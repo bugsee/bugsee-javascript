@@ -36,4 +36,19 @@ describe('base64 round trip', () => {
     const bytes = new Uint8Array([0, 1, 2, 254, 255, 128, 64]);
     expect(Array.from(fromBase64(toBase64(bytes)))).toEqual(Array.from(bytes));
   });
+
+  it('preserves a large buffer (no call-stack/arg-count limits)', () => {
+    const big = Uint8Array.from({ length: 100_000 }, (_, i) => i % 256);
+    expect(Array.from(fromBase64(toBase64(big)))).toEqual(Array.from(big));
+  });
+});
+
+describe('base64 edge cases', () => {
+  it('encodes high bytes (>127) with a standalone oracle, independent of the decoder', () => {
+    expect(toBase64(new Uint8Array([255, 254, 128]))).toBe('//6A');
+  });
+
+  it('decodes a double-padded group standalone', () => {
+    expect(Array.from(fromBase64('TQ=='))).toEqual([77]);
+  });
 });

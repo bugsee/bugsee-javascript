@@ -33,4 +33,17 @@ describe('jsonSafeStringify', () => {
   it('honors the space argument for pretty printing', () => {
     expect(jsonSafeStringify({ a: 1 }, 2)).toBe('{\n  "a": 1\n}');
   });
+
+  it('reports repeated (non-circular) references as "[Circular]" (documented limitation)', () => {
+    const shared = { v: 1 };
+    expect(jsonSafeStringify({ a: shared, b: shared })).toBe('{"a":{"v":1},"b":"[Circular]"}');
+  });
+
+  it('serializes a top-level BigInt as its decimal string', () => {
+    expect(jsonSafeStringify(10n)).toBe('"10"');
+  });
+
+  it('omits nested undefined and function values (standard JSON behavior)', () => {
+    expect(jsonSafeStringify({ a: undefined, b: () => 1, c: 2 })).toBe('{"c":2}');
+  });
 });

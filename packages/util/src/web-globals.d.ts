@@ -10,8 +10,11 @@ declare class TextEncoder {
   encode(input?: string): Uint8Array;
 }
 
-declare const crypto: {
-  readonly subtle: {
-    digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
+// Minimal `node:crypto` surface used by the SHA-256 fallback (sha256.ts), declared locally so
+// the package needs neither @types/node nor a global `crypto` to typecheck. The dynamic import
+// only executes on runtimes without global WebCrypto.
+declare module 'node:crypto' {
+  export function createHash(algorithm: string): {
+    update(data: Uint8Array): { digest(): Uint8Array };
   };
-};
+}

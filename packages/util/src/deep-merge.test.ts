@@ -46,4 +46,26 @@ describe('deepMerge', () => {
     expect(target).toEqual({ a: { x: 1 } });
     expect(source).toEqual({ a: { y: 2 } });
   });
+
+  it('ignores a top-level __proto__ key without corrupting the result prototype', () => {
+    const result = deepMerge({ a: 1 }, JSON.parse('{"b":2,"__proto__":{"polluted":true}}'));
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect((result as Record<string, unknown>).polluted).toBeUndefined();
+    expect(result).toEqual({ a: 1, b: 2 });
+  });
+
+  it('ignores a nested __proto__ key without corrupting nested prototypes', () => {
+    const result = deepMerge(
+      { cfg: { x: 1 } },
+      JSON.parse('{"cfg":{"y":2,"__proto__":{"isAdmin":true}}}'),
+    );
+    expect(Object.getPrototypeOf(result.cfg)).toBe(Object.prototype);
+    expect((result.cfg as Record<string, unknown>).isAdmin).toBeUndefined();
+    expect(result).toEqual({ cfg: { x: 1, y: 2 } });
+  });
+
+  it('never pollutes the global Object.prototype', () => {
+    deepMerge({}, JSON.parse('{"__proto__":{"globallyPolluted":true}}'));
+    expect((Object.prototype as Record<string, unknown>).globallyPolluted).toBeUndefined();
+  });
 });

@@ -74,6 +74,11 @@ describe('isWebWorker', () => {
     vi.stubGlobal('importScripts', () => undefined);
     expect(isWebWorker()).toBe(true);
   });
+  it('is false in a service worker (importScripts present but SW scope too)', () => {
+    vi.stubGlobal('importScripts', () => undefined);
+    vi.stubGlobal('ServiceWorkerGlobalScope', {});
+    expect(isWebWorker()).toBe(false);
+  });
 });
 
 describe('isServiceWorker', () => {
@@ -115,6 +120,10 @@ describe('isElectronRenderer', () => {
   it('is true when process.type is renderer', () => {
     vi.stubGlobal('process', { type: 'renderer' });
     expect(isElectronRenderer()).toBe(true);
+  });
+  it('is false when process.type is not renderer', () => {
+    vi.stubGlobal('process', { type: 'browser' });
+    expect(isElectronRenderer()).toBe(false);
   });
   it('is false without process', () => {
     vi.stubGlobal('process', undefined);

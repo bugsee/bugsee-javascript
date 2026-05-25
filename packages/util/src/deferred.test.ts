@@ -45,4 +45,12 @@ describe('createDeferred', () => {
     d.resolve(2);
     await expect(d.promise).resolves.toBe(1);
   });
+
+  it('keeps the resolved value if reject is called afterward, and stays settled', async () => {
+    const d = createDeferred<number>();
+    d.resolve(1);
+    d.reject(new Error('late'));
+    expect(d.settled).toBe(true);
+    await expect(d.promise).resolves.toBe(1);
+  });
 });

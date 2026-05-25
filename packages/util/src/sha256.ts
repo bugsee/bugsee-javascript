@@ -1,13 +1,28 @@
+type WebCryptoLike = {
+  subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> };
+};
+
 /**
- * SHA-256 hex digest via the global WebCrypto `crypto.subtle` (available on browsers, Node >=20,
- * Bun, Deno, and Workers). Async. Used for bundle checksums (design §8.3) and the storage-dir
- * hash (§3.4).
+ * Computes the SHA-256 digest, preferring the global WebCrypto `crypto.subtle` (browsers, Node
+ * >=19/20, Bun, Deno, Workers) and falling back to `node:crypto` when no global `crypto` exists
+ * (the Node >=18 baseline without `--experimental-global-webcrypto`). Mirrors design §8.3, which
+ * routes Node/Bun through `node:crypto`. The `node:crypto` import is dynamic so it never loads on
+ * runtimes that have global WebCrypto.
  */
+async function digestSha256(bytes: Uint8Array): Promise<Uint8Array> {
+  const webcrypto = (globalThis as { crypto?: WebCryptoLike }).crypto;
+  if (webcrypto?.subtle) {
+    return new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes));
+  }
+  const { createHash } = await import('node:crypto');
+  return new Uint8Array(createHash('sha256').update(bytes).digest());
+}
+
+/** SHA-256 hex digest of a string (UTF-8) or raw bytes. Async. */
 export async function sha256Hex(data: Uint8Array | string): Promise<string> {
   const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
   let hex = '';
-  for (const byte of new Uint8Array(digest)) {
+  for (const byte of await digestSha256(bytes)) {
     hex += byte.toString(16).padStart(2, '0');
   }
   return hex;

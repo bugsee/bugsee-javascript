@@ -32,7 +32,9 @@ export function computeBackoff(attempt: number, options: BackoffOptions = {}): n
   const exponential = initialDelayMs * factor ** safeAttempt;
   const capped = Math.min(exponential, maxDelayMs);
   const jitter = 1 + (random() * 2 - 1) * jitterRatio;
-  const delay = capped * jitter;
+  const jittered = capped * jitter;
+  // maxDelayMs is a hard ceiling: jitter must not push the delay above it (design §14.8).
+  const bounded = jittered > maxDelayMs ? maxDelayMs : jittered;
 
-  return delay > 0 ? delay : 0;
+  return bounded > 0 ? bounded : 0;
 }

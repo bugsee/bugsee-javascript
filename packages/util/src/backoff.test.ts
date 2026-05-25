@@ -61,4 +61,17 @@ describe('computeBackoff', () => {
       computeBackoff(0, { initialDelayMs: -100, factor: 2, jitterRatio: 0, random: () => 0.5 }),
     ).toBe(0);
   });
+
+  it('never exceeds maxDelayMs after jitter is applied (cap is a hard ceiling)', () => {
+    // capped = 5000, jitter = 1.1 -> 5500, clamped back down to the 5000 ceiling.
+    expect(
+      computeBackoff(10, {
+        initialDelayMs: 1_000,
+        factor: 10,
+        maxDelayMs: 5_000,
+        jitterRatio: 0.1,
+        random: () => 1,
+      }),
+    ).toBe(5_000);
+  });
 });

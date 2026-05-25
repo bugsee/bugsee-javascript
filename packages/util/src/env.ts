@@ -24,7 +24,10 @@ export const isNode = (): boolean =>
 
 export const isBrowser = (): boolean => typeof g.window?.document !== 'undefined';
 
-export const isWebWorker = (): boolean => typeof g.importScripts === 'function';
+// A ServiceWorker scope also exposes importScripts, so exclude it — callers branching on
+// isWebWorker() for a dedicated/shared worker should not also match service workers.
+export const isWebWorker = (): boolean =>
+  typeof g.importScripts === 'function' && !isServiceWorker();
 
 export const isServiceWorker = (): boolean => typeof g.ServiceWorkerGlobalScope !== 'undefined';
 
