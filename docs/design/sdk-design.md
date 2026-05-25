@@ -1345,7 +1345,7 @@ Framework adapters beyond these stay published as `@bugsee/<framework>` direct p
 
 ## 13. Testing strategy
 
-**Methodology is binding — see `docs/implementation-standards.md`** (also summarized in `CLAUDE.md`): test-first TDD; a hand-driven **mutator loop** per testable entity (inject bug → confirm test catches it → roll back, ≤10 iterations); integration tests at every class-interaction / cross-package boundary with the same discipline. The table below is the tooling/layer breakdown.
+**Methodology is binding — see `docs/implementation-standards.md`** (also summarized in `CLAUDE.md`): test-first TDD; a hand-driven **mutator loop** per testable entity (inject bug → confirm test catches it → roll back, ≤10 iterations); integration tests at every class-interaction / cross-package boundary with the same discipline; and a **convergent multi-agent code review** per feature (§7 of that doc) that loops until a review round finds zero new real issues. The table below is the tooling/layer breakdown.
 
 | Layer | Tool | Scope |
 |---|---|---|

@@ -86,6 +86,40 @@ Integration tests follow the **same mutator discipline (§2)** — inject bugs a
 
 ---
 
+## 7. Multi-agent code review (per feature) — convergent gate
+
+After a feature's implementation **and** tests are complete and all automated gates pass (§2 mutator loop, §4 coverage, typecheck, lint), it must clear a **multi-agent code review** before it is considered done. Automated gates prove the tests are strong; this review proves the *design, correctness, and test adequacy* are sound — things a coverage number cannot.
+
+### 7.1 Spawn multiple specialized agents in parallel
+
+Both the implementation **and** the tests are under review. Run, at minimum:
+
+- **Implementation reviewer** — correctness, edge cases, error handling, async/concurrency, security & privacy (sanitizer/PII per design §14), resource/lifecycle handling, and conformance to the design doc and the public API contract.
+- **Test reviewer** — whether tests *validate* behavior rather than merely execute it; missing cases and boundaries; weak, oracle-free, or tautological assertions; over-mocking that hides real behavior; flakiness/nondeterminism; and whether the mutator-loop intent is genuinely met.
+- **Standards / design-conformance reviewer** (for cross-cutting or cross-package features) — adherence to the architecture (thin kernel, pub/sub, no core piercing — §0.6/§16), naming, layering, and these standards.
+
+Use distinct agents so perspectives don't collapse into one. The reviewed surface includes the diff **and** its immediate collaborators.
+
+### 7.2 Rules of engagement (non-negotiable, passed to every review agent)
+
+- **No assumptions.** If behavior or intent is unclear, read the code, the design doc, and the tests until certain. Never guess.
+- **No hallucination.** Every finding cites a concrete `file:line` and a verifiable reason; if a claim can be checked by running code or tests, run it.
+- **No shortcuts / easy paths.** Validate everything thoroughly. When confused, **re-check** rather than hand-waving; prefer reproducing over reasoning-from-memory.
+- **Read-only.** Review agents report findings; they do **not** edit code. Fixes are applied by the orchestrator.
+
+### 7.3 Triage, fix, and re-review (loop to convergence)
+
+1. **Triage** each finding into *real issue* vs *false positive*; record a one-line reason for every dismissal (so dismissals are auditable, not silent).
+2. **Fix real issues test-first**: write a failing test that reproduces the issue, fix it, then run that entity's §2 mutator loop and re-check the §4 gates.
+3. **Re-review**: start a **fresh** multi-agent review (new agents, full scope) over the updated feature.
+4. **Repeat** 1–3 until a full round produces **zero new real findings**. Only then is the feature done.
+
+### 7.4 Guardrail
+
+If the loop does not converge after several rounds (fixes keep surfacing genuinely new real issues), **pause and surface the situation to the user** with the open findings rather than thrashing. (Analogous to the §2 mutator loop's hard iteration cap — convergence is the goal, not infinite churn.)
+
+---
+
 ## Checklist (per change)
 
 - [ ] Failing test written first.
@@ -94,3 +128,4 @@ Integration tests follow the **same mutator discipline (§2)** — inject bugs a
 - [ ] All injected mutations rolled back; tree is clean.
 - [ ] Integration tests added for new class interactions / module boundaries (with their own mutator loop).
 - [ ] Coverage 100% line / ≥90% branch on the relevant runtime(s); any exclusion annotated + justified.
+- [ ] Multi-agent review (§7) run; real findings fixed test-first; re-reviewed until a round has zero new findings.
