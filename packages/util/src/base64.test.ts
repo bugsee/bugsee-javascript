@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { fromBase64, toBase64 } from './base64';
 
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+// ASCII-only test strings -> bytes, without depending on a TextEncoder global in the test.
+const enc = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
 
 describe('toBase64', () => {
   it('encodes empty input to an empty string', () => {

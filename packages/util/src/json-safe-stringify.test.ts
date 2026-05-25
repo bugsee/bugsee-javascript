@@ -18,6 +18,12 @@ describe('jsonSafeStringify', () => {
     expect(jsonSafeStringify(o)).toBe('{"a":1,"self":"[Circular]"}');
   });
 
+  it('detects a cycle back to an ancestor at depth', () => {
+    const a: Record<string, unknown> = { b: {} };
+    (a.b as Record<string, unknown>).parent = a;
+    expect(jsonSafeStringify(a)).toBe('{"b":{"parent":"[Circular]"}}');
+  });
+
   it('keeps explicit null values', () => {
     expect(jsonSafeStringify({ a: null })).toBe('{"a":null}');
   });
