@@ -246,7 +246,8 @@ A feature with both a platform impl and a capture loop (e.g. replay = an encoder
 
 ```
 packages/
-  # tier 0: runtime-agnostic foundation (zero internal deps among themselves except util→types)
+  # tier 0: runtime-agnostic foundation (minimal internal deps forming a clean DAG: util→fflate only;
+  #         service→util; protocol→types,util; logger/types standalone. Merge targets live in @bugsee/types.)
   @bugsee/types                 # TS types only; declaration-merge target for NameServiceMapping
   @bugsee/util                  # pure utilities: env detection, Deferred, base64, sha256, deep-merge, json-safe-stringify, exponential-backoff, fflate re-export
   @bugsee/logger                # log-level + handler registration
@@ -298,12 +299,14 @@ This rule applies to integrations too: importing `@bugsee/replay` must NOT insta
 
 ### 5.2 `NameServiceMapping`
 
+> **Implemented placement (v3):** the empty `NameServiceMapping` (and the other merge targets) live in **`@bugsee/types`**, not `@bugsee/service` — `@bugsee/types` is the zero-dependency tier-0 node every package can reach, so typed mergers (`@bugsee/protocol`, framework packages) depend on `types` without forcing a dependency on the `service` runtime package. `@bugsee/service` is a generic, untyped container; the `NameServiceMapping`-typed facade is layered on by `@bugsee/core`'s `Client.addService`/`getService`.
+
 ```ts
-// @bugsee/service
+// @bugsee/types
 export interface NameServiceMapping {}
 
 // @bugsee/protocol (declaration-merge)
-declare module '@bugsee/service' {
+declare module '@bugsee/types' {
   interface NameServiceMapping {
     'api': BugseeApi;
     'uploader': BundleUploader;
@@ -318,7 +321,7 @@ declare module '@bugsee/service' {
 }
 
 // @bugsee/replay (optional)
-declare module '@bugsee/service' {
+declare module '@bugsee/types' {
   interface NameServiceMapping {
     'replay-encoder': ReplayEncoder;
   }

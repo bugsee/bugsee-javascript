@@ -1,6 +1,7 @@
 // @bugsee/service — per-Client service registry (design §4.4, §7.4). Firebase @firebase/component
-// pattern, renamed and reduced to single-instance: LAZY (default) + EXPLICIT instantiation modes,
-// pending-Deferred late registration, clearInstance, and onInit. No global registry, no EAGER mode.
+// pattern, renamed (Component -> Service, §0.1) and reduced to single-instance: LAZY (default) +
+// EXPLICIT instantiation modes, pending-Deferred late registration, clearInstance, and onInit.
+// No global registry, no EAGER mode.
 
 import { createDeferred, type Deferred } from '@bugsee/util';
 
@@ -26,9 +27,12 @@ export function defineService<T>(
 
 export interface Provider<T> {
   readonly name: string;
-  isComponentSet(): boolean;
+  isServiceSet(): boolean;
   isInitialized(): boolean;
-  /** Resolves with the instance — instantiating lazily, or awaiting late registration / explicit init. */
+  /**
+   * Resolves with the instance — instantiating lazily, or awaiting late registration / explicit init.
+   * A pending get() is rejected if `clearInstance()` runs first, so callers must handle the promise.
+   */
   get(): Promise<T>;
   /** Returns the instance synchronously; throws if unavailable (or returns null when optional). */
   getImmediate(): T;
@@ -36,7 +40,7 @@ export interface Provider<T> {
   /** Instantiates with init options (required for EXPLICIT services). */
   initialize(options?: unknown): T;
   /** Registers the backing service definition (called by the container). */
-  setComponent(service: Service<T>): void;
+  setService(service: Service<T>): void;
   /** Drops the instance and rejects any pending get(). */
   clearInstance(): void;
   /** Runs `cb` when the instance is created (immediately if it already exists); returns unsubscribe. */
@@ -49,10 +53,11 @@ export interface ServiceContainer {
 }
 
 function createProvider<T>(name: string, container: ServiceContainer): Provider<T> {
-  let component: Service<T> | null = null;
+  let service: Service<T> | null = null;
   let instance: T | null = null;
   let deferred: Deferred<T> | null = null;
   let failure: { error: unknown } | null = null;
+  let instantiating = false;
   const onInitCallbacks = new Set<(instance: T) => void>();
 
   const safeInvoke = (cb: (instance: T) => void, value: T): void => {
@@ -63,11 +68,15 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
     }
   };
 
-  // Single instantiation point: resolves/rejects the pending deferred, fires onInit, and rethrows.
+  // Single instantiation point: resolves/rejects the pending deferred, fires onInit, rethrows.
   const instantiate = (options?: unknown): T => {
-    const service = component as Service<T>;
+    const definition = service as Service<T>;
+    if (instantiating) {
+      throw new Error(`Service "${name}" has a circular dependency on itself during creation`);
+    }
+    instantiating = true;
     try {
-      const created = service.factory(container, options);
+      const created = definition.factory(container, options);
       instance = created;
       deferred?.resolve(created);
       for (const cb of [...onInitCallbacks]) {
@@ -78,12 +87,14 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
       failure = { error };
       deferred?.reject(error);
       throw error;
+    } finally {
+      instantiating = false;
     }
   };
 
   return {
     name,
-    isComponentSet: () => component !== null,
+    isServiceSet: () => service !== null,
     isInitialized: () => instance !== null,
 
     get(): Promise<T> {
@@ -96,7 +107,7 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
       if (deferred === null) {
         deferred = createDeferred<T>();
       }
-      if (component !== null && component.mode === 'LAZY') {
+      if (service !== null && service.mode === 'LAZY') {
         try {
           instantiate();
         } catch {
@@ -116,13 +127,13 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
         }
         throw failure.error;
       }
-      if (component === null) {
+      if (service === null) {
         if (opts?.optional) {
           return null;
         }
         throw new Error(`Service "${name}" is not registered`);
       }
-      if (component.mode === 'EXPLICIT') {
+      if (service.mode === 'EXPLICIT') {
         if (opts?.optional) {
           return null;
         }
@@ -132,7 +143,10 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
     },
 
     initialize(options?: unknown): T {
-      if (component === null) {
+      if (failure !== null) {
+        throw failure.error;
+      }
+      if (service === null) {
         throw new Error(`Service "${name}" is not registered`);
       }
       if (instance !== null) {
@@ -141,13 +155,14 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
       return instantiate(options);
     },
 
-    setComponent(service: Service<T>): void {
-      if (component !== null) {
+    setService(definition: Service<T>): void {
+      if (service !== null) {
         throw new Error(`Service "${name}" is already registered`);
       }
-      component = service;
-      // Late registration: a pending get() on a LAZY service instantiates now.
-      if (deferred !== null && !deferred.settled && service.mode === 'LAZY') {
+      service = definition;
+      // Late registration: a pending get() on a LAZY service instantiates now. (A deferred present
+      // here is always unsettled: before registration nothing instantiates, and clearInstance nulls it.)
+      if (deferred !== null && definition.mode === 'LAZY') {
         try {
           instantiate();
         } catch {
@@ -191,7 +206,7 @@ export function createServiceContainer(): ServiceContainer {
 
   const container: ServiceContainer = {
     addService<T>(service: Service<T>): void {
-      getOrCreate<T>(service.name).setComponent(service);
+      getOrCreate<T>(service.name).setService(service);
     },
     getProvider<T>(name: string): Provider<T> {
       return getOrCreate<T>(name);
