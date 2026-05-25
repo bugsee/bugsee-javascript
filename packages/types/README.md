@@ -1,5 +1,5 @@
 # @bugsee/types
 
-TS types only; declaration-merge target for NameServiceMapping/NameExtensionMapping/NameHookMapping
+Zero-dependency TS types shared across the SDK: branded ids (`AppToken`/`AccessToken`/`IssueId`/`RecordingId`), public string unions (`LogLevelName`/`SeverityName`/`IssueType`/`AttributeValue`), and the declaration-merge targets `NameServiceMapping`/`NameExtensionMapping`/`NameHookMapping`/`NameHubMapping`.
 
-**Status:** stub. Tier 0 (design §5). Implementation follows `docs/implementation-standards.md`.
+Type-only — no runtime code; validated by the type-checker via `src/index.test-d.ts`. Tier 0 (design §5).

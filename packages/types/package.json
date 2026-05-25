@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "TS types only; declaration-merge target for NameServiceMapping/NameExtensionMapping/NameHookMapping",
+  "description": "TS types only; declaration-merge targets NameServiceMapping/NameExtensionMapping/NameHookMapping/NameHubMapping",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
