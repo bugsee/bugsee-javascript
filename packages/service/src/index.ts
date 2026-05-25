@@ -1,5 +1,5 @@
 // @bugsee/service — per-Client service registry (design §4.4, §7.4). Firebase @firebase/component
-// pattern, renamed (Component -> Service, §0.1) and reduced to single-instance: LAZY (default) +
+// pattern, renamed (Component -> Service, §0 item 1 / §4.4) and reduced to single-instance: LAZY (default) +
 // EXPLICIT instantiation modes, pending-Deferred late registration, clearInstance, and onInit.
 // No global registry, no EAGER mode.
 
@@ -68,11 +68,14 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
     }
   };
 
+  const circularError = (): Error =>
+    new Error(`Service "${name}" has a circular dependency on itself during creation`);
+
   // Single instantiation point: resolves/rejects the pending deferred, fires onInit, rethrows.
   const instantiate = (options?: unknown): T => {
     const definition = service as Service<T>;
     if (instantiating) {
-      throw new Error(`Service "${name}" has a circular dependency on itself during creation`);
+      throw circularError();
     }
     instantiating = true;
     try {
@@ -120,6 +123,11 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
     getImmediate(opts?: { optional?: boolean }): T | null {
       if (instance !== null) {
         return instance;
+      }
+      // A re-entrant getImmediate() during this provider's own construction is a self-cycle,
+      // regardless of mode — surface it as a circular-dependency error, not "must be initialized".
+      if (instantiating) {
+        throw circularError();
       }
       if (failure !== null) {
         if (opts?.optional) {

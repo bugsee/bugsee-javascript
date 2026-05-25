@@ -273,7 +273,7 @@ describe('factory failure', () => {
 });
 
 describe('re-entrancy', () => {
-  it('detects a self-referential factory instead of double-instantiating', () => {
+  it('detects a self-referential factory (getImmediate) instead of double-instantiating', () => {
     const c = createServiceContainer();
     c.addService(
       defineService('s', (container) => {
@@ -282,6 +282,39 @@ describe('re-entrancy', () => {
       }),
     );
     expect(() => c.getProvider('s').getImmediate()).toThrow(/circular/);
+  });
+
+  it('reports a circular error (not "must be initialized") for an EXPLICIT self-cycle via getImmediate', () => {
+    const c = createServiceContainer();
+    c.addService(
+      defineService(
+        's',
+        (container) => {
+          container.getProvider('s').getImmediate();
+          return 1;
+        },
+        'EXPLICIT',
+      ),
+    );
+    expect(() => c.getProvider('s').initialize()).toThrow(/circular/);
+  });
+
+  it('a re-entrant get() during construction does not re-run the factory and resolves to the instance', async () => {
+    const c = createServiceContainer();
+    let calls = 0;
+    let inner: Promise<number> | undefined;
+    c.addService(
+      defineService('s', (container) => {
+        calls += 1;
+        // Re-entrant get(): instantiate()'s guard prevents a second build; this pending deferred
+        // is the provider's own, so the outer construction resolves it once it completes.
+        inner = container.getProvider<number>('s').get();
+        return 1;
+      }),
+    );
+    expect(c.getProvider<number>('s').getImmediate()).toBe(1);
+    expect(calls).toBe(1);
+    await expect(inner).resolves.toBe(1);
   });
 });
 
