@@ -180,7 +180,10 @@ function createProvider<T>(name: string, container: ServiceContainer): Provider<
     },
 
     clearInstance(): void {
-      if (deferred !== null && !deferred.settled) {
+      // Reject a pending get(). If the deferred is already settled (the instance was created via
+      // get()), this reject is a harmless no-op — native promises are idempotent — so no
+      // settled-check is needed.
+      if (deferred !== null) {
         deferred.reject(new Error(`Service "${name}" was cleared before it initialized`));
       }
       instance = null;

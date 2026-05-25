@@ -213,6 +213,24 @@ describe('clearInstance', () => {
     await expect(second).resolves.toBe(7);
   });
 
+  it('clears an instance created via get() without corrupting the resolved promise, and re-instantiates', async () => {
+    const c = createServiceContainer();
+    let calls = 0;
+    c.addService(
+      defineService('s', () => {
+        calls += 1;
+        return { v: calls };
+      }),
+    );
+    const p = c.getProvider<{ v: number }>('s');
+    const promise = p.get(); // creates + (LAZY) resolves the deferred
+    const first = await promise;
+    p.clearInstance(); // rejects an already-settled deferred -> harmless no-op
+    await expect(promise).resolves.toBe(first); // the original resolved promise is unaffected
+    expect(p.getImmediate()).not.toBe(first); // re-instantiated
+    expect(calls).toBe(2);
+  });
+
   it('recovers after a factory failure once cleared (failure reset)', () => {
     const c = createServiceContainer();
     let shouldThrow = true;
