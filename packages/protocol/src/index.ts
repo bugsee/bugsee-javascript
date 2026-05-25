@@ -11,3 +11,11 @@ export {
   severityToWire,
 } from './levels';
 export { optionKeyFromWire, optionKeyToWire, optionsToWire } from './options';
+export {
+  isSensitiveHeader,
+  isSensitiveKey,
+  REDACTED,
+  REDACTED_URL_ENCODED,
+  SENSITIVE_HEADERS,
+  SENSITIVE_KEY_SUBSTRINGS,
+} from './sensitive';
