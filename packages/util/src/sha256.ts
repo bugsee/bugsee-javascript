@@ -1,3 +1,8 @@
+/// <reference path="./web-globals.d.ts" />
+// The reference makes the local `node:crypto` ambient (web-globals.d.ts) travel with this file,
+// so a consumer that type-checks @bugsee/util's source (e.g. @bugsee/service) can resolve the
+// dynamic import without needing @types/node of its own.
+
 type WebCryptoLike = {
   subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> };
 };
