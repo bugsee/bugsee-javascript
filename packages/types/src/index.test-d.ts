@@ -11,6 +11,7 @@ import type {
   LogLevelName,
   NameExtensionMapping,
   NameHookMapping,
+  NameHubMapping,
   NameServiceMapping,
   RecordingId,
   SeverityName,
@@ -23,16 +24,29 @@ type Extends<A, B> = A extends B ? true : false;
 
 // Exported so the assertions are "used" (no unused-symbol diagnostics) and evaluated by tsc.
 export type TypeAssertions = [
-  // branded ids are string subtypes...
+  // each brand is a string subtype...
   Expect<Extends<AppToken, string>>,
   Expect<Extends<AccessToken, string>>,
   Expect<Extends<IssueId, string>>,
   Expect<Extends<RecordingId, string>>,
-  // ...but a plain string is NOT one of them...
+  // ...but plain string is assignable to NONE of them...
   Expect<Equal<Extends<string, AppToken>, false>>,
-  // ...and the brands are mutually distinct.
+  Expect<Equal<Extends<string, AccessToken>, false>>,
+  Expect<Equal<Extends<string, IssueId>, false>>,
+  Expect<Equal<Extends<string, RecordingId>, false>>,
+  // ...and the brands are mutually non-assignable (every ordered distinct pair).
+  Expect<Equal<Extends<AppToken, AccessToken>, false>>,
   Expect<Equal<Extends<AppToken, IssueId>, false>>,
+  Expect<Equal<Extends<AppToken, RecordingId>, false>>,
   Expect<Equal<Extends<AccessToken, AppToken>, false>>,
+  Expect<Equal<Extends<AccessToken, IssueId>, false>>,
+  Expect<Equal<Extends<AccessToken, RecordingId>, false>>,
+  Expect<Equal<Extends<IssueId, AppToken>, false>>,
+  Expect<Equal<Extends<IssueId, AccessToken>, false>>,
+  Expect<Equal<Extends<IssueId, RecordingId>, false>>,
+  Expect<Equal<Extends<RecordingId, AppToken>, false>>,
+  Expect<Equal<Extends<RecordingId, AccessToken>, false>>,
+  Expect<Equal<Extends<RecordingId, IssueId>, false>>,
   // string unions are exact
   Expect<Equal<LogLevelName, 'error' | 'warning' | 'info' | 'debug' | 'verbose'>>,
   Expect<Equal<SeverityName, 'verylow' | 'medium' | 'high' | 'critical' | 'blocker' | 'low'>>,
@@ -42,4 +56,5 @@ export type TypeAssertions = [
   Expect<Equal<keyof NameServiceMapping, never>>,
   Expect<Equal<keyof NameExtensionMapping, never>>,
   Expect<Equal<keyof NameHookMapping, never>>,
+  Expect<Equal<keyof NameHubMapping, never>>,
 ];

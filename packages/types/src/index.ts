@@ -28,3 +28,6 @@ export interface NameServiceMapping {}
 export interface NameExtensionMapping {}
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
 export interface NameHookMapping {}
+// Event-hub typing target for `client.hubs.<name>` (design §16.2).
+// biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
+export interface NameHubMapping {}

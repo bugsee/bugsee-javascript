@@ -29,13 +29,21 @@ export function createLogger(initialLevel: LoggerLevel = 'error'): Logger {
   const handlers = new Set<LogHandler>();
   const warnedKeys = new Set<string>();
 
-  const emit = (messageLevel: LogLevel, args: unknown[]): void => {
+  // Returns whether the message was deliverable at the current level (used by warnOnce).
+  const emit = (messageLevel: LogLevel, args: unknown[]): boolean => {
     if (RANK[messageLevel] > RANK[level]) {
-      return;
+      return false;
     }
-    for (const handler of handlers) {
-      handler(messageLevel, args);
+    Object.freeze(args); // handlers must treat args as immutable; freezing enforces it
+    // Snapshot so a handler that (un)registers handlers mid-emit doesn't affect this delivery.
+    for (const handler of [...handlers]) {
+      try {
+        handler(messageLevel, args);
+      } catch {
+        // A faulty sink must never break SDK logging or starve other sinks.
+      }
     }
+    return true;
   };
 
   return {
@@ -67,8 +75,11 @@ export function createLogger(initialLevel: LoggerLevel = 'error'): Logger {
       if (warnedKeys.has(key)) {
         return;
       }
-      warnedKeys.add(key);
-      emit('warn', args);
+      // Consume the key only if the warning was actually delivered, so a warning first hit
+      // while suppressed can still surface once verbosity is raised.
+      if (emit('warn', args)) {
+        warnedKeys.add(key);
+      }
     },
   };
 }
