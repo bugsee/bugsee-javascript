@@ -1,0 +1,257 @@
+import { describe, expect, it, vi } from 'vitest';
+import { createServiceContainer, defineService } from './index';
+
+describe('defineService', () => {
+  it('defaults to LAZY mode', () => {
+    expect(defineService('x', () => 1).mode).toBe('LAZY');
+  });
+
+  it('honors an explicit mode', () => {
+    expect(defineService('x', () => 1, 'EXPLICIT').mode).toBe('EXPLICIT');
+  });
+});
+
+describe('ServiceContainer / Provider (LAZY)', () => {
+  it('getProvider exposes the name', () => {
+    expect(createServiceContainer().getProvider('clock').name).toBe('clock');
+  });
+
+  it('returns the same provider instance for a name', () => {
+    const c = createServiceContainer();
+    expect(c.getProvider('clock')).toBe(c.getProvider('clock'));
+  });
+
+  it('lazily instantiates on first getImmediate, exactly once (singleton)', () => {
+    const c = createServiceContainer();
+    const factory = vi.fn(() => ({ v: 1 }));
+    c.addService(defineService('s', factory));
+    const a = c.getProvider<{ v: number }>('s').getImmediate();
+    const b = c.getProvider<{ v: number }>('s').getImmediate();
+    expect(a).toBe(b);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the container to the factory', () => {
+    const c = createServiceContainer();
+    let received: unknown;
+    c.addService(
+      defineService('s', (container) => {
+        received = container;
+        return 1;
+      }),
+    );
+    c.getProvider('s').getImmediate();
+    expect(received).toBe(c);
+  });
+
+  it('getImmediate throws before registration', () => {
+    expect(() => createServiceContainer().getProvider('missing').getImmediate()).toThrow();
+  });
+
+  it('getImmediate({ optional: true }) returns null before registration', () => {
+    expect(
+      createServiceContainer().getProvider('missing').getImmediate({ optional: true }),
+    ).toBeNull();
+  });
+
+  it('isComponentSet / isInitialized track the lifecycle', () => {
+    const c = createServiceContainer();
+    const p = c.getProvider('s');
+    expect(p.isComponentSet()).toBe(false);
+    expect(p.isInitialized()).toBe(false);
+    c.addService(defineService('s', () => 1));
+    expect(p.isComponentSet()).toBe(true);
+    expect(p.isInitialized()).toBe(false);
+    p.getImmediate();
+    expect(p.isInitialized()).toBe(true);
+  });
+
+  it('registering the same name twice throws', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1));
+    expect(() => c.addService(defineService('s', () => 2))).toThrow();
+  });
+});
+
+describe('async get() + late registration', () => {
+  it('resolves after late registration (LAZY)', async () => {
+    const c = createServiceContainer();
+    const promise = c.getProvider<number>('s').get(); // pending: not registered yet
+    c.addService(defineService('s', () => 42));
+    await expect(promise).resolves.toBe(42);
+  });
+
+  it('resolves immediately when already instantiated', async () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 7));
+    c.getProvider('s').getImmediate();
+    await expect(c.getProvider<number>('s').get()).resolves.toBe(7);
+  });
+
+  it('get() and getImmediate() yield the same instance', async () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => ({ v: 1 })));
+    const fromGet = await c.getProvider<{ v: number }>('s').get();
+    expect(c.getProvider<{ v: number }>('s').getImmediate()).toBe(fromGet);
+  });
+});
+
+describe('EXPLICIT mode', () => {
+  it('getImmediate throws before initialize', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1, 'EXPLICIT'));
+    expect(() => c.getProvider('s').getImmediate()).toThrow();
+  });
+
+  it('getImmediate({ optional: true }) returns null before initialize', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1, 'EXPLICIT'));
+    expect(c.getProvider('s').getImmediate({ optional: true })).toBeNull();
+  });
+
+  it('initialize instantiates with options; getImmediate then returns it', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', (_c, opts) => ({ opts }), 'EXPLICIT'));
+    const inst = c.getProvider<{ opts: unknown }>('s').initialize({ a: 1 });
+    expect(inst).toEqual({ opts: { a: 1 } });
+    expect(c.getProvider('s').getImmediate()).toBe(inst);
+  });
+
+  it('get() stays pending until initialize', async () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 5, 'EXPLICIT'));
+    const promise = c.getProvider<number>('s').get();
+    c.getProvider('s').initialize();
+    await expect(promise).resolves.toBe(5);
+  });
+});
+
+describe('initialize errors', () => {
+  it('throws when the service is not registered', () => {
+    expect(() => createServiceContainer().getProvider('s').initialize()).toThrow();
+  });
+
+  it('throws when already initialized', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1, 'EXPLICIT'));
+    c.getProvider('s').initialize();
+    expect(() => c.getProvider('s').initialize()).toThrow();
+  });
+});
+
+describe('clearInstance', () => {
+  it('drops the instance and re-instantiates on next access', () => {
+    const c = createServiceContainer();
+    const factory = vi.fn(() => ({ v: 1 }));
+    c.addService(defineService('s', factory));
+    const p = c.getProvider('s');
+    p.getImmediate();
+    p.clearInstance();
+    expect(p.isInitialized()).toBe(false);
+    p.getImmediate();
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a pending get()', async () => {
+    const c = createServiceContainer();
+    const pending = c.getProvider<number>('s').get();
+    c.getProvider('s').clearInstance();
+    await expect(pending).rejects.toThrow();
+  });
+});
+
+describe('factory failure', () => {
+  it('getImmediate throws the factory error', () => {
+    const c = createServiceContainer();
+    const boom = new Error('boom');
+    c.addService(
+      defineService('s', () => {
+        throw boom;
+      }),
+    );
+    expect(() => c.getProvider('s').getImmediate()).toThrow(boom);
+  });
+
+  it('get() rejects with the factory error on late registration', async () => {
+    const c = createServiceContainer();
+    const boom = new Error('boom');
+    const promise = c.getProvider('s').get();
+    c.addService(
+      defineService('s', () => {
+        throw boom;
+      }),
+    );
+    await expect(promise).rejects.toBe(boom);
+  });
+
+  it('caches the failure: factory is not re-run, and a later get() also rejects', async () => {
+    const c = createServiceContainer();
+    const boom = new Error('boom');
+    const factory = vi.fn(() => {
+      throw boom;
+    });
+    c.addService(defineService('s', factory));
+    const p = c.getProvider('s');
+    expect(() => p.getImmediate()).toThrow(boom);
+    expect(() => p.getImmediate()).toThrow(boom); // re-throws the cached failure, no re-run
+    await expect(p.get()).rejects.toBe(boom);
+    expect(p.getImmediate({ optional: true })).toBeNull();
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('get() called twice while pending shares one pending promise', async () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 9, 'EXPLICIT'));
+    const p = c.getProvider<number>('s');
+    const a = p.get();
+    const b = p.get(); // deferred already exists -> reused, not recreated
+    expect(a).toBe(b);
+    p.initialize();
+    await expect(a).resolves.toBe(9);
+  });
+});
+
+describe('onInit', () => {
+  it('fires when the instance is created', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => ({ v: 1 })));
+    const cb = vi.fn();
+    const p = c.getProvider<{ v: number }>('s');
+    p.onInit(cb);
+    p.getImmediate();
+    expect(cb).toHaveBeenCalledWith({ v: 1 });
+  });
+
+  it('fires immediately if the instance already exists', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1));
+    const p = c.getProvider('s');
+    p.getImmediate();
+    const cb = vi.fn();
+    p.onInit(cb);
+    expect(cb).toHaveBeenCalledWith(1);
+  });
+
+  it('unsubscribe stops future calls', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => 1));
+    const p = c.getProvider('s');
+    const cb = vi.fn();
+    p.onInit(cb)();
+    p.getImmediate();
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it('a throwing onInit callback does not break instantiation or other callbacks', () => {
+    const c = createServiceContainer();
+    c.addService(defineService('s', () => ({ v: 1 })));
+    const p = c.getProvider<{ v: number }>('s');
+    p.onInit(() => {
+      throw new Error('bad');
+    });
+    const good = vi.fn();
+    p.onInit(good);
+    expect(() => p.getImmediate()).not.toThrow();
+    expect(good).toHaveBeenCalledWith({ v: 1 });
+  });
+});

@@ -280,9 +280,9 @@ importers:
 
   packages/service:
     dependencies:
-      '@bugsee/types':
+      '@bugsee/util':
         specifier: workspace:*
-        version: link:../types
+        version: link:../util
 
   packages/solid:
     dependencies:
