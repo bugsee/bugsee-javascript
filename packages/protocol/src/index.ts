@@ -10,3 +10,4 @@ export {
   severityFromWire,
   severityToWire,
 } from './levels';
+export { optionKeyFromWire, optionKeyToWire, optionsToWire } from './options';
