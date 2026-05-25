@@ -186,11 +186,7 @@ importers:
         specifier: workspace:*
         version: link:../types
 
-  packages/logger:
-    dependencies:
-      '@bugsee/types':
-        specifier: workspace:*
-        version: link:../types
+  packages/logger: {}
 
   packages/nestjs:
     dependencies:
@@ -313,9 +309,6 @@ importers:
 
   packages/util:
     dependencies:
-      '@bugsee/types':
-        specifier: workspace:*
-        version: link:../types
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
