@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+  - 'dev-packages/*'
+
+# esbuild (via tsup/vitest) needs its postinstall to fetch its native binary.
+allowBuilds:
+  esbuild: true

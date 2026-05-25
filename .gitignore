@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.turbo/
+.stryker-tmp/
+reports/
+*.tsbuildinfo
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,27 @@
+{
+  "name": "@bugsee/replay",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "rrweb-based recorder (vendored Sentry fork) — external rrweb dep added when implemented",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bugsee/core": "workspace:*",
+    "@bugsee/browser-utils": "workspace:*"
+  }
+}
