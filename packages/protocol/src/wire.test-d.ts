@@ -106,39 +106,145 @@ const fullNetworkEvent: NetworkEvent = {
   override: true,
 };
 
-// --- Negatives: omitting any required field must NOT type-check. ---
+// --- Negatives: omitting ANY required top-level field must NOT type-check. One per required field
+// of every interface (the missing-property error on a top-level field is reported at the object
+// literal, so a required -> optional regression turns the directive into an unused error). ---
+
+// RequestJson: type, summary, severity, source, created_on, environment.
+// @ts-expect-error `type` is required on RequestJson
+export const reqNoType: RequestJson = {
+  summary: 's',
+  severity: 3,
+  source: { type: 'uncaught' },
+  created_on: 'x',
+  environment: env,
+};
 // @ts-expect-error `summary` is required on RequestJson
-export const noSummary: RequestJson = {
+export const reqNoSummary: RequestJson = {
   type: 'error',
   severity: 3,
   source: { type: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
+// @ts-expect-error `severity` is required on RequestJson
+export const reqNoSeverity: RequestJson = {
+  type: 'error',
+  summary: 's',
+  source: { type: 'uncaught' },
+  created_on: 'x',
+  environment: env,
+};
+// @ts-expect-error `source` is required on RequestJson
+export const reqNoSource: RequestJson = {
+  type: 'error',
+  summary: 's',
+  severity: 3,
+  created_on: 'x',
+  environment: env,
+};
+// @ts-expect-error `created_on` is required on RequestJson
+export const reqNoCreatedOn: RequestJson = {
+  type: 'error',
+  summary: 's',
+  severity: 3,
+  source: { type: 'uncaught' },
+  environment: env,
+};
 // @ts-expect-error `environment` is required on RequestJson
-export const noEnvironment: RequestJson = {
+export const reqNoEnvironment: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
   source: { type: 'uncaught' },
   created_on: 'x',
 };
+
+// ManifestJson: version, time, files, attrs.
 // @ts-expect-error `version` is required on ManifestJson
-export const noVersion: ManifestJson = { time: { start: 1, end: 2 }, files: [], attrs: {} };
+export const manNoVersion: ManifestJson = { time: { start: 1, end: 2 }, files: [], attrs: {} };
+// @ts-expect-error `time` is required on ManifestJson
+export const manNoTime: ManifestJson = { version: 2, files: [], attrs: {} };
 // @ts-expect-error `files` is required on ManifestJson
-export const noFiles: ManifestJson = { version: 2, time: { start: 1, end: 2 }, attrs: {} };
+export const manNoFiles: ManifestJson = { version: 2, time: { start: 1, end: 2 }, attrs: {} };
+// @ts-expect-error `attrs` is required on ManifestJson
+export const manNoAttrs: ManifestJson = { version: 2, time: { start: 1, end: 2 }, files: [] };
+
+// ManifestFileEntry: filename, type.
+// @ts-expect-error `filename` is required on ManifestFileEntry
+export const feNoFilename: ManifestFileEntry = { type: 'log' };
 // @ts-expect-error `type` is required on ManifestFileEntry
-export const noFileType: ManifestFileEntry = { filename: 'x' };
+export const feNoType: ManifestFileEntry = { filename: 'x' };
+
+// EnvironmentEnvelope: platform, sdk.
+// @ts-expect-error `platform` is required on EnvironmentEnvelope
+export const envNoPlatform: EnvironmentEnvelope = { sdk: { version: '0', type: 'javascript' } };
 // @ts-expect-error `sdk` is required on EnvironmentEnvelope
-export const noSdk: EnvironmentEnvelope = { platform: { type: 'web', version: '1' } };
+export const envNoSdk: EnvironmentEnvelope = { platform: { type: 'web', version: '1' } };
+
+// NetworkEvent: timestamp, id, sequence, mechanism, url, method, type.
+// @ts-expect-error `timestamp` is required on NetworkEvent
+export const neNoTimestamp: NetworkEvent = {
+  id: 'a',
+  sequence: 'a',
+  mechanism: 'fetch',
+  url: 'u',
+  method: 'GET',
+  type: 'complete',
+};
+// @ts-expect-error `id` is required on NetworkEvent
+export const neNoId: NetworkEvent = {
+  timestamp: 1,
+  sequence: 'a',
+  mechanism: 'fetch',
+  url: 'u',
+  method: 'GET',
+  type: 'complete',
+};
+// @ts-expect-error `sequence` is required on NetworkEvent
+export const neNoSequence: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  mechanism: 'fetch',
+  url: 'u',
+  method: 'GET',
+  type: 'complete',
+};
 // @ts-expect-error `mechanism` is required on NetworkEvent
-export const noMechanism: NetworkEvent = {
+export const neNoMechanism: NetworkEvent = {
   timestamp: 1,
   id: 'a',
   sequence: 'a',
   url: 'u',
   method: 'GET',
   type: 'complete',
+};
+// @ts-expect-error `url` is required on NetworkEvent
+export const neNoUrl: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  sequence: 'a',
+  mechanism: 'fetch',
+  method: 'GET',
+  type: 'complete',
+};
+// @ts-expect-error `method` is required on NetworkEvent
+export const neNoMethod: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  sequence: 'a',
+  mechanism: 'fetch',
+  url: 'u',
+  type: 'complete',
+};
+// @ts-expect-error `type` is required on NetworkEvent
+export const neNoType: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  sequence: 'a',
+  mechanism: 'fetch',
+  url: 'u',
+  method: 'GET',
 };
 
 // Exported so the example instances + assertions are "used" and evaluated by tsc.
