@@ -4,6 +4,17 @@
 
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { type Clock, createSystemClock } from './clock';
+export type {
+  CaptureProvider,
+  Client,
+  DetectionProvider,
+  Extension,
+  Interceptor,
+  Operation,
+  OperationDispatcher,
+  OperationObserver,
+  TriggerHint,
+} from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
