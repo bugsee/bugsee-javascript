@@ -3,6 +3,11 @@
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
 export { type BundleFile, writeBundleZip } from './bundle-writer';
+export {
+  type CaptureCoordinator,
+  createCaptureCoordinator,
+  type OptionGate,
+} from './capture-coordinator';
 export { type Clock, createSystemClock } from './clock';
 export type {
   CaptureProvider,
