@@ -21,6 +21,11 @@ export type {
   TriggerHint,
 } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
+export {
+  createDetectionCoordinator,
+  type DetectionCoordinator,
+  type TriggerListener,
+} from './detection-coordinator';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
