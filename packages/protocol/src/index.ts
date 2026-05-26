@@ -19,3 +19,4 @@ export {
   SENSITIVE_HEADERS,
   SENSITIVE_KEY_SUBSTRINGS,
 } from './sensitive';
+export { redactShapes, type ShapeRedactionOptions } from './shapes';
