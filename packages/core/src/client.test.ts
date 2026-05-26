@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
 import type { Clock } from './clock';
 import type { CaptureDataEntry, CaptureProvider, DetectionProvider } from './contracts';
+import { createReportingRequest, type ReportingRequest } from './reporting';
+import type { UploadPipeline } from './transport';
+import type { TriggerPipeline } from './trigger-pipeline';
 
 // Fixed-time clock so capture-entry timestamps are deterministic.
 const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow: () => 0 });
@@ -195,5 +198,145 @@ describe('createClient — capture entry points', () => {
     client.trace('t', 1);
     const snap = await client.captureAggregator.snapshot();
     expect([...snap.keys()].sort()).toEqual(['breadcrumbs', 'events.user', 'log', 'traces.user']);
+  });
+});
+
+const gatedCaptureProvider = (name: string, controllingOption?: string): CaptureProvider => ({
+  name,
+  ...(controllingOption !== undefined ? { controllingOption } : {}),
+  start: vi.fn(),
+  stop: vi.fn(),
+});
+
+function capturingDetector(name: string) {
+  let captured: ((request: ReportingRequest) => void) | undefined;
+  const provider: DetectionProvider = {
+    name,
+    start: vi.fn((_client, report: (request: ReportingRequest) => void) => {
+      captured = report;
+    }),
+    stop: vi.fn(),
+  };
+  return { provider, fire: (request: ReportingRequest) => captured?.(request) };
+}
+
+function fakeUpload() {
+  const flush = vi.fn(async () => true);
+  const uploadPipeline: UploadPipeline = {
+    enqueue: vi.fn(async () => ({ ok: true })),
+    flush,
+    drop: vi.fn(),
+  };
+  return { uploadPipeline, flush };
+}
+
+describe('createClient — lifecycle', () => {
+  it('is not launched initially', () => {
+    expect(createClient().isLaunched()).toBe(false);
+  });
+
+  it('launch starts capture providers and marks the client launched', () => {
+    const client = createClient();
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    expect(client.isLaunched()).toBe(true);
+    expect(provider.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('launch starts detection providers', () => {
+    const client = createClient();
+    const { provider } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    expect(provider.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('launch is idempotent', () => {
+    const client = createClient();
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    client.launch();
+    expect(provider.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a detection submission to the trigger pipeline', () => {
+    const report = vi.fn(async () => ({ ok: true }));
+    const triggerPipeline = { report } as TriggerPipeline;
+    const client = createClient({ triggerPipeline });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1' });
+    fire(request);
+    expect(report).toHaveBeenCalledWith(request);
+  });
+
+  it('respects the option gate (a disabled capture provider is not started)', () => {
+    const client = createClient({ isEnabled: (opt) => opt !== 'captureNetwork' });
+    const provider = gatedCaptureProvider('net', 'captureNetwork');
+    client.addCaptureProvider(provider);
+    client.launch();
+    expect(provider.start).not.toHaveBeenCalled();
+  });
+
+  it('uses an all-enabled gate by default (a gated provider still starts)', () => {
+    const client = createClient(); // no isEnabled -> default all-enabled gate
+    const provider = gatedCaptureProvider('net', 'captureNetwork');
+    client.addCaptureProvider(provider);
+    client.launch();
+    expect(provider.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop stops providers, drains uploads, and clears launched', async () => {
+    const { uploadPipeline, flush } = fakeUpload();
+    const client = createClient({ uploadPipeline });
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    const drained = await client.stop(50);
+    expect(drained).toBe(true);
+    expect(provider.stop).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledWith(50);
+    expect(client.isLaunched()).toBe(false);
+  });
+
+  it('stop is a no-op when not launched (does not flush)', async () => {
+    const { uploadPipeline, flush } = fakeUpload();
+    const client = createClient({ uploadPipeline });
+    expect(await client.stop()).toBe(true);
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('stop without an upload pipeline stops providers and resolves true', async () => {
+    const client = createClient(); // no uploadPipeline
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    expect(await client.stop()).toBe(true);
+    expect(provider.stop).toHaveBeenCalledTimes(1);
+    expect(client.isLaunched()).toBe(false);
+  });
+
+  it('flush delegates to the upload pipeline', async () => {
+    const { uploadPipeline, flush } = fakeUpload();
+    const client = createClient({ uploadPipeline });
+    await client.flush(99);
+    expect(flush).toHaveBeenCalledWith(99);
+  });
+
+  it('flush without an upload pipeline resolves true', async () => {
+    expect(await createClient().flush()).toBe(true);
+  });
+
+  it('can relaunch after stop', () => {
+    const client = createClient();
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    void client.stop();
+    client.launch();
+    expect(provider.start).toHaveBeenCalledTimes(2);
   });
 });
