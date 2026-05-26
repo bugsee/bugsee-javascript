@@ -3,3 +3,4 @@
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
+export { createRingBuffer, type RingBuffer } from './ring-buffer';
