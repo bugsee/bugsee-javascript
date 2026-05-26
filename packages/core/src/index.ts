@@ -4,6 +4,10 @@
 
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export {
+  type CaptureAggregatorOptions,
+  createCaptureAggregator,
+} from './capture-aggregator';
+export {
   type CaptureCoordinator,
   createCaptureCoordinator,
   type OptionGate,
