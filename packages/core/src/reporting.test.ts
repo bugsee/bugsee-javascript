@@ -84,4 +84,17 @@ describe('createReportingRequest', () => {
     expect(req.report.summary).toBeUndefined();
     expect('summary' in req.report).toBe(false);
   });
+
+  it('carries the capture mechanism on the source when provided', () => {
+    const req = createReportingRequest({
+      source: { type: 'crash', mechanism: 'uncaught' },
+      id: 'x',
+    });
+    expect(req.source.mechanism).toBe('uncaught');
+  });
+
+  it('leaves the mechanism undefined when the source does not provide one', () => {
+    const req = createReportingRequest({ source: { type: 'shake' }, id: 'x' });
+    expect(req.source.mechanism).toBeUndefined();
+  });
 });

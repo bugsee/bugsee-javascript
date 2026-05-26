@@ -1,3 +1,4 @@
+import type { Mechanism } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { Client } from './contracts';
 import { createDetectionCoordinator } from './detection-coordinator';
@@ -20,9 +21,12 @@ class TestDetector extends DetectionProviderBase {
     this.stopped += 1;
   }
 
-  detectCrash(summary?: string): void {
+  detectCrash(summary?: string, mechanism?: Mechanism): void {
     this.handleReportingRequest(
-      this.createCrashReport(summary === undefined ? undefined : { summary }),
+      this.createCrashReport({
+        ...(summary === undefined ? {} : { summary }),
+        ...(mechanism === undefined ? {} : { mechanism }),
+      }),
     );
   }
   detectError(): void {
@@ -45,15 +49,28 @@ describe('DetectionProviderBase', () => {
     expect(report).toHaveBeenCalledTimes(1);
     const request = report.mock.calls[0]?.[0] as ReportingRequest;
     expect(request.source.type).toBe('crash');
+    expect(request.source.mechanism).toBe('uncaught'); // crash helper default
     expect(request.report.summary).toBe('boom');
   });
 
-  it('createErrorReport produces an error-sourced request', () => {
+  it('createErrorReport produces an error-sourced request with the programmatic mechanism', () => {
     const d = new TestDetector();
     const report = vi.fn();
     d.start(client, report);
     d.detectError();
-    expect((report.mock.calls[0]?.[0] as ReportingRequest).source.type).toBe('error');
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.source.type).toBe('error');
+    expect(request.source.mechanism).toBe('programmatic'); // error helper default
+  });
+
+  it('lets a detector override the crash mechanism', () => {
+    const d = new TestDetector();
+    const report = vi.fn();
+    d.start(client, report);
+    d.detectCrash('rej', 'unhandledrejection');
+    expect((report.mock.calls[0]?.[0] as ReportingRequest).source.mechanism).toBe(
+      'unhandledrejection',
+    );
   });
 
   it('handleReportingRequest is a no-op before start', () => {

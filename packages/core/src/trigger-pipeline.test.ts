@@ -10,7 +10,7 @@ const bundle = (name = 'b.bundle.zip'): Bundle => ({
     type: 'error',
     summary: 's',
     severity: 3,
-    source: { type: 'uncaught' },
+    source: { mechanism: 'uncaught' },
     created_on: 'x',
     environment: {
       platform: { type: 'web', version: '1' },

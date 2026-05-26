@@ -7,13 +7,13 @@ import type {
   EnvironmentEnvelope,
   ManifestFileEntry,
   ManifestJson,
+  Mechanism,
   NetworkEvent,
   NetworkMechanism,
   NetworkStage,
   NoBodyReason,
   PlatformType,
   RequestJson,
-  SourceType,
   WebSocketEvent,
 } from './index';
 
@@ -31,7 +31,7 @@ const request: RequestJson = {
   type: 'error',
   summary: 'Boom',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: '2026-05-26T00:00:00Z',
   environment: env,
 };
@@ -70,7 +70,7 @@ const fullRequest: RequestJson = {
   severity: 5,
   email: 'x@example.com',
   signatures: ['sig'],
-  source: { type: 'http-error', origin: 'fetch' },
+  source: { mechanism: 'http-error', origin: 'fetch' },
   created_on: '2026-05-26T00:00:00Z',
   environment: fullEnv,
 };
@@ -115,7 +115,7 @@ const fullNetworkEvent: NetworkEvent = {
 export const reqNoType: RequestJson = {
   summary: 's',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -123,7 +123,7 @@ export const reqNoType: RequestJson = {
 export const reqNoSummary: RequestJson = {
   type: 'error',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -131,7 +131,7 @@ export const reqNoSummary: RequestJson = {
 export const reqNoSeverity: RequestJson = {
   type: 'error',
   summary: 's',
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -148,7 +148,7 @@ export const reqNoCreatedOn: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   environment: env,
 };
 // @ts-expect-error `environment` is required on RequestJson
@@ -156,9 +156,13 @@ export const reqNoEnvironment: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: 'x',
 };
+
+// Nested: RequestJson.source requires `mechanism` (single-line so the directive pins it directly).
+// @ts-expect-error `mechanism` is required on RequestJson.source
+export const reqNoMechanism: RequestJson['source'] = { origin: 'x' };
 
 // ManifestJson: version, time, files, attrs.
 // @ts-expect-error `version` is required on ManifestJson
@@ -259,7 +263,7 @@ export type WireAssertions = [
   typeof fullNetworkEvent,
   Expect<
     Equal<
-      SourceType,
+      Mechanism,
       | 'programmatic'
       | 'uncaught'
       | 'unhandledrejection'

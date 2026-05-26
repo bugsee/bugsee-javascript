@@ -34,12 +34,12 @@ export type {
   EnvironmentEnvelope,
   ManifestFileEntry,
   ManifestJson,
+  Mechanism,
   NetworkEvent,
   NetworkMechanism,
   NetworkStage,
   NoBodyReason,
   PlatformType,
   RequestJson,
-  SourceType,
   WebSocketEvent,
 } from './wire';

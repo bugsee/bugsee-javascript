@@ -18,7 +18,7 @@ const request: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { type: 'uncaught' },
+  source: { mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };

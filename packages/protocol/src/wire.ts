@@ -5,8 +5,12 @@ import type { AttributeValue, IssueType } from '@bugsee/types';
 import type { FileType } from './constants';
 import type { Severity } from './levels';
 
-/** Origin of a captured issue (design §8.5). */
-export type SourceType =
+/**
+ * How a captured issue originated (design §8.5) — the capture "mechanism", analogous to
+ * NetworkEvent.mechanism and Sentry's exception mechanism. Distinct from the issue `type`
+ * (bug/crash/error) and from a report's trigger.
+ */
+export type Mechanism =
   | 'programmatic'
   | 'uncaught'
   | 'unhandledrejection'
@@ -55,7 +59,7 @@ export interface RequestJson {
   severity: Severity;
   email?: string;
   signatures?: string[];
-  source: { type: SourceType; origin?: string };
+  source: { mechanism: Mechanism; origin?: string };
   created_on: string; // ISO-8601 with Z
   environment: EnvironmentEnvelope;
 }

@@ -1,3 +1,4 @@
+import type { Mechanism } from '@bugsee/protocol';
 import type { AttributeValue, IssueType, SeverityName } from '@bugsee/types';
 
 // Report assembly request (Android BugseeReportingRequest / ReportingSource / Report parity). A
@@ -22,7 +23,14 @@ export type ReportingTriggerType =
 
 /** The origin of a reporting request (Android ReportingSource). */
 export interface ReportingSource {
+  /** Why the report fired (crash/error/shake/upload/…). */
   type: ReportingTriggerType;
+  /**
+   * How the underlying event originated — the capture mechanism (uncaught/programmatic/console-error
+   * /…). Set by the capturing code (an interceptor knows 'uncaught'); maps directly to
+   * request.json `source.mechanism`. Optional: assembly defaults it for manual triggers.
+   */
+  mechanism?: Mechanism;
   /** Additional context about what initiated the report (e.g. 'window.onerror'). */
   origin?: string;
 }

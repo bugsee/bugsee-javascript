@@ -1,9 +1,13 @@
+import type { Mechanism } from '@bugsee/protocol';
 import type { Client, DetectionProvider } from './contracts';
 import {
   createReportingRequest,
   type ReportingRequest,
   type ReportingRequestInit,
 } from './reporting';
+
+/** Crash/error report init: report fields plus the capture mechanism (defaulted per helper). */
+type ReportInit = Omit<ReportingRequestInit, 'source'> & { mechanism?: Mechanism };
 
 // Base class for detection providers (Android BugseeDetectionProviderBase parity). Concrete
 // detectors extend this, install their hooks in onStart(), and on detection call
@@ -41,13 +45,15 @@ export abstract class DetectionProviderBase implements DetectionProvider {
     this.#report?.(request);
   }
 
-  /** Build a crash report (source `crash`). */
-  protected createCrashReport(init?: Omit<ReportingRequestInit, 'source'>): ReportingRequest {
-    return createReportingRequest({ ...init, source: { type: 'crash' } });
+  /** Build a crash report (trigger `crash`); mechanism defaults to 'uncaught'. */
+  protected createCrashReport(init: ReportInit = {}): ReportingRequest {
+    const { mechanism = 'uncaught', ...rest } = init;
+    return createReportingRequest({ ...rest, source: { type: 'crash', mechanism } });
   }
 
-  /** Build an error report (source `error`). */
-  protected createErrorReport(init?: Omit<ReportingRequestInit, 'source'>): ReportingRequest {
-    return createReportingRequest({ ...init, source: { type: 'error' } });
+  /** Build an error report (trigger `error`); mechanism defaults to 'programmatic'. */
+  protected createErrorReport(init: ReportInit = {}): ReportingRequest {
+    const { mechanism = 'programmatic', ...rest } = init;
+    return createReportingRequest({ ...rest, source: { type: 'error', mechanism } });
   }
 }
