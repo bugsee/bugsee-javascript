@@ -11,6 +11,7 @@ export {
   severityToWire,
 } from './levels';
 export { optionKeyFromWire, optionKeyToWire, optionsToWire } from './options';
+export { sanitizeHeaders, sanitizeJson, sanitizeParams } from './sanitize';
 export {
   isSensitiveHeader,
   isSensitiveKey,
