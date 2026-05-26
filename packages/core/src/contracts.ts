@@ -58,21 +58,48 @@ export interface Interceptor {
   stop(): void;
 }
 
-/** Capture-pipeline data source — one per wire file-type (§16.2). */
-export interface CaptureProvider<T = unknown> {
+/**
+ * A single captured item a provider produces (Android BugseeCaptureDataEntry parity). The aggregator
+ * routes it to the bundle file named by `type`; `data` is the wire-shaped payload (e.g. a
+ * NetworkEvent or LogEvent). Serialization is the entry's/export step's concern, not the provider's.
+ */
+export interface CaptureDataEntry {
+  /** Which bundle file this entry contributes to. */
+  type: FileType;
+  /** Wall-clock unix-ms; used for ordering and time bounds. */
+  timestamp: number;
+  /** The wire payload for this entry. */
+  data: unknown;
+}
+
+/**
+ * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity): it accepts
+ * entries, buffers them per file-type (the in-memory store in bundle mode), and forwards to the data
+ * store. snapshot() atomically drains for the trigger path (§7.7).
+ */
+export interface CaptureAggregator {
+  /** Accept one entry, routing it to its file-type buffer. */
+  addEntry(entry: CaptureDataEntry): void;
+  /** Accept many entries. */
+  addEntries(entries: readonly CaptureDataEntry[]): void;
+  /** Atomically take and clear all buffered entries, grouped by file type (trigger snapshot). */
+  snapshot(): Map<FileType, CaptureDataEntry[]>;
+  /** Drop all buffered entries. */
+  clear(): void;
+}
+
+/**
+ * Capture-pipeline data source (§16.2). In start(client) it subscribes to its hub, filter+sanitizes
+ * each event into a CaptureDataEntry, and pushes it to client.captureAggregator.addEntry(...).
+ */
+export interface CaptureProvider {
   /** Component id (Android @BugseeCaptureComponentName). */
   name: string;
-  /** The wire file-type this provider contributes to the bundle. */
-  wireFileType: FileType;
-  /** Default in-bundle filename for the contributed file. */
-  filename: string;
   // TODO: narrow to `keyof BugseeOptions` once options.ts lands (e.g. 'captureNetwork').
   /** The launch option that gates this provider; when false, the provider is skipped. */
   controllingOption?: string;
   start(client: Client): void;
   stop(): void;
-  /** Serialize the provider's ring-buffer entries into a bundle file (§7.7 trigger). */
-  serialize(entries: T[]): Uint8Array | string;
 }
 
 /** Decides when to assemble & upload a report (§16.2). */
@@ -101,6 +128,8 @@ export interface Client {
   readonly hubs: EventHubs;
   /** Operation bridge for adapters/build injection (§16.2). */
   readonly operations: OperationDispatcher;
+  /** The single data adapter providers push captured entries to (§7.7). */
+  readonly captureAggregator: CaptureAggregator;
   /** Register a capture data source (Android addProvider). */
   addCaptureProvider(provider: CaptureProvider): void;
   /** Register a report trigger. */

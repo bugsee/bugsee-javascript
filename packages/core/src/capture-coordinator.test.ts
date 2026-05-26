@@ -8,12 +8,9 @@ const enableAll = () => true;
 function makeProvider(name: string, controllingOption?: string): CaptureProvider {
   return {
     name,
-    wireFileType: 'network',
-    filename: `${name}.json`,
     ...(controllingOption !== undefined ? { controllingOption } : {}),
     start: vi.fn(),
     stop: vi.fn(),
-    serialize: () => '',
   };
 }
 

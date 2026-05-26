@@ -1,9 +1,11 @@
 // Type-level tests for the §16.2 contracts, checked by `tsc --noEmit`. Valid example implementations
-// must type-check; @ts-expect-error negatives pin required members; a generic CaptureProvider<T> is
-// exercised. Example object literals are type-checked (excess-property + missing-property checks).
+// must type-check; @ts-expect-error negatives pin required members. Example object literals are
+// type-checked (excess-property + missing-property checks).
 
-import type { NetworkEvent } from '@bugsee/protocol';
+import type { FileType, NetworkEvent } from '@bugsee/protocol';
 import type {
+  CaptureAggregator,
+  CaptureDataEntry,
   CaptureProvider,
   Client,
   DetectionProvider,
@@ -30,15 +32,24 @@ const triggerHint: TriggerHint = {
   description: 'detail',
   error: new Error('x'),
 };
+const entry: CaptureDataEntry = { type: 'log', timestamp: 1, data: { message: 'hi' } };
 
 const dispatcher: OperationDispatcher = {
   registerObserver: () => noop,
   onOperation: noop,
 };
 
+const aggregator: CaptureAggregator = {
+  addEntry: noop,
+  addEntries: noop,
+  snapshot: () => new Map<FileType, CaptureDataEntry[]>(),
+  clear: noop,
+};
+
 const exampleClient: Client = {
   hubs: createEventHubs(),
   operations: dispatcher,
+  captureAggregator: aggregator,
   addCaptureProvider: noop,
   addDetectionProvider: noop,
 };
@@ -49,24 +60,20 @@ const interceptor: Interceptor = {
   stop: noop,
 };
 
-// Generic capture provider over a concrete event type; serialize may return bytes or a string.
-const networkProvider: CaptureProvider<NetworkEvent> = {
+// A provider subscribes to its hub and pushes filtered entries to the single aggregator.
+const networkProvider: CaptureProvider = {
   name: 'network',
-  wireFileType: 'network',
-  filename: 'network.json',
   controllingOption: 'captureNetwork',
-  start: (_client: Client) => {},
+  start: (client: Client) => {
+    client.hubs.network.subscribe((event: NetworkEvent) => {
+      client.captureAggregator.addEntry({
+        type: 'network',
+        timestamp: event.timestamp,
+        data: event,
+      });
+    });
+  },
   stop: noop,
-  serialize: (entries) => JSON.stringify(entries),
-};
-
-const screenshotProvider: CaptureProvider = {
-  name: 'screenshot',
-  wireFileType: 'screenshot',
-  filename: 'screenshot.png',
-  start: noop,
-  stop: noop,
-  serialize: () => new Uint8Array([1, 2, 3]),
 };
 
 const detector: DetectionProvider = {
@@ -89,14 +96,16 @@ const extension: Extension = {
 export const badOperation: Operation = { type: 'http' };
 // @ts-expect-error `source` is required on TriggerHint
 export const badTriggerHint: TriggerHint = { summary: 'x' };
-// @ts-expect-error `wireFileType` is required on CaptureProvider
-export const badCaptureProvider: CaptureProvider = {
-  name: 'x',
-  filename: 'x.json',
-  start: noop,
-  stop: noop,
-  serialize: () => '',
+// @ts-expect-error `type` is required on CaptureDataEntry
+export const badEntry: CaptureDataEntry = { timestamp: 1, data: {} };
+// @ts-expect-error `addEntry` is required on CaptureAggregator
+export const badAggregator: CaptureAggregator = {
+  addEntries: noop,
+  snapshot: () => new Map<FileType, CaptureDataEntry[]>(),
+  clear: noop,
 };
+// @ts-expect-error `start` is required on CaptureProvider
+export const badCaptureProvider: CaptureProvider = { name: 'x', stop: noop };
 // @ts-expect-error `start` is required on Interceptor
 export const badInterceptor: Interceptor = { name: 'x', stop: noop };
 // @ts-expect-error `name` is required on Extension
@@ -109,11 +118,12 @@ export const badDetector: DetectionProvider = { name: 'x', stop: noop };
 export type ContractAssertions = [
   typeof operation,
   typeof triggerHint,
+  typeof entry,
   typeof dispatcher,
+  typeof aggregator,
   typeof exampleClient,
   typeof interceptor,
   typeof networkProvider,
-  typeof screenshotProvider,
   typeof detector,
   typeof extension,
 ];

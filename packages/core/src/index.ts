@@ -10,6 +10,8 @@ export {
 } from './capture-coordinator';
 export { type Clock, createSystemClock } from './clock';
 export type {
+  CaptureAggregator,
+  CaptureDataEntry,
   CaptureProvider,
   Client,
   DetectionProvider,
