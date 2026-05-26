@@ -1,23 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Client, DetectionProvider, TriggerHint } from './contracts';
+import type { Client, DetectionProvider } from './contracts';
 import { createDetectionCoordinator } from './detection-coordinator';
+import { createReportingRequest, type ReportingRequest } from './reporting';
 
 const client = { tag: 'client' } as unknown as Client;
 const enableAll = () => true;
-const noTrigger: (h: TriggerHint) => void = () => {};
+const noReport: (request: ReportingRequest) => void = () => {};
+const request = (id: string): ReportingRequest =>
+  createReportingRequest({ source: { type: 'crash' }, id });
 
-// A fake provider that captures the trigger callback so tests can fire it.
+// A fake provider that captures the report callback so tests can submit a request through it.
 function makeProvider(name: string, controllingOption?: string) {
-  let captured: ((hint: TriggerHint) => void) | undefined;
+  let captured: ((request: ReportingRequest) => void) | undefined;
   const provider: DetectionProvider = {
     name,
     ...(controllingOption !== undefined ? { controllingOption } : {}),
-    start: vi.fn((_client: Client, trigger: (hint: TriggerHint) => void) => {
-      captured = trigger;
+    start: vi.fn((_client: Client, report: (request: ReportingRequest) => void) => {
+      captured = report;
     }),
     stop: vi.fn(),
   };
-  return { provider, fire: (hint: TriggerHint) => captured?.(hint) };
+  return { provider, fire: (req: ReportingRequest) => captured?.(req) };
 }
 
 describe('createDetectionCoordinator', () => {
@@ -34,32 +37,32 @@ describe('createDetectionCoordinator', () => {
     expect(() => co.addProvider(makeProvider('crash').provider)).toThrow(/already registered/);
   });
 
-  it('starts an enabled provider with the client and a trigger callback', () => {
+  it('starts an enabled provider with the client and a report callback', () => {
     const co = createDetectionCoordinator();
     const { provider } = makeProvider('crash', 'detectCrash');
     co.addProvider(provider);
-    co.start(client, (opt) => opt === 'detectCrash', noTrigger);
+    co.start(client, (opt) => opt === 'detectCrash', noReport);
     expect(provider.start).toHaveBeenCalledTimes(1);
     expect((provider.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(client);
     expect(typeof (provider.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toBe('function');
   });
 
-  it('routes a fired trigger to onTrigger with the hint', () => {
+  it('routes a submitted request to onReport', () => {
     const co = createDetectionCoordinator();
     const { provider, fire } = makeProvider('crash');
-    const onTrigger = vi.fn();
+    const onReport = vi.fn();
     co.addProvider(provider);
-    co.start(client, enableAll, onTrigger);
-    const hint: TriggerHint = { source: 'uncaught', summary: 'boom' };
-    fire(hint);
-    expect(onTrigger).toHaveBeenCalledWith(hint);
+    co.start(client, enableAll, onReport);
+    const req = request('r1');
+    fire(req);
+    expect(onReport).toHaveBeenCalledWith(req);
   });
 
   it('starts a no-controllingOption provider even when the gate denies everything', () => {
     const co = createDetectionCoordinator();
     const { provider } = makeProvider('crash');
     co.addProvider(provider);
-    co.start(client, () => false, noTrigger);
+    co.start(client, () => false, noReport);
     expect(provider.start).toHaveBeenCalledTimes(1);
   });
 
@@ -67,14 +70,14 @@ describe('createDetectionCoordinator', () => {
     const co = createDetectionCoordinator();
     const { provider } = makeProvider('http', 'detectHttpErrors');
     co.addProvider(provider);
-    co.start(client, () => false, noTrigger);
+    co.start(client, () => false, noReport);
     expect(provider.start).not.toHaveBeenCalled();
   });
 
   it('throws if started twice', () => {
     const co = createDetectionCoordinator();
-    co.start(client, enableAll, noTrigger);
-    expect(() => co.start(client, enableAll, noTrigger)).toThrow(/already started/);
+    co.start(client, enableAll, noReport);
+    expect(() => co.start(client, enableAll, noReport)).toThrow(/already started/);
   });
 
   it('stops only started providers; idempotent when not started', () => {
@@ -83,7 +86,7 @@ describe('createDetectionCoordinator', () => {
     const off = makeProvider('off', 'disabled');
     co.addProvider(on.provider);
     co.addProvider(off.provider);
-    co.start(client, (opt) => opt !== 'disabled', noTrigger);
+    co.start(client, (opt) => opt !== 'disabled', noReport);
     co.stop();
     expect(on.provider.stop).toHaveBeenCalledTimes(1);
     expect(off.provider.stop).not.toHaveBeenCalled();
@@ -94,22 +97,22 @@ describe('createDetectionCoordinator', () => {
     const co = createDetectionCoordinator();
     const { provider } = makeProvider('crash');
     co.addProvider(provider);
-    co.start(client, enableAll, noTrigger);
+    co.start(client, enableAll, noReport);
     co.stop();
-    co.start(client, enableAll, noTrigger);
+    co.start(client, enableAll, noReport);
     expect(provider.start).toHaveBeenCalledTimes(2);
   });
 
-  it('starts a provider added while running and wires its trigger', () => {
+  it('starts a provider added while running and wires its report callback', () => {
     const co = createDetectionCoordinator();
-    const onTrigger = vi.fn();
-    co.start(client, enableAll, onTrigger);
+    const onReport = vi.fn();
+    co.start(client, enableAll, onReport);
     const { provider, fire } = makeProvider('late');
     co.addProvider(provider);
     expect(provider.start).toHaveBeenCalledTimes(1);
-    const hint: TriggerHint = { source: 'programmatic' };
-    fire(hint);
-    expect(onTrigger).toHaveBeenCalledWith(hint);
+    const req = request('late-1');
+    fire(req);
+    expect(onReport).toHaveBeenCalledWith(req);
   });
 
   it('only registers (does not start) a provider added while not running', () => {

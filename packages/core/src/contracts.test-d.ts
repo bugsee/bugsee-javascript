@@ -13,9 +13,9 @@ import type {
   Interceptor,
   Operation,
   OperationDispatcher,
-  TriggerHint,
 } from './contracts';
 import { createEventHubs } from './hubs';
+import { createReportingRequest, type ReportingRequest } from './reporting';
 
 const noop = (): void => {};
 
@@ -24,13 +24,6 @@ const operation: Operation = {
   timestamp: 1,
   description: 'GET /',
   data: { status: 200 },
-};
-const triggerHint: TriggerHint = {
-  source: 'uncaught',
-  severity: 'high',
-  summary: 'Boom',
-  description: 'detail',
-  error: new Error('x'),
 };
 const entry: CaptureDataEntry = { type: 'log', timestamp: 1, data: { message: 'hi' } };
 
@@ -79,8 +72,8 @@ const networkProvider: CaptureProvider = {
 const detector: DetectionProvider = {
   name: 'crash',
   controllingOption: 'detectCrash',
-  start: (_client: Client, trigger: (hint: TriggerHint) => void) => {
-    trigger({ source: 'uncaught' });
+  start: (_client: Client, report: (request: ReportingRequest) => void) => {
+    report(createReportingRequest({ source: { type: 'crash' }, id: 'r1' }));
   },
   stop: noop,
 };
@@ -94,8 +87,6 @@ const extension: Extension = {
 // --- Negatives: omitting a required member must NOT type-check. ---
 // @ts-expect-error `timestamp` is required on Operation
 export const badOperation: Operation = { type: 'http' };
-// @ts-expect-error `source` is required on TriggerHint
-export const badTriggerHint: TriggerHint = { summary: 'x' };
 // @ts-expect-error `type` is required on CaptureDataEntry
 export const badEntry: CaptureDataEntry = { timestamp: 1, data: {} };
 // @ts-expect-error `addEntry` is required on CaptureAggregator
@@ -117,7 +108,6 @@ export const badDetector: DetectionProvider = { name: 'x', stop: noop };
 
 export type ContractAssertions = [
   typeof operation,
-  typeof triggerHint,
   typeof entry,
   typeof dispatcher,
   typeof aggregator,

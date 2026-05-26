@@ -1,14 +1,14 @@
-import type { FileType, SourceType } from '@bugsee/protocol';
-import type { SeverityName } from '@bugsee/types';
+import type { FileType } from '@bugsee/protocol';
 import type { EventHubs } from './hubs';
+import type { ReportingRequest } from './reporting';
 
 // The Android-derived extension contracts (design §16.2). Sources (Interceptor / adapters via
 // OperationDispatcher) emit to hubs; consumers (CaptureProvider / DetectionProvider) and feature
 // modules (Extension) plug in through these seams (§16.3). Type-only; validated by contracts.test-d.ts.
 //
-// Several supporting types the design references are left unspecified there (Operation,
-// OperationObserver, TriggerHint); they are given MINIMAL cross-runtime base shapes here (the
-// adapter/detection tiers refine them), matching the InputEvent approach.
+// Operation / OperationObserver are unspecified in the design, so they get MINIMAL cross-runtime base
+// shapes (adapters refine them), matching the InputEvent approach. Detection submits a
+// ReportingRequest (Android parity, reporting.ts) rather than a lightweight hint.
 
 /**
  * A build-injected / framework-adapter operation (DB, HTTP, file, …) fed in via OperationDispatcher
@@ -26,21 +26,6 @@ export interface Operation {
 }
 
 export type OperationObserver = (operation: Operation) => void;
-
-/**
- * What a DetectionProvider passes to report assembly to explain why a report is being triggered
- * (§7.7 trigger path). Minimal base; event-level fields come exclusively from the hint (§7.2).
- */
-export interface TriggerHint {
-  /** Maps to request.json `source.type`. */
-  source: SourceType;
-  /** Report severity; downstream applies a default when omitted. */
-  severity?: SeverityName;
-  summary?: string;
-  description?: string;
-  /** Originating error/value when triggered by an exception. */
-  error?: unknown;
-}
 
 /** Bridge for external libs / build-time injection; fans out operations to its own observers (§16.2). */
 export interface OperationDispatcher {
@@ -107,7 +92,8 @@ export interface DetectionProvider {
   name: string;
   // TODO: narrow to `keyof BugseeOptions` once options.ts lands.
   controllingOption?: string;
-  start(client: Client, trigger: (hint: TriggerHint) => void): void;
+  /** On detection, build a ReportingRequest and submit it via `report` (Android parity). */
+  start(client: Client, report: (request: ReportingRequest) => void): void;
   stop(): void;
 }
 

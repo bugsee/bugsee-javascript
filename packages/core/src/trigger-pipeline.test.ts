@@ -1,7 +1,7 @@
 import { createDeferred } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
-import type { TriggerHint } from './contracts';
 import { BugseeError } from './errors';
+import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 import { createTriggerPipeline } from './trigger-pipeline';
 
@@ -21,7 +21,8 @@ const bundle = (name = 'b.bundle.zip'): Bundle => ({
   fileName: name,
 });
 
-const hint = (summary: string): TriggerHint => ({ source: 'programmatic', summary });
+const request = (id: string): ReportingRequest =>
+  createReportingRequest({ source: { type: 'code_upload' }, id });
 
 function fakeUpload(): { uploadPipeline: UploadPipeline; enqueue: ReturnType<typeof vi.fn> } {
   const enqueue = vi.fn(async (): Promise<UploadResult> => ({ ok: true }));
@@ -32,28 +33,29 @@ function fakeUpload(): { uploadPipeline: UploadPipeline; enqueue: ReturnType<typ
 }
 
 describe('createTriggerPipeline', () => {
-  it('assembles for the hint and enqueues the bundle, returning the upload result', async () => {
+  it('assembles for the request and enqueues the bundle, returning the upload result', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const b = bundle();
     const assemble = vi.fn(async () => b);
-    const result = await createTriggerPipeline({ assemble, uploadPipeline }).trigger(hint('boom'));
-    expect(assemble).toHaveBeenCalledWith(hint('boom'));
+    const req = request('boom');
+    const result = await createTriggerPipeline({ assemble, uploadPipeline }).report(req);
+    expect(assemble).toHaveBeenCalledWith(req);
     expect(enqueue).toHaveBeenCalledWith(b);
     expect(result).toEqual({ ok: true });
   });
 
-  it('serializes a concurrent trigger behind the in-flight assembly', async () => {
+  it('serializes a concurrent request behind the in-flight assembly', async () => {
     const { uploadPipeline } = fakeUpload();
     const d1 = createDeferred<Bundle>();
     const d2 = createDeferred<Bundle>();
     const assemble = vi
-      .fn<(h: TriggerHint) => Promise<Bundle>>()
+      .fn<(r: ReportingRequest) => Promise<Bundle>>()
       .mockReturnValueOnce(d1.promise)
       .mockReturnValueOnce(d2.promise);
     const pipeline = createTriggerPipeline({ assemble, uploadPipeline });
 
-    const t1 = pipeline.trigger(hint('one'));
-    const t2 = pipeline.trigger(hint('two'));
+    const t1 = pipeline.report(request('one'));
+    const t2 = pipeline.report(request('two'));
     expect(assemble).toHaveBeenCalledTimes(1); // second is queued, not yet assembling
 
     d1.resolve(bundle('one.zip'));
@@ -64,37 +66,37 @@ describe('createTriggerPipeline', () => {
     expect((await t2).ok).toBe(true);
   });
 
-  it('drops triggers beyond the queue depth', async () => {
+  it('drops requests beyond the queue depth', async () => {
     const { uploadPipeline } = fakeUpload();
     const gate = createDeferred<Bundle>();
     const assemble = vi.fn(() => gate.promise); // first stays in-flight
     const pipeline = createTriggerPipeline({ assemble, uploadPipeline, maxQueueDepth: 2 });
 
-    pipeline.trigger(hint('1')); // in-flight
-    pipeline.trigger(hint('2')); // queued (depth 1)
-    pipeline.trigger(hint('3')); // queued (depth 2)
-    const dropped = await pipeline.trigger(hint('4')); // queue full -> dropped
+    pipeline.report(request('1')); // in-flight
+    pipeline.report(request('2')); // queued (depth 1)
+    pipeline.report(request('3')); // queued (depth 2)
+    const dropped = await pipeline.report(request('4')); // queue full -> dropped
     expect(dropped.ok).toBe(false);
     expect(dropped.error?.message).toMatch(/queue overflow/);
 
     gate.resolve(bundle());
   });
 
-  it('processes queued triggers in FIFO order after the current one', async () => {
+  it('processes queued requests in FIFO order after the current one', async () => {
     const { uploadPipeline } = fakeUpload();
     const order: string[] = [];
     const gates = new Map<string, ReturnType<typeof createDeferred<Bundle>>>();
-    const assemble = vi.fn((h: TriggerHint) => {
-      order.push(h.summary ?? '');
+    const assemble = vi.fn((r: ReportingRequest) => {
+      order.push(r.id);
       const d = createDeferred<Bundle>();
-      gates.set(h.summary ?? '', d);
+      gates.set(r.id, d);
       return d.promise;
     });
     const pipeline = createTriggerPipeline({ assemble, uploadPipeline });
 
-    const t1 = pipeline.trigger(hint('a'));
-    pipeline.trigger(hint('b'));
-    pipeline.trigger(hint('c'));
+    const t1 = pipeline.report(request('a'));
+    pipeline.report(request('b'));
+    pipeline.report(request('c'));
     expect(order).toEqual(['a']); // only the first is assembling
 
     gates.get('a')?.resolve(bundle());
@@ -108,13 +110,13 @@ describe('createTriggerPipeline', () => {
   it('returns a failed result when assembly throws, without stalling the queue', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const assemble = vi
-      .fn<(h: TriggerHint) => Promise<Bundle>>()
+      .fn<(r: ReportingRequest) => Promise<Bundle>>()
       .mockRejectedValueOnce(new Error('assembly boom'))
       .mockResolvedValueOnce(bundle('next.zip'));
     const pipeline = createTriggerPipeline({ assemble, uploadPipeline });
 
-    const t1 = pipeline.trigger(hint('fails'));
-    const t2 = pipeline.trigger(hint('ok'));
+    const t1 = pipeline.report(request('fails'));
+    const t2 = pipeline.report(request('ok'));
     const r1 = await t1;
     expect(r1.ok).toBe(false);
     expect(r1.error?.message).toMatch(/assembly failed/);
@@ -125,8 +127,8 @@ describe('createTriggerPipeline', () => {
   it('preserves a BugseeError thrown by assembly', async () => {
     const { uploadPipeline } = fakeUpload();
     const boom = new BugseeError('custom', 99);
-    const assemble = vi.fn<(h: TriggerHint) => Promise<Bundle>>().mockRejectedValueOnce(boom);
-    const result = await createTriggerPipeline({ assemble, uploadPipeline }).trigger(hint('x'));
+    const assemble = vi.fn<(r: ReportingRequest) => Promise<Bundle>>().mockRejectedValueOnce(boom);
+    const result = await createTriggerPipeline({ assemble, uploadPipeline }).report(request('x'));
     expect(result.error).toBe(boom);
   });
 
@@ -134,8 +136,8 @@ describe('createTriggerPipeline', () => {
     const { uploadPipeline } = fakeUpload();
     const assemble = vi.fn(async () => bundle());
     const pipeline = createTriggerPipeline({ assemble, uploadPipeline });
-    await pipeline.trigger(hint('first'));
-    await pipeline.trigger(hint('second'));
+    await pipeline.report(request('first'));
+    await pipeline.report(request('second'));
     expect(assemble).toHaveBeenCalledTimes(2);
   });
 });

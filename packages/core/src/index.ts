@@ -25,13 +25,12 @@ export type {
   Operation,
   OperationDispatcher,
   OperationObserver,
-  TriggerHint,
 } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {
   createDetectionCoordinator,
   type DetectionCoordinator,
-  type TriggerListener,
+  type ReportListener,
 } from './detection-coordinator';
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
@@ -49,6 +48,14 @@ export {
   type RateLimiter,
   type RateLimiterOptions,
 } from './rate-limiter';
+export {
+  createReportingRequest,
+  type Report,
+  type ReportingRequest,
+  type ReportingRequestInit,
+  type ReportingSource,
+  type ReportingTriggerType,
+} from './reporting';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
 export type {
   BugseeApi,

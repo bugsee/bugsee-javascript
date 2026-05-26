@@ -1,18 +1,19 @@
 import type { OptionGate } from './capture-coordinator';
-import type { Client, DetectionProvider, TriggerHint } from './contracts';
+import type { Client, DetectionProvider } from './contracts';
+import type { ReportingRequest } from './reporting';
 
 // Detection-provider lifecycle manager (design §16.3, Android BugseeDetectionCoordinator parity).
-// Mirrors the capture coordinator, but each provider's start receives a `trigger` callback: the
-// coordinator wires it to a single onTrigger sink (the pipeline's report-assembly entry, §7.7).
-// Re-entrancy/queue guarding of triggers belongs to the pipeline, not here.
+// Mirrors the capture coordinator, but each provider's start receives a `report` callback: the
+// coordinator wires it to a single onReport sink (the pipeline's report-assembly entry, §7.7).
+// Re-entrancy/queue guarding of submitted requests belongs to the pipeline, not here.
 
-export type TriggerListener = (hint: TriggerHint) => void;
+export type ReportListener = (request: ReportingRequest) => void;
 
 export interface DetectionCoordinator {
   /** Register a provider (unique name). If already running, the provider is started immediately. */
   addProvider(provider: DetectionProvider): void;
-  /** Start every enabled provider, wiring each provider's trigger to onTrigger. Throws if started. */
-  start(client: Client, isEnabled: OptionGate, onTrigger: TriggerListener): void;
+  /** Start every enabled provider, wiring each provider's report callback to onReport. Throws if started. */
+  start(client: Client, isEnabled: OptionGate, onReport: ReportListener): void;
   /** Stop all started providers; idempotent. */
   stop(): void;
   /** A copy of the registered providers. */
@@ -22,7 +23,7 @@ export interface DetectionCoordinator {
 interface Session {
   client: Client;
   gate: OptionGate;
-  onTrigger: TriggerListener;
+  onReport: ReportListener;
 }
 
 export function createDetectionCoordinator(): DetectionCoordinator {
@@ -32,7 +33,7 @@ export function createDetectionCoordinator(): DetectionCoordinator {
 
   const startProvider = (provider: DetectionProvider, active: Session): void => {
     if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
-      provider.start(active.client, active.onTrigger);
+      provider.start(active.client, active.onReport);
       started.add(provider);
     }
   };
@@ -52,11 +53,11 @@ export function createDetectionCoordinator(): DetectionCoordinator {
       }
     },
 
-    start(client: Client, isEnabled: OptionGate, onTrigger: TriggerListener): void {
+    start(client: Client, isEnabled: OptionGate, onReport: ReportListener): void {
       if (session !== null) {
         throw new Error('DetectionCoordinator is already started');
       }
-      session = { client, gate: isEnabled, onTrigger };
+      session = { client, gate: isEnabled, onReport };
       for (const provider of providers) {
         startProvider(provider, session);
       }
