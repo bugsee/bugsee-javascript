@@ -41,6 +41,7 @@ export {
   type InputEvent,
   type LogEvent,
 } from './hubs';
+export { createOperationDispatcher } from './operation-dispatcher';
 export {
   createRateLimiter,
   type RateLimiter,
