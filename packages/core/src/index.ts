@@ -62,6 +62,11 @@ export type {
   UploadResult,
 } from './transport';
 export {
+  createTriggerPipeline,
+  type TriggerPipeline,
+  type TriggerPipelineOptions,
+} from './trigger-pipeline';
+export {
   createUploadPipeline,
   type PipelineOutcome,
   type UploadPipelineOptions,
