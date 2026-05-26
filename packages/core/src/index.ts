@@ -2,6 +2,7 @@
 // EventEmitter, Interceptor/CaptureProvider/DetectionProvider + extension registry, ring buffers,
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
+export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { type Clock, createSystemClock } from './clock';
 export { checkOrSetAlreadyCaught } from './dedup';
 export { BugseeError, type BugseeErrorOptions } from './errors';
