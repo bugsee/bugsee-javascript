@@ -12,6 +12,7 @@ export {
   createCaptureCoordinator,
   type OptionGate,
 } from './capture-coordinator';
+export { CaptureProviderBase } from './capture-provider-base';
 export { type BugseeClient, createClient } from './client';
 export { type Clock, createSystemClock } from './clock';
 export type {
