@@ -8,6 +8,12 @@ export { checkOrSetAlreadyCaught } from './dedup';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export {
+  createEventHubs,
+  type EventHubs,
+  type InputEvent,
+  type LogEvent,
+} from './hubs';
+export {
   createRateLimiter,
   type RateLimiter,
   type RateLimiterOptions,
