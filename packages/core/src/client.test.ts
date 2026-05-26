@@ -1,7 +1,13 @@
 import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
-import type { CaptureProvider, DetectionProvider } from './contracts';
+import type { Clock } from './clock';
+import type { CaptureDataEntry, CaptureProvider, DetectionProvider } from './contracts';
+
+// Fixed-time clock so capture-entry timestamps are deterministic.
+const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow: () => 0 });
+const firstEntry = (client: ReturnType<typeof createClient>, type: CaptureDataEntry['type']) =>
+  client.captureAggregator.snapshot().get(type)?.[0];
 
 // Test-only extension typing so registerExt/ext can be exercised.
 declare module '@bugsee/types' {
@@ -108,5 +114,81 @@ describe('createClient — identity & attributes', () => {
     const b = createClient();
     a.setUserIdentifier('only-a');
     expect(b.getUserIdentifier()).toBeNull();
+  });
+});
+
+describe('createClient — capture entry points', () => {
+  it('addBreadcrumb pushes a breadcrumbs entry stamped from the clock', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.addBreadcrumb({ message: 'clicked', category: 'ui' });
+    const entry = firstEntry(client, 'breadcrumbs');
+    expect(entry?.timestamp).toBe(1000);
+    expect(entry?.data).toEqual({ message: 'clicked', category: 'ui', timestamp: 1000 });
+  });
+
+  it('addBreadcrumb honors an explicit timestamp', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.addBreadcrumb({ message: 'x', timestamp: 42 });
+    const entry = firstEntry(client, 'breadcrumbs');
+    expect(entry?.timestamp).toBe(42);
+    expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
+  });
+
+  it('log pushes a log entry with default level info and clock timestamp', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.log('hello');
+    expect(firstEntry(client, 'log')?.data).toEqual({
+      timestamp: 1000,
+      level: 'info',
+      source: 'logger',
+      message: 'hello',
+    });
+  });
+
+  it('log honors an explicit level and timestamp', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.log('boom', 'error', 7);
+    expect(firstEntry(client, 'log')?.data).toEqual({
+      timestamp: 7,
+      level: 'error',
+      source: 'logger',
+      message: 'boom',
+    });
+  });
+
+  it('event pushes an events.user entry with params', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.event('checkout', { total: 9 });
+    expect(firstEntry(client, 'events.user')?.data).toEqual({
+      timestamp: 1000,
+      name: 'checkout',
+      params: { total: 9 },
+    });
+  });
+
+  it('event omits params when not provided', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.event('opened');
+    expect(firstEntry(client, 'events.user')?.data).toEqual({ timestamp: 1000, name: 'opened' });
+  });
+
+  it('trace pushes a traces.user entry with name and value', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.trace('fps', 60);
+    expect(firstEntry(client, 'traces.user')?.data).toEqual({
+      timestamp: 1000,
+      name: 'fps',
+      value: 60,
+    });
+  });
+
+  it('routes each entry to its own file type', () => {
+    const client = createClient({ clock: fixedClock(1000) });
+    client.addBreadcrumb({ message: 'b' });
+    client.log('l');
+    client.event('e');
+    client.trace('t', 1);
+    const snap = client.captureAggregator.snapshot();
+    expect([...snap.keys()].sort()).toEqual(['breadcrumbs', 'events.user', 'log', 'traces.user']);
   });
 });
