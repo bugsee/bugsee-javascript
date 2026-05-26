@@ -1,4 +1,4 @@
-// @bugsee/core — the SDK kernel (tier 1, design §7/§16): Client, single global scope, event hubs +
+// @bugsee/core — the SDK kernel (tier 1, design §7/§16): Client, single global Environment, event hubs +
 // EventEmitter, Interceptor/CaptureProvider/DetectionProvider + extension registry, ring buffers,
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
@@ -12,7 +12,7 @@ export {
   createCaptureCoordinator,
   type OptionGate,
 } from './capture-coordinator';
-export { type BugseeClient, type CreateClientOptions, createClient } from './client';
+export { type BugseeClient, createClient } from './client';
 export { type Clock, createSystemClock } from './clock';
 export type {
   CaptureAggregator,
@@ -33,6 +33,7 @@ export {
   type DetectionCoordinator,
   type TriggerListener,
 } from './detection-coordinator';
+export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
@@ -49,7 +50,6 @@ export {
   type RateLimiterOptions,
 } from './rate-limiter';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
-export { type Breadcrumb, createScope, type Scope, type ScopeOptions } from './scope';
 export type {
   BugseeApi,
   Bundle,

@@ -1,20 +1,14 @@
-import type { AttributeValue, LogLevelName } from '@bugsee/types';
-import { createRingBuffer } from './ring-buffer';
+import type { AttributeValue } from '@bugsee/types';
 
-// The single, process-global scope (design §7.2: v3 removed the per-call/isolation scope API).
-// Holds the identity and context merged into request.json at trigger time: user identifier,
-// attributes (manifest.attrs), and the breadcrumb ring (capped at maxBreadcrumbs, §7.7).
+// The single global runtime state holder (Android BugseeEnvironment parity, design §7.2). Bugsee has
+// no "scope" abstraction — one Environment per Client holds all state: the user identifier and custom
+// attributes (→ manifest.attrs) now, and later the app/access token, options and build info, from
+// which the EnvironmentEnvelope wire shape is produced.
+//
+// Breadcrumbs are NOT held here — they are a capture data stream produced by the breadcrumbs provider
+// and routed through the aggregator like network/log entries.
 
-export interface Breadcrumb {
-  type?: string;
-  category?: string;
-  message?: string;
-  level?: LogLevelName;
-  data?: Record<string, unknown>;
-  timestamp: number;
-}
-
-export interface Scope {
+export interface Environment {
   setUserIdentifier(id: string): void;
   getUserIdentifier(): string | null;
   clearUserIdentifier(): void;
@@ -24,23 +18,13 @@ export interface Scope {
   clearAttribute(key: string): void;
   clearAllAttributes(): void;
   getAllAttributes(): Record<string, AttributeValue>;
-
-  addBreadcrumb(breadcrumb: Breadcrumb): void;
-  getBreadcrumbs(): Breadcrumb[];
-  clearBreadcrumbs(): void;
 }
 
-export interface ScopeOptions {
-  /** Breadcrumb ring capacity. Default 100 (§7.7). */
-  maxBreadcrumbs?: number;
-}
-
-export function createScope(options?: ScopeOptions): Scope {
+export function createEnvironment(): Environment {
   let userIdentifier: string | null = null;
   // Map (not a plain object) so user-controlled attribute keys like `__proto__` can't pollute a
   // prototype; insertion order is preserved for getAllAttributes.
   const attributes = new Map<string, AttributeValue>();
-  const breadcrumbs = createRingBuffer<Breadcrumb>(options?.maxBreadcrumbs ?? 100);
 
   return {
     setUserIdentifier(id: string): void {
@@ -69,16 +53,6 @@ export function createScope(options?: ScopeOptions): Scope {
       // Object.fromEntries creates own data properties (defineProperty semantics), so a `__proto__`
       // key becomes a plain own property rather than corrupting the prototype.
       return Object.fromEntries(attributes);
-    },
-
-    addBreadcrumb(breadcrumb: Breadcrumb): void {
-      breadcrumbs.push(breadcrumb);
-    },
-    getBreadcrumbs(): Breadcrumb[] {
-      return breadcrumbs.toArray();
-    },
-    clearBreadcrumbs(): void {
-      breadcrumbs.clear();
     },
   };
 }

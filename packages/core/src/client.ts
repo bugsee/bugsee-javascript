@@ -3,16 +3,17 @@ import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator } from './capture-coordinator';
 import type { Client } from './contracts';
 import { createDetectionCoordinator } from './detection-coordinator';
+import { createEnvironment } from './environment';
 import { createExtensionRegistry } from './extension-registry';
 import { createEventHubs } from './hubs';
 import { createOperationDispatcher } from './operation-dispatcher';
-import { createScope } from './scope';
 
 // The Client facade (design §7.1) — the runtime-agnostic composition root that wires the kernel
 // together. Built in slices; this slice covers the registration seams (§16.3) and identity/attribute
-// delegation to the single global scope (§7.2). Capture entry points, lifecycle, and report assembly
-// land in subsequent slices. Platform specifics (EnvironmentEnvelope factory, BugseeApi/
-// BundleUploader, DOM methods) are injected by the platform packages, not built here.
+// delegation to the single global Environment (§7.2; Bugsee has no scope abstraction). Capture entry
+// points, lifecycle, and report assembly land in subsequent slices. Platform specifics
+// (EnvironmentEnvelope factory, BugseeApi/BundleUploader, DOM methods) are injected by the platform
+// packages, not built here.
 
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
 export interface BugseeClient extends Client {
@@ -30,13 +31,8 @@ export interface BugseeClient extends Client {
   getAllAttributes(): Record<string, AttributeValue>;
 }
 
-export interface CreateClientOptions {
-  /** Breadcrumb ring capacity (default 100, §7.7). */
-  maxBreadcrumbs?: number;
-}
-
-export function createClient(options: CreateClientOptions = {}): BugseeClient {
-  const scope = createScope({ maxBreadcrumbs: options.maxBreadcrumbs });
+export function createClient(): BugseeClient {
+  const environment = createEnvironment();
   const hubs = createEventHubs();
   const operations = createOperationDispatcher();
   const captureAggregator = createCaptureAggregator();
@@ -55,14 +51,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     registerExt: extensionRegistry.registerExt,
     ext: extensionRegistry.ext,
 
-    setUserIdentifier: scope.setUserIdentifier,
-    getUserIdentifier: scope.getUserIdentifier,
-    clearUserIdentifier: scope.clearUserIdentifier,
+    setUserIdentifier: environment.setUserIdentifier,
+    getUserIdentifier: environment.getUserIdentifier,
+    clearUserIdentifier: environment.clearUserIdentifier,
 
-    setAttribute: scope.setAttribute,
-    getAttribute: scope.getAttribute,
-    clearAttribute: scope.clearAttribute,
-    clearAllAttributes: scope.clearAllAttributes,
-    getAllAttributes: scope.getAllAttributes,
+    setAttribute: environment.setAttribute,
+    getAttribute: environment.getAttribute,
+    clearAttribute: environment.clearAttribute,
+    clearAllAttributes: environment.clearAllAttributes,
+    getAllAttributes: environment.getAllAttributes,
   };
 }

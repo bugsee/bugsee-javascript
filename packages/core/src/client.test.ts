@@ -103,14 +103,10 @@ describe('createClient — identity & attributes', () => {
     expect(client.getAllAttributes()).toEqual({});
   });
 
-  it('uses a separate scope per client instance', () => {
+  it('uses a separate environment per client instance', () => {
     const a = createClient();
     const b = createClient();
     a.setUserIdentifier('only-a');
     expect(b.getUserIdentifier()).toBeNull();
-  });
-
-  it('honors the maxBreadcrumbs option via the scope (invalid value rejected)', () => {
-    expect(() => createClient({ maxBreadcrumbs: 0 })).toThrow(RangeError);
   });
 });
