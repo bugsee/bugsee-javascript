@@ -26,7 +26,8 @@ describe('isSensitiveHeader (case-insensitive exact match)', () => {
     'content-type',
     'accept',
     'user-agent',
-    'x-authorization-extra', // exact match only — not a substring match
+    'x-authorization-extra', // trailing-edge: exact match only, not a substring match
+    'extra-authorization', // leading-edge: likewise not matched
   ])('does not flag %s', (name) => {
     expect(isSensitiveHeader(name)).toBe(false);
   });
@@ -34,17 +35,62 @@ describe('isSensitiveHeader (case-insensitive exact match)', () => {
 
 describe('isSensitiveKey (case-insensitive substring match)', () => {
   it.each([
-    'password',
     'PASSWORD', // case-insensitive
     'userPassword', // substring
-    'access_token',
-    'refresh_token', // contains "token"
-    'api_key',
-    'ssn',
+    'access_token', // contains "token"
     'creditCard', // -> creditcard
-    'csrf',
-    'bearer',
   ])('flags %s', (name) => {
+    expect(isSensitiveKey(name)).toBe(true);
+  });
+
+  // Every independently-matched denylist entry (one whose match is not subsumed by a shorter entry)
+  // is pinned here: deleting it from SENSITIVE_KEY_SUBSTRINGS would flip this assertion. Subsumed
+  // superstrings (e.g. `password`/`access_token`, retained to mirror the mobile contract) are
+  // covered transitively by their shorter substring (`pass`/`token`).
+  it.each([
+    'pass',
+    'secret',
+    'token',
+    'api_key',
+    'apikey',
+    'authorization',
+    'credit_card',
+    'creditcard',
+    'card_number',
+    'cardnumber',
+    'cvv',
+    'cvc',
+    'ssn',
+    'social_security',
+    'pin',
+    'private_key',
+    'privatekey',
+    'jwt',
+    'bearer',
+    'auth',
+    'creds',
+    'credentials',
+    'sessionid',
+    'phpsessid',
+    'connect.sid',
+    'csrf',
+    'code_verifier',
+    'client_assertion',
+    'signature',
+    'hmac',
+    'otp',
+    'routing_number',
+    'account_number',
+    'iban',
+    'swift',
+    'bank_account',
+    'dob',
+    'date_of_birth',
+    'passport',
+    'national_id',
+    'tax_id',
+    'ein',
+  ])('flags the denylisted key %s', (name) => {
     expect(isSensitiveKey(name)).toBe(true);
   });
 

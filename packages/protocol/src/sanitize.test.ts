@@ -33,6 +33,16 @@ describe('sanitizeHeaders', () => {
     expect(Object.getOwnPropertyDescriptor(out, '__proto__')?.value).toBe('x');
     expect(out.Accept).toBe('*/*');
   });
+
+  it('threads the creditCards option into the shape pass', () => {
+    // CC shape is off by default; only redacts a non-sensitive header value when the option is on.
+    expect(sanitizeHeaders({ 'X-Card': '5555555555554444' })).toEqual({
+      'X-Card': '5555555555554444',
+    });
+    expect(sanitizeHeaders({ 'X-Card': '5555555555554444' }, { creditCards: true })).toEqual({
+      'X-Card': R,
+    });
+  });
 });
 
 describe('sanitizeParams', () => {
@@ -51,6 +61,12 @@ describe('sanitizeParams', () => {
     expect(out.q).toBe('ok');
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
+
+  it('threads the creditCards option into the shape pass', () => {
+    expect(sanitizeParams({ note: '5555555555554444' }, { creditCards: true })).toEqual({
+      note: R,
+    });
+  });
 });
 
 describe('sanitizeJson', () => {
@@ -63,6 +79,14 @@ describe('sanitizeJson', () => {
 
   it('recurses into arrays and shape-scans string values', () => {
     expect(sanitizeJson({ items: [GH, 'ok'] })).toEqual({ items: [R, 'ok'] });
+  });
+
+  it('recurses into objects nested inside arrays and leaves non-string elements', () => {
+    expect(sanitizeJson([{ token: 'x' }, 42])).toEqual([{ token: R }, 42]);
+  });
+
+  it('threads the creditCards option into the recursive shape pass', () => {
+    expect(sanitizeJson({ note: '5555555555554444' }, { creditCards: true })).toEqual({ note: R });
   });
 
   it('leaves non-string primitives unchanged', () => {

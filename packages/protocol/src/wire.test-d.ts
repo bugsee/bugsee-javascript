@@ -1,29 +1,37 @@
-// Type-level tests for the wire shapes, checked by `tsc --noEmit`. Valid example instances must
-// type-check (a wrong field type / missing required field fails tsc); union exactness is asserted.
+// Type-level tests for the wire shapes, checked by `tsc --noEmit`. Minimal instances pin the
+// required fields; fully-populated instances exercise every optional field with its correct type;
+// `@ts-expect-error` negatives pin required-ness (a required -> optional regression surfaces as an
+// unused directive and fails tsc); `Equal<>` assertions pin each union's exact membership.
 
 import type {
   EnvironmentEnvelope,
+  ManifestFileEntry,
   ManifestJson,
   NetworkEvent,
+  NetworkMechanism,
   NetworkStage,
+  NoBodyReason,
+  PlatformType,
   RequestJson,
   SourceType,
+  WebSocketEvent,
 } from './index';
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;
 
+// --- Minimal instances: only required fields present. ---
 const env: EnvironmentEnvelope = {
-  platform: { type: 'web', version: '124', locale: 'en-US' },
+  platform: { type: 'web', version: '124', locale: 'en-US' }, // locale exercises the index signature
   sdk: { version: '0.0.0', type: 'javascript' },
 };
 
 const request: RequestJson = {
   type: 'error',
   summary: 'Boom',
-  severity: 3, // Severity (1..5)
-  source: { type: 'uncaught', origin: 'window.onerror' },
+  severity: 3,
+  source: { type: 'uncaught' },
   created_on: '2026-05-26T00:00:00Z',
   environment: env,
 };
@@ -31,7 +39,7 @@ const request: RequestJson = {
 const manifest: ManifestJson = {
   version: 2,
   time: { start: 1, end: 2 },
-  files: [{ filename: 'network.json', type: 'network', attrs: { count: 3 } }],
+  files: [{ filename: 'network.json', type: 'network' }],
   attrs: { plan: 'pro' },
 };
 
@@ -43,19 +51,94 @@ const networkEvent: NetworkEvent = {
   url: 'https://example.com',
   method: 'GET',
   type: 'complete',
-  status: 200,
-  custom: { headers: { 'Content-Type': 'application/json' }, body: null },
 };
 
-// Negative: omitting a required field must NOT type-check (pins required-ness, so a
-// required -> optional regression is caught as an unused @ts-expect-error).
+// --- Fully-populated instances: every optional field present and correctly typed. ---
+const fullEnv: EnvironmentEnvelope = {
+  platform: { type: 'node', version: '22', arch: 'arm64' },
+  hardware: { cores: 8 },
+  app: { name: 'demo' },
+  sdk: { version: '1.0.0', type: 'javascript', build: 'abc123', options: { autoStart: true } },
+  wrapper: null,
+};
+
+const fullRequest: RequestJson = {
+  type: 'error',
+  summary: 'Boom',
+  description: 'detail',
+  labels: ['a', 'b'],
+  severity: 5,
+  email: 'x@example.com',
+  signatures: ['sig'],
+  source: { type: 'http-error', origin: 'fetch' },
+  created_on: '2026-05-26T00:00:00Z',
+  environment: fullEnv,
+};
+
+const fullFileEntry: ManifestFileEntry = {
+  filename: 'logs.json',
+  type: 'log',
+  name: 'app logs',
+  attrs: { count: 3 },
+};
+
+const fullNetworkEvent: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  sequence: 'a-0',
+  mechanism: 'ws',
+  url: 'wss://example.com',
+  method: 'GET',
+  type: 'websocket',
+  size: 10,
+  redirect: false,
+  status: 101,
+  statusText: 'Switching Protocols',
+  customError: null,
+  event: 'open',
+  custom: {
+    headers: { 'Content-Type': 'application/json' },
+    body: null,
+    error: null,
+    no_body_reason: 'size_too_large',
+    timings: { dns: 1 },
+  },
+  override: true,
+};
+
+// --- Negatives: omitting any required field must NOT type-check. ---
 // @ts-expect-error `summary` is required on RequestJson
-export const invalidRequest: RequestJson = {
+export const noSummary: RequestJson = {
   type: 'error',
   severity: 3,
   source: { type: 'uncaught' },
-  created_on: '2026-05-26T00:00:00Z',
+  created_on: 'x',
   environment: env,
+};
+// @ts-expect-error `environment` is required on RequestJson
+export const noEnvironment: RequestJson = {
+  type: 'error',
+  summary: 's',
+  severity: 3,
+  source: { type: 'uncaught' },
+  created_on: 'x',
+};
+// @ts-expect-error `version` is required on ManifestJson
+export const noVersion: ManifestJson = { time: { start: 1, end: 2 }, files: [], attrs: {} };
+// @ts-expect-error `files` is required on ManifestJson
+export const noFiles: ManifestJson = { version: 2, time: { start: 1, end: 2 }, attrs: {} };
+// @ts-expect-error `type` is required on ManifestFileEntry
+export const noFileType: ManifestFileEntry = { filename: 'x' };
+// @ts-expect-error `sdk` is required on EnvironmentEnvelope
+export const noSdk: EnvironmentEnvelope = { platform: { type: 'web', version: '1' } };
+// @ts-expect-error `mechanism` is required on NetworkEvent
+export const noMechanism: NetworkEvent = {
+  timestamp: 1,
+  id: 'a',
+  sequence: 'a',
+  url: 'u',
+  method: 'GET',
+  type: 'complete',
 };
 
 // Exported so the example instances + assertions are "used" and evaluated by tsc.
@@ -64,6 +147,10 @@ export type WireAssertions = [
   typeof request,
   typeof manifest,
   typeof networkEvent,
+  typeof fullEnv,
+  typeof fullRequest,
+  typeof fullFileEntry,
+  typeof fullNetworkEvent,
   Expect<
     Equal<
       SourceType,
@@ -80,6 +167,29 @@ export type WireAssertions = [
     Equal<
       NetworkStage,
       'before' | 'complete' | 'redirect' | 'error' | 'abort' | 'timing' | 'websocket'
+    >
+  >,
+  Expect<
+    Equal<
+      PlatformType,
+      | 'web'
+      | 'node'
+      | 'bun'
+      | 'deno'
+      | 'workers'
+      | 'edge-light'
+      | 'service-worker'
+      | 'web-worker'
+      | 'electron-main'
+      | 'electron-renderer'
+    >
+  >,
+  Expect<Equal<NetworkMechanism, 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon'>>,
+  Expect<Equal<WebSocketEvent, 'create' | 'open' | 'send' | 'message' | 'close' | 'error'>>,
+  Expect<
+    Equal<
+      NoBodyReason,
+      'size_too_large' | 'no_content_type' | 'unsupported_content_type' | 'cant_read_data'
     >
   >,
 ];

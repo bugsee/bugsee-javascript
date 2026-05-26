@@ -34,8 +34,10 @@ function isLuhnValid(digits: string): boolean {
 }
 
 function redactCreditCards(value: string): string {
-  // The {12,19} quantifier bounds each match to 12-19 digits, so the stripped run is always in range.
-  return value.replace(/\b(?:\d[ -]?){12,19}\b/g, (match) => {
+  // One leading digit + 11-18 more (each optionally preceded by a space/dash) = 12-19 digits, so the
+  // stripped run is always in range. The trailing token is a digit (not a separator), so a separator
+  // adjacent to the number is never consumed.
+  return value.replace(/\b\d(?:[ -]?\d){11,18}\b/g, (match) => {
     const digits = match.replace(/[ -]/g, '');
     return isLuhnValid(digits) ? REDACTED : match;
   });

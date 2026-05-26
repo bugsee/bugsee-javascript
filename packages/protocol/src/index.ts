@@ -1,6 +1,6 @@
-// @bugsee/protocol — canonical wire shapes: types + serializers + sanitizer lists + option-key
+// @bugsee/protocol — canonical wire shapes: types + sanitizer lists + shape redaction + option-key
 // translator + enum maps (design §8). The single source of truth for the wire contract. Tier 0.
-// Built incrementally; this is the level/severity translation component (§8.9).
+// Serializers + URL/stack scrubbing (§8.10/§14.3) are core-coupled and live in @bugsee/core.
 
 export {
   APP_TOKEN_FILENAME,
