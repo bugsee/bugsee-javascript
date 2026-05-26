@@ -107,15 +107,21 @@ export interface CreateClientOptions {
   bundleFileName?: () => string;
   /** Trigger pipeline override; when omitted, built from uploadPipeline + appToken + getEnvironment. */
   triggerPipeline?: TriggerPipeline;
+  /**
+   * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
+   * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
+   */
+  onError?: (error: unknown) => void;
 }
 
 export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
+  const onError = options.onError ?? (() => {});
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
-  const hubs = createEventHubs();
-  const operations = createOperationDispatcher();
+  const hubs = createEventHubs(onError);
+  const operations = createOperationDispatcher(onError);
   const captureAggregator = createCaptureAggregator(
     options.captureStore ?? createMemoryCaptureStore(),
   );
@@ -230,10 +236,20 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         return;
       }
       launched = true;
-      captureCoordinator.start(context, isEnabled);
-      detectionCoordinator.start(context, isEnabled, (request) => {
-        void triggerPipeline?.report(request);
-      });
+      // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
+      // (a failed capture start must not prevent detection from starting) and routed to onError.
+      try {
+        captureCoordinator.start(context, isEnabled);
+      } catch (error) {
+        onError(error);
+      }
+      try {
+        detectionCoordinator.start(context, isEnabled, (request) => {
+          void triggerPipeline?.report(request);
+        });
+      } catch (error) {
+        onError(error);
+      }
     },
 
     stop(timeout?: number): Promise<boolean> {

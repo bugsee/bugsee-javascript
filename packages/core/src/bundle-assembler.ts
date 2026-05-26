@@ -99,6 +99,9 @@ export function assembleBundle(
     }
     const filename = fileNameForType(type);
     files.push({ filename, type });
+    // Core produces only JSON file types (log/network/events/traces/breadcrumbs). Binary streams
+    // (§8.4: replay/screenshot/attachment) are platform-tier provider concerns; when those land the
+    // assembler must branch on type (pass Uint8Array `data` through) instead of JSON-stringifying.
     typedFiles.push({ name: filename, data: JSON.stringify(entries.map((entry) => entry.data)) });
   }
 

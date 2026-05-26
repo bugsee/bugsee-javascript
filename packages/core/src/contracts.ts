@@ -103,6 +103,10 @@ export interface CaptureAggregator {
 /**
  * Capture-pipeline data source (§16.2). In start(client) it subscribes to its hub, filter+sanitizes
  * each event into a CaptureDataEntry, and pushes it to client.captureAggregator.addEntry(...).
+ *
+ * NB: this follows Android (BugseeCaptureDataProvider works on entries; CaptureExporter serializes
+ * centrally), not the design doc §16.2 sketch's per-provider `wireFileType`/`filename`/`serialize`.
+ * File type lives on CaptureDataEntry.type and serialization is centralized in bundle-assembler.
  */
 export interface CaptureProvider {
   /** Component id (Android @BugseeCaptureComponentName). */

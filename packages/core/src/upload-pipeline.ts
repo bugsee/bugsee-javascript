@@ -7,6 +7,7 @@ import type {
   DropReason,
   IssueCreateResult,
   OutcomeCategory,
+  PutResult,
   UploadHint,
   UploadPipeline,
   UploadResult,
@@ -58,8 +59,12 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
 
   const inFlight = new Set<Promise<UploadResult>>();
 
-  const fail = (error: BugseeError, category: OutcomeCategory): UploadResult => {
-    onOutcome?.({ kind: 'drop', category, reason: 'upload_failed' });
+  const fail = (
+    error: BugseeError,
+    category: OutcomeCategory,
+    reason: DropReason = 'upload_failed',
+  ): UploadResult => {
+    onOutcome?.({ kind: 'drop', category, reason });
     return { ok: false, error };
   };
 
@@ -89,26 +94,50 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       return fail(err as BugseeError, category);
     }
 
+    let checksumSha256: string;
+    try {
+      checksumSha256 = await sha256(bundle.body);
+    } catch (err) {
+      return fail(
+        err instanceof BugseeError ? err : new BugseeError('checksum failed', 0, { cause: err }),
+        category,
+      );
+    }
     const putOptions = {
       contentLength: bundle.body.length,
-      checksumSha256: await sha256(bundle.body),
+      checksumSha256,
       fileName: bundle.fileName,
     };
     let endpoint = issue.endpoint;
     let lastStatus = 0;
+    let renewed = false;
 
-    // Phase 2: signed PUT, bounded by maxRetries; 403 → renew, retryable → backoff.
+    // Phase 2: signed PUT, bounded by maxRetries; 403 → renew (once), retryable → backoff.
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       if (attempt > 0) {
         await sleep(computeDelay(attempt));
       }
-      const put = await uploader.putBundle(endpoint, bundle.body, putOptions);
+      let put: PutResult;
+      try {
+        put = await uploader.putBundle(endpoint, bundle.body, putOptions);
+      } catch (err) {
+        return fail(
+          err instanceof BugseeError
+            ? err
+            : new BugseeError('bundle upload threw', 0, { cause: err }),
+          category,
+        );
+      }
       if (put.ok) {
         onOutcome?.({ kind: 'success', category });
         return { ok: true, issueId: issue.issueId, recordingId: issue.recordingId };
       }
       lastStatus = put.status;
       if (put.status === 403) {
+        // 403 (signed PUT): renew the signed url once; a second 403 gives up `renew_failed` (§14.8).
+        if (renewed) {
+          return fail(new BugseeError('signed url renew failed', 403), category, 'renew_failed');
+        }
         try {
           endpoint = (await api.renewUpload(bundle.request, issue.issueId, issue.recordingId))
             .endpoint;
@@ -116,8 +145,10 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
           return fail(
             err instanceof BugseeError ? err : new BugseeError('renew failed', 403, { cause: err }),
             category,
+            'renew_failed',
           );
         }
+        renewed = true;
         continue;
       }
       if (!put.retryable) {

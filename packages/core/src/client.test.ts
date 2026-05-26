@@ -343,6 +343,80 @@ describe('createClient — lifecycle', () => {
   });
 });
 
+const throwingCaptureProvider = (name: string, err: unknown): CaptureProvider => ({
+  name,
+  start: vi.fn(() => {
+    throw err;
+  }),
+  stop: vi.fn(),
+});
+const throwingDetectionProvider = (name: string, err: unknown): DetectionProvider => ({
+  name,
+  start: vi.fn(() => {
+    throw err;
+  }),
+  stop: vi.fn(),
+});
+
+describe('createClient — launch never throws (§15.1)', () => {
+  it('swallows a throwing capture provider start and routes it to onError', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    const boom = new Error('capture start failed');
+    client.addCaptureProvider(throwingCaptureProvider('bad', boom));
+    expect(() => client.launch()).not.toThrow();
+    expect(client.isLaunched()).toBe(true);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('still starts detection providers when a capture provider start throws', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    const { provider: detector } = capturingDetector('crash');
+    client.addCaptureProvider(throwingCaptureProvider('bad', new Error('x')));
+    client.addDetectionProvider(detector);
+    client.launch();
+    expect(detector.start).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('swallows a throwing detection provider start and routes it to onError', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    const boom = new Error('detection start failed');
+    client.addDetectionProvider(throwingDetectionProvider('crash', boom));
+    expect(() => client.launch()).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('launch does not throw with no onError configured (defaults to a no-op)', () => {
+    const client = createClient();
+    client.addCaptureProvider(throwingCaptureProvider('bad', new Error('x')));
+    expect(() => client.launch()).not.toThrow();
+  });
+
+  it('routes a throwing hub listener to onError', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    client.hubs.log.subscribe(() => {
+      throw new Error('listener boom');
+    });
+    client.hubs.log.emit({ timestamp: 1, level: 'info', source: 'logger', message: 'x' });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a throwing operation observer to onError', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    client.operations.registerObserver(() => {
+      throw new Error('observer boom');
+    });
+    client.operations.onOperation({ type: 'http', timestamp: 1 });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createClient — logException', () => {
   const withTrigger = () => {
     const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));

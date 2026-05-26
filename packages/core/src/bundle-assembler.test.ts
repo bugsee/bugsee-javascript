@@ -65,8 +65,14 @@ describe('assembleBundle — request.json', () => {
   });
 
   it('defaults the summary from the issue type when absent', () => {
-    const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1' });
-    expect(assembleBundle(request, new Map(), context()).request.summary).toBe('Crash');
+    const crash = createReportingRequest({ source: { type: 'crash' }, id: 'r1' });
+    expect(assembleBundle(crash, new Map(), context()).request.summary).toBe('Crash');
+    // error-class triggers (error/assert) -> issue type 'error'
+    const error = createReportingRequest({ source: { type: 'error' }, id: 'r2' });
+    expect(assembleBundle(error, new Map(), context()).request.summary).toBe('Error');
+    // everything else -> issue type 'bug'
+    const bug = createReportingRequest({ source: { type: 'code_upload' }, id: 'r3' });
+    expect(assembleBundle(bug, new Map(), context()).request.summary).toBe('Bug Report');
   });
 
   it('defaults source.mechanism to programmatic when the source has none', () => {

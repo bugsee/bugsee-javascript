@@ -134,6 +134,30 @@ describe('createUploadPipeline — 403 renew', () => {
     );
     expect(result.error).toBe(boom);
   });
+
+  it('renews only once: a second 403 after renewing gives up with renew_failed (§14.8)', async () => {
+    const api = fakeApi();
+    const outcomes: PipelineOutcome[] = [];
+    const put = vi.fn(async () => ({ ok: false, status: 403, retryable: false }) as PutResult);
+    const result = await createUploadPipeline(
+      deps({ api, uploader: fakeUploader(put), onOutcome: (o) => outcomes.push(o) }),
+    ).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe(403);
+    expect(api.renewUpload).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(2); // initial + one post-renew retry
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'renew_failed' });
+  });
+
+  it('reports the renew_failed reason when renewUpload itself rejects', async () => {
+    const outcomes: PipelineOutcome[] = [];
+    const api = fakeApi({ renewUpload: vi.fn(async () => Promise.reject(new Error('nope'))) });
+    const put = vi.fn(async () => ({ ok: false, status: 403, retryable: false }) as PutResult);
+    await createUploadPipeline(
+      deps({ api, uploader: fakeUploader(put), onOutcome: (o) => outcomes.push(o) }),
+    ).enqueue(bundle);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'renew_failed' });
+  });
 });
 
 describe('createUploadPipeline — retries', () => {
@@ -232,6 +256,57 @@ describe('createUploadPipeline — failure outcomes', () => {
       deps({ uploader: fakeUploader(put), onOutcome: (o) => outcomes.push(o) }),
     ).enqueue(bundle);
     expect(outcomes).toEqual([{ kind: 'drop', category: 'issue', reason: 'upload_failed' }]);
+  });
+});
+
+describe('createUploadPipeline — operation rejections (enqueue never rejects)', () => {
+  it('resolves to a failed result and records a drop when putBundle rejects', async () => {
+    const outcomes: PipelineOutcome[] = [];
+    const put = vi.fn<BundleUploader['putBundle']>(async () => {
+      throw new Error('socket hang up');
+    });
+    const result = await createUploadPipeline(
+      deps({ uploader: fakeUploader(put), onOutcome: (o) => outcomes.push(o) }),
+    ).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'upload_failed' });
+  });
+
+  it('preserves a BugseeError thrown by putBundle', async () => {
+    const boom = new BugseeError('put threw', 0);
+    const put = vi.fn<BundleUploader['putBundle']>(async () => {
+      throw boom;
+    });
+    const result = await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue(
+      bundle,
+    );
+    expect(result.error).toBe(boom);
+  });
+
+  it('resolves to a failed result and records a drop when sha256 rejects', async () => {
+    const outcomes: PipelineOutcome[] = [];
+    const result = await createUploadPipeline(
+      deps({
+        sha256: async () => {
+          throw new Error('no crypto');
+        },
+        onOutcome: (o) => outcomes.push(o),
+      }),
+    ).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'upload_failed' });
+  });
+
+  it('preserves a BugseeError thrown by sha256', async () => {
+    const boom = new BugseeError('checksum boom', 0);
+    const result = await createUploadPipeline(
+      deps({
+        sha256: async () => {
+          throw boom;
+        },
+      }),
+    ).enqueue(bundle);
+    expect(result.error).toBe(boom);
   });
 });
 

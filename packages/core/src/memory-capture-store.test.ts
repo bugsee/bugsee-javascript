@@ -97,6 +97,15 @@ describe('createMemoryCaptureStore', () => {
     expect((await store.drain()).size).toBe(0); // cleared
   });
 
+  it('stream drains eagerly at call time (before iteration), not lazily per yield', async () => {
+    const store = createMemoryCaptureStore();
+    store.add(entry('log', 1));
+    store.add(entry('network', 2));
+    // Create the iterator but do NOT iterate it: the snapshot+clear must already have happened.
+    store.stream();
+    expect((await store.drain()).size).toBe(0);
+  });
+
   it('stream over an empty store yields nothing', async () => {
     const store = createMemoryCaptureStore();
     const seen: unknown[] = [];

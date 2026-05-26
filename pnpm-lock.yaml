@@ -125,15 +125,9 @@ importers:
 
   packages/core:
     dependencies:
-      '@bugsee/logger':
-        specifier: workspace:*
-        version: link:../logger
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@bugsee/service':
-        specifier: workspace:*
-        version: link:../service
       '@bugsee/types':
         specifier: workspace:*
         version: link:../types
