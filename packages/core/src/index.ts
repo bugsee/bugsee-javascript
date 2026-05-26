@@ -42,3 +42,16 @@ export {
 } from './rate-limiter';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
 export { type Breadcrumb, createScope, type Scope, type ScopeOptions } from './scope';
+export type {
+  BugseeApi,
+  Bundle,
+  BundleUploader,
+  DropReason,
+  IssueCreateResult,
+  OutcomeCategory,
+  PutBundleOptions,
+  PutResult,
+  UploadHint,
+  UploadPipeline,
+  UploadResult,
+} from './transport';
