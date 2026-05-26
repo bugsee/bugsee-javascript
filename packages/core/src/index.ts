@@ -12,3 +12,4 @@ export {
   type RateLimiterOptions,
 } from './rate-limiter';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export { type Breadcrumb, createScope, type Scope, type ScopeOptions } from './scope';
