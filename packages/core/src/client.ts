@@ -1,24 +1,35 @@
-import type { LogLevel } from '@bugsee/protocol';
-import type { AttributeValue, LogLevelName, NameExtensionMapping } from '@bugsee/types';
+import type { EnvironmentEnvelope, LogLevel, Mechanism } from '@bugsee/protocol';
+import type {
+  AttributeValue,
+  LogLevelName,
+  NameExtensionMapping,
+  SeverityName,
+} from '@bugsee/types';
+import { assembleBundle } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureStore, Client } from './contracts';
+import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
 import { createExtensionRegistry } from './extension-registry';
 import { createEventHubs, type LogEvent } from './hubs';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
-import type { UploadPipeline } from './transport';
-import type { TriggerPipeline } from './trigger-pipeline';
+import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
+import { createReportingRequest, type ReportingRequest } from './reporting';
+import type { Bundle, UploadPipeline, UploadResult } from './transport';
+import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline';
 
 // The Client facade (design §7.1) — the runtime-agnostic composition root that wires the kernel
-// together. Built in slices: registration seams (§16.3) + identity/attribute delegation to the
-// single global Environment (§7.2), manual capture entry points (push CaptureDataEntry to the
-// aggregator), and lifecycle (launch/stop/flush). The report-assembly trigger + upload pipelines are
-// injected (built by the platform tier from BugseeApi/BundleUploader + the report assembler);
-// logException's trigger and the assembler itself land in the next slice.
+// together: registration seams (§16.3), identity/attribute delegation to the single global
+// Environment (§7.2), manual capture entry points, lifecycle (launch/stop/flush), and the
+// report/upload path. When given a report assembler's inputs (appToken + environment + upload
+// pipeline), the Client builds the trigger pipeline itself (assembleBundle over the aggregator
+// snapshot); logException instance-dedups + rate-limits, then reports. A dropped result is
+// `{ ok: false }`. Platform specifics (EnvironmentEnvelope factory, transport impls, DOM) are
+// injected.
 
 /** A breadcrumb payload (design §10). */
 export interface Breadcrumb {
@@ -32,6 +43,16 @@ export interface Breadcrumb {
 
 /** addBreadcrumb input: timestamp is optional (the Client stamps it from the clock). */
 export type BreadcrumbInput = Omit<Breadcrumb, 'timestamp'> & { timestamp?: number };
+
+/** Options for logException (a focused core subset of Android ExceptionOptions). */
+export interface LogExceptionOptions {
+  /** Capture mechanism for the wire source (default 'programmatic'). */
+  mechanism?: Mechanism;
+  /** Issue severity (default derived from the error issue type). */
+  severity?: SeverityName;
+  /** Extra labels for the issue. */
+  labels?: string[];
+}
 
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
 export interface BugseeClient extends Client {
@@ -54,6 +75,9 @@ export interface BugseeClient extends Client {
   event(name: string, params?: Record<string, unknown>): void;
   trace(name: string, value: unknown): void;
 
+  /** Capture an exception (instance-deduped + rate-limited) and trigger a report. */
+  logException(error: unknown, options?: LogExceptionOptions): Promise<UploadResult>;
+
   // Lifecycle (§7.1).
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
   launch(): void;
@@ -71,15 +95,24 @@ export interface CreateClientOptions {
   captureStore?: CaptureStore;
   /** Which capture/detection options are enabled (gates the coordinators). Default: all enabled. */
   isEnabled?: OptionGate;
+  /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
+  captureRateLimit?: RateLimiterOptions;
   /** Upload pipeline (built by the platform from BugseeApi/BundleUploader); enables flush/stop drain. */
   uploadPipeline?: UploadPipeline;
-  /** Trigger pipeline (assembles + uploads reports); detection submissions route here. */
+  /** Plain-text app token (apptoken file); required to build the trigger pipeline. */
+  appToken?: string;
+  /** Builds the EnvironmentEnvelope at assembly time; required to build the trigger pipeline. */
+  getEnvironment?: () => EnvironmentEnvelope;
+  /** Bundle archive name generator (default `<random20>.bundle.zip`). */
+  bundleFileName?: () => string;
+  /** Trigger pipeline override; when omitted, built from uploadPipeline + appToken + getEnvironment. */
   triggerPipeline?: TriggerPipeline;
 }
 
 export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
+  const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
   const hubs = createEventHubs();
   const operations = createOperationDispatcher();
@@ -90,6 +123,22 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   let launched = false;
+
+  // Build the trigger pipeline from the report assembler when its inputs are present (unless an
+  // override is injected). assemble reads the aggregator snapshot + the live environment/attributes.
+  const { uploadPipeline, appToken, getEnvironment } = options;
+  let triggerPipeline = options.triggerPipeline;
+  if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
+    const assemble = async (request: ReportingRequest): Promise<Bundle> =>
+      assembleBundle(request, await captureAggregator.snapshot(), {
+        appToken,
+        environment: getEnvironment(),
+        attributes: environment.getAllAttributes(),
+        clock,
+        ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
+      });
+    triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
+  }
 
   // The provider/extension-facing surface (§16.3) passed to providers at start().
   const context: Client = {
@@ -149,6 +198,29 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       });
     },
 
+    logException(error: unknown, exceptionOptions?: LogExceptionOptions): Promise<UploadResult> {
+      // Instance dedup: a re-capture of the same thrown object is a no-op (§7.7).
+      if (checkOrSetAlreadyCaught(error)) {
+        return Promise.resolve({ ok: false });
+      }
+      // Storm self-protection: drop beyond the rolling capture rate (§7.7).
+      if (!rateLimiter.tryAcquire()) {
+        return Promise.resolve({ ok: false });
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      const request = createReportingRequest({
+        source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
+        summary: message,
+        ...(stack !== undefined ? { description: stack } : {}),
+        ...(exceptionOptions?.severity !== undefined
+          ? { severity: exceptionOptions.severity }
+          : {}),
+        ...(exceptionOptions?.labels !== undefined ? { labels: exceptionOptions.labels } : {}),
+      });
+      return triggerPipeline?.report(request) ?? Promise.resolve({ ok: false });
+    },
+
     isLaunched(): boolean {
       return launched;
     },
@@ -160,7 +232,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       launched = true;
       captureCoordinator.start(context, isEnabled);
       detectionCoordinator.start(context, isEnabled, (request) => {
-        void options.triggerPipeline?.report(request);
+        void triggerPipeline?.report(request);
       });
     },
 
@@ -171,11 +243,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       launched = false;
       captureCoordinator.stop();
       detectionCoordinator.stop();
-      return options.uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
+      return uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
     },
 
     flush(timeout?: number): Promise<boolean> {
-      return options.uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
+      return uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
     },
   };
 }

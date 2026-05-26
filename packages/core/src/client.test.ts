@@ -1,11 +1,16 @@
-import type { NetworkEvent } from '@bugsee/protocol';
+import type { EnvironmentEnvelope, NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
 import type { Clock } from './clock';
 import type { CaptureDataEntry, CaptureProvider, DetectionProvider } from './contracts';
 import { createReportingRequest, type ReportingRequest } from './reporting';
-import type { UploadPipeline } from './transport';
+import type { Bundle, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
+
+const getEnvironment = (): EnvironmentEnvelope => ({
+  platform: { type: 'web', version: '1' },
+  sdk: { version: '0', type: 'javascript' },
+});
 
 // Fixed-time clock so capture-entry timestamps are deterministic.
 const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow: () => 0 });
@@ -222,12 +227,9 @@ function capturingDetector(name: string) {
 
 function fakeUpload() {
   const flush = vi.fn(async () => true);
-  const uploadPipeline: UploadPipeline = {
-    enqueue: vi.fn(async () => ({ ok: true })),
-    flush,
-    drop: vi.fn(),
-  };
-  return { uploadPipeline, flush };
+  const enqueue = vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: true }));
+  const uploadPipeline: UploadPipeline = { enqueue, flush, drop: vi.fn() };
+  return { uploadPipeline, flush, enqueue };
 }
 
 describe('createClient — lifecycle', () => {
@@ -338,5 +340,112 @@ describe('createClient — lifecycle', () => {
     void client.stop();
     client.launch();
     expect(provider.start).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createClient — logException', () => {
+  const withTrigger = () => {
+    const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+    return { client: createClient({ triggerPipeline: { report } as TriggerPipeline }), report };
+  };
+
+  it('builds an error report (type/mechanism/summary/stack) and reports it', async () => {
+    const { client, report } = withTrigger();
+    const result = await client.logException(new Error('boom'));
+    expect(result).toEqual({ ok: true });
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.report.type).toBe('error');
+    expect(request.source).toEqual({ type: 'error', mechanism: 'programmatic' });
+    expect(request.report.summary).toBe('boom');
+    expect(request.report.description).toMatch(/Error: boom/);
+  });
+
+  it('dedups a re-captured instance (reports once)', async () => {
+    const { client, report } = withTrigger();
+    const err = new Error('x');
+    await client.logException(err);
+    expect(await client.logException(err)).toEqual({ ok: false });
+    expect(report).toHaveBeenCalledTimes(1);
+  });
+
+  it('rate-limits captures beyond the configured limit', async () => {
+    const report = vi.fn(async (): Promise<UploadResult> => ({ ok: true }));
+    const client = createClient({
+      triggerPipeline: { report } as TriggerPipeline,
+      captureRateLimit: { limit: 2, windowMs: 1000 },
+      clock: fixedClock(0),
+    });
+    await client.logException(new Error('1'));
+    await client.logException(new Error('2'));
+    expect(await client.logException(new Error('3'))).toEqual({ ok: false });
+    expect(report).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves {ok:false} when there is no trigger pipeline', async () => {
+    expect(await createClient().logException(new Error('x'))).toEqual({ ok: false });
+  });
+
+  it('uses String(value) as the summary for a non-Error value (no description)', async () => {
+    const { client, report } = withTrigger();
+    await client.logException('plain failure');
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.report.summary).toBe('plain failure');
+    expect(request.report.description).toBeUndefined();
+  });
+
+  it('applies mechanism, severity and labels overrides', async () => {
+    const { client, report } = withTrigger();
+    await client.logException(new Error('x'), {
+      mechanism: 'uncaught',
+      severity: 'blocker',
+      labels: ['p1'],
+    });
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.source.mechanism).toBe('uncaught');
+    expect(request.report.severity).toBe('blocker');
+    expect(request.report.labels).toEqual(['p1']);
+  });
+});
+
+describe('createClient — report path (built trigger pipeline)', () => {
+  it('logException assembles + enqueues a bundle through the built trigger pipeline', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      bundleFileName: () => 'x.bundle.zip',
+      clock: fixedClock(1000),
+    });
+    const result = await client.logException(new Error('boom'));
+    expect(result).toEqual({ ok: true });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(bundle.request.summary).toBe('boom');
+    expect(bundle.fileName).toBe('x.bundle.zip');
+  });
+
+  it('a detection submission assembles + enqueues through the built trigger pipeline', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    fire(
+      createReportingRequest({
+        source: { type: 'crash', mechanism: 'uncaught' },
+        id: 'r1',
+        summary: 'crashed',
+      }),
+    );
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.summary).toBe('crashed');
+  });
+
+  it('does not build a trigger pipeline without appToken/getEnvironment (reports drop)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload(); // uploadPipeline only
+    const client = createClient({ uploadPipeline });
+    expect(await client.logException(new Error('x'))).toEqual({ ok: false });
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });
