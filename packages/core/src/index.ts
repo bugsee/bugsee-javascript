@@ -18,6 +18,7 @@ export type {
 export { checkOrSetAlreadyCaught } from './dedup';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
+export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export {
   createEventHubs,
   type EventHubs,
