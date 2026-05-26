@@ -3,6 +3,7 @@
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
 export { type Clock, createSystemClock } from './clock';
+export { checkOrSetAlreadyCaught } from './dedup';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export {
