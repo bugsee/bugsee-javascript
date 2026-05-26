@@ -32,6 +32,7 @@ export {
   type DetectionCoordinator,
   type ReportListener,
 } from './detection-coordinator';
+export { DetectionProviderBase } from './detection-provider-base';
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
