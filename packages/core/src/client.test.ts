@@ -6,8 +6,10 @@ import type { CaptureDataEntry, CaptureProvider, DetectionProvider } from './con
 
 // Fixed-time clock so capture-entry timestamps are deterministic.
 const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow: () => 0 });
-const firstEntry = (client: ReturnType<typeof createClient>, type: CaptureDataEntry['type']) =>
-  client.captureAggregator.snapshot().get(type)?.[0];
+const firstEntry = async (
+  client: ReturnType<typeof createClient>,
+  type: CaptureDataEntry['type'],
+) => (await client.captureAggregator.snapshot()).get(type)?.[0];
 
 // Test-only extension typing so registerExt/ext can be exercised.
 declare module '@bugsee/types' {
@@ -53,10 +55,10 @@ describe('createClient — wiring', () => {
     expect(seen).toEqual(['http']);
   });
 
-  it('exposes a working capture aggregator', () => {
+  it('exposes a working capture aggregator', async () => {
     const client = createClient();
     client.captureAggregator.addEntry({ type: 'log', timestamp: 1, data: { msg: 'hi' } });
-    expect(client.captureAggregator.snapshot().get('log')).toHaveLength(1);
+    expect((await client.captureAggregator.snapshot()).get('log')).toHaveLength(1);
   });
 });
 
@@ -118,26 +120,26 @@ describe('createClient — identity & attributes', () => {
 });
 
 describe('createClient — capture entry points', () => {
-  it('addBreadcrumb pushes a breadcrumbs entry stamped from the clock', () => {
+  it('addBreadcrumb pushes a breadcrumbs entry stamped from the clock', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'clicked', category: 'ui' });
-    const entry = firstEntry(client, 'breadcrumbs');
+    const entry = await firstEntry(client, 'breadcrumbs');
     expect(entry?.timestamp).toBe(1000);
     expect(entry?.data).toEqual({ message: 'clicked', category: 'ui', timestamp: 1000 });
   });
 
-  it('addBreadcrumb honors an explicit timestamp', () => {
+  it('addBreadcrumb honors an explicit timestamp', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'x', timestamp: 42 });
-    const entry = firstEntry(client, 'breadcrumbs');
+    const entry = await firstEntry(client, 'breadcrumbs');
     expect(entry?.timestamp).toBe(42);
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  it('log pushes a log entry with default level info and clock timestamp', () => {
+  it('log pushes a log entry with default level info and clock timestamp', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.log('hello');
-    expect(firstEntry(client, 'log')?.data).toEqual({
+    expect((await firstEntry(client, 'log'))?.data).toEqual({
       timestamp: 1000,
       level: 'info',
       source: 'logger',
@@ -145,10 +147,10 @@ describe('createClient — capture entry points', () => {
     });
   });
 
-  it('log honors an explicit level and timestamp', () => {
+  it('log honors an explicit level and timestamp', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.log('boom', 'error', 7);
-    expect(firstEntry(client, 'log')?.data).toEqual({
+    expect((await firstEntry(client, 'log'))?.data).toEqual({
       timestamp: 7,
       level: 'error',
       source: 'logger',
@@ -156,39 +158,42 @@ describe('createClient — capture entry points', () => {
     });
   });
 
-  it('event pushes an events.user entry with params', () => {
+  it('event pushes an events.user entry with params', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.event('checkout', { total: 9 });
-    expect(firstEntry(client, 'events.user')?.data).toEqual({
+    expect((await firstEntry(client, 'events.user'))?.data).toEqual({
       timestamp: 1000,
       name: 'checkout',
       params: { total: 9 },
     });
   });
 
-  it('event omits params when not provided', () => {
+  it('event omits params when not provided', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.event('opened');
-    expect(firstEntry(client, 'events.user')?.data).toEqual({ timestamp: 1000, name: 'opened' });
+    expect((await firstEntry(client, 'events.user'))?.data).toEqual({
+      timestamp: 1000,
+      name: 'opened',
+    });
   });
 
-  it('trace pushes a traces.user entry with name and value', () => {
+  it('trace pushes a traces.user entry with name and value', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.trace('fps', 60);
-    expect(firstEntry(client, 'traces.user')?.data).toEqual({
+    expect((await firstEntry(client, 'traces.user'))?.data).toEqual({
       timestamp: 1000,
       name: 'fps',
       value: 60,
     });
   });
 
-  it('routes each entry to its own file type', () => {
+  it('routes each entry to its own file type', async () => {
     const client = createClient({ clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'b' });
     client.log('l');
     client.event('e');
     client.trace('t', 1);
-    const snap = client.captureAggregator.snapshot();
+    const snap = await client.captureAggregator.snapshot();
     expect([...snap.keys()].sort()).toEqual(['breadcrumbs', 'events.user', 'log', 'traces.user']);
   });
 });

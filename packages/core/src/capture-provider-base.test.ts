@@ -48,22 +48,22 @@ describe('CaptureProviderBase', () => {
     expect(provider.startedWith).toBe(client);
   });
 
-  it('routes addEntry to the client aggregator', () => {
+  it('routes addEntry to the client aggregator', async () => {
     const provider = new NetworkProvider();
     const client = createClient();
     provider.start(client);
     provider.pushLog();
-    expect(client.captureAggregator.snapshot().get('log')).toEqual([
+    expect((await client.captureAggregator.snapshot()).get('log')).toEqual([
       { type: 'log', timestamp: 5, data: { message: 'hi' } },
     ]);
   });
 
-  it('capture() builds an entry of the given type/timestamp/data and routes it', () => {
+  it('capture() builds an entry of the given type/timestamp/data and routes it', async () => {
     const provider = new NetworkProvider();
     const client = createClient();
     provider.start(client);
     client.hubs.network.emit(netEvent(99));
-    const entries = client.captureAggregator.snapshot().get('network');
+    const entries = (await client.captureAggregator.snapshot()).get('network');
     expect(entries).toHaveLength(1);
     expect(entries?.[0]).toEqual({ type: 'network', timestamp: 99, data: netEvent(99) });
   });
@@ -73,13 +73,13 @@ describe('CaptureProviderBase', () => {
     expect(() => provider.pushLog()).not.toThrow();
   });
 
-  it('detaches the aggregator on stop (subsequent entries are not routed) and calls onStop', () => {
+  it('detaches the aggregator on stop (subsequent entries are not routed) and calls onStop', async () => {
     const provider = new NetworkProvider();
     const client = createClient();
     provider.start(client);
     provider.stop();
     provider.pushLog();
-    expect(client.captureAggregator.snapshot().size).toBe(0);
+    expect((await client.captureAggregator.snapshot()).size).toBe(0);
     expect(provider.stopped).toBe(1);
   });
 
@@ -94,17 +94,17 @@ describe('CaptureProviderBase', () => {
   });
 
   // Integration: the base provider works through the real capture coordinator + client.
-  it('captures hub events into the aggregator when started via the coordinator', () => {
+  it('captures hub events into the aggregator when started via the coordinator', async () => {
     const client = createClient();
     const coordinator = createCaptureCoordinator();
     coordinator.addProvider(new NetworkProvider());
     coordinator.start(client, (opt) => opt === 'captureNetwork');
     client.hubs.network.emit(netEvent(1));
     client.hubs.network.emit(netEvent(2));
-    expect(client.captureAggregator.snapshot().get('network')).toHaveLength(2);
+    expect((await client.captureAggregator.snapshot()).get('network')).toHaveLength(2);
   });
 
-  it('a coordinator-disabled provider does not subscribe, so nothing is captured', () => {
+  it('a coordinator-disabled provider does not subscribe, so nothing is captured', async () => {
     const client = createClient();
     const coordinator = createCaptureCoordinator();
     const provider = new NetworkProvider();
@@ -112,6 +112,6 @@ describe('CaptureProviderBase', () => {
     coordinator.start(client, () => false); // captureNetwork disabled
     client.hubs.network.emit(netEvent(1));
     expect(provider.startedWith).toBeNull();
-    expect(client.captureAggregator.snapshot().size).toBe(0);
+    expect((await client.captureAggregator.snapshot()).size).toBe(0);
   });
 });

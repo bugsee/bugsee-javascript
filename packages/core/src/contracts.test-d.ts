@@ -7,6 +7,7 @@ import type {
   CaptureAggregator,
   CaptureDataEntry,
   CaptureProvider,
+  CaptureStore,
   Client,
   DetectionProvider,
   Extension,
@@ -32,10 +33,18 @@ const dispatcher: OperationDispatcher = {
   onOperation: noop,
 };
 
+const captureStore: CaptureStore = {
+  add: noop,
+  stream: async function* () {},
+  drain: async () => new Map<FileType, CaptureDataEntry[]>(),
+  clear: noop,
+};
+
 const aggregator: CaptureAggregator = {
   addEntry: noop,
   addEntries: noop,
-  snapshot: () => new Map<FileType, CaptureDataEntry[]>(),
+  stream: async function* () {},
+  snapshot: async () => new Map<FileType, CaptureDataEntry[]>(),
   clear: noop,
 };
 
@@ -89,10 +98,17 @@ const extension: Extension = {
 export const badOperation: Operation = { type: 'http' };
 // @ts-expect-error `type` is required on CaptureDataEntry
 export const badEntry: CaptureDataEntry = { timestamp: 1, data: {} };
-// @ts-expect-error `addEntry` is required on CaptureAggregator
+// @ts-expect-error `addEntry` is required on CaptureAggregator (stream/snapshot/clear present)
 export const badAggregator: CaptureAggregator = {
   addEntries: noop,
-  snapshot: () => new Map<FileType, CaptureDataEntry[]>(),
+  stream: async function* () {},
+  snapshot: async () => new Map<FileType, CaptureDataEntry[]>(),
+  clear: noop,
+};
+// @ts-expect-error `stream` is required on CaptureStore (add/drain/clear present)
+export const badStore: CaptureStore = {
+  add: noop,
+  drain: async () => new Map<FileType, CaptureDataEntry[]>(),
   clear: noop,
 };
 // @ts-expect-error `start` is required on CaptureProvider
@@ -110,6 +126,7 @@ export type ContractAssertions = [
   typeof operation,
   typeof entry,
   typeof dispatcher,
+  typeof captureStore,
   typeof aggregator,
   typeof exampleClient,
   typeof interceptor,

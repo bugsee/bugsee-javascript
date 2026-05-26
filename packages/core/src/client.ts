@@ -3,11 +3,12 @@ import type { AttributeValue, LogLevelName, NameExtensionMapping } from '@bugsee
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator } from './capture-coordinator';
 import { type Clock, createSystemClock } from './clock';
-import type { Client } from './contracts';
+import type { CaptureStore, Client } from './contracts';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
 import { createExtensionRegistry } from './extension-registry';
 import { createEventHubs, type LogEvent } from './hubs';
+import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 
 // The Client facade (design §7.1) — the runtime-agnostic composition root that wires the kernel
@@ -55,6 +56,8 @@ export interface BugseeClient extends Client {
 export interface CreateClientOptions {
   /** Time source; injectable for tests. Default createSystemClock(). */
   clock?: Clock;
+  /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
+  captureStore?: CaptureStore;
 }
 
 export function createClient(options: CreateClientOptions = {}): BugseeClient {
@@ -62,7 +65,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const environment = createEnvironment();
   const hubs = createEventHubs();
   const operations = createOperationDispatcher();
-  const captureAggregator = createCaptureAggregator();
+  const captureAggregator = createCaptureAggregator(
+    options.captureStore ?? createMemoryCaptureStore(),
+  );
   const captureCoordinator = createCaptureCoordinator();
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();

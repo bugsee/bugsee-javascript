@@ -3,10 +3,7 @@
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
 export { type BundleFile, writeBundleZip } from './bundle-writer';
-export {
-  type CaptureAggregatorOptions,
-  createCaptureAggregator,
-} from './capture-aggregator';
+export { createCaptureAggregator } from './capture-aggregator';
 export {
   type CaptureCoordinator,
   createCaptureCoordinator,
@@ -19,6 +16,7 @@ export type {
   CaptureAggregator,
   CaptureDataEntry,
   CaptureProvider,
+  CaptureStore,
   Client,
   DetectionProvider,
   Extension,
@@ -44,6 +42,10 @@ export {
   type InputEvent,
   type LogEvent,
 } from './hubs';
+export {
+  createMemoryCaptureStore,
+  type MemoryCaptureStoreOptions,
+} from './memory-capture-store';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   createRateLimiter,

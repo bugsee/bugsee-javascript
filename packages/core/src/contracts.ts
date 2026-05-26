@@ -58,18 +58,45 @@ export interface CaptureDataEntry {
 }
 
 /**
+ * The configurable storage backend the aggregator supplies entries to (Android CaptureFileStorage
+ * parity). Large entries (e.g. network bodies) shouldn't be memory-only, so the backend is
+ * runtime-specific: in-memory (lambda/edge), on disk (Node/Bun), IndexedDB (browser). `add` is
+ * fire-and-forget — it must never block or throw the capture path; `drain` is async (disk/IDB reads).
+ */
+export interface CaptureStore {
+  /** Persist an entry under its file type. Non-blocking; failures are the store's own concern. */
+  add(entry: CaptureDataEntry): void;
+  /**
+   * Default export read: stream stored entries one-by-one (grouped by file type), then clear. Memory-
+   * light — a disk/IndexedDB backend reads lazily without loading everything (Android
+   * CaptureDataEntryStreamReader.readEntry parity).
+   */
+  stream(): AsyncIterableIterator<CaptureDataEntry>;
+  /**
+   * All-at-once export read: read every stored entry into memory grouped by file type, then clear.
+   * For small data / edge-lambda where a single bulk extraction is simplest.
+   */
+  drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
+  /** Discard all stored entries without reading them. */
+  clear(): void;
+}
+
+/**
  * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity): it accepts
- * entries, buffers them per file-type (the in-memory store in bundle mode), and forwards to the data
- * store. snapshot() atomically drains for the trigger path (§7.7).
+ * entries and supplies them to the configurable CaptureStore, then reads them back for export at
+ * trigger time — streaming (default, one-by-one) or snapshot (all-at-once). Reads are async so
+ * disk/IndexedDB backends fit.
  */
 export interface CaptureAggregator {
-  /** Accept one entry, routing it to its file-type buffer. */
+  /** Accept one entry, supplying it to the store. */
   addEntry(entry: CaptureDataEntry): void;
   /** Accept many entries. */
   addEntries(entries: readonly CaptureDataEntry[]): void;
-  /** Atomically take and clear all buffered entries, grouped by file type (trigger snapshot). */
-  snapshot(): Map<FileType, CaptureDataEntry[]>;
-  /** Drop all buffered entries. */
+  /** Default export: stream stored entries one-by-one (grouped by file type), then clear. */
+  stream(): AsyncIterableIterator<CaptureDataEntry>;
+  /** All-at-once: read + clear all stored entries grouped by file type (§7.7 trigger snapshot). */
+  snapshot(): Promise<Map<FileType, CaptureDataEntry[]>>;
+  /** Drop all stored entries. */
   clear(): void;
 }
 
