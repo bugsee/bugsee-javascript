@@ -30,3 +30,16 @@ export {
   SENSITIVE_KEY_SUBSTRINGS,
 } from './sensitive';
 export { redactShapes, type ShapeRedactionOptions } from './shapes';
+export type {
+  EnvironmentEnvelope,
+  ManifestFileEntry,
+  ManifestJson,
+  NetworkEvent,
+  NetworkMechanism,
+  NetworkStage,
+  NoBodyReason,
+  PlatformType,
+  RequestJson,
+  SourceType,
+  WebSocketEvent,
+} from './wire';
