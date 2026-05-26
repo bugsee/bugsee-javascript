@@ -3,6 +3,15 @@
 // Built incrementally; this is the level/severity translation component (§8.9).
 
 export {
+  APP_TOKEN_FILENAME,
+  BUNDLE_FILE_SUFFIX,
+  DEFAULT_FILENAMES,
+  type FileType,
+  MANIFEST_JSON_FILENAME,
+  MANIFEST_VERSION,
+  REQUEST_JSON_FILENAME,
+} from './constants';
+export {
   LogLevel,
   logLevelFromWire,
   logLevelToWire,
