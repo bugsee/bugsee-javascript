@@ -55,3 +55,8 @@ export type {
   UploadPipeline,
   UploadResult,
 } from './transport';
+export {
+  createUploadPipeline,
+  type PipelineOutcome,
+  type UploadPipelineOptions,
+} from './upload-pipeline';
