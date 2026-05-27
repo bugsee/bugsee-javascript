@@ -1,5 +1,9 @@
-// @bugsee/node-utils
-// http/https/fs/ALS helpers shared by node/bun/electron-main
-// Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/node-utils — http/https/fs/ALS helpers shared by @bugsee/node, bun and electron-main
+// (design §5). Built test-first per docs/implementation-standards.md.
+
+export {
+  type HttpRequestOptions,
+  type HttpResponse,
+  httpRequest,
+  transportFor,
+} from './http-request';
