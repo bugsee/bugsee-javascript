@@ -9,6 +9,7 @@ import type {
   CaptureEntryFactory,
   CaptureExporter,
   CaptureProvider,
+  CaptureProviderInit,
   CaptureSnapshot,
   CaptureStore,
   Client,
@@ -17,6 +18,7 @@ import type {
   Interceptor,
   Operation,
   OperationDispatcher,
+  OptionsContainer,
   StoredEntry,
 } from './contracts';
 import { createEventHubs } from './hubs';
@@ -95,13 +97,27 @@ const interceptor: Interceptor = {
   stop: noop,
 };
 
-// A provider subscribes to its hub and pushes filtered entries to the single aggregator.
+// The pipeline deps a provider receives once via init() (subset of Client, no registration seams).
+const captureProviderInit: CaptureProviderInit = {
+  hubs: createEventHubs(),
+  operations: dispatcher,
+  captureAggregator: aggregator,
+};
+
+// The launch-options bag passed to start(options) for per-launch reconfiguration.
+const launchOptions: OptionsContainer = {
+  get: <T>(_key: string, fallback: T): T => fallback,
+  has: (_key: string) => false,
+};
+
+// A provider receives its deps via init(), then on start(options) subscribes to its hub and pushes
+// filtered entries to the single aggregator.
 const networkProvider: CaptureProvider = {
   name: 'network',
   controllingOption: 'captureNetwork',
-  start: (client: Client) => {
-    client.hubs.network.subscribe((event: NetworkEvent) => {
-      client.captureAggregator.addEntry({
+  init: (deps: CaptureProviderInit) => {
+    deps.hubs.network.subscribe((event: NetworkEvent) => {
+      deps.captureAggregator.addEntry({
         type: 'network',
         timestamp: event.timestamp,
         data: event,
@@ -109,6 +125,9 @@ const networkProvider: CaptureProvider = {
         deserialize: () => {},
       });
     });
+  },
+  start: (options: OptionsContainer) => {
+    options.get('captureNetworkBodySizeLimit', 20480);
   },
   stop: noop,
 };
@@ -160,8 +179,10 @@ export const badSnapshot: CaptureSnapshot = {
 };
 // @ts-expect-error `drain` is required on CaptureExporter (stream present)
 export const badExporter: CaptureExporter = { stream: async function* () {} };
-// @ts-expect-error `start` is required on CaptureProvider
-export const badCaptureProvider: CaptureProvider = { name: 'x', stop: noop };
+// @ts-expect-error `start` is required on CaptureProvider (name/init/stop present)
+export const badCaptureProvider: CaptureProvider = { name: 'x', init: noop, stop: noop };
+// @ts-expect-error `init` is required on CaptureProvider (name/start/stop present)
+export const badCaptureProviderNoInit: CaptureProvider = { name: 'x', start: noop, stop: noop };
 // @ts-expect-error `start` is required on Interceptor
 export const badInterceptor: Interceptor = { name: 'x', stop: noop };
 // @ts-expect-error `name` is required on Extension
@@ -183,6 +204,8 @@ export type ContractAssertions = [
   typeof exporter,
   typeof exampleClient,
   typeof interceptor,
+  typeof captureProviderInit,
+  typeof launchOptions,
   typeof networkProvider,
   typeof detector,
   typeof extension,

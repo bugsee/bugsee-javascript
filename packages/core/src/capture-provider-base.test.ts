@@ -1,12 +1,15 @@
 import type { FileType, NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
+import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import { CaptureProviderBase } from './capture-provider-base';
-import { createClient } from './client';
-import type { CaptureStore, Client } from './contracts';
+import type { CaptureProviderInit, CaptureStore, OptionsContainer } from './contracts';
+import { createEventHubs } from './hubs';
 import { createMemoryCaptureStore } from './memory-capture-store';
+import { createOperationDispatcher } from './operation-dispatcher';
+import { createOptionsContainer } from './options';
 
 const netEvent = (timestamp: number): NetworkEvent => ({
   timestamp,
@@ -18,7 +21,17 @@ const netEvent = (timestamp: number): NetworkEvent => ({
   type: 'complete',
 });
 
-// Read captured entries back through an exporter over the client's store (the aggregator is write-only).
+const mkStore = (): CaptureStore =>
+  createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+// A fresh pipeline (hubs/operations/aggregator) over the given store — what init() supplies.
+const buildInit = (store: CaptureStore): CaptureProviderInit => ({
+  hubs: createEventHubs(),
+  operations: createOperationDispatcher(),
+  captureAggregator: createCaptureAggregator(store),
+});
+const options: OptionsContainer = createOptionsContainer();
+
+// Read captured entries back through an exporter over the store (the aggregator is write-only).
 const drainType = async (store: CaptureStore, type: FileType) =>
   (await createCaptureExporter(store).drain()).get(type);
 
@@ -26,13 +39,13 @@ const drainType = async (store: CaptureStore, type: FileType) =>
 class NetworkProvider extends CaptureProviderBase {
   readonly name = 'network';
   readonly controllingOption = 'captureNetwork';
-  startedWith: Client | null = null;
+  startedWith: OptionsContainer | null = null;
   stopped = 0;
   #off: (() => void) | null = null;
 
-  protected onStart(client: Client): void {
-    this.startedWith = client;
-    this.#off = client.hubs.network.subscribe((event) => {
+  protected onStart(launchOptions: OptionsContainer): void {
+    this.startedWith = launchOptions;
+    this.#off = this.pipeline.hubs.network.subscribe((event) => {
       this.capture('network', event.timestamp, event);
     });
   }
@@ -47,29 +60,30 @@ class NetworkProvider extends CaptureProviderBase {
   }
 }
 
-describe('CaptureProviderBase', () => {
-  it('calls onStart with the client on start', () => {
+describe('CaptureProviderBase — lifecycle', () => {
+  it('passes the launch options to onStart on start', () => {
     const provider = new NetworkProvider();
-    const client = createClient();
-    provider.start(client);
-    expect(provider.startedWith).toBe(client);
+    provider.init(buildInit(mkStore()));
+    provider.start(options);
+    expect(provider.startedWith).toBe(options);
   });
 
-  it('routes addEntry to the client aggregator', async () => {
+  it('routes addEntry to the init-supplied aggregator', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const client = createClient({ captureStore: store });
-    provider.start(client);
+    const store = mkStore();
+    provider.init(buildInit(store));
+    provider.start(options);
     provider.pushLog();
     expect((await drainType(store, 'log'))?.map((e) => e.data)).toEqual([{ message: 'hi' }]);
   });
 
   it('capture() builds an entry of the given type/timestamp/data and routes it', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const client = createClient({ captureStore: store });
-    provider.start(client);
-    client.hubs.network.emit(netEvent(99));
+    const store = mkStore();
+    const init = buildInit(store);
+    provider.init(init);
+    provider.start(options);
+    init.hubs.network.emit(netEvent(99));
     const entries = await drainType(store, 'network');
     expect(entries).toHaveLength(1);
     expect(entries?.map((e) => ({ type: e.type, timestamp: e.timestamp, data: e.data }))).toEqual([
@@ -77,18 +91,19 @@ describe('CaptureProviderBase', () => {
     ]);
   });
 
-  it('addEntry is a no-op before start', () => {
-    const provider = new NetworkProvider();
-    expect(() => provider.pushLog()).not.toThrow();
+  it('throws when used before init() (deps accessed via this.pipeline)', () => {
+    const provider = new NetworkProvider(); // never init()ed
+    expect(() => provider.start(options)).toThrow(/before init/);
   });
 
-  it('detaches the aggregator on stop (subsequent entries are not routed) and calls onStop', async () => {
+  it('stop unsubscribes (later hub events are not captured) and runs onStop', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const client = createClient({ captureStore: store });
-    provider.start(client);
+    const store = mkStore();
+    const init = buildInit(store);
+    provider.init(init);
+    provider.start(options);
     provider.stop();
-    provider.pushLog();
+    init.hubs.network.emit(netEvent(1)); // arrives after stop → must not be captured
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
     expect(provider.stopped).toBe(1);
   });
@@ -99,30 +114,32 @@ describe('CaptureProviderBase', () => {
       protected onStart(): void {}
     }
     const provider = new Minimal();
-    provider.start(createClient());
+    provider.init(buildInit(mkStore()));
+    provider.start(options);
     expect(() => provider.stop()).not.toThrow();
   });
+});
 
-  // Integration: the base provider works through the real capture coordinator + client.
+describe('CaptureProviderBase — integration via the coordinator', () => {
   it('captures hub events into the aggregator when started via the coordinator', async () => {
-    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const client = createClient({ captureStore: store });
-    const coordinator = createCaptureCoordinator();
+    const store = mkStore();
+    const init = buildInit(store);
+    const coordinator = createCaptureCoordinator(init);
     coordinator.addProvider(new NetworkProvider());
-    coordinator.start(client, (opt) => opt === 'captureNetwork');
-    client.hubs.network.emit(netEvent(1));
-    client.hubs.network.emit(netEvent(2));
+    coordinator.start(options, (opt) => opt === 'captureNetwork');
+    init.hubs.network.emit(netEvent(1));
+    init.hubs.network.emit(netEvent(2));
     expect(await drainType(store, 'network')).toHaveLength(2);
   });
 
   it('a coordinator-disabled provider does not subscribe, so nothing is captured', async () => {
-    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const client = createClient({ captureStore: store });
-    const coordinator = createCaptureCoordinator();
+    const store = mkStore();
+    const init = buildInit(store);
+    const coordinator = createCaptureCoordinator(init);
     const provider = new NetworkProvider();
     coordinator.addProvider(provider);
-    coordinator.start(client, () => false); // captureNetwork disabled
-    client.hubs.network.emit(netEvent(1));
+    coordinator.start(options, () => false); // captureNetwork disabled
+    init.hubs.network.emit(netEvent(1));
     expect(provider.startedWith).toBeNull();
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
   });

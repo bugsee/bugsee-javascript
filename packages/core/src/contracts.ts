@@ -158,12 +158,48 @@ export interface CaptureExporter {
 }
 
 /**
- * Capture-pipeline data source (§16.2). In start(client) it subscribes to its hub, filter+sanitizes
- * each event into a CaptureDataEntry, and pushes it to client.captureAggregator.addEntry(...).
+ * The capture-pipeline dependencies a CaptureProvider needs for its whole lifetime (Android
+ * BugseeCaptureDataProviderInit parity): the hubs it subscribes to, the operation bridge, and the
+ * aggregator it pushes entries to. Supplied ONCE via {@link CaptureProvider.init} at registration —
+ * NOT at start — so start(options) is free to (re)configure behavior per launch without re-wiring
+ * deps. Deliberately a subset of {@link Client} that EXCLUDES the registration seams: a provider
+ * consumes the capture pipeline; it does not register other providers.
+ */
+export interface CaptureProviderInit {
+  /** Process-wide pub/sub hubs the provider subscribes to (§16.2). */
+  readonly hubs: EventHubs;
+  /** Operation bridge for adapters/build injection (§16.2). */
+  readonly operations: OperationDispatcher;
+  /** The single data adapter the provider pushes captured entries to (§7.7). */
+  readonly captureAggregator: CaptureAggregator;
+}
+
+/**
+ * A read-only launch-options bag (Android OptionsContainer parity) passed to start(options) so a
+ * component (re)configures its behavior per launch — e.g. network body-size limits, log level —
+ * rather than re-initializing its dependencies. `get` returns the configured value, or the caller's
+ * `fallback` when the key is absent; `has` reports presence. (Forward-compatible: keys/values become
+ * `keyof BugseeOptions` once options.ts lands.)
+ */
+export interface OptionsContainer {
+  /** Read a launch option by key, falling back to `fallback` when the key is absent. */
+  get<T>(key: string, fallback: T): T;
+  /** Whether a launch option is present. */
+  has(key: string): boolean;
+}
+
+/**
+ * Capture-pipeline data source (§16.2), Android BugseeCaptureDataProvider parity. Lifecycle splits
+ * dependency wiring from per-launch configuration:
+ * - init(init): ONCE at registration — capture the pipeline deps (hubs/operations/aggregator).
+ * - start(options): per launch — (re)configure from launch options, subscribe to its hub, and
+ *   filter+sanitize each event into a CaptureDataEntry pushed to the aggregator. May be cycled
+ *   (stop→start) across launches without re-init.
+ * - stop(): unsubscribe / release hooks (the subscription, not a detached aggregator, is the gate).
  *
- * NB: this follows Android (BugseeCaptureDataProvider works on CaptureDataEntry objects), not the
- * design doc §16.2 sketch's per-provider `wireFileType`/`filename`/`serialize`. File type lives on
- * CaptureDataEntry.type and serialization lives on the entry itself (serialize/deserialize).
+ * NB: this follows Android (works on CaptureDataEntry objects), not the design doc §16.2 sketch's
+ * per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
+ * serialization lives on the entry itself (serialize/deserialize).
  */
 export interface CaptureProvider {
   /** Component id (Android @BugseeCaptureComponentName). */
@@ -171,7 +207,10 @@ export interface CaptureProvider {
   // TODO: narrow to `keyof BugseeOptions` once options.ts lands (e.g. 'captureNetwork').
   /** The launch option that gates this provider; when false, the provider is skipped. */
   controllingOption?: string;
-  start(client: Client): void;
+  /** One-time: receive the capture-pipeline dependencies (Android constructor-init). */
+  init(init: CaptureProviderInit): void;
+  /** (Re)configure from launch options and begin capturing; may be cycled across launches. */
+  start(options: OptionsContainer): void;
   stop(): void;
 }
 

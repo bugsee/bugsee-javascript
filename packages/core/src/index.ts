@@ -31,6 +31,7 @@ export type {
   CaptureEntryFactory,
   CaptureExporter,
   CaptureProvider,
+  CaptureProviderInit,
   CaptureSnapshot,
   CaptureStore,
   Client,
@@ -41,6 +42,7 @@ export type {
   Operation,
   OperationDispatcher,
   OperationObserver,
+  OptionsContainer,
   StoredEntry,
 } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
@@ -66,6 +68,7 @@ export {
   type MemoryCaptureStoreOptions,
 } from './memory-capture-store';
 export { createOperationDispatcher } from './operation-dispatcher';
+export { createOptionsContainer } from './options';
 export {
   createRateLimiter,
   type RateLimiter,

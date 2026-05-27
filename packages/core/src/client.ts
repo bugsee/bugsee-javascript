@@ -11,7 +11,7 @@ import { createCaptureCoordinator, type OptionGate } from './capture-coordinator
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import { type Clock, createSystemClock } from './clock';
-import type { CaptureStore, Client } from './contracts';
+import type { CaptureProviderInit, CaptureStore, Client, OptionsContainer } from './contracts';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
@@ -19,6 +19,7 @@ import { createExtensionRegistry } from './extension-registry';
 import { createEventHubs, type LogEvent } from './hubs';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
+import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
@@ -128,6 +129,8 @@ export interface CreateClientOptions {
   tickIntervalMs?: number;
   /** Which capture/detection options are enabled (gates the coordinators). Default: all enabled. */
   isEnabled?: OptionGate;
+  /** Launch options passed to each provider's start(options) for per-launch reconfiguration. */
+  launchOptions?: OptionsContainer;
   /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
   captureRateLimit?: RateLimiterOptions;
   /** Upload pipeline (built by the platform from BugseeApi/BundleUploader); enables flush/stop drain. */
@@ -166,7 +169,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     });
   const captureAggregator = createCaptureAggregator(captureStore);
   const captureExporter = createCaptureExporter(captureStore);
-  const captureCoordinator = createCaptureCoordinator();
+  // The capture-pipeline deps every provider gets once at registration (Android
+  // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
+  const captureProviderInit: CaptureProviderInit = { hubs, operations, captureAggregator };
+  const captureCoordinator = createCaptureCoordinator(captureProviderInit);
+  const launchOptions = options.launchOptions ?? createOptionsContainer();
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
@@ -281,7 +288,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
-        captureCoordinator.start(context, isEnabled);
+        captureCoordinator.start(launchOptions, isEnabled);
       } catch (error) {
         onError(error);
       }

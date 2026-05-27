@@ -11,6 +11,7 @@ import type {
   DetectionProvider,
 } from './contracts';
 import { createMemoryCaptureStore } from './memory-capture-store';
+import { createOptionsContainer } from './options';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
@@ -35,6 +36,7 @@ declare module '@bugsee/types' {
 
 const captureProvider = (name: string): CaptureProvider => ({
   name,
+  init: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
 });
@@ -225,6 +227,7 @@ describe('createClient — capture entry points', () => {
 const gatedCaptureProvider = (name: string, controllingOption?: string): CaptureProvider => ({
   name,
   ...(controllingOption !== undefined ? { controllingOption } : {}),
+  init: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
 });
@@ -260,6 +263,26 @@ describe('createClient — lifecycle', () => {
     client.launch();
     expect(client.isLaunched()).toBe(true);
     expect(provider.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('inits a registered capture provider with the capture pipeline (hubs/operations/aggregator)', () => {
+    const client = createClient();
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    expect(provider.init).toHaveBeenCalledTimes(1);
+    const init = vi.mocked(provider.init).mock.calls[0]?.[0];
+    expect(init?.hubs).toBe(client.hubs);
+    expect(init?.operations).toBe(client.operations);
+    expect(init?.captureAggregator).toBe(client.captureAggregator);
+  });
+
+  it('passes the configured launchOptions to each capture provider on start', () => {
+    const launchOptions = createOptionsContainer({ captureNetworkBodySizeLimit: 4096 });
+    const client = createClient({ launchOptions });
+    const provider = gatedCaptureProvider('net');
+    client.addCaptureProvider(provider);
+    client.launch();
+    expect(provider.start).toHaveBeenCalledWith(launchOptions);
   });
 
   it('launch starts detection providers', () => {
@@ -361,6 +384,7 @@ describe('createClient — lifecycle', () => {
 
 const throwingCaptureProvider = (name: string, err: unknown): CaptureProvider => ({
   name,
+  init: vi.fn(),
   start: vi.fn(() => {
     throw err;
   }),
