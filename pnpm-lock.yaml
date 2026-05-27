@@ -208,6 +208,13 @@ importers:
       '@bugsee/node-utils':
         specifier: workspace:*
         version: link:../node-utils
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
 
   packages/node-utils:
     dependencies:
