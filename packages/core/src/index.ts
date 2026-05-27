@@ -78,6 +78,7 @@ export {
   type ReportingTriggerType,
 } from './reporting';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export { parseV8Stack, type StackFrame } from './stack';
 export type {
   BugseeApi,
   Bundle,
