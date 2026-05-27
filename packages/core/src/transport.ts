@@ -2,9 +2,38 @@ import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import type { BugseeError } from './errors';
 
-// Transport split into three roles (design §7.5). The control/data-plane implementations are
-// platform-tier (fetch / node http); core owns only these contracts and the UploadPipeline
-// orchestrator (upload-pipeline.ts). Type-only; validated by transport.test-d.ts.
+// Transport split into three roles (design §7.5). The BugseeApi / BundleUploader / UploadPipeline
+// LOGIC is platform-agnostic, so core owns the implementations (bugsee-api.ts, bundle-uploader.ts,
+// upload-pipeline.ts); only the raw HTTP primitive (HttpTransport below) is platform-specific —
+// node:http(s) in @bugsee/node, fetch/XHR in @bugsee/browser. Platforms supply the transport; they
+// do NOT reimplement the api/uploader. Contracts are type-only; validated by transport.test-d.ts.
+
+/**
+ * The minimal, runtime-portable HTTP primitive each platform supplies (the only platform-specific
+ * piece of the transport). node-utils `httpRequest` implements this over node:http(s); a browser
+ * tier wraps fetch/XHR. Non-2xx resolves (callers map status); only network errors/timeouts reject.
+ */
+export type HttpTransport = (url: string, options?: HttpRequestOptions) => Promise<HttpResponse>;
+
+export interface HttpRequestOptions {
+  /** HTTP method. Default 'GET'. */
+  method?: string;
+  /** Request headers. */
+  headers?: Record<string, string>;
+  /** Request body. */
+  body?: Uint8Array | string;
+  /** Abort + reject after this many ms. */
+  timeoutMs?: number;
+}
+
+export interface HttpResponse {
+  /** HTTP status code. */
+  status: number;
+  /** Response headers (lowercased keys). */
+  headers: Record<string, string | string[] | undefined>;
+  /** Response body bytes. */
+  body: Uint8Array;
+}
 
 /** Result of POST /v2/issues — the signed PUT url + identifiers (§7.5/§8.1). */
 export interface IssueCreateResult {

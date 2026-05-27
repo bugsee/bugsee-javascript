@@ -2,7 +2,9 @@
 // EventEmitter, Interceptor/CaptureProvider/DetectionProvider + extension registry, ring buffers,
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
+export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+export { createBundleUploader } from './bundle-uploader';
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { createCaptureAggregator } from './capture-aggregator';
 export {
@@ -79,6 +81,9 @@ export type {
   Bundle,
   BundleUploader,
   DropReason,
+  HttpRequestOptions,
+  HttpResponse,
+  HttpTransport,
   IssueCreateResult,
   OutcomeCategory,
   PutBundleOptions,

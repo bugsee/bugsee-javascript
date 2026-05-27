@@ -7,6 +7,8 @@ import type {
   BugseeApi,
   Bundle,
   BundleUploader,
+  HttpResponse,
+  HttpTransport,
   IssueCreateResult,
   PutResult,
   UploadResult,
@@ -47,7 +49,16 @@ const uploader: BundleUploader = {
 const bundle: Bundle = { request, body: new Uint8Array([1]), fileName: 'a.bundle.zip' };
 const uploadOk: UploadResult = { ok: true, issueId, recordingId };
 
+// The platform-supplied HTTP primitive — options optional, resolves to {status, headers, body}.
+const transport: HttpTransport = async (_url, _options) => ({
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+  body: new Uint8Array(),
+});
+
 // --- Negatives ---
+// @ts-expect-error `status` is required on HttpResponse (headers/body present)
+export const badResponse: HttpResponse = { headers: {}, body: new Uint8Array() };
 // @ts-expect-error `issueId` is required on IssueCreateResult
 export const badIssue: IssueCreateResult = { endpoint: 'x', recordingId };
 // @ts-expect-error a failed PutResult requires `status` (retryable present, so only status is missing)
@@ -64,6 +75,7 @@ export const badApi: BugseeApi = {
 export type TransportAssertions = [
   typeof api,
   typeof uploader,
+  typeof transport,
   typeof bundle,
   typeof issueResult,
   typeof okPut,
