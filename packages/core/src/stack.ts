@@ -61,3 +61,17 @@ export function parseV8Stack(stack: string): StackFrame[] {
   }
   return frames;
 }
+
+/** Render scrubbed frames back into a stack string (one `at fn (file:line:col)` line per frame). */
+export function formatStack(frames: StackFrame[]): string {
+  return frames
+    .map((frame) => {
+      const fn = frame.function ?? '<anonymous>';
+      const location =
+        frame.line !== undefined && frame.column !== undefined
+          ? `${frame.file}:${frame.line}:${frame.column}`
+          : `${frame.file}`;
+      return `    at ${fn} (${location})`;
+    })
+    .join('\n');
+}

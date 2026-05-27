@@ -3,6 +3,11 @@
 // docs/implementation-standards.md.
 
 export {
+  createUncaughtExceptionProvider,
+  createUnhandledRejectionProvider,
+  type ProcessEvents,
+} from './detection-providers';
+export {
   buildNodeEnvironment,
   type NodeEnvironmentInput,
   realSystemProbe,

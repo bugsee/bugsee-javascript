@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseV8Stack } from './stack';
+import { formatStack, parseV8Stack } from './stack';
 
 describe('parseV8Stack', () => {
   it('parses a typical Node stack into structured frames', () => {
@@ -63,5 +63,32 @@ describe('parseV8Stack', () => {
 
   it('returns an empty array for an empty string', () => {
     expect(parseV8Stack('')).toEqual([]);
+  });
+});
+
+describe('formatStack', () => {
+  it('renders frames with function, file, line and column', () => {
+    expect(formatStack([{ function: 'doWork', file: '/a.js', line: 10, column: 5 }])).toBe(
+      '    at doWork (/a.js:10:5)',
+    );
+  });
+
+  it('uses <anonymous> for a frame without a function name', () => {
+    expect(formatStack([{ file: '/a.js', line: 1, column: 2 }])).toBe(
+      '    at <anonymous> (/a.js:1:2)',
+    );
+  });
+
+  it('omits line/column for a frame that has none', () => {
+    expect(formatStack([{ function: 'f', file: '<anonymous>' }])).toBe('    at f (<anonymous>)');
+  });
+
+  it('joins multiple frames with newlines and round-trips a parsed stack', () => {
+    const stack = '    at a (/x.js:1:2)\n    at b (/y.js:3:4)';
+    expect(formatStack(parseV8Stack(stack))).toBe(stack);
+  });
+
+  it('returns an empty string for no frames', () => {
+    expect(formatStack([])).toBe('');
   });
 });
