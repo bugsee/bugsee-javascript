@@ -34,6 +34,7 @@ export type {
   Client,
   DetectionProvider,
   Extension,
+  FileStorageAdapter,
   Interceptor,
   Operation,
   OperationDispatcher,
@@ -51,6 +52,7 @@ export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
+export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 export {
   createEventHubs,
   type EventHubs,

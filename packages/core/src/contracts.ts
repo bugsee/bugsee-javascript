@@ -94,6 +94,23 @@ export interface CaptureStore {
 }
 
 /**
+ * The minimal file-system primitive a file-based runtime supplies (node:fs in @bugsee/node, Deno.* in
+ * @bugsee/deno, electron-main) so the file-backed CaptureStore LOGIC can be shared via
+ * createFileCaptureStore — only this primitive is platform-specific. Streams are named (one per file
+ * type); the store owns the JSONL record encoding. Synchronous: local file-system ops are sync.
+ */
+export interface FileStorageAdapter {
+  /** Append text to the named stream, creating it if absent. */
+  append(name: string, data: string): void;
+  /** Read the named stream as text, or undefined if it does not exist. */
+  read(name: string): string | undefined;
+  /** Names of all streams currently present. */
+  names(): string[];
+  /** Remove the named stream; a no-op if absent. */
+  remove(name: string): void;
+}
+
+/**
  * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity). Data flows
  * ONE direction: accept an entry → transform (entry.serialize()) → route the record to the
  * CaptureStore. Read-back is deliberately NOT here — it belongs to CaptureExporter.
