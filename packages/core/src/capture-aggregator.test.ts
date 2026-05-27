@@ -56,7 +56,7 @@ describe('createCaptureAggregator', () => {
 
   // Integration: write via the aggregator, read back via the exporter over the same store.
   it('round-trips entries through the in-memory store + exporter', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const aggregator = createCaptureAggregator(store);
     const exporter = createCaptureExporter(store);
     aggregator.addEntry(new CaptureDataEntryBase('log', 1, { m: 'hi' }));

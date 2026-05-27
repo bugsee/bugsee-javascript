@@ -66,7 +66,7 @@ describe('createClient — wiring', () => {
   });
 
   it('exposes a working capture aggregator', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
     expect((await createCaptureExporter(store).drain()).get('log')).toHaveLength(1);
@@ -132,7 +132,7 @@ describe('createClient — identity & attributes', () => {
 
 describe('createClient — capture entry points', () => {
   it('addBreadcrumb pushes a breadcrumbs entry stamped from the clock', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'clicked', category: 'ui' });
     const entry = await firstEntry(store, 'breadcrumbs');
@@ -141,7 +141,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('addBreadcrumb honors an explicit timestamp', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'x', timestamp: 42 });
     const entry = await firstEntry(store, 'breadcrumbs');
@@ -150,7 +150,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('log pushes a log entry with default level info and clock timestamp', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('hello');
     expect((await firstEntry(store, 'log'))?.data).toEqual({
@@ -162,7 +162,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('log honors an explicit level and timestamp', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('boom', 'error', 7);
     expect((await firstEntry(store, 'log'))?.data).toEqual({
@@ -174,7 +174,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('event pushes an events.user entry with params', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.event('checkout', { total: 9 });
     expect((await firstEntry(store, 'events.user'))?.data).toEqual({
@@ -185,7 +185,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('event omits params when not provided', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.event('opened');
     expect((await firstEntry(store, 'events.user'))?.data).toEqual({
@@ -195,7 +195,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('trace pushes a traces.user entry with name and value', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.trace('fps', 60);
     expect((await firstEntry(store, 'traces.user'))?.data).toEqual({
@@ -206,7 +206,7 @@ describe('createClient — capture entry points', () => {
   });
 
   it('routes each entry to its own file type', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'b' });
     client.log('l');

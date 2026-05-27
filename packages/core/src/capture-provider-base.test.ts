@@ -57,7 +57,7 @@ describe('CaptureProviderBase', () => {
 
   it('routes addEntry to the client aggregator', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     provider.start(client);
     provider.pushLog();
@@ -66,7 +66,7 @@ describe('CaptureProviderBase', () => {
 
   it('capture() builds an entry of the given type/timestamp/data and routes it', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     provider.start(client);
     client.hubs.network.emit(netEvent(99));
@@ -84,7 +84,7 @@ describe('CaptureProviderBase', () => {
 
   it('detaches the aggregator on stop (subsequent entries are not routed) and calls onStop', async () => {
     const provider = new NetworkProvider();
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     provider.start(client);
     provider.stop();
@@ -105,7 +105,7 @@ describe('CaptureProviderBase', () => {
 
   // Integration: the base provider works through the real capture coordinator + client.
   it('captures hub events into the aggregator when started via the coordinator', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     const coordinator = createCaptureCoordinator();
     coordinator.addProvider(new NetworkProvider());
@@ -116,7 +116,7 @@ describe('CaptureProviderBase', () => {
   });
 
   it('a coordinator-disabled provider does not subscribe, so nothing is captured', async () => {
-    const store = createMemoryCaptureStore();
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
     const coordinator = createCaptureCoordinator();
     const provider = new NetworkProvider();

@@ -95,6 +95,8 @@ export interface CreateClientOptions {
   clock?: Clock;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
+  /** Recording window in seconds for the default in-memory store (design maxRecordingTime). Default 60. */
+  maxRecordingTime?: number;
   /** Which capture/detection options are enabled (gates the coordinators). Default: all enabled. */
   isEnabled?: OptionGate;
   /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
@@ -125,8 +127,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const hubs = createEventHubs(onError);
   const operations = createOperationDispatcher(onError);
   // One store, two directions (§16): the aggregator writes (serialize + route), the exporter reads
-  // (drain + deserialize) at trigger time.
-  const captureStore = options.captureStore ?? createMemoryCaptureStore();
+  // (drain + deserialize) at trigger time. The default in-memory store shares the Client's clock and
+  // recording window so entries and the time-based retention agree on "now".
+  const captureStore =
+    options.captureStore ??
+    createMemoryCaptureStore({
+      clock,
+      maxRecordingTimeMs: (options.maxRecordingTime ?? 60) * 1000,
+    });
   const captureAggregator = createCaptureAggregator(captureStore);
   const captureExporter = createCaptureExporter(captureStore);
   const captureCoordinator = createCaptureCoordinator();
