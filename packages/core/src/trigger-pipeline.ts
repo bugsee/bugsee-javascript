@@ -7,11 +7,11 @@ import type { Bundle, UploadPipeline, UploadResult } from './transport';
 // 2); requests beyond the bound are dropped. This is the `alreadyAssembling` guard — concurrent
 // captures during assembly land in the NEXT bundle because each assembly snapshots fresh.
 //
-// The assembly step (snapshot aggregator → build request.json + manifest → serialize → zip → Bundle)
-// is injected, since it depends on environment/options owned by the Client.
+// The assembly step (drain the CaptureExporter → build request.json + manifest → serialize → zip →
+// Bundle) is injected, since it depends on environment/options owned by the Client.
 
 export interface TriggerPipelineOptions {
-  /** Assemble a bundle for a reporting request (snapshots the aggregator, builds request/files/zip). */
+  /** Assemble a bundle for a reporting request (drains the CaptureExporter, builds request/files/zip). */
   assemble: (request: ReportingRequest) => Bundle | Promise<Bundle>;
   uploadPipeline: UploadPipeline;
   /** Max requests queued behind the in-flight assembly before further ones drop. Default 2. */

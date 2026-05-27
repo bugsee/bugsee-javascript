@@ -6,7 +6,7 @@ import type { AttributeValue, IssueType, SeverityName } from '@bugsee/types';
 // pipeline assembles it into request.json + a bundle. This replaces the lightweight TriggerHint.
 //
 // Android's filesystem/Bitmap/encryption/disk-stage machinery is platform-specific and intentionally
-// omitted here — the JS v3 bundle path is in-memory (snapshot aggregator → request.json → zip).
+// omitted here — the JS v3 bundle path is in-memory (CaptureExporter.drain() → request.json → zip).
 
 /** How a report was triggered (Android ReportingSource.ReportingTriggerType). */
 export type ReportingTriggerType =
