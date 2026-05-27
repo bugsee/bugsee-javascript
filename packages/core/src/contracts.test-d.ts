@@ -9,6 +9,7 @@ import type {
   CaptureEntryFactory,
   CaptureExporter,
   CaptureProvider,
+  CaptureSnapshot,
   CaptureStore,
   Client,
   DetectionProvider,
@@ -54,11 +55,16 @@ const dispatcher: OperationDispatcher = {
   onOperation: noop,
 };
 
-// The store persists serialized records; reads drain raw StoredEntry, not deserialized entries.
-const captureStore: CaptureStore = {
-  add: (_record: StoredEntry) => {},
+// The store routes records into the current part; snapshot() freezes them; tick() rotates + GCs.
+const captureSnapshot: CaptureSnapshot = {
   stream: async function* () {},
   drainAll: async () => new Map<FileType, StoredEntry[]>(),
+  release: noop,
+};
+const captureStore: CaptureStore = {
+  add: (_record: StoredEntry) => {},
+  tick: (_nowMs: number) => {},
+  snapshot: () => captureSnapshot,
   clear: noop,
 };
 
@@ -141,11 +147,16 @@ export const badEntryNoSerialize: CaptureDataEntry = {
 };
 // @ts-expect-error `addEntry` is required on CaptureAggregator (addEntries/clear present)
 export const badAggregator: CaptureAggregator = { addEntries: noop, clear: noop };
-// @ts-expect-error `stream` is required on CaptureStore (add/drainAll/clear present)
+// @ts-expect-error `tick` is required on CaptureStore (add/snapshot/clear present)
 export const badStore: CaptureStore = {
   add: noop,
-  drainAll: async () => new Map<FileType, StoredEntry[]>(),
+  snapshot: () => captureSnapshot,
   clear: noop,
+};
+// @ts-expect-error `release` is required on CaptureSnapshot (stream/drainAll present)
+export const badSnapshot: CaptureSnapshot = {
+  stream: async function* () {},
+  drainAll: async () => new Map<FileType, StoredEntry[]>(),
 };
 // @ts-expect-error `drain` is required on CaptureExporter (stream present)
 export const badExporter: CaptureExporter = { stream: async function* () {} };
@@ -167,6 +178,7 @@ export type ContractAssertions = [
   typeof storedEntry,
   typeof dispatcher,
   typeof captureStore,
+  typeof captureSnapshot,
   typeof aggregator,
   typeof exporter,
   typeof exampleClient,

@@ -77,20 +77,40 @@ export interface StoredEntry {
 }
 
 /**
- * The configurable storage backend the aggregator routes serialized records to (Android
- * CaptureFileStorage parity). Runtime-specific: in-memory (lambda/edge), on disk (Node/Bun),
- * IndexedDB (browser). `add` is fire-and-forget — it must never block or throw the capture path.
- * The reads (used only by CaptureExporter) drain raw serialized records, NOT deserialized entries.
+ * The live, partitioned capture store (Android CapturePartManager paradigm). Records are routed into
+ * the current 1-second PART; `tick(nowMs)` rotates the current part and evicts parts outside the
+ * recording window (so the live store is always ~the last maxRecordingTime seconds); `snapshot()`
+ * freezes the current in-window records into a CaptureSnapshot for export, divorced from the rolling
+ * window — capture keeps writing + GC'ing while the snapshot is read, then released. Runtime-specific:
+ * in-memory (lambda/edge), on disk (Node/Bun via chunk-dirs), IndexedDB (browser). `add` is
+ * fire-and-forget — it must never block or throw the capture path.
  */
 export interface CaptureStore {
-  /** Persist a serialized record under its file type. Non-blocking; failures are the store's concern. */
+  /** Route a serialized record into the current part. Non-blocking; failures are the store's concern. */
   add(record: StoredEntry): void;
-  /** Drain stored records one-by-one then clear — memory-light for disk/IDB (Android stream reader). */
-  stream(): AsyncIterableIterator<StoredEntry>;
-  /** Drain all stored records into memory grouped by file type, then clear. */
-  drainAll(): Promise<Map<FileType, StoredEntry[]>>;
-  /** Discard all stored records without reading them. */
+  /**
+   * Close the current part, open a new one, and evict parts outside the recording window. Called
+   * ~every second with the current wall-clock ms (driven by the Client; edge/lambda may skip it).
+   */
+  tick(nowMs: number): void;
+  /** Freeze the current in-window records into a snapshot for export; the live store keeps rolling. */
+  snapshot(): CaptureSnapshot;
+  /** Discard all live records. */
   clear(): void;
+}
+
+/**
+ * A frozen, read-once view of captured records (Android snapshot parity), divorced from the live
+ * store's rolling window so capture continues during export. Read it (stream one-by-one, or drainAll
+ * grouped by file type), then release() to delete its frozen copy once the bundle is built.
+ */
+export interface CaptureSnapshot {
+  /** Stream the snapshot's records one-by-one (oldest-to-newest across parts). */
+  stream(): AsyncIterableIterator<StoredEntry>;
+  /** Read all snapshot records grouped by file type. */
+  drainAll(): Promise<Map<FileType, StoredEntry[]>>;
+  /** Delete the snapshot's frozen copy; called after the bundle is built. */
+  release(): void;
 }
 
 /**
@@ -125,15 +145,15 @@ export interface CaptureAggregator {
 }
 
 /**
- * Reads stored records back, deserializes them (via a per-type CaptureEntryFactory) and returns them
- * in the requested format (Android CaptureExporter / CaptureDataEntryStreamReader parity): stream()
- * one-by-one (default, memory-light) or drain() all-at-once grouped by file type. Both consume
- * (clear) the underlying store.
+ * Reads captured data back for export (Android CaptureExporter parity). Internally it takes a
+ * CaptureSnapshot of the store, deserializes its records (via a per-type CaptureEntryFactory) and
+ * returns them streaming (one-by-one) or all-at-once (grouped by file type), then releases the
+ * snapshot — the live store keeps rolling throughout (no drain-on-read).
  */
 export interface CaptureExporter {
-  /** Stream deserialized entries one-by-one (then the store is cleared). */
+  /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot. */
   stream(): AsyncIterableIterator<CaptureDataEntry>;
-  /** Read + deserialize all stored entries grouped by file type, then clear (§7.7 trigger snapshot). */
+  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7). */
   drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
 }
 

@@ -1,87 +1,70 @@
-import type { FileType } from '@bugsee/protocol';
+import { createRecordSnapshot } from './capture-snapshot';
 import { type Clock, createSystemClock } from './clock';
-import type { CaptureStore, StoredEntry } from './contracts';
-import { createRingBuffer, type RingBuffer } from './ring-buffer';
+import type { CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
 
-// In-memory CaptureStore: a bounded ring buffer per file-type holding serialized records. The default
-// backend, and the only option on runtimes without persistent storage (lambda/edge). Retention is
-// TIME-based (design `maxRecordingTime`, default 60s — the bundle is the last N seconds, matching
-// Android): the recording window is applied at READ time, now-relative — drain/stream drop records
-// older than `now - maxRecordingTime`, so an idle-then-trigger bundle is still the last N seconds.
-// `defaultCapacity` is the count safety bound that caps memory between reads (burst protection);
-// breadcrumbs use a count cap (maxBreadcrumbs) via `capacities`. Node/Bun (disk) and browser
-// (IndexedDB) ship their own stores.
+// In-memory CaptureStore implemented as an Android-style PartManager: captured records accumulate in
+// the current 1-second PART; tick(now) closes it, opens a new one, and evicts parts outside the
+// recording window (default 60s) — so the live store is always ~the last maxRecordingTime seconds.
+// snapshot() freezes the current parts' records into a CaptureSnapshot for export, divorced from the
+// rolling window (a flat copy of record refs — records are immutable, so capture keeps writing while
+// the snapshot is read). The default backend, and the only option on runtimes without persistent
+// storage (lambda/edge). Node/Bun (disk) and browser (IndexedDB) ship their own part-based stores.
+//
+// (Per-type count caps — maxBreadcrumbs — and a maxDataSize byte bound are secondary memory bounds,
+// not yet implemented here.)
+
+const PART_DURATION_MS = 1000;
+
+interface Part {
+  startTimestamp: number;
+  /** undefined while the part is open (the current part). */
+  endTimestamp: number | undefined;
+  records: StoredEntry[];
+}
 
 export interface MemoryCaptureStoreOptions {
-  /** Count safety cap per file-type with no override (burst bound on top of the time window). Default 1000. */
-  defaultCapacity?: number;
-  /** Per-file-type count caps (e.g. breadcrumbs: maxBreadcrumbs). */
-  capacities?: Partial<Record<FileType, number>>;
-  /** Time-window retention in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
+  /** Recording window in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
   maxRecordingTimeMs?: number;
-  /** Time source for the retention window; injectable for tests. Default system clock. */
+  /** Time source for the initial part / clear; injectable for tests. Default system clock. */
   clock?: Clock;
 }
 
 export function createMemoryCaptureStore(options?: MemoryCaptureStoreOptions): CaptureStore {
-  const defaultCapacity = options?.defaultCapacity ?? 1000;
-  const capacities = options?.capacities ?? {};
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
   const clock = options?.clock ?? createSystemClock();
-  const buffers = new Map<FileType, RingBuffer<StoredEntry>>();
 
-  /** Records with a timestamp below this are out of the recording window. */
-  const cutoff = (): number => clock.wallNow() - maxRecordingTimeMs;
+  // Oldest-first; the last part is the current (open) part.
+  let parts: Part[] = [{ startTimestamp: clock.wallNow(), endTimestamp: undefined, records: [] }];
 
-  const bufferFor = (type: FileType): RingBuffer<StoredEntry> => {
-    let buffer = buffers.get(type);
-    if (buffer === undefined) {
-      buffer = createRingBuffer<StoredEntry>(capacities[type] ?? defaultCapacity);
-      buffers.set(type, buffer);
-    }
-    return buffer;
-  };
+  const currentPart = (): Part => parts[parts.length - 1] as Part;
 
   return {
     add(record: StoredEntry): void {
-      // Push (count-capped by the ring buffer); the time window is applied at read time (below).
-      bufferFor(record.type).push(record);
+      currentPart().records.push(record);
     },
 
-    stream(): AsyncIterableIterator<StoredEntry> {
-      // Atomic snapshot: drain every buffer now, keeping only records still within the window.
-      const oldest = cutoff();
-      const snapshot: StoredEntry[] = [];
-      for (const buffer of buffers.values()) {
-        for (const record of buffer.drain()) {
-          if (record.timestamp >= oldest) {
-            snapshot.push(record);
-          }
-        }
+    tick(nowMs: number): void {
+      currentPart().endTimestamp = nowMs;
+      parts.push({ startTimestamp: nowMs, endTimestamp: undefined, records: [] });
+      // Evict closed parts whose end is outside the window (keep one extra part, Android parity).
+      const cutting = nowMs - maxRecordingTimeMs - PART_DURATION_MS;
+      while (
+        parts.length > 0 &&
+        parts[0]?.endTimestamp !== undefined &&
+        parts[0].endTimestamp < cutting
+      ) {
+        parts.shift();
       }
-      return (async function* (): AsyncIterableIterator<StoredEntry> {
-        for (const record of snapshot) {
-          yield record;
-        }
-      })();
     },
 
-    drainAll(): Promise<Map<FileType, StoredEntry[]>> {
-      const oldest = cutoff();
-      const result = new Map<FileType, StoredEntry[]>();
-      for (const [type, buffer] of buffers) {
-        const records = buffer.drain().filter((record) => record.timestamp >= oldest);
-        if (records.length > 0) {
-          result.set(type, records);
-        }
-      }
-      return Promise.resolve(result);
+    snapshot(): CaptureSnapshot {
+      // Flat copy of record refs across parts (chronological); records are immutable, so the live
+      // store can keep rolling without affecting the snapshot.
+      return createRecordSnapshot(parts.flatMap((part) => part.records));
     },
 
     clear(): void {
-      for (const buffer of buffers.values()) {
-        buffer.clear();
-      }
+      parts = [{ startTimestamp: clock.wallNow(), endTimestamp: undefined, records: [] }];
     },
   };
 }

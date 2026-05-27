@@ -56,10 +56,8 @@ describe('createNodeFileStorageAdapter', () => {
     const b: StoredEntry = { type: 'network', timestamp: 2, serialized: '{"u":"x"}' };
     store.add(a);
     store.add(b);
-    const snap = await store.drainAll();
+    const snap = await store.snapshot().drainAll();
     expect(snap.get('log')).toEqual([a]);
     expect(snap.get('network')).toEqual([b]);
-    // drained → cleared
-    expect((await store.drainAll()).size).toBe(0);
   });
 });

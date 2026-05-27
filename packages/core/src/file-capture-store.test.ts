@@ -1,15 +1,17 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
+import type { Clock } from './clock';
 import type { FileStorageAdapter, StoredEntry } from './contracts';
-import { createFileCaptureStore } from './file-capture-store';
+import { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 
 const rec = (type: FileType, timestamp: number, serialized = '{}'): StoredEntry => ({
   type,
   timestamp,
   serialized,
 });
+const clockAt = (now: number): Clock => ({ wallNow: () => now, monotonicNow: () => 0 });
 
-// An in-memory fake FileStorageAdapter (a name→text map), so the store logic is tested without disk.
+// In-memory fake FileStorageAdapter (a name→text map), so the part logic is tested without disk.
 function fakeAdapter() {
   const streams = new Map<string, string>();
   const adapter: FileStorageAdapter = {
@@ -23,169 +25,136 @@ function fakeAdapter() {
   return { adapter, streams };
 }
 
-describe('createFileCaptureStore — add + drainAll', () => {
-  it('persists a record and reads it back grouped by file type', async () => {
+const mk = (adapter: FileStorageAdapter, over: FileCaptureStoreOptions = {}) =>
+  createFileCaptureStore(adapter, { clock: clockAt(10_000), ...over });
+
+describe('createFileCaptureStore — add + snapshot', () => {
+  it('persists records and snapshots them grouped by file type', async () => {
     const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    const r = rec('log', 1, '{"m":"hi"}');
-    store.add(r);
-    expect(await store.drainAll()).toEqual(new Map([['log', [r]]]));
+    const store = mk(adapter);
+    const log = rec('log', 10_000, '{"m":"hi"}');
+    const net = rec('network', 10_000, '{"u":"x"}');
+    store.add(log);
+    store.add(net);
+    const snap = await store.snapshot().drainAll();
+    expect(snap.get('log')).toEqual([log]);
+    expect(snap.get('network')).toEqual([net]);
   });
 
-  it('keeps same-type records in insertion order', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1));
-    store.add(rec('log', 2));
-    expect((await store.drainAll()).get('log')).toEqual([rec('log', 1), rec('log', 2)]);
-  });
-
-  it('routes records to separate streams by file type', async () => {
+  it('writes one file per (part, type), named <paddedPart>__<type>', () => {
     const { adapter, streams } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('network', 1));
-    store.add(rec('log', 2));
-    expect([...streams.keys()].sort()).toEqual(['log', 'network']);
-    const snap = await store.drainAll();
-    expect(snap.get('network')).toEqual([rec('network', 1)]);
-    expect(snap.get('log')).toEqual([rec('log', 2)]);
+    mk(adapter).add(rec('log', 10_000));
+    expect([...streams.keys()]).toEqual(['000000000000__log']);
   });
 
-  it('drainAll clears the streams (next drain is empty)', async () => {
-    const { adapter, streams } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1));
-    await store.drainAll();
-    expect(streams.size).toBe(0);
-    expect((await store.drainAll()).size).toBe(0);
-  });
-
-  it('omits a stream that holds no parseable records', async () => {
+  it('keeps same-type records in part order across a rotation', async () => {
     const { adapter } = fakeAdapter();
-    adapter.append('log', 'not-json\n'); // a corrupt-only stream
-    expect((await createFileCaptureStore(adapter).drainAll()).size).toBe(0);
-  });
-
-  it('skips a corrupt line but keeps the valid ones', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1, '{"m":"a"}'));
-    adapter.append('log', '{"t":2,"s": not-valid-json}\n'); // a complete but corrupt line
-    store.add(rec('log', 3, '{"m":"b"}'));
-    expect((await store.drainAll()).get('log')).toEqual([
-      rec('log', 1, '{"m":"a"}'),
-      rec('log', 3, '{"m":"b"}'),
+    const store = mk(adapter);
+    store.add(rec('log', 10_000));
+    store.tick(11_000);
+    store.add(rec('log', 11_000));
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([
+      rec('log', 10_000),
+      rec('log', 11_000),
     ]);
   });
 
-  it('skips a truncated trailing line (interrupted write)', async () => {
+  it('ignores files belonging to no active part (a leftover/evicted part)', async () => {
     const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1, '{"m":"a"}'));
-    adapter.append('log', '{"t":2,"s": trunc'); // crash mid-append: no trailing newline
-    expect((await store.drainAll()).get('log')).toEqual([rec('log', 1, '{"m":"a"}')]);
+    const store = mk(adapter);
+    store.add(rec('log', 10_000)); // part0 (active)
+    adapter.append('000000000099__log', '{"t":99,"s":"{}"}\n'); // a file for a part the store doesn't track
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
 
-  it('tolerates a listed stream that reads as undefined (removed mid-drain)', async () => {
-    const adapter: FileStorageAdapter = {
-      append: () => {},
-      read: () => undefined,
-      names: () => ['log'], // listed, but read returns undefined
-      remove: () => {},
-    };
-    expect((await createFileCaptureStore(adapter).drainAll()).size).toBe(0);
+  it('skips a corrupt line and a stray (non-part) file', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter);
+    store.add(rec('log', 10_000, '{"m":"a"}'));
+    adapter.append('000000000000__log', 'corrupt-not-json\n'); // a bad line in the part file
+    adapter.append('stray-file', 'whatever\n'); // not a part file (no "__")
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([
+      rec('log', 10_000, '{"m":"a"}'),
+    ]);
   });
 });
 
-describe('createFileCaptureStore — capacity', () => {
-  it('keeps only the newest defaultCapacity records per type', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter, { defaultCapacity: 2 });
-    store.add(rec('log', 1));
-    store.add(rec('log', 2));
-    store.add(rec('log', 3));
-    expect((await store.drainAll()).get('log')?.map((e) => e.timestamp)).toEqual([2, 3]);
-  });
-
-  it('applies a per-type capacity override', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter, {
-      defaultCapacity: 100,
-      capacities: { breadcrumbs: 1 },
-    });
-    store.add(rec('breadcrumbs', 1));
-    store.add(rec('breadcrumbs', 2));
-    expect((await store.drainAll()).get('breadcrumbs')?.map((e) => e.timestamp)).toEqual([2]);
-  });
-
-  it('is unbounded by default (keeps all records)', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    for (let i = 0; i < 50; i += 1) {
-      store.add(rec('log', i));
-    }
-    expect((await store.drainAll()).get('log')).toHaveLength(50);
-  });
-});
-
-describe('createFileCaptureStore — stream', () => {
-  it('yields records one-by-one across streams, then clears', async () => {
+describe('createFileCaptureStore — tick rotation + cleanup', () => {
+  it('deletes the files of parts outside the recording window on tick', async () => {
     const { adapter, streams } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1));
-    store.add(rec('network', 2));
-    store.add(rec('log', 3));
-    const seen: string[] = [];
-    for await (const r of store.stream()) {
-      seen.push(`${r.type}:${r.timestamp}`);
-    }
-    expect(seen).toEqual(['log:1', 'log:3', 'network:2']);
-    expect(streams.size).toBe(0);
+    const store = mk(adapter, { maxRecordingTimeMs: 2000 }); // cutting = now - 3000
+    store.add(rec('log', 10_000)); // part0
+    store.tick(11_000); // part0 closes @11000, part1 opens
+    store.add(rec('log', 11_000)); // part1
+    store.tick(15_000); // cutting 12000 → part0 (end 11000) evicted, its files removed
+    expect([...streams.keys()]).toEqual(['000000000001__log']); // only part1's file remains
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 11_000)]);
   });
 
-  it('applies capacity while streaming', async () => {
+  it('keeps a part whose end is exactly at the cutting edge (strict <)', async () => {
     const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter, { defaultCapacity: 1 });
-    store.add(rec('log', 1));
-    store.add(rec('log', 2));
-    const seen: number[] = [];
-    for await (const r of store.stream()) {
-      seen.push(r.timestamp);
-    }
-    expect(seen).toEqual([2]);
+    const store = mk(adapter, { maxRecordingTimeMs: 2000 });
+    store.add(rec('log', 10_000));
+    store.tick(12_000); // part0 end = 12000
+    store.tick(15_000); // cutting 12000; 12000 is NOT < 12000 → kept
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
+  });
+});
+
+describe('createFileCaptureStore — snapshot isolation', () => {
+  it('freezes the snapshot: capture after snapshot() does not change it', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter);
+    store.add(rec('log', 10_000));
+    const snap = store.snapshot();
+    store.add(rec('log', 10_001)); // after the snapshot
+    expect((await snap.drainAll()).get('log')).toEqual([rec('log', 10_000)]); // unchanged
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([
+      rec('log', 10_000),
+      rec('log', 10_001),
+    ]);
   });
 
-  it('tolerates a listed stream that reads as undefined while streaming', async () => {
+  it('release() empties the snapshot', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter);
+    store.add(rec('log', 10_000));
+    const snap = store.snapshot();
+    snap.release();
+    expect((await snap.drainAll()).size).toBe(0);
+  });
+
+  it('snapshot of an empty store yields nothing', async () => {
+    expect((await mk(fakeAdapter().adapter).snapshot().drainAll()).size).toBe(0);
+  });
+
+  it('works with default options (system clock, 60s window)', async () => {
+    const { adapter } = fakeAdapter();
+    const store = createFileCaptureStore(adapter); // no clock/window → defaults
+    store.add(rec('log', 10_000)); // no tick → current part never evicted
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
+  });
+
+  it('tolerates an active part file that reads as undefined (removed mid-snapshot)', async () => {
     const adapter: FileStorageAdapter = {
       append: () => {},
       read: () => undefined,
-      names: () => ['log'],
+      names: () => ['000000000000__log'], // part 0 is active, but its file reads undefined
       remove: () => {},
     };
-    const seen: unknown[] = [];
-    for await (const r of createFileCaptureStore(adapter).stream()) {
-      seen.push(r);
-    }
-    expect(seen).toEqual([]);
-  });
-
-  it('yields nothing for an empty store', async () => {
-    const { adapter } = fakeAdapter();
-    const seen: unknown[] = [];
-    for await (const r of createFileCaptureStore(adapter).stream()) {
-      seen.push(r);
-    }
-    expect(seen).toEqual([]);
+    expect((await mk(adapter).snapshot().drainAll()).size).toBe(0);
   });
 });
 
 describe('createFileCaptureStore — clear', () => {
-  it('removes all streams', async () => {
+  it('removes all files and keeps working afterwards', async () => {
     const { adapter, streams } = fakeAdapter();
-    const store = createFileCaptureStore(adapter);
-    store.add(rec('log', 1));
-    store.add(rec('network', 2));
+    const store = mk(adapter);
+    store.add(rec('log', 10_000));
+    store.add(rec('network', 10_000));
     store.clear();
     expect(streams.size).toBe(0);
+    store.add(rec('log', 10_001));
+    expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_001)]);
   });
 });

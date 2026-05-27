@@ -9,8 +9,12 @@ function fakeStore() {
   const added: StoredEntry[] = [];
   const store: CaptureStore = {
     add: (r) => added.push(r),
-    stream: vi.fn(async function* () {}),
-    drainAll: vi.fn(async () => new Map()),
+    tick: vi.fn(),
+    snapshot: vi.fn(() => ({
+      stream: async function* () {},
+      drainAll: async () => new Map(),
+      release: () => {},
+    })),
     clear: vi.fn(),
   };
   return { store, added };
@@ -54,7 +58,7 @@ describe('createCaptureAggregator', () => {
     expect(store.clear).toHaveBeenCalledTimes(1);
   });
 
-  // Integration: write via the aggregator, read back via the exporter over the same store.
+  // Integration: write via the aggregator, read back via the exporter (snapshot) over the same store.
   it('round-trips entries through the in-memory store + exporter', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const aggregator = createCaptureAggregator(store);
@@ -64,6 +68,7 @@ describe('createCaptureAggregator', () => {
     expect(
       out.get('log')?.map((e) => ({ type: e.type, timestamp: e.timestamp, data: e.data })),
     ).toEqual([{ type: 'log', timestamp: 1, data: { m: 'hi' } }]);
-    expect((await exporter.drain()).size).toBe(0); // drained
+    // The exporter snapshots (non-destructive): a second drain still sees the live data.
+    expect((await exporter.drain()).get('log')).toHaveLength(1);
   });
 });

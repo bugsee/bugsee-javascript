@@ -30,6 +30,7 @@ export type {
   CaptureEntryFactory,
   CaptureExporter,
   CaptureProvider,
+  CaptureSnapshot,
   CaptureStore,
   Client,
   DetectionProvider,

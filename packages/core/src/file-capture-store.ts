@@ -1,89 +1,108 @@
 import type { FileType } from '@bugsee/protocol';
-import type { CaptureStore, FileStorageAdapter, StoredEntry } from './contracts';
+import { createRecordSnapshot } from './capture-snapshot';
+import { type Clock, createSystemClock } from './clock';
+import type { CaptureSnapshot, CaptureStore, FileStorageAdapter, StoredEntry } from './contracts';
 
-// File-backed CaptureStore LOGIC, shared by every file-based runtime (node/bun/deno/electron-main).
-// Only the FileStorageAdapter primitive is platform-specific (node:fs / Deno.* / …) — this layout
-// (one append-only JSONL stream per file type, read-back + per-type capacity on export) is identical
-// everywhere, so it lives in core (mirrors how createMemoryCaptureStore and the transport impls are
-// shared). The store owns the record↔line encoding; the adapter just appends/reads/lists/removes.
+// File-backed CaptureStore as an Android-style PartManager (shared by node/bun/deno/electron via a
+// FileStorageAdapter). Records append to the current 1-second PART's per-type file (named
+// `<paddedPartNumber>__<type>`); tick(now) closes the current part, opens a new one, and deletes the
+// files of parts outside the recording window. snapshot() reads the current in-window parts' files
+// into an in-memory frozen CaptureSnapshot (the live files keep rolling + getting GC'd during export);
+// release() drops the in-memory copy. Part metadata (number/start/end) is tracked in memory.
+//
+// (Generations + session recovery and content-hash dedup for snapshots are the fuller-port follow-up;
+// a maxDataSize byte bound is also not yet implemented.)
 
-export interface FileCaptureStoreOptions {
-  /** Newest-N kept per file-type with no explicit override. Default Infinity (unbounded). */
-  defaultCapacity?: number;
-  /** Per-file-type capacity overrides (e.g. breadcrumbs: maxBreadcrumbs). */
-  capacities?: Partial<Record<FileType, number>>;
+const PART_DURATION_MS = 1000;
+const SEPARATOR = '__';
+
+const pad = (partNumber: number): string => String(partNumber).padStart(12, '0');
+const fileName = (partNumber: number, type: FileType): string =>
+  `${pad(partNumber)}${SEPARATOR}${type}`;
+
+interface FilePart {
+  number: number;
+  start: number;
+  /** undefined while the part is open (the current part). */
+  end: number | undefined;
 }
 
-interface Line {
-  t: number;
-  s: string;
+export interface FileCaptureStoreOptions {
+  /** Recording window in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
+  maxRecordingTimeMs?: number;
+  /** Time source for the initial part / clear; injectable for tests. Default system clock. */
+  clock?: Clock;
 }
 
 export function createFileCaptureStore(
   adapter: FileStorageAdapter,
   options?: FileCaptureStoreOptions,
 ): CaptureStore {
-  const defaultCapacity = options?.defaultCapacity ?? Number.POSITIVE_INFINITY;
-  const capacities = options?.capacities ?? {};
+  const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
+  const clock = options?.clock ?? createSystemClock();
+
+  let parts: FilePart[] = [{ number: 0, start: clock.wallNow(), end: undefined }];
+  let nextNumber = 1;
+  const current = (): FilePart => parts[parts.length - 1] as FilePart;
 
   const encode = (record: StoredEntry): string =>
     `${JSON.stringify({ t: record.timestamp, s: record.serialized })}\n`;
 
-  // Parse a stream's text into records for `type`, keeping only the newest `capacity` (corrupt or
-  // truncated lines — e.g. a partial write — are skipped).
-  const recordsOf = (type: FileType, text: string): StoredEntry[] => {
-    const records: StoredEntry[] = [];
-    for (const line of text.split('\n')) {
-      // Skip blank lines (incl. the trailing newline's empty tail) and any corrupt/truncated line —
-      // JSON.parse throws on all of them.
-      let parsed: Line;
-      try {
-        parsed = JSON.parse(line) as Line;
-      } catch {
-        continue;
+  const removePart = (partNumber: number): void => {
+    const prefix = `${pad(partNumber)}${SEPARATOR}`;
+    for (const name of adapter.names()) {
+      if (name.startsWith(prefix)) {
+        adapter.remove(name);
       }
-      records.push({ type, timestamp: parsed.t, serialized: parsed.s });
     }
-    const capacity = capacities[type] ?? defaultCapacity;
-    return records.length > capacity ? records.slice(records.length - capacity) : records;
   };
 
   return {
     add(record: StoredEntry): void {
-      adapter.append(record.type, encode(record));
+      adapter.append(fileName(current().number, record.type), encode(record));
     },
 
-    stream(): AsyncIterableIterator<StoredEntry> {
-      const names = adapter.names();
-      return (async function* (): AsyncIterableIterator<StoredEntry> {
-        // Memory-light: read + clear one stream at a time, yielding its records before the next.
-        for (const name of names) {
-          const text = adapter.read(name) ?? '';
-          adapter.remove(name);
-          for (const record of recordsOf(name as FileType, text)) {
-            yield record;
+    tick(nowMs: number): void {
+      current().end = nowMs;
+      parts.push({ number: nextNumber, start: nowMs, end: undefined });
+      nextNumber += 1;
+      const cutting = nowMs - maxRecordingTimeMs - PART_DURATION_MS;
+      while (parts.length > 0 && parts[0]?.end !== undefined && parts[0].end < cutting) {
+        removePart((parts.shift() as FilePart).number);
+      }
+    },
+
+    snapshot(): CaptureSnapshot {
+      // Read the in-window parts' files into memory, in part order (chronological per type). Only the
+      // active parts' files are read — a leftover/evicted/stray file matches no active part's prefix.
+      const flat: StoredEntry[] = [];
+      for (const part of parts) {
+        const prefix = `${pad(part.number)}${SEPARATOR}`;
+        for (const name of adapter.names()) {
+          if (!name.startsWith(prefix)) {
+            continue;
+          }
+          const type = name.slice(prefix.length) as FileType;
+          for (const line of (adapter.read(name) ?? '').split('\n')) {
+            let parsed: { t: number; s: string };
+            try {
+              parsed = JSON.parse(line) as { t: number; s: string };
+            } catch {
+              continue; // skip blank/corrupt/truncated lines
+            }
+            flat.push({ type, timestamp: parsed.t, serialized: parsed.s });
           }
         }
-      })();
-    },
-
-    drainAll(): Promise<Map<FileType, StoredEntry[]>> {
-      const result = new Map<FileType, StoredEntry[]>();
-      for (const name of adapter.names()) {
-        const text = adapter.read(name) ?? '';
-        adapter.remove(name);
-        const records = recordsOf(name as FileType, text);
-        if (records.length > 0) {
-          result.set(name as FileType, records);
-        }
       }
-      return Promise.resolve(result);
+      return createRecordSnapshot(flat);
     },
 
     clear(): void {
       for (const name of adapter.names()) {
         adapter.remove(name);
       }
+      parts = [{ number: nextNumber, start: clock.wallNow(), end: undefined }];
+      nextNumber += 1;
     },
   };
 }
