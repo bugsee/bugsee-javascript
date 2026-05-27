@@ -1,32 +1,13 @@
-import http, { type IncomingHttpHeaders } from 'node:http';
+import http from 'node:http';
 import https from 'node:https';
 import { gunzipSync, inflateSync } from 'node:zlib';
+import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 
-// Promisified node:http(s) request — the transport spine for @bugsee/node's BugseeApi and
-// BundleUploader (design §7.5). Uses node:http(s) rather than global fetch so proxy agents can be
+// The Node implementation of core's HttpTransport primitive (design §7.5) — the spine for core's
+// BugseeApi + BundleUploader. Uses node:http(s) rather than global fetch so proxy agents can be
 // injected later (§5/§6). Advertises gzip/deflate (§8.2) and transparently decompresses the
 // response. Non-2xx statuses resolve normally (the caller maps status → outcome); only network
-// errors and timeouts reject.
-
-export interface HttpRequestOptions {
-  /** HTTP method. Default 'GET'. */
-  method?: string;
-  /** Request headers. `accept-encoding` defaults to 'gzip, deflate' unless the caller sets it. */
-  headers?: Record<string, string>;
-  /** Request body. */
-  body?: Uint8Array | string;
-  /** Abort + reject after this many ms. Default 30_000. */
-  timeoutMs?: number;
-}
-
-export interface HttpResponse {
-  /** HTTP status code (0 if the response had none). */
-  status: number;
-  /** Response headers (node-lowercased keys). */
-  headers: IncomingHttpHeaders;
-  /** Decompressed response body bytes. */
-  body: Uint8Array;
-}
+// errors and timeouts reject. The transport contract (HttpRequestOptions/HttpResponse) lives in core.
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -45,7 +26,8 @@ function decode(body: Buffer, encoding: string | string[] | undefined): Buffer {
   return body;
 }
 
-export function httpRequest(url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> {
+// Typed as core's HttpTransport so drift from the contract is caught here, not only at call sites.
+export const httpRequest: HttpTransport = (url: string, options: HttpRequestOptions = {}) => {
   const { method = 'GET', headers = {}, body, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
   const parsed = new URL(url);
   const transport = transportFor(parsed.protocol);
@@ -96,4 +78,4 @@ export function httpRequest(url: string, options: HttpRequestOptions = {}): Prom
     }
     req.end();
   });
-}
+};

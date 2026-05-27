@@ -9,9 +9,5 @@ export {
   remove,
   writeFileSecure,
 } from './fs-storage';
-export {
-  type HttpRequestOptions,
-  type HttpResponse,
-  httpRequest,
-  transportFor,
-} from './http-request';
+// httpRequest implements core's HttpTransport; the transport contract types live in @bugsee/core.
+export { httpRequest, transportFor } from './http-request';
