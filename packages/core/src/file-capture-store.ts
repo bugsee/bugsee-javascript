@@ -3,22 +3,29 @@ import { createRecordSnapshot } from './capture-snapshot';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureSnapshot, CaptureStore, FileStorageAdapter, StoredEntry } from './contracts';
 
-// File-backed CaptureStore as an Android-style PartManager (shared by node/bun/deno/electron via a
-// FileStorageAdapter). Records append to the current 1-second PART's per-type file (named
-// `<paddedPartNumber>__<type>`); tick(now) closes the current part, opens a new one, and deletes the
-// files of parts outside the recording window. snapshot() reads the current in-window parts' files
-// into an in-memory frozen CaptureSnapshot (the live files keep rolling + getting GC'd during export);
-// release() drops the in-memory copy. Part metadata (number/start/end) is tracked in memory.
+// File-backed CaptureStore as an Android-style PartManager with per-launch GENERATIONS (shared by
+// node/bun/deno/electron via a FileStorageAdapter). Each launch is a generation (default the launch
+// wall-clock ms); its records append to the current 1-second PART's per-type file, named
+// `<gen13>__<part12>__<type>` (the FileStorageAdapter is a flat named-stream store, so generation +
+// part are encoded in the name). tick(now) closes the current part, opens a new one, and deletes the
+// files of parts outside the recording window. On construction a fresh launch DELETES other
+// generations' leftover capture files (a prior launch that died without a clean stop) — that stale
+// rolling-buffer data is discarded, NOT uploaded (crash recovery re-uploads persisted bundles, a
+// separate concern). snapshot() reads the current in-window parts into an in-memory frozen
+// CaptureSnapshot (the live files keep rolling + getting GC'd during export); release() drops the copy.
 //
-// (Generations + session recovery and content-hash dedup for snapshots are the fuller-port follow-up;
-// a maxDataSize byte bound is also not yet implemented.)
+// (Content-hash snapshot dedup is deferred — it deduplicates on-disk snapshot file COPIES, which this
+// in-memory-snapshot model does not produce. A maxDataSize byte bound is also not yet implemented.)
 
 const PART_DURATION_MS = 1000;
 const SEPARATOR = '__';
+const GEN_PAD = 13;
+const PART_PAD = 12;
+// A capture-part file: <13-digit generation>__<12-digit part>__<type>. Used to identify (and only
+// ever delete) capture files — foreign files (e.g. persisted crash bundles) never match it.
+const PART_FILE_RE = /^(\d{13})__\d{12}__.+$/;
 
-const pad = (partNumber: number): string => String(partNumber).padStart(12, '0');
-const fileName = (partNumber: number, type: FileType): string =>
-  `${pad(partNumber)}${SEPARATOR}${type}`;
+const pad = (value: number, width: number): string => String(value).padStart(width, '0');
 
 interface FilePart {
   number: number;
@@ -30,8 +37,12 @@ interface FilePart {
 export interface FileCaptureStoreOptions {
   /** Recording window in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
   maxRecordingTimeMs?: number;
-  /** Time source for the initial part / clear; injectable for tests. Default system clock. */
+  /** Time source for the initial part / clear and the default generation; injectable. Default system clock. */
   clock?: Clock;
+  /** This launch's generation id (groups its files). Default clock.wallNow() at construction. */
+  generation?: number;
+  /** On construction, delete OTHER generations' leftover capture files (prior launches). Default true. */
+  cleanOtherGenerations?: boolean;
 }
 
 export function createFileCaptureStore(
@@ -40,6 +51,24 @@ export function createFileCaptureStore(
 ): CaptureStore {
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
   const clock = options?.clock ?? createSystemClock();
+  const generation = options?.generation ?? clock.wallNow();
+  const genPrefix = `${pad(generation, GEN_PAD)}${SEPARATOR}`;
+
+  const partPrefix = (partNumber: number): string =>
+    `${genPrefix}${pad(partNumber, PART_PAD)}${SEPARATOR}`;
+  const fileName = (partNumber: number, type: FileType): string =>
+    `${partPrefix(partNumber)}${type}`;
+
+  // Fresh launch: discard prior launches' leftover capture files (other generations only). Foreign
+  // files (e.g. persisted crash bundles) never match PART_FILE_RE and are left untouched.
+  if (options?.cleanOtherGenerations !== false) {
+    for (const name of adapter.names()) {
+      const match = PART_FILE_RE.exec(name);
+      if (match !== null && Number(match[1]) !== generation) {
+        adapter.remove(name);
+      }
+    }
+  }
 
   let parts: FilePart[] = [{ number: 0, start: clock.wallNow(), end: undefined }];
   let nextNumber = 1;
@@ -49,7 +78,7 @@ export function createFileCaptureStore(
     `${JSON.stringify({ t: record.timestamp, s: record.serialized })}\n`;
 
   const removePart = (partNumber: number): void => {
-    const prefix = `${pad(partNumber)}${SEPARATOR}`;
+    const prefix = partPrefix(partNumber);
     for (const name of adapter.names()) {
       if (name.startsWith(prefix)) {
         adapter.remove(name);
@@ -73,11 +102,11 @@ export function createFileCaptureStore(
     },
 
     snapshot(): CaptureSnapshot {
-      // Read the in-window parts' files into memory, in part order (chronological per type). Only the
-      // active parts' files are read — a leftover/evicted/stray file matches no active part's prefix.
+      // Read the in-window parts' files into memory, in part order (chronological per type). Only this
+      // generation's active parts are read — an evicted/untracked/foreign file matches no part prefix.
       const flat: StoredEntry[] = [];
       for (const part of parts) {
-        const prefix = `${pad(part.number)}${SEPARATOR}`;
+        const prefix = partPrefix(part.number);
         for (const name of adapter.names()) {
           if (!name.startsWith(prefix)) {
             continue;
@@ -99,7 +128,9 @@ export function createFileCaptureStore(
 
     clear(): void {
       for (const name of adapter.names()) {
-        adapter.remove(name);
+        if (name.startsWith(genPrefix)) {
+          adapter.remove(name);
+        }
       }
       parts = [{ number: nextNumber, start: clock.wallNow(), end: undefined }];
       nextNumber += 1;
