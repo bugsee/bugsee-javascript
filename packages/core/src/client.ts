@@ -33,6 +33,31 @@ import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline'
 // `{ ok: false }`. Platform specifics (EnvironmentEnvelope factory, transport impls, DOM) are
 // injected.
 
+/**
+ * Periodic scheduler driving the capture-store tick (part rotation + out-of-window cleanup).
+ * Injectable for tests and for edge/lambda (where a long-lived timer is undesirable — pass a no-op).
+ * Defaults to the global setInterval/clearInterval.
+ */
+export interface Scheduler {
+  setInterval(callback: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+const globalTimers = globalThis as unknown as {
+  setInterval(cb: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+};
+const defaultScheduler: Scheduler = {
+  setInterval: (callback, ms) => {
+    const handle = globalTimers.setInterval(callback, ms);
+    // A background cleanup timer must not keep a Node process alive; unref where supported (no-op
+    // in the browser, where setInterval returns a number).
+    (handle as { unref?: () => void }).unref?.();
+    return handle;
+  },
+  clearInterval: (handle) => globalTimers.clearInterval(handle),
+};
+
 /** A breadcrumb payload (design §10). */
 export interface Breadcrumb {
   type?: string;
@@ -97,6 +122,10 @@ export interface CreateClientOptions {
   captureStore?: CaptureStore;
   /** Recording window in seconds for the default in-memory store (design maxRecordingTime). Default 60. */
   maxRecordingTime?: number;
+  /** Scheduler for the capture-store tick; injectable for tests/edge. Default global timers. */
+  scheduler?: Scheduler;
+  /** Capture-store tick interval in ms (part rotation + cleanup) while launched. Default 1000. */
+  tickIntervalMs?: number;
   /** Which capture/detection options are enabled (gates the coordinators). Default: all enabled. */
   isEnabled?: OptionGate;
   /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
@@ -140,7 +169,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const captureCoordinator = createCaptureCoordinator();
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
+  const scheduler = options.scheduler ?? defaultScheduler;
+  const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
+  let tickTimer: unknown = null;
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
@@ -260,6 +292,8 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       } catch (error) {
         onError(error);
       }
+      // Drive part rotation + out-of-window cleanup while launched (Android PartManager tick).
+      tickTimer = scheduler.setInterval(() => captureStore.tick(clock.wallNow()), tickIntervalMs);
     },
 
     stop(timeout?: number): Promise<boolean> {
@@ -267,6 +301,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         return Promise.resolve(true);
       }
       launched = false;
+      // launch() always sets tickTimer before returning, so it is set here (stop runs only if launched).
+      scheduler.clearInterval(tickTimer);
+      tickTimer = null;
       captureCoordinator.stop();
       detectionCoordinator.stop();
       return uploadPipeline?.flush(timeout) ?? Promise.resolve(true);

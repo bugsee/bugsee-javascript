@@ -2,9 +2,14 @@ import type { EnvironmentEnvelope, FileType, NetworkEvent } from '@bugsee/protoc
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { createClient } from './client';
+import { createClient, type Scheduler } from './client';
 import type { Clock } from './clock';
-import type { CaptureProvider, CaptureStore, DetectionProvider } from './contracts';
+import type {
+  CaptureProvider,
+  CaptureSnapshot,
+  CaptureStore,
+  DetectionProvider,
+} from './contracts';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
@@ -532,5 +537,92 @@ describe('createClient — report path (built trigger pipeline)', () => {
     const client = createClient({ uploadPipeline });
     expect(await client.logException(new Error('x'))).toEqual({ ok: false });
     expect(enqueue).not.toHaveBeenCalled();
+  });
+});
+
+function tickStore() {
+  const tick = vi.fn();
+  const store: CaptureStore = {
+    add: vi.fn(),
+    tick,
+    snapshot: () =>
+      ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release: () => {},
+      }) as CaptureSnapshot,
+    clear: vi.fn(),
+  };
+  return { store, tick };
+}
+
+function fakeScheduler() {
+  const calls: Array<{ cb: () => void; ms: number }> = [];
+  const cleared: unknown[] = [];
+  const scheduler: Scheduler = {
+    setInterval: (cb, ms) => {
+      calls.push({ cb, ms });
+      return `handle-${calls.length}`;
+    },
+    clearInterval: (handle) => {
+      cleared.push(handle);
+    },
+  };
+  return { scheduler, calls, cleared };
+}
+
+describe('createClient — capture-store tick timer', () => {
+  it('ticks the store on the scheduler interval (default 1000ms) while launched', () => {
+    const { store, tick } = tickStore();
+    const sched = fakeScheduler();
+    createClient({
+      captureStore: store,
+      scheduler: sched.scheduler,
+      clock: fixedClock(7777),
+    }).launch();
+    expect(sched.calls).toHaveLength(1);
+    expect(sched.calls[0]?.ms).toBe(1000);
+    sched.calls[0]?.cb(); // fire the interval
+    expect(tick).toHaveBeenCalledWith(7777);
+  });
+
+  it('uses the configured tickIntervalMs', () => {
+    const { store } = tickStore();
+    const sched = fakeScheduler();
+    createClient({ captureStore: store, scheduler: sched.scheduler, tickIntervalMs: 250 }).launch();
+    expect(sched.calls[0]?.ms).toBe(250);
+  });
+
+  it('does not start a timer before launch', () => {
+    const { store } = tickStore();
+    const sched = fakeScheduler();
+    createClient({ captureStore: store, scheduler: sched.scheduler });
+    expect(sched.calls).toHaveLength(0);
+  });
+
+  it('clears the tick timer on stop', async () => {
+    const { store } = tickStore();
+    const sched = fakeScheduler();
+    const client = createClient({ captureStore: store, scheduler: sched.scheduler });
+    client.launch();
+    await client.stop();
+    expect(sched.cleared).toEqual(['handle-1']);
+  });
+
+  it('drives the store via the global timers by default, and stops on stop()', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, tick } = tickStore();
+      const client = createClient({ captureStore: store, clock: fixedClock(123) }); // default scheduler
+      client.launch();
+      vi.advanceTimersByTime(1000);
+      expect(tick).toHaveBeenCalledWith(123);
+      await client.stop();
+      tick.mockClear();
+      vi.advanceTimersByTime(3000);
+      expect(tick).not.toHaveBeenCalled(); // timer cleared on stop
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

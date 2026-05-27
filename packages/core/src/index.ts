@@ -22,6 +22,7 @@ export {
   type CreateClientOptions,
   createClient,
   type LogExceptionOptions,
+  type Scheduler,
 } from './client';
 export { type Clock, createSystemClock } from './clock';
 export type {
