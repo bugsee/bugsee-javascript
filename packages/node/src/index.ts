@@ -2,6 +2,7 @@
 // unhandledRejection detection, console/network capture. Built test-first per
 // docs/implementation-standards.md.
 
+export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export {
   buildNodeEnvironment,
   type NodeEnvironmentInput,
