@@ -44,69 +44,89 @@ export interface Interceptor {
 }
 
 /**
- * A single captured item a provider produces (Android BugseeCaptureDataEntry parity). The aggregator
- * routes it to the bundle file named by `type`; `data` is the wire-shaped payload (e.g. a
- * NetworkEvent or LogEvent). Serialization is the entry's/export step's concern, not the provider's.
+ * A single captured item (Android BugseeCaptureDataEntry parity). It carries its file type, a
+ * timestamp and the structured payload, AND owns its serialization: serialize() produces the stored
+ * string form; deserialize() populates THIS (freshly-created) entry from that form (Android-style
+ * instance deserialize, mutating `this`). Concrete entry types implement their own format — see
+ * CaptureDataEntryBase for the default JSON entry.
  */
 export interface CaptureDataEntry {
   /** Which bundle file this entry contributes to. */
-  type: FileType;
+  readonly type: FileType;
   /** Wall-clock unix-ms; used for ordering and time bounds. */
   timestamp: number;
-  /** The wire payload for this entry. */
+  /** The structured payload (what lands in the bundle file). */
   data: unknown;
+  /** Serialize this entry to its stored string form. */
+  serialize(): string;
+  /** Populate this entry from its stored string form (mutates `this`; Android instance deserialize). */
+  deserialize(serialized: string): void;
+}
+
+/** Creates an empty entry of a given file type for the exporter to deserialize into. */
+export type CaptureEntryFactory = (type: FileType) => CaptureDataEntry;
+
+/** A serialized entry as persisted by the store (entry.serialize() output + out-of-band routing/time). */
+export interface StoredEntry {
+  /** Which bundle file this record belongs to. */
+  type: FileType;
+  /** Wall-clock unix-ms, kept out-of-band so ordering/time-bounds need no deserialize. */
+  timestamp: number;
+  /** The entry's serialized string form. */
+  serialized: string;
 }
 
 /**
- * The configurable storage backend the aggregator supplies entries to (Android CaptureFileStorage
- * parity). Large entries (e.g. network bodies) shouldn't be memory-only, so the backend is
- * runtime-specific: in-memory (lambda/edge), on disk (Node/Bun), IndexedDB (browser). `add` is
- * fire-and-forget — it must never block or throw the capture path; `drain` is async (disk/IDB reads).
+ * The configurable storage backend the aggregator routes serialized records to (Android
+ * CaptureFileStorage parity). Runtime-specific: in-memory (lambda/edge), on disk (Node/Bun),
+ * IndexedDB (browser). `add` is fire-and-forget — it must never block or throw the capture path.
+ * The reads (used only by CaptureExporter) drain raw serialized records, NOT deserialized entries.
  */
 export interface CaptureStore {
-  /** Persist an entry under its file type. Non-blocking; failures are the store's own concern. */
-  add(entry: CaptureDataEntry): void;
-  /**
-   * Default export read: stream stored entries one-by-one (grouped by file type), then clear. Memory-
-   * light — a disk/IndexedDB backend reads lazily without loading everything (Android
-   * CaptureDataEntryStreamReader.readEntry parity).
-   */
-  stream(): AsyncIterableIterator<CaptureDataEntry>;
-  /**
-   * All-at-once export read: read every stored entry into memory grouped by file type, then clear.
-   * For small data / edge-lambda where a single bulk extraction is simplest.
-   */
-  drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
-  /** Discard all stored entries without reading them. */
+  /** Persist a serialized record under its file type. Non-blocking; failures are the store's concern. */
+  add(record: StoredEntry): void;
+  /** Drain stored records one-by-one then clear — memory-light for disk/IDB (Android stream reader). */
+  stream(): AsyncIterableIterator<StoredEntry>;
+  /** Drain all stored records into memory grouped by file type, then clear. */
+  drainAll(): Promise<Map<FileType, StoredEntry[]>>;
+  /** Discard all stored records without reading them. */
   clear(): void;
 }
 
 /**
- * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity): it accepts
- * entries and supplies them to the configurable CaptureStore, then reads them back for export at
- * trigger time — streaming (default, one-by-one) or snapshot (all-at-once). Reads are async so
- * disk/IndexedDB backends fit.
+ * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity). Data flows
+ * ONE direction: accept an entry → transform (entry.serialize()) → route the record to the
+ * CaptureStore. Read-back is deliberately NOT here — it belongs to CaptureExporter.
  */
 export interface CaptureAggregator {
-  /** Accept one entry, supplying it to the store. */
+  /** Accept one entry: serialize it and route the record to the store. */
   addEntry(entry: CaptureDataEntry): void;
   /** Accept many entries. */
   addEntries(entries: readonly CaptureDataEntry[]): void;
-  /** Default export: stream stored entries one-by-one (grouped by file type), then clear. */
-  stream(): AsyncIterableIterator<CaptureDataEntry>;
-  /** All-at-once: read + clear all stored entries grouped by file type (§7.7 trigger snapshot). */
-  snapshot(): Promise<Map<FileType, CaptureDataEntry[]>>;
-  /** Drop all stored entries. */
+  /** Drop all stored records. */
   clear(): void;
+}
+
+/**
+ * Reads stored records back, deserializes them (via a per-type CaptureEntryFactory) and returns them
+ * in the requested format (Android CaptureExporter / CaptureDataEntryStreamReader parity): stream()
+ * one-by-one (default, memory-light) or drain() all-at-once grouped by file type. Both consume
+ * (clear) the underlying store.
+ */
+export interface CaptureExporter {
+  /** Stream deserialized entries one-by-one (then the store is cleared). */
+  stream(): AsyncIterableIterator<CaptureDataEntry>;
+  /** Read + deserialize all stored entries grouped by file type, then clear (§7.7 trigger snapshot). */
+  drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
 }
 
 /**
  * Capture-pipeline data source (§16.2). In start(client) it subscribes to its hub, filter+sanitizes
  * each event into a CaptureDataEntry, and pushes it to client.captureAggregator.addEntry(...).
  *
- * NB: this follows Android (BugseeCaptureDataProvider works on entries; CaptureExporter serializes
- * centrally), not the design doc §16.2 sketch's per-provider `wireFileType`/`filename`/`serialize`.
- * File type lives on CaptureDataEntry.type and serialization is centralized in bundle-assembler.
+ * NB: this follows Android (BugseeCaptureDataProvider works on CaptureDataEntry objects), not the
+ * design doc §16.2 sketch's per-provider `wireFileType`/`filename`/`serialize`. File type lives on
+ * CaptureDataEntry.type and serialization lives on the entry itself (serialize/deserialize).
  */
 export interface CaptureProvider {
   /** Component id (Android @BugseeCaptureComponentName). */

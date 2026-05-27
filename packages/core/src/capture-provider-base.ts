@@ -1,4 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
+import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureAggregator, CaptureDataEntry, CaptureProvider, Client } from './contracts';
 
 // Base class for capture data providers (Android BugseeCaptureDataProviderBase parity). Concrete
@@ -7,7 +8,8 @@ import type { CaptureAggregator, CaptureDataEntry, CaptureProvider, Client } fro
 // the aggregator wired at start() (the proper target), mirroring Android's mDataAggregator.addEntry.
 //
 // Android's entry object-pool (borrow/return) is a GC optimization that JS doesn't need, so it's
-// omitted; entries are plain objects.
+// omitted. `capture()` builds the default JSON entry (CaptureDataEntryBase); a provider needing a
+// custom serialization passes its own CaptureDataEntry to `addEntry()`.
 
 export abstract class CaptureProviderBase implements CaptureProvider {
   abstract readonly name: string;
@@ -39,8 +41,8 @@ export abstract class CaptureProviderBase implements CaptureProvider {
     this.#aggregator?.addEntry(entry);
   }
 
-  /** Build a capture entry and route it in one call. */
+  /** Build the default JSON capture entry and route it in one call. */
   protected capture(type: FileType, timestamp: number, data: unknown): void {
-    this.addEntry({ type, timestamp, data });
+    this.addEntry(new CaptureDataEntryBase(type, timestamp, data));
   }
 }

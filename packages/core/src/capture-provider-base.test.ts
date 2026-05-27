@@ -1,9 +1,12 @@
-import type { NetworkEvent } from '@bugsee/protocol';
+import type { FileType, NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createCaptureCoordinator } from './capture-coordinator';
+import { CaptureDataEntryBase } from './capture-data-entry';
+import { createCaptureExporter } from './capture-exporter';
 import { CaptureProviderBase } from './capture-provider-base';
 import { createClient } from './client';
-import type { Client } from './contracts';
+import type { CaptureStore, Client } from './contracts';
+import { createMemoryCaptureStore } from './memory-capture-store';
 
 const netEvent = (timestamp: number): NetworkEvent => ({
   timestamp,
@@ -14,6 +17,10 @@ const netEvent = (timestamp: number): NetworkEvent => ({
   method: 'GET',
   type: 'complete',
 });
+
+// Read captured entries back through an exporter over the client's store (the aggregator is write-only).
+const drainType = async (store: CaptureStore, type: FileType) =>
+  (await createCaptureExporter(store).drain()).get(type);
 
 // A concrete provider that subscribes to the network hub and captures each event as an entry.
 class NetworkProvider extends CaptureProviderBase {
@@ -36,7 +43,7 @@ class NetworkProvider extends CaptureProviderBase {
 
   // expose addEntry for direct routing tests
   pushLog(): void {
-    this.addEntry({ type: 'log', timestamp: 5, data: { message: 'hi' } });
+    this.addEntry(new CaptureDataEntryBase('log', 5, { message: 'hi' }));
   }
 }
 
@@ -50,22 +57,24 @@ describe('CaptureProviderBase', () => {
 
   it('routes addEntry to the client aggregator', async () => {
     const provider = new NetworkProvider();
-    const client = createClient();
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
     provider.start(client);
     provider.pushLog();
-    expect((await client.captureAggregator.snapshot()).get('log')).toEqual([
-      { type: 'log', timestamp: 5, data: { message: 'hi' } },
-    ]);
+    expect((await drainType(store, 'log'))?.map((e) => e.data)).toEqual([{ message: 'hi' }]);
   });
 
   it('capture() builds an entry of the given type/timestamp/data and routes it', async () => {
     const provider = new NetworkProvider();
-    const client = createClient();
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
     provider.start(client);
     client.hubs.network.emit(netEvent(99));
-    const entries = (await client.captureAggregator.snapshot()).get('network');
+    const entries = await drainType(store, 'network');
     expect(entries).toHaveLength(1);
-    expect(entries?.[0]).toEqual({ type: 'network', timestamp: 99, data: netEvent(99) });
+    expect(entries?.map((e) => ({ type: e.type, timestamp: e.timestamp, data: e.data }))).toEqual([
+      { type: 'network', timestamp: 99, data: netEvent(99) },
+    ]);
   });
 
   it('addEntry is a no-op before start', () => {
@@ -75,11 +84,12 @@ describe('CaptureProviderBase', () => {
 
   it('detaches the aggregator on stop (subsequent entries are not routed) and calls onStop', async () => {
     const provider = new NetworkProvider();
-    const client = createClient();
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
     provider.start(client);
     provider.stop();
     provider.pushLog();
-    expect((await client.captureAggregator.snapshot()).size).toBe(0);
+    expect((await createCaptureExporter(store).drain()).size).toBe(0);
     expect(provider.stopped).toBe(1);
   });
 
@@ -95,23 +105,25 @@ describe('CaptureProviderBase', () => {
 
   // Integration: the base provider works through the real capture coordinator + client.
   it('captures hub events into the aggregator when started via the coordinator', async () => {
-    const client = createClient();
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
     const coordinator = createCaptureCoordinator();
     coordinator.addProvider(new NetworkProvider());
     coordinator.start(client, (opt) => opt === 'captureNetwork');
     client.hubs.network.emit(netEvent(1));
     client.hubs.network.emit(netEvent(2));
-    expect((await client.captureAggregator.snapshot()).get('network')).toHaveLength(2);
+    expect(await drainType(store, 'network')).toHaveLength(2);
   });
 
   it('a coordinator-disabled provider does not subscribe, so nothing is captured', async () => {
-    const client = createClient();
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
     const coordinator = createCaptureCoordinator();
     const provider = new NetworkProvider();
     coordinator.addProvider(provider);
     coordinator.start(client, () => false); // captureNetwork disabled
     client.hubs.network.emit(netEvent(1));
     expect(provider.startedWith).toBeNull();
-    expect((await client.captureAggregator.snapshot()).size).toBe(0);
+    expect((await createCaptureExporter(store).drain()).size).toBe(0);
   });
 });

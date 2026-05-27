@@ -8,6 +8,8 @@ import type {
 import { assembleBundle } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
+import { CaptureDataEntryBase } from './capture-data-entry';
+import { createCaptureExporter } from './capture-exporter';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureStore, Client } from './contracts';
 import { checkOrSetAlreadyCaught } from './dedup';
@@ -122,9 +124,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const environment = createEnvironment();
   const hubs = createEventHubs(onError);
   const operations = createOperationDispatcher(onError);
-  const captureAggregator = createCaptureAggregator(
-    options.captureStore ?? createMemoryCaptureStore(),
-  );
+  // One store, two directions (§16): the aggregator writes (serialize + route), the exporter reads
+  // (drain + deserialize) at trigger time.
+  const captureStore = options.captureStore ?? createMemoryCaptureStore();
+  const captureAggregator = createCaptureAggregator(captureStore);
+  const captureExporter = createCaptureExporter(captureStore);
   const captureCoordinator = createCaptureCoordinator();
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
@@ -136,7 +140,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
     const assemble = async (request: ReportingRequest): Promise<Bundle> =>
-      assembleBundle(request, await captureAggregator.snapshot(), {
+      assembleBundle(request, await captureExporter.drain(), {
         appToken,
         environment: getEnvironment(),
         attributes: environment.getAllAttributes(),
@@ -173,35 +177,33 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
       const timestamp = breadcrumb.timestamp ?? clock.wallNow();
-      captureAggregator.addEntry({
-        type: 'breadcrumbs',
-        timestamp,
-        data: { ...breadcrumb, timestamp },
-      });
+      captureAggregator.addEntry(
+        new CaptureDataEntryBase('breadcrumbs', timestamp, { ...breadcrumb, timestamp }),
+      );
     },
 
     log(message: string, level: LogLevel | LogLevelName = 'info', timestamp?: number): void {
       const ts = timestamp ?? clock.wallNow();
       const entry: LogEvent = { timestamp: ts, level, source: 'logger', message };
-      captureAggregator.addEntry({ type: 'log', timestamp: ts, data: entry });
+      captureAggregator.addEntry(new CaptureDataEntryBase('log', ts, entry));
     },
 
     event(name: string, params?: Record<string, unknown>): void {
       const timestamp = clock.wallNow();
-      captureAggregator.addEntry({
-        type: 'events.user',
-        timestamp,
-        data: { timestamp, name, ...(params !== undefined ? { params } : {}) },
-      });
+      captureAggregator.addEntry(
+        new CaptureDataEntryBase('events.user', timestamp, {
+          timestamp,
+          name,
+          ...(params !== undefined ? { params } : {}),
+        }),
+      );
     },
 
     trace(name: string, value: unknown): void {
       const timestamp = clock.wallNow();
-      captureAggregator.addEntry({
-        type: 'traces.user',
-        timestamp,
-        data: { timestamp, name, value },
-      });
+      captureAggregator.addEntry(
+        new CaptureDataEntryBase('traces.user', timestamp, { timestamp, name, value }),
+      );
     },
 
     logException(error: unknown, exceptionOptions?: LogExceptionOptions): Promise<UploadResult> {

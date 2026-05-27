@@ -1,8 +1,11 @@
-import type { EnvironmentEnvelope, NetworkEvent } from '@bugsee/protocol';
+import type { EnvironmentEnvelope, FileType, NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { CaptureDataEntryBase } from './capture-data-entry';
+import { createCaptureExporter } from './capture-exporter';
 import { createClient } from './client';
 import type { Clock } from './clock';
-import type { CaptureDataEntry, CaptureProvider, DetectionProvider } from './contracts';
+import type { CaptureProvider, CaptureStore, DetectionProvider } from './contracts';
+import { createMemoryCaptureStore } from './memory-capture-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
@@ -14,10 +17,9 @@ const getEnvironment = (): EnvironmentEnvelope => ({
 
 // Fixed-time clock so capture-entry timestamps are deterministic.
 const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow: () => 0 });
-const firstEntry = async (
-  client: ReturnType<typeof createClient>,
-  type: CaptureDataEntry['type'],
-) => (await client.captureAggregator.snapshot()).get(type)?.[0];
+// The aggregator is write-only; read captured entries back via an exporter over the client's store.
+const firstEntry = async (store: CaptureStore, type: FileType) =>
+  (await createCaptureExporter(store).drain()).get(type)?.[0];
 
 // Test-only extension typing so registerExt/ext can be exercised.
 declare module '@bugsee/types' {
@@ -64,9 +66,10 @@ describe('createClient — wiring', () => {
   });
 
   it('exposes a working capture aggregator', async () => {
-    const client = createClient();
-    client.captureAggregator.addEntry({ type: 'log', timestamp: 1, data: { msg: 'hi' } });
-    expect((await client.captureAggregator.snapshot()).get('log')).toHaveLength(1);
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
+    expect((await createCaptureExporter(store).drain()).get('log')).toHaveLength(1);
   });
 });
 
@@ -129,25 +132,28 @@ describe('createClient — identity & attributes', () => {
 
 describe('createClient — capture entry points', () => {
   it('addBreadcrumb pushes a breadcrumbs entry stamped from the clock', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'clicked', category: 'ui' });
-    const entry = await firstEntry(client, 'breadcrumbs');
+    const entry = await firstEntry(store, 'breadcrumbs');
     expect(entry?.timestamp).toBe(1000);
     expect(entry?.data).toEqual({ message: 'clicked', category: 'ui', timestamp: 1000 });
   });
 
   it('addBreadcrumb honors an explicit timestamp', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'x', timestamp: 42 });
-    const entry = await firstEntry(client, 'breadcrumbs');
+    const entry = await firstEntry(store, 'breadcrumbs');
     expect(entry?.timestamp).toBe(42);
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
   it('log pushes a log entry with default level info and clock timestamp', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('hello');
-    expect((await firstEntry(client, 'log'))?.data).toEqual({
+    expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 1000,
       level: 'info',
       source: 'logger',
@@ -156,9 +162,10 @@ describe('createClient — capture entry points', () => {
   });
 
   it('log honors an explicit level and timestamp', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('boom', 'error', 7);
-    expect((await firstEntry(client, 'log'))?.data).toEqual({
+    expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 7,
       level: 'error',
       source: 'logger',
@@ -167,9 +174,10 @@ describe('createClient — capture entry points', () => {
   });
 
   it('event pushes an events.user entry with params', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.event('checkout', { total: 9 });
-    expect((await firstEntry(client, 'events.user'))?.data).toEqual({
+    expect((await firstEntry(store, 'events.user'))?.data).toEqual({
       timestamp: 1000,
       name: 'checkout',
       params: { total: 9 },
@@ -177,18 +185,20 @@ describe('createClient — capture entry points', () => {
   });
 
   it('event omits params when not provided', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.event('opened');
-    expect((await firstEntry(client, 'events.user'))?.data).toEqual({
+    expect((await firstEntry(store, 'events.user'))?.data).toEqual({
       timestamp: 1000,
       name: 'opened',
     });
   });
 
   it('trace pushes a traces.user entry with name and value', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.trace('fps', 60);
-    expect((await firstEntry(client, 'traces.user'))?.data).toEqual({
+    expect((await firstEntry(store, 'traces.user'))?.data).toEqual({
       timestamp: 1000,
       name: 'fps',
       value: 60,
@@ -196,12 +206,13 @@ describe('createClient — capture entry points', () => {
   });
 
   it('routes each entry to its own file type', async () => {
-    const client = createClient({ clock: fixedClock(1000) });
+    const store = createMemoryCaptureStore();
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.addBreadcrumb({ message: 'b' });
     client.log('l');
     client.event('e');
     client.trace('t', 1);
-    const snap = await client.captureAggregator.snapshot();
+    const snap = await createCaptureExporter(store).drain();
     expect([...snap.keys()].sort()).toEqual(['breadcrumbs', 'events.user', 'log', 'traces.user']);
   });
 });

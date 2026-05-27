@@ -10,6 +10,8 @@ export {
   createCaptureCoordinator,
   type OptionGate,
 } from './capture-coordinator';
+export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry';
+export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export {
   type Breadcrumb,
@@ -23,6 +25,8 @@ export { type Clock, createSystemClock } from './clock';
 export type {
   CaptureAggregator,
   CaptureDataEntry,
+  CaptureEntryFactory,
+  CaptureExporter,
   CaptureProvider,
   CaptureStore,
   Client,
@@ -32,6 +36,7 @@ export type {
   Operation,
   OperationDispatcher,
   OperationObserver,
+  StoredEntry,
 } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {

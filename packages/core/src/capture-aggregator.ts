@@ -1,25 +1,22 @@
 import type { CaptureAggregator, CaptureDataEntry, CaptureStore } from './contracts';
 
 // The single data adapter every provider feeds (Android BugseeCaptureAggregator parity, design §7.7).
-// It is a thin, store-agnostic router: providers push entries here and the aggregator supplies them
-// to the configurable CaptureStore (in-memory / disk / IndexedDB). snapshot() reads + clears the
-// store at trigger time (async, so disk/IndexedDB backends fit).
+// Data flows ONE direction: accept an entry → transform (entry.serialize()) → route the serialized
+// record to the configurable CaptureStore (in-memory / disk / IndexedDB). Read-back is NOT here —
+// it belongs to the CaptureExporter (capture-exporter.ts).
 
 export function createCaptureAggregator(store: CaptureStore): CaptureAggregator {
+  const route = (entry: CaptureDataEntry): void => {
+    store.add({ type: entry.type, timestamp: entry.timestamp, serialized: entry.serialize() });
+  };
   return {
     addEntry(entry: CaptureDataEntry): void {
-      store.add(entry);
+      route(entry);
     },
     addEntries(entries: readonly CaptureDataEntry[]): void {
       for (const entry of entries) {
-        store.add(entry);
+        route(entry);
       }
-    },
-    stream(): AsyncIterableIterator<CaptureDataEntry> {
-      return store.stream();
-    },
-    snapshot(): Promise<Map<CaptureDataEntry['type'], CaptureDataEntry[]>> {
-      return store.drain();
     },
     clear(): void {
       store.clear();

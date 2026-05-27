@@ -6,6 +6,8 @@ import type { FileType, NetworkEvent } from '@bugsee/protocol';
 import type {
   CaptureAggregator,
   CaptureDataEntry,
+  CaptureEntryFactory,
+  CaptureExporter,
   CaptureProvider,
   CaptureStore,
   Client,
@@ -14,6 +16,7 @@ import type {
   Interceptor,
   Operation,
   OperationDispatcher,
+  StoredEntry,
 } from './contracts';
 import { createEventHubs } from './hubs';
 import { createReportingRequest, type ReportingRequest } from './reporting';
@@ -26,26 +29,50 @@ const operation: Operation = {
   description: 'GET /',
   data: { status: 200 },
 };
-const entry: CaptureDataEntry = { type: 'log', timestamp: 1, data: { message: 'hi' } };
+
+// An entry owns its serialize/deserialize (Android-style instance deserialize).
+const entry: CaptureDataEntry = {
+  type: 'log',
+  timestamp: 1,
+  data: { message: 'hi' },
+  serialize: () => '{"message":"hi"}',
+  deserialize: (_serialized: string) => {},
+};
+
+const entryFactory: CaptureEntryFactory = (type) => ({
+  type,
+  timestamp: 0,
+  data: undefined,
+  serialize: () => '',
+  deserialize: () => {},
+});
+
+const storedEntry: StoredEntry = { type: 'log', timestamp: 1, serialized: '{}' };
 
 const dispatcher: OperationDispatcher = {
   registerObserver: () => noop,
   onOperation: noop,
 };
 
+// The store persists serialized records; reads drain raw StoredEntry, not deserialized entries.
 const captureStore: CaptureStore = {
-  add: noop,
+  add: (_record: StoredEntry) => {},
   stream: async function* () {},
-  drain: async () => new Map<FileType, CaptureDataEntry[]>(),
+  drainAll: async () => new Map<FileType, StoredEntry[]>(),
   clear: noop,
 };
 
+// The aggregator is write-only: accept → serialize → route.
 const aggregator: CaptureAggregator = {
   addEntry: noop,
   addEntries: noop,
-  stream: async function* () {},
-  snapshot: async () => new Map<FileType, CaptureDataEntry[]>(),
   clear: noop,
+};
+
+// The exporter is the only reader: it deserializes records back into entries.
+const exporter: CaptureExporter = {
+  stream: async function* () {},
+  drain: async () => new Map<FileType, CaptureDataEntry[]>(),
 };
 
 const exampleClient: Client = {
@@ -72,6 +99,8 @@ const networkProvider: CaptureProvider = {
         type: 'network',
         timestamp: event.timestamp,
         data: event,
+        serialize: () => JSON.stringify(event),
+        deserialize: () => {},
       });
     });
   },
@@ -96,21 +125,30 @@ const extension: Extension = {
 // --- Negatives: omitting a required member must NOT type-check. ---
 // @ts-expect-error `timestamp` is required on Operation
 export const badOperation: Operation = { type: 'http' };
-// @ts-expect-error `type` is required on CaptureDataEntry
-export const badEntry: CaptureDataEntry = { timestamp: 1, data: {} };
-// @ts-expect-error `addEntry` is required on CaptureAggregator (stream/snapshot/clear present)
-export const badAggregator: CaptureAggregator = {
-  addEntries: noop,
-  stream: async function* () {},
-  snapshot: async () => new Map<FileType, CaptureDataEntry[]>(),
-  clear: noop,
+// @ts-expect-error `type` is required on CaptureDataEntry (timestamp/data/serialize/deserialize present)
+export const badEntry: CaptureDataEntry = {
+  timestamp: 1,
+  data: {},
+  serialize: () => '',
+  deserialize: () => {},
 };
-// @ts-expect-error `stream` is required on CaptureStore (add/drain/clear present)
+// @ts-expect-error `serialize` is required on CaptureDataEntry (type/timestamp/data/deserialize present)
+export const badEntryNoSerialize: CaptureDataEntry = {
+  type: 'log',
+  timestamp: 1,
+  data: {},
+  deserialize: () => {},
+};
+// @ts-expect-error `addEntry` is required on CaptureAggregator (addEntries/clear present)
+export const badAggregator: CaptureAggregator = { addEntries: noop, clear: noop };
+// @ts-expect-error `stream` is required on CaptureStore (add/drainAll/clear present)
 export const badStore: CaptureStore = {
   add: noop,
-  drain: async () => new Map<FileType, CaptureDataEntry[]>(),
+  drainAll: async () => new Map<FileType, StoredEntry[]>(),
   clear: noop,
 };
+// @ts-expect-error `drain` is required on CaptureExporter (stream present)
+export const badExporter: CaptureExporter = { stream: async function* () {} };
 // @ts-expect-error `start` is required on CaptureProvider
 export const badCaptureProvider: CaptureProvider = { name: 'x', stop: noop };
 // @ts-expect-error `start` is required on Interceptor
@@ -125,9 +163,12 @@ export const badDetector: DetectionProvider = { name: 'x', stop: noop };
 export type ContractAssertions = [
   typeof operation,
   typeof entry,
+  typeof entryFactory,
+  typeof storedEntry,
   typeof dispatcher,
   typeof captureStore,
   typeof aggregator,
+  typeof exporter,
   typeof exampleClient,
   typeof interceptor,
   typeof networkProvider,

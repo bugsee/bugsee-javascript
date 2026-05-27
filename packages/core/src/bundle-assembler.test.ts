@@ -2,6 +2,7 @@ import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureDataEntry } from './contracts';
 import { createReportingRequest } from './reporting';
 
@@ -19,11 +20,8 @@ const context = (over: Partial<BundleAssemblyContext> = {}): BundleAssemblyConte
   ...over,
 });
 
-const entry = (type: FileType, timestamp: number, data: unknown): CaptureDataEntry => ({
-  type,
-  timestamp,
-  data,
-});
+const entry = (type: FileType, timestamp: number, data: unknown): CaptureDataEntry =>
+  new CaptureDataEntryBase(type, timestamp, data);
 
 // Parse the request.json / manifest.json out of an assembled bundle zip.
 function unzip(body: Uint8Array) {

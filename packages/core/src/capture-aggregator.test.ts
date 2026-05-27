@@ -1,61 +1,51 @@
-import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCaptureAggregator } from './capture-aggregator';
-import type { CaptureDataEntry, CaptureStore } from './contracts';
+import { CaptureDataEntryBase } from './capture-data-entry';
+import { createCaptureExporter } from './capture-exporter';
+import type { CaptureDataEntry, CaptureStore, StoredEntry } from './contracts';
 import { createMemoryCaptureStore } from './memory-capture-store';
 
-const entry = (type: FileType, timestamp: number): CaptureDataEntry => ({
-  type,
-  timestamp,
-  data: {},
-});
-
 function fakeStore() {
-  const added: CaptureDataEntry[] = [];
-  const drainResult = new Map<FileType, CaptureDataEntry[]>([['log', [entry('log', 9)]]]);
-  const streamed = entry('network', 8);
+  const added: StoredEntry[] = [];
   const store: CaptureStore = {
-    add: (e) => added.push(e),
-    stream: vi.fn(async function* () {
-      yield streamed;
-    }),
-    drain: vi.fn(async () => drainResult),
+    add: (r) => added.push(r),
+    stream: vi.fn(async function* () {}),
+    drainAll: vi.fn(async () => new Map()),
     clear: vi.fn(),
   };
-  return { store, added, drainResult, streamed };
+  return { store, added };
 }
 
 describe('createCaptureAggregator', () => {
-  it('supplies a single entry to the store', () => {
+  it('serializes an entry and routes the record to the store', () => {
     const { store, added } = fakeStore();
-    const e = entry('network', 1);
+    const e = new CaptureDataEntryBase('network', 1, { url: 'u' });
     createCaptureAggregator(store).addEntry(e);
-    expect(added).toEqual([e]);
+    expect(added).toEqual([{ type: 'network', timestamp: 1, serialized: e.serialize() }]);
   });
 
-  it('supplies each entry of a batch to the store, in order', () => {
+  it("routes the entry's OWN serialize() output", () => {
     const { store, added } = fakeStore();
-    const a = entry('log', 1);
-    const b = entry('network', 2);
+    const custom: CaptureDataEntry = {
+      type: 'log',
+      timestamp: 5,
+      data: {},
+      serialize: () => 'MARKER',
+      deserialize: () => {},
+    };
+    createCaptureAggregator(store).addEntry(custom);
+    expect(added[0]).toEqual({ type: 'log', timestamp: 5, serialized: 'MARKER' });
+  });
+
+  it('serializes and routes each entry of a batch, in order', () => {
+    const { store, added } = fakeStore();
+    const a = new CaptureDataEntryBase('log', 1, { a: 1 });
+    const b = new CaptureDataEntryBase('network', 2, { b: 2 });
     createCaptureAggregator(store).addEntries([a, b]);
-    expect(added).toEqual([a, b]);
-  });
-
-  it('snapshot delegates to store.drain', async () => {
-    const { store, drainResult } = fakeStore();
-    const snap = await createCaptureAggregator(store).snapshot();
-    expect(store.drain).toHaveBeenCalledTimes(1);
-    expect(snap).toBe(drainResult);
-  });
-
-  it('stream delegates to store.stream', async () => {
-    const { store, streamed } = fakeStore();
-    const out: CaptureDataEntry[] = [];
-    for await (const e of createCaptureAggregator(store).stream()) {
-      out.push(e);
-    }
-    expect(store.stream).toHaveBeenCalledTimes(1);
-    expect(out).toEqual([streamed]);
+    expect(added).toEqual([
+      { type: 'log', timestamp: 1, serialized: a.serialize() },
+      { type: 'network', timestamp: 2, serialized: b.serialize() },
+    ]);
   });
 
   it('clear delegates to store.clear', () => {
@@ -64,12 +54,16 @@ describe('createCaptureAggregator', () => {
     expect(store.clear).toHaveBeenCalledTimes(1);
   });
 
-  // Integration with the default in-memory store.
-  it('round-trips entries through the in-memory store', async () => {
-    const aggregator = createCaptureAggregator(createMemoryCaptureStore());
-    const log = entry('log', 1);
-    aggregator.addEntry(log);
-    expect((await aggregator.snapshot()).get('log')).toEqual([log]);
-    expect((await aggregator.snapshot()).size).toBe(0); // drained
+  // Integration: write via the aggregator, read back via the exporter over the same store.
+  it('round-trips entries through the in-memory store + exporter', async () => {
+    const store = createMemoryCaptureStore();
+    const aggregator = createCaptureAggregator(store);
+    const exporter = createCaptureExporter(store);
+    aggregator.addEntry(new CaptureDataEntryBase('log', 1, { m: 'hi' }));
+    const out = await exporter.drain();
+    expect(
+      out.get('log')?.map((e) => ({ type: e.type, timestamp: e.timestamp, data: e.data })),
+    ).toEqual([{ type: 'log', timestamp: 1, data: { m: 'hi' } }]);
+    expect((await exporter.drain()).size).toBe(0); // drained
   });
 });
