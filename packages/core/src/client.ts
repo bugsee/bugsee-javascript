@@ -28,8 +28,8 @@ import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline'
 // together: registration seams (§16.3), identity/attribute delegation to the single global
 // Environment (§7.2), manual capture entry points, lifecycle (launch/stop/flush), and the
 // report/upload path. When given a report assembler's inputs (appToken + environment + upload
-// pipeline), the Client builds the trigger pipeline itself (assembleBundle over the aggregator
-// snapshot); logException instance-dedups + rate-limits, then reports. A dropped result is
+// pipeline), the Client builds the trigger pipeline itself (assembleBundle over the exporter
+// drain); logException instance-dedups + rate-limits, then reports. A dropped result is
 // `{ ok: false }`. Platform specifics (EnvironmentEnvelope factory, transport impls, DOM) are
 // injected.
 
@@ -135,7 +135,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   let launched = false;
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
-  // override is injected). assemble reads the aggregator snapshot + the live environment/attributes.
+  // override is injected). assemble reads the exporter drain + the live environment/attributes.
   const { uploadPipeline, appToken, getEnvironment } = options;
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {

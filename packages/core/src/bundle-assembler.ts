@@ -20,10 +20,10 @@ import type { ReportingRequest } from './reporting';
 import type { Bundle } from './transport';
 
 // Report assembly (design §7.7 trigger path, §8.4/§8.5 bundle layout, Android CaptureExporter). Turns
-// a ReportingRequest + the captured data (grouped by file type, from the aggregator) into a Bundle:
-// request.json (from the Report + Environment + source mechanism), manifest.json (file inventory +
-// time bounds + attributes), the apptoken file, and one JSON file per captured file-type, zipped.
-// Pure + synchronous; the Client reads the aggregator (stream/snapshot) and passes the grouped data.
+// a ReportingRequest + the captured data (grouped by file type, from CaptureExporter.drain()) into a
+// Bundle: request.json (from the Report + Environment + source mechanism), manifest.json (file
+// inventory + time bounds + attributes), the apptoken file, and one JSON file per captured file-type,
+// zipped. Pure + synchronous; the Client reads the CaptureExporter (drain()) and passes the data.
 
 export interface BundleAssemblyContext {
   /** Plain-text app token (apptoken file). */
