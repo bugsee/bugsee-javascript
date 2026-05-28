@@ -64,6 +64,18 @@ const okResponse = {
   headers: { 'content-type': 'text/html' },
 };
 
+// Run fn and return the value it throws (or a unique sentinel if it doesn't), so tests can assert
+// the IDENTITY of a re-raised error, not merely that something threw.
+const DID_NOT_THROW = Symbol('did-not-throw');
+const caught = (fn: () => void): unknown => {
+  try {
+    fn();
+    return DID_NOT_THROW;
+  } catch (error) {
+    return error;
+  }
+};
+
 describe('createNodeHttpInterceptor', () => {
   it('emits before then complete for an http.request(string url), sharing id/sequence', () => {
     const { target, last, events } = harness();
@@ -161,20 +173,22 @@ describe('createNodeHttpInterceptor', () => {
     expect(events[1]?.custom?.headers).toEqual({ 'set-cookie': 'c1=1, c2=2' });
   });
 
-  it('emits an error event (with timestamp) and re-raises when it is the sole error listener', () => {
+  it('emits an error event (with timestamp) and re-raises the ORIGINAL error when sole listener', () => {
     const { target, last, events } = harness({ now: () => 4242 });
     target.http.request('http://api.test/e');
-    // The app installed no 'error' listener, so node would throw — capturing must preserve that.
-    expect(() => last().fire('error', new Error('boom'))).toThrow('boom');
+    // The app installed no 'error' listener, so node would throw — capturing must preserve that,
+    // re-raising the SAME object (not a re-wrap, which would lose its type/.code/.stack).
+    const err = new Error('boom');
+    expect(caught(() => last().fire('error', err))).toBe(err);
     expect(events.map((e) => e.type)).toEqual(['before', 'error']); // captured before re-raising
     expect(events[1]).toMatchObject({ type: 'error', customError: 'boom', timestamp: 4242 });
     expect(events[1]?.custom?.error).toBe('boom');
   });
 
-  it('stringifies a non-Error error value (and still re-raises it)', () => {
+  it('re-raises a non-Error error value UNCHANGED (no Error wrapping)', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/e');
-    expect(() => last().fire('error', 'kaput')).toThrow();
+    expect(caught(() => last().fire('error', 'kaput'))).toBe('kaput'); // the raw string, not Error('kaput')
     expect(events[1]?.customError).toBe('kaput');
   });
 
