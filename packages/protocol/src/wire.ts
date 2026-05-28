@@ -81,6 +81,12 @@ export interface ManifestJson {
 }
 
 /** Network event stage values (corrected to Android-canonical, design §8.7). */
+/**
+ * Lifecycle stage of a network interaction (design §8.7). Request/response transports (fetch/xhr/
+ * sendBeacon) use `before`→`complete` (+`redirect`/`error`/`abort`/`timing`). Connection/streaming
+ * transports (ws/sse/webtransport) use `open`→`message`*→`close` (+`error`); each `message` carries a
+ * `direction`. One transport instance emits multiple events sharing `id`/`sequence`.
+ */
 export type NetworkStage =
   | 'before'
   | 'complete'
@@ -88,22 +94,31 @@ export type NetworkStage =
   | 'error'
   | 'abort'
   | 'timing'
-  | 'websocket';
-export type NetworkMechanism = 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon';
-export type WebSocketEvent = 'create' | 'open' | 'send' | 'message' | 'close' | 'error';
+  | 'open'
+  | 'message'
+  | 'close';
+export type NetworkMechanism = 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon' | 'webtransport';
+/** Direction of a streamed frame / event / datagram (ws/sse/webtransport): client→server or back. */
+export type NetworkDirection = 'in' | 'out';
 export type NoBodyReason =
   | 'size_too_large'
   | 'no_content_type'
   | 'unsupported_content_type'
   | 'cant_read_data';
 
-/** Canonical network event (design §8.7); a request emits multiple entries sharing id/sequence. */
+/**
+ * Canonical network event (design §8.7) — a single shape spanning fetch, XHR, WebSocket, SSE and
+ * WebTransport; the interceptor sets `mechanism` + the fields relevant to that transport. A request /
+ * connection emits multiple entries sharing `id`/`sequence`.
+ */
 export interface NetworkEvent {
   timestamp: number;
   id: string;
   sequence: string;
   mechanism: NetworkMechanism;
+  /** Request URL (fetch/xhr/beacon) or connection/session URL (ws/sse/webtransport). */
   url: string;
+  /** HTTP method, or the handshake method for connection transports (GET for ws/sse, CONNECT for wt). */
   method: string;
   type: NetworkStage;
   size?: number;
@@ -111,7 +126,14 @@ export interface NetworkEvent {
   status?: number;
   statusText?: string;
   customError?: string | null;
-  event?: WebSocketEvent | null;
+  /** Inbound vs outbound for a streamed frame / event / datagram (ws/sse/webtransport `message`). */
+  direction?: NetworkDirection;
+  /** Connection/session close code (ws/webtransport). */
+  code?: number;
+  /** Connection/session close or abort reason (ws/webtransport). */
+  reason?: string;
+  /** Sub-channel of a connection: the SSE event name, or a WebTransport stream/datagram identifier. */
+  channel?: string;
   custom?: {
     headers?: Record<string, string>;
     body?: string | null;

@@ -35,11 +35,11 @@ export type {
   ManifestFileEntry,
   ManifestJson,
   Mechanism,
+  NetworkDirection,
   NetworkEvent,
   NetworkMechanism,
   NetworkStage,
   NoBodyReason,
   PlatformType,
   RequestJson,
-  WebSocketEvent,
 } from './wire';

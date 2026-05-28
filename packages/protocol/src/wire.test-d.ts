@@ -8,13 +8,13 @@ import type {
   ManifestFileEntry,
   ManifestJson,
   Mechanism,
+  NetworkDirection,
   NetworkEvent,
   NetworkMechanism,
   NetworkStage,
   NoBodyReason,
   PlatformType,
   RequestJson,
-  WebSocketEvent,
 } from './index';
 
 type Equal<A, B> =
@@ -89,13 +89,16 @@ const fullNetworkEvent: NetworkEvent = {
   mechanism: 'ws',
   url: 'wss://example.com',
   method: 'GET',
-  type: 'websocket',
+  type: 'message',
   size: 10,
   redirect: false,
   status: 101,
   statusText: 'Switching Protocols',
   customError: null,
-  event: 'open',
+  direction: 'in',
+  code: 1000,
+  reason: 'normal closure',
+  channel: 'updates',
   custom: {
     headers: { 'Content-Type': 'application/json' },
     body: null,
@@ -276,7 +279,15 @@ export type WireAssertions = [
   Expect<
     Equal<
       NetworkStage,
-      'before' | 'complete' | 'redirect' | 'error' | 'abort' | 'timing' | 'websocket'
+      | 'before'
+      | 'complete'
+      | 'redirect'
+      | 'error'
+      | 'abort'
+      | 'timing'
+      | 'open'
+      | 'message'
+      | 'close'
     >
   >,
   Expect<
@@ -294,8 +305,8 @@ export type WireAssertions = [
       | 'electron-renderer'
     >
   >,
-  Expect<Equal<NetworkMechanism, 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon'>>,
-  Expect<Equal<WebSocketEvent, 'create' | 'open' | 'send' | 'message' | 'close' | 'error'>>,
+  Expect<Equal<NetworkMechanism, 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon' | 'webtransport'>>,
+  Expect<Equal<NetworkDirection, 'in' | 'out'>>,
   Expect<
     Equal<
       NoBodyReason,
