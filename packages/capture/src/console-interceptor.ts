@@ -1,4 +1,4 @@
-import { type Client, type Interceptor, InterceptorBase, type LogEvent } from '@bugsee/core';
+import { type Interceptor, InterceptorBase, type LogEvent } from '@bugsee/core';
 import type { LogLevelName } from '@bugsee/types';
 import { jsonSafeStringify } from '@bugsee/util';
 
@@ -78,7 +78,7 @@ class ConsoleInterceptor extends InterceptorBase<ConsoleStageMap> {
     this.#now = options.now ?? (() => Date.now());
   }
 
-  protected onStart(client: Client): void {
+  protected onActivate(): void {
     const con = getConsole();
     if (con === undefined) {
       return;
@@ -93,14 +93,12 @@ class ConsoleInterceptor extends InterceptorBase<ConsoleStageMap> {
         if (!this.#capturing) {
           this.#capturing = true;
           try {
-            const event: LogEvent = {
+            this.emit('log', {
               timestamp: this.#now(),
               level,
               source: 'console',
               message: this.#format(args),
-            };
-            client.hubs.log.emit(event);
-            this.emit('log', event);
+            });
           } finally {
             this.#capturing = false;
           }
@@ -110,7 +108,7 @@ class ConsoleInterceptor extends InterceptorBase<ConsoleStageMap> {
     }
   }
 
-  protected override onStop(): void {
+  protected override onDeactivate(): void {
     const con = getConsole();
     if (con !== undefined) {
       for (const [method, original] of this.#originals) {

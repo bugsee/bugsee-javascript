@@ -6,9 +6,11 @@ import {
   createCaptureExporter,
   createEventHubs,
   createMemoryCaptureStore,
+  createMultiKeyEmitter,
   createOperationDispatcher,
   createOptionsContainer,
   type LogEvent,
+  type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
@@ -22,6 +24,8 @@ const buildInit = (store: CaptureStore): CaptureProviderInit => ({
   captureAggregator: createCaptureAggregator(store),
 });
 const options: OptionsContainer = createOptionsContainer();
+// A standalone log source the test drives via emit (the console interceptor is one such source).
+const mkSource = (): MultiKeyEmitter<{ log: LogEvent }> => createMultiKeyEmitter();
 const logEvent = (timestamp: number, message: string): LogEvent => ({
   timestamp,
   level: 'warning',
@@ -33,19 +37,19 @@ const drainLog = async (store: CaptureStore) =>
 
 describe('createLogCaptureProvider', () => {
   it('is named "log" and gated by the captureLogs option', () => {
-    const p = createLogCaptureProvider();
+    const p = createLogCaptureProvider(mkSource());
     expect(p.name).toBe('log');
     expect(p.controllingOption).toBe('captureLogs');
   });
 
-  it('routes a log hub event to the aggregator as a "log" entry (type/timestamp/data)', async () => {
+  it('routes a source log event to the aggregator as a "log" entry (type/timestamp/data)', async () => {
     const store = mkStore();
-    const init = buildInit(store);
-    const p = createLogCaptureProvider();
-    p.init(init);
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
     p.start(options);
     const event = logEvent(5, 'hi');
-    init.hubs.log.emit(event);
+    source.emit('log', event);
     const entries = await drainLog(store);
     expect(entries).toHaveLength(1);
     expect(entries?.[0]?.type).toBe('log');
@@ -55,47 +59,47 @@ describe('createLogCaptureProvider', () => {
 
   it('captures multiple events in order', async () => {
     const store = mkStore();
-    const init = buildInit(store);
-    const p = createLogCaptureProvider();
-    p.init(init);
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
     p.start(options);
-    init.hubs.log.emit(logEvent(1, 'a'));
-    init.hubs.log.emit(logEvent(2, 'b'));
+    source.emit('log', logEvent(1, 'a'));
+    source.emit('log', logEvent(2, 'b'));
     expect((await drainLog(store))?.map((e) => (e.data as LogEvent).message)).toEqual(['a', 'b']);
   });
 
-  it('stop unsubscribes: later hub events are not captured', async () => {
+  it('stop unsubscribes: later source events are not captured', async () => {
     const store = mkStore();
-    const init = buildInit(store);
-    const p = createLogCaptureProvider();
-    p.init(init);
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
     p.start(options);
     p.stop();
-    init.hubs.log.emit(logEvent(9, 'after-stop'));
+    source.emit('log', logEvent(9, 'after-stop'));
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
   });
 
   it('stop before start is a safe no-op', () => {
-    const p = createLogCaptureProvider();
+    const p = createLogCaptureProvider(mkSource());
     p.init(buildInit(mkStore()));
     expect(() => p.stop()).not.toThrow();
   });
 
   it('integrates through the coordinator (enabled → captures; disabled → nothing)', async () => {
     const store = mkStore();
-    const init = buildInit(store);
-    const coordinator = createCaptureCoordinator(init);
-    coordinator.addProvider(createLogCaptureProvider());
+    const source = mkSource();
+    const coordinator = createCaptureCoordinator(buildInit(store));
+    coordinator.addProvider(createLogCaptureProvider(source));
     coordinator.start(options, (opt) => opt === 'captureLogs');
-    init.hubs.log.emit(logEvent(1, 'on'));
+    source.emit('log', logEvent(1, 'on'));
     expect(await drainLog(store)).toHaveLength(1);
 
     const offStore = mkStore();
-    const offInit = buildInit(offStore);
-    const offCoordinator = createCaptureCoordinator(offInit);
-    offCoordinator.addProvider(createLogCaptureProvider());
+    const offSource = mkSource();
+    const offCoordinator = createCaptureCoordinator(buildInit(offStore));
+    offCoordinator.addProvider(createLogCaptureProvider(offSource));
     offCoordinator.start(options, () => false);
-    offInit.hubs.log.emit(logEvent(1, 'off'));
+    offSource.emit('log', logEvent(1, 'off'));
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
   });
 });

@@ -96,7 +96,7 @@ const exampleClient: Client = {
 // surface, the subclass adds name + onStart/onStop. The contract holder can subscribe to stages.
 class ExampleInterceptor extends InterceptorBase<{ tick: number }> {
   readonly name = 'global-error';
-  protected onStart(_client: Client): void {}
+  protected onActivate(): void {}
 }
 const interceptor: Interceptor<{ tick: number }> = new ExampleInterceptor();
 const offTick: () => void = interceptor.on('tick', (n: number) => n);

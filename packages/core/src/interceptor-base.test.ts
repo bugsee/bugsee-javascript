@@ -1,63 +1,100 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { Client } from './contracts';
+import { describe, expect, it } from 'vitest';
 import { InterceptorBase } from './interceptor-base';
 
 interface Stages {
   tick: number;
-  done: string;
 }
 
 class TestInterceptor extends InterceptorBase<Stages> {
   readonly name = 'test';
-  startedWith: Client | null = null;
-  stopped = 0;
-
-  protected onStart(client: Client): void {
-    this.startedWith = client;
+  activations = 0;
+  deactivations = 0;
+  protected onActivate(): void {
+    this.activations += 1;
   }
-  protected override onStop(): void {
-    this.stopped += 1;
+  protected override onDeactivate(): void {
+    this.deactivations += 1;
   }
-
-  // expose emit (protected-by-contract) so the test can drive a stage
+  // expose emit so a test can drive a stage
   fireTick(n: number): void {
     this.emit('tick', n);
   }
 }
 
-const client = { tag: 'client' } as unknown as Client;
-
-describe('InterceptorBase — lifecycle', () => {
-  it('start passes the client to onStart', () => {
+describe('InterceptorBase — explicit start/stop activation', () => {
+  it('activates on start() and deactivates on stop()', () => {
     const ic = new TestInterceptor();
-    ic.start(client);
-    expect(ic.startedWith).toBe(client);
+    ic.start();
+    expect(ic.activations).toBe(1);
+    ic.stop();
+    expect(ic.deactivations).toBe(1);
   });
 
-  it('stop calls onStop', () => {
+  it('start() is idempotent (does not re-activate)', () => {
     const ic = new TestInterceptor();
-    ic.start(client);
+    ic.start();
+    ic.start();
+    expect(ic.activations).toBe(1);
+  });
+
+  it('stop() while idle does not deactivate', () => {
+    const ic = new TestInterceptor();
     ic.stop();
-    expect(ic.stopped).toBe(1);
+    expect(ic.deactivations).toBe(0);
   });
 
   it('exposes the subclass name', () => {
     expect(new TestInterceptor().name).toBe('test');
   });
 
-  it('uses the base default onStop when a subclass does not override it', () => {
+  it('uses the base default onDeactivate when a subclass does not override it', () => {
     class Minimal extends InterceptorBase<Stages> {
       readonly name = 'minimal';
-      protected onStart(): void {}
+      protected onActivate(): void {}
     }
     const ic = new Minimal();
-    ic.start(client);
+    ic.start();
     expect(() => ic.stop()).not.toThrow();
   });
 });
 
-describe('InterceptorBase — listenable (inherits the multi-key emitter)', () => {
-  it('lets a subscriber observe a stage via on()', () => {
+describe('InterceptorBase — subscriber-presence activation', () => {
+  it('activates on the first subscriber and deactivates when the last leaves', () => {
+    const ic = new TestInterceptor();
+    const off = ic.on('tick', () => {});
+    expect(ic.activations).toBe(1);
+    off();
+    expect(ic.deactivations).toBe(1);
+  });
+
+  it('stays active across an explicit stop() while a subscriber remains', () => {
+    const ic = new TestInterceptor();
+    ic.start();
+    ic.on('tick', () => {});
+    expect(ic.activations).toBe(1);
+    ic.stop(); // subscriber still present → still active
+    expect(ic.deactivations).toBe(0);
+  });
+
+  it('stays active across unsubscribe while explicitly started', () => {
+    const ic = new TestInterceptor();
+    ic.start();
+    const off = ic.on('tick', () => {});
+    off(); // still started → still active
+    expect(ic.deactivations).toBe(0);
+  });
+
+  it('deactivates only when both the explicit start and the last subscriber are gone', () => {
+    const ic = new TestInterceptor();
+    ic.start();
+    const off = ic.on('tick', () => {});
+    expect(ic.activations).toBe(1);
+    ic.stop();
+    off();
+    expect(ic.deactivations).toBe(1);
+  });
+
+  it('delivers stage events to subscribers (it is an emitter)', () => {
     const ic = new TestInterceptor();
     const seen: number[] = [];
     ic.on('tick', (n) => seen.push(n));
@@ -66,12 +103,12 @@ describe('InterceptorBase — listenable (inherits the multi-key emitter)', () =
     expect(seen).toEqual([1, 2]);
   });
 
-  it('off() (and the on() unsubscribe) stop delivery', () => {
+  it('does not re-activate on a second subscriber', () => {
     const ic = new TestInterceptor();
-    const fn = vi.fn();
-    const off = ic.on('tick', fn);
-    off();
-    ic.fireTick(1);
-    expect(fn).not.toHaveBeenCalled();
+    ic.on('tick', () => {});
+    const off2 = ic.on('tick', () => {});
+    expect(ic.activations).toBe(1);
+    off2();
+    expect(ic.deactivations).toBe(0); // one subscriber remains
   });
 });

@@ -1,18 +1,32 @@
-import { type CaptureProvider, CaptureProviderBase } from '@bugsee/core';
+import {
+  type CaptureProvider,
+  CaptureProviderBase,
+  type EventSubscribable,
+  type LogEvent,
+} from '@bugsee/core';
 
-// Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to the log hub and routes each
-// LogEvent to the aggregator as a `log` capture entry. The hub is fed by sources — the shared
-// consoleInterceptor, the manual client.log(), or any platform-specific log source — so this single
-// provider serves every runtime; only the SOURCES vary. Uses the init()/start(options) lifecycle
-// (init supplies the pipeline at registration; start subscribes).
+// Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to a log SOURCE and routes each
+// LogEvent to the aggregator as a `log` capture entry. The source is any emitter with a 'log' stage —
+// the shared consoleInterceptor, or a platform log source — so this single provider serves every
+// runtime; only the sources vary. Subscribing also drives the source's subscriber-presence activation
+// (the console interceptor patches `console` while the provider is started, and unpatches on stop).
+
+/** A source of log events — any emitter exposing a `log` stage (e.g. the console interceptor). */
+export type LogSource = EventSubscribable<{ log: LogEvent }>;
 
 class LogCaptureProvider extends CaptureProviderBase {
   readonly name = 'log';
   readonly controllingOption = 'captureLogs';
+  readonly #source: LogSource;
   #off: (() => void) | null = null;
 
+  constructor(source: LogSource) {
+    super();
+    this.#source = source;
+  }
+
   protected onStart(): void {
-    this.#off = this.pipeline.hubs.log.subscribe((event) => {
+    this.#off = this.#source.on('log', (event) => {
       this.capture('log', event.timestamp, event);
     });
   }
@@ -23,7 +37,7 @@ class LogCaptureProvider extends CaptureProviderBase {
   }
 }
 
-/** The shared log capture provider (consumes the log hub → `log` entries). Gated by `captureLogs`. */
-export function createLogCaptureProvider(): CaptureProvider {
-  return new LogCaptureProvider();
+/** The shared log capture provider: consumes a log source → `log` entries. Gated by `captureLogs`. */
+export function createLogCaptureProvider(source: LogSource): CaptureProvider {
+  return new LogCaptureProvider(source);
 }

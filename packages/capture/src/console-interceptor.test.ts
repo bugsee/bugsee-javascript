@@ -1,4 +1,4 @@
-import { type Client, createEventHubs, type LogEvent } from '@bugsee/core';
+import type { LogEvent } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type ConsoleInterceptorOptions,
@@ -25,14 +25,6 @@ function installFakeConsole() {
 // Read globalThis.console (the fake during a test) so we exercise the wrapper the interceptor installed.
 type FakeConsole = Record<(typeof CONSOLE_METHODS)[number], (...a: unknown[]) => void>;
 const con = () => (globalThis as unknown as { console: FakeConsole }).console;
-
-// A minimal client: the interceptor only touches client.hubs.log.
-function fakeClient() {
-  const hubs = createEventHubs();
-  const emitted: LogEvent[] = [];
-  hubs.log.subscribe((e) => emitted.push(e));
-  return { client: { hubs } as unknown as Client, emitted, hubs };
-}
 
 const restores: Array<() => void> = [];
 const fake = () => {
@@ -80,118 +72,131 @@ describe('formatConsoleArgs (portable default formatter)', () => {
   });
 });
 
-describe('createConsoleInterceptor — capture', () => {
-  it('emits a LogEvent (mapped level, source "console", formatted message, clock timestamp)', () => {
+describe('createConsoleInterceptor — capture (fires the "log" stage)', () => {
+  it('fires a LogEvent (mapped level, source "console", formatted message, clock timestamp)', () => {
     fake();
-    const { client, emitted } = fakeClient();
     const ic = createConsoleInterceptor({ now: () => 123 });
-    ic.start(client);
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e)); // subscribing activates + patches console
     con().error('boom', { a: 1 });
-    expect(emitted).toEqual([
+    expect(logs).toEqual([
       { timestamp: 123, level: 'error', source: 'console', message: 'boom {"a":1}' },
     ]);
   });
 
   it('maps each console method to its default level', () => {
     fake();
-    const { client, emitted } = fakeClient();
-    createConsoleInterceptor({ now: () => 1 }).start(client);
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
     con().log('a');
     con().info('b');
     con().debug('c');
     con().warn('d');
     con().error('e');
-    expect(emitted.map((e) => e.level)).toEqual(['info', 'info', 'debug', 'warning', 'error']);
+    expect(logs.map((l) => l.level)).toEqual(['info', 'info', 'debug', 'warning', 'error']);
   });
 
   it('passes the call through to the original console (app behavior preserved)', () => {
     const { calls } = fake();
-    const { client } = fakeClient();
-    createConsoleInterceptor().start(client);
+    const ic = createConsoleInterceptor();
+    ic.on('log', () => {});
     con().warn('hi', 1);
     expect(calls).toEqual([{ method: 'warn', args: ['hi', 1] }]);
   });
 
   it('honors an injected formatter', () => {
     fake();
-    const { client, emitted } = fakeClient();
     const format: ConsoleInterceptorOptions['format'] = (args) => `<${args.length}>`;
-    createConsoleInterceptor({ now: () => 1, format }).start(client);
+    const ic = createConsoleInterceptor({ now: () => 1, format });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
     con().log('a', 'b', 'c');
-    expect(emitted[0]?.message).toBe('<3>');
+    expect(logs[0]?.message).toBe('<3>');
   });
 
   it('honors injected level mappings (and only patches the listed methods)', () => {
     const { calls } = fake();
-    const { client, emitted } = fakeClient();
-    createConsoleInterceptor({ now: () => 1, levels: { error: 'verbose' } }).start(client);
+    const ic = createConsoleInterceptor({ now: () => 1, levels: { error: 'verbose' } });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
     con().error('x');
     con().log('y'); // not in the custom levels → not captured, but still works
-    expect(emitted).toEqual([{ timestamp: 1, level: 'verbose', source: 'console', message: 'x' }]);
+    expect(logs).toEqual([{ timestamp: 1, level: 'verbose', source: 'console', message: 'x' }]);
     expect(calls).toContainEqual({ method: 'log', args: ['y'] });
   });
 
   it('skips a configured method that is absent from the runtime console', () => {
     fake(); // fake console has no "trace"
-    const { client, emitted } = fakeClient();
     const ic = createConsoleInterceptor({ now: () => 1, levels: { trace: 'debug' } });
-    expect(() => ic.start(client)).not.toThrow();
+    const logs: LogEvent[] = [];
+    expect(() => ic.on('log', (e) => logs.push(e))).not.toThrow();
     expect((con() as unknown as Record<string, unknown>).trace).toBeUndefined(); // not patched in
-    expect(emitted).toEqual([]);
-  });
-
-  it('fires the "log" stage hook with the captured LogEvent (listenable interceptor)', () => {
-    fake();
-    const { client } = fakeClient();
-    const ic = createConsoleInterceptor({ now: () => 7 });
-    const seen: LogEvent[] = [];
-    ic.on('log', (e) => seen.push(e));
-    ic.start(client);
-    con().warn('hi', 1);
-    expect(seen).toEqual([{ timestamp: 7, level: 'warning', source: 'console', message: 'hi 1' }]);
+    expect(logs).toEqual([]);
   });
 
   it('does not re-emit when a log subscriber itself logs (re-entrancy guard)', () => {
     fake();
-    const { client, hubs } = fakeClient();
+    const ic = createConsoleInterceptor({ now: () => 1 });
     const seen: LogEvent[] = [];
-    hubs.log.subscribe((e) => {
+    ic.on('log', (e) => {
       seen.push(e);
       con().log('from inside a subscriber'); // would recurse without the guard
     });
-    createConsoleInterceptor({ now: () => 1 }).start(client);
     con().error('outer');
-    expect(seen).toHaveLength(1); // exactly one emit; the nested log did not re-enter
+    expect(seen).toHaveLength(1);
     expect(seen[0]?.message).toBe('outer');
   });
 });
 
-describe('createConsoleInterceptor — stop', () => {
-  it('restores the originals (after stop, calls are not captured but still pass through)', () => {
+describe('createConsoleInterceptor — activation', () => {
+  it('patches console on the first subscriber and restores it on the last unsubscribe', () => {
     const { calls } = fake();
-    const { client, emitted } = fakeClient();
     const ic = createConsoleInterceptor({ now: () => 1 });
-    ic.start(client);
-    ic.stop();
+    const logs: LogEvent[] = [];
+    const originalLog = con().log;
+    const off = ic.on('log', (e) => logs.push(e));
+    expect(con().log).not.toBe(originalLog); // patched (wrapper installed)
+    con().log('active');
+    expect(logs).toHaveLength(1); // captured while active
+    off(); // last subscriber gone → deactivate → restore console
+    expect(con().log).toBe(originalLog); // the original method is restored, not left wrapped
     con().log('after');
-    expect(emitted).toEqual([]); // nothing captured post-stop
-    expect(calls).toContainEqual({ method: 'log', args: ['after'] }); // original restored
+    expect(logs).toHaveLength(1); // not captured after restore
+    expect(calls).toEqual([
+      { method: 'log', args: ['active'] },
+      { method: 'log', args: ['after'] },
+    ]); // both passed through to the original
+  });
+
+  it('explicit start() activates without a subscriber; a later subscriber receives events', () => {
+    fake();
+    const ic = createConsoleInterceptor({ now: () => 5 });
+    ic.start(); // active + patched, no subscriber yet
+    con().warn('early'); // emitted to nobody (fine)
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    con().warn('later');
+    expect(logs).toEqual([{ timestamp: 5, level: 'warning', source: 'console', message: 'later' }]);
+    ic.stop();
   });
 });
 
 describe('createConsoleInterceptor — no console in the runtime', () => {
-  it('start and stop are safe no-ops when globalThis has no console', () => {
+  it('activation is a safe no-op when globalThis has no console', () => {
     const slot = globalThis as unknown as { console?: unknown };
     const real = slot.console;
     slot.console = undefined;
     try {
-      const { client, emitted } = fakeClient();
       const ic = createConsoleInterceptor();
+      const logs: LogEvent[] = [];
       expect(() => {
-        ic.start(client);
+        const off = ic.on('log', (e) => logs.push(e)); // activate (no console to patch)
+        ic.start();
         ic.stop();
+        off(); // last subscriber gone → deactivate with no console to restore
       }).not.toThrow();
-      expect(emitted).toEqual([]);
+      expect(logs).toEqual([]);
     } finally {
       slot.console = real;
     }
