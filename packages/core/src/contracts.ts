@@ -1,4 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
+import type { EventSubscribable } from './emitter';
 import type { EventHubs } from './hubs';
 import type { ReportingRequest } from './reporting';
 
@@ -35,8 +36,15 @@ export interface OperationDispatcher {
   onOperation(operation: Operation): void;
 }
 
-/** A source that owns runtime hooks and emits to a hub (§16.2). */
-export interface Interceptor {
+/**
+ * A source that owns a runtime hook and emits captured events to a hub (§16.2). It is ALSO listenable:
+ * by extending {@link EventSubscribable} it lets other components subscribe to its processing STAGES
+ * (`StageMap` maps stage name → payload — e.g. the network interceptor keys by NetworkStage) through
+ * the contract alone, without the concrete impl. Observe-only: the contract exposes the listener side
+ * (on/off/once/…), not emit — only the interceptor fires its own stages. {@link InterceptorBase}
+ * provides the reusable implementation.
+ */
+export interface Interceptor<StageMap = Record<never, never>> extends EventSubscribable<StageMap> {
   /** Component id. */
   name: string;
   start(client: Client): void;

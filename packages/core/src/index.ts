@@ -70,6 +70,7 @@ export {
   type InputEvent,
   type LogEvent,
 } from './hubs';
+export { InterceptorBase } from './interceptor-base';
 export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,

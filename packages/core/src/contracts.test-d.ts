@@ -22,6 +22,7 @@ import type {
   StoredEntry,
 } from './contracts';
 import { createEventHubs } from './hubs';
+import { InterceptorBase } from './interceptor-base';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 
 const noop = (): void => {};
@@ -91,11 +92,20 @@ const exampleClient: Client = {
   addDetectionProvider: noop,
 };
 
-const interceptor: Interceptor = {
-  name: 'global-error',
-  start: (_client: Client) => {},
-  stop: noop,
-};
+// An interceptor is listenable (extends EventSubscribable): InterceptorBase supplies the emitter
+// surface, the subclass adds name + onStart/onStop. The contract holder can subscribe to stages.
+class ExampleInterceptor extends InterceptorBase<{ tick: number }> {
+  readonly name = 'global-error';
+  protected onStart(_client: Client): void {}
+}
+const interceptor: Interceptor<{ tick: number }> = new ExampleInterceptor();
+const offTick: () => void = interceptor.on('tick', (n: number) => n);
+offTick();
+interceptor.addEventListener('tick', () => {});
+interceptor.once('tick', () => {});
+interceptor.off('tick', () => {});
+interceptor.removeEventListener('tick', () => {});
+interceptor.removeAllListeners();
 
 // The pipeline deps a provider receives once via init() (subset of Client, no registration seams).
 const captureProviderInit: CaptureProviderInit = {

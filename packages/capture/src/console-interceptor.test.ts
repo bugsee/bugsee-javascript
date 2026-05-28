@@ -140,6 +140,17 @@ describe('createConsoleInterceptor — capture', () => {
     expect(emitted).toEqual([]);
   });
 
+  it('fires the "log" stage hook with the captured LogEvent (listenable interceptor)', () => {
+    fake();
+    const { client } = fakeClient();
+    const ic = createConsoleInterceptor({ now: () => 7 });
+    const seen: LogEvent[] = [];
+    ic.on('log', (e) => seen.push(e));
+    ic.start(client);
+    con().warn('hi', 1);
+    expect(seen).toEqual([{ timestamp: 7, level: 'warning', source: 'console', message: 'hi 1' }]);
+  });
+
   it('does not re-emit when a log subscriber itself logs (re-entrancy guard)', () => {
     fake();
     const { client, hubs } = fakeClient();

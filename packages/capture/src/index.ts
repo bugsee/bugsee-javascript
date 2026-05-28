@@ -5,6 +5,7 @@
 
 export {
   type ConsoleInterceptorOptions,
+  type ConsoleStageMap,
   createConsoleInterceptor,
   formatConsoleArgs,
 } from './console-interceptor';
