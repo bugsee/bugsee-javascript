@@ -142,7 +142,9 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
         return `h${this.#counter}`;
       });
     this.#isInternal = options.isInternal ?? ((_url, headers) => hasInternalHeader(headers));
-    this.#target = options.target ?? { http, https };
+    // The real node modules expose the same request/get factories we patch; their precise overload
+    // types aren't structurally assignable to our minimal RequestFn, so widen through unknown.
+    this.#target = options.target ?? ({ http, https } as unknown as NodeHttpTarget);
   }
 
   protected onActivate(): void {
