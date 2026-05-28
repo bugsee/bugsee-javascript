@@ -311,11 +311,10 @@ describe('launch', () => {
     expect(client.isLaunched()).toBe(true);
   });
 
-  it('routes provider-start failures to a supplied onError without throwing', () => {
+  it('routes a provider-start failure to onError and still launches (never throws, §15.1)', () => {
     const onError = vi.fn();
-    // A clock whose first read throws would surface inside a provider; instead just assert the
-    // onError seam is wired by launching with it and an injected scheduler/clock (no failure path
-    // here — coverage of the option being threaded).
+    // The system-traces provider samples on start; a sampler that throws makes its start() throw.
+    // launch must isolate that to onError and still come up launched (the §15.1 guarantee).
     const client = launchTracked(
       'tok',
       baseOptions({
@@ -323,9 +322,14 @@ describe('launch', () => {
         onError,
         clock: fixedClock,
         scheduler: fakeScheduler().scheduler,
+        systemMetricsSampler: () => {
+          throw new Error('sampler boom');
+        },
       }),
     );
     expect(client.isLaunched()).toBe(true);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('sampler boom');
   });
 
   it('uses the real Node process / system probe / metrics sampler when not injected', async () => {

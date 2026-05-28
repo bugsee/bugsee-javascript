@@ -87,7 +87,7 @@ describe('launch — loopback end-to-end', () => {
       systemMetricsSampler: () => [],
     });
 
-    client.event('checkout', { step: 3 }); // a captured user event lands in the bundle
+    client.event('checkout', { step: 3 }); // capture an entry so a non-empty store is assembled
     const result = await client.logException(new Error('integration boom'));
     await client.stop();
 

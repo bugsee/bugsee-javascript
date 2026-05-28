@@ -667,11 +667,13 @@ describe('createClient — flush/stop await pending reports', () => {
     expect(await client.flush()).toBe(true); // the settled {ok:false} report drains
   });
 
-  it('drops a settled report from the pending set (a later flush is immediate)', async () => {
+  it('a report that already settled does not block a later flush', async () => {
+    // (The pending-set cleanup itself is non-observable memory hygiene — a resolved promise left in
+    // the set wouldn't change flush; what's validated here is that a settled report can't stall flush.)
     const { triggerPipeline, releaseAll } = deferredTrigger();
     const client = createClient({ triggerPipeline });
     void client.logException(new Error('x'));
-    releaseAll(); // report settles → removed from the pending set
+    releaseAll(); // report settles before flush is called
     await delay(0);
     expect(await client.flush()).toBe(true);
   });
