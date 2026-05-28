@@ -64,7 +64,8 @@ const buildUrl = (options: HttpRequestOptions | undefined, secure: boolean): str
     (typeof options?.hostname === 'string' && options.hostname) ||
     (typeof options?.host === 'string' && options.host) ||
     'localhost';
-  const port = options?.port !== undefined && options.port !== '' ? `:${options.port}` : '';
+  // Truthy guard so an unset/empty/0 port is omitted (port 0 = "any", not a real target).
+  const port = options?.port ? `:${options.port}` : '';
   const path = typeof options?.path === 'string' ? options.path : '/';
   return `${protocol}//${host}${port}${path}`;
 };

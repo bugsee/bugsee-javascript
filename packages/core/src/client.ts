@@ -211,7 +211,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const pendingReports = new Set<Promise<UploadResult>>();
   const track = (report: Promise<UploadResult>): Promise<UploadResult> => {
     pendingReports.add(report);
-    void report.finally(() => pendingReports.delete(report));
+    // Settle handler on BOTH outcomes (not .finally, whose returned promise would re-raise a
+    // rejection as unhandled): the report pipeline is contractually non-rejecting, but this keeps
+    // `track` self-defending so a stray rejection can't surface as an unhandled rejection.
+    const forget = (): void => {
+      pendingReports.delete(report);
+    };
+    report.then(forget, forget);
     return report;
   };
   // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded

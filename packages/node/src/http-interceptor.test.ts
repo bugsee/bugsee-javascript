@@ -120,6 +120,12 @@ describe('createNodeHttpInterceptor', () => {
     expect(events[0]?.url).toBe('http://only-host.test/');
   });
 
+  it('omits an explicit port 0 from the built url (0 = "any", not a real target)', () => {
+    const { target, events } = harness();
+    target.http.request({ host: 'h.test', port: 0, path: '/p' });
+    expect(events[0]?.url).toBe('http://h.test/p');
+  });
+
   it('falls back to localhost and http when options carry neither host nor protocol', () => {
     const { target, events } = harness();
     target.http.request({ method: 'GET' });

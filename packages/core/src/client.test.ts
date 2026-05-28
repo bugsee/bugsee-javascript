@@ -621,6 +621,21 @@ describe('createClient — flush/stop await pending reports', () => {
     expect(await client.flush(10)).toBe(false);
   });
 
+  it('drains an in-flight report that rejects, without surfacing it (flush still resolves)', async () => {
+    let reject!: (reason: unknown) => void;
+    const report = vi.fn<TriggerPipeline['report']>(
+      () => new Promise<UploadResult>((_resolve, rej) => (reject = rej)),
+    );
+    const client = createClient({ triggerPipeline: { report } as TriggerPipeline });
+    const logged = client.logException(new Error('x'));
+    logged.catch(() => {}); // the public promise rejects too; handle it so it isn't "unhandled"
+    const f = tracked(client.flush());
+    await delay(5);
+    expect(f.settled).toBe(false); // still awaiting the pending report
+    reject(new Error('report blew up'));
+    expect(await f.p).toBe(true); // allSettled tolerates the rejection; flush still resolves
+  });
+
   it('tracks a dropped report when a detection fires with no trigger pipeline', async () => {
     const client = createClient(); // no triggerPipeline → report resolves {ok:false}
     const { provider, fire } = capturingDetector('crash');

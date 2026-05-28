@@ -16,9 +16,9 @@ import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
 // --- fakes -------------------------------------------------------------------------------------
 
-function fakeProcess() {
+function fakeProcess(onExit?: (code?: number) => void) {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
-  const exit = vi.fn();
+  const exit = vi.fn(onExit);
   const proc: NodeRuntime = {
     on(event, listener) {
       const list = listeners.get(event) ?? [];
@@ -165,23 +165,40 @@ describe('launch', () => {
     expect(await drain(store, 'traces.system')).toBeUndefined();
   });
 
-  it('flushes the crash report then exits on uncaughtException (default exitOnUncaught)', async () => {
-    const fp = fakeProcess();
-    const transport = uploadTransport();
+  it('delivers the crash bundle BEFORE exiting on uncaughtException (ordering)', async () => {
+    const order: string[] = [];
+    const fp = fakeProcess(() => order.push('exit'));
+    // Record when the signed PUT (the bundle delivery) reaches the transport, relative to exit.
+    const transport = vi.fn<HttpTransport>(async (url: string) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'a' }) };
+      }
+      if (url.endsWith('/v2/issues')) {
+        return {
+          status: 200,
+          headers: {},
+          body: jsonBody({ endpoint: 'https://s3.test/put', issueId: 'i1', recordingId: 'r1' }),
+        };
+      }
+      order.push('put');
+      return { status: 200, headers: {}, body: new Uint8Array() } satisfies HttpResponse;
+    });
     launchTracked('tok', baseOptions({ process: fp.proc, transport, captureStore: memStore() }));
     fp.fire('uncaughtException', new Error('boom'));
     await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
-    // session → issue → PUT all went through the (internal-tagged) transport.
-    expect(transport.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(order).toEqual(['put', 'exit']); // bundle delivered, THEN exit — not the reverse / parallel
   });
 
-  it('does not exit when exitOnUncaught is false (still flushes)', async () => {
+  it('installs the crash handler but does not exit when exitOnUncaught is false', async () => {
     const fp = fakeProcess();
     const transport = uploadTransport();
     launchTracked(
       'tok',
       baseOptions({ process: fp.proc, transport, captureStore: memStore(), exitOnUncaught: false }),
     );
+    // The launch crash handler is installed alongside the uncaught detection provider (2 listeners);
+    // deleting the handler would drop this to 1, so this pins the handler's presence.
+    expect(fp.count('uncaughtException')).toBe(2);
     fp.fire('uncaughtException', new Error('boom'));
     await vi.waitFor(() => expect(transport.mock.calls.length).toBeGreaterThanOrEqual(3));
     expect(fp.exit).not.toHaveBeenCalled();
@@ -194,6 +211,17 @@ describe('launch', () => {
       baseOptions({ process: fp.proc, captureStore: memStore(), detectCrashes: false }),
     );
     expect(fp.count('uncaughtException')).toBe(0);
+  });
+
+  it('removes the crash handler on stop (a later uncaughtException neither flushes nor exits)', async () => {
+    const fp = fakeProcess();
+    const client = launch('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    expect(fp.count('uncaughtException')).toBe(2); // detection provider + crash handler
+    await client.stop();
+    expect(fp.count('uncaughtException')).toBe(0); // both removed
+    fp.fire('uncaughtException', new Error('after stop'));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fp.exit).not.toHaveBeenCalled();
   });
 
   it('tags every SDK request with X-Bugsee-Internal and targets the default endpoint', async () => {

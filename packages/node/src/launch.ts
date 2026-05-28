@@ -196,21 +196,34 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
 
   client.launch();
 
+  if (!gates.detectCrashes) {
+    return client;
+  }
+
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
   // was registered during launch, so BEFORE this one) submits the crash report; flush() now awaits
   // that in-flight report, so the bundle is delivered before we exit. Guaranteed delivery across a
   // hard crash (persist-before-exit + relaunch re-upload) is the separate recovery slice.
-  if (gates.detectCrashes) {
-    const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
-    const exitOnUncaught = options.exitOnUncaught ?? true;
-    proc.on('uncaughtException', () => {
-      void client.flush(shutdownTimeoutMs).finally(() => {
-        if (exitOnUncaught) {
-          proc.exit(1);
-        }
-      });
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  const exitOnUncaught = options.exitOnUncaught ?? true;
+  const onUncaughtException = (): void => {
+    void client.flush(shutdownTimeoutMs).finally(() => {
+      if (exitOnUncaught) {
+        proc.exit(1);
+      }
     });
-  }
+  };
+  proc.on('uncaughtException', onUncaughtException);
 
-  return client;
+  // stop() must also remove THIS process listener: the core client owns the detection providers'
+  // cleanup but knows nothing about launch's crash handler, so without this a stopped SDK would
+  // still flush + exit on a later uncaughtException (and re-launching would pile up handlers).
+  const stopCore = client.stop;
+  return {
+    ...client,
+    stop(timeout?: number): Promise<boolean> {
+      proc.off('uncaughtException', onUncaughtException);
+      return stopCore(timeout);
+    },
+  };
 }
