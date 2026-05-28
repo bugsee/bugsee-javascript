@@ -52,12 +52,18 @@ export {
   type ReportListener,
 } from './detection-coordinator';
 export { DetectionProviderBase } from './detection-provider-base';
+export {
+  createMultiKeyEmitter,
+  type EventListener,
+  type EventSubscribable,
+  type MultiKeyEmitter,
+  MultiKeyEmitterBase,
+} from './emitter';
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
-export { createHooks, type Hooks } from './hooks';
 export {
   createEventHubs,
   type EventHubs,
