@@ -19,5 +19,6 @@ export {
   type NodeHttpInterceptorOptions,
   type NodeHttpTarget,
 } from './http-interceptor';
+export { type Bugsee, type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
