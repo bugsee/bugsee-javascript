@@ -24,6 +24,9 @@ class FakeReq {
       l(arg);
     }
   }
+  listenerCount(event: string): number {
+    return this.#listeners[event]?.length ?? 0;
+  }
 }
 
 // A fake { http, https } target. Each request/get is an INDEPENDENT fn that mints its own FakeReq
@@ -88,12 +91,14 @@ describe('createNodeHttpInterceptor', () => {
     expect(typeof before?.timestamp).toBe('number'); // default now = Date.now
   });
 
-  it('computes complete.custom.timings.duration from the injected clock', () => {
+  it('stamps before/complete timestamps and the duration from the injected clock', () => {
     let t = 1000;
     const { target, last, events } = harness({ now: () => t });
     target.http.request('http://api.test/x');
     t = 1750;
     last().fire('response', okResponse);
+    expect(events[0]?.timestamp).toBe(1000); // before, stamped at request start
+    expect(events[1]?.timestamp).toBe(1750); // complete, stamped at response
     expect(events[1]?.custom?.timings).toEqual({ duration: 750 });
   });
 
@@ -156,20 +161,32 @@ describe('createNodeHttpInterceptor', () => {
     expect(events[1]?.custom?.headers).toEqual({ 'set-cookie': 'c1=1, c2=2' });
   });
 
-  it('emits an error event with the message of a thrown Error', () => {
-    const { target, last, events } = harness();
+  it('emits an error event (with timestamp) and re-raises when it is the sole error listener', () => {
+    const { target, last, events } = harness({ now: () => 4242 });
     target.http.request('http://api.test/e');
-    last().fire('error', new Error('boom'));
-    expect(events.map((e) => e.type)).toEqual(['before', 'error']);
-    expect(events[1]).toMatchObject({ type: 'error', customError: 'boom' });
+    // The app installed no 'error' listener, so node would throw — capturing must preserve that.
+    expect(() => last().fire('error', new Error('boom'))).toThrow('boom');
+    expect(events.map((e) => e.type)).toEqual(['before', 'error']); // captured before re-raising
+    expect(events[1]).toMatchObject({ type: 'error', customError: 'boom', timestamp: 4242 });
     expect(events[1]?.custom?.error).toBe('boom');
   });
 
-  it('stringifies a non-Error error value', () => {
+  it('stringifies a non-Error error value (and still re-raises it)', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/e');
-    last().fire('error', 'kaput');
+    expect(() => last().fire('error', 'kaput')).toThrow();
     expect(events[1]?.customError).toBe('kaput');
+  });
+
+  it('does NOT re-raise when the request has its own error listener (app handles it)', () => {
+    const { target, events } = harness();
+    const req = target.http.request('http://api.test/e') as FakeReq;
+    const appErrors: unknown[] = [];
+    req.on('error', (e) => appErrors.push(e)); // the app's handler → no longer the sole listener
+    const err = new Error('handled');
+    expect(() => req.fire('error', err)).not.toThrow(); // capture, but leave the app's handling intact
+    expect(events[1]).toMatchObject({ type: 'error', customError: 'handled' });
+    expect(appErrors).toEqual([err]); // the app's listener still ran
   });
 
   it('skips SDK self-traffic via the default X-Bugsee-Internal header', () => {

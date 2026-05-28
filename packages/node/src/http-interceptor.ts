@@ -15,6 +15,7 @@ import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 /** A node:http-like ClientRequest: an emitter exposing the `response`/`error` events we observe. */
 interface ClientRequest {
   on(event: string, listener: (arg: unknown) => void): unknown;
+  listenerCount(event: string): number;
 }
 type RequestFn = (...args: unknown[]) => unknown;
 /** The subset of a node:http(s) module we patch — its `request` and `get` factories. */
@@ -218,6 +219,12 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
           customError: message,
           custom: { error: message },
         });
+        // Transparency: a ClientRequest that emits 'error' with no listener THROWS (→
+        // uncaughtException). Capturing must not change that — if ours is the only 'error' listener
+        // (the app installed none), re-raise so the request still fails exactly as uninstrumented.
+        if ((req as ClientRequest).listenerCount('error') <= 1) {
+          throw error;
+        }
       });
       return req;
     };
