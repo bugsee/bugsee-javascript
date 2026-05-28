@@ -8,3 +8,4 @@ export {
   createConsoleInterceptor,
   formatConsoleArgs,
 } from './console-interceptor';
+export { createLogCaptureProvider } from './log-provider';
