@@ -11,7 +11,12 @@ import {
 class FakeReq {
   readonly #listeners: Record<string, Array<(arg: unknown) => void>> = {};
   on(event: string, listener: (arg: unknown) => void): this {
-    (this.#listeners[event] ??= []).push(listener);
+    let list = this.#listeners[event];
+    if (list === undefined) {
+      list = [];
+      this.#listeners[event] = list;
+    }
+    list.push(listener);
     return this;
   }
   fire(event: string, arg?: unknown): void {
