@@ -13,4 +13,5 @@ export {
   realSystemProbe,
   type SystemProbe,
 } from './environment';
+export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';

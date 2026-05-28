@@ -23,6 +23,12 @@ export {
   type SseTarget,
 } from './sse-interceptor';
 export {
+  createSystemEventsProvider,
+  type SystemEvent,
+  type SystemEventSource,
+  type SystemEventsProviderOptions,
+} from './system-events-provider';
+export {
   createSystemTracesProvider,
   type SystemTracesProviderOptions,
   type TraceSample,
