@@ -205,6 +205,142 @@ describe('MultiKeyEmitterBase — dispatch snapshot semantics', () => {
   });
 });
 
+describe('MultiKeyEmitterBase — onAny', () => {
+  it('delivers every channel with its name and payload', () => {
+    const e = mk();
+    const seen: Array<[string, unknown]> = [];
+    e.onAny((name, payload) => seen.push([name, payload]));
+    e.emit('before', { url: '/a' });
+    e.emit('complete', { status: 204 });
+    expect(seen).toEqual([
+      ['before', { url: '/a' }],
+      ['complete', { status: 204 }],
+    ]);
+  });
+
+  it('fires even for a channel that has no per-channel listeners', () => {
+    const e = mk();
+    const fn = vi.fn();
+    e.onAny(fn);
+    e.emit('before', { url: '/a' }); // no on('before') listener exists
+    expect(fn).toHaveBeenCalledWith('before', { url: '/a' });
+  });
+
+  it('fires per-channel listeners before onAny listeners', () => {
+    const e = mk();
+    const order: string[] = [];
+    e.onAny(() => order.push('any'));
+    e.on('before', () => order.push('named'));
+    e.emit('before', { url: '/a' });
+    expect(order).toEqual(['named', 'any']);
+  });
+
+  it('the returned unsubscribe stops onAny delivery', () => {
+    const e = mk();
+    const fn = vi.fn();
+    const off = e.onAny(fn);
+    off();
+    e.emit('before', { url: '/a' });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('isolates a throwing onAny listener', () => {
+    const onErr = vi.fn();
+    const e = mk(onErr);
+    e.onAny(() => {
+      throw new Error('boom');
+    });
+    expect(() => e.emit('before', { url: '/a' })).not.toThrow();
+    expect(onErr).toHaveBeenCalledTimes(1);
+  });
+
+  it('removeAllListeners() also clears onAny listeners', () => {
+    const e = mk();
+    const fn = vi.fn();
+    e.onAny(fn);
+    e.removeAllListeners();
+    e.emit('before', { url: '/a' });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('an onAny listener unsubscribed during dispatch is not called', () => {
+    const e = mk();
+    const second = vi.fn();
+    let off2: () => void = () => {};
+    e.onAny(() => off2());
+    off2 = e.onAny(second);
+    e.emit('before', { url: '/a' });
+    expect(second).not.toHaveBeenCalled();
+  });
+});
+
+class Probe extends MultiKeyEmitterBase<M> {
+  readonly transitions: boolean[] = [];
+  protected override onActiveChange(active: boolean): void {
+    this.transitions.push(active);
+  }
+}
+
+describe('MultiKeyEmitterBase — onActiveChange (listener presence)', () => {
+  it('fires true on the first listener and false when the last leaves', () => {
+    const e = new Probe();
+    const off = e.on('before', () => {});
+    expect(e.transitions).toEqual([true]);
+    off();
+    expect(e.transitions).toEqual([true, false]);
+  });
+
+  it('does not fire while the emitter stays non-empty (add/remove a second listener)', () => {
+    const e = new Probe();
+    e.on('before', () => {});
+    e.transitions.length = 0; // ignore the initial true
+    const offA = e.on('complete', () => {});
+    expect(e.transitions).toEqual([]); // still active → no transition
+    offA();
+    expect(e.transitions).toEqual([]); // 'before' listener remains → no transition
+  });
+
+  it('counts onAny listeners toward presence', () => {
+    const e = new Probe();
+    const off = e.onAny(() => {});
+    expect(e.transitions).toEqual([true]);
+    off();
+    expect(e.transitions).toEqual([true, false]);
+  });
+
+  it('does not fire when re-adding the same listener (dedup)', () => {
+    const e = new Probe();
+    const fn = () => {};
+    e.on('before', fn);
+    e.transitions.length = 0;
+    e.on('before', fn);
+    expect(e.transitions).toEqual([]);
+  });
+
+  it('fires false when removeAllListeners empties the emitter', () => {
+    const e = new Probe();
+    e.on('before', () => {});
+    e.on('complete', () => {});
+    e.transitions.length = 0;
+    e.removeAllListeners();
+    expect(e.transitions).toEqual([false]);
+  });
+
+  it('fires false when a once listener fires as the last listener', () => {
+    const e = new Probe();
+    e.once('before', () => {});
+    e.transitions.length = 0;
+    e.emit('before', { url: '/a' }); // once fires → auto-removes → now empty
+    expect(e.transitions).toEqual([false]);
+  });
+
+  it('does not fire on off of an absent listener', () => {
+    const e = new Probe();
+    e.off('before', () => {});
+    expect(e.transitions).toEqual([]);
+  });
+});
+
 describe('createMultiKeyEmitter factory', () => {
   it('returns a working emitter (on/emit)', () => {
     const e = createMultiKeyEmitter<M>();
