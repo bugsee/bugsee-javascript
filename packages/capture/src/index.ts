@@ -23,6 +23,11 @@ export {
   type SseTarget,
 } from './sse-interceptor';
 export {
+  createSystemTracesProvider,
+  type SystemTracesProviderOptions,
+  type TraceSample,
+} from './system-traces-provider';
+export {
   createWebSocketInterceptor,
   type WebSocketInterceptorOptions,
   type WebSocketTarget,

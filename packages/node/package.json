@@ -23,9 +23,10 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/node-utils": "workspace:*",
     "@bugsee/integration-shims": "workspace:*",
+    "@bugsee/node-utils": "workspace:*",
     "@bugsee/protocol": "workspace:*"
   },
   "devDependencies": {

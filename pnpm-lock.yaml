@@ -214,6 +214,9 @@ importers:
 
   packages/node:
     dependencies:
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
