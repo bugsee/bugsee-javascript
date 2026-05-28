@@ -114,6 +114,21 @@ importers:
         specifier: workspace:*
         version: link:../node-utils
 
+  packages/capture:
+    dependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/types':
+        specifier: workspace:*
+        version: link:../types
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/cloudflare:
     dependencies:
       '@bugsee/core':
