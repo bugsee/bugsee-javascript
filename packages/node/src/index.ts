@@ -13,5 +13,11 @@ export {
   realSystemProbe,
   type SystemProbe,
 } from './environment';
+export {
+  createNodeHttpInterceptor,
+  type HttpModule,
+  type NodeHttpInterceptorOptions,
+  type NodeHttpTarget,
+} from './http-interceptor';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';

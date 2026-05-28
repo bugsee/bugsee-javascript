@@ -305,7 +305,9 @@ export type WireAssertions = [
       | 'electron-renderer'
     >
   >,
-  Expect<Equal<NetworkMechanism, 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon' | 'webtransport'>>,
+  Expect<
+    Equal<NetworkMechanism, 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon' | 'webtransport' | 'http'>
+  >,
   Expect<Equal<NetworkDirection, 'in' | 'out'>>,
   Expect<
     Equal<

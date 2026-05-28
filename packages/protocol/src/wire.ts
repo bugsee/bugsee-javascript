@@ -97,7 +97,16 @@ export type NetworkStage =
   | 'open'
   | 'message'
   | 'close';
-export type NetworkMechanism = 'fetch' | 'xhr' | 'ws' | 'sse' | 'sendBeacon' | 'webtransport';
+// 'http' = Node's native node:http/node:https client (used by axios/got/node-fetch/etc., bypasses
+// global fetch); request/response semantics, same before→complete(+error) stages as fetch/xhr.
+export type NetworkMechanism =
+  | 'fetch'
+  | 'xhr'
+  | 'ws'
+  | 'sse'
+  | 'sendBeacon'
+  | 'webtransport'
+  | 'http';
 /** Direction of a streamed frame / event / datagram (ws/sse/webtransport): client→server or back. */
 export type NetworkDirection = 'in' | 'out';
 export type NoBodyReason =
