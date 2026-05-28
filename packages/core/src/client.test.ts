@@ -1,4 +1,4 @@
-import type { EnvironmentEnvelope, FileType, NetworkEvent } from '@bugsee/protocol';
+import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
@@ -47,23 +47,6 @@ const detectionProvider = (name: string): DetectionProvider => ({
 });
 
 describe('createClient — wiring', () => {
-  it('exposes a working network hub', () => {
-    const client = createClient();
-    const seen: NetworkEvent[] = [];
-    client.hubs.network.subscribe((e) => seen.push(e));
-    const event: NetworkEvent = {
-      timestamp: 1,
-      id: 'a',
-      sequence: 'a',
-      mechanism: 'fetch',
-      url: 'u',
-      method: 'GET',
-      type: 'complete',
-    };
-    client.hubs.network.emit(event);
-    expect(seen).toEqual([event]);
-  });
-
   it('exposes a working operation dispatcher', () => {
     const client = createClient();
     const seen: string[] = [];
@@ -265,13 +248,12 @@ describe('createClient — lifecycle', () => {
     expect(provider.start).toHaveBeenCalledTimes(1);
   });
 
-  it('inits a registered capture provider with the capture pipeline (hubs/operations/aggregator)', () => {
+  it('inits a registered capture provider with the capture pipeline (operations/aggregator)', () => {
     const client = createClient();
     const provider = gatedCaptureProvider('net');
     client.addCaptureProvider(provider);
     expect(provider.init).toHaveBeenCalledTimes(1);
     const init = vi.mocked(provider.init).mock.calls[0]?.[0];
-    expect(init?.hubs).toBe(client.hubs);
     expect(init?.operations).toBe(client.operations);
     expect(init?.captureAggregator).toBe(client.captureAggregator);
   });
@@ -434,16 +416,6 @@ describe('createClient — launch never throws (§15.1)', () => {
     const client = createClient();
     client.addCaptureProvider(throwingCaptureProvider('bad', new Error('x')));
     expect(() => client.launch()).not.toThrow();
-  });
-
-  it('routes a throwing hub listener to onError', () => {
-    const onError = vi.fn();
-    const client = createClient({ onError });
-    client.hubs.log.subscribe(() => {
-      throw new Error('listener boom');
-    });
-    client.hubs.log.emit({ timestamp: 1, level: 'info', source: 'logger', message: 'x' });
-    expect(onError).toHaveBeenCalledTimes(1);
   });
 
   it('routes a throwing operation observer to onError', () => {

@@ -21,7 +21,6 @@ import type {
   OptionsContainer,
   StoredEntry,
 } from './contracts';
-import { createEventHubs } from './hubs';
 import { InterceptorBase } from './interceptor-base';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 
@@ -85,7 +84,6 @@ const exporter: CaptureExporter = {
 };
 
 const exampleClient: Client = {
-  hubs: createEventHubs(),
   operations: dispatcher,
   captureAggregator: aggregator,
   addCaptureProvider: noop,
@@ -109,7 +107,6 @@ interceptor.removeAllListeners();
 
 // The pipeline deps a provider receives once via init() (subset of Client, no registration seams).
 const captureProviderInit: CaptureProviderInit = {
-  hubs: createEventHubs(),
   operations: dispatcher,
   captureAggregator: aggregator,
 };
@@ -120,20 +117,27 @@ const launchOptions: OptionsContainer = {
   has: (_key: string) => false,
 };
 
-// A provider receives its deps via init(), then on start(options) subscribes to its hub and pushes
-// filtered entries to the single aggregator.
+// A provider receives its deps via init(); on a (sanitized) source event it pushes an entry to the
+// single aggregator. Sources are subscribed to separately (an interceptor), not via a hub.
 const networkProvider: CaptureProvider = {
   name: 'network',
   controllingOption: 'captureNetwork',
   init: (deps: CaptureProviderInit) => {
-    deps.hubs.network.subscribe((event: NetworkEvent) => {
-      deps.captureAggregator.addEntry({
-        type: 'network',
-        timestamp: event.timestamp,
-        data: event,
-        serialize: () => JSON.stringify(event),
-        deserialize: () => {},
-      });
+    const event: NetworkEvent = {
+      timestamp: 1,
+      id: 'a',
+      sequence: 'a',
+      mechanism: 'fetch',
+      url: '/',
+      method: 'GET',
+      type: 'complete',
+    };
+    deps.captureAggregator.addEntry({
+      type: 'network',
+      timestamp: event.timestamp,
+      data: event,
+      serialize: () => JSON.stringify(event),
+      deserialize: () => {},
     });
   },
   start: (options: OptionsContainer) => {

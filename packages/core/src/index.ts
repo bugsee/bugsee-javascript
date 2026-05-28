@@ -62,14 +62,9 @@ export {
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
+export type { InputEvent, LogEvent } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
-export {
-  createEventHubs,
-  type EventHubs,
-  type InputEvent,
-  type LogEvent,
-} from './hubs';
 export { InterceptorBase } from './interceptor-base';
 export {
   createMemoryCaptureStore,

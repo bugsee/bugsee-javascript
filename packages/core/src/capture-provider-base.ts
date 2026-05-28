@@ -50,7 +50,7 @@ export abstract class CaptureProviderBase implements CaptureProvider {
     return this.#init;
   }
 
-  /** Subclasses (re)configure from `options`, subscribe to `this.pipeline.hubs`, install hooks here. */
+  /** Subclasses (re)configure from `options` and subscribe to their source interceptor(s) here. */
   protected abstract onStart(options: OptionsContainer): void;
 
   /** Subclasses unsubscribe / release hooks here (optional). */

@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCaptureCoordinator } from './capture-coordinator';
 import type { CaptureProvider, CaptureProviderInit, OptionsContainer } from './contracts';
-import { createEventHubs } from './hubs';
 import { createOptionsContainer } from './options';
 
 const noop = () => {};
 const init: CaptureProviderInit = {
-  hubs: createEventHubs(),
   operations: { registerObserver: () => noop, onOperation: noop },
   captureAggregator: { addEntry: noop, addEntries: noop, clear: noop },
 };

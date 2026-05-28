@@ -4,7 +4,6 @@ import {
   createCaptureAggregator,
   createCaptureCoordinator,
   createCaptureExporter,
-  createEventHubs,
   createMemoryCaptureStore,
   createMultiKeyEmitter,
   createOperationDispatcher,
@@ -19,7 +18,6 @@ import { createLogCaptureProvider } from './log-provider';
 const mkStore = (): CaptureStore =>
   createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
 const buildInit = (store: CaptureStore): CaptureProviderInit => ({
-  hubs: createEventHubs(),
   operations: createOperationDispatcher(),
   captureAggregator: createCaptureAggregator(store),
 });

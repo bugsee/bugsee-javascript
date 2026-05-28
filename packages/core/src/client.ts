@@ -15,8 +15,8 @@ import type { CaptureProviderInit, CaptureStore, Client, OptionsContainer } from
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
+import type { LogEvent } from './events';
 import { createExtensionRegistry } from './extension-registry';
-import { createEventHubs, type LogEvent } from './hubs';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
@@ -156,7 +156,6 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const onError = options.onError ?? (() => {});
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
-  const hubs = createEventHubs(onError);
   const operations = createOperationDispatcher(onError);
   // One store, two directions (§16): the aggregator writes (serialize + route), the exporter reads
   // (drain + deserialize) at trigger time. The default in-memory store shares the Client's clock and
@@ -171,7 +170,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const captureExporter = createCaptureExporter(captureStore);
   // The capture-pipeline deps every provider gets once at registration (Android
   // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
-  const captureProviderInit: CaptureProviderInit = { hubs, operations, captureAggregator };
+  const captureProviderInit: CaptureProviderInit = { operations, captureAggregator };
   const captureCoordinator = createCaptureCoordinator(captureProviderInit);
   const launchOptions = options.launchOptions ?? createOptionsContainer();
   const detectionCoordinator = createDetectionCoordinator();
@@ -199,7 +198,6 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
   // The provider/extension-facing surface (§16.3) passed to providers at start().
   const context: Client = {
-    hubs,
     operations,
     captureAggregator,
     addCaptureProvider: captureCoordinator.addProvider,

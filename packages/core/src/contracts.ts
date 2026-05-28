@@ -1,6 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
 import type { EventSubscribable } from './emitter';
-import type { EventHubs } from './hubs';
 import type { ReportingRequest } from './reporting';
 
 // The Android-derived extension contracts (design §16.2). Sources (Interceptor / adapters via
@@ -170,15 +169,13 @@ export interface CaptureExporter {
 
 /**
  * The capture-pipeline dependencies a CaptureProvider needs for its whole lifetime (Android
- * BugseeCaptureDataProviderInit parity): the hubs it subscribes to, the operation bridge, and the
- * aggregator it pushes entries to. Supplied ONCE via {@link CaptureProvider.init} at registration —
- * NOT at start — so start(options) is free to (re)configure behavior per launch without re-wiring
- * deps. Deliberately a subset of {@link Client} that EXCLUDES the registration seams: a provider
- * consumes the capture pipeline; it does not register other providers.
+ * BugseeCaptureDataProviderInit parity): the operation bridge and the aggregator it pushes entries
+ * to. Supplied ONCE via {@link CaptureProvider.init} at registration — NOT at start — so
+ * start(options) is free to (re)configure behavior per launch without re-wiring deps. Source events
+ * arrive by subscribing to interceptors directly (there is no hub), so a provider is wired to its
+ * source(s) separately. Deliberately a subset of {@link Client} that EXCLUDES the registration seams.
  */
 export interface CaptureProviderInit {
-  /** Process-wide pub/sub hubs the provider subscribes to (§16.2). */
-  readonly hubs: EventHubs;
   /** Operation bridge for adapters/build injection (§16.2). */
   readonly operations: OperationDispatcher;
   /** The single data adapter the provider pushes captured entries to (§7.7). */
@@ -248,8 +245,6 @@ export interface Extension {
  * implementation lands (task 8). The contracts above pass it to start()/setup().
  */
 export interface Client {
-  /** Process-wide pub/sub hubs (§16.2). */
-  readonly hubs: EventHubs;
   /** Operation bridge for adapters/build injection (§16.2). */
   readonly operations: OperationDispatcher;
   /** The single data adapter providers push captured entries to (§7.7). */
