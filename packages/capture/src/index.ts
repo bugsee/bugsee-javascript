@@ -14,6 +14,11 @@ export {
   type FetchInterceptorOptions,
   type FetchTarget,
 } from './fetch-interceptor';
+export {
+  type InstallNetworkCaptureOptions,
+  installNetworkCapture,
+  type NetworkCapture,
+} from './install-network-capture';
 export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
 export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
