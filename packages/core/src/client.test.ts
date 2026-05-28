@@ -621,19 +621,41 @@ describe('createClient — flush/stop await pending reports', () => {
     expect(await client.flush(10)).toBe(false);
   });
 
-  it('drains an in-flight report that rejects, without surfacing it (flush still resolves)', async () => {
-    let reject!: (reason: unknown) => void;
-    const report = vi.fn<TriggerPipeline['report']>(
-      () => new Promise<UploadResult>((_resolve, rej) => (reject = rej)),
-    );
-    const client = createClient({ triggerPipeline: { report } as TriggerPipeline });
-    const logged = client.logException(new Error('x'));
-    logged.catch(() => {}); // the public promise rejects too; handle it so it isn't "unhandled"
-    const f = tracked(client.flush());
-    await delay(5);
-    expect(f.settled).toBe(false); // still awaiting the pending report
-    reject(new Error('report blew up'));
-    expect(await f.p).toBe(true); // allSettled tolerates the rejection; flush still resolves
+  it('drains an in-flight report that rejects, without surfacing an unhandled rejection', async () => {
+    // Explicitly watch for unhandled rejections: drainPending's own allSettled tolerates the
+    // rejection regardless, so the ONLY thing distinguishing track's `.then(forget, forget)` from a
+    // `.finally` (whose discarded derived promise re-raises) is whether an unhandled rejection fires.
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on(event: string, listener: (reason: unknown) => void): unknown;
+          off(event: string, listener: (reason: unknown) => void): unknown;
+        };
+      }
+    ).process;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    proc.on('unhandledRejection', onUnhandled);
+    try {
+      let reject!: (reason: unknown) => void;
+      const report = vi.fn<TriggerPipeline['report']>(
+        () => new Promise<UploadResult>((_resolve, rej) => (reject = rej)),
+      );
+      const client = createClient({ triggerPipeline: { report } as TriggerPipeline });
+      const logged = client.logException(new Error('x'));
+      logged.catch(() => {}); // the public promise rejects too; handle it so it isn't "unhandled"
+      const f = tracked(client.flush());
+      await delay(5);
+      expect(f.settled).toBe(false); // still awaiting the pending report
+      reject(new Error('report blew up'));
+      expect(await f.p).toBe(true); // allSettled tolerates the rejection; flush still resolves
+      await delay(10); // let any unhandled rejection settle into a macrotask
+      expect(unhandled).toEqual([]); // track must not leak the rejection (reverting to .finally would)
+    } finally {
+      proc.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('tracks a dropped report when a detection fires with no trigger pipeline', async () => {
