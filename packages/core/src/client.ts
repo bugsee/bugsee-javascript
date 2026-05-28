@@ -59,6 +59,14 @@ const defaultScheduler: Scheduler = {
   clearInterval: (handle) => globalTimers.clearInterval(handle),
 };
 
+const globalTimeout = globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown };
+// A flush/stop deadline timer; unref'd so it never keeps a process alive when the drain wins.
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const handle = globalTimeout.setTimeout(resolve, ms);
+    (handle as { unref?: () => void }).unref?.();
+  });
+
 /** A breadcrumb payload (design §10). */
 export interface Breadcrumb {
   type?: string;
@@ -196,6 +204,28 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
 
+  // In-flight report promises (logException + detection submissions). A report promise resolves
+  // only after its full path completes (assemble → enqueue → upload), so flush()/stop() await these
+  // to drain reports still ASSEMBLING — which uploadPipeline.flush alone misses (no upload enqueued
+  // yet). This is what lets a crash flush-then-exit actually deliver the crash bundle.
+  const pendingReports = new Set<Promise<UploadResult>>();
+  const track = (report: Promise<UploadResult>): Promise<UploadResult> => {
+    pendingReports.add(report);
+    void report.finally(() => pendingReports.delete(report));
+    return report;
+  };
+  // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded
+  // by `timeout` so a hung assemble/upload can't block shutdown. Resolves true if drained in time.
+  const drainPending = (timeout?: number): Promise<boolean> => {
+    const drained = Promise.allSettled([...pendingReports]).then(
+      () => uploadPipeline?.flush(timeout) ?? true,
+    );
+    if (timeout === undefined) {
+      return drained;
+    }
+    return Promise.race([drained, sleep(timeout).then(() => false)]);
+  };
+
   // The provider/extension-facing surface (§16.3) passed to providers at start().
   const context: Client = {
     operations,
@@ -271,7 +301,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           : {}),
         ...(exceptionOptions?.labels !== undefined ? { labels: exceptionOptions.labels } : {}),
       });
-      return triggerPipeline?.report(request) ?? Promise.resolve({ ok: false });
+      return track(triggerPipeline?.report(request) ?? Promise.resolve({ ok: false }));
     },
 
     isLaunched(): boolean {
@@ -292,7 +322,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
       try {
         detectionCoordinator.start(context, isEnabled, (request) => {
-          void triggerPipeline?.report(request);
+          void track(triggerPipeline?.report(request) ?? Promise.resolve({ ok: false }));
         });
       } catch (error) {
         onError(error);
@@ -311,11 +341,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       tickTimer = null;
       captureCoordinator.stop();
       detectionCoordinator.stop();
-      return uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
+      return drainPending(timeout);
     },
 
     flush(timeout?: number): Promise<boolean> {
-      return uploadPipeline?.flush(timeout) ?? Promise.resolve(true);
+      return drainPending(timeout);
     },
   };
 }

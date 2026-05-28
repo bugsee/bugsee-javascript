@@ -536,6 +536,110 @@ describe('createClient — report path (built trigger pipeline)', () => {
   });
 });
 
+describe('createClient — flush/stop await pending reports', () => {
+  const delay = (ms: number): Promise<void> =>
+    new Promise((resolve) =>
+      (globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown }).setTimeout(
+        resolve,
+        ms,
+      ),
+    );
+  // Tracks whether a promise has settled yet (without consuming it).
+  const tracked = <T>(p: Promise<T>) => {
+    let settled = false;
+    void p.finally(() => {
+      settled = true;
+    });
+    return {
+      p,
+      get settled() {
+        return settled;
+      },
+    };
+  };
+  // A trigger pipeline whose report() stays pending until we release it — modelling the async
+  // assemble→enqueue→upload a report drives (report resolves only after the upload completes).
+  const deferredTrigger = () => {
+    const resolvers: Array<(r: UploadResult) => void> = [];
+    const report = vi.fn<TriggerPipeline['report']>(
+      () => new Promise<UploadResult>((resolve) => resolvers.push(resolve)),
+    );
+    return {
+      triggerPipeline: { report } as TriggerPipeline,
+      report,
+      releaseAll: (r: UploadResult = { ok: true }) => {
+        for (const res of resolvers) {
+          res(r);
+        }
+      },
+    };
+  };
+
+  it('flush() does not resolve until an in-flight logException report settles', async () => {
+    const { triggerPipeline, report, releaseAll } = deferredTrigger();
+    const client = createClient({ triggerPipeline });
+    void client.logException(new Error('x'));
+    expect(report).toHaveBeenCalledTimes(1);
+    const f = tracked(client.flush());
+    await delay(5);
+    expect(f.settled).toBe(false); // report still assembling/uploading → flush waits
+    releaseAll();
+    expect(await f.p).toBe(true);
+  });
+
+  it('flush() awaits an in-flight detection report (fire-and-forget submission)', async () => {
+    const { triggerPipeline, report, releaseAll } = deferredTrigger();
+    const client = createClient({ triggerPipeline });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    fire(createReportingRequest({ source: { type: 'crash' }, id: 'r1' }));
+    expect(report).toHaveBeenCalledTimes(1);
+    const f = tracked(client.flush());
+    await delay(5);
+    expect(f.settled).toBe(false);
+    releaseAll();
+    expect(await f.p).toBe(true);
+  });
+
+  it('stop() awaits an in-flight report before resolving', async () => {
+    const { triggerPipeline, releaseAll } = deferredTrigger();
+    const client = createClient({ triggerPipeline });
+    client.launch();
+    void client.logException(new Error('x'));
+    const s = tracked(client.stop());
+    await delay(5);
+    expect(s.settled).toBe(false);
+    releaseAll();
+    expect(await s.p).toBe(true);
+  });
+
+  it('flush(timeout) resolves false when a report does not settle within the budget', async () => {
+    const { triggerPipeline } = deferredTrigger(); // never released
+    const client = createClient({ triggerPipeline });
+    void client.logException(new Error('x'));
+    expect(await client.flush(10)).toBe(false);
+  });
+
+  it('tracks a dropped report when a detection fires with no trigger pipeline', async () => {
+    const client = createClient(); // no triggerPipeline → report resolves {ok:false}
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    fire(createReportingRequest({ source: { type: 'crash' }, id: 'r1' }));
+    expect(await client.flush()).toBe(true); // the settled {ok:false} report drains
+  });
+
+  it('drops a settled report from the pending set (a later flush is immediate)', async () => {
+    const { triggerPipeline, releaseAll } = deferredTrigger();
+    const client = createClient({ triggerPipeline });
+    void client.logException(new Error('x'));
+    releaseAll(); // report settles → removed from the pending set
+    await delay(0);
+    expect(await client.flush()).toBe(true);
+  });
+});
+
 function tickStore() {
   const tick = vi.fn();
   const store: CaptureStore = {
