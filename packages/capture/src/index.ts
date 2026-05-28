@@ -17,3 +17,8 @@ export {
 export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
 export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
+export {
+  createXhrInterceptor,
+  type XhrInterceptorOptions,
+  type XhrTarget,
+} from './xhr-interceptor';
