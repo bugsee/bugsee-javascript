@@ -9,4 +9,10 @@ export {
   createConsoleInterceptor,
   formatConsoleArgs,
 } from './console-interceptor';
+export {
+  createFetchInterceptor,
+  type FetchInterceptorOptions,
+  type FetchTarget,
+} from './fetch-interceptor';
 export { createLogCaptureProvider } from './log-provider';
+export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
