@@ -18,6 +18,11 @@ export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
 export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
 export {
+  createWebSocketInterceptor,
+  type WebSocketInterceptorOptions,
+  type WebSocketTarget,
+} from './web-socket-interceptor';
+export {
   createXhrInterceptor,
   type XhrInterceptorOptions,
   type XhrTarget,
