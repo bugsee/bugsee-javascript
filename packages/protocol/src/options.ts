@@ -24,3 +24,47 @@ export function optionsToWire<V>(options: Record<string, V>): Record<string, V> 
   }
   return out;
 }
+
+// Canonical Bugsee option identifiers (Android `com.bugsee.option.*` parity). These dotted strings
+// are the CROSS-SDK, on-the-wire identity of each option (sent in environment.sdk.options after
+// optionsToWire); they never change per platform. Platforms expose friendly names that map onto
+// these (see @bugsee/core option definitions); extension packages add their own keys under the same
+// `com.bugsee.option.<namespace>.<feature>` convention and extend BugseeOptionTypes by declaration
+// merging. Values are booleans/numbers/strings (Serializable), matching Android's option value set.
+export const BugseeOption = {
+  /** Capture console/logger output as logs. */
+  CaptureLogs: 'com.bugsee.option.capture.logs',
+  /** Capture network activity (fetch/xhr/ws/sse/webtransport, and node:http on Node). */
+  CaptureNetwork: 'com.bugsee.option.capture.network',
+  /** Max captured request/response body size in bytes. */
+  CaptureNetworkBodySizeLimit: 'com.bugsee.option.capture.network.body-size-limit',
+  /** Apply the default network PII sanitizer. */
+  CaptureNetworkDefaultSanitizer: 'com.bugsee.option.capture.network.default-sanitizer',
+  /** Capture periodic system traces (memory / cpu / event-loop lag). */
+  CaptureSystemTraces: 'com.bugsee.option.capture.system-traces',
+  /** Capture system events (process / app lifecycle). */
+  CaptureSystemEvents: 'com.bugsee.option.capture.system-events',
+  /** Detect uncaught exceptions / unhandled rejections and report them. */
+  DetectCrash: 'com.bugsee.option.detect.crash',
+  /** Rolling recording window in seconds. */
+  Duration: 'com.bugsee.option.config.duration',
+} as const;
+
+/** A canonical option identifier value (one of {@link BugseeOption}'s string values). */
+export type BugseeOptionKey = (typeof BugseeOption)[keyof typeof BugseeOption];
+
+/**
+ * The value type carried by each canonical option key — the typed option contract. Platform and
+ * extension packages widen it via declaration merging, e.g.
+ * `declare module '@bugsee/protocol' { interface BugseeOptionTypes { 'com.bugsee.option.x': T } }`.
+ */
+export interface BugseeOptionTypes {
+  'com.bugsee.option.capture.logs': boolean;
+  'com.bugsee.option.capture.network': boolean;
+  'com.bugsee.option.capture.network.body-size-limit': number;
+  'com.bugsee.option.capture.network.default-sanitizer': boolean;
+  'com.bugsee.option.capture.system-traces': boolean;
+  'com.bugsee.option.capture.system-events': boolean;
+  'com.bugsee.option.detect.crash': boolean;
+  'com.bugsee.option.config.duration': number;
+}

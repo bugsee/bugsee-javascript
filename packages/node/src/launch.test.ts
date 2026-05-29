@@ -12,8 +12,10 @@ import {
   serializeBundle,
 } from '@bugsee/core';
 import {
+  BugseeOption,
   type EnvironmentEnvelope,
   type FileType,
+  optionKeyToWire,
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
@@ -299,7 +301,11 @@ describe('launch', () => {
     const env = sessionBody.environment;
     expect(env.platform.type).toBe('node');
     expect(env.platform.version).toBe('20.1.2'); // from the injected probe
-    expect(env.sdk.options).toMatchObject({ captureLogs: true, captureNetwork: false });
+    // friendly captureNetwork:false → canonical com.bugsee.option.capture.network → colon wire form
+    expect(env.sdk.options).toMatchObject({
+      [optionKeyToWire(BugseeOption.CaptureLogs)]: true,
+      [optionKeyToWire(BugseeOption.CaptureNetwork)]: false,
+    });
     expect(env.app?.package_id).toBe('unknown'); // default when appId omitted
   });
 

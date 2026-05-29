@@ -1,11 +1,12 @@
 import os from 'node:os';
 import process from 'node:process';
-import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for Node from process/os. System reads go through an
 // injectable SystemProbe so the mapping is testable deterministically; realSystemProbe is the
-// default. Pure given (input, probe) — persistence (device_id generation) and option sanitization
-// are the caller's concern (the launch wiring passes them in).
+// default. Pure given (input, probe) — persistence (device_id generation) is the caller's concern.
+// Canonical (dotted) option keys are translated to colon wire form for sdk.options here, because the
+// server treats dots as nested-document paths (§2.4).
 
 export interface SystemProbe {
   nodeVersion(): string;
@@ -41,7 +42,7 @@ export interface NodeEnvironmentInput {
   appBuild?: string;
   /** sdk.build — git SHA; omitted when absent. */
   sdkBuild?: string;
-  /** sdk.options — already-sanitized dotted option keys; omitted when absent. */
+  /** sdk.options — canonical dotted option keys; wire-translated to colon form here. Omitted when absent. */
   options?: Record<string, unknown>;
   /** app.debuggable (default false). */
   debuggable?: boolean;
@@ -80,7 +81,7 @@ export function buildNodeEnvironment(
       version: input.sdkVersion,
       type: 'javascript',
       ...(input.sdkBuild !== undefined ? { build: input.sdkBuild } : {}),
-      ...(input.options !== undefined ? { options: input.options } : {}),
+      ...(input.options !== undefined ? { options: optionsToWire(input.options) } : {}),
     },
   };
 }

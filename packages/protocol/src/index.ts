@@ -19,7 +19,14 @@ export {
   severityFromWire,
   severityToWire,
 } from './levels';
-export { optionKeyFromWire, optionKeyToWire, optionsToWire } from './options';
+export {
+  BugseeOption,
+  type BugseeOptionKey,
+  type BugseeOptionTypes,
+  optionKeyFromWire,
+  optionKeyToWire,
+  optionsToWire,
+} from './options';
 export { sanitizeHeaders, sanitizeJson, sanitizeParams } from './sanitize';
 export {
   isSensitiveHeader,

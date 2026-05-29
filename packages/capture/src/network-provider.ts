@@ -1,5 +1,10 @@
 import { type CaptureProvider, CaptureProviderBase, type EventSubscribable } from '@bugsee/core';
-import { type NetworkEvent, type NetworkStage, sanitizeHeaders } from '@bugsee/protocol';
+import {
+  BugseeOption,
+  type NetworkEvent,
+  type NetworkStage,
+  sanitizeHeaders,
+} from '@bugsee/protocol';
 
 // Runtime-agnostic network capture CONSUMER (design §16.1): subscribes to one or more network SOURCES
 // (the fetch interceptor, and later xhr/ws/webtransport/sse) and routes every NetworkEvent — at any
@@ -21,7 +26,7 @@ const sanitize = (event: NetworkEvent): NetworkEvent => {
 
 class NetworkCaptureProvider extends CaptureProviderBase {
   readonly name = 'network';
-  readonly controllingOption = 'captureNetwork';
+  readonly controllingOption = BugseeOption.CaptureNetwork;
   readonly #sources: readonly NetworkSource[];
   #offs: Array<() => void> = [];
 

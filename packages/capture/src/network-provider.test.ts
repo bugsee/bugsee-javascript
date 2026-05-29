@@ -11,7 +11,7 @@ import {
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createNetworkCaptureProvider } from './network-provider';
 
@@ -40,7 +40,7 @@ describe('createNetworkCaptureProvider', () => {
   it('is named "network" and gated by the captureNetwork option', () => {
     const p = createNetworkCaptureProvider(mkSource());
     expect(p.name).toBe('network');
-    expect(p.controllingOption).toBe('captureNetwork');
+    expect(p.controllingOption).toBe(BugseeOption.CaptureNetwork);
   });
 
   it('captures events of every stage (onAny) as "network" entries', async () => {
@@ -125,7 +125,7 @@ describe('createNetworkCaptureProvider', () => {
     const source = mkSource();
     const coordinator = createCaptureCoordinator(buildInit(store));
     coordinator.addProvider(createNetworkCaptureProvider(source));
-    coordinator.start(options, (opt) => opt === 'captureNetwork');
+    coordinator.start(options, (opt) => opt === BugseeOption.CaptureNetwork);
     source.emit('complete', netEvent());
     expect(await drainNetwork(store)).toHaveLength(1);
 

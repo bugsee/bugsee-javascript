@@ -1,5 +1,11 @@
+import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
-import { createOptionsContainer } from './options';
+import {
+  COMMON_OPTION_DEFINITIONS,
+  createOptionsContainer,
+  type OptionDefinition,
+  resolveLaunchOptions,
+} from './options';
 
 describe('createOptionsContainer', () => {
   it('get returns the configured value when the key is present', () => {
@@ -41,5 +47,80 @@ describe('createOptionsContainer', () => {
     const c = createOptionsContainer({});
     expect(c.has('toString')).toBe(false);
     expect(c.get('toString', 'fallback')).toBe('fallback');
+  });
+});
+
+describe('resolveLaunchOptions', () => {
+  const defs: readonly OptionDefinition[] = [
+    { friendly: 'captureNetwork', key: 'com.bugsee.option.capture.network', default: true },
+    { friendly: 'maxRecordingTime', key: 'com.bugsee.option.config.duration', default: 60 },
+  ];
+
+  it('maps friendly names to canonical identifiers, applying defaults for omitted ones', () => {
+    const r = resolveLaunchOptions({ captureNetwork: false }, defs);
+    expect(r.canonical).toEqual({
+      'com.bugsee.option.capture.network': false, // user value
+      'com.bugsee.option.config.duration': 60, // default
+    });
+  });
+
+  it('applies all defaults for an empty bag', () => {
+    expect(resolveLaunchOptions({}, defs).canonical).toEqual({
+      'com.bugsee.option.capture.network': true,
+      'com.bugsee.option.config.duration': 60,
+    });
+  });
+
+  it('exposes values through the OptionsContainer keyed by canonical identifier', () => {
+    const r = resolveLaunchOptions({ maxRecordingTime: 120 }, defs);
+    expect(r.options.get('com.bugsee.option.config.duration', 0)).toBe(120);
+    expect(r.options.has('com.bugsee.option.capture.network')).toBe(true);
+  });
+
+  it('gates a boolean option: enabled unless explicitly false; unknown keys default enabled', () => {
+    const r = resolveLaunchOptions({ captureNetwork: false }, defs);
+    expect(r.isEnabled('com.bugsee.option.capture.network')).toBe(false); // explicit false
+    expect(r.isEnabled('com.bugsee.option.config.duration')).toBe(true); // a non-false value
+    expect(r.isEnabled('com.bugsee.option.detect.crash')).toBe(true); // not in defs → enabled
+  });
+
+  it('ignores friendly names that are not defined (only declared options resolve)', () => {
+    const r = resolveLaunchOptions({ captureNetwork: false, bogus: 1 }, defs);
+    expect(r.canonical).not.toHaveProperty('bogus');
+    expect(Object.keys(r.canonical).sort()).toEqual([
+      'com.bugsee.option.capture.network',
+      'com.bugsee.option.config.duration',
+    ]);
+  });
+});
+
+describe('COMMON_OPTION_DEFINITIONS', () => {
+  const byFriendly = new Map(COMMON_OPTION_DEFINITIONS.map((d) => [d.friendly, d]));
+
+  it('maps each common friendly name to its canonical com.bugsee.option.* identifier', () => {
+    expect(byFriendly.get('captureLogs')?.key).toBe(BugseeOption.CaptureLogs);
+    expect(byFriendly.get('captureNetwork')?.key).toBe(BugseeOption.CaptureNetwork);
+    expect(byFriendly.get('captureSystemTraces')?.key).toBe(BugseeOption.CaptureSystemTraces);
+    expect(byFriendly.get('captureSystemEvents')?.key).toBe(BugseeOption.CaptureSystemEvents);
+    expect(byFriendly.get('detectCrashes')?.key).toBe(BugseeOption.DetectCrash);
+    expect(byFriendly.get('maxRecordingTime')?.key).toBe(BugseeOption.Duration);
+  });
+
+  it('defaults capture/detect toggles on and the recording duration to 60s', () => {
+    expect(byFriendly.get('captureLogs')?.default).toBe(true);
+    expect(byFriendly.get('detectCrashes')?.default).toBe(true);
+    expect(byFriendly.get('maxRecordingTime')?.default).toBe(60);
+  });
+
+  it('resolves to all canonical identifiers with defaults when launched with no options', () => {
+    const { canonical } = resolveLaunchOptions({}, COMMON_OPTION_DEFINITIONS);
+    expect(canonical).toEqual({
+      [BugseeOption.CaptureLogs]: true,
+      [BugseeOption.CaptureNetwork]: true,
+      [BugseeOption.CaptureSystemTraces]: true,
+      [BugseeOption.CaptureSystemEvents]: true,
+      [BugseeOption.DetectCrash]: true,
+      [BugseeOption.Duration]: 60,
+    });
   });
 });

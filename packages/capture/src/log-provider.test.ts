@@ -12,6 +12,7 @@ import {
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createLogCaptureProvider } from './log-provider';
 
@@ -37,7 +38,7 @@ describe('createLogCaptureProvider', () => {
   it('is named "log" and gated by the captureLogs option', () => {
     const p = createLogCaptureProvider(mkSource());
     expect(p.name).toBe('log');
-    expect(p.controllingOption).toBe('captureLogs');
+    expect(p.controllingOption).toBe(BugseeOption.CaptureLogs);
   });
 
   it('routes a source log event to the aggregator as a "log" entry (type/timestamp/data)', async () => {
@@ -88,7 +89,7 @@ describe('createLogCaptureProvider', () => {
     const source = mkSource();
     const coordinator = createCaptureCoordinator(buildInit(store));
     coordinator.addProvider(createLogCaptureProvider(source));
-    coordinator.start(options, (opt) => opt === 'captureLogs');
+    coordinator.start(options, (opt) => opt === BugseeOption.CaptureLogs);
     source.emit('log', logEvent(1, 'on'));
     expect(await drainLog(store)).toHaveLength(1);
 

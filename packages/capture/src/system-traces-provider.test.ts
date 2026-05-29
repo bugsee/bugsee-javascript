@@ -10,6 +10,7 @@ import {
   type OptionsContainer,
   type Scheduler,
 } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createSystemTracesProvider, type TraceSample } from './system-traces-provider';
 
@@ -45,7 +46,7 @@ describe('createSystemTracesProvider', () => {
   it('is named "traces.system" and gated by captureSystemTraces', () => {
     const p = createSystemTracesProvider({ sample: () => [] });
     expect(p.name).toBe('traces.system');
-    expect(p.controllingOption).toBe('captureSystemTraces');
+    expect(p.controllingOption).toBe(BugseeOption.CaptureSystemTraces);
   });
 
   it('emits an initial snapshot on start and registers the interval (default 1000ms)', async () => {

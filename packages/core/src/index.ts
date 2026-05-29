@@ -79,7 +79,13 @@ export {
   type MemoryCaptureStoreOptions,
 } from './memory-capture-store';
 export { createOperationDispatcher } from './operation-dispatcher';
-export { createOptionsContainer } from './options';
+export {
+  COMMON_OPTION_DEFINITIONS,
+  createOptionsContainer,
+  type OptionDefinition,
+  type ResolvedLaunchOptions,
+  resolveLaunchOptions,
+} from './options';
 export {
   createRateLimiter,
   type RateLimiter,

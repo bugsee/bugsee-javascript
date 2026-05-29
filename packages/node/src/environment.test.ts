@@ -83,16 +83,21 @@ describe('buildNodeEnvironment — sdk', () => {
     expect(env.sdk).toEqual({ version: '1.2.3', type: 'javascript' });
   });
 
-  it('includes sdk build (git SHA) and sanitized options when provided', () => {
+  it('includes sdk build (git SHA) and wire-translates canonical option keys (dots → colons)', () => {
     const env = buildNodeEnvironment(
-      { sdkVersion: '1.2.3', sdkBuild: 'abc1234', options: { 'capture.network': true } },
+      {
+        sdkVersion: '1.2.3',
+        sdkBuild: 'abc1234',
+        options: { 'com.bugsee.option.capture.network': true },
+      },
       fakeProbe,
     );
     expect(env.sdk).toEqual({
       version: '1.2.3',
       type: 'javascript',
       build: 'abc1234',
-      options: { 'capture.network': true },
+      // dotted canonical key → colon wire form (the server treats dots as nested paths)
+      options: { 'com:bugsee:option:capture:network': true },
     });
   });
 });

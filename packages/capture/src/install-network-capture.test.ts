@@ -10,7 +10,7 @@ import {
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import type { FetchTarget } from './fetch-interceptor';
 import { installNetworkCapture } from './install-network-capture';
@@ -41,7 +41,7 @@ describe('installNetworkCapture', () => {
     const { interceptor, provider } = installNetworkCapture();
     expect(interceptor.name).toBe('network');
     expect(provider.name).toBe('network');
-    expect(provider.controllingOption).toBe('captureNetwork');
+    expect(provider.controllingOption).toBe(BugseeOption.CaptureNetwork);
   });
 
   it('captures end-to-end: starting the provider activates fetch and records before+complete', async () => {

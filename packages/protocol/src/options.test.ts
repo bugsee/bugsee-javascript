@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { optionKeyFromWire, optionKeyToWire, optionsToWire } from './index';
+import { BugseeOption, optionKeyFromWire, optionKeyToWire, optionsToWire } from './index';
 
 describe('optionKeyToWire', () => {
   it('replaces every dot with a colon', () => {
@@ -44,5 +44,34 @@ describe('optionsToWire', () => {
     expect((out as Record<string, unknown>)['a:b']).toBe(1);
     expect((out as Record<string, unknown>).polluted).toBeUndefined(); // not via out's prototype
     expect(({} as Record<string, unknown>).polluted).toBeUndefined(); // not via global prototype
+  });
+});
+
+describe('BugseeOption canonical identifiers', () => {
+  // These dotted strings are the cross-SDK, on-the-wire identity — a typo silently breaks server
+  // correlation, so the exact values are locked here.
+  it('match the com.bugsee.option.* contract values', () => {
+    expect(BugseeOption.CaptureLogs).toBe('com.bugsee.option.capture.logs');
+    expect(BugseeOption.CaptureNetwork).toBe('com.bugsee.option.capture.network');
+    expect(BugseeOption.CaptureNetworkBodySizeLimit).toBe(
+      'com.bugsee.option.capture.network.body-size-limit',
+    );
+    expect(BugseeOption.CaptureNetworkDefaultSanitizer).toBe(
+      'com.bugsee.option.capture.network.default-sanitizer',
+    );
+    expect(BugseeOption.CaptureSystemTraces).toBe('com.bugsee.option.capture.system-traces');
+    expect(BugseeOption.CaptureSystemEvents).toBe('com.bugsee.option.capture.system-events');
+    expect(BugseeOption.DetectCrash).toBe('com.bugsee.option.detect.crash');
+    expect(BugseeOption.Duration).toBe('com.bugsee.option.config.duration');
+  });
+
+  it('are all namespaced under com.bugsee.option. and unique', () => {
+    const keys = Object.values(BugseeOption);
+    expect(keys.every((k) => k.startsWith('com.bugsee.option.'))).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length); // no duplicate identifiers
+  });
+
+  it('translate to colon wire form for environment.sdk.options (server treats dots as nesting)', () => {
+    expect(optionKeyToWire(BugseeOption.CaptureNetwork)).toBe('com:bugsee:option:capture:network');
   });
 });

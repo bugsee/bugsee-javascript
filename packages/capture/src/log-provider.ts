@@ -4,6 +4,7 @@ import {
   type EventSubscribable,
   type LogEvent,
 } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 
 // Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to a log SOURCE and routes each
 // LogEvent to the aggregator as a `log` capture entry. The source is any emitter with a 'log' stage —
@@ -16,7 +17,7 @@ export type LogSource = EventSubscribable<{ log: LogEvent }>;
 
 class LogCaptureProvider extends CaptureProviderBase {
   readonly name = 'log';
-  readonly controllingOption = 'captureLogs';
+  readonly controllingOption = BugseeOption.CaptureLogs;
   readonly #source: LogSource;
   #off: (() => void) | null = null;
 

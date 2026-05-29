@@ -1,4 +1,5 @@
 import { type CaptureProvider, CaptureProviderBase, type EventSubscribable } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 
 // Runtime-agnostic SYSTEM EVENTS provider (design §16.1, Android events.system parity). A system event
 // is a discrete, auto-captured occurrence (process lifecycle, memory pressure, …). While started, the
@@ -22,7 +23,7 @@ export interface SystemEventsProviderOptions {
 
 class SystemEventsProvider extends CaptureProviderBase {
   readonly name = 'events.system';
-  readonly controllingOption = 'captureSystemEvents';
+  readonly controllingOption = BugseeOption.CaptureSystemEvents;
   readonly #source: SystemEventSource;
   readonly #now: () => number;
   #off: (() => void) | null = null;

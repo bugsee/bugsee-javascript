@@ -13,17 +13,17 @@ import {
   type BundleStore,
   type CaptureStore,
   type Clock,
+  COMMON_OPTION_DEFINITIONS,
   createBugseeApi,
   createBundleUploader,
   createClient,
   createDurableUploadPipeline,
   createFileCaptureStore,
-  createOptionsContainer,
   createUploadPipeline,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
-  type OptionGate,
+  resolveLaunchOptions,
   type Scheduler,
 } from '@bugsee/core';
 import {
@@ -31,6 +31,7 @@ import {
   createNodeFileStorageAdapter,
   httpRequest,
 } from '@bugsee/node-utils';
+import { BugseeOption } from '@bugsee/protocol';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -55,6 +56,10 @@ import { createNodeSystemMetricsSampler } from './system-metrics';
 const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
+
+// Node's launch-option definitions = the shared cross-runtime set (Node adds none of its own yet;
+// a Node-specific option would be appended here with a com.bugsee.option.<...> identifier).
+const NODE_OPTION_DEFINITIONS = COMMON_OPTION_DEFINITIONS;
 
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
 export interface NodeRuntime extends ProcessEvents {
@@ -139,15 +144,13 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
 
-  const gates: Record<string, boolean> = {
-    captureLogs: options.captureLogs ?? true,
-    captureNetwork: options.captureNetwork ?? true,
-    captureSystemTraces: options.captureSystemTraces ?? true,
-    captureSystemEvents: options.captureSystemEvents ?? true,
-    detectCrashes: options.detectCrashes ?? true,
-  };
-  // Enabled unless explicitly turned off — an unknown option (no registered gate) defaults on.
-  const isEnabled: OptionGate = (option) => gates[option] !== false;
+  // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
+  // coordinators query (by each provider's controllingOption identifier), the OptionsContainer
+  // providers read, and the canonical record sent (wire-form) in environment.sdk.options.
+  const resolved = resolveLaunchOptions(
+    options as unknown as Record<string, unknown>,
+    NODE_OPTION_DEFINITIONS,
+  );
 
   // Transport → control plane + data plane → upload pipeline.
   const transport = internalTagged(options.transport ?? httpRequest);
@@ -173,13 +176,14 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       : undefined;
   const uploadPipeline = durable ?? baseUploadPipeline;
 
-  // Node environment envelope, rebuilt at each report so it reflects current state.
+  // Node environment envelope, rebuilt at each report so it reflects current state. The canonical
+  // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
         sdkVersion,
-        options: gates,
+        options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
@@ -188,7 +192,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     );
 
   // Capture store: explicit override > file-backed (dataDir) > in-memory (createClient default).
-  const maxRecordingTime = options.maxRecordingTime ?? 60;
+  const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   let captureStore = options.captureStore;
   if (captureStore === undefined && options.dataDir !== undefined) {
     captureStore = createFileCaptureStore(createNodeFileStorageAdapter(options.dataDir), {
@@ -198,8 +202,8 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   }
 
   const client = createClient({
-    isEnabled,
-    launchOptions: createOptionsContainer(),
+    isEnabled: resolved.isEnabled,
+    launchOptions: resolved.options,
     uploadPipeline,
     appToken,
     getEnvironment,
@@ -232,7 +236,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
   durable?.recover();
 
-  if (!gates.detectCrashes) {
+  if (!resolved.isEnabled(BugseeOption.DetectCrash)) {
     return client;
   }
 

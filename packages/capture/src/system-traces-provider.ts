@@ -1,4 +1,5 @@
 import { type CaptureProvider, CaptureProviderBase, type Scheduler } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 
 // Runtime-agnostic SYSTEM TRACES provider (design §16.1, Android traces.system parity). A trace is a
 // named value sampled over TIME. While started, it periodically calls an injected `sample()` and routes
@@ -40,7 +41,7 @@ export interface SystemTracesProviderOptions {
 
 class SystemTracesProvider extends CaptureProviderBase {
   readonly name = 'traces.system';
-  readonly controllingOption = 'captureSystemTraces';
+  readonly controllingOption = BugseeOption.CaptureSystemTraces;
   readonly #sample: () => readonly TraceSample[];
   readonly #intervalMs: number;
   readonly #scheduler: Scheduler;

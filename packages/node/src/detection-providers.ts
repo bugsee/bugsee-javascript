@@ -1,6 +1,7 @@
 import process from 'node:process';
 import type { DetectionProvider } from '@bugsee/core';
 import { DetectionProviderBase, formatStack, parseV8Stack } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 
 // Node crash/error detection providers (design §3.2 globalErrorInterceptor on Node, §8.5 mechanisms).
 // Each subscribes to a process event and submits a ReportingRequest via DetectionProviderBase:
@@ -51,8 +52,7 @@ abstract class NodeProcessDetectionProvider extends DetectionProviderBase {
 
 class UncaughtExceptionProvider extends NodeProcessDetectionProvider {
   readonly name = 'node-uncaught-exception';
-  // TODO: narrow to keyof BugseeOptions once options.ts lands.
-  readonly controllingOption = 'detectCrashes';
+  readonly controllingOption = BugseeOption.DetectCrash;
   protected readonly event = 'uncaughtException' as const;
 
   protected onDetected(value: unknown): void {
@@ -69,7 +69,7 @@ class UncaughtExceptionProvider extends NodeProcessDetectionProvider {
 
 class UnhandledRejectionProvider extends NodeProcessDetectionProvider {
   readonly name = 'node-unhandled-rejection';
-  readonly controllingOption = 'detectCrashes';
+  readonly controllingOption = BugseeOption.DetectCrash;
   protected readonly event = 'unhandledRejection' as const;
 
   protected onDetected(value: unknown): void {

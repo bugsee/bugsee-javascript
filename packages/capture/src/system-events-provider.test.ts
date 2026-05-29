@@ -11,6 +11,7 @@ import {
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createSystemEventsProvider, type SystemEvent } from './system-events-provider';
 
@@ -29,7 +30,7 @@ describe('createSystemEventsProvider', () => {
   it('is named "events.system" and gated by captureSystemEvents', () => {
     const p = createSystemEventsProvider(mkSource());
     expect(p.name).toBe('events.system');
-    expect(p.controllingOption).toBe('captureSystemEvents');
+    expect(p.controllingOption).toBe(BugseeOption.CaptureSystemEvents);
   });
 
   it('captures a source event as an events.system entry (timestamp from the clock)', async () => {
@@ -72,7 +73,7 @@ describe('createSystemEventsProvider', () => {
     const source = mkSource();
     const coordinator = createCaptureCoordinator(buildInit(store));
     coordinator.addProvider(createSystemEventsProvider(source, { now: () => 1 }));
-    coordinator.start(options, (opt) => opt === 'captureSystemEvents');
+    coordinator.start(options, (opt) => opt === BugseeOption.CaptureSystemEvents);
     source.emit('event', { name: 'on' });
     expect(await drainEvents(store)).toHaveLength(1);
 
