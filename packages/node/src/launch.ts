@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import process from 'node:process';
 import {
   createConsoleInterceptor,
@@ -9,11 +10,13 @@ import {
 } from '@bugsee/capture';
 import {
   type BugseeClient,
+  type BundleStore,
   type CaptureStore,
   type Clock,
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDurableUploadPipeline,
   createFileCaptureStore,
   createOptionsContainer,
   createUploadPipeline,
@@ -23,7 +26,11 @@ import {
   type OptionGate,
   type Scheduler,
 } from '@bugsee/core';
-import { createNodeFileStorageAdapter, httpRequest } from '@bugsee/node-utils';
+import {
+  createNodeBundleStore,
+  createNodeFileStorageAdapter,
+  httpRequest,
+} from '@bugsee/node-utils';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -85,6 +92,12 @@ export interface BugseeLaunchOptions {
   shutdownTimeoutMs?: number;
   /** Call process.exit(1) after flushing an uncaught exception. Default true. */
   exitOnUncaught?: boolean;
+  /**
+   * Durably persist each bundle before upload and re-upload any left behind by a crashed/killed run
+   * on the next launch (guaranteed crash delivery). Requires a persistent location (dataDir or an
+   * injected bundleStore); a no-op for an in-memory store. Default true.
+   */
+  recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -103,6 +116,8 @@ export interface BugseeLaunchOptions {
   systemProbe?: SystemProbe;
   /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
   systemMetricsSampler?: () => readonly TraceSample[];
+  /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
+  bundleStore?: BundleStore;
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -138,7 +153,25 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   const transport = internalTagged(options.transport ?? httpRequest);
   const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
   const uploader = createBundleUploader(transport);
-  const uploadPipeline = createUploadPipeline({ api, uploader });
+  const baseUploadPipeline = createUploadPipeline({ api, uploader });
+
+  // Durable bundle queue (guaranteed crash delivery): persist each bundle before upload and re-upload
+  // any left behind by a crashed/killed run. Needs a stable on-disk location — the bundleStore
+  // override, else <dataDir>/pending; with neither (in-memory store) there's nothing durable to do.
+  const bundleStore =
+    options.bundleStore ??
+    (options.dataDir !== undefined
+      ? createNodeBundleStore(join(options.dataDir, 'pending'))
+      : undefined);
+  const durable =
+    (options.recover ?? true) && bundleStore !== undefined
+      ? createDurableUploadPipeline({
+          store: bundleStore,
+          pipeline: baseUploadPipeline,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
+  const uploadPipeline = durable ?? baseUploadPipeline;
 
   // Node environment envelope, rebuilt at each report so it reflects current state.
   const probe = options.systemProbe ?? realSystemProbe;
@@ -196,14 +229,17 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
 
   client.launch();
 
+  // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
+  durable?.recover();
+
   if (!gates.detectCrashes) {
     return client;
   }
 
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
   // was registered during launch, so BEFORE this one) submits the crash report; flush() now awaits
-  // that in-flight report, so the bundle is delivered before we exit. Guaranteed delivery across a
-  // hard crash (persist-before-exit + relaunch re-upload) is the separate recovery slice.
+  // that in-flight report, so the bundle is delivered before we exit. With the durable queue the
+  // bundle is also persisted pre-upload, so even a hard exit before the upload lands is recovered.
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const exitOnUncaught = options.exitOnUncaught ?? true;
   const onUncaughtException = (): void => {

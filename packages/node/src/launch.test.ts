@@ -2,14 +2,21 @@ import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type BundleStore,
   type Clock,
   createCaptureExporter,
   createMemoryCaptureStore,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  serializeBundle,
 } from '@bugsee/core';
-import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
+import {
+  type EnvironmentEnvelope,
+  type FileType,
+  type RequestJson,
+  Severity,
+} from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
@@ -123,6 +130,43 @@ const drain = async (store: ReturnType<typeof createMemoryCaptureStore>, type: F
   (await createCaptureExporter(store).drain()).get(type);
 
 const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+
+// In-memory durable BundleStore + live map/put-log for assertions.
+function bundleMemStore() {
+  const map = new Map<string, Uint8Array>();
+  const puts: string[] = [];
+  const store: BundleStore = {
+    put: (id, bytes) => {
+      puts.push(id);
+      map.set(id, bytes);
+    },
+    list: () => [...map.keys()],
+    read: (id) => map.get(id),
+    remove: (id) => {
+      map.delete(id);
+    },
+  };
+  return { store, map, puts };
+}
+// A serialized pending bundle (as a prior crashed run would have left on disk).
+const pendingBundle = (summary: string): Uint8Array => {
+  const request: RequestJson = {
+    type: 'crash',
+    summary,
+    severity: Severity.Blocker,
+    source: { mechanism: 'uncaught' },
+    created_on: '2026-05-29T00:00:00Z',
+    environment: {
+      platform: { type: 'node', version: '1' },
+      sdk: { version: '0', type: 'javascript' },
+    },
+  };
+  return serializeBundle({
+    request,
+    body: new Uint8Array([0x50, 0x4b, 1]),
+    fileName: 'recovered.zip',
+  });
+};
 
 describe('launch', () => {
   it('returns a launched client', () => {
@@ -362,6 +406,52 @@ describe('launch', () => {
       detectCrashes: false,
     });
     expect(client.isLaunched()).toBe(true);
+  });
+
+  it('re-uploads a bundle left by a prior crashed run on launch (durable recovery)', async () => {
+    const { store, map } = bundleMemStore();
+    map.set('leftover', pendingBundle('recovered-crash'));
+    const transport = uploadTransport();
+    launchTracked(
+      'tok',
+      baseOptions({
+        process: fakeProcess().proc,
+        transport,
+        captureStore: memStore(),
+        bundleStore: store,
+      }),
+    );
+    await vi.waitFor(() => expect(map.has('leftover')).toBe(false)); // re-uploaded → removed
+    const issue = transport.mock.calls.find(([url]) => url.endsWith('/v2/issues'));
+    expect(JSON.parse(String((issue?.[1] as HttpRequestOptions).body)).summary).toBe(
+      'recovered-crash',
+    );
+  });
+
+  it('persists a report bundle before upload and removes it on success (durable queue)', async () => {
+    const { store, map, puts } = bundleMemStore();
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      // onError threaded into the durable pipeline (a real, error-free run here).
+      baseOptions({ transport, captureStore: memStore(), bundleStore: store, onError: vi.fn() }),
+    );
+    await client.logException(new Error('boom'));
+    expect(puts).toHaveLength(1); // staged durably before the upload
+    expect(map.size).toBe(0); // confirmed delivered → durable copy removed
+  });
+
+  it('does not re-upload leftovers (or persist) when recover is false', async () => {
+    const { store, map } = bundleMemStore();
+    map.set('leftover', pendingBundle('should-not-upload'));
+    const transport = uploadTransport();
+    launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: memStore(), bundleStore: store, recover: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(map.has('leftover')).toBe(true); // durable disabled → leftover untouched
+    expect(transport.mock.calls).toHaveLength(0); // nothing re-uploaded
   });
 
   it('launches with all defaults (in-memory store, global timers, no overrides)', async () => {

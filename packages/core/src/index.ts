@@ -53,6 +53,14 @@ export {
 } from './detection-coordinator';
 export { DetectionProviderBase } from './detection-provider-base';
 export {
+  type BundleStore,
+  createDurableUploadPipeline,
+  type DurableUploadPipeline,
+  type DurableUploadPipelineOptions,
+  deserializeBundle,
+  serializeBundle,
+} from './durable-upload-pipeline';
+export {
   createMultiKeyEmitter,
   type EventListener,
   type EventSubscribable,

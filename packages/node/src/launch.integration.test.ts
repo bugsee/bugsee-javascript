@@ -1,6 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createMemoryCaptureStore } from '@bugsee/core';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createMemoryCaptureStore, serializeBundle } from '@bugsee/core';
+import { createNodeBundleStore } from '@bugsee/node-utils';
+import { type RequestJson, Severity } from '@bugsee/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launch, type NodeRuntime } from './launch';
 
@@ -107,5 +112,45 @@ describe('launch — loopback end-to-end', () => {
     expect(put?.headers['x-bugsee-internal']).toBe('1'); // self-isolation tag on the PUT
     expect(put?.body.subarray(0, 2).toString('latin1')).toBe('PK');
     expect(put?.body.length).toBeGreaterThan(0);
+  });
+
+  it('recovers a bundle a prior run persisted to disk and re-uploads it through the real transport', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-'));
+    try {
+      // Simulate the leftover from a prior crashed run: a serialized bundle in <dataDir>/pending.
+      const request: RequestJson = {
+        type: 'crash',
+        summary: 'prior-run crash',
+        severity: Severity.Blocker,
+        source: { mechanism: 'uncaught' },
+        created_on: '2026-05-29T00:00:00Z',
+        environment: {
+          platform: { type: 'node', version: '1' },
+          sdk: { version: '0', type: 'javascript' },
+        },
+      };
+      const queue = createNodeBundleStore(join(dir, 'pending'));
+      queue.put(
+        'crash-1',
+        serializeBundle({ request, body: new Uint8Array([1, 2, 3]), fileName: 'p.zip' }),
+      );
+
+      const client = launch('app-token', {
+        endpoint: origin,
+        process: fakeProcess(),
+        dataDir: dir, // → <dir>/pending durable queue; recover() runs on launch
+        captureNetwork: false,
+        captureSystemEvents: false,
+        systemMetricsSampler: () => [],
+      });
+      await client.stop(); // flush awaits the recovery re-upload (it's in the upload pipeline)
+
+      const issue = received.find((r) => r.url.endsWith('/v2/issues'));
+      expect(JSON.parse(issue?.body.toString() ?? '{}').summary).toBe('prior-run crash');
+      expect(received.find((r) => r.url.endsWith('/upload'))?.method).toBe('PUT');
+      expect(queue.list()).toEqual([]); // confirmed re-uploaded → durable copy removed from disk
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
