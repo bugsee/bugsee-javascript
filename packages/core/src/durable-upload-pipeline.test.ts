@@ -82,15 +82,31 @@ describe('serializeBundle / deserializeBundle', () => {
 });
 
 describe('createDurableUploadPipeline', () => {
-  it('persists a bundle before uploading it', () => {
+  it('persists a bundle BEFORE attempting the upload (durability ordering)', () => {
     const { store, map } = memStore();
-    const { pipeline, enqueue } = fakePipeline();
-    const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'b1' });
+    const order: string[] = [];
+    // Record the relative order of the durable write vs the upload attempt — the core durability
+    // contract is that the bundle is on disk before the upload could fail/crash.
+    const recordingStore: BundleStore = {
+      ...store,
+      put: (id, bytes) => {
+        order.push('put');
+        store.put(id, bytes);
+      },
+    };
+    const enqueue = vi.fn<UploadPipeline['enqueue']>(async () => {
+      order.push('enqueue');
+      return { ok: true };
+    });
+    const pipeline = { enqueue, flush: vi.fn(async () => true), drop: vi.fn() } as UploadPipeline;
+    const durable = createDurableUploadPipeline({
+      store: recordingStore,
+      pipeline,
+      newId: () => 'b1',
+    });
     void durable.enqueue(bundle());
-    // Persisted synchronously, with the serialized frame, before the upload resolves.
-    expect(map.has('b1')).toBe(true);
+    expect(order).toEqual(['put', 'enqueue']); // persisted, THEN uploaded — not the reverse
     expect(deserializeBundle(map.get('b1') as Uint8Array).fileName).toBe('abc.bundle.zip');
-    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('removes the durable copy after a confirmed upload (resolves after removal)', async () => {
