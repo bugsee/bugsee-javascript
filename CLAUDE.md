@@ -10,17 +10,26 @@ Design implication: runtime-portable code is the default. Anything runtime-speci
 
 ## Current state
 
-No source code yet, but the architecture is fully specified in **`docs/design/sdk-design.md`** (Draft v3) — read it before writing any code. There is no build/test/lint command to document yet.
+A **runnable Node SDK** exists. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`.
 
-Planned toolchain is consolidated in **`docs/dev-environment.md`**. When code lands, update this file with:
-- Package manager and the actual build/test/lint commands (including how to run a single test) — also fill the "Commands" section of `docs/dev-environment.md`
-- The chosen module strategy for multi-runtime support (`exports` conditions; see design §6/§12.2)
-- The runtime-adapter pattern (where the runtime is detected, how platform-specific code is isolated)
+**Implemented (test-first, reviewed, on `master`):**
+- Tier-0: `@bugsee/types`, `@bugsee/util`, `@bugsee/logger`, `@bugsee/protocol`, `@bugsee/service`.
+- Kernel: `@bugsee/core` (Client, capture aggregator/store/exporter, coordinators, trigger/upload pipelines, durable bundle queue, interceptor/emitter base, options resolver).
+- Shared capture: `@bugsee/capture` (console→log; fetch/xhr/ws/sse/webtransport → network umbrella; system traces/events providers).
+- Node platform: `@bugsee/node-utils` (httpRequest transport, fs storage + bundle store) and `@bugsee/node` (`launch()`, node:http interceptor, env builder, detection providers, system metrics). `launch(appToken, options)` returns the started client.
+
+**Scaffold only (1-file stubs, no impl yet):** `browser`, `browser-utils`, `bun`, `deno`, `electron`, `webworker`, `integration-shims`, `performance`, `replay`/`replay-canvas`, `bugsee` (umbrella), and all framework adapters (`react`, `vue`, `svelte`, `express`, `fastify`, `nextjs`, …).
+
+**Commands:** pnpm + turbo. `pnpm test` (all), `pnpm typecheck`, `pnpm lint` / `lint:fix`, `pnpm check:cycles`, `pnpm test:coverage`. Single file: `pnpm --filter @bugsee/<pkg> exec vitest run src/<file>.test.ts`. Single-package typecheck: `pnpm --filter @bugsee/<pkg> exec tsc --noEmit` (vitest does NOT typecheck — run tsc before committing). Full reference in `docs/dev-environment.md`.
+
+**Module strategy:** packages `exports` map `.` → `./src/index.ts` (source consumed directly inside the monorepo; no build step for dev). tsconfig `module: ESNext`, `moduleResolution: Bundler`, `verbatimModuleSyntax`. Per-runtime `exports` conditions (browser/node) are **not yet** split (single entry) — a follow-up (design §6/§12.2). Coverage gate per package: **100% line/fn/stmt, ≥90% branch** (vitest v8).
+
+**Runtime-adapter pattern:** shared tiers (`core`/`capture`/`protocol`/`util`) are runtime-portable — they reach runtime globals only via `globalThis as unknown as {…}` casts and **never** import `node:*`/DOM. Runtime-specific code lives in platform packages (`@bugsee/node` imports `node:process`/`node:http`/`node:fs`; `@bugsee/node-utils` owns the fs/http primitives). Platforms inject specifics through seams: `HttpTransport` (node:http vs fetch), `FileStorageAdapter` + `BundleStore` (fs vs IndexedDB), `CaptureStore` (in-memory shared / file via adapter), capture sources via `installNetworkCapture({ additionalSources })`, and injectable `Clock`/`Scheduler`/`SystemProbe`/`process`. Cross-runtime capture interceptors self-skip when their global is absent.
 
 ## Design (must-follow)
 
 - **Android-canonical.** The Bugsee Android SDK (`/Users/alexeykarimov/Projects/Bugsee/android/sdk`) is the API **and** architecture parity target. Sentry/Firebase are studied as internal design references only — **never** migration sources; do not add migration guides/aliases for them.
-- **Thin kernel + pub/sub event flow** (Android-derived): sources (interceptors/adapters) → event hubs → capture/detection providers → cyclic ring buffers → bundle. Features are **pluggable extensions**; **do not pierce the core** (e.g. APM is the opt-in `@bugsee/performance` extension, not core code). Full contract in design §16.
+- **Thin kernel + pub/sub event flow** (Android-derived): sources (interceptors/adapters) → capture/detection providers → capture aggregator → capture store (ring/parts) → bundle. NOTE: the design-doc "event hubs" layer was **removed** during implementation — interceptors are themselves listenable (extend the core multi-key emitter / `InterceptorBase`) and providers subscribe to them directly (subscriber-presence drives activation). Features are **pluggable extensions**; **do not pierce the core** (e.g. APM is the opt-in `@bugsee/performance` extension, not core code). Full contract in design §16 (read alongside `docs/PROGRESS.md` for the as-built deltas).
 - **Runtime-portable by default.** Anything runtime-specific (DOM, `process`, `window`, `fs`, Electron, Bun/Deno APIs) lives behind a runtime adapter or conditional entry point — never imported unconditionally from shared code.
 
 ## Implementation standards (binding — full methodology in `docs/implementation-standards.md`)

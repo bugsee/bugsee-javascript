@@ -1,6 +1,6 @@
 # Bugsee JavaScript SDK — Dev Environment & Tooling
 
-**Status:** v1 (2026-05-25) — *planned*. The repo has no `package.json`/tooling config yet; this consolidates the toolchain decided in `docs/design/sdk-design.md` (§12.1, §12.3, §12.5, §5.3) and `docs/implementation-standards.md` (§13). Update the **Commands** section below when code lands.
+**Status:** v1.1 (2026-05-30) — *in use*. The repo is bootstrapped: pnpm + turbo workspace, Vitest + Biome + tsc + madge wired, ~38 packages scaffolded (10 implemented, see `docs/PROGRESS.md`). This file consolidates the toolchain decided in `docs/design/sdk-design.md` (§12.1, §12.3, §12.5, §5.3) and `docs/implementation-standards.md` (§13). Source of truth for the live commands is the **Commands** section below.
 
 ---
 
@@ -84,4 +84,80 @@ Changesets, independent versioning. `@bugsee/protocol` exact-pinned by every con
 
 ## Commands
 
-> **TODO (fill when code lands):** install, build, build a single package, test, test a single file, lint, format, type-check, coverage, run mutation testing, per-runtime smoke. Mirror these into `CLAUDE.md` "Current state".
+Package manager: **pnpm 11.3.0** (declared in root `package.json` `packageManager`). Task runner: **turbo** (`turbo.json`). All commands run from the repo root unless noted.
+
+### Install
+
+```bash
+pnpm install                              # install workspace dependencies
+```
+
+### Build
+
+```bash
+pnpm build                                # turbo run build (all packages)
+pnpm --filter @bugsee/<pkg> build         # build one package
+```
+
+> Packages currently export their TypeScript source directly via `exports: { ".": { "import": "./src/index.ts" } }`, so the monorepo CONSUMES source — no build step is required to develop or test inside the repo. `pnpm build` produces `dist/` for publishing.
+
+### Test (Vitest)
+
+```bash
+pnpm test                                 # all packages, one run
+pnpm test:watch                           # vitest watch mode
+pnpm test:coverage                        # all packages with coverage
+pnpm --filter @bugsee/<pkg> exec vitest run             # one package
+pnpm --filter @bugsee/<pkg> exec vitest run src/<file>.test.ts   # one file
+pnpm --filter @bugsee/<pkg> exec vitest run -t "<test name fragment>"  # one test
+pnpm --filter @bugsee/<pkg> exec vitest run --coverage  # one package with coverage
+```
+
+**Coverage gate per package (vitest v8 thresholds):** **100% line / function / statement, ≥90% branch (aggregate)**. Failing the gate fails the run.
+
+### Type-check
+
+**Vitest does NOT typecheck.** Always run `tsc` per package before committing.
+
+```bash
+pnpm typecheck                            # turbo run typecheck → tsc --noEmit per package
+pnpm --filter @bugsee/<pkg> exec tsc --noEmit           # one package
+```
+
+### Lint & format (Biome)
+
+```bash
+pnpm lint                                 # biome check . (read-only)
+pnpm lint:fix                             # biome check --write . (auto-fix safe issues; unsafe fixes — e.g. unused-import removal — stay as warnings, fix manually)
+pnpm format                               # biome format --write .
+```
+
+### Cycles
+
+```bash
+pnpm check:cycles                         # madge --circular --extensions ts packages
+```
+
+### Mutation testing (Stryker, opt-in)
+
+```bash
+pnpm mutation                             # turbo run mutation (per-package Stryker run)
+```
+
+> Mutation testing is **not** a blocking gate. The always-on discipline is the per-entity **mutator loop** in `docs/implementation-standards.md` §2 (inject a bug → confirm a test catches it → restore). Stryker is run on demand to audit test strength.
+
+### Per-runtime smoke
+
+Not yet wired (no per-runtime smoke harness exists). The Node SDK's end-to-end coverage is in `packages/node/src/launch.integration.test.ts` (real loopback `http.createServer`, full session → issue → signed PUT → durable-queue recovery).
+
+### Pre-commit checklist
+
+Before committing, run all four gates:
+
+```bash
+pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test
+```
+
+The repo currently has no git pre-commit hook installed — these gates are operated manually.
+
+> Mirror any change to these commands into `CLAUDE.md` "Current state" so a fresh agent session sees the same picture.
