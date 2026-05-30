@@ -191,9 +191,12 @@ importers:
 
   packages/integration-shims:
     dependencies:
-      '@bugsee/types':
+      '@bugsee/core':
         specifier: workspace:*
-        version: link:../types
+        version: link:../core
+      '@bugsee/logger':
+        specifier: workspace:*
+        version: link:../logger
 
   packages/logger: {}
 

@@ -18,9 +18,12 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/types": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "@bugsee/logger": "workspace:*"
   }
 }
