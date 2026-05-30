@@ -1,4 +1,5 @@
 import type { Interceptor } from './contracts';
+import type { ServiceResolver } from './services';
 
 // Process-global Carrier (design §4.2 §214): a version-keyed slot on `globalThis.__BUGSEE__` holding
 // the SDK's process-global singletons — currently the interceptor registry. Routing interceptor
@@ -76,4 +77,12 @@ export function getCarrierClient<T = unknown>(globalObj: object = globalThis): T
 /** Set (or, with `undefined`, clear) the process-global launched client. */
 export function setCarrierClient(client: unknown, globalObj: object = globalThis): void {
   getCarrier(globalObj).client = client;
+}
+
+/**
+ * The internal aggregated object (the singleton client's service resolver) for in-process consumers —
+ * e.g. the capture pipeline resolving services without importing the Client. Undefined until launched.
+ */
+export function getInternal(globalObj: object = globalThis): ServiceResolver | undefined {
+  return getCarrierClient<ServiceResolver>(globalObj);
 }

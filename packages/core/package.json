@@ -25,6 +25,7 @@
   "dependencies": {
     "@bugsee/types": "workspace:*",
     "@bugsee/util": "workspace:*",
-    "@bugsee/protocol": "workspace:*"
+    "@bugsee/protocol": "workspace:*",
+    "@bugsee/service": "workspace:*"
   }
 }

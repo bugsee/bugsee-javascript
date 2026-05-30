@@ -2,6 +2,15 @@
 // EventEmitter, Interceptor/CaptureProvider/DetectionProvider + extension registry, ring buffers,
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
+export {
+  createServiceContainer,
+  defineService,
+  type InstantiationMode,
+  type Provider,
+  type Service,
+  type ServiceContainer,
+  type ServiceFactory,
+} from '@bugsee/service';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 export { createBundleUploader } from './bundle-uploader';
@@ -20,6 +29,7 @@ export {
   type BugseeCarrier,
   getCarrier,
   getCarrierClient,
+  getInternal,
   getOrCreateInterceptor,
   setCarrierClient,
 } from './carrier';
@@ -108,6 +118,7 @@ export {
   type ReportingTriggerType,
 } from './reporting';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export type { ServiceRegistrar, ServiceResolver } from './services';
 export { formatStack, parseV8Stack, type StackFrame } from './stack';
 export type {
   BugseeApi,

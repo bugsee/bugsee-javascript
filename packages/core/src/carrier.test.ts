@@ -4,6 +4,7 @@ import {
   type BugseeCarrier,
   getCarrier,
   getCarrierClient,
+  getInternal,
   getOrCreateInterceptor,
   setCarrierClient,
 } from './carrier';
@@ -131,5 +132,18 @@ describe('getCarrierClient / setCarrierClient (per-process singleton slot)', () 
     const client = { id: 'global-client' };
     setCarrierClient(client);
     expect(getCarrierClient()).toBe(client);
+  });
+});
+
+describe('getInternal (the singleton client as a service resolver)', () => {
+  it('is undefined when no client is launched', () => {
+    expect(getInternal({})).toBeUndefined();
+  });
+
+  it('returns the carrier client (which IS a service resolver)', () => {
+    const g = {};
+    const resolver = { getService: vi.fn(() => 1), getServiceProvider: vi.fn() };
+    setCarrierClient(resolver, g);
+    expect(getInternal(g)).toBe(resolver);
   });
 });

@@ -1,8 +1,15 @@
 import type { EnvironmentEnvelope, LogLevel, Mechanism } from '@bugsee/protocol';
+import {
+  createServiceContainer,
+  type Provider,
+  type Service,
+  type ServiceContainer,
+} from '@bugsee/service';
 import type {
   AttributeValue,
   LogLevelName,
   NameExtensionMapping,
+  NameServiceMapping,
   SeverityName,
 } from '@bugsee/types';
 import { assembleBundle } from './bundle-assembler';
@@ -23,6 +30,7 @@ import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import { createReportingRequest, type ReportingRequest } from './reporting';
+import type { ServiceRegistrar, ServiceResolver } from './services';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline';
 
@@ -92,7 +100,7 @@ export interface LogExceptionOptions {
 }
 
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
-export interface BugseeClient extends Client {
+export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar {
   registerExt<K extends keyof NameExtensionMapping>(name: K, api: NameExtensionMapping[K]): void;
   ext<K extends keyof NameExtensionMapping>(name: K): NameExtensionMapping[K];
 
@@ -130,6 +138,8 @@ export interface CreateClientOptions {
   clock?: Clock;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
+  /** The internal service container (the per-process DI registry). Default a fresh one. */
+  services?: ServiceContainer;
   /** Recording window in seconds for the default in-memory store (design maxRecordingTime). Default 60. */
   maxRecordingTime?: number;
   /** Scheduler for the capture-store tick; injectable for tests/edge. Default global timers. */
@@ -163,6 +173,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
   const onError = options.onError ?? (() => {});
+  // The internal service container (the "BugseeInternal" — the per-process DI registry, §7.4). Phase 1
+  // stands it up; later phases migrate the hand-wired seams into it as registered services.
+  const services = options.services ?? createServiceContainer();
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
   const operations = createOperationDispatcher(onError);
@@ -282,6 +295,19 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
     registerExt: extensionRegistry.registerExt,
     ext: extensionRegistry.ext,
+
+    // Internal DI container facade (NameServiceMapping-typed over the generic @bugsee/service container).
+    addService<K extends keyof NameServiceMapping>(service: Service<NameServiceMapping[K]>): void {
+      services.addService(service);
+    },
+    getService<K extends keyof NameServiceMapping>(name: K): NameServiceMapping[K] {
+      return services.getProvider<NameServiceMapping[K]>(name).getImmediate();
+    },
+    getServiceProvider<K extends keyof NameServiceMapping>(
+      name: K,
+    ): Provider<NameServiceMapping[K]> {
+      return services.getProvider<NameServiceMapping[K]>(name);
+    },
 
     setUserIdentifier: environment.setUserIdentifier,
     getUserIdentifier: environment.getUserIdentifier,

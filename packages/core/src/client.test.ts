@@ -1,4 +1,5 @@
 import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
+import { createServiceContainer, defineService } from '@bugsee/service';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
@@ -28,10 +29,13 @@ const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow:
 const firstEntry = async (store: CaptureStore, type: FileType) =>
   (await createCaptureExporter(store).drain()).get(type)?.[0];
 
-// Test-only extension typing so registerExt/ext can be exercised.
+// Test-only extension + service typing so registerExt/ext and addService/getService are exercised.
 declare module '@bugsee/types' {
   interface NameExtensionMapping {
     demo: { ping(): string };
+  }
+  interface NameServiceMapping {
+    svc: { v: number };
   }
 }
 
@@ -87,6 +91,31 @@ describe('createClient — registration seams', () => {
     client.registerExt('demo', api);
     expect(client.ext('demo')).toBe(api);
     expect(client.ext('demo').ping()).toBe('pong');
+  });
+});
+
+describe('createClient — internal service container (DI)', () => {
+  it('lazily instantiates a registered service exactly once (singleton)', () => {
+    const factory = vi.fn(() => ({ v: 7 }));
+    const client = createClient();
+    client.addService(defineService('svc', factory));
+    expect(client.getService('svc')).toEqual({ v: 7 });
+    expect(client.getService('svc')).toBe(client.getService('svc'));
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves a service registered AFTER getServiceProvider (late registration)', async () => {
+    const client = createClient();
+    const pending = client.getServiceProvider('svc').get();
+    client.addService(defineService('svc', () => ({ v: 9 })));
+    expect(await pending).toEqual({ v: 9 });
+  });
+
+  it('uses an injected container when provided', () => {
+    const container = createServiceContainer();
+    container.addService(defineService('svc', () => ({ v: 42 })));
+    const client = createClient({ services: container });
+    expect(client.getService('svc')).toEqual({ v: 42 });
   });
 });
 
