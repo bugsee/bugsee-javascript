@@ -30,6 +30,11 @@ describe('BugseeError', () => {
     expect(new BugseeError('x', 1).cause).toBeUndefined();
   });
 
+  it('is non-fatal by default and carries the fatal flag when set (invalid-token kill-state)', () => {
+    expect(new BugseeError('x', 1).fatal).toBe(false);
+    expect(new BugseeError('bad token', 401, { fatal: true }).fatal).toBe(true);
+  });
+
   it('renders name and message via toString (standard Error formatting)', () => {
     expect(new BugseeError('nope', 7).toString()).toBe('BugseeError: nope');
   });

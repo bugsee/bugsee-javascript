@@ -156,4 +156,41 @@ describe('launch — loopback end-to-end', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('enters the kill-state when the real transport gets 401 on /v2/sessions (invalid app token)', async () => {
+    // A loopback server that rejects the app token on session create.
+    const hits: string[] = [];
+    const authServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        hits.push(req.url ?? '');
+        res.writeHead((req.url ?? '').endsWith('/v2/sessions') ? 401 : 200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve));
+    const authOrigin = `http://127.0.0.1:${(authServer.address() as AddressInfo).port}`;
+    const onError = vi.fn();
+    try {
+      const client = launch('bad-token', {
+        endpoint: authOrigin,
+        process: fakeProcess(),
+        captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+        captureNetwork: false,
+        captureSystemEvents: false,
+        systemMetricsSampler: () => [],
+        onError,
+      });
+      await client.logException(new Error('boom')); // real transport → 401 sessions → fatal → kill
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(client.isLaunched()).toBe(false); // killed
+
+      const sessionsBefore = hits.filter((u) => u.endsWith('/v2/sessions')).length;
+      expect(await client.logException(new Error('again'))).toEqual({ ok: false }); // no-op
+      expect(hits.filter((u) => u.endsWith('/v2/sessions')).length).toBe(sessionsBefore); // no new call
+      expect(hits.some((u) => u.endsWith('/v2/issues'))).toBe(false); // never got past auth
+    } finally {
+      await new Promise<void>((resolve) => authServer.close(() => resolve()));
+    }
+  });
 });

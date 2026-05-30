@@ -15,6 +15,7 @@ import type { CaptureProviderInit, CaptureStore, Client, OptionsContainer } from
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
+import type { BugseeError } from './errors';
 import type { LogEvent } from './events';
 import { createExtensionRegistry } from './extension-registry';
 import { createMemoryCaptureStore } from './memory-capture-store';
@@ -189,6 +190,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
+  // Permanent kill-state (§1435/§1504): set when a report fails with an unrecoverable auth error
+  // (invalid app token). All capture goes no-op, capture+detection halt, onError fires ONCE.
+  let killed = false;
   let tickTimer: unknown = null;
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
@@ -221,7 +225,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     const forget = (): void => {
       pendingReports.delete(report);
     };
-    report.then(forget, forget);
+    report.then((result) => {
+      forget();
+      // An unrecoverable auth failure (invalid app token) on any report trips the kill-state.
+      if (result.ok === false && result.error?.fatal === true) {
+        enterKillState(result.error);
+      }
+    }, forget);
     return report;
   };
   // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded
@@ -234,6 +244,29 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return drained;
     }
     return Promise.race([drained, sleep(timeout).then(() => false)]);
+  };
+
+  // Halt the live capture machinery (tick + capture/detection coordinators). Shared by stop() and the
+  // kill-state; the caller decides whether to also drain pending uploads.
+  const haltCapture = (): void => {
+    scheduler.clearInterval(tickTimer);
+    tickTimer = null;
+    captureCoordinator.stop();
+    detectionCoordinator.stop();
+  };
+
+  // Enter the permanent kill-state (invalid app token): fire onError ONCE, then halt capture/detection.
+  // Idempotent. Pending uploads are not drained — further uploads on a rejected token are futile.
+  const enterKillState = (error: BugseeError): void => {
+    if (killed) {
+      return;
+    }
+    killed = true;
+    onError(error);
+    if (launched) {
+      launched = false;
+      haltCapture();
+    }
   };
 
   // The provider/extension-facing surface (§16.3) passed to providers at start().
@@ -261,6 +294,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     getAllAttributes: environment.getAllAttributes,
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
+      if (killed) {
+        return;
+      }
       const timestamp = breadcrumb.timestamp ?? clock.wallNow();
       captureAggregator.addEntry(
         new CaptureDataEntryBase('breadcrumbs', timestamp, { ...breadcrumb, timestamp }),
@@ -268,12 +304,18 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     log(message: string, level: LogLevel | LogLevelName = 'info', timestamp?: number): void {
+      if (killed) {
+        return;
+      }
       const ts = timestamp ?? clock.wallNow();
       const entry: LogEvent = { timestamp: ts, level, source: 'logger', message };
       captureAggregator.addEntry(new CaptureDataEntryBase('log', ts, entry));
     },
 
     event(name: string, params?: Record<string, unknown>): void {
+      if (killed) {
+        return;
+      }
       const timestamp = clock.wallNow();
       captureAggregator.addEntry(
         new CaptureDataEntryBase('events.user', timestamp, {
@@ -285,6 +327,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     trace(name: string, value: unknown): void {
+      if (killed) {
+        return;
+      }
       const timestamp = clock.wallNow();
       captureAggregator.addEntry(
         new CaptureDataEntryBase('traces.user', timestamp, { timestamp, name, value }),
@@ -292,8 +337,8 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     logException(error: unknown, exceptionOptions?: LogExceptionOptions): Promise<UploadResult> {
-      // After stop(), logException is a silent no-op (§1501) until a re-launch.
-      if (stopped) {
+      // After stop() (§1501) or in the kill-state (§1435), logException is a silent no-op.
+      if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
       // Instance dedup: a re-capture of the same thrown object is a no-op (§7.7).
@@ -323,7 +368,8 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     launch(): void {
-      if (launched) {
+      // A killed client (invalid app token) is permanently dead: re-launching must not re-arm it.
+      if (killed || launched) {
         return;
       }
       launched = true;
@@ -352,11 +398,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
       launched = false;
       stopped = true;
-      // launch() always sets tickTimer before returning, so it is set here (stop runs only if launched).
-      scheduler.clearInterval(tickTimer);
-      tickTimer = null;
-      captureCoordinator.stop();
-      detectionCoordinator.stop();
+      haltCapture(); // launch() always sets tickTimer first, so it is set here (stop runs only if launched)
       return drainPending(timeout);
     },
 

@@ -69,12 +69,25 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
   };
 
   // Phase 1: ensure session + create the issue, retried as a unit (invalidate before each retry).
+  // EXCEPTION: a 401/403 from ensureSession is the APP TOKEN itself being rejected (session create is
+  // app-token-authenticated) — retrying can't recover it, so it fails FATALLY (no retry) and the
+  // client enters its kill-state. A 401 from createIssue is a stale ACCESS token → recoverable retry.
   const createIssue = async (bundle: Bundle): Promise<IssueCreateResult> => {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        await api.ensureSession(bundle.request.environment);
+        try {
+          await api.ensureSession(bundle.request.environment);
+        } catch (err) {
+          if (err instanceof BugseeError && (err.code === 401 || err.code === 403)) {
+            throw new BugseeError('invalid app token', err.code, { fatal: true, cause: err });
+          }
+          throw err; // any other session failure falls through to the recoverable retry below
+        }
         return await api.createIssue(bundle.request);
       } catch (err) {
+        if (err instanceof BugseeError && err.fatal) {
+          throw err; // do not retry / re-acquire — the app token is invalid
+        }
         api.invalidateSession();
         if (attempt >= maxRetries) {
           throw err instanceof BugseeError

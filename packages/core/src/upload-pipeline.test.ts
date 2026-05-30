@@ -221,6 +221,43 @@ describe('createUploadPipeline — retries', () => {
     expect(result.error?.code).toBe(418);
   });
 
+  it.each([
+    401, 403,
+  ])('fails FATALLY without retry when ensureSession is rejected with %i (invalid app token)', async (code) => {
+    const ensureSession = vi
+      .fn<BugseeApi['ensureSession']>()
+      .mockRejectedValue(new BugseeError('nope', code));
+    const api = fakeApi({ ensureSession });
+    const result = await createUploadPipeline(deps({ api, maxRetries: 3 })).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.error?.fatal).toBe(true);
+    expect(result.error?.code).toBe(code);
+    expect(ensureSession).toHaveBeenCalledTimes(1); // no re-acquire — retrying can't recover
+    expect(api.invalidateSession).not.toHaveBeenCalled();
+  });
+
+  it('treats a 401 from createIssue (stale access token) as recoverable, not fatal', async () => {
+    const createIssue = vi
+      .fn<BugseeApi['createIssue']>()
+      .mockRejectedValueOnce(new BugseeError('stale', 401))
+      .mockResolvedValue(issue);
+    const api = fakeApi({ createIssue });
+    const result = await createUploadPipeline(deps({ api })).enqueue(bundle);
+    expect(result.ok).toBe(true); // retried + recovered
+    expect(api.invalidateSession).toHaveBeenCalledTimes(1);
+    expect(createIssue).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not treat a non-auth session failure (e.g. 500) as fatal', async () => {
+    const ensureSession = vi
+      .fn<BugseeApi['ensureSession']>()
+      .mockRejectedValue(new BugseeError('server', 500));
+    const api = fakeApi({ ensureSession });
+    const result = await createUploadPipeline(deps({ api, maxRetries: 1 })).enqueue(bundle);
+    expect(result.error?.fatal).toBe(false);
+    expect(ensureSession).toHaveBeenCalledTimes(2); // retried (initial + 1)
+  });
+
   it('uses computeBackoff by default when no computeDelay is injected', async () => {
     const sleep = vi.fn<(ms: number) => Promise<void>>(async () => {});
     const put = vi

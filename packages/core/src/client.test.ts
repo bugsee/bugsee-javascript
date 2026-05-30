@@ -10,6 +10,7 @@ import type {
   CaptureStore,
   DetectionProvider,
 } from './contracts';
+import { BugseeError } from './errors';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createReportingRequest, type ReportingRequest } from './reporting';
@@ -561,6 +562,85 @@ describe('createClient — report path (built trigger pipeline)', () => {
     const client = createClient({ uploadPipeline });
     expect(await client.logException(new Error('x'))).toEqual({ ok: false });
     expect(enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe('createClient — kill-state (invalid app token)', () => {
+  const killClient = (
+    over: { enqueue?: UploadPipeline['enqueue']; onError?: (e: unknown) => void } = {},
+  ) => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const enqueue = over.enqueue ?? vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: true }));
+    const onError = over.onError ?? vi.fn();
+    const client = createClient({
+      uploadPipeline: { enqueue, flush: vi.fn(async () => true), drop: vi.fn() },
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+      scheduler: { setInterval: () => 'h', clearInterval: () => {} },
+      onError,
+    });
+    return { client, store, enqueue, onError };
+  };
+  const fatal = () => new BugseeError('invalid app token', 401, { fatal: true });
+
+  it('enters the kill-state on a fatal report result: onError once, halts, captures no-op', async () => {
+    const err = fatal();
+    const { client, store, onError } = killClient({
+      enqueue: async () => ({ ok: false, error: err }),
+    });
+    const provider = { name: 'p', init: vi.fn(), start: vi.fn(), stop: vi.fn() } as CaptureProvider;
+    client.addCaptureProvider(provider);
+    client.launch();
+    await client.logException(new Error('boom'));
+
+    expect(onError).toHaveBeenCalledWith(err);
+    expect(client.isLaunched()).toBe(false); // capture/detection halted
+    expect(provider.stop).toHaveBeenCalled(); // the capture coordinator was stopped
+    // Subsequent captures are no-ops.
+    client.log('after-kill');
+    client.event('e');
+    client.trace('t', 1);
+    client.addBreadcrumb({ message: 'b' });
+    const drained = await createCaptureExporter(store).drain();
+    expect(drained.size).toBe(0);
+    expect(await client.logException(new Error('again'))).toEqual({ ok: false }); // no-op
+  });
+
+  it('fires onError exactly once even when multiple fatal reports settle', async () => {
+    const { client, onError } = killClient({
+      enqueue: async () => ({ ok: false, error: fatal() }),
+    });
+    client.launch();
+    const a = client.logException(new Error('a'));
+    const b = client.logException(new Error('b')); // both in flight before either settles
+    await Promise.all([a, b]);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays dead: launch() after a kill is a no-op (does not re-arm capture)', async () => {
+    const { client } = killClient({ enqueue: async () => ({ ok: false, error: fatal() }) });
+    const provider = { name: 'p', init: vi.fn(), start: vi.fn(), stop: vi.fn() } as CaptureProvider;
+    client.addCaptureProvider(provider);
+    client.launch();
+    await client.logException(new Error('boom')); // → kill
+    (provider.start as ReturnType<typeof vi.fn>).mockClear();
+    client.launch(); // attempt to re-arm a killed client
+    expect(client.isLaunched()).toBe(false);
+    expect(provider.start).not.toHaveBeenCalled(); // capture was NOT restarted
+  });
+
+  it('does NOT kill on a non-fatal report failure', async () => {
+    const nonFatal = new BugseeError('5xx', 500); // fatal defaults false
+    const { client, store, onError } = killClient({
+      enqueue: async () => ({ ok: false, error: nonFatal }),
+    });
+    client.launch();
+    await client.logException(new Error('boom'));
+    expect(onError).not.toHaveBeenCalled();
+    expect(client.isLaunched()).toBe(true);
+    client.log('still-capturing');
+    expect((await createCaptureExporter(store).drain()).get('log')).toHaveLength(1);
   });
 });
 
