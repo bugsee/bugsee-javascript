@@ -35,6 +35,10 @@ export interface InstallNetworkCaptureOptions {
   additionalSources?: readonly NetworkSource[];
   /** Carrier host for the leaf singletons; injectable for tests. Default the real `globalThis`. */
   carrier?: object;
+  /** Capture response bodies (bounded read) in the request interceptors. Default true (interceptor default). */
+  captureBodies?: boolean;
+  /** Max response-body bytes read before stopping (bounded). Default 20480 (interceptor default). */
+  maxBodyBytes?: number;
 }
 
 export interface NetworkCapture {
@@ -60,6 +64,8 @@ export function installNetworkCapture(options: InstallNetworkCaptureOptions = {}
       createFetchInterceptor({
         ...httpOpts,
         ...(options.fetchTarget !== undefined ? { target: options.fetchTarget } : {}),
+        ...(options.captureBodies !== undefined ? { captureBodies: options.captureBodies } : {}),
+        ...(options.maxBodyBytes !== undefined ? { maxBodyBytes: options.maxBodyBytes } : {}),
       }),
     ),
     leaf('xhr', () => createXhrInterceptor(httpOpts)),

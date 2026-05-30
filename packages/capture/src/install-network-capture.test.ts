@@ -91,6 +91,129 @@ describe('installNetworkCapture', () => {
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
   });
 
+  it('captures response bodies through the fetch interceptor by default (interceptor default-on)', async () => {
+    const store = mkStore();
+    const TE = (
+      globalThis as unknown as { TextEncoder: new () => { encode: (s: string) => Uint8Array } }
+    ).TextEncoder;
+    const RS = (globalThis as unknown as { ReadableStream: new (s: object) => unknown })
+      .ReadableStream;
+    const bodyResp = () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {
+        forEach: (cb: (v: string, k: string) => void) => cb('text/plain', 'content-type'),
+      },
+      clone: () => ({
+        body: new RS({
+          pull(c: { enqueue: (x: unknown) => void; close: () => void }) {
+            c.enqueue(new TE().encode('hello'));
+            c.close();
+          },
+        }),
+      }),
+    });
+    let current: FetchFn = async () => bodyResp();
+    const fetchTarget: FetchTarget = {
+      get: () => current,
+      set: (fn) => {
+        current = fn;
+      },
+    };
+    const { provider } = installNetworkCapture({ now: () => 1, fetchTarget });
+    provider.init(buildInit(store));
+    provider.start(options);
+    await current('https://api/x');
+    await new Promise<void>((r) =>
+      (globalThis as unknown as { setTimeout: (cb: () => void, ms: number) => void }).setTimeout(
+        r,
+        0,
+      ),
+    );
+    const bodies = (await drainNetwork(store))?.map((e) => (e.data as NetworkEvent).custom?.body);
+    expect(bodies).toContain('hello'); // the response body was captured (override amendment), gated+kept
+  });
+
+  it('threads captureBodies:false through so no response body is read', async () => {
+    const store = mkStore();
+    let cloned = 0;
+    const bodyResp = () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {},
+      clone: () => {
+        cloned += 1;
+        return { body: null };
+      },
+    });
+    let current: FetchFn = async () => bodyResp();
+    const fetchTarget: FetchTarget = {
+      get: () => current,
+      set: (fn) => {
+        current = fn;
+      },
+    };
+    const { provider } = installNetworkCapture({ now: () => 1, fetchTarget, captureBodies: false });
+    provider.init(buildInit(store));
+    provider.start(options);
+    await current('https://api/x');
+    await new Promise<void>((r) =>
+      (globalThis as unknown as { setTimeout: (cb: () => void, ms: number) => void }).setTimeout(
+        r,
+        0,
+      ),
+    );
+    expect(cloned).toBe(0); // captureBodies:false → interceptor never clones/reads
+  });
+
+  it('threads maxBodyBytes through to the fetch interceptor (over-cap body → size_too_large)', async () => {
+    const store = mkStore();
+    const TE = (
+      globalThis as unknown as { TextEncoder: new () => { encode: (s: string) => Uint8Array } }
+    ).TextEncoder;
+    const RS = (globalThis as unknown as { ReadableStream: new (s: object) => unknown })
+      .ReadableStream;
+    const bodyResp = () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {
+        forEach: (cb: (v: string, k: string) => void) => cb('text/plain', 'content-type'),
+      },
+      clone: () => ({
+        body: new RS({
+          pull(c: { enqueue: (x: unknown) => void; close: () => void }) {
+            c.enqueue(new TE().encode('hello')); // 5 bytes > the 3-byte cap below
+            c.close();
+          },
+        }),
+      }),
+    });
+    let current: FetchFn = async () => bodyResp();
+    const fetchTarget: FetchTarget = {
+      get: () => current,
+      set: (fn) => {
+        current = fn;
+      },
+    };
+    const { provider } = installNetworkCapture({ now: () => 1, fetchTarget, maxBodyBytes: 3 });
+    provider.init(buildInit(store));
+    provider.start(options);
+    await current('https://api/x');
+    await new Promise<void>((r) =>
+      (globalThis as unknown as { setTimeout: (cb: () => void, ms: number) => void }).setTimeout(
+        r,
+        0,
+      ),
+    );
+    const reasons = (await drainNetwork(store))?.map(
+      (e) => (e.data as NetworkEvent).custom?.no_body_reason,
+    );
+    expect(reasons).toContain('size_too_large'); // the 3-byte cap was applied → body dropped
+  });
+
   it('aggregates additionalSources (e.g. a node:http interceptor) into the umbrella', async () => {
     const store = mkStore();
     const extra: MultiKeyEmitter<Record<NetworkStage, NetworkEvent>> = createMultiKeyEmitter();

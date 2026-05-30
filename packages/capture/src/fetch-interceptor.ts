@@ -127,6 +127,95 @@ const readRequestBody = (
 const hasContentType = (headers: Record<string, string>): boolean =>
   Object.keys(headers).some((key) => key.toLowerCase() === 'content-type');
 
+/** Case-insensitive header lookup over a record (header maps preserve the producer's casing). */
+const headerValueCI = (headers: Record<string, string>, name: string): string | undefined => {
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+// A ReadableStream reader (the subset we use). `fetch` body globals carry no lib types here → cast.
+type StreamReader = {
+  read: () => Promise<{ done: boolean; value?: unknown }>;
+  cancel: () => Promise<void>;
+};
+
+/** Concatenate UTF-8 chunks and decode, or undefined when TextDecoder is unavailable in this runtime. */
+const decodeUtf8 = (chunks: Uint8Array[]): string | undefined => {
+  const Decoder = (
+    globalThis as unknown as { TextDecoder?: new () => { decode: (b: Uint8Array) => string } }
+  ).TextDecoder;
+  if (typeof Decoder !== 'function') {
+    return undefined;
+  }
+  let length = 0;
+  for (const chunk of chunks) {
+    length += chunk.byteLength;
+  }
+  const all = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    all.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new Decoder().decode(all);
+};
+
+/**
+ * Read a CLONED response body up to `maxBytes` (never the whole stream — design: don't alter app
+ * behavior / memory) and cancel the reader. Returns undefined when there is no body to capture (no
+ * stream). Honors a Content-Length fast-skip (known over-cap → never read). Never throws: a read error
+ * or absent decoder → `cant_read_data`.
+ */
+const readBoundedBody = async (
+  clone: unknown,
+  maxBytes: number,
+  contentLength: number | undefined,
+): Promise<{ body?: string; reason?: NoBodyReason } | undefined> => {
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    return { reason: 'size_too_large' }; // known over-cap → don't read at all
+  }
+  const stream = (clone as { body?: unknown }).body;
+  if (stream === null || stream === undefined) {
+    return undefined; // no body (e.g. 204 / HEAD)
+  }
+  if (typeof (stream as { getReader?: unknown }).getReader !== 'function') {
+    return { reason: 'cant_read_data' };
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let reader: StreamReader | undefined;
+  try {
+    reader = (stream as { getReader: () => StreamReader }).getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = value as Uint8Array;
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return { reason: 'size_too_large' };
+      }
+      chunks.push(chunk);
+    }
+  } catch {
+    try {
+      await reader?.cancel();
+    } catch {
+      /* reader already errored — nothing to release */
+    }
+    return { reason: 'cant_read_data' };
+  }
+  const text = decodeUtf8(chunks);
+  return text === undefined ? { reason: 'cant_read_data' } : { body: text };
+};
+
 const requestHeaders = (input: unknown, init: unknown): Record<string, string> => {
   const fromInit = (init as { headers?: unknown } | undefined)?.headers;
   if (fromInit !== undefined) {
@@ -151,6 +240,10 @@ export interface FetchInterceptorOptions {
   isInternal?: (url: string, requestHeaders: Record<string, string>) => boolean;
   /** Where to read/replace the wrapped fetch — the global by default, or a custom/library fetch. */
   target?: FetchTarget;
+  /** Capture response bodies (bounded clone read). Default true; off skips cloning/reading entirely. */
+  captureBodies?: boolean;
+  /** Max response-body bytes read before stopping (bounded; over-cap → size_too_large). Default 20480. */
+  maxBodyBytes?: number;
 }
 
 class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
@@ -159,6 +252,8 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
   readonly #target: FetchTarget;
+  readonly #captureBodies: boolean;
+  readonly #maxBodyBytes: number;
   #original: FetchFn | null = null;
   #counter = 0;
 
@@ -173,6 +268,55 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
       });
     this.#isInternal = options.isInternal ?? ((_url, headers) => hasInternalHeader(headers));
     this.#target = options.target ?? globalFetchTarget;
+    this.#captureBodies = options.captureBodies ?? true;
+    this.#maxBodyBytes = options.maxBodyBytes ?? 20480;
+  }
+
+  // Capture the RESPONSE body without disturbing the app's own consumption: clone immediately, then
+  // bounded-read the clone (≤ maxBodyBytes) off the event loop and deliver the body as an `override`
+  // amendment (same id) — so a slow/held-open body never delays the `complete` event. A clone failure
+  // (no clone() / threw) means we can't read safely → skip (no amendment). The original response is
+  // never touched. Gated by captureBodies (see onStart wiring); the provider sanitizes the raw body.
+  #captureResponseBody(
+    response: unknown,
+    resHeaders: Record<string, string>,
+    id: string,
+    url: string,
+    method: string,
+  ): void {
+    let clone: unknown;
+    try {
+      const cloneFn = (response as { clone?: unknown }).clone;
+      clone = typeof cloneFn === 'function' ? (cloneFn as () => unknown).call(response) : undefined;
+    } catch {
+      clone = undefined; // body already used / not cloneable → don't risk the app's stream
+    }
+    if (clone === undefined || clone === null) {
+      return;
+    }
+    const lengthHeader = headerValueCI(resHeaders, 'content-length');
+    const parsed = lengthHeader === undefined ? Number.NaN : Number(lengthHeader);
+    const contentLength = Number.isFinite(parsed) ? parsed : undefined;
+    void readBoundedBody(clone, this.#maxBodyBytes, contentLength).then((result) => {
+      if (result === undefined) {
+        return; // no body stream → nothing to amend
+      }
+      this.emit('complete', {
+        timestamp: this.#now(),
+        id,
+        sequence: id,
+        mechanism: 'fetch',
+        url,
+        method,
+        type: 'complete',
+        override: true,
+        custom: {
+          headers: resHeaders,
+          ...(result.body !== undefined ? { body: result.body } : {}),
+          ...(result.reason !== undefined ? { no_body_reason: result.reason } : {}),
+        },
+      });
+    });
   }
 
   protected onActivate(): void {
@@ -230,6 +374,7 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
             redirected: boolean;
             headers: unknown;
           };
+          const resHeaders = headersToRecord(res.headers);
           this.emit('complete', {
             timestamp: this.#now(),
             id,
@@ -242,10 +387,13 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
             statusText: res.statusText,
             redirect: res.redirected,
             custom: {
-              headers: headersToRecord(res.headers),
+              headers: resHeaders,
               timings: { duration: this.#now() - startedAt },
             },
           });
+          if (this.#captureBodies) {
+            this.#captureResponseBody(response, resHeaders, id, url, method);
+          }
           return response;
         },
         (error: unknown) => {

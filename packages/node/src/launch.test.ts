@@ -190,6 +190,111 @@ describe('launch', () => {
     expect((lastCall?.[1] as HttpRequestOptions).headers?.['x-bugsee-internal']).toBe('1');
   });
 
+  it('threads captureNetworkBodies to the fetch interceptor: bodies captured by default (clones)', async () => {
+    const slot = globalThis as unknown as {
+      fetch?: (i: unknown, init?: unknown) => Promise<unknown>;
+    };
+    const real = slot.fetch;
+    const clone = vi.fn(() => ({ body: null }));
+    slot.fetch = async () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {},
+      clone,
+    });
+    try {
+      launchTracked('tok', baseOptions({ captureNetwork: true, captureStore: memStore() }));
+      await (slot.fetch as (i: unknown) => Promise<unknown>)('https://x.test/');
+      expect(clone).toHaveBeenCalled(); // captureNetworkBodies default true → response cloned for capture
+    } finally {
+      slot.fetch = real;
+    }
+  });
+
+  it('threads captureNetworkBodies:false to the fetch interceptor: no body read (no clone)', async () => {
+    const slot = globalThis as unknown as {
+      fetch?: (i: unknown, init?: unknown) => Promise<unknown>;
+    };
+    const real = slot.fetch;
+    const clone = vi.fn(() => ({ body: null }));
+    slot.fetch = async () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {},
+      clone,
+    });
+    try {
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureNetwork: true,
+          captureNetworkBodies: false,
+          captureStore: memStore(),
+        }),
+      );
+      await (slot.fetch as (i: unknown) => Promise<unknown>)('https://x.test/');
+      expect(clone).not.toHaveBeenCalled(); // option threaded through → interceptor skips the read
+    } finally {
+      slot.fetch = real;
+    }
+  });
+
+  it('threads maxNetworkBodySize to the fetch interceptor: the read is bounded by the cap', async () => {
+    // The interceptor's READ is bounded by maxNetworkBodySize (don't read more than needed). The
+    // provider's gate would drop an over-cap body either way, so we assert the bound by counting how
+    // many 1-byte chunks the clone stream was pulled for: cap 3 → ~4 pulls (stops early), not all 50.
+    const slot = globalThis as unknown as {
+      fetch?: (i: unknown, init?: unknown) => Promise<unknown>;
+    };
+    const real = slot.fetch;
+    const TE = (
+      globalThis as unknown as { TextEncoder: new () => { encode: (s: string) => Uint8Array } }
+    ).TextEncoder;
+    const RS = (globalThis as unknown as { ReadableStream: new (s: object) => unknown })
+      .ReadableStream;
+    let pulls = 0;
+    slot.fetch = async () => ({
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: {
+        forEach: (cb: (v: string, k: string) => void) => cb('text/plain', 'content-type'),
+      },
+      clone: () => ({
+        body: new RS({
+          pull(c: { enqueue: (x: unknown) => void; close: () => void }) {
+            pulls += 1;
+            if (pulls <= 50) {
+              c.enqueue(new TE().encode('x')); // 1 byte per pull
+            } else {
+              c.close();
+            }
+          },
+        }),
+      }),
+    });
+    const store = memStore();
+    try {
+      launchTracked(
+        'tok',
+        baseOptions({ captureNetwork: true, maxNetworkBodySize: 3, captureStore: store }),
+      );
+      await (slot.fetch as (i: unknown) => Promise<unknown>)('https://x.test/');
+      await new Promise<void>((r) =>
+        (globalThis as unknown as { setTimeout: (cb: () => void, ms: number) => void }).setTimeout(
+          r,
+          0,
+        ),
+      );
+      // cap 3 → reads 4 bytes then cancels. A non-threaded (default 20480) cap would drain all 50.
+      expect(pulls).toBeLessThanOrEqual(5);
+    } finally {
+      slot.fetch = real;
+    }
+  });
+
   it('captures console output as log entries (captureLogs default on)', async () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store }));

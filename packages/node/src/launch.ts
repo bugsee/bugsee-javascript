@@ -95,6 +95,12 @@ export interface BugseeLaunchOptions {
   captureLogs?: boolean;
   /** Capture network (fetch/xhr/ws/sse/webtransport + node:http). Default true. */
   captureNetwork?: boolean;
+  /** Capture request/response bodies (bounded read). Default true. */
+  captureNetworkBodies?: boolean;
+  /** Max captured request/response body size in bytes. Default 20480. */
+  maxNetworkBodySize?: number;
+  /** Capture a body even when its Content-Type is missing/blank. Default false. */
+  captureNetworkBodyWithoutType?: boolean;
   /** Capture periodic system traces (memory/cpu/event-loop lag). Default true. */
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
@@ -270,7 +276,12 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   );
   client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
   const nodeHttp = getOrCreateInterceptor('node-http', () => createNodeHttpInterceptor(), carrier);
-  const network = installNetworkCapture({ additionalSources: [nodeHttp], carrier });
+  const network = installNetworkCapture({
+    additionalSources: [nodeHttp],
+    carrier,
+    captureBodies: resolved.options.get(BugseeOption.CaptureNetworkBodies, true),
+    maxBodyBytes: resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480),
+  });
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(
     createSystemTracesProvider({
