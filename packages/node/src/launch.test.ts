@@ -179,6 +179,17 @@ describe('launch', () => {
     expect(client.isLaunched()).toBe(true);
   });
 
+  it('registers the HTTP transport as a resolvable service that internal-tags requests', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    const svc = client.getService('transport'); // the internal container resolves the node transport
+    expect(typeof svc).toBe('function');
+    await svc('https://x.test/v2/sessions', {});
+    // The resolved service is the internal-tagged wrapper over the injected transport.
+    const lastCall = transport.mock.calls.at(-1);
+    expect((lastCall?.[1] as HttpRequestOptions).headers?.['x-bugsee-internal']).toBe('1');
+  });
+
   it('captures console output as log entries (captureLogs default on)', async () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store }));

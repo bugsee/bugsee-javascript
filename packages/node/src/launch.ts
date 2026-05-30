@@ -20,7 +20,9 @@ import {
   createDurableUploadPipeline,
   createFileCaptureStore,
   createMemoryCaptureStore,
+  createServiceContainer,
   createUploadPipeline,
+  defineService,
   getCarrierClient,
   getOrCreateInterceptor,
   type HttpRequestOptions,
@@ -180,8 +182,16 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     NODE_OPTION_DEFINITIONS,
   );
 
+  // The internal service container (the client's "BugseeInternal"). Node registers its platform
+  // services into it here (the register() step, design §294); launch resolves them to assemble the
+  // pipeline, then hands the SAME container to createClient. Increment 1: the HTTP transport.
+  const services = createServiceContainer();
+  services.addService(
+    defineService('transport', () => internalTagged(options.transport ?? httpRequest)),
+  );
+
   // Transport → control plane + data plane → upload pipeline.
-  const transport = internalTagged(options.transport ?? httpRequest);
+  const transport = services.getProvider<HttpTransport>('transport').getImmediate();
   const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
@@ -239,6 +249,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    services, // the internal container launch populated (transport + later seams)
     uploadPipeline,
     appToken,
     getEnvironment,
