@@ -20,6 +20,8 @@ export interface BugseeCarrier {
   readonly version: string;
   /** Interceptor singletons keyed by interceptor `name` — one global patch per name. */
   readonly interceptors: Map<string, Interceptor<unknown>>;
+  /** The process-global launched client (Bugsee is a per-process singleton, §1497/§473); else undefined. */
+  client?: unknown;
 }
 
 type CarrierHost = { [CARRIER_PROPERTY]?: Record<string, BugseeCarrier> };
@@ -64,4 +66,14 @@ export function getOrCreateInterceptor<StageMap>(
   const created = factory();
   interceptors.set(name, created as Interceptor<unknown>);
   return created;
+}
+
+/** The process-global launched client (Bugsee is a per-process singleton), or undefined if none. */
+export function getCarrierClient<T = unknown>(globalObj: object = globalThis): T | undefined {
+  return getCarrier(globalObj).client as T | undefined;
+}
+
+/** Set (or, with `undefined`, clear) the process-global launched client. */
+export function setCarrierClient(client: unknown, globalObj: object = globalThis): void {
+  getCarrier(globalObj).client = client;
 }

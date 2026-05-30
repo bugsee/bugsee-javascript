@@ -186,6 +186,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const scheduler = options.scheduler ?? defaultScheduler;
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
+  // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
+  // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
+  let stopped = false;
   let tickTimer: unknown = null;
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
@@ -288,6 +291,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     logException(error: unknown, exceptionOptions?: LogExceptionOptions): Promise<UploadResult> {
+      // After stop(), logException is a silent no-op (§1501) until a re-launch.
+      if (stopped) {
+        return Promise.resolve({ ok: false });
+      }
       // Instance dedup: a re-capture of the same thrown object is a no-op (§7.7).
       if (checkOrSetAlreadyCaught(error)) {
         return Promise.resolve({ ok: false });
@@ -319,6 +326,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         return;
       }
       launched = true;
+      stopped = false;
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
@@ -342,6 +350,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         return Promise.resolve(true);
       }
       launched = false;
+      stopped = true;
       // launch() always sets tickTimer before returning, so it is set here (stop runs only if launched).
       scheduler.clearInterval(tickTimer);
       tickTimer = null;

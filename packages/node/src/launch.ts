@@ -21,12 +21,14 @@ import {
   createFileCaptureStore,
   createMemoryCaptureStore,
   createUploadPipeline,
+  getCarrierClient,
   getOrCreateInterceptor,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   resolveLaunchOptions,
   type Scheduler,
+  setCarrierClient,
 } from '@bugsee/core';
 import {
   createNodeBundleStore,
@@ -157,6 +159,19 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
 
+  // Bugsee is a per-process singleton (§1497): if a client was already launched (same SDK version on
+  // the process Carrier), warn and return it rather than building a second client / second handler set.
+  const carrier = options.carrier;
+  const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
+  if (alreadyLaunched !== undefined) {
+    options.onError?.(
+      new Error(
+        'Bugsee.launch() called more than once in this process; the repeat call is ignored',
+      ),
+    );
+    return alreadyLaunched;
+  }
+
   // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
   // coordinators query (by each provider's controllingOption identifier), the OptionsContainer
   // providers read, and the canonical record sent (wire-form) in environment.sdk.options.
@@ -237,7 +252,6 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // Node-native node:http source folded in, periodic system traces, and process system events. Each
   // interceptor that patches a global is obtained through the process Carrier (getOrCreateInterceptor,
   // keyed by name), so duplicated module copies share ONE instance / ONE patch (#47).
-  const carrier = options.carrier;
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
     () => createConsoleInterceptor(),
@@ -264,14 +278,12 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
   durable?.recover();
 
-  if (!resolved.isEnabled(BugseeOption.DetectCrash)) {
-    return client;
-  }
-
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
   // was registered during launch, so BEFORE this one) submits the crash report; flush() now awaits
   // that in-flight report, so the bundle is delivered before we exit. With the durable queue the
   // bundle is also persisted pre-upload, so even a hard exit before the upload lands is recovered.
+  // Installed only when crash detection is enabled.
+  const detectCrash = resolved.isEnabled(BugseeOption.DetectCrash);
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const exitOnUncaught = options.exitOnUncaught ?? true;
   const onUncaughtException = (): void => {
@@ -281,17 +293,24 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       }
     });
   };
-  proc.on('uncaughtException', onUncaughtException);
+  if (detectCrash) {
+    proc.on('uncaughtException', onUncaughtException);
+  }
 
-  // stop() must also remove THIS process listener: the core client owns the detection providers'
-  // cleanup but knows nothing about launch's crash handler, so without this a stopped SDK would
-  // still flush + exit on a later uncaughtException (and re-launching would pile up handlers).
+  // The public client. stop() also (a) removes launch's crash handler — the core client cleans up the
+  // detection providers but knows nothing about this listener — and (b) clears the process Carrier slot
+  // so a later launch() starts a fresh client (the singleton is released on stop).
   const stopCore = client.stop;
-  return {
+  const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
-      proc.off('uncaughtException', onUncaughtException);
+      if (detectCrash) {
+        proc.off('uncaughtException', onUncaughtException);
+      }
+      setCarrierClient(undefined, carrier);
       return stopCore(timeout);
     },
   };
+  setCarrierClient(publicClient, carrier);
+  return publicClient;
 }

@@ -315,9 +315,11 @@ describe('launch', () => {
   it('reports maxDataSize (default 50 MB) in the wire-form sdk.options, and honors an override', async () => {
     const sdkOptions = async (over: Partial<BugseeLaunchOptions>) => {
       const transport = uploadTransport();
+      // Fresh carrier per call so each launch is independent (the per-process singleton guard would
+      // otherwise ignore the second launch in this test).
       const client = launchTracked(
         'tok',
-        baseOptions({ transport, captureStore: memStore(), ...over }),
+        baseOptions({ transport, captureStore: memStore(), carrier: {}, ...over }),
       );
       await client.logException(new Error('x'));
       const env = (
@@ -333,42 +335,37 @@ describe('launch', () => {
     );
   });
 
-  it('shares interceptor singletons across launches via the carrier (one global patch)', () => {
-    const carrier = {}; // both launches (≈ two module copies) see one process global
+  it('registers the process-global interceptor singletons on the carrier (one patch each)', () => {
+    const carrier = {};
     launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
     const reg = getCarrier(carrier).interceptors;
-    const console1 = reg.get('console');
-    const http1 = reg.get('node-http');
-    const fetch1 = reg.get('fetch');
-    expect(console1).toBeDefined();
-    expect(http1).toBeDefined();
-    expect(fetch1).toBeDefined();
+    expect(reg.get('console')).toBeDefined();
+    expect(reg.get('node-http')).toBeDefined();
+    expect(reg.get('fetch')).toBeDefined();
     // console + node-http + the 5 cross-runtime network leaves = 7 process-global interceptors.
     expect(reg.size).toBe(7);
-
-    launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
-    expect(getCarrier(carrier).interceptors.get('console')).toBe(console1); // reused, not rebuilt
-    expect(getCarrier(carrier).interceptors.get('node-http')).toBe(http1);
-    expect(getCarrier(carrier).interceptors.get('fetch')).toBe(fetch1);
-    expect(getCarrier(carrier).interceptors.size).toBe(7); // not doubled
   });
 
-  it('keeps the shared console patch active for a still-running client after another stops', async () => {
-    // Two clients share ONE console interceptor (via the carrier). Stopping one must NOT unpatch the
-    // global for the other — the InterceptorBase refcount keeps it active while B is still subscribed.
+  it('is a per-process singleton: a second launch() warns, is ignored, and returns the first client', async () => {
     const carrier = {};
-    const storeA = memStore();
-    const storeB = memStore();
-    const a = launchTracked('tok', baseOptions({ captureStore: storeA, carrier }));
-    launchTracked('tok', baseOptions({ captureStore: storeB, carrier })); // client B (stopped in afterEach)
-    expect(getCarrier(carrier).interceptors.get('console')).toBeDefined(); // one shared instance
+    const onError = vi.fn();
+    const first = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
+    const console1 = getCarrier(carrier).interceptors.get('console');
+    expect(getCarrier(carrier).interceptors.size).toBe(7);
 
-    await a.stop(); // A unsubscribes; B still subscribes → console stays patched
-    console.log('after-stop-marker'); // captured only by the still-running B
-    const hasMarker = (logs: Awaited<ReturnType<typeof drain>>): boolean =>
-      logs?.some((e) => JSON.stringify(e.data).includes('after-stop-marker')) ?? false;
-    expect(hasMarker(await drain(storeB, 'log'))).toBe(true); // B (still running) captured it
-    expect(hasMarker(await drain(storeA, 'log'))).toBe(false); // A (stopped) did not
+    const second = launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), carrier, onError }),
+    );
+    expect(second).toBe(first); // the repeat launch built nothing new — same client back
+    expect(onError).toHaveBeenCalledTimes(1); // warned once
+    expect(getCarrier(carrier).interceptors.get('console')).toBe(console1); // not re-wired
+    expect(getCarrier(carrier).interceptors.size).toBe(7); // not doubled
+
+    // After stop() the singleton is released, so a later launch() builds a fresh client.
+    await first.stop();
+    const third = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
+    expect(third).not.toBe(first);
   });
 
   it('passes through app identity and a custom sdk version', async () => {

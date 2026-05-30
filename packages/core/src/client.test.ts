@@ -471,6 +471,21 @@ describe('createClient — logException', () => {
     expect(await createClient().logException(new Error('x'))).toEqual({ ok: false });
   });
 
+  it('is a silent no-op after stop() (does not report), and resumes after re-launch', async () => {
+    const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+    const client = createClient({
+      triggerPipeline: { report } as TriggerPipeline,
+      scheduler: { setInterval: () => 'h', clearInterval: () => {} },
+    });
+    client.launch();
+    await client.stop();
+    expect(await client.logException(new Error('after-stop'))).toEqual({ ok: false }); // §1501
+    expect(report).not.toHaveBeenCalled();
+    client.launch(); // re-launch restores capture
+    expect(await client.logException(new Error('after-relaunch'))).toEqual({ ok: true });
+    expect(report).toHaveBeenCalledTimes(1);
+  });
+
   it('uses String(value) as the summary for a non-Error value (no description)', async () => {
     const { client, report } = withTrigger();
     await client.logException('plain failure');

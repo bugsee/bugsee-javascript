@@ -3,7 +3,9 @@ import {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
   getCarrier,
+  getCarrierClient,
   getOrCreateInterceptor,
+  setCarrierClient,
 } from './carrier';
 import type { Interceptor } from './contracts';
 
@@ -106,5 +108,28 @@ describe('getOrCreateInterceptor', () => {
     const result = getOrCreateInterceptor('console', () => made);
     expect(result).toBe(made);
     expect(getCarrier().interceptors.get('console')).toBe(made);
+  });
+});
+
+describe('getCarrierClient / setCarrierClient (per-process singleton slot)', () => {
+  it('is undefined until a client is set', () => {
+    const g = {};
+    expect(getCarrierClient(g)).toBeUndefined();
+  });
+
+  it('stores and returns the client, and clears it with undefined', () => {
+    const g = {};
+    const client = { id: 'the-client' };
+    setCarrierClient(client, g);
+    expect(getCarrierClient(g)).toBe(client);
+    expect(getCarrier(g).client).toBe(client); // stored on the slot
+    setCarrierClient(undefined, g);
+    expect(getCarrierClient(g)).toBeUndefined();
+  });
+
+  it('defaults to the real globalThis when no global is supplied', () => {
+    const client = { id: 'global-client' };
+    setCarrierClient(client);
+    expect(getCarrierClient()).toBe(client);
   });
 });

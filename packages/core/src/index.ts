@@ -19,7 +19,9 @@ export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
   getCarrier,
+  getCarrierClient,
   getOrCreateInterceptor,
+  setCarrierClient,
 } from './carrier';
 export {
   type Breadcrumb,
