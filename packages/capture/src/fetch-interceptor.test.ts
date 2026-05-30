@@ -146,6 +146,147 @@ describe('createFetchInterceptor — request shape extraction', () => {
   });
 });
 
+describe('createFetchInterceptor — request body', () => {
+  const customOf = (events: Captured[]) => events[0]?.event.custom as Record<string, unknown>;
+
+  it('captures a string request body on the before event (raw), keeping the user Content-Type', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target, newId: () => 'r1' });
+    const events = collect(ic);
+    await call('https://api/x', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"password":"hunter2"}',
+    });
+    // The interceptor emits the body RAW (the provider sanitizes); it sits on the request event.
+    expect(events[0]?.event.type).toBe('before');
+    expect(events[0]?.event.custom?.body).toBe('{"password":"hunter2"}');
+    expect(events[0]?.event.custom?.headers).toEqual({ 'content-type': 'application/json' }); // user CT kept
+    expect('no_body_reason' in customOf(events)).toBe(false); // mutually exclusive with body
+  });
+
+  it('captures an empty-string request body (falsy but present)', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'POST', body: '' });
+    expect('body' in customOf(events)).toBe(true); // present, not dropped as a falsy value
+    expect(events[0]?.event.custom?.body).toBe('');
+    expect('no_body_reason' in customOf(events)).toBe(false);
+  });
+
+  it('synthesizes the implied text/plain Content-Type for an unlabeled string body', async () => {
+    // fetch defaults a string body to text/plain;charset=UTF-8 on the wire — capture that so the
+    // downstream gate does not drop the body as no_content_type.
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'POST', body: 'plain text' });
+    expect(events[0]?.event.custom?.body).toBe('plain text');
+    expect(events[0]?.event.custom?.headers).toEqual({
+      'content-type': 'text/plain;charset=UTF-8',
+    });
+  });
+
+  it('captures a URLSearchParams body + synthesizes the form-urlencoded Content-Type', async () => {
+    const USP = (
+      globalThis as unknown as { URLSearchParams: new (i: Record<string, string>) => object }
+    ).URLSearchParams;
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'POST', body: new USP({ a: '1', b: '2' }) });
+    expect(events[0]?.event.custom?.body).toBe('a=1&b=2');
+    expect(events[0]?.event.custom?.headers).toEqual({
+      'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+    });
+  });
+
+  it('does not override a Content-Type the caller already set (case-insensitive)', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', {
+      method: 'POST',
+      headers: { 'Content-Type': 'app/custom' },
+      body: 'x',
+    });
+    expect(events[0]?.event.custom?.headers).toEqual({ 'Content-Type': 'app/custom' });
+  });
+
+  it('records cant_read_data for a non-sync-readable body (typed array / Blob / stream)', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'POST', body: new Uint8Array([1, 2, 3]) });
+    expect(events[0]?.event.custom?.no_body_reason).toBe('cant_read_data');
+    expect('body' in customOf(events)).toBe(false); // mutually exclusive with reason
+    // No implied Content-Type for an unreadable body → no spurious content-type header is synthesized.
+    expect('content-type' in (events[0]?.event.custom?.headers ?? {})).toBe(false);
+  });
+
+  it('records cant_read_data for a Request passed as input that carries a (stream) body', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    // A Request-like input (string url) whose body is an unreadable stream, with no init.
+    await call({ url: 'https://r/', method: 'POST', body: { locked: false } });
+    expect(events[0]?.event.custom?.no_body_reason).toBe('cant_read_data');
+    expect('body' in customOf(events)).toBe(false);
+  });
+
+  it('captures no body or reason for a Request input that carries no body', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call({ url: 'https://r/', method: 'GET' }); // Request-like input, no body, no init
+    expect('body' in customOf(events)).toBe(false);
+    expect('no_body_reason' in customOf(events)).toBe(false);
+  });
+
+  it('does not treat a non-Request object input (no url) carrying a stray body as a request body', async () => {
+    // A URL-like input has `href`, not `url`, and never carries a body — only a Request (string `url`)
+    // is treated as a body carrier.
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call({ href: 'https://u/', body: { x: 1 } });
+    expect('no_body_reason' in customOf(events)).toBe(false);
+    expect('body' in customOf(events)).toBe(false);
+  });
+
+  it('omits both body and reason keys when there is no request body', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'GET' });
+    expect('body' in customOf(events)).toBe(false);
+    expect('no_body_reason' in customOf(events)).toBe(false);
+  });
+
+  it('treats an explicit null body as no body (omits both keys, not cant_read_data)', async () => {
+    const { target, call } = harness(async () => okResponse());
+    const ic = createFetchInterceptor({ target });
+    const events = collect(ic);
+    await call('https://api/x', { method: 'POST', body: null });
+    expect('body' in customOf(events)).toBe(false);
+    expect('no_body_reason' in customOf(events)).toBe(false);
+  });
+
+  it('does not consume or replace the body passed to the underlying fetch', async () => {
+    let seenInit: unknown;
+    const { target, call } = harness(async (_input, init) => {
+      seenInit = init;
+      return okResponse();
+    });
+    const ic = createFetchInterceptor({ target });
+    collect(ic);
+    const init = { method: 'POST', body: 'original-payload' };
+    await call('https://api/x', init);
+    expect((seenInit as { body?: unknown }).body).toBe('original-payload'); // untouched
+  });
+});
+
 describe('createFetchInterceptor — default global target', () => {
   it('wraps globalThis.fetch when no target is given', async () => {
     const slot = globalThis as unknown as { fetch?: FetchFn };

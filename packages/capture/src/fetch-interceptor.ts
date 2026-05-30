@@ -1,5 +1,5 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import type { NetworkEvent, NetworkStage, NoBodyReason } from '@bugsee/protocol';
 
 // Cross-runtime fetch capture SOURCE (design §16.2): wraps `fetch` and emits NetworkEvents per stage
 // (before → complete | error). global `fetch` is universal (browser/workers/Node≥18/Bun/Deno/edge),
@@ -85,6 +85,48 @@ const headersToRecord = (headers: unknown): Record<string, string> => {
   return out;
 };
 
+// fetch's spec-default Content-Type for body types the runtime auto-labels on the wire when the caller
+// sets none — captured so the downstream gate doesn't drop the body as `no_content_type`.
+const TEXT_PLAIN_TYPE = 'text/plain;charset=UTF-8';
+const FORM_URLENCODED_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8';
+
+// True when `input` is a Request (has a string `url`) carrying a non-null (stream) body — not readable
+// synchronously. Reading `.body` returns the stream reference only; it does not consume it.
+const requestInputHasBody = (input: unknown): boolean => {
+  if (input === null || typeof input !== 'object') {
+    return false;
+  }
+  const o = input as { url?: unknown; body?: unknown };
+  return typeof o.url === 'string' && o.body != null;
+};
+
+// Read the OUTGOING request body when it is synchronously available without consuming a stream: a
+// string (the common JSON/text/`JSON.stringify` case) or URLSearchParams (form-urlencoded), each with
+// the Content-Type the runtime implies. Other `init.body` types (FormData / Blob / ArrayBuffer / typed
+// arrays / ReadableStream) and a body carried on a `Request` passed as `input` are not readable
+// synchronously → `cant_read_data` so the absence is explained on the wire. Never consumes the value.
+const readRequestBody = (
+  input: unknown,
+  init: unknown,
+): { body?: string; reason?: NoBodyReason; contentType?: string } => {
+  const body = (init as { body?: unknown } | undefined)?.body;
+  if (body === undefined || body === null) {
+    return requestInputHasBody(input) ? { reason: 'cant_read_data' } : {};
+  }
+  if (typeof body === 'string') {
+    return { body, contentType: TEXT_PLAIN_TYPE };
+  }
+  const USP = (globalThis as unknown as { URLSearchParams?: new () => unknown }).URLSearchParams;
+  if (typeof USP === 'function' && body instanceof USP) {
+    return { body: String(body), contentType: FORM_URLENCODED_TYPE };
+  }
+  return { reason: 'cant_read_data' };
+};
+
+/** True when the header map already carries a Content-Type (case-insensitive). */
+const hasContentType = (headers: Record<string, string>): boolean =>
+  Object.keys(headers).some((key) => key.toLowerCase() === 'content-type');
+
 const requestHeaders = (input: unknown, init: unknown): Record<string, string> => {
   const fromInit = (init as { headers?: unknown } | undefined)?.headers;
   if (fromInit !== undefined) {
@@ -160,6 +202,12 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
       const method = resolveMethod(input, init);
       const id = this.#newId();
       const startedAt = this.#now();
+      const reqBody = readRequestBody(input, init);
+      // Reflect the runtime-implied Content-Type only when the caller set none (so the captured headers
+      // match the wire and the downstream gate keeps the body).
+      if (reqBody.contentType !== undefined && !hasContentType(reqHeaders)) {
+        reqHeaders['content-type'] = reqBody.contentType;
+      }
       this.emit('before', {
         timestamp: startedAt,
         id,
@@ -168,7 +216,11 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
         url,
         method,
         type: 'before',
-        custom: { headers: reqHeaders },
+        custom: {
+          headers: reqHeaders,
+          ...(reqBody.body !== undefined ? { body: reqBody.body } : {}),
+          ...(reqBody.reason !== undefined ? { no_body_reason: reqBody.reason } : {}),
+        },
       });
       return call.then(
         (response) => {
