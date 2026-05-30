@@ -27,7 +27,15 @@ export {
   optionKeyToWire,
   optionsToWire,
 } from './options';
-export { sanitizeHeaders, sanitizeJson, sanitizeParams } from './sanitize';
+export {
+  contentTypeOf,
+  gateNetworkBody,
+  type NetworkBodyGateOptions,
+  sanitizeBody,
+  sanitizeHeaders,
+  sanitizeJson,
+  sanitizeParams,
+} from './sanitize';
 export {
   isSensitiveHeader,
   isSensitiveKey,

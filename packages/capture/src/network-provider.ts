@@ -8,8 +8,11 @@ import {
 } from '@bugsee/core';
 import {
   BugseeOption,
+  contentTypeOf,
+  gateNetworkBody,
   type NetworkEvent,
   type NetworkStage,
+  sanitizeBody,
   sanitizeHeaders,
 } from '@bugsee/protocol';
 
@@ -22,13 +25,23 @@ import {
 /** A network source — any emitter exposing NetworkStage channels (e.g. the fetch interceptor). */
 export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>>;
 
-// Per-event header sanitization (§8.10, [R:wire m9]): redact sensitive request/response headers.
-// Non-mutating (the hub event other subscribers see stays raw). Bodies are deferred (metadata-first).
+// Per-event default PII redaction (§8.10, [R:wire m9]): redact sensitive request/response headers and
+// scrub the captured body by Content-Type (JSON key denylist, else a shape pass). Non-mutating (the hub
+// event other subscribers see stays raw); returns the same event when there is nothing to redact.
 const sanitize = (event: NetworkEvent): NetworkEvent => {
-  if (event.custom?.headers === undefined) {
+  const custom = event.custom;
+  if (custom === undefined) {
     return event;
   }
-  return { ...event, custom: { ...event.custom, headers: sanitizeHeaders(event.custom.headers) } };
+  const headers = custom.headers === undefined ? custom.headers : sanitizeHeaders(custom.headers);
+  const body =
+    typeof custom.body === 'string'
+      ? sanitizeBody(custom.body, contentTypeOf(custom.headers))
+      : custom.body;
+  if (headers === custom.headers && body === custom.body) {
+    return event;
+  }
+  return { ...event, custom: { ...custom, headers, body } };
 };
 
 class NetworkCaptureProvider extends CaptureProviderBase {
@@ -37,20 +50,45 @@ class NetworkCaptureProvider extends CaptureProviderBase {
   readonly #sources: readonly NetworkSource[];
   #offs: Array<() => void> = [];
   #sanitizeDefault = true;
+  #captureBodies = true;
+  #maxBodyBytes = 20480;
+  #captureBodyWithoutType = false;
 
   constructor(sources: readonly NetworkSource[]) {
     super();
     this.#sources = sources;
   }
 
+  // Apply the body capture POLICY before redaction/filtering (Android applyBodyFilters order): the
+  // master toggle strips any captured body (a config choice — no per-request reason); otherwise the
+  // size + Content-Type gate may drop it with a `no_body_reason`. Non-mutating.
+  #gateBody(event: NetworkEvent): NetworkEvent {
+    if (!this.#captureBodies) {
+      if (event.custom?.body == null) {
+        return event;
+      }
+      return { ...event, custom: { ...event.custom, body: null } };
+    }
+    return gateNetworkBody(event, {
+      maxBytes: this.#maxBodyBytes,
+      captureWithoutType: this.#captureBodyWithoutType,
+    });
+  }
+
   protected onStart(options: OptionsContainer): void {
     // The built-in PII sanitizer is gated by its option (default on); a user network filter supersedes
-    // it entirely (Android XOR rule). Read once per launch.
+    // it entirely (Android XOR rule). The body policy (master toggle, size limit, allow-without-type)
+    // is read once per launch and applied to every event before the filter/sanitizer XOR.
     this.#sanitizeDefault = options.get(BugseeOption.CaptureNetworkDefaultSanitizer, true);
+    this.#captureBodies = options.get(BugseeOption.CaptureNetworkBodies, true);
+    this.#maxBodyBytes = options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
+    this.#captureBodyWithoutType = options.get(BugseeOption.CaptureNetworkBodyWithoutType, false);
     this.#offs = this.#sources.map((source) =>
-      source.onAny((_stage, event) => {
-        // Live per-event redaction: a user network filter (from the carrier's client) REPLACES the
-        // default sanitizer; otherwise apply the default sanitizer when enabled. A filter may DROP.
+      source.onAny((_stage, raw) => {
+        // Gate the body first (always), then live per-event redaction: a user network filter (from the
+        // carrier's client) REPLACES the default sanitizer; otherwise apply the default sanitizer when
+        // enabled. A filter may DROP. The filter/sanitizer both see the already body-gated event.
+        const event = this.#gateBody(raw);
         const filters = getFilters();
         if (filters?.network) {
           const out = runFilter(filters.network, event, filters.onError);

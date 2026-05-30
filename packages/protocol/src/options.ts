@@ -36,8 +36,12 @@ export const BugseeOption = {
   CaptureLogs: 'com.bugsee.option.capture.logs',
   /** Capture network activity (fetch/xhr/ws/sse/webtransport, and node:http on Node). */
   CaptureNetwork: 'com.bugsee.option.capture.network',
+  /** Capture request/response bodies (master toggle; default on). */
+  CaptureNetworkBodies: 'com.bugsee.option.capture.network.bodies',
   /** Max captured request/response body size in bytes. */
   CaptureNetworkBodySizeLimit: 'com.bugsee.option.capture.network.body-size-limit',
+  /** Capture a body even when its Content-Type is missing/blank (default off). */
+  CaptureNetworkBodyWithoutType: 'com.bugsee.option.capture.network.body-without-type',
   /** Apply the default network PII sanitizer. */
   CaptureNetworkDefaultSanitizer: 'com.bugsee.option.capture.network.default-sanitizer',
   /** Capture periodic system traces (memory / cpu / event-loop lag). */
@@ -63,7 +67,9 @@ export type BugseeOptionKey = (typeof BugseeOption)[keyof typeof BugseeOption];
 export interface BugseeOptionTypes {
   'com.bugsee.option.capture.logs': boolean;
   'com.bugsee.option.capture.network': boolean;
+  'com.bugsee.option.capture.network.bodies': boolean;
   'com.bugsee.option.capture.network.body-size-limit': number;
+  'com.bugsee.option.capture.network.body-without-type': boolean;
   'com.bugsee.option.capture.network.default-sanitizer': boolean;
   'com.bugsee.option.capture.system-traces': boolean;
   'com.bugsee.option.capture.system-events': boolean;

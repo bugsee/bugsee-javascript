@@ -62,6 +62,17 @@ export function resolveLaunchOptions(
 export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   { friendly: 'captureLogs', key: BugseeOption.CaptureLogs, default: true },
   { friendly: 'captureNetwork', key: BugseeOption.CaptureNetwork, default: true },
+  { friendly: 'captureNetworkBodies', key: BugseeOption.CaptureNetworkBodies, default: true },
+  {
+    friendly: 'maxNetworkBodySize',
+    key: BugseeOption.CaptureNetworkBodySizeLimit,
+    default: 20480,
+  },
+  {
+    friendly: 'captureNetworkBodyWithoutType',
+    key: BugseeOption.CaptureNetworkBodyWithoutType,
+    default: false,
+  },
   { friendly: 'captureSystemTraces', key: BugseeOption.CaptureSystemTraces, default: true },
   { friendly: 'captureSystemEvents', key: BugseeOption.CaptureSystemEvents, default: true },
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true },

@@ -1,8 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeHeaders, sanitizeJson, sanitizeParams } from './index';
+import {
+  contentTypeOf,
+  gateNetworkBody,
+  sanitizeBody,
+  sanitizeHeaders,
+  sanitizeJson,
+  sanitizeParams,
+} from './index';
+import type { NetworkEvent } from './wire';
 
 const R = '<redacted>';
 const GH = `ghp_${'a'.repeat(36)}`;
+
+/** Build a minimal NetworkEvent with the given `custom` payload for the body-gate tests. */
+function evt(custom: NetworkEvent['custom']): NetworkEvent {
+  return {
+    timestamp: 0,
+    id: 'i',
+    sequence: 's',
+    mechanism: 'fetch',
+    url: 'https://x/y',
+    method: 'POST',
+    type: 'complete',
+    custom,
+  };
+}
 
 describe('sanitizeHeaders', () => {
   it('redacts the value of a sensitive header, preserving its name/casing', () => {
@@ -113,5 +135,163 @@ describe('sanitizeJson', () => {
     const input = { token: 'x', nested: { secret: 's' } };
     sanitizeJson(input);
     expect(input).toEqual({ token: 'x', nested: { secret: 's' } });
+  });
+});
+
+describe('sanitizeBody', () => {
+  it('redacts sensitive keys in an application/json body and re-serializes', () => {
+    expect(sanitizeBody('{"password":"hunter2","q":"hi"}', 'application/json')).toBe(
+      `{"password":"${R}","q":"hi"}`,
+    );
+  });
+
+  it('treats a Content-Type with a charset suffix as JSON (case-insensitively)', () => {
+    expect(sanitizeBody('{"token":"x"}', 'Application/JSON; charset=utf-8')).toBe(
+      `{"token":"${R}"}`,
+    );
+  });
+
+  it('key-redacts text/json bodies (legacy JSON media type)', () => {
+    expect(sanitizeBody('{"password":"x"}', 'text/json')).toBe(`{"password":"${R}"}`);
+  });
+
+  it('key-redacts RFC 6839 +json structured-syntax suffix bodies', () => {
+    // application/vnd.api+json (JSON:API), application/ld+json, application/problem+json, … are JSON.
+    expect(sanitizeBody('{"password":"x"}', 'application/vnd.api+json')).toBe(
+      `{"password":"${R}"}`,
+    );
+    expect(sanitizeBody('{"token":"x"}', 'application/problem+json; charset=utf-8')).toBe(
+      `{"token":"${R}"}`,
+    );
+  });
+
+  it('trims surrounding whitespace around the media type', () => {
+    expect(sanitizeBody('{"token":"x"}', '  application/json  ')).toBe(`{"token":"${R}"}`);
+  });
+
+  it('does not treat a non-JSON media type that merely contains "json" as JSON', () => {
+    // 'application/json5' is not standard JSON; key denylist must not run (shape pass still does).
+    expect(sanitizeBody('{"password":"x"}', 'application/json5')).toBe('{"password":"x"}');
+  });
+
+  it('degrades to the shape pass when a JSON body fails to parse (never throws)', () => {
+    // Not valid JSON, but a JSON content-type: must not throw — falls back to redactShapes.
+    expect(sanitizeBody(`not json ${GH}`, 'application/json')).toBe(`not json ${R}`);
+  });
+
+  it('shape-scans a non-JSON body (text/plain) without key redaction', () => {
+    expect(sanitizeBody(`hello ${GH} world`, 'text/plain')).toBe(`hello ${R} world`);
+  });
+
+  it('shape-scans a body with no Content-Type', () => {
+    expect(sanitizeBody(`leak ${GH}`, undefined)).toBe(`leak ${R}`);
+  });
+
+  it('threads the creditCards option into the JSON path', () => {
+    expect(
+      sanitizeBody('{"note":"5555555555554444"}', 'application/json', { creditCards: true }),
+    ).toBe(`{"note":"${R}"}`);
+    // Off by default → the CC number survives the JSON path.
+    expect(sanitizeBody('{"note":"5555555555554444"}', 'application/json')).toBe(
+      '{"note":"5555555555554444"}',
+    );
+  });
+
+  it('threads the creditCards option into the shape (non-JSON) path', () => {
+    expect(sanitizeBody('card 5555555555554444', 'text/plain', { creditCards: true })).toBe(
+      `card ${R}`,
+    );
+  });
+});
+
+describe('contentTypeOf', () => {
+  it('returns undefined when there are no headers', () => {
+    expect(contentTypeOf(undefined)).toBeUndefined();
+  });
+
+  it('finds the Content-Type case-insensitively', () => {
+    expect(contentTypeOf({ 'content-type': 'text/html' })).toBe('text/html');
+    expect(contentTypeOf({ 'CoNtEnT-tYpE': 'text/html' })).toBe('text/html');
+  });
+
+  it('returns undefined when no Content-Type header is present', () => {
+    expect(contentTypeOf({ Accept: '*/*' })).toBeUndefined();
+  });
+});
+
+describe('gateNetworkBody', () => {
+  const OPTS = { maxBytes: 1024, captureWithoutType: false };
+
+  it('leaves an event with no body unchanged (identity)', () => {
+    const e = evt({ headers: { 'Content-Type': 'application/json' } });
+    expect(gateNetworkBody(e, OPTS)).toBe(e);
+  });
+
+  it('leaves an event whose body is explicitly null unchanged (identity)', () => {
+    const e = evt({ body: null, headers: { 'Content-Type': 'application/json' } });
+    expect(gateNetworkBody(e, OPTS)).toBe(e);
+  });
+
+  it('preserves a producer-set no_body_reason without re-gating (identity)', () => {
+    // Body present but the producer already declared why it is absent — leave it alone.
+    const e = evt({ body: 'x'.repeat(99999), no_body_reason: 'cant_read_data' });
+    expect(gateNetworkBody(e, OPTS)).toBe(e);
+  });
+
+  it('drops a body with a missing Content-Type as no_content_type', () => {
+    const out = gateNetworkBody(evt({ body: 'hello' }), OPTS);
+    expect(out.custom?.body).toBeNull();
+    expect(out.custom?.no_body_reason).toBe('no_content_type');
+  });
+
+  it('drops a body with a blank (whitespace) Content-Type as no_content_type', () => {
+    const out = gateNetworkBody(evt({ body: 'hi', headers: { 'content-type': '   ' } }), OPTS);
+    expect(out.custom?.no_body_reason).toBe('no_content_type');
+  });
+
+  it('keeps a Content-Type-less body when captureWithoutType is on', () => {
+    const e = evt({ body: 'hello' });
+    expect(gateNetworkBody(e, { maxBytes: 1024, captureWithoutType: true })).toBe(e);
+  });
+
+  it('drops an over-size body as size_too_large', () => {
+    const e = evt({ body: 'x'.repeat(11), headers: { 'Content-Type': 'text/plain' } });
+    const out = gateNetworkBody(e, { maxBytes: 10, captureWithoutType: false });
+    expect(out.custom?.body).toBeNull();
+    expect(out.custom?.no_body_reason).toBe('size_too_large');
+  });
+
+  it('keeps a body at exactly the byte limit (identity)', () => {
+    const e = evt({ body: 'x'.repeat(10), headers: { 'Content-Type': 'text/plain' } });
+    expect(gateNetworkBody(e, { maxBytes: 10, captureWithoutType: false })).toBe(e);
+  });
+
+  it('measures size in UTF-8 bytes, not characters', () => {
+    // '€' is 3 UTF-8 bytes; one char but over a 2-byte limit.
+    const e = evt({ body: '€', headers: { 'Content-Type': 'text/plain' } });
+    const out = gateNetworkBody(e, { maxBytes: 2, captureWithoutType: false });
+    expect(out.custom?.no_body_reason).toBe('size_too_large');
+  });
+
+  it('finds the Content-Type header case-insensitively', () => {
+    // Lower-cased header name must still be recognized as a present content type.
+    const e = evt({ body: 'x'.repeat(11), headers: { 'CoNtEnT-tYpE': 'text/plain' } });
+    const out = gateNetworkBody(e, { maxBytes: 10, captureWithoutType: false });
+    // Recognized as present (so not no_content_type) and then dropped on size.
+    expect(out.custom?.no_body_reason).toBe('size_too_large');
+  });
+
+  it('does not mutate the input event when dropping', () => {
+    const e = evt({ body: 'hello' });
+    gateNetworkBody(e, OPTS);
+    expect(e.custom?.body).toBe('hello');
+    expect(e.custom?.no_body_reason).toBeUndefined();
+  });
+
+  it('preserves the other custom fields when dropping', () => {
+    const e = evt({ body: 'hello', headers: { 'X-A': '1' }, error: 'boom' });
+    const out = gateNetworkBody(e, OPTS);
+    expect(out.custom?.headers).toEqual({ 'X-A': '1' });
+    expect(out.custom?.error).toBe('boom');
   });
 });

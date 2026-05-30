@@ -1,5 +1,7 @@
+import { utf8ByteLength } from '@bugsee/util';
 import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
+import type { NetworkEvent, NoBodyReason } from './wire';
 
 // Object/header/param sanitization (design §8.10): apply the key denylists (§sensitive) and the
 // shape pass (§shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
@@ -48,4 +50,93 @@ export function sanitizeJson(value: unknown, options?: ShapeRedactionOptions): u
     return out;
   }
   return value;
+}
+
+/**
+ * Whether a Content-Type denotes a JSON body: `application/json`, the legacy `text/json`, or any
+ * RFC 6839 structured-syntax `+json` suffix (`application/vnd.api+json`, `application/ld+json`,
+ * `application/problem+json`, …). Parameters (e.g. `; charset=utf-8`) are ignored; matched on the bare
+ * media type so a non-JSON type that merely contains `json` (e.g. `application/json5`) does not match.
+ */
+function isJsonContentType(contentType: string | undefined): boolean {
+  const lower = (contentType ?? '').toLowerCase();
+  const semicolon = lower.indexOf(';');
+  const mediaType = (semicolon === -1 ? lower : lower.slice(0, semicolon)).trim();
+  return (
+    mediaType === 'application/json' || mediaType === 'text/json' || mediaType.endsWith('+json')
+  );
+}
+
+/**
+ * Sanitize a request/response body string by Content-Type (design §8.10). A JSON media type (see
+ * {@link isJsonContentType}) → recursive key-denylist redaction (re-serialized); everything else → the
+ * shape pass only (token / card scrub). Never throws: invalid JSON degrades to the shape pass.
+ * (Form-urlencoded key redaction is a follow-up; today it gets the shape pass.)
+ */
+export function sanitizeBody(
+  body: string,
+  contentType: string | undefined,
+  options?: ShapeRedactionOptions,
+): string {
+  if (isJsonContentType(contentType)) {
+    try {
+      return JSON.stringify(sanitizeJson(JSON.parse(body), options));
+    } catch {
+      return redactShapes(body, options); // not valid JSON → shape pass
+    }
+  }
+  return redactShapes(body, options);
+}
+
+/** Find a header's value case-insensitively (header maps preserve the producer's casing). */
+function findHeader(headers: Record<string, string> | undefined, name: string): string | undefined {
+  if (headers === undefined) {
+    return undefined;
+  }
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/** The `Content-Type` header value, found case-insensitively (drives body sanitization dispatch). */
+export function contentTypeOf(headers: Record<string, string> | undefined): string | undefined {
+  return findHeader(headers, 'content-type');
+}
+
+export interface NetworkBodyGateOptions {
+  /** Max captured body size in UTF-8 bytes; a larger body is dropped (`size_too_large`). */
+  maxBytes: number;
+  /** Keep a body whose Content-Type is missing/blank (else drop it `no_content_type`). */
+  captureWithoutType: boolean;
+}
+
+/**
+ * Apply the body size + Content-Type policy to a NetworkEvent (Android applyBodyFilters parity, §8.10).
+ * Non-mutating. A present `custom.body` is dropped (→ null + `no_body_reason`) when its Content-Type is
+ * missing/blank and `captureWithoutType` is off, or when it exceeds `maxBytes`. A producer-set
+ * `no_body_reason` (or an absent body) is left untouched.
+ */
+export function gateNetworkBody(
+  event: NetworkEvent,
+  options: NetworkBodyGateOptions,
+): NetworkEvent {
+  const body = event.custom?.body;
+  if (body === undefined || body === null || event.custom?.no_body_reason != null) {
+    return event;
+  }
+  const contentType = contentTypeOf(event.custom?.headers);
+  let reason: NoBodyReason | null = null;
+  if (!options.captureWithoutType && (contentType === undefined || contentType.trim() === '')) {
+    reason = 'no_content_type';
+  } else if (utf8ByteLength(body) > options.maxBytes) {
+    reason = 'size_too_large';
+  }
+  if (reason === null) {
+    return event;
+  }
+  return { ...event, custom: { ...event.custom, body: null, no_body_reason: reason } };
 }

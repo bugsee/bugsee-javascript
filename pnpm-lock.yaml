@@ -270,6 +270,9 @@ importers:
       '@bugsee/types':
         specifier: workspace:*
         version: link:../types
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/react:
     dependencies:

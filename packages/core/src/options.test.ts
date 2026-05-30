@@ -100,6 +100,13 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
   it('maps each common friendly name to its canonical com.bugsee.option.* identifier', () => {
     expect(byFriendly.get('captureLogs')?.key).toBe(BugseeOption.CaptureLogs);
     expect(byFriendly.get('captureNetwork')?.key).toBe(BugseeOption.CaptureNetwork);
+    expect(byFriendly.get('captureNetworkBodies')?.key).toBe(BugseeOption.CaptureNetworkBodies);
+    expect(byFriendly.get('maxNetworkBodySize')?.key).toBe(
+      BugseeOption.CaptureNetworkBodySizeLimit,
+    );
+    expect(byFriendly.get('captureNetworkBodyWithoutType')?.key).toBe(
+      BugseeOption.CaptureNetworkBodyWithoutType,
+    );
     expect(byFriendly.get('captureSystemTraces')?.key).toBe(BugseeOption.CaptureSystemTraces);
     expect(byFriendly.get('captureSystemEvents')?.key).toBe(BugseeOption.CaptureSystemEvents);
     expect(byFriendly.get('detectCrashes')?.key).toBe(BugseeOption.DetectCrash);
@@ -112,11 +119,20 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     expect(byFriendly.get('maxRecordingTime')?.default).toBe(60);
   });
 
+  it('defaults network bodies on, the body size limit to 20480 bytes, and without-type off', () => {
+    expect(byFriendly.get('captureNetworkBodies')?.default).toBe(true);
+    expect(byFriendly.get('maxNetworkBodySize')?.default).toBe(20480);
+    expect(byFriendly.get('captureNetworkBodyWithoutType')?.default).toBe(false);
+  });
+
   it('resolves to all canonical identifiers with defaults when launched with no options', () => {
     const { canonical } = resolveLaunchOptions({}, COMMON_OPTION_DEFINITIONS);
     expect(canonical).toEqual({
       [BugseeOption.CaptureLogs]: true,
       [BugseeOption.CaptureNetwork]: true,
+      [BugseeOption.CaptureNetworkBodies]: true,
+      [BugseeOption.CaptureNetworkBodySizeLimit]: 20480,
+      [BugseeOption.CaptureNetworkBodyWithoutType]: false,
       [BugseeOption.CaptureSystemTraces]: true,
       [BugseeOption.CaptureSystemEvents]: true,
       [BugseeOption.DetectCrash]: true,
