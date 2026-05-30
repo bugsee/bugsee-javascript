@@ -526,6 +526,19 @@ describe('createClient — report path (built trigger pipeline)', () => {
     expect(bundle.fileName).toBe('x.bundle.zip');
   });
 
+  it('puts the global userIdentifier on the wire as request.json email', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setUserIdentifier('alice@example.com');
+    await client.logException(new Error('boom'));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.email).toBe('alice@example.com');
+
+    // Clearing the identity drops the email on subsequent reports.
+    client.clearUserIdentifier();
+    await client.logException(new Error('boom2'));
+    expect('email' in (enqueue.mock.calls[1]?.[0] as Bundle).request).toBe(false);
+  });
+
   it('a detection submission assembles + enqueues through the built trigger pipeline', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });

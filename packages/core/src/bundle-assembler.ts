@@ -32,6 +32,11 @@ export interface BundleAssemblyContext {
   environment: EnvironmentEnvelope;
   /** Global attributes (manifest `attrs`). */
   attributes: Record<string, AttributeValue>;
+  /**
+   * Global user identifier (Environment.getUserIdentifier()); becomes request.json `email` when set —
+   * Android maps the user identifier to the `email` field ("email from global scope"). Null when unset.
+   */
+  userIdentifier?: string | null;
   /** Clock for created_on + manifest time bounds. */
   clock: Clock;
   /** Bundle archive name; defaults to `<random20>.bundle.zip`. Injectable for tests. */
@@ -70,6 +75,10 @@ export function assembleBundle(
   const { report, source } = request;
   const now = context.clock.wallNow();
 
+  // Wire `email` = a per-report email if set, else the global user identifier (Android "email from
+  // global scope"). Emitted only when it is a non-empty string.
+  const email = report.email ?? context.userIdentifier ?? undefined;
+
   // request.json (§8.5): metadata from the Report + the wire source mechanism + the environment.
   const requestJson: RequestJson = {
     type: report.type,
@@ -83,7 +92,7 @@ export function assembleBundle(
     environment: context.environment,
     ...(report.description !== undefined ? { description: report.description } : {}),
     ...(report.labels.length > 0 ? { labels: report.labels } : {}),
-    ...(report.email !== undefined ? { email: report.email } : {}),
+    ...(email !== undefined && email !== '' ? { email } : {}),
     ...(report.signatures.length > 0 ? { signatures: report.signatures } : {}),
   };
 

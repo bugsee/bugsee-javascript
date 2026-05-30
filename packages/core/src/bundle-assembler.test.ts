@@ -90,6 +90,32 @@ describe('assembleBundle — request.json', () => {
     expect('origin' in json.source).toBe(false);
   });
 
+  it('takes email from the global userIdentifier when the report has none (Android parity)', () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const json = assembleBundle(request, new Map(), context({ userIdentifier: 'alice' })).request;
+    expect(json.email).toBe('alice');
+  });
+
+  it('lets a per-report email override the global userIdentifier', () => {
+    const request = createReportingRequest({
+      source: { type: 'error' },
+      id: 'r1',
+      email: 'rep@x.c',
+    });
+    const json = assembleBundle(request, new Map(), context({ userIdentifier: 'alice' })).request;
+    expect(json.email).toBe('rep@x.c');
+  });
+
+  it('omits email when the userIdentifier is null or empty', () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    expect(
+      'email' in assembleBundle(request, new Map(), context({ userIdentifier: null })).request,
+    ).toBe(false);
+    expect(
+      'email' in assembleBundle(request, new Map(), context({ userIdentifier: '' })).request,
+    ).toBe(false);
+  });
+
   it('embeds request.json verbatim in the zip', () => {
     const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1' });
     const bundle = assembleBundle(request, new Map(), context());

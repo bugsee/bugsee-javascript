@@ -201,6 +201,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         appToken,
         environment: getEnvironment(),
         attributes: environment.getAllAttributes(),
+        userIdentifier: environment.getUserIdentifier(),
         clock,
         ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
       });
