@@ -14,6 +14,19 @@ export interface LogEvent {
   message: string;
 }
 
+/** A breadcrumb payload (design §10). Lives here (a leaf) so filter types can reference it cycle-free. */
+export interface Breadcrumb {
+  type?: string;
+  category?: string;
+  message?: string;
+  level?: LogLevelName;
+  data?: Record<string, unknown>;
+  timestamp: number;
+}
+
+/** addBreadcrumb input: timestamp is optional (the Client stamps it from the clock). */
+export type BreadcrumbInput = Omit<Breadcrumb, 'timestamp'> & { timestamp?: number };
+
 /**
  * Minimal cross-runtime input event (the design references InputEvent but leaves its shape to the
  * runtime). The `@bugsee/browser` input interceptor refines `type`/`target`/`data` with concrete DOM

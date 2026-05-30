@@ -4,6 +4,7 @@ import {
   type BugseeCarrier,
   getCarrier,
   getCarrierClient,
+  getFilters,
   getInternal,
   getOrCreateInterceptor,
   setCarrierClient,
@@ -145,5 +146,24 @@ describe('getInternal (the singleton client as a service resolver)', () => {
     const resolver = { getService: vi.fn(() => 1), getServiceProvider: vi.fn() };
     setCarrierClient(resolver, g);
     expect(getInternal(g)).toBe(resolver);
+  });
+});
+
+describe('getFilters (the singleton client filters service)', () => {
+  it('is undefined when no client is launched', () => {
+    expect(getFilters({})).toBeUndefined();
+  });
+
+  it('returns the client filters service', () => {
+    const g = {};
+    const filterStore = { network: null };
+    setCarrierClient(
+      {
+        getService: (name: string) => (name === 'filters' ? filterStore : undefined),
+        getServiceProvider: vi.fn(),
+      },
+      g,
+    );
+    expect(getFilters(g)).toBe(filterStore);
   });
 });

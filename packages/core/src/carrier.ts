@@ -1,4 +1,5 @@
 import type { Interceptor } from './contracts';
+import type { FilterStore } from './filters';
 import type { ServiceResolver } from './services';
 
 // Process-global Carrier (design §4.2 §214): a version-keyed slot on `globalThis.__BUGSEE__` holding
@@ -85,4 +86,12 @@ export function setCarrierClient(client: unknown, globalObj: object = globalThis
  */
 export function getInternal(globalObj: object = globalThis): ServiceResolver | undefined {
   return getCarrierClient<ServiceResolver>(globalObj);
+}
+
+/**
+ * The process-global redaction filters (the singleton client's `filters` service), for the capture
+ * pipeline to read live. Undefined when no client is launched (capture then applies defaults).
+ */
+export function getFilters(globalObj: object = globalThis): FilterStore | undefined {
+  return getInternal(globalObj)?.getService('filters');
 }

@@ -29,6 +29,7 @@ export {
   type BugseeCarrier,
   getCarrier,
   getCarrierClient,
+  getFilters,
   getInternal,
   getOrCreateInterceptor,
   setCarrierClient,
@@ -91,6 +92,15 @@ export { createEventEmitter, type EventEmitter, type Listener } from './event-em
 export type { InputEvent, LogEvent } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
+export {
+  type BreadcrumbFilter,
+  createFilterStore,
+  type FilterStore,
+  type LogEventFilter,
+  type NetworkEventFilter,
+  type ReportHandler,
+  runFilter,
+} from './filters';
 export { InterceptorBase } from './interceptor-base';
 export {
   createMemoryCaptureStore,

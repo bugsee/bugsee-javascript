@@ -187,6 +187,16 @@ describe('launch', () => {
     expect(logs?.some((e) => JSON.stringify(e.data).includes('hello-from-launch-test'))).toBe(true);
   });
 
+  it('applies a log filter set on the returned client (facade → carrier service → pipeline)', async () => {
+    const store = memStore();
+    const client = launchTracked('tok', baseOptions({ captureStore: store })); // global carrier
+    client.setLogEventFilter((e) => ({ ...e, message: e.message.replace('secret', '***') }));
+    console.log('my secret data');
+    const logs = await drain(store, 'log');
+    expect(logs?.some((e) => JSON.stringify(e.data).includes('***'))).toBe(true);
+    expect(logs?.some((e) => JSON.stringify(e.data).includes('secret'))).toBe(false);
+  });
+
   it('does not capture console output when captureLogs is disabled', async () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store, captureLogs: false }));

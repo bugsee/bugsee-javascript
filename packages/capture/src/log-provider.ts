@@ -2,7 +2,9 @@ import {
   type CaptureProvider,
   CaptureProviderBase,
   type EventSubscribable,
+  getFilters,
   type LogEvent,
+  runFilter,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
@@ -28,7 +30,16 @@ class LogCaptureProvider extends CaptureProviderBase {
 
   protected onStart(): void {
     this.#off = this.#source.on('log', (event) => {
-      this.capture('log', event.timestamp, event);
+      // Live per-event log filter (from the carrier's client); may mutate or DROP the entry.
+      const filters = getFilters();
+      if (filters?.log) {
+        const out = runFilter(filters.log, event, filters.onError);
+        if (out !== null) {
+          this.capture('log', out.timestamp, out);
+        }
+      } else {
+        this.capture('log', event.timestamp, event);
+      }
     });
   }
 

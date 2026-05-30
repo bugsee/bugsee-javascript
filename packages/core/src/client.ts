@@ -1,6 +1,7 @@
 import type { EnvironmentEnvelope, LogLevel, Mechanism } from '@bugsee/protocol';
 import {
   createServiceContainer,
+  defineService,
   type Provider,
   type Service,
   type ServiceContainer,
@@ -23,7 +24,18 @@ import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
 import type { BugseeError } from './errors';
-import type { LogEvent } from './events';
+import type { BreadcrumbInput, LogEvent } from './events';
+import {
+  type BreadcrumbFilter,
+  createFilterStore,
+  type LogEventFilter,
+  type NetworkEventFilter,
+  type ReportHandler,
+  runFilter,
+} from './filters';
+
+export type { Breadcrumb, BreadcrumbInput } from './events';
+
 import { createExtensionRegistry } from './extension-registry';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
@@ -76,19 +88,6 @@ const sleep = (ms: number): Promise<void> =>
     (handle as { unref?: () => void }).unref?.();
   });
 
-/** A breadcrumb payload (design §10). */
-export interface Breadcrumb {
-  type?: string;
-  category?: string;
-  message?: string;
-  level?: LogLevelName;
-  data?: Record<string, unknown>;
-  timestamp: number;
-}
-
-/** addBreadcrumb input: timestamp is optional (the Client stamps it from the clock). */
-export type BreadcrumbInput = Omit<Breadcrumb, 'timestamp'> & { timestamp?: number };
-
 /** Options for logException (a focused core subset of Android ExceptionOptions). */
 export interface LogExceptionOptions {
   /** Capture mechanism for the wire source (default 'programmatic'). */
@@ -113,6 +112,14 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   clearAttribute(key: string): void;
   clearAllAttributes(): void;
   getAllAttributes(): Record<string, AttributeValue>;
+
+  // Redaction filters (§4.1#4 / §7.1): each runs per captured event to mutate it or DROP it (return
+  // null). A network filter REPLACES the built-in sanitizer. Pass null to clear. Settable any time.
+  setNetworkEventFilter(filter: NetworkEventFilter | null): void;
+  setLogEventFilter(filter: LogEventFilter | null): void;
+  setBreadcrumbFilter(filter: BreadcrumbFilter | null): void;
+  /** `before` mutates/vetoes (return null) the report before assembly. `after` is accepted but deferred. */
+  setReportHandler(handler: ReportHandler | null): void;
 
   // Manual capture entry points (Android parity, §7.1). Each pushes a CaptureDataEntry.
   addBreadcrumb(breadcrumb: BreadcrumbInput): void;
@@ -176,6 +183,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // The internal service container (the "BugseeInternal" — the per-process DI registry, §7.4). Phase 1
   // stands it up; later phases migrate the hand-wired seams into it as registered services.
   const services = options.services ?? createServiceContainer();
+  // Redaction filters: the first real service (§4.1#4). The facade's set* mutate this store; the
+  // capture pipeline reads the same instance via the container (getFilters). Registered eagerly so a
+  // pipeline resolve always finds it once a client exists.
+  const filters = createFilterStore(onError);
+  services.addService(defineService('filters', () => filters));
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
   const operations = createOperationDispatcher(onError);
@@ -282,6 +294,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     }
   };
 
+  // Apply the report handler's `before` (mutate/veto) at report entry — before assembly. null = veto.
+  const applyReportBefore = (request: ReportingRequest): ReportingRequest | null =>
+    runFilter(filters.report?.before ?? null, request, onError);
+
   // The provider/extension-facing surface (§16.3) passed to providers at start().
   const context: Client = {
     operations,
@@ -319,13 +335,30 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     clearAllAttributes: environment.clearAllAttributes,
     getAllAttributes: environment.getAllAttributes,
 
+    setNetworkEventFilter(filter: NetworkEventFilter | null): void {
+      filters.network = filter;
+    },
+    setLogEventFilter(filter: LogEventFilter | null): void {
+      filters.log = filter;
+    },
+    setBreadcrumbFilter(filter: BreadcrumbFilter | null): void {
+      filters.breadcrumb = filter;
+    },
+    setReportHandler(handler: ReportHandler | null): void {
+      filters.report = handler;
+    },
+
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
       if (killed) {
         return;
       }
       const timestamp = breadcrumb.timestamp ?? clock.wallNow();
+      const filtered = runFilter(filters.breadcrumb, { ...breadcrumb, timestamp }, onError);
+      if (filtered === null) {
+        return; // dropped by the breadcrumb filter
+      }
       captureAggregator.addEntry(
-        new CaptureDataEntryBase('breadcrumbs', timestamp, { ...breadcrumb, timestamp }),
+        new CaptureDataEntryBase('breadcrumbs', filtered.timestamp, filtered),
       );
     },
 
@@ -335,7 +368,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
       const ts = timestamp ?? clock.wallNow();
       const entry: LogEvent = { timestamp: ts, level, source: 'logger', message };
-      captureAggregator.addEntry(new CaptureDataEntryBase('log', ts, entry));
+      const filtered = runFilter(filters.log, entry, onError);
+      if (filtered === null) {
+        return; // dropped by the log filter
+      }
+      captureAggregator.addEntry(new CaptureDataEntryBase('log', filtered.timestamp, filtered));
     },
 
     event(name: string, params?: Record<string, unknown>): void {
@@ -386,7 +423,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           : {}),
         ...(exceptionOptions?.labels !== undefined ? { labels: exceptionOptions.labels } : {}),
       });
-      return track(triggerPipeline?.report(request) ?? Promise.resolve({ ok: false }));
+      const handled = applyReportBefore(request);
+      if (handled === null) {
+        return Promise.resolve({ ok: false }); // vetoed by the report handler
+      }
+      return track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
     },
 
     isLaunched(): boolean {
@@ -409,7 +450,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
       try {
         detectionCoordinator.start(context, isEnabled, (request) => {
-          void track(triggerPipeline?.report(request) ?? Promise.resolve({ ok: false }));
+          const handled = applyReportBefore(request);
+          if (handled !== null) {
+            void track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+          }
         });
       } catch (error) {
         onError(error);

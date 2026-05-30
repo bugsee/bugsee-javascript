@@ -4,16 +4,31 @@ import {
   createCaptureAggregator,
   createCaptureCoordinator,
   createCaptureExporter,
+  createFilterStore,
   createMemoryCaptureStore,
   createMultiKeyEmitter,
   createOperationDispatcher,
   createOptionsContainer,
+  type FilterStore,
   type MultiKeyEmitter,
   type OptionsContainer,
+  setCarrierClient,
 } from '@bugsee/core';
 import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetworkCaptureProvider } from './network-provider';
+
+// Publish a filter store as the singleton client's `filters` service on the global carrier (the
+// provider reads it via getFilters()); reset between tests.
+const publishFilters = (store: FilterStore): void => {
+  setCarrierClient({
+    getService: (name: string) => (name === 'filters' ? store : undefined),
+    getServiceProvider: () => undefined as never,
+  });
+};
+afterEach(() => {
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+});
 
 const mkStore = (): CaptureStore =>
   createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
@@ -55,6 +70,63 @@ describe('createNetworkCaptureProvider', () => {
     expect(entries).toHaveLength(2);
     expect(entries?.map((e) => (e.data as NetworkEvent).type)).toEqual(['before', 'complete']);
     expect(entries?.[0]?.timestamp).toBe(1);
+  });
+
+  it('applies a user network filter (mutate) and that filter REPLACES the default sanitizer', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    // Identity filter (no scrubbing): proves the default sanitizer is NOT also applied (Android XOR).
+    filters.network = (e) => ({ ...e, url: 'REDACTED' });
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ custom: { headers: { authorization: 'secret' } } }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('REDACTED'); // filter ran
+    expect(captured.custom?.headers).toEqual({ authorization: 'secret' }); // sanitizer NOT applied
+  });
+
+  it('drops a network event when the filter returns null', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    filters.network = () => null;
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent());
+    expect(await drainNetwork(store)).toBeUndefined();
+  });
+
+  it('drops the event and routes to the filter onError when a network filter throws', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const onError = vi.fn();
+    const filters = createFilterStore(onError);
+    filters.network = () => {
+      throw new Error('bad');
+    };
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent());
+    expect(await drainNetwork(store)).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the default sanitizer when captureNetworkDefaultSanitizer is false', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(createOptionsContainer({ [BugseeOption.CaptureNetworkDefaultSanitizer]: false }));
+    source.emit('complete', netEvent({ custom: { headers: { authorization: 'secret' } } }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.custom?.headers).toEqual({ authorization: 'secret' }); // raw, not redacted
   });
 
   it('sanitizes sensitive request/response headers per event (non-mutating)', async () => {

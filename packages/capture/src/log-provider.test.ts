@@ -4,17 +4,30 @@ import {
   createCaptureAggregator,
   createCaptureCoordinator,
   createCaptureExporter,
+  createFilterStore,
   createMemoryCaptureStore,
   createMultiKeyEmitter,
   createOperationDispatcher,
   createOptionsContainer,
+  type FilterStore,
   type LogEvent,
   type MultiKeyEmitter,
   type OptionsContainer,
+  setCarrierClient,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLogCaptureProvider } from './log-provider';
+
+const publishFilters = (store: FilterStore): void => {
+  setCarrierClient({
+    getService: (name: string) => (name === 'filters' ? store : undefined),
+    getServiceProvider: () => undefined as never,
+  });
+};
+afterEach(() => {
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+});
 
 const mkStore = (): CaptureStore =>
   createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
@@ -54,6 +67,22 @@ describe('createLogCaptureProvider', () => {
     expect(entries?.[0]?.type).toBe('log');
     expect(entries?.[0]?.timestamp).toBe(5);
     expect(entries?.[0]?.data).toEqual(event);
+  });
+
+  it('applies a user log filter (mutate) and drops on null', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    filters.log = (e) => (e.message.includes('drop') ? null : { ...e, message: 'X' });
+    publishFilters(filters);
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('log', logEvent(1, 'keep'));
+    source.emit('log', logEvent(2, 'please drop'));
+    const entries = await drainLog(store);
+    expect(entries).toHaveLength(1);
+    expect((entries?.[0]?.data as LogEvent).message).toBe('X');
   });
 
   it('captures multiple events in order', async () => {

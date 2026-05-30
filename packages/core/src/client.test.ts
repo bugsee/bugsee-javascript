@@ -119,6 +119,75 @@ describe('createClient — internal service container (DI)', () => {
   });
 });
 
+describe('createClient — redaction filters', () => {
+  const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+  const drainType = async (store: CaptureStore, type: FileType) =>
+    (await createCaptureExporter(store).drain()).get(type) ?? [];
+
+  it('set* write the filters service (the same instance the capture pipeline reads)', () => {
+    const client = createClient();
+    const nf = (e: { url: string }) => e as never;
+    client.setNetworkEventFilter(nf as never);
+    expect(client.getService('filters').network).toBe(nf);
+    client.setNetworkEventFilter(null);
+    expect(client.getService('filters').network).toBeNull();
+  });
+
+  it('setBreadcrumbFilter mutates, drops, and clears', async () => {
+    const store = memStore();
+    const client = createClient({ captureStore: store });
+    client.setBreadcrumbFilter((b) => ({ ...b, message: 'redacted' }));
+    client.addBreadcrumb({ message: 'secret' });
+    expect((await drainType(store, 'breadcrumbs'))[0]?.data).toMatchObject({ message: 'redacted' });
+    client.setBreadcrumbFilter(() => null); // drop
+    client.addBreadcrumb({ message: 'gone' });
+    expect(await drainType(store, 'breadcrumbs')).toHaveLength(1); // dropped one not added
+    client.setBreadcrumbFilter(null); // cleared → passes through
+    client.addBreadcrumb({ message: 'kept' });
+    expect(await drainType(store, 'breadcrumbs')).toHaveLength(2);
+  });
+
+  it('setLogEventFilter mutates or drops logs', async () => {
+    const store = memStore();
+    const client = createClient({ captureStore: store });
+    client.setLogEventFilter((e) => (e.message.includes('drop') ? null : { ...e, message: 'X' }));
+    client.log('keep me');
+    client.log('please drop');
+    const logs = await drainType(store, 'log');
+    expect(logs).toHaveLength(1);
+    expect((logs[0]?.data as { message: string }).message).toBe('X');
+  });
+
+  it('a throwing filter drops the event and routes to onError once', async () => {
+    const store = memStore();
+    const onError = vi.fn();
+    const client = createClient({ captureStore: store, onError });
+    client.setBreadcrumbFilter(() => {
+      throw new Error('bad scrubber');
+    });
+    client.addBreadcrumb({ message: 'x' });
+    expect((await createCaptureExporter(store).drain()).size).toBe(0); // dropped (privacy-safe)
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('setReportHandler before mutates the report; a null veto blocks the upload', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setReportHandler({
+      before: (r) => {
+        r.report.summary = 'masked';
+        return r;
+      },
+    });
+    await client.logException(new Error('boom'));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.summary).toBe('masked');
+
+    client.setReportHandler({ before: () => null }); // veto
+    expect(await client.logException(new Error('veto'))).toEqual({ ok: false });
+    expect(enqueue).toHaveBeenCalledTimes(1); // no second enqueue
+  });
+});
+
 describe('createClient — identity & attributes', () => {
   it('round-trips and clears the user identifier', () => {
     const client = createClient();

@@ -1,4 +1,11 @@
-import { type CaptureProvider, CaptureProviderBase, type EventSubscribable } from '@bugsee/core';
+import {
+  type CaptureProvider,
+  CaptureProviderBase,
+  type EventSubscribable,
+  getFilters,
+  type OptionsContainer,
+  runFilter,
+} from '@bugsee/core';
 import {
   BugseeOption,
   type NetworkEvent,
@@ -29,16 +36,32 @@ class NetworkCaptureProvider extends CaptureProviderBase {
   readonly controllingOption = BugseeOption.CaptureNetwork;
   readonly #sources: readonly NetworkSource[];
   #offs: Array<() => void> = [];
+  #sanitizeDefault = true;
 
   constructor(sources: readonly NetworkSource[]) {
     super();
     this.#sources = sources;
   }
 
-  protected onStart(): void {
+  protected onStart(options: OptionsContainer): void {
+    // The built-in PII sanitizer is gated by its option (default on); a user network filter supersedes
+    // it entirely (Android XOR rule). Read once per launch.
+    this.#sanitizeDefault = options.get(BugseeOption.CaptureNetworkDefaultSanitizer, true);
     this.#offs = this.#sources.map((source) =>
       source.onAny((_stage, event) => {
-        this.capture('network', event.timestamp, sanitize(event));
+        // Live per-event redaction: a user network filter (from the carrier's client) REPLACES the
+        // default sanitizer; otherwise apply the default sanitizer when enabled. A filter may DROP.
+        const filters = getFilters();
+        if (filters?.network) {
+          const out = runFilter(filters.network, event, filters.onError);
+          if (out !== null) {
+            this.capture('network', out.timestamp, out);
+          }
+        } else if (this.#sanitizeDefault) {
+          this.capture('network', event.timestamp, sanitize(event));
+        } else {
+          this.capture('network', event.timestamp, event);
+        }
       }),
     );
   }
