@@ -59,6 +59,7 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.clearAllMocks();
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__; // fresh interceptor singletons per test
 });
 const launchTracked = (over?: Partial<BugseeLaunchOptions>) => {
   const c = launch('tok', opts(over));

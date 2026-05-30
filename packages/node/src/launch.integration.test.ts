@@ -80,6 +80,9 @@ describe('launch — loopback end-to-end', () => {
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     vi.restoreAllMocks();
+    // These launches use the default (real globalThis) carrier; reset it so interceptor singletons
+    // don't leak across tests/files.
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
   });
 
   it('delivers a zip bundle through the real transport: session → issue → signed PUT', async () => {

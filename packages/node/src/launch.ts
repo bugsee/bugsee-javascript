@@ -21,6 +21,7 @@ import {
   createFileCaptureStore,
   createMemoryCaptureStore,
   createUploadPipeline,
+  getOrCreateInterceptor,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
@@ -133,6 +134,8 @@ export interface BugseeLaunchOptions {
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
   bundleStore?: BundleStore;
+  /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
+  carrier?: object;
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -231,9 +234,18 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   });
 
   // Capture providers (each gated by its controllingOption). Console→log, network umbrella with the
-  // Node-native node:http source folded in, periodic system traces, and process system events.
-  client.addCaptureProvider(createLogCaptureProvider(createConsoleInterceptor()));
-  const network = installNetworkCapture({ additionalSources: [createNodeHttpInterceptor()] });
+  // Node-native node:http source folded in, periodic system traces, and process system events. Each
+  // interceptor that patches a global is obtained through the process Carrier (getOrCreateInterceptor,
+  // keyed by name), so duplicated module copies share ONE instance / ONE patch (#47).
+  const carrier = options.carrier;
+  const consoleInterceptor = getOrCreateInterceptor(
+    'console',
+    () => createConsoleInterceptor(),
+    carrier,
+  );
+  client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
+  const nodeHttp = getOrCreateInterceptor('node-http', () => createNodeHttpInterceptor(), carrier);
+  const network = installNetworkCapture({ additionalSources: [nodeHttp], carrier });
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(
     createSystemTracesProvider({

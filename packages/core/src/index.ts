@@ -16,6 +16,12 @@ export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry'
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export {
+  BUGSEE_SDK_VERSION,
+  type BugseeCarrier,
+  getCarrier,
+  getOrCreateInterceptor,
+} from './carrier';
+export {
   type Breadcrumb,
   type BreadcrumbInput,
   type BugseeClient,

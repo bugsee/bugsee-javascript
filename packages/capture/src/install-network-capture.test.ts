@@ -7,13 +7,20 @@ import {
   createMultiKeyEmitter,
   createOperationDispatcher,
   createOptionsContainer,
+  getCarrier,
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
 import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { FetchTarget } from './fetch-interceptor';
 import { installNetworkCapture } from './install-network-capture';
+
+// installNetworkCapture now registers its network leaves on the process Carrier (default the real
+// globalThis). Reset it between tests so each gets fresh interceptors (no cross-test reuse).
+afterEach(() => {
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+});
 
 type FetchFn = (input: unknown, init?: unknown) => Promise<unknown>;
 const mkStore = (): CaptureStore =>
@@ -103,5 +110,34 @@ describe('installNetworkCapture', () => {
     provider.init(buildInit(store));
     extra.emit('complete', netEvent()); // provider not started → umbrella idle → not forwarded
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
+  });
+});
+
+describe('installNetworkCapture — carrier (process-global leaf singletons)', () => {
+  const LEAF_NAMES = ['fetch', 'sse', 'websocket', 'webtransport', 'xhr'];
+
+  it('registers each network leaf on the carrier by name', () => {
+    const carrier = {};
+    installNetworkCapture({ carrier });
+    expect([...getCarrier(carrier).interceptors.keys()].sort()).toEqual(LEAF_NAMES);
+  });
+
+  it('reuses the SAME leaf instances on a second install sharing the carrier (one patch)', () => {
+    const carrier = {}; // a single process global both "module copies" see
+    installNetworkCapture({ carrier });
+    const first = getCarrier(carrier).interceptors.get('fetch');
+    installNetworkCapture({ carrier }); // a duplicated copy installs again
+    expect(getCarrier(carrier).interceptors.get('fetch')).toBe(first); // not a second instance
+    expect(getCarrier(carrier).interceptors.size).toBe(5); // leaves not doubled
+  });
+
+  it('builds fresh leaves for a different carrier', () => {
+    const a = {};
+    const b = {};
+    installNetworkCapture({ carrier: a });
+    installNetworkCapture({ carrier: b });
+    expect(getCarrier(a).interceptors.get('fetch')).not.toBe(
+      getCarrier(b).interceptors.get('fetch'),
+    );
   });
 });

@@ -1,4 +1,4 @@
-import type { CaptureProvider, Interceptor } from '@bugsee/core';
+import { type CaptureProvider, getOrCreateInterceptor, type Interceptor } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 import { createFetchInterceptor, type FetchTarget } from './fetch-interceptor';
 import { createNetworkInterceptor } from './network-interceptor';
@@ -15,6 +15,12 @@ import { createXhrInterceptor } from './xhr-interceptor';
 // in via `additionalSources`. The provider is registered with the client (captureNetwork-gated; its
 // subscription activates the umbrella → the available subs); the returned umbrella is the single source
 // other consumers (APM, user code) subscribe to for ALL network events.
+//
+// Each leaf is obtained through the process Carrier (getOrCreateInterceptor, keyed by interceptor
+// name), so duplicated module copies converge on ONE instance per leaf and a runtime global is patched
+// exactly once (#47). Consequently the FIRST installer's leaf options (now/isInternal/fetchTarget)
+// win — a later call reuses the existing singletons and its options for an already-built leaf are
+// ignored. The umbrella + provider stay per-install (they consume the shared leaves).
 
 type NetworkUmbrella = Interceptor<Record<NetworkStage, NetworkEvent>>;
 
@@ -27,6 +33,8 @@ export interface InstallNetworkCaptureOptions {
   fetchTarget?: FetchTarget;
   /** Extra platform-specific network sources to aggregate (e.g. Node's node:http interceptor). */
   additionalSources?: readonly NetworkSource[];
+  /** Carrier host for the leaf singletons; injectable for tests. Default the real `globalThis`. */
+  carrier?: object;
 }
 
 export interface NetworkCapture {
@@ -42,15 +50,22 @@ export function installNetworkCapture(options: InstallNetworkCaptureOptions = {}
     ...nowOpt,
     ...(options.isInternal !== undefined ? { isInternal: options.isInternal } : {}),
   };
+  // Each leaf is a process-global singleton on the carrier (one patch per global, module-dup safe).
+  // Passing options.carrier === undefined falls back to getOrCreateInterceptor's globalThis default.
+  const carrier = options.carrier;
+  const leaf = (name: string, make: () => NetworkUmbrella): NetworkUmbrella =>
+    getOrCreateInterceptor<Record<NetworkStage, NetworkEvent>>(name, make, carrier);
   const sources: NetworkUmbrella[] = [
-    createFetchInterceptor({
-      ...httpOpts,
-      ...(options.fetchTarget !== undefined ? { target: options.fetchTarget } : {}),
-    }),
-    createXhrInterceptor(httpOpts),
-    createWebSocketInterceptor(nowOpt),
-    createSseInterceptor(nowOpt),
-    createWebTransportInterceptor(nowOpt),
+    leaf('fetch', () =>
+      createFetchInterceptor({
+        ...httpOpts,
+        ...(options.fetchTarget !== undefined ? { target: options.fetchTarget } : {}),
+      }),
+    ),
+    leaf('xhr', () => createXhrInterceptor(httpOpts)),
+    leaf('websocket', () => createWebSocketInterceptor(nowOpt)),
+    leaf('sse', () => createSseInterceptor(nowOpt)),
+    leaf('webtransport', () => createWebTransportInterceptor(nowOpt)),
   ];
   const interceptor = createNetworkInterceptor(...sources, ...(options.additionalSources ?? []));
   return { interceptor, provider: createNetworkCaptureProvider(interceptor) };

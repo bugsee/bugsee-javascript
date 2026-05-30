@@ -6,6 +6,7 @@ import {
   type Clock,
   createCaptureExporter,
   createMemoryCaptureStore,
+  getCarrier,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
@@ -109,6 +110,8 @@ afterEach(async () => {
   // Stop every launched client so the console interceptor unpatches the global console.
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
+  // Reset the process Carrier so each test builds fresh interceptor singletons (default global path).
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
 const launchTracked = (token: string, options: BugseeLaunchOptions) => {
@@ -328,6 +331,44 @@ describe('launch', () => {
     expect((await sdkOptions({ maxDataSize: 7 }))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(
       7,
     );
+  });
+
+  it('shares interceptor singletons across launches via the carrier (one global patch)', () => {
+    const carrier = {}; // both launches (≈ two module copies) see one process global
+    launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
+    const reg = getCarrier(carrier).interceptors;
+    const console1 = reg.get('console');
+    const http1 = reg.get('node-http');
+    const fetch1 = reg.get('fetch');
+    expect(console1).toBeDefined();
+    expect(http1).toBeDefined();
+    expect(fetch1).toBeDefined();
+    // console + node-http + the 5 cross-runtime network leaves = 7 process-global interceptors.
+    expect(reg.size).toBe(7);
+
+    launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
+    expect(getCarrier(carrier).interceptors.get('console')).toBe(console1); // reused, not rebuilt
+    expect(getCarrier(carrier).interceptors.get('node-http')).toBe(http1);
+    expect(getCarrier(carrier).interceptors.get('fetch')).toBe(fetch1);
+    expect(getCarrier(carrier).interceptors.size).toBe(7); // not doubled
+  });
+
+  it('keeps the shared console patch active for a still-running client after another stops', async () => {
+    // Two clients share ONE console interceptor (via the carrier). Stopping one must NOT unpatch the
+    // global for the other — the InterceptorBase refcount keeps it active while B is still subscribed.
+    const carrier = {};
+    const storeA = memStore();
+    const storeB = memStore();
+    const a = launchTracked('tok', baseOptions({ captureStore: storeA, carrier }));
+    launchTracked('tok', baseOptions({ captureStore: storeB, carrier })); // client B (stopped in afterEach)
+    expect(getCarrier(carrier).interceptors.get('console')).toBeDefined(); // one shared instance
+
+    await a.stop(); // A unsubscribes; B still subscribes → console stays patched
+    console.log('after-stop-marker'); // captured only by the still-running B
+    const hasMarker = (logs: Awaited<ReturnType<typeof drain>>): boolean =>
+      logs?.some((e) => JSON.stringify(e.data).includes('after-stop-marker')) ?? false;
+    expect(hasMarker(await drain(storeB, 'log'))).toBe(true); // B (still running) captured it
+    expect(hasMarker(await drain(storeA, 'log'))).toBe(false); // A (stopped) did not
   });
 
   it('passes through app identity and a custom sdk version', async () => {
