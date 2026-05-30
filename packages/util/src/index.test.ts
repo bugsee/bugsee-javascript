@@ -29,6 +29,7 @@ describe('@bugsee/util public surface', () => {
       'zipSync',
       'jsonSafeStringify',
       'sha256Hex',
+      'utf8ByteLength',
     ];
     const surface = util as Record<string, unknown>;
     for (const name of expected) {

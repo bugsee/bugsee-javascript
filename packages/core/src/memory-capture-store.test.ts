@@ -14,6 +14,10 @@ const clockAt = (now: number): Clock => ({ wallNow: () => now, monotonicNow: () 
 const mk = (over: MemoryCaptureStoreOptions = {}) =>
   createMemoryCaptureStore({ clock: clockAt(10_000), ...over });
 
+// A record whose serialized form is exactly `bytes` ASCII bytes (utf8 length == char count).
+const recBytes = (type: FileType, timestamp: number, bytes: number): StoredEntry =>
+  rec(type, timestamp, 'x'.repeat(bytes));
+
 describe('createMemoryCaptureStore — add + snapshot', () => {
   it('snapshots records grouped by file type', async () => {
     const store = mk();
@@ -118,6 +122,65 @@ describe('createMemoryCaptureStore — snapshot isolation', () => {
   });
 });
 
+describe('createMemoryCaptureStore — maxDataSize byte bound', () => {
+  it('is unbounded by default (no byte eviction)', async () => {
+    const store = mk(); // no maxDataSizeBytes
+    store.add(recBytes('log', 10_000, 1000));
+    store.tick(11_000);
+    store.add(recBytes('log', 11_000, 1000));
+    store.tick(12_000);
+    store.add(recBytes('log', 12_000, 1000));
+    expect((await store.snapshot().drainAll()).get('log')).toHaveLength(3);
+  });
+
+  it('evicts whole oldest closed parts once the byte total exceeds the cap', async () => {
+    // cap 30 bytes, 10-byte records: part0(r0) + part1(r1) + part2(r2,r3) → total 40 > 30, so the
+    // oldest closed part (part0) is dropped down to 30.
+    const store = mk({ maxDataSizeBytes: 30 });
+    store.add(recBytes('log', 1, 10)); // part0
+    store.tick(10_100);
+    store.add(recBytes('log', 2, 10)); // part1
+    store.tick(10_200);
+    store.add(recBytes('log', 3, 10)); // part2
+    store.add(recBytes('log', 4, 10)); // part2 → total 40 → evict part0
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([2, 3, 4]); // oldest (ts 1) dropped, newest kept
+  });
+
+  it('never evicts the open current part (soft bound): a single oversized part is kept', async () => {
+    const store = mk({ maxDataSizeBytes: 5 });
+    store.add(recBytes('log', 1, 50)); // 50 > 5, but it is the only (open) part → kept
+    expect((await store.snapshot().drainAll()).get('log')).toHaveLength(1);
+  });
+
+  it('evicts MULTIPLE oldest parts in a single add when one record overflows past several', async () => {
+    // cap 25; two 10-byte closed parts (total 20, under cap) then a 30-byte record lands → total 50,
+    // so a SINGLE add must evict BOTH older parts (loops), leaving only the large current record.
+    const store = mk({ maxDataSizeBytes: 25 });
+    store.add(recBytes('log', 1, 10)); // part0
+    store.tick(10_100);
+    store.add(recBytes('log', 2, 10)); // part1
+    store.tick(10_200);
+    store.add(recBytes('log', 3, 30)); // part2 → total 50 → evict part0 AND part1 in this one add
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([3]); // both older parts gone, large record kept
+  });
+
+  it('keeps the byte total accurate when time-eviction also runs (no double-count drift)', async () => {
+    // window 2000ms, cap 30, 10-byte records. part0 is time-evicted at tick(15_000); if its bytes
+    // were NOT subtracted from the running total, a later add would over-evict part1.
+    const store = mk({ maxRecordingTimeMs: 2000, maxDataSizeBytes: 30 });
+    store.add(recBytes('log', 10_000, 10)); // part0
+    store.tick(11_000); // part0 closes @11000
+    store.add(recBytes('log', 11_000, 10)); // part1
+    store.tick(15_000); // cutting 12000 → part0 (end 11000) time-evicted; part1 kept
+    store.add(recBytes('log', 15_000, 10)); // part2
+    store.add(recBytes('log', 15_001, 10)); // part2 → total should be 30 (not 40) → no byte evict
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([11_000, 15_000, 15_001]); // part1 survives
+  });
+});
+
 describe('createMemoryCaptureStore — clear', () => {
   it('drops all records', async () => {
     const store = mk();
@@ -133,5 +196,20 @@ describe('createMemoryCaptureStore — clear', () => {
     store.clear();
     store.add(rec('log', 10_001));
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_001)]);
+  });
+
+  it('resets the byte total so post-clear captures are not wrongly evicted', async () => {
+    // Fill to the cap, clear (must zero the running byte total), then capture fresh data under the
+    // cap across two parts. If clear left the total at 30, the later adds would over-evict part_new.
+    const store = mk({ maxDataSizeBytes: 30 });
+    store.add(recBytes('log', 1, 10));
+    store.add(recBytes('log', 2, 10));
+    store.add(recBytes('log', 3, 10)); // total 30
+    store.clear();
+    store.add(recBytes('log', 4, 10)); // fresh part
+    store.tick(10_100); // close it
+    store.add(recBytes('log', 5, 10)); // total should be 20, well under 30 → nothing evicted
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([4, 5]);
   });
 });

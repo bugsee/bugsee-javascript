@@ -33,6 +33,14 @@ function fakeAdapter() {
 const mk = (adapter: FileStorageAdapter, over: FileCaptureStoreOptions = {}) =>
   createFileCaptureStore(adapter, { clock: clockAt(10_000), ...over });
 
+// A 20-char ASCII payload record; with a 5-digit timestamp every such record encodes to the same
+// number of on-disk bytes (`enc` below), so byte-cap math in the tests is exact.
+const PAYLOAD = 'x'.repeat(20);
+const recBytes = (type: FileType, timestamp: number): StoredEntry => rec(type, timestamp, PAYLOAD);
+// Mirrors the store's on-disk encoding: JSON.stringify({ t, s }) + '\n' (ASCII → bytes == chars).
+const enc = (timestamp: number): number => JSON.stringify({ t: timestamp, s: PAYLOAD }).length + 1;
+const U = enc(10_000); // one record's on-disk byte size (5-digit timestamp)
+
 describe('createFileCaptureStore — add + snapshot', () => {
   it('persists records and snapshots them grouped by file type', async () => {
     const { adapter } = fakeAdapter();
@@ -155,6 +163,72 @@ describe('createFileCaptureStore — generations', () => {
   });
 });
 
+describe('createFileCaptureStore — maxDataSize byte bound', () => {
+  it('is unbounded by default (no byte eviction)', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter); // no maxDataSizeBytes
+    store.add(recBytes('log', 10_000));
+    store.tick(10_100);
+    store.add(recBytes('log', 10_001));
+    store.tick(10_200);
+    store.add(recBytes('log', 10_002));
+    expect((await store.snapshot().drainAll()).get('log')).toHaveLength(3);
+  });
+
+  it('evicts whole oldest closed parts and removes their files once over the byte cap', async () => {
+    // cap = 3 records: part0(r0) + part1(r1) + part2(r2,r3) = 4U > 3U → drop oldest closed part0.
+    const { adapter, streams } = fakeAdapter();
+    const store = mk(adapter, { maxDataSizeBytes: 3 * U });
+    store.add(recBytes('log', 10_000)); // part0
+    store.tick(10_100);
+    store.add(recBytes('log', 10_001)); // part1
+    store.tick(10_200);
+    store.add(recBytes('log', 10_002)); // part2
+    store.add(recBytes('log', 10_003)); // part2 → total 4U → evict part0
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([10_001, 10_002, 10_003]);
+    expect(streams.has(cf('log', 0))).toBe(false); // part0's file deleted
+    expect(streams.has(cf('log', 1))).toBe(true); // part1's file kept
+  });
+
+  it('never evicts the open current part (soft bound): a single oversized part is kept', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter, { maxDataSizeBytes: 1 }); // far below one record
+    store.add(recBytes('log', 10_000)); // only (open) part → kept despite exceeding the cap
+    expect((await store.snapshot().drainAll()).get('log')).toHaveLength(1);
+  });
+
+  it('evicts MULTIPLE oldest parts in a single add when one record overflows past several', async () => {
+    // Two 20-char records (enc = 39 bytes each, total 78, under cap 80) in their own parts, then a
+    // 40-char record (enc = 59 bytes) lands → total 137, so a SINGLE add must evict BOTH older parts.
+    const recPay = (ts: number, chars: number): StoredEntry => rec('log', ts, 'x'.repeat(chars));
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter, { maxDataSizeBytes: 80 });
+    store.add(recPay(10_000, 20)); // part0 (39B)
+    store.tick(10_100);
+    store.add(recPay(10_001, 20)); // part1 (39B) → total 78
+    store.tick(10_200);
+    store.add(recPay(10_002, 40)); // part2 (59B) → total 137 → evict part0 AND part1 in this add
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([10_002]); // both older parts gone, large record kept
+  });
+
+  it('keeps the byte total accurate when time-eviction also runs (no double-count drift)', async () => {
+    // window 2000ms, cap 3U. part0 is time-evicted at tick(15_000); if its bytes were not subtracted
+    // from the running total, the later adds would over-evict part1.
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter, { maxRecordingTimeMs: 2000, maxDataSizeBytes: 3 * U });
+    store.add(recBytes('log', 10_000)); // part0
+    store.tick(11_000); // part0 closes @11000
+    store.add(recBytes('log', 11_000)); // part1
+    store.tick(15_000); // cutting 12000 → part0 time-evicted; part1 kept
+    store.add(recBytes('log', 15_000)); // part2
+    store.add(recBytes('log', 15_001)); // part2 → total should be 3U (not 4U) → no byte evict
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([11_000, 15_000, 15_001]); // part1 survives
+  });
+});
+
 describe('createFileCaptureStore — snapshot isolation', () => {
   it('freezes the snapshot: capture after snapshot() does not change it', async () => {
     const { adapter } = fakeAdapter();
@@ -210,6 +284,20 @@ describe('createFileCaptureStore — clear', () => {
     expect(streams.size).toBe(0);
     store.add(rec('log', 10_001));
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_001)]);
+  });
+
+  it('resets the byte total so post-clear captures are not wrongly evicted', async () => {
+    const { adapter } = fakeAdapter();
+    const store = mk(adapter, { maxDataSizeBytes: 3 * U });
+    store.add(recBytes('log', 10_000));
+    store.add(recBytes('log', 10_001));
+    store.add(recBytes('log', 10_002)); // total 3U
+    store.clear(); // must zero the running byte total
+    store.add(recBytes('log', 10_003)); // fresh part
+    store.tick(10_100); // close it
+    store.add(recBytes('log', 10_004)); // total should be 2U, under cap → nothing evicted
+    const got = (await store.snapshot().drainAll()).get('log') ?? [];
+    expect(got.map((r) => r.timestamp)).toEqual([10_003, 10_004]);
   });
 
   it('clear() leaves another generation’s files intact', () => {

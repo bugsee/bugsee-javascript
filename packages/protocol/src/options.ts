@@ -48,6 +48,8 @@ export const BugseeOption = {
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Rolling recording window in seconds. */
   Duration: 'com.bugsee.option.config.duration',
+  /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
+  MaxDataSize: 'com.bugsee.option.config.data-size',
 } as const;
 
 /** A canonical option identifier value (one of {@link BugseeOption}'s string values). */
@@ -67,4 +69,5 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.system-events': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.config.duration': number;
+  'com.bugsee.option.config.data-size': number;
 }

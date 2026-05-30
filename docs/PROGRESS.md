@@ -14,7 +14,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 | Package | Role |
 | --- | --- |
 | `@bugsee/types` | Shared TS types (`NameExtensionMapping`, `AccessToken`, `IssueId`, `LogLevelName`, `SeverityName`, …) consumed via declaration merging. |
-| `@bugsee/util` | Pure helpers: `fflate` re-export (`zipSync`/`unzipSync`/`gzipSync`/`gunzipSync`/`strToU8`/`strFromU8`), `sha256Hex`, `computeBackoff`. |
+| `@bugsee/util` | Pure helpers: `fflate` re-export (`zipSync`/`unzipSync`/`gzipSync`/`gunzipSync`/`strToU8`/`strFromU8`), `sha256Hex`, `computeBackoff`, `utf8ByteLength` (allocation-free UTF-8 byte measure for the capture-store byte cap). |
 | `@bugsee/logger` | Debug logger (`debug.warn` etc.); platforms route `onError` here. |
 | `@bugsee/protocol` | Wire types (`RequestJson`, `EnvironmentEnvelope`, `NetworkEvent` superset incl. `'http'` mechanism, `NetworkStage`, `FileType`, `Mechanism`), `Severity` enum + level conversions, header/JSON/params sanitizers, shape redaction, **`BugseeOption` canonical identifiers + `optionsToWire` (dots → colons)**. |
 | `@bugsee/service` | Tier-0 service contracts (reviewed unit). |
@@ -22,7 +22,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 ### Kernel — `@bugsee/core` (the thin kernel; runtime-portable)
 - **`Client`** (`createClient`) — composition root: identity/attributes via the single global `Environment`, manual capture (`addBreadcrumb`/`log`/`event`/`trace`/`logException`), provider/extension registration, lifecycle (`launch`/`isLaunched`/`stop`/`flush`). `flush()`/`stop()` await both `uploadPipeline.flush` AND in-flight **report promises** (the path that lets crash flush-then-exit deliver), bounded by an unref'd deadline.
 - **Capture data model** (Android aggregator parity): one-way flow `CaptureProvider → CaptureAggregator → CaptureStore (Part/PartManager) → CaptureExporter → bundle`. `CaptureDataEntryBase` + `defaultEntryFactory`. No `Scope` (one global Environment); breadcrumbs are a capture stream.
-- **Stores**: `createMemoryCaptureStore` (in-memory); `createFileCaptureStore(adapter, opts)` with per-launch GENERATIONS (`<gen13>__<part12>__<type>`, fresh launch cleans other generations).
+- **Stores**: `createMemoryCaptureStore` (in-memory); `createFileCaptureStore(adapter, opts)` with per-launch GENERATIONS (`<gen13>__<part12>__<type>`, fresh launch cleans other generations). Both are bounded by TWO axes (drop-oldest whole CLOSED parts, design A1): the time window (`maxRecordingTimeMs`) AND an optional `maxDataSizeBytes` byte cap (slice #34) enforced on `add` via a running UTF-8 byte total (the open current part is never evicted — a single oversized part is a documented soft over-shoot). Byte measure = `@bugsee/util` `utf8ByteLength` (pure, allocation-free); the memory store counts the serialized string, the file store the encoded on-disk line.
 - **PartManager + tick**: 1-second parts with rotation + out-of-window cleanup driven by the client's `Scheduler` (`setInterval`-based, unref'd by default).
 - **Coordinators**: `CaptureCoordinator` (init-once via `CaptureProviderInit { operations, captureAggregator }`, start-with-options, gated by `controllingOption`), `DetectionCoordinator` (start-with-onReport, same gate).
 - **Trigger + Upload pipelines**: `createTriggerPipeline` (serialized assemble, `maxQueueDepth`), `createUploadPipeline` (session→issue→signed PUT, retry/backoff, 403→renew, bounded inFlight). `BugseeApi` + `BundleUploader` over an injected `HttpTransport` (transport logic is core, the primitive is platform).
@@ -104,7 +104,7 @@ Cross-runtime capture interceptors **self-skip when their global is absent**, so
 
 ## 4. Verified by
 
-- **~960+ tests** across the workspace (`pnpm test`), Vitest. Coverage gate **100% line / function / statement, ≥90% branch (aggregate) PER PACKAGE** — failing the gate fails the run.
+- **~990+ tests** across the workspace (`pnpm test`), Vitest. Coverage gate **100% line / function / statement, ≥90% branch (aggregate) PER PACKAGE** — failing the gate fails the run.
 - **Test-first + mutator loop** on every entity (binding standard, `docs/implementation-standards.md` §2): inject a bug → confirm a test catches it → restore. Documented behaviorally-inert exceptions exist only for memory-hygiene cleanup lines with no observable behavior.
 - **End-to-end loopback** for the Node SDK (`packages/node/src/launch.integration.test.ts`): real `http.createServer`, full `session → issue → signed PUT` with a real `node:http` transport and a real zip bundle; plus a recovery e2e that drops a serialized bundle on disk, launches, and asserts re-upload + file removal.
 - **Multi-agent convergent review** per feature (binding standard §6): for big features (kernel rebuild, Node launch, recovery, options scheme) ran fresh parallel reviewers (correctness / test quality / architecture) until a round yielded zero new real findings. Notable bugs caught this way:
@@ -153,7 +153,7 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
 ### Immediate hardening / Node-tier polish
 | # | Slice | Notes |
 | --- | --- | --- |
-| #34 | `maxDataSize` byte bound on the capture store | Cap on-disk/in-memory capture size; currently only time-bounded (`maxRecordingTime`). |
+| ~~#34~~ | ~~`maxDataSize` byte bound on the capture store~~ | **DONE (2026-05-30, on `master`).** Byte cap on both capture stores (drop-oldest closed parts, soft-bounded on the open part); friendly `maxDataSize` (MB, Node default 50) → canonical `com.bugsee.option.config.data-size` → wired in Node `launch` for memory + file paths. `@bugsee/util` `utf8ByteLength` added. Test-first, mutator-looped (incl. multi-part single-add eviction + no-drift + clear-reset), multi-agent reviewed to convergence. Node now builds the in-memory store itself (parity with the file path), so `createClient` is untouched. Browser/edge 10 MB default lands with `@bugsee/browser`. |
 | #47 | Interceptor carrier (global singleton) | Resilience against module duplication (multiple copies of `@bugsee/capture`); a process-wide singleton holds interceptor instances so all consumers share one. |
 | #13 | Integration-shims | No-op `viewHierarchy`/`xhr`/`replay` providers so optional integrations stay tree-shakeable + don't error if absent. |
 

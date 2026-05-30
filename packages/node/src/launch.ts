@@ -19,6 +19,7 @@ import {
   createClient,
   createDurableUploadPipeline,
   createFileCaptureStore,
+  createMemoryCaptureStore,
   createUploadPipeline,
   type HttpRequestOptions,
   type HttpResponse,
@@ -56,10 +57,17 @@ import { createNodeSystemMetricsSampler } from './system-metrics';
 const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
+// Node/Electron capture buffer ceiling (design §966: 50 MB on Node, 10 MB on browser/edge).
+const DEFAULT_MAX_DATA_SIZE_MB = 50;
 
-// Node's launch-option definitions = the shared cross-runtime set (Node adds none of its own yet;
-// a Node-specific option would be appended here with a com.bugsee.option.<...> identifier).
-const NODE_OPTION_DEFINITIONS = COMMON_OPTION_DEFINITIONS;
+// Node's launch-option definitions = the shared cross-runtime set plus Node's own. maxDataSize is
+// platform-local because its default differs per runtime (50 MB on Node/Electron vs 10 MB on
+// browser/edge), so it does not belong in COMMON_OPTION_DEFINITIONS; its canonical identifier still
+// lives in @bugsee/protocol (BugseeOption.MaxDataSize) for cross-SDK / wire parity.
+const NODE_OPTION_DEFINITIONS = [
+  ...COMMON_OPTION_DEFINITIONS,
+  { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+];
 
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
 export interface NodeRuntime extends ProcessEvents {
@@ -91,6 +99,8 @@ export interface BugseeLaunchOptions {
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
+  /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). Default 50. */
+  maxDataSize?: number;
   /** Persist capture to this directory (file-backed store). Default in-memory. */
   dataDir?: string;
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
@@ -191,15 +201,22 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       probe,
     );
 
-  // Capture store: explicit override > file-backed (dataDir) > in-memory (createClient default).
+  // Capture store: explicit override > file-backed (dataDir) > in-memory. The platform owns store
+  // construction (and its byte/time bounds) for both paths so the maxDataSize ceiling is wired the
+  // same way regardless of backend. Bounds: maxRecordingTime (s → ms window) + maxDataSize (MB →
+  // byte cap, drop-oldest parts past either).
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
-  let captureStore = options.captureStore;
-  if (captureStore === undefined && options.dataDir !== undefined) {
-    captureStore = createFileCaptureStore(createNodeFileStorageAdapter(options.dataDir), {
-      maxRecordingTimeMs: maxRecordingTime * 1000,
-      ...(options.clock !== undefined ? { clock: options.clock } : {}),
-    });
-  }
+  const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  const storeOptions = {
+    maxRecordingTimeMs: maxRecordingTime * 1000,
+    maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  };
+  const captureStore =
+    options.captureStore ??
+    (options.dataDir !== undefined
+      ? createFileCaptureStore(createNodeFileStorageAdapter(options.dataDir), storeOptions)
+      : createMemoryCaptureStore(storeOptions));
 
   const client = createClient({
     isEnabled: resolved.isEnabled,
@@ -207,8 +224,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     uploadPipeline,
     appToken,
     getEnvironment,
-    maxRecordingTime,
-    ...(captureStore !== undefined ? { captureStore } : {}),
+    captureStore,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),

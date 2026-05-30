@@ -309,6 +309,27 @@ describe('launch', () => {
     expect(env.app?.package_id).toBe('unknown'); // default when appId omitted
   });
 
+  it('reports maxDataSize (default 50 MB) in the wire-form sdk.options, and honors an override', async () => {
+    const sdkOptions = async (over: Partial<BugseeLaunchOptions>) => {
+      const transport = uploadTransport();
+      const client = launchTracked(
+        'tok',
+        baseOptions({ transport, captureStore: memStore(), ...over }),
+      );
+      await client.logException(new Error('x'));
+      const env = (
+        JSON.parse(String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body)) as {
+          environment: EnvironmentEnvelope;
+        }
+      ).environment;
+      return env.sdk.options as Record<string, unknown>;
+    };
+    expect((await sdkOptions({}))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(50); // default
+    expect((await sdkOptions({ maxDataSize: 7 }))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(
+      7,
+    );
+  });
+
   it('passes through app identity and a custom sdk version', async () => {
     const transport = uploadTransport();
     const client = launchTracked(

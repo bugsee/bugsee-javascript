@@ -1,4 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
+import { utf8ByteLength } from '@bugsee/util';
 import { createRecordSnapshot } from './capture-snapshot';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureSnapshot, CaptureStore, FileStorageAdapter, StoredEntry } from './contracts';
@@ -15,7 +16,12 @@ import type { CaptureSnapshot, CaptureStore, FileStorageAdapter, StoredEntry } f
 // CaptureSnapshot (the live files keep rolling + getting GC'd during export); release() drops the copy.
 //
 // (Content-hash snapshot dedup is deferred — it deduplicates on-disk snapshot file COPIES, which this
-// in-memory-snapshot model does not produce. A maxDataSize byte bound is also not yet implemented.)
+// in-memory-snapshot model does not produce.)
+//
+// Two memory bounds apply (drop-oldest-part semantics, design A1): the time window above, and an
+// optional maxDataSize BYTE cap enforced on add — when the running on-disk UTF-8 byte total exceeds
+// the cap, whole oldest CLOSED parts are evicted (their files removed) until it fits. The open
+// current part is never evicted, so a single oversized part is a documented soft over-shoot.
 
 const PART_DURATION_MS = 1000;
 const SEPARATOR = '__';
@@ -32,11 +38,18 @@ interface FilePart {
   start: number;
   /** undefined while the part is open (the current part). */
   end: number | undefined;
+  /** Running on-disk UTF-8 byte total of this part's encoded records. */
+  bytes: number;
 }
 
 export interface FileCaptureStoreOptions {
   /** Recording window in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
   maxRecordingTimeMs?: number;
+  /**
+   * Byte ceiling (design maxDataSize) on the total on-disk size of stored records; oldest closed
+   * parts are evicted once it is exceeded. Default undefined = unbounded (only the time window).
+   */
+  maxDataSizeBytes?: number;
   /** Time source for the initial part / clear and the default generation; injectable. Default system clock. */
   clock?: Clock;
   /** This launch's generation id (groups its files). Default clock.wallNow() at construction. */
@@ -50,6 +63,7 @@ export function createFileCaptureStore(
   options?: FileCaptureStoreOptions,
 ): CaptureStore {
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
+  const maxDataSizeBytes = options?.maxDataSizeBytes;
   const clock = options?.clock ?? createSystemClock();
   const generation = options?.generation ?? clock.wallNow();
   const genPrefix = `${pad(generation, GEN_PAD)}${SEPARATOR}`;
@@ -70,8 +84,11 @@ export function createFileCaptureStore(
     }
   }
 
-  let parts: FilePart[] = [{ number: 0, start: clock.wallNow(), end: undefined }];
+  let parts: FilePart[] = [{ number: 0, start: clock.wallNow(), end: undefined, bytes: 0 }];
   let nextNumber = 1;
+  // Running on-disk byte total across all live parts; kept in sync with every add/evict so the byte
+  // cap and the time window never double-count.
+  let totalBytes = 0;
   const current = (): FilePart => parts[parts.length - 1] as FilePart;
 
   const encode = (record: StoredEntry): string =>
@@ -86,18 +103,39 @@ export function createFileCaptureStore(
     }
   };
 
+  // Evict whole oldest CLOSED parts (removing their files) until the byte total fits the cap. Never
+  // the open current part (parts.length > 1 guard): a lone oversized part is kept (soft bound).
+  const enforceByteCap = (): void => {
+    if (maxDataSizeBytes === undefined) {
+      return;
+    }
+    while (totalBytes > maxDataSizeBytes && parts.length > 1) {
+      const dropped = parts.shift() as FilePart;
+      totalBytes -= dropped.bytes;
+      removePart(dropped.number);
+    }
+  };
+
   return {
     add(record: StoredEntry): void {
-      adapter.append(fileName(current().number, record.type), encode(record));
+      const encoded = encode(record);
+      const part = current();
+      adapter.append(fileName(part.number, record.type), encoded);
+      const size = utf8ByteLength(encoded);
+      part.bytes += size;
+      totalBytes += size;
+      enforceByteCap();
     },
 
     tick(nowMs: number): void {
       current().end = nowMs;
-      parts.push({ number: nextNumber, start: nowMs, end: undefined });
+      parts.push({ number: nextNumber, start: nowMs, end: undefined, bytes: 0 });
       nextNumber += 1;
       const cutting = nowMs - maxRecordingTimeMs - PART_DURATION_MS;
       while (parts.length > 0 && parts[0]?.end !== undefined && parts[0].end < cutting) {
-        removePart((parts.shift() as FilePart).number);
+        const dropped = parts.shift() as FilePart;
+        totalBytes -= dropped.bytes;
+        removePart(dropped.number);
       }
     },
 
@@ -132,8 +170,9 @@ export function createFileCaptureStore(
           adapter.remove(name);
         }
       }
-      parts = [{ number: nextNumber, start: clock.wallNow(), end: undefined }];
+      parts = [{ number: nextNumber, start: clock.wallNow(), end: undefined, bytes: 0 }];
       nextNumber += 1;
+      totalBytes = 0;
     },
   };
 }
