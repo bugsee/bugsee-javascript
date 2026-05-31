@@ -6,7 +6,7 @@ import { createNetworkCaptureProvider, type NetworkSource } from './network-prov
 import { createSseInterceptor } from './sse-interceptor';
 import { createWebSocketInterceptor } from './web-socket-interceptor';
 import { createWebTransportInterceptor } from './web-transport-interceptor';
-import { createXhrInterceptor } from './xhr-interceptor';
+import { createXhrInterceptor, type XhrTarget } from './xhr-interceptor';
 
 // One-call network capture wiring: build every cross-runtime network sub-interceptor (fetch / xhr /
 // websocket / sse / webtransport), aggregate them under the NetworkInterceptor umbrella, and create the
@@ -31,6 +31,8 @@ export interface InstallNetworkCaptureOptions {
   isInternal?: (url: string, requestHeaders: Record<string, string>) => boolean;
   /** Override the fetch target (a custom/library fetch, or for tests). Default globalThis.fetch. */
   fetchTarget?: FetchTarget;
+  /** Override the XMLHttpRequest target (a custom impl, or for tests). Default globalThis.XMLHttpRequest. */
+  xhrTarget?: XhrTarget;
   /** Extra platform-specific network sources to aggregate (e.g. Node's node:http interceptor). */
   additionalSources?: readonly NetworkSource[];
   /** Carrier host for the leaf singletons; injectable for tests. Default the real `globalThis`. */
@@ -54,6 +56,11 @@ export function installNetworkCapture(options: InstallNetworkCaptureOptions = {}
     ...nowOpt,
     ...(options.isInternal !== undefined ? { isInternal: options.isInternal } : {}),
   };
+  // Body-capture policy shared by the request/response interceptors (fetch + xhr).
+  const bodyOpts = {
+    ...(options.captureBodies !== undefined ? { captureBodies: options.captureBodies } : {}),
+    ...(options.maxBodyBytes !== undefined ? { maxBodyBytes: options.maxBodyBytes } : {}),
+  };
   // Each leaf is a process-global singleton on the carrier (one patch per global, module-dup safe).
   // Passing options.carrier === undefined falls back to getOrCreateInterceptor's globalThis default.
   const carrier = options.carrier;
@@ -64,11 +71,16 @@ export function installNetworkCapture(options: InstallNetworkCaptureOptions = {}
       createFetchInterceptor({
         ...httpOpts,
         ...(options.fetchTarget !== undefined ? { target: options.fetchTarget } : {}),
-        ...(options.captureBodies !== undefined ? { captureBodies: options.captureBodies } : {}),
-        ...(options.maxBodyBytes !== undefined ? { maxBodyBytes: options.maxBodyBytes } : {}),
+        ...bodyOpts,
       }),
     ),
-    leaf('xhr', () => createXhrInterceptor(httpOpts)),
+    leaf('xhr', () =>
+      createXhrInterceptor({
+        ...httpOpts,
+        ...bodyOpts,
+        ...(options.xhrTarget !== undefined ? { target: options.xhrTarget } : {}),
+      }),
+    ),
     leaf('websocket', () => createWebSocketInterceptor(nowOpt)),
     leaf('sse', () => createSseInterceptor(nowOpt)),
     leaf('webtransport', () => createWebTransportInterceptor(nowOpt)),

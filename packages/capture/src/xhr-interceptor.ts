@@ -1,5 +1,11 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import {
+  boundedText,
+  hasContentType,
+  readSyncRequestBody,
+  type SyncBodyRead,
+} from './network-body';
 
 // XMLHttpRequest capture SOURCE (design §16.2). XHR is browser/electron-renderer only, so the wrap is
 // installed only when XMLHttpRequest exists (availability-detected) — on other runtimes onActivate is
@@ -15,6 +21,12 @@ type XhrInstance = {
   status: number;
   statusText: string;
   getAllResponseHeaders(): string;
+  /** '' | 'text' → responseText is valid; 'json' → response is the parsed value; others → binary/doc. */
+  responseType: string;
+  /** The response body as text (valid only when responseType is '' or 'text'). */
+  responseText: string;
+  /** The typed response (used for responseType 'json'). */
+  response: unknown;
 };
 type XhrMethods = {
   open(method: string, url: string, ...rest: unknown[]): unknown;
@@ -61,6 +73,10 @@ export interface XhrInterceptorOptions {
   isInternal?: (url: string, requestHeaders: Record<string, string>) => boolean;
   /** Where to read the wrapped XMLHttpRequest constructor — the global by default, or a custom impl. */
   target?: XhrTarget;
+  /** Capture request/response bodies. Default true; off skips reading the response body entirely. */
+  captureBodies?: boolean;
+  /** Max captured body size in bytes (response over-cap → size_too_large). Default 20480. */
+  maxBodyBytes?: number;
 }
 
 class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
@@ -69,6 +85,8 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
   readonly #target: XhrTarget;
+  readonly #captureBodies: boolean;
+  readonly #maxBodyBytes: number;
   readonly #state = new WeakMap<object, XhrState>();
   #originals: XhrMethods | null = null;
   #counter = 0;
@@ -84,6 +102,8 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
       });
     this.#isInternal = options.isInternal ?? ((_url, headers) => hasInternalHeader(headers));
     this.#target = options.target ?? globalXhrTarget;
+    this.#captureBodies = options.captureBodies ?? true;
+    this.#maxBodyBytes = options.maxBodyBytes ?? 20480;
   }
 
   protected onActivate(): void {
@@ -145,6 +165,12 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
         const id = self.#newId();
         state.id = id;
         state.startedAt = self.#now();
+        // Capture the request body (string / URLSearchParams). Reflect the runtime-implied Content-Type
+        // only when the caller set none (so the captured headers match the wire and the gate keeps it).
+        const reqBody = readSyncRequestBody(body);
+        if (reqBody.contentType !== undefined && !hasContentType(state.headers)) {
+          state.headers['content-type'] = reqBody.contentType;
+        }
         self.emit('before', {
           timestamp: state.startedAt,
           id,
@@ -153,7 +179,11 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
           url: state.url,
           method: state.method,
           type: 'before',
-          custom: { headers: state.headers },
+          custom: {
+            headers: state.headers,
+            ...(reqBody.body !== undefined ? { body: reqBody.body } : {}),
+            ...(reqBody.reason !== undefined ? { no_body_reason: reqBody.reason } : {}),
+          },
         });
         this.addEventListener('load', () => self.#complete(this, state));
         this.addEventListener('error', () => self.#fail(state, 'error', 'network error'));
@@ -164,7 +194,31 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
     };
   }
 
+  // Read the RESPONSE body at `load` — already buffered, so reading is synchronous and side-effect-free
+  // (no stream to disturb). Valid only for text-ish responseTypes: '' / 'text' → responseText; 'json' →
+  // the parsed `response` re-serialized. Binary / document responseTypes can't be read as text →
+  // cant_read_data. Bounded by maxBodyBytes (over-cap → size_too_large, body not included).
+  #readResponseBody(xhr: XhrInstance): SyncBodyRead {
+    const type = xhr.responseType;
+    if (type === '' || type === 'text') {
+      return boundedText(xhr.responseText, this.#maxBodyBytes);
+    }
+    if (type === 'json') {
+      let json: string | undefined;
+      try {
+        json = JSON.stringify(xhr.response);
+      } catch {
+        return { reason: 'cant_read_data' }; // circular / non-serializable
+      }
+      return json === undefined
+        ? { reason: 'cant_read_data' }
+        : boundedText(json, this.#maxBodyBytes);
+    }
+    return { reason: 'cant_read_data' }; // arraybuffer / blob / document — not text
+  }
+
   #complete(xhr: XhrInstance, state: XhrState): void {
+    const resBody = this.#captureBodies ? this.#readResponseBody(xhr) : {};
     this.emit('complete', {
       timestamp: this.#now(),
       id: state.id,
@@ -178,6 +232,8 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
       custom: {
         headers: parseResponseHeaders(xhr.getAllResponseHeaders()),
         timings: { duration: this.#now() - state.startedAt },
+        ...(resBody.body !== undefined ? { body: resBody.body } : {}),
+        ...(resBody.reason !== undefined ? { no_body_reason: resBody.reason } : {}),
       },
     });
   }

@@ -13,6 +13,9 @@ function makeXhr() {
     status = 0;
     statusText = '';
     responseHeaders = '';
+    responseType = '';
+    responseText = '';
+    response: unknown = undefined;
     readonly opened: Array<{ method: string; url: string }> = [];
     readonly sent: unknown[] = [];
     readonly reqHeaders: Record<string, string> = {};
@@ -66,6 +69,7 @@ describe('createXhrInterceptor — capture', () => {
     xhr.status = 200;
     xhr.statusText = 'OK';
     xhr.responseHeaders = 'content-type: application/json\r\nx-a: b\r\n';
+    xhr.responseText = '{"ok":true}';
     xhr.fire('load');
     expect(events.map(([s]) => s)).toEqual(['before', 'complete']);
     expect(events[0]?.[1]).toMatchObject({
@@ -76,12 +80,18 @@ describe('createXhrInterceptor — capture', () => {
       method: 'GET',
       type: 'before',
     });
-    expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 'secret' });
+    // request body captured + implied Content-Type synthesized (caller set none)
+    expect(events[0]?.[1].custom?.headers).toEqual({
+      authorization: 'secret',
+      'content-type': 'text/plain;charset=UTF-8',
+    });
+    expect(events[0]?.[1].custom?.body).toBe('payload');
     expect(events[1]?.[1]).toMatchObject({ type: 'complete', status: 200, statusText: 'OK' });
     expect(events[1]?.[1].custom?.headers).toEqual({
       'content-type': 'application/json',
       'x-a': 'b',
     });
+    expect(events[1]?.[1].custom?.body).toBe('{"ok":true}'); // response body captured (responseText)
     // original methods were called through
     expect(xhr.opened).toEqual([{ method: 'get', url: 'https://api/x' }]);
     expect(xhr.sent).toEqual(['payload']);
@@ -143,6 +153,134 @@ describe('createXhrInterceptor — capture', () => {
     xhr.responseHeaders = 'content-type: text/plain\r\nmalformed-no-colon\r\n\r\n';
     xhr.fire('load');
     expect(events[1]?.[1].custom?.headers).toEqual({ 'content-type': 'text/plain' });
+  });
+});
+
+describe('createXhrInterceptor — body capture', () => {
+  const before = (events: Array<[NetworkStage, NetworkEvent]>) => events[0]?.[1].custom ?? {};
+  const complete = (events: Array<[NetworkStage, NetworkEvent]>) =>
+    events.find(([s]) => s === 'complete')?.[1].custom ?? {};
+
+  it('captures a URLSearchParams request body + synthesizes the form Content-Type', () => {
+    const USP = (
+      globalThis as unknown as { URLSearchParams: new (i: Record<string, string>) => object }
+    ).URLSearchParams;
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('POST', 'u');
+    xhr.send(new USP({ a: '1', b: '2' }));
+    expect(before(events).body).toBe('a=1&b=2');
+    expect(before(events).headers).toEqual({
+      'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+    });
+  });
+
+  it('does not override a Content-Type the caller already set', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('POST', 'u');
+    xhr.setRequestHeader('Content-Type', 'app/custom');
+    xhr.send('x');
+    expect(before(events).headers).toEqual({ 'Content-Type': 'app/custom' });
+    expect(before(events).body).toBe('x');
+  });
+
+  it('omits the request body keys when there is no body', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    expect('body' in before(events)).toBe(false);
+    expect('no_body_reason' in before(events)).toBe(false);
+  });
+
+  it('records cant_read_data for a non-sync-readable request body', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('POST', 'u');
+    xhr.send(new Uint8Array([1, 2, 3]));
+    expect(before(events).no_body_reason).toBe('cant_read_data');
+    expect('body' in before(events)).toBe(false);
+  });
+
+  it('captures a text response body (responseType "text")', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseType = 'text';
+    xhr.responseText = 'hello world';
+    xhr.fire('load');
+    expect(complete(events).body).toBe('hello world');
+    expect('no_body_reason' in complete(events)).toBe(false);
+  });
+
+  it('captures a json response body by re-serializing the parsed response', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseType = 'json';
+    xhr.response = { a: 1, b: 'x' };
+    xhr.fire('load');
+    expect(complete(events).body).toBe('{"a":1,"b":"x"}');
+  });
+
+  it('records cant_read_data for a json response that is not serializable (circular)', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseType = 'json';
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    xhr.response = circular;
+    xhr.fire('load');
+    expect(complete(events).no_body_reason).toBe('cant_read_data');
+  });
+
+  it('records cant_read_data for a json response of undefined', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseType = 'json';
+    xhr.response = undefined;
+    xhr.fire('load');
+    expect(complete(events).no_body_reason).toBe('cant_read_data');
+  });
+
+  it('records cant_read_data for a binary/document responseType (arraybuffer)', () => {
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseType = 'arraybuffer';
+    xhr.fire('load');
+    expect(complete(events).no_body_reason).toBe('cant_read_data');
+    expect('body' in complete(events)).toBe(false);
+  });
+
+  it('drops an over-cap response body as size_too_large', () => {
+    const { Xhr, events } = setup({ maxBodyBytes: 5 });
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseText = 'way too long';
+    xhr.fire('load');
+    expect(complete(events).no_body_reason).toBe('size_too_large');
+    expect('body' in complete(events)).toBe(false);
+  });
+
+  it('does not read the response body when captureBodies is off', () => {
+    const { Xhr, events } = setup({ captureBodies: false });
+    const xhr = new Xhr();
+    xhr.open('GET', 'u');
+    xhr.send();
+    xhr.responseText = 'secret response';
+    xhr.fire('load');
+    expect('body' in complete(events)).toBe(false);
+    expect('no_body_reason' in complete(events)).toBe(false);
   });
 });
 

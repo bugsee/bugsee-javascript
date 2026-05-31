@@ -214,6 +214,90 @@ describe('installNetworkCapture', () => {
     expect(reasons).toContain('size_too_large'); // the 3-byte cap was applied → body dropped
   });
 
+  it('threads captureBodies through to the xhr interceptor (off → no response body)', async () => {
+    // A fake XMLHttpRequest class wired via xhrTarget; with captureBodies:false the complete event must
+    // carry no response body even though responseText is set.
+    class FakeXhr {
+      status = 200;
+      statusText = 'OK';
+      responseType = 'text';
+      responseText = 'secret response';
+      response: unknown = undefined;
+      readonly #listeners = new Map<string, Array<() => void>>();
+      open(): void {}
+      send(): void {}
+      setRequestHeader(): void {}
+      addEventListener(type: string, cb: () => void): void {
+        const a = this.#listeners.get(type) ?? [];
+        a.push(cb);
+        this.#listeners.set(type, a);
+      }
+      getAllResponseHeaders(): string {
+        return 'content-type: text/plain\r\n';
+      }
+      fire(type: string): void {
+        for (const cb of this.#listeners.get(type) ?? []) cb();
+      }
+    }
+    const store = mkStore();
+    const { provider } = installNetworkCapture({
+      now: () => 1,
+      xhrTarget: { get: () => FakeXhr },
+      captureBodies: false,
+    });
+    provider.init(buildInit(store));
+    provider.start(options);
+    const xhr = new FakeXhr();
+    xhr.open();
+    xhr.send();
+    xhr.fire('load');
+    const completeBodies = (await drainNetwork(store))
+      ?.filter((e) => (e.data as NetworkEvent).type === 'complete')
+      .map((e) => (e.data as NetworkEvent).custom?.body);
+    expect(completeBodies).toEqual([undefined]); // captureBodies:false threaded → no response body
+  });
+
+  it('threads maxBodyBytes through to the xhr interceptor (over-cap response → size_too_large)', async () => {
+    class FakeXhr {
+      status = 200;
+      statusText = 'OK';
+      responseType = 'text';
+      responseText = 'way too long'; // > the 3-byte cap below
+      response: unknown = undefined;
+      readonly #listeners = new Map<string, Array<() => void>>();
+      open(): void {}
+      send(): void {}
+      setRequestHeader(): void {}
+      addEventListener(type: string, cb: () => void): void {
+        const a = this.#listeners.get(type) ?? [];
+        a.push(cb);
+        this.#listeners.set(type, a);
+      }
+      getAllResponseHeaders(): string {
+        return 'content-type: text/plain\r\n';
+      }
+      fire(type: string): void {
+        for (const cb of this.#listeners.get(type) ?? []) cb();
+      }
+    }
+    const store = mkStore();
+    const { provider } = installNetworkCapture({
+      now: () => 1,
+      xhrTarget: { get: () => FakeXhr },
+      maxBodyBytes: 3,
+    });
+    provider.init(buildInit(store));
+    provider.start(options);
+    const xhr = new FakeXhr();
+    xhr.open();
+    xhr.send();
+    xhr.fire('load');
+    const reasons = (await drainNetwork(store))
+      ?.filter((e) => (e.data as NetworkEvent).type === 'complete')
+      .map((e) => (e.data as NetworkEvent).custom?.no_body_reason);
+    expect(reasons).toEqual(['size_too_large']); // maxBodyBytes:3 threaded to the xhr leaf
+  });
+
   it('aggregates additionalSources (e.g. a node:http interceptor) into the umbrella', async () => {
     const store = mkStore();
     const extra: MultiKeyEmitter<Record<NetworkStage, NetworkEvent>> = createMultiKeyEmitter();
