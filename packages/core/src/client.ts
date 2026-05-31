@@ -200,6 +200,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       clock,
       maxRecordingTimeMs: (options.maxRecordingTime ?? 60) * 1000,
     });
+  // The resolved store (platform override or default) is a container service — resolvable process-wide
+  // via getService('captureStore'), alongside transport/filters (DI Phase 3).
+  services.addService(defineService('captureStore', () => captureStore));
   const captureAggregator = createCaptureAggregator(captureStore);
   const captureExporter = createCaptureExporter(captureStore);
   // The capture-pipeline deps every provider gets once at registration (Android

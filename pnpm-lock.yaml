@@ -235,6 +235,9 @@ importers:
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@bugsee/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@types/node':
         specifier: ^25.9.1

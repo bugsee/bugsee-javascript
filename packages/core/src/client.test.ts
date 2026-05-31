@@ -117,6 +117,22 @@ describe('createClient — internal service container (DI)', () => {
     const client = createClient({ services: container });
     expect(client.getService('svc')).toEqual({ v: 42 });
   });
+
+  it('registers the provided captureStore as a resolvable service', () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store });
+    expect(client.getService('captureStore')).toBe(store); // same instance the aggregator uses
+  });
+
+  it('registers the default in-memory captureStore as a service when none is provided', () => {
+    const client = createClient();
+    const store = client.getService('captureStore');
+    // it is the SAME store the aggregator writes to (drains what was added)
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
+    return createCaptureExporter(store)
+      .drain()
+      .then((parts) => expect(parts.get('log')).toHaveLength(1));
+  });
 });
 
 describe('createClient — redaction filters', () => {

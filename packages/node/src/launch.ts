@@ -223,6 +223,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // Node environment envelope, rebuilt at each report so it reflects current state. The canonical
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
+  services.addService(defineService('systemProbe', () => probe)); // container service (DI Phase 3)
   const getEnvironment = () =>
     buildNodeEnvironment(
       {

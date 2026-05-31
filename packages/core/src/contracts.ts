@@ -109,6 +109,15 @@ export interface CaptureStore {
   clear(): void;
 }
 
+// The capture store's typed identity in the internal container (DI Phase 3): core owns the contract;
+// the platform supplies the impl (in-memory / file / IndexedDB) and the client registers the resolved
+// store, so it is resolvable process-wide via getService('captureStore').
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    captureStore: CaptureStore;
+  }
+}
+
 /**
  * A frozen, read-once view of captured records (Android snapshot parity), divorced from the live
  * store's rolling window so capture continues during export. Read it (stream one-by-one, or drainAll

@@ -20,6 +20,15 @@ export interface SystemProbe {
   locale(): string;
 }
 
+// The Node SystemProbe's typed identity in the internal container (DI Phase 3). SystemProbe is
+// Node-specific (other platforms supply different probes), so the contract is declared here, not in
+// core; `launch` registers the resolved probe so it is resolvable via getService('systemProbe').
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    systemProbe: SystemProbe;
+  }
+}
+
 export const realSystemProbe: SystemProbe = {
   nodeVersion: () => process.versions.node,
   osType: () => os.type(),

@@ -192,6 +192,13 @@ describe('launch', () => {
     expect((lastCall?.[1] as HttpRequestOptions).headers?.['x-bugsee-internal']).toBe('1');
   });
 
+  it('registers the systemProbe and captureStore as resolvable container services (DI Phase 3)', () => {
+    const store = memStore();
+    const client = launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
+    expect(client.getService('systemProbe')).toBe(probe);
+    expect(client.getService('captureStore')).toBe(store);
+  });
+
   it('threads captureNetworkBodies to the fetch interceptor: bodies captured by default (clones)', async () => {
     const slot = globalThis as unknown as {
       fetch?: (i: unknown, init?: unknown) => Promise<unknown>;
