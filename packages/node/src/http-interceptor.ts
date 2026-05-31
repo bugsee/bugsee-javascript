@@ -1,7 +1,8 @@
+import { Buffer } from 'node:buffer';
 import http from 'node:http';
 import https from 'node:https';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import type { NetworkEvent, NetworkStage, NoBodyReason } from '@bugsee/protocol';
 
 // Node-native HTTP capture SOURCE (design §16.2, mechanism 'http'). Wraps node:http and node:https
 // `request`/`get`; libraries like axios / got / node-fetch issue requests through these and so bypass
@@ -12,10 +13,13 @@ import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 // lexically-scoped `request`, not the patched `exports.request`. This is a @bugsee/node source folded
 // into capture's NetworkInterceptor umbrella via installNetworkCapture({ additionalSources }).
 
-/** A node:http-like ClientRequest: an emitter exposing the `response`/`error` events we observe. */
+/** A node:http-like ClientRequest: the `response`/`error` events we observe + the body-writing methods
+ * (`write`/`end`) we wrap per-instance to capture the OUTGOING request body. */
 interface ClientRequest {
   on(event: string, listener: (arg: unknown) => void): unknown;
   listenerCount(event: string): number;
+  write(...args: unknown[]): unknown;
+  end(...args: unknown[]): unknown;
 }
 type RequestFn = (...args: unknown[]) => unknown;
 /** The subset of a node:http(s) module we patch — its `request` and `get` factories. */
@@ -117,6 +121,10 @@ export interface NodeHttpInterceptorOptions {
   isInternal?: (url: string, requestHeaders: Record<string, string>) => boolean;
   /** The node:http / node:https modules to patch — the real ones by default, fakes in tests. */
   target?: NodeHttpTarget;
+  /** Capture the request body (observed via write/end). Default true; off skips the wrap entirely. */
+  captureBodies?: boolean;
+  /** Max captured request-body size in bytes (over-cap → size_too_large). Default 20480. */
+  maxBodyBytes?: number;
 }
 
 interface Patch {
@@ -131,6 +139,8 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
   readonly #target: NodeHttpTarget;
+  readonly #captureBodies: boolean;
+  readonly #maxBodyBytes: number;
   #patches: Patch[] = [];
   #counter = 0;
 
@@ -144,6 +154,8 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
         return `h${this.#counter}`;
       });
     this.#isInternal = options.isInternal ?? ((_url, headers) => hasInternalHeader(headers));
+    this.#captureBodies = options.captureBodies ?? true;
+    this.#maxBodyBytes = options.maxBodyBytes ?? 20480;
     // The real node modules expose the same request/get factories we patch; their precise overload
     // types aren't structurally assignable to our minimal RequestFn, so widen through unknown.
     this.#target = options.target ?? ({ http, https } as unknown as NodeHttpTarget);
@@ -188,6 +200,9 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
         type: 'before',
         custom: { headers },
       });
+      if (this.#captureBodies) {
+        this.#captureRequestBody(req as ClientRequest, id, url, method, headers);
+      }
       (req as ClientRequest).on('response', (response) => {
         const res = response as IncomingMessage;
         this.emit('complete', {
@@ -227,6 +242,85 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
         }
       });
       return req;
+    };
+  }
+
+  // Capture the OUTGOING request body by wrapping the ClientRequest's own write/end (per-instance, not
+  // the prototype) — observe each chunk, then call through unchanged (the body the app sends is never
+  // altered). The body is known only once end() is called, so it is delivered as a later `override`
+  // amendment to the `before` event (carrying the request headers so F.1's Content-Type dispatch works).
+  // Bounded by maxBodyBytes (over-cap → size_too_large, chunks dropped). A body-less request emits no
+  // amendment. node:http does not imply a Content-Type (unlike fetch/xhr), so none is synthesized.
+  #captureRequestBody(
+    req: ClientRequest,
+    id: string,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+  ): void {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let overCap = false;
+    let finalized = false;
+    const observe = (chunk: unknown, encoding: unknown): void => {
+      if (overCap || chunk === null || chunk === undefined) {
+        return;
+      }
+      // node:http write/end accept a string, a Buffer, or any ArrayBufferView (Uint8Array, etc.). Copy
+      // a view's raw bytes (don't String() it — that would capture "104,105" instead of the bytes);
+      // a string is encoded with its declared encoding (default utf8).
+      const buf = Buffer.isBuffer(chunk)
+        ? chunk
+        : ArrayBuffer.isView(chunk)
+          ? Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+          : Buffer.from(
+              String(chunk),
+              typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8',
+            );
+      total += buf.length;
+      if (total > this.#maxBodyBytes) {
+        overCap = true;
+        chunks.length = 0; // drop what we have — the whole body is over-cap
+        return;
+      }
+      chunks.push(buf);
+    };
+    const finalize = (): void => {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      if (!overCap && chunks.length === 0) {
+        return; // no request body → no amendment
+      }
+      this.emit('before', {
+        timestamp: this.#now(),
+        id,
+        sequence: id,
+        mechanism: 'http',
+        url,
+        method,
+        type: 'before',
+        override: true,
+        custom: overCap
+          ? { headers, no_body_reason: 'size_too_large' as NoBodyReason }
+          : { headers, body: Buffer.concat(chunks).toString('utf8') },
+      });
+    };
+    const originalWrite = req.write.bind(req);
+    const originalEnd = req.end.bind(req);
+    req.write = (...args: unknown[]): unknown => {
+      observe(args[0], args[1]);
+      return originalWrite(...args);
+    };
+    req.end = (...args: unknown[]): unknown => {
+      // end() may be called as end(), end(cb), end(chunk[, encoding][, cb]) — only a non-function first
+      // arg is a body chunk.
+      if (typeof args[0] !== 'function') {
+        observe(args[0], args[1]);
+      }
+      finalize();
+      return originalEnd(...args);
     };
   }
 }

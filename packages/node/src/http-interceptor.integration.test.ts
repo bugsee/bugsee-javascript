@@ -53,4 +53,44 @@ describe('createNodeHttpInterceptor — real node:http', () => {
     expect(before?.url).toBe(`${origin}/x`);
     expect(events.find((e) => e.type === 'complete')?.status).toBe(200);
   });
+
+  it('captures a real POST request body via write/end patching (override amendment, passthrough)', async () => {
+    const received: string[] = [];
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      req.on('data', (c) => received.push(String(c))); // the server still receives the full body
+      req.on('end', () => {
+        res.writeHead(200);
+        res.end('ok');
+      });
+    });
+    const interceptor = createNodeHttpInterceptor({ newId: () => 'h1' });
+    const events: NetworkEvent[] = [];
+    interceptor.onAny((_stage, event) => events.push(event as NetworkEvent));
+    interceptor.start();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          `${origin}/x`,
+          { method: 'POST', headers: { 'content-type': 'text/plain' } },
+          (res) => {
+            res.on('data', () => {});
+            res.on('end', () => resolve());
+          },
+        );
+        req.on('error', reject);
+        req.write('hello ');
+        req.end('world');
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      interceptor.stop();
+    }
+    // the SDK captured the request body as an override amendment...
+    const amendment = events.find((e) => e.override === true);
+    expect(amendment?.type).toBe('before');
+    expect(amendment?.custom?.body).toBe('hello world');
+    // ...and the server still received the unaltered body (pass-through, no app-behavior change)
+    expect(received.join('')).toBe('hello world');
+  });
 });

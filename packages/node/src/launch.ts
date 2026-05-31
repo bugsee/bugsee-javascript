@@ -275,12 +275,19 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     carrier,
   );
   client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
-  const nodeHttp = getOrCreateInterceptor('node-http', () => createNodeHttpInterceptor(), carrier);
+  // Body-capture policy (shared by node:http + the cross-runtime fetch/xhr leaves).
+  const captureBodies = resolved.options.get(BugseeOption.CaptureNetworkBodies, true);
+  const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
+  const nodeHttp = getOrCreateInterceptor(
+    'node-http',
+    () => createNodeHttpInterceptor({ captureBodies, maxBodyBytes }),
+    carrier,
+  );
   const network = installNetworkCapture({
     additionalSources: [nodeHttp],
     carrier,
-    captureBodies: resolved.options.get(BugseeOption.CaptureNetworkBodies, true),
-    maxBodyBytes: resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480),
+    captureBodies,
+    maxBodyBytes,
   });
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(

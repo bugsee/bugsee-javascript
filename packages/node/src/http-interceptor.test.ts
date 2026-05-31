@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,9 +8,12 @@ import {
   type NodeHttpTarget,
 } from './http-interceptor';
 
-// A fake ClientRequest: records 'response'/'error' listeners; the test fires them.
+// A fake ClientRequest: records 'response'/'error' listeners (the test fires them) and the
+// write/end body-writing calls that reach the ORIGINAL methods (to verify pass-through).
 class FakeReq {
   readonly #listeners: Record<string, Array<(arg: unknown) => void>> = {};
+  readonly writes: unknown[][] = [];
+  readonly ends: unknown[][] = [];
   on(event: string, listener: (arg: unknown) => void): this {
     let list = this.#listeners[event];
     if (list === undefined) {
@@ -17,6 +21,14 @@ class FakeReq {
       this.#listeners[event] = list;
     }
     list.push(listener);
+    return this;
+  }
+  write(...args: unknown[]): boolean {
+    this.writes.push(args);
+    return true;
+  }
+  end(...args: unknown[]): this {
+    this.ends.push(args);
     return this;
   }
   fire(event: string, arg?: unknown): void {
@@ -271,5 +283,126 @@ describe('createNodeHttpInterceptor', () => {
     // Construct only (never started) so the real modules are left unpatched; this exercises the
     // `?? { http, https }` default-target fallback.
     expect(createNodeHttpInterceptor().name).toBe('node-http');
+  });
+});
+
+describe('createNodeHttpInterceptor — request body', () => {
+  const override = (events: NetworkEvent[]) => events.find((e) => e.override === true);
+
+  it('captures a body written via write()+end() as an override before amendment (passthrough)', () => {
+    const { target, last, events } = harness({ newId: () => 'h1' });
+    const req = target.http.request('http://api.test/x') as FakeReq;
+    req.write('hello ');
+    req.write('world');
+    req.end();
+    last().fire('response', okResponse);
+    // before (metadata) → before (override, with body) → complete
+    expect(events.map((e) => `${e.type}${e.override ? ':o' : ''}`)).toEqual([
+      'before',
+      'before:o',
+      'complete',
+    ]);
+    expect(override(events)).toMatchObject({ id: 'h1', type: 'before', override: true });
+    expect(override(events)?.custom?.body).toBe('hello world');
+    // the original write/end were called through unchanged
+    expect(req.writes).toEqual([['hello '], ['world']]);
+    expect(req.ends).toEqual([[]]);
+  });
+
+  it('captures a body passed to end() and includes the request headers (for the gate)', () => {
+    const { target, last, events } = harness();
+    target.http.request({ host: 'api.test', headers: { 'content-type': 'application/json' } });
+    (last() as FakeReq).end('{"a":1}');
+    expect(override(events)?.custom?.body).toBe('{"a":1}');
+    expect(override(events)?.custom?.headers).toEqual({ 'content-type': 'application/json' });
+  });
+
+  it('captures a Buffer chunk (node bodies are usually Buffers)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end(Buffer.from('buffer-body'));
+    expect(override(events)?.custom?.body).toBe('buffer-body');
+  });
+
+  it('captures a Uint8Array chunk by its raw bytes (not its String() form)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end(new Uint8Array([104, 105])); // 'hi' — String() would give "104,105"
+    expect(override(events)?.custom?.body).toBe('hi');
+  });
+
+  it('emits no amendment for a body-less request (end with no chunk)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end();
+    last().fire('response', okResponse);
+    expect(events.some((e) => e.override)).toBe(false);
+    expect(events.map((e) => e.type)).toEqual(['before', 'complete']);
+  });
+
+  it('treats end(callback) as a body-less request (first arg is a function)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end(() => {});
+    expect(events.some((e) => e.override)).toBe(false);
+  });
+
+  it('drops an over-cap request body as size_too_large', () => {
+    const { target, last, events } = harness({ maxBodyBytes: 5 });
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end('way too long');
+    expect(override(events)?.custom?.no_body_reason).toBe('size_too_large');
+    expect('body' in (override(events)?.custom ?? {})).toBe(false);
+  });
+
+  it('keeps a request body exactly at the byte cap', () => {
+    const { target, last, events } = harness({ maxBodyBytes: 5 });
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end('12345'); // exactly 5 bytes
+    expect(override(events)?.custom?.body).toBe('12345');
+  });
+
+  it('accumulates across multiple write() calls and a final end(chunk)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    const req = last() as FakeReq;
+    req.write('a');
+    req.write('b');
+    req.end('c');
+    expect(override(events)?.custom?.body).toBe('abc');
+  });
+
+  it('decodes a written chunk using its declared encoding (base64)', () => {
+    // 'aGVsbG8=' is 'hello' base64-encoded; honoring the encoding yields 'hello' (vs the literal).
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).write('aGVsbG8=', 'base64');
+    (last() as FakeReq).end();
+    expect(override(events)?.custom?.body).toBe('hello');
+  });
+
+  it('emits the request-body amendment only once even if end() is called twice', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    const req = last() as FakeReq;
+    req.end('first');
+    req.end('second'); // re-entrant finalize is guarded
+    expect(events.filter((e) => e.override).length).toBe(1);
+    expect(override(events)?.custom?.body).toBe('first');
+  });
+
+  it('does not patch write/end when captureBodies is off (no amendment, still passes through)', () => {
+    const { target, events } = harness({ captureBodies: false });
+    const req = target.http.request('http://api.test/x') as FakeReq;
+    req.end('a body');
+    expect(events.some((e) => e.override)).toBe(false);
+    expect(req.ends).toEqual([['a body']]); // original end still called
+  });
+
+  it('does not capture the body of a self-isolated (X-Bugsee-Internal) request', () => {
+    const { target, last, events } = harness();
+    target.http.request({ host: 'api.test', headers: { 'X-Bugsee-Internal': '1' } });
+    (last() as FakeReq).end('internal body');
+    expect(events).toEqual([]); // skipped entirely — no before, no amendment
   });
 });

@@ -1,4 +1,6 @@
 import { mkdtempSync, readdirSync } from 'node:fs';
+import http, { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -292,6 +294,81 @@ describe('launch', () => {
       expect(pulls).toBeLessThanOrEqual(5);
     } finally {
       slot.fetch = real;
+    }
+  });
+
+  it('threads captureNetworkBodies to the node:http interceptor (off → no request-body amendment)', async () => {
+    // Real loopback server: launch patches the real node:http; with captureNetworkBodies:false the
+    // node:http interceptor must not capture the POST body (no override amendment).
+    const server: Server = createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(200);
+        res.end('ok');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const store = memStore();
+    try {
+      launchTracked(
+        'tok',
+        baseOptions({ captureNetwork: true, captureNetworkBodies: false, captureStore: store }),
+      );
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          `${origin}/x`,
+          { method: 'POST', headers: { 'content-type': 'text/plain' } },
+          (res) => {
+            res.on('data', () => {});
+            res.on('end', () => resolve());
+          },
+        );
+        req.on('error', reject);
+        req.end('a body');
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      const overrides = (await drain(store, 'network'))?.filter(
+        (e) => (e.data as { override?: boolean }).override === true,
+      );
+      expect(overrides ?? []).toEqual([]); // captureNetworkBodies:false threaded → no body captured
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('captures a node:http request body by default (captureNetworkBodies on)', async () => {
+    const server: Server = createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(200);
+        res.end('ok');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const store = memStore();
+    try {
+      launchTracked('tok', baseOptions({ captureNetwork: true, captureStore: store }));
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          `${origin}/x`,
+          { method: 'POST', headers: { 'content-type': 'text/plain' } },
+          (res) => {
+            res.on('data', () => {});
+            res.on('end', () => resolve());
+          },
+        );
+        req.on('error', reject);
+        req.end('small body');
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      const bodies = (await drain(store, 'network'))?.map(
+        (e) => (e.data as { custom?: { body?: string } }).custom?.body,
+      );
+      expect(bodies).toContain('small body'); // node:http capture works end-to-end through launch
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
     }
   });
 
