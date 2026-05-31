@@ -70,11 +70,22 @@ function harness(extra: Omit<NodeHttpInterceptorOptions, 'target'> = {}) {
   return { interceptor, target, last, events };
 }
 
-const okResponse = {
-  statusCode: 200,
-  statusMessage: 'OK',
-  headers: { 'content-type': 'text/html' },
-};
+// A fresh fake IncomingMessage per use (the interceptor patches its `push` per-instance to observe the
+// response body, so a shared object would leak the patch across tests). `pushed` records what reached
+// the ORIGINAL push (pass-through). Fire chunks with `res.push('chunk')` then `res.push(null)` (EOF).
+class FakeRes {
+  statusCode = 200;
+  statusMessage = 'OK';
+  headers: Record<string, unknown> = { 'content-type': 'text/html' };
+  readonly pushed: unknown[] = [];
+  push(chunk: unknown, enc?: unknown): boolean {
+    this.pushed.push([chunk, enc]);
+    return true;
+  }
+}
+const mkRes = (
+  over: Partial<Pick<FakeRes, 'statusCode' | 'statusMessage' | 'headers'>> = {},
+): FakeRes => Object.assign(new FakeRes(), over);
 
 // Run fn and return the value it throws (or a unique sentinel if it doesn't), so tests can assert
 // the IDENTITY of a re-raised error, not merely that something threw.
@@ -92,7 +103,7 @@ describe('createNodeHttpInterceptor', () => {
   it('emits before then complete for an http.request(string url), sharing id/sequence', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/x');
-    last().fire('response', okResponse);
+    last().fire('response', mkRes());
 
     expect(events.map((e) => e.type)).toEqual(['before', 'complete']);
     const [before, complete] = events;
@@ -120,7 +131,7 @@ describe('createNodeHttpInterceptor', () => {
     const { target, last, events } = harness({ now: () => t });
     target.http.request('http://api.test/x');
     t = 1750;
-    last().fire('response', okResponse);
+    last().fire('response', mkRes());
     expect(events[0]?.timestamp).toBe(1000); // before, stamped at request start
     expect(events[1]?.timestamp).toBe(1750); // complete, stamped at response
     expect(events[1]?.custom?.timings).toEqual({ duration: 750 });
@@ -176,11 +187,14 @@ describe('createNodeHttpInterceptor', () => {
   it('joins array-valued headers with a comma (request and response)', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/z', { headers: { 'x-multi': ['a', 'b'] } });
-    last().fire('response', {
-      statusCode: 204,
-      statusMessage: 'No Content',
-      headers: { 'set-cookie': ['c1=1', 'c2=2'] },
-    });
+    last().fire(
+      'response',
+      mkRes({
+        statusCode: 204,
+        statusMessage: 'No Content',
+        headers: { 'set-cookie': ['c1=1', 'c2=2'] },
+      }),
+    );
     expect(events[0]?.custom?.headers).toEqual({ 'x-multi': 'a, b' });
     expect(events[1]?.custom?.headers).toEqual({ 'set-cookie': 'c1=1, c2=2' });
   });
@@ -218,7 +232,7 @@ describe('createNodeHttpInterceptor', () => {
   it('skips SDK self-traffic via the default X-Bugsee-Internal header', () => {
     const { target, last, events } = harness();
     target.http.request('http://ingest.test', { headers: { 'X-Bugsee-Internal': '1' } });
-    last().fire('response', okResponse); // listeners were never attached
+    last().fire('response', mkRes()); // listeners were never attached
     expect(events).toEqual([]);
   });
 
@@ -295,7 +309,7 @@ describe('createNodeHttpInterceptor — request body', () => {
     req.write('hello ');
     req.write('world');
     req.end();
-    last().fire('response', okResponse);
+    last().fire('response', mkRes());
     // before (metadata) → before (override, with body) → complete
     expect(events.map((e) => `${e.type}${e.override ? ':o' : ''}`)).toEqual([
       'before',
@@ -335,7 +349,7 @@ describe('createNodeHttpInterceptor — request body', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/x');
     (last() as FakeReq).end();
-    last().fire('response', okResponse);
+    last().fire('response', mkRes());
     expect(events.some((e) => e.override)).toBe(false);
     expect(events.map((e) => e.type)).toEqual(['before', 'complete']);
   });
@@ -399,10 +413,165 @@ describe('createNodeHttpInterceptor — request body', () => {
     expect(req.ends).toEqual([['a body']]); // original end still called
   });
 
+  it('ignores a null chunk (write(null)) — treated as no body', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).write(null);
+    (last() as FakeReq).end();
+    expect(events.some((e) => e.override)).toBe(false); // null is not captured as the literal "null"
+  });
+
+  it('captures a Uint8Array SUBVIEW by its bytes (respects byteOffset/length)', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/x');
+    (last() as FakeReq).end(new Uint8Array([97, 98, 99, 100]).subarray(1, 3)); // bytes 98,99 = 'bc'
+    expect(override(events)?.custom?.body).toBe('bc');
+  });
+
   it('does not capture the body of a self-isolated (X-Bugsee-Internal) request', () => {
     const { target, last, events } = harness();
     target.http.request({ host: 'api.test', headers: { 'X-Bugsee-Internal': '1' } });
     (last() as FakeReq).end('internal body');
     expect(events).toEqual([]); // skipped entirely — no before, no amendment
+  });
+});
+
+describe('createNodeHttpInterceptor — response body', () => {
+  // The response-body amendment is a `complete` override (distinct from a request-body `before` override).
+  const resOverride = (events: NetworkEvent[]) =>
+    events.find((e) => e.override === true && e.type === 'complete');
+
+  it('captures a response body by passively observing push (complete override, passthrough)', () => {
+    const { target, last, events } = harness({ newId: () => 'h1', now: () => 4242 });
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res); // interceptor patches res.push
+    res.push(Buffer.from('part1'));
+    res.push(Buffer.from('part2'));
+    res.push(null); // EOF → finalize
+    // full correlation identity on the amendment (id/sequence/mechanism/url/method + timestamp)
+    expect(resOverride(events)).toMatchObject({
+      id: 'h1',
+      sequence: 'h1',
+      mechanism: 'http',
+      url: 'http://api.test/x',
+      method: 'GET',
+      type: 'complete',
+      override: true,
+      timestamp: 4242,
+    });
+    expect(resOverride(events)?.custom?.body).toBe('part1part2');
+    expect('no_body_reason' in (resOverride(events)?.custom ?? {})).toBe(false); // body XOR reason
+    expect(resOverride(events)?.custom?.headers).toEqual({ 'content-type': 'text/html' });
+    // every chunk (incl. the null EOF) reached the original push — the stream is unaltered
+    expect(res.pushed).toEqual([
+      [Buffer.from('part1'), undefined],
+      [Buffer.from('part2'), undefined],
+      [null, undefined],
+    ]);
+  });
+
+  it('emits no amendment for a body-less response (push(null) with no chunks)', () => {
+    const { target, last, events } = harness();
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(null);
+    expect(resOverride(events)).toBeUndefined();
+    expect(events.map((e) => e.type)).toEqual(['before', 'complete']);
+  });
+
+  it('drops an over-cap response body as size_too_large', () => {
+    const { target, last, events } = harness({ maxBodyBytes: 5 });
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('way too long'));
+    res.push(null);
+    expect(resOverride(events)?.custom?.no_body_reason).toBe('size_too_large');
+    expect('body' in (resOverride(events)?.custom ?? {})).toBe(false);
+  });
+
+  it('does not read a Content-Encoding-compressed body (gzip → cant_read_data, push not observed)', () => {
+    const { target, last, events } = harness();
+    const res = mkRes({
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+    });
+    target.http.request('http://api.test/x');
+    last().fire('response', res); // cant_read_data emitted synchronously, push left unpatched
+    expect(resOverride(events)?.custom?.no_body_reason).toBe('cant_read_data');
+    expect('body' in (resOverride(events)?.custom ?? {})).toBe(false);
+    res.push(Buffer.from('compressed-bytes')); // not observed (push was never patched)
+    res.push(null);
+    expect(events.filter((e) => e.override).length).toBe(1); // still just the cant_read_data one
+  });
+
+  it('treats content-encoding "identity" as readable (not compressed)', () => {
+    const { target, last, events } = harness();
+    const res = mkRes({
+      headers: { 'content-type': 'text/plain', 'content-encoding': 'identity' },
+    });
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('plain'));
+    res.push(null);
+    expect(resOverride(events)?.custom?.body).toBe('plain');
+  });
+
+  it('does not observe the response body when captureBodies is off', () => {
+    const { target, last, events } = harness({ captureBodies: false });
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('secret response'));
+    res.push(null);
+    expect(events.some((e) => e.override)).toBe(false);
+  });
+
+  it('treats a padded/uppercase content-encoding "identity" as readable (trim + lowercase)', () => {
+    const { target, last, events } = harness();
+    const res = mkRes({
+      headers: { 'content-type': 'text/plain', 'content-encoding': ' IDENTITY ' },
+    });
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('plain'));
+    res.push(null);
+    expect(resOverride(events)?.custom?.body).toBe('plain');
+  });
+
+  it('emits the response-body amendment only once even if push(null) fires twice', () => {
+    const { target, last, events } = harness();
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('once'));
+    res.push(null);
+    res.push(null); // re-entrant EOF is guarded
+    expect(events.filter((e) => e.override && e.type === 'complete').length).toBe(1);
+  });
+
+  it('treats an empty content-encoding as readable', () => {
+    const { target, last, events } = harness();
+    const res = mkRes({ headers: { 'content-type': 'text/plain', 'content-encoding': '' } });
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('plain'));
+    res.push(null);
+    expect(resOverride(events)?.custom?.body).toBe('plain');
+  });
+
+  it('emits the response-body amendment on the complete channel (not before)', () => {
+    const { target, last } = makeTarget();
+    const ic = createNodeHttpInterceptor({ target, newId: () => 'h1' });
+    const completeBodies: Array<string | null | undefined> = [];
+    ic.on('complete', (e) => completeBodies.push((e as NetworkEvent).custom?.body));
+    ic.start();
+    const res = mkRes();
+    target.http.request('http://api.test/x');
+    last().fire('response', res);
+    res.push(Buffer.from('chan-body'));
+    res.push(null);
+    expect(completeBodies).toContain('chan-body'); // arrived on the 'complete' channel
   });
 });

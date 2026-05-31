@@ -46,6 +46,10 @@ interface IncomingMessage {
   statusCode: number;
   statusMessage: string;
   headers: unknown;
+  // The Readable producer hook the HTTP parser feeds body chunks into (push(null) = EOF). We wrap it
+  // per-instance to PASSIVELY observe the response body without consuming the stream or changing its
+  // flow mode (a `.on('data')` would force flowing mode and break a paused / async-iterating consumer).
+  push(chunk: unknown, encoding?: unknown): boolean;
 }
 
 // Node header bags map a name to a string, a number, or a string[] (multi-value). Flatten arrays to a
@@ -111,6 +115,72 @@ const resolveRequest = (
 /** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal (§14.6). */
 const hasInternalHeader = (headers: Record<string, string>): boolean =>
   Object.keys(headers).some((key) => key.toLowerCase() === 'x-bugsee-internal');
+
+/** Case-insensitive header lookup over a normalized record. */
+const headerValueCI = (headers: Record<string, string>, name: string): string | undefined => {
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+// A body chunk from node:http write/end/push is a string, a Buffer, or any ArrayBufferView (Uint8Array,
+// etc.). Copy a view's RAW bytes (don't String() it — that would capture "104,105" instead of the
+// bytes); a string is encoded with its declared encoding (default utf8). Never mutates the input.
+const chunkToBuffer = (chunk: unknown, encoding: unknown): Buffer => {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+  if (ArrayBuffer.isView(chunk)) {
+    return Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+  }
+  return Buffer.from(
+    String(chunk),
+    typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8',
+  );
+};
+
+interface BodyAccumulator {
+  /** Observe a body chunk (null/undefined and anything after the cap is ignored). */
+  add(chunk: unknown, encoding: unknown): void;
+  /** size_too_large if over cap; undefined if there was no body; else the decoded `{ body }`. */
+  result(): { body?: string; reason?: NoBodyReason } | undefined;
+}
+
+// Accumulate body chunks up to a byte cap; over-cap drops the whole body (size_too_large). Shared by
+// the request (write/end) and response (push) observers.
+const createBodyAccumulator = (maxBytes: number): BodyAccumulator => {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let overCap = false;
+  return {
+    add(chunk, encoding) {
+      if (overCap || chunk === null || chunk === undefined) {
+        return;
+      }
+      const buf = chunkToBuffer(chunk, encoding);
+      total += buf.length;
+      if (total > maxBytes) {
+        overCap = true;
+        chunks.length = 0; // the whole body is over-cap
+        return;
+      }
+      chunks.push(buf);
+    },
+    result() {
+      if (overCap) {
+        return { reason: 'size_too_large' };
+      }
+      if (chunks.length === 0) {
+        return undefined;
+      }
+      return { body: Buffer.concat(chunks).toString('utf8') };
+    },
+  };
+};
 
 export interface NodeHttpInterceptorOptions {
   /** Wall-clock source; injectable for tests. Default Date.now. */
@@ -205,6 +275,7 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
       }
       (req as ClientRequest).on('response', (response) => {
         const res = response as IncomingMessage;
+        const resHeaders = normalizeHeaders(res.headers);
         this.emit('complete', {
           timestamp: this.#now(),
           id,
@@ -216,10 +287,13 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
           status: res.statusCode,
           statusText: res.statusMessage,
           custom: {
-            headers: normalizeHeaders(res.headers),
+            headers: resHeaders,
             timings: { duration: this.#now() - startedAt },
           },
         });
+        if (this.#captureBodies) {
+          this.#captureResponseBody(res, id, url, method, resHeaders);
+        }
       });
       (req as ClientRequest).on('error', (error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -245,12 +319,38 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
     };
   }
 
+  // Emit a body OVERRIDE amendment (same id) carrying the headers (so F.1's Content-Type gate works)
+  // plus the body XOR no_body_reason. `before` for the request body, `complete` for the response body.
+  #emitBodyAmendment(
+    stage: 'before' | 'complete',
+    id: string,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    result: { body?: string; reason?: NoBodyReason },
+  ): void {
+    this.emit(stage, {
+      timestamp: this.#now(),
+      id,
+      sequence: id,
+      mechanism: 'http',
+      url,
+      method,
+      type: stage,
+      override: true,
+      custom: {
+        headers,
+        ...(result.body !== undefined ? { body: result.body } : {}),
+        ...(result.reason !== undefined ? { no_body_reason: result.reason } : {}),
+      },
+    });
+  }
+
   // Capture the OUTGOING request body by wrapping the ClientRequest's own write/end (per-instance, not
   // the prototype) — observe each chunk, then call through unchanged (the body the app sends is never
-  // altered). The body is known only once end() is called, so it is delivered as a later `override`
-  // amendment to the `before` event (carrying the request headers so F.1's Content-Type dispatch works).
-  // Bounded by maxBodyBytes (over-cap → size_too_large, chunks dropped). A body-less request emits no
-  // amendment. node:http does not imply a Content-Type (unlike fetch/xhr), so none is synthesized.
+  // altered). The body is known only once end() is called, so it is delivered as a `before` override
+  // amendment (the request headers carry the Content-Type). Bounded by maxBodyBytes. A body-less request
+  // emits no amendment. node:http does not imply a Content-Type (unlike fetch/xhr), so none is synthesized.
   #captureRequestBody(
     req: ClientRequest,
     id: string,
@@ -258,69 +358,70 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
     method: string,
     headers: Record<string, string>,
   ): void {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let overCap = false;
+    const acc = createBodyAccumulator(this.#maxBodyBytes);
     let finalized = false;
-    const observe = (chunk: unknown, encoding: unknown): void => {
-      if (overCap || chunk === null || chunk === undefined) {
-        return;
-      }
-      // node:http write/end accept a string, a Buffer, or any ArrayBufferView (Uint8Array, etc.). Copy
-      // a view's raw bytes (don't String() it — that would capture "104,105" instead of the bytes);
-      // a string is encoded with its declared encoding (default utf8).
-      const buf = Buffer.isBuffer(chunk)
-        ? chunk
-        : ArrayBuffer.isView(chunk)
-          ? Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
-          : Buffer.from(
-              String(chunk),
-              typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8',
-            );
-      total += buf.length;
-      if (total > this.#maxBodyBytes) {
-        overCap = true;
-        chunks.length = 0; // drop what we have — the whole body is over-cap
-        return;
-      }
-      chunks.push(buf);
-    };
     const finalize = (): void => {
       if (finalized) {
         return;
       }
       finalized = true;
-      if (!overCap && chunks.length === 0) {
-        return; // no request body → no amendment
+      const result = acc.result();
+      if (result !== undefined) {
+        this.#emitBodyAmendment('before', id, url, method, headers, result);
       }
-      this.emit('before', {
-        timestamp: this.#now(),
-        id,
-        sequence: id,
-        mechanism: 'http',
-        url,
-        method,
-        type: 'before',
-        override: true,
-        custom: overCap
-          ? { headers, no_body_reason: 'size_too_large' as NoBodyReason }
-          : { headers, body: Buffer.concat(chunks).toString('utf8') },
-      });
     };
     const originalWrite = req.write.bind(req);
     const originalEnd = req.end.bind(req);
     req.write = (...args: unknown[]): unknown => {
-      observe(args[0], args[1]);
+      acc.add(args[0], args[1]);
       return originalWrite(...args);
     };
     req.end = (...args: unknown[]): unknown => {
       // end() may be called as end(), end(cb), end(chunk[, encoding][, cb]) — only a non-function first
       // arg is a body chunk.
       if (typeof args[0] !== 'function') {
-        observe(args[0], args[1]);
+        acc.add(args[0], args[1]);
       }
       finalize();
       return originalEnd(...args);
+    };
+  }
+
+  // Capture the RESPONSE body by PASSIVELY wrapping the IncomingMessage's own `push` (the producer hook
+  // the HTTP parser feeds body chunks into) — observe each chunk, then call through. This never adds a
+  // consumer or forces flowing mode, so the app reads the stream exactly as it would uninstrumented.
+  // push(null) is EOF → the body is delivered as a `complete` override amendment. A Content-Encoding
+  // body (gzip/br/…) is still-encoded on the wire and can't be read as text via push → cant_read_data
+  // (fetch captures decoded bodies via undici; node:http does not). Bounded by maxBodyBytes; a body-less
+  // response emits no amendment.
+  #captureResponseBody(
+    res: IncomingMessage,
+    id: string,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+  ): void {
+    const encoding = headerValueCI(headers, 'content-encoding')?.trim().toLowerCase();
+    if (encoding !== undefined && encoding !== '' && encoding !== 'identity') {
+      this.#emitBodyAmendment('complete', id, url, method, headers, { reason: 'cant_read_data' });
+      return;
+    }
+    const acc = createBodyAccumulator(this.#maxBodyBytes);
+    let finalized = false;
+    const originalPush = res.push.bind(res);
+    res.push = (chunk: unknown, enc?: unknown): boolean => {
+      if (chunk === null) {
+        if (!finalized) {
+          finalized = true;
+          const result = acc.result();
+          if (result !== undefined) {
+            this.#emitBodyAmendment('complete', id, url, method, headers, result);
+          }
+        }
+      } else {
+        acc.add(chunk, enc);
+      }
+      return originalPush(chunk, enc);
     };
   }
 }

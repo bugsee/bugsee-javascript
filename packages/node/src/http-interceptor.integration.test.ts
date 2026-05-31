@@ -45,13 +45,16 @@ describe('createNodeHttpInterceptor — real node:http', () => {
       interceptor.stop(); // restore the real node:http
     }
 
-    expect(events.filter((e) => e.type === 'before')).toHaveLength(1);
-    expect(events.filter((e) => e.type === 'complete')).toHaveLength(1);
+    // Exactly one metadata before + one metadata complete (the `ok` response body adds a `complete`
+    // OVERRIDE amendment — that is the F.4b body capture, not a double-capture of the request).
+    expect(events.filter((e) => e.type === 'before' && !e.override)).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'complete' && !e.override)).toHaveLength(1);
     const before = events.find((e) => e.type === 'before');
     expect(before?.mechanism).toBe('http');
     expect(before?.method).toBe('GET');
     expect(before?.url).toBe(`${origin}/x`);
-    expect(events.find((e) => e.type === 'complete')?.status).toBe(200);
+    expect(events.find((e) => e.type === 'complete' && !e.override)?.status).toBe(200);
+    expect(events.find((e) => e.override && e.type === 'complete')?.custom?.body).toBe('ok');
   });
 
   it('captures a real POST request body via write/end patching (override amendment, passthrough)', async () => {
@@ -92,5 +95,71 @@ describe('createNodeHttpInterceptor — real node:http', () => {
     expect(amendment?.custom?.body).toBe('hello world');
     // ...and the server still received the unaltered body (pass-through, no app-behavior change)
     expect(received.join('')).toBe('hello world');
+  });
+
+  it('captures a real response body via push observation (client still receives it via on(data))', async () => {
+    server.removeAllListeners('request');
+    server.on('request', (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('response-payload');
+    });
+    const interceptor = createNodeHttpInterceptor();
+    const events: NetworkEvent[] = [];
+    interceptor.onAny((_stage, event) => events.push(event as NetworkEvent));
+    interceptor.start();
+    let clientBody = '';
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = http.get(`${origin}/x`, (res) => {
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            clientBody += c;
+          });
+          res.on('end', () => resolve());
+        });
+        req.on('error', reject);
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      interceptor.stop();
+    }
+    const amendment = events.find((e) => e.override === true && e.type === 'complete');
+    expect(amendment?.custom?.body).toBe('response-payload'); // SDK observed it via push
+    expect(clientBody).toBe('response-payload'); // the app still received the full body
+  });
+
+  it('does not break a paused-mode async-iterating response consumer (the flowing-mode hazard)', async () => {
+    server.removeAllListeners('request');
+    // A LARGE body + a delay before iterating: a naive res.on('data') observer forces flowing mode at
+    // 'response' time, so the body drains into the void before the delayed `for await` starts and the
+    // app loses bytes. The push observer never changes the mode, so the app receives all of it.
+    const big = 'x'.repeat(100_000);
+    server.on('request', (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(big);
+    });
+    const interceptor = createNodeHttpInterceptor({ maxBodyBytes: 200_000 });
+    const events: NetworkEvent[] = [];
+    interceptor.onAny((_stage, event) => events.push(event as NetworkEvent));
+    interceptor.start();
+    let clientBody = '';
+    try {
+      const res = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
+        const req = http.get(`${origin}/x`, resolve);
+        req.on('error', reject);
+      });
+      // Delay so a (hypothetical) flowing-mode observer would have already drained+lost the body.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      // Consume in PAUSED mode via async iteration — the push observer must not have stolen these chunks.
+      for await (const chunk of res) {
+        clientBody += String(chunk);
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      interceptor.stop();
+    }
+    expect(clientBody).toBe(big); // app's async iteration received the FULL body (no flow-mode theft)
+    const amendment = events.find((e) => e.override === true && e.type === 'complete');
+    expect(amendment?.custom?.body).toBe(big); // and the SDK still captured it
   });
 });
