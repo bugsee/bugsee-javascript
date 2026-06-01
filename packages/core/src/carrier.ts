@@ -1,6 +1,17 @@
 import type { Interceptor } from './contracts';
-import type { FilterStore } from './filters';
-import type { ServiceResolver } from './services';
+import { type FilterStore, FiltersToken } from './filters';
+import type { ServiceRegistrar, ServiceResolver } from './services';
+
+/**
+ * A package's SERVICE MANIFEST: registers its contract-first services into the internal container,
+ * resolving any dependencies from it. Extensions / framework adapters CONTRIBUTE a manifest to the
+ * carrier (typically at module init); the platform composition root then runs every contributed
+ * manifest against the launched client's internal object — so a package's components join the SDK
+ * WITHOUT `launch`/`createClient` ever naming them (auto-registration via an explicit manifest, not
+ * import side-effects). The manifest gets the typed register+resolve facade, so a contributed service
+ * can wire itself from `transport`/`captureStore`/… already in the container.
+ */
+export type ServiceManifest = (internal: ServiceRegistrar & ServiceResolver) => void;
 
 // Process-global Carrier (design §4.2 §214): a version-keyed slot on `globalThis.__BUGSEE__` holding
 // the SDK's process-global singletons — currently the interceptor registry. Routing interceptor
@@ -24,6 +35,8 @@ export interface BugseeCarrier {
   readonly interceptors: Map<string, Interceptor<unknown>>;
   /** The process-global launched client (Bugsee is a per-process singleton, §1497/§473); else undefined. */
   client?: unknown;
+  /** Service manifests contributed by extensions / other packages; run against the launched container. */
+  serviceManifests?: ServiceManifest[];
 }
 
 type CarrierHost = { [CARRIER_PROPERTY]?: Record<string, BugseeCarrier> };
@@ -70,6 +83,28 @@ export function getOrCreateInterceptor<StageMap>(
   return created;
 }
 
+/**
+ * Contribute a {@link ServiceManifest} to the carrier — appended in contribution order. An extension /
+ * framework adapter calls this (at module init or explicitly); the launched client runs it. Idempotent
+ * only in that it appends; contributing the same manifest twice runs it twice (and a duplicate service
+ * name then throws on the second registration — register each contract once).
+ */
+export function contributeServiceManifest(
+  manifest: ServiceManifest,
+  globalObj: object = globalThis,
+): void {
+  const carrier = getCarrier(globalObj);
+  if (carrier.serviceManifests === undefined) {
+    carrier.serviceManifests = [];
+  }
+  carrier.serviceManifests.push(manifest);
+}
+
+/** Every service manifest contributed to the carrier, in contribution order (empty if none). */
+export function getServiceManifests(globalObj: object = globalThis): readonly ServiceManifest[] {
+  return getCarrier(globalObj).serviceManifests ?? [];
+}
+
 /** The process-global launched client (Bugsee is a per-process singleton), or undefined if none. */
 export function getCarrierClient<T = unknown>(globalObj: object = globalThis): T | undefined {
   return getCarrier(globalObj).client as T | undefined;
@@ -93,5 +128,5 @@ export function getInternal(globalObj: object = globalThis): ServiceResolver | u
  * pipeline to read live. Undefined when no client is launched (capture then applies defaults).
  */
 export function getFilters(globalObj: object = globalThis): FilterStore | undefined {
-  return getInternal(globalObj)?.getService('filters');
+  return getInternal(globalObj)?.getService(FiltersToken);
 }

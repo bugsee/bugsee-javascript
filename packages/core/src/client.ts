@@ -5,12 +5,13 @@ import {
   type Provider,
   type Service,
   type ServiceContainer,
+  type ServiceToken,
+  serviceToken,
 } from '@bugsee/service';
 import type {
   AttributeValue,
   LogLevelName,
   NameExtensionMapping,
-  NameServiceMapping,
   SeverityName,
 } from '@bugsee/types';
 import { assembleBundle } from './bundle-assembler';
@@ -18,8 +19,14 @@ import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { type Clock, createSystemClock } from './clock';
-import type { CaptureProviderInit, CaptureStore, Client, OptionsContainer } from './contracts';
+import { type Clock, ClockToken, createSystemClock } from './clock';
+import {
+  type CaptureProviderInit,
+  type CaptureStore,
+  CaptureStoreToken,
+  type Client,
+  type OptionsContainer,
+} from './contracts';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
@@ -28,6 +35,7 @@ import type { BreadcrumbInput, LogEvent } from './events';
 import {
   type BreadcrumbFilter,
   createFilterStore,
+  FiltersToken,
   type LogEventFilter,
   type NetworkEventFilter,
   type ReportHandler,
@@ -43,7 +51,12 @@ import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { ServiceRegistrar, ServiceResolver } from './services';
-import type { Bundle, UploadPipeline, UploadResult } from './transport';
+import {
+  type Bundle,
+  type UploadPipeline,
+  UploadPipelineToken,
+  type UploadResult,
+} from './transport';
 import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline';
 
 // The Client facade (design §7.1) — the runtime-agnostic composition root that wires the kernel
@@ -67,11 +80,7 @@ export interface Scheduler {
 
 // The scheduler's typed identity in the internal container (DI Phase 3); the client registers the
 // resolved scheduler (injected or the default global timers) so it is resolvable via getService.
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    scheduler: Scheduler;
-  }
-}
+export const SchedulerToken = serviceToken<Scheduler>('scheduler');
 
 const globalTimers = globalThis as unknown as {
   setInterval(cb: () => void, ms: number): unknown;
@@ -195,7 +204,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // capture pipeline reads the same instance via the container (getFilters). Registered eagerly so a
   // pipeline resolve always finds it once a client exists.
   const filters = createFilterStore(onError);
-  services.addService(defineService('filters', () => filters));
+  services.addService(defineService(FiltersToken, () => filters));
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
   const operations = createOperationDispatcher(onError);
@@ -209,9 +218,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       maxRecordingTimeMs: (options.maxRecordingTime ?? 60) * 1000,
     });
   // The resolved store (platform override or default) is a container service — resolvable process-wide
-  // via getService('captureStore'), alongside transport/filters (DI Phase 3).
-  services.addService(defineService('captureStore', () => captureStore));
-  services.addService(defineService('clock', () => clock));
+  // via getService(CaptureStoreToken), alongside transport/filters (DI Phase 3).
+  services.addService(defineService(CaptureStoreToken, () => captureStore));
+  services.addService(defineService(ClockToken, () => clock));
   const captureAggregator = createCaptureAggregator(captureStore);
   const captureExporter = createCaptureExporter(captureStore);
   // The capture-pipeline deps every provider gets once at registration (Android
@@ -222,7 +231,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
-  services.addService(defineService('scheduler', () => scheduler));
+  services.addService(defineService(SchedulerToken, () => scheduler));
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
@@ -238,7 +247,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const { uploadPipeline, appToken, getEnvironment } = options;
   // The platform's assembled upload orchestrator, when present, is also a container service (DI Phase 3).
   if (uploadPipeline !== undefined) {
-    services.addService(defineService('uploadPipeline', () => uploadPipeline));
+    services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
@@ -329,17 +338,16 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     registerExt: extensionRegistry.registerExt,
     ext: extensionRegistry.ext,
 
-    // Internal DI container facade (NameServiceMapping-typed over the generic @bugsee/service container).
-    addService<K extends keyof NameServiceMapping>(service: Service<NameServiceMapping[K]>): void {
+    // Internal DI container facade (token-typed over the generic @bugsee/service container): a contract's
+    // ServiceToken carries its instance type, so register/resolve are type-checked without a magic string.
+    addService<T>(service: Service<T>): void {
       services.addService(service);
     },
-    getService<K extends keyof NameServiceMapping>(name: K): NameServiceMapping[K] {
-      return services.getProvider<NameServiceMapping[K]>(name).getImmediate();
+    getService<T>(token: ServiceToken<T>): T {
+      return services.getProvider(token).getImmediate();
     },
-    getServiceProvider<K extends keyof NameServiceMapping>(
-      name: K,
-    ): Provider<NameServiceMapping[K]> {
-      return services.getProvider<NameServiceMapping[K]>(name);
+    getServiceProvider<T>(token: ServiceToken<T>): Provider<T> {
+      return services.getProvider(token);
     },
 
     setUserIdentifier: environment.setUserIdentifier,

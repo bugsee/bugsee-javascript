@@ -1,4 +1,5 @@
 import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
+import { serviceToken } from '@bugsee/service';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import type { BugseeError } from './errors';
 
@@ -115,14 +116,10 @@ export interface UploadPipeline {
   drop(reason: DropReason, category: OutcomeCategory): void;
 }
 
-// The HTTP transport is a per-platform SERVICE in the internal container (design §198): core owns the
-// `HttpTransport` contract; each platform registers its impl (Node's httpRequest, the browser's fetch
-// wrapper) and the container resolves it — typed here without core importing any platform.
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    transport: HttpTransport;
-    // The assembled upload orchestrator (built by the platform from transport); resolvable so triggers
-    // / flush can reach it process-wide (DI Phase 3).
-    uploadPipeline: UploadPipeline;
-  }
-}
+// Per-platform SERVICE tokens in the internal container (design §198): core owns the `HttpTransport`
+// contract; each platform registers its impl (Node's httpRequest, the browser's fetch wrapper) under
+// this token and the container resolves it — without core importing any platform.
+/** Service token for the platform HTTP transport primitive. */
+export const TransportToken = serviceToken<HttpTransport>('transport');
+/** Service token for the assembled upload orchestrator (built by the platform from transport). */
+export const UploadPipelineToken = serviceToken<UploadPipeline>('uploadPipeline');

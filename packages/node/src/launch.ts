@@ -11,6 +11,7 @@ import {
 import {
   type BugseeClient,
   type BundleStore,
+  BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
@@ -23,14 +24,17 @@ import {
   createServiceContainer,
   createUploadPipeline,
   defineService,
+  FileStorageAdapterToken,
   getCarrierClient,
   getOrCreateInterceptor,
+  getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
+  TransportToken,
 } from '@bugsee/core';
 import {
   createNodeBundleStore,
@@ -43,7 +47,12 @@ import {
   createUnhandledRejectionProvider,
   type ProcessEvents,
 } from './detection-providers';
-import { buildNodeEnvironment, realSystemProbe, type SystemProbe } from './environment';
+import {
+  buildNodeEnvironment,
+  realSystemProbe,
+  type SystemProbe,
+  SystemProbeToken,
+} from './environment';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
@@ -193,11 +202,11 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // pipeline, then hands the SAME container to createClient. Increment 1: the HTTP transport.
   const services = createServiceContainer();
   services.addService(
-    defineService('transport', () => internalTagged(options.transport ?? httpRequest)),
+    defineService(TransportToken, () => internalTagged(options.transport ?? httpRequest)),
   );
 
   // Transport → control plane + data plane → upload pipeline.
-  const transport = services.getProvider<HttpTransport>('transport').getImmediate();
+  const transport = services.getProvider(TransportToken).getImmediate();
   const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
@@ -211,7 +220,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       ? createNodeBundleStore(join(options.dataDir, 'pending'))
       : undefined);
   if (bundleStore !== undefined) {
-    services.addService(defineService('bundleStore', () => bundleStore)); // container service (DI Phase 3)
+    services.addService(defineService(BundleStoreToken, () => bundleStore)); // container service (DI Phase 3)
   }
   const durable =
     (options.recover ?? true) && bundleStore !== undefined
@@ -226,7 +235,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   // Node environment envelope, rebuilt at each report so it reflects current state. The canonical
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
-  services.addService(defineService('systemProbe', () => probe)); // container service (DI Phase 3)
+  services.addService(defineService(SystemProbeToken, () => probe)); // container service (DI Phase 3)
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
@@ -257,7 +266,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       ? createNodeFileStorageAdapter(options.dataDir)
       : undefined;
   if (fileStorageAdapter !== undefined) {
-    services.addService(defineService('fileStorageAdapter', () => fileStorageAdapter));
+    services.addService(defineService(FileStorageAdapterToken, () => fileStorageAdapter));
   }
   const captureStore =
     options.captureStore ??
@@ -277,6 +286,14 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+
+  // Run every service manifest contributed to the carrier (extensions / framework adapters / user code):
+  // their contract-first services join the internal container — resolving deps from it — without launch
+  // naming them. The container is fully populated (transport + the core seams) by this point, so a
+  // contributed service can wire itself from any of them.
+  for (const manifest of getServiceManifests(carrier)) {
+    manifest(client);
+  }
 
   // Capture providers (each gated by its controllingOption). Console→log, network umbrella with the
   // Node-native node:http source folded in, periodic system traces, and process system events. Each

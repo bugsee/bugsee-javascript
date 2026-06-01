@@ -5,14 +5,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type BundleStore,
+  BundleStoreToken,
+  CaptureStoreToken,
   type Clock,
+  contributeServiceManifest,
   createCaptureExporter,
   createMemoryCaptureStore,
+  defineService,
+  FileStorageAdapterToken,
   getCarrier,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   serializeBundle,
+  serviceToken,
+  TransportToken,
 } from '@bugsee/core';
 import {
   BugseeOption,
@@ -23,8 +30,11 @@ import {
   Severity,
 } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SystemProbe } from './environment';
+import { type SystemProbe, SystemProbeToken } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
+
+/** A test-only contributed service token (an "extension"). */
+const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 
 // --- fakes -------------------------------------------------------------------------------------
 
@@ -184,7 +194,7 @@ describe('launch', () => {
   it('registers the HTTP transport as a resolvable service that internal-tags requests', async () => {
     const transport = uploadTransport();
     const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
-    const svc = client.getService('transport'); // the internal container resolves the node transport
+    const svc = client.getService(TransportToken); // the internal container resolves the node transport
     expect(typeof svc).toBe('function');
     await svc('https://x.test/v2/sessions', {});
     // The resolved service is the internal-tagged wrapper over the injected transport.
@@ -195,15 +205,15 @@ describe('launch', () => {
   it('registers the systemProbe and captureStore as resolvable container services (DI Phase 3)', () => {
     const store = memStore();
     const client = launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
-    expect(client.getService('systemProbe')).toBe(probe);
-    expect(client.getService('captureStore')).toBe(store);
+    expect(client.getService(SystemProbeToken)).toBe(probe);
+    expect(client.getService(CaptureStoreToken)).toBe(store);
   });
 
   it('registers bundleStore + fileStorageAdapter as services in file-backed (dataDir) mode', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-di-'));
     const client = launchTracked('tok', baseOptions({ dataDir: dir }));
-    expect(typeof client.getService('bundleStore').put).toBe('function');
-    expect(typeof client.getService('fileStorageAdapter').append).toBe('function');
+    expect(typeof client.getService(BundleStoreToken).put).toBe('function');
+    expect(typeof client.getService(FileStorageAdapterToken).append).toBe('function');
   });
 
   it('registers an injected bundleStore as the resolvable service (by identity)', () => {
@@ -212,13 +222,27 @@ describe('launch', () => {
       'tok',
       baseOptions({ bundleStore: store, captureStore: memStore() }),
     );
-    expect(client.getService('bundleStore')).toBe(store); // the exact instance the durable queue uses
+    expect(client.getService(BundleStoreToken)).toBe(store); // the exact instance the durable queue uses
   });
 
   it('does not register bundleStore/fileStorageAdapter in in-memory mode', () => {
     const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
-    expect(() => client.getService('bundleStore')).toThrow();
-    expect(() => client.getService('fileStorageAdapter')).toThrow();
+    expect(() => client.getService(BundleStoreToken)).toThrow();
+    expect(() => client.getService(FileStorageAdapterToken)).toThrow();
+  });
+
+  it('runs a carrier-contributed service manifest against the launched container (auto-registration)', () => {
+    // An "extension" contributes a manifest with NO knowledge of launch; its service wires itself from a
+    // base service already in the internal container (DI), and is then resolvable like any other.
+    contributeServiceManifest((internal) => {
+      internal.addService(
+        defineService(DemoExtToken, () => ({
+          storeIsRegistered: internal.getService(CaptureStoreToken) !== undefined,
+        })),
+      );
+    });
+    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    expect(client.getService(DemoExtToken)).toEqual({ storeIsRegistered: true });
   });
 
   it('threads captureNetworkBodies to the fetch interceptor: bodies captured by default (clones)', async () => {

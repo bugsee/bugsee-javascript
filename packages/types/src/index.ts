@@ -21,9 +21,8 @@ export type IssueType = 'bug' | 'crash' | 'error';
 export type AttributeValue = string | number | boolean | string[];
 
 // ── Cross-package declaration-merge targets (design §5.2, §16.3) ─────────────
-// Start empty; each owning package augments these via `declare module '@bugsee/types'`.
-// biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
-export interface NameServiceMapping {}
+// Start empty; each owning package augments these via `declare module '@bugsee/types'`. (Services are
+// resolved by typed ServiceToken values from @bugsee/service, NOT a name→type map.)
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
 export interface NameExtensionMapping {}
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.

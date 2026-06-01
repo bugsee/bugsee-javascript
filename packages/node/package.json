@@ -27,8 +27,7 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/integration-shims": "workspace:*",
     "@bugsee/node-utils": "workspace:*",
-    "@bugsee/protocol": "workspace:*",
-    "@bugsee/types": "workspace:*"
+    "@bugsee/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.9.1"

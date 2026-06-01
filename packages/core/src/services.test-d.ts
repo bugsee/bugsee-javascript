@@ -1,8 +1,8 @@
-// Type-level tests for the NameServiceMapping-typed service facade, checked by `tsc --noEmit`.
-// The Client's getService/addService key into the declaration-merged NameServiceMapping, so a
-// registered service resolves to its mapped instance type and an unknown name is rejected.
+// Type-level tests for the token-typed service facade, checked by `tsc --noEmit`. The Client's
+// getService/addService resolve/register by a ServiceToken<T>, so the instance type flows from the
+// token and a mismatched factory is rejected.
 
-import { defineService } from '@bugsee/service';
+import { defineService, type ServiceToken, serviceToken } from '@bugsee/service';
 import { createClient } from './client';
 
 // Local type-assertion helpers (mirrors the other *.test-d.ts files).
@@ -10,24 +10,27 @@ type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;
 
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    typedSvc: { hello: string };
-  }
-}
+const TypedSvc = serviceToken<{ hello: string }>('typedSvc');
 
 const client = createClient();
 
-// getService('typedSvc') resolves to the mapped instance type.
-type Got = ReturnType<typeof client.getService<'typedSvc'>>;
-type _resolvesToMapped = Expect<Equal<Got, { hello: string }>>;
-const member: string = client.getService('typedSvc').hello;
+// getService(token) resolves to the token's type.
+type Got = ReturnType<typeof client.getService<{ hello: string }>>;
+type _resolvesToTokenType = Expect<Equal<Got, { hello: string }>>;
+const member: string = client.getService(TypedSvc).hello;
 void member;
 
-// @ts-expect-error — an unknown name is not a NameServiceMapping key.
-client.getService('not-a-service');
+// addService requires a Service whose instance matches the token's type.
+client.addService(defineService(TypedSvc, () => ({ hello: 'world' })));
+// @ts-expect-error — wrong instance shape for the TypedSvc token.
+client.addService(defineService(TypedSvc, () => ({ wrong: 1 })));
 
-// addService requires a Service whose instance matches the mapped type.
-client.addService(defineService('typedSvc', () => ({ hello: 'world' })));
-// @ts-expect-error — wrong instance shape for 'typedSvc'.
-client.addService(defineService('typedSvc', () => ({ wrong: 1 })));
+// The token BRANDS its instance type: a differently-typed token is rejected where a specific token
+// type is required. This pins the phantom `__type` — without it, `ServiceToken<number>` and
+// `ServiceToken<{ hello: string }>` are the structurally-identical `{ name: string }`, the misuse
+// below type-checks, and the @ts-expect-error becomes unused (a compile error → this test fails).
+const NumberSvc = serviceToken<number>('numberSvc');
+declare function requireHelloToken(token: ServiceToken<{ hello: string }>): void;
+requireHelloToken(TypedSvc);
+// @ts-expect-error — ServiceToken<number> is not assignable to ServiceToken<{ hello: string }>.
+requireHelloToken(NumberSvc);

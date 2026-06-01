@@ -22,7 +22,7 @@ import { createNetworkCaptureProvider } from './network-provider';
 // provider reads it via getFilters()); reset between tests.
 const publishFilters = (store: FilterStore): void => {
   setCarrierClient({
-    getService: (name: string) => (name === 'filters' ? store : undefined),
+    getService: (token: { name: string }) => (token.name === 'filters' ? store : undefined),
     getServiceProvider: () => undefined as never,
   });
 };

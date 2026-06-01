@@ -12,7 +12,6 @@ import type {
   NameExtensionMapping,
   NameHookMapping,
   NameHubMapping,
-  NameServiceMapping,
   RecordingId,
   SeverityName,
 } from './index';
@@ -53,7 +52,6 @@ export type TypeAssertions = [
   Expect<Equal<IssueType, 'bug' | 'crash' | 'error'>>,
   Expect<Equal<AttributeValue, string | number | boolean | string[]>>,
   // declaration-merge targets start empty
-  Expect<Equal<keyof NameServiceMapping, never>>,
   Expect<Equal<keyof NameExtensionMapping, never>>,
   Expect<Equal<keyof NameHookMapping, never>>,
   Expect<Equal<keyof NameHubMapping, never>>,

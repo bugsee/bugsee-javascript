@@ -1,3 +1,5 @@
+import { serviceToken } from '@bugsee/service';
+
 // Clock model (design §7.7). Two distinct time sources, injectable so downstream components can use
 // a deterministic fake in tests:
 //   - wallNow():      Date.now() unix-ms, for wire `timestamp` fields (matches mobile).
@@ -12,13 +14,8 @@ export interface Clock {
   monotonicNow(): number;
 }
 
-// The clock's typed identity in the internal container (DI Phase 3); the client registers the resolved
-// clock (injected or createSystemClock) so it is resolvable via getService('clock').
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    clock: Clock;
-  }
-}
+/** Service token for the clock; the client registers the resolved clock (injected or createSystemClock). */
+export const ClockToken = serviceToken<Clock>('clock');
 
 interface PerfLike {
   now(): number;

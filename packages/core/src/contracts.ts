@@ -1,4 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
+import { serviceToken } from '@bugsee/service';
 import type { EventSubscribable } from './emitter';
 import type { ReportingRequest } from './reporting';
 
@@ -109,14 +110,9 @@ export interface CaptureStore {
   clear(): void;
 }
 
-// The capture store's typed identity in the internal container (DI Phase 3): core owns the contract;
-// the platform supplies the impl (in-memory / file / IndexedDB) and the client registers the resolved
-// store, so it is resolvable process-wide via getService('captureStore').
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    captureStore: CaptureStore;
-  }
-}
+// Service token for the capture store: core owns the contract; the platform supplies the impl (in-memory
+// / file / IndexedDB) and the client registers the resolved store, resolvable process-wide.
+export const CaptureStoreToken = serviceToken<CaptureStore>('captureStore');
 
 /**
  * A frozen, read-once view of captured records (Android snapshot parity), divorced from the live
@@ -149,13 +145,9 @@ export interface FileStorageAdapter {
   remove(name: string): void;
 }
 
-// The file-storage primitive's typed identity in the internal container (DI Phase 3). Present only in
-// file-backed mode (a dataDir, no captureStore override); the platform registers it so it is resolvable.
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    fileStorageAdapter: FileStorageAdapter;
-  }
-}
+// Service token for the file-storage primitive. Present only in file-backed mode (a dataDir, no
+// captureStore override); the platform registers it so it is resolvable.
+export const FileStorageAdapterToken = serviceToken<FileStorageAdapter>('fileStorageAdapter');
 
 /**
  * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity). Data flows

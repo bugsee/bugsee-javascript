@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
+  contributeServiceManifest,
   getCarrier,
   getCarrierClient,
   getFilters,
   getInternal,
   getOrCreateInterceptor,
+  getServiceManifests,
+  type ServiceManifest,
   setCarrierClient,
 } from './carrier';
 import type { Interceptor } from './contracts';
@@ -159,11 +162,37 @@ describe('getFilters (the singleton client filters service)', () => {
     const filterStore = { network: null };
     setCarrierClient(
       {
-        getService: (name: string) => (name === 'filters' ? filterStore : undefined),
+        getService: (token: { name: string }) =>
+          token.name === 'filters' ? filterStore : undefined,
         getServiceProvider: vi.fn(),
       },
       g,
     );
     expect(getFilters(g)).toBe(filterStore);
+  });
+});
+
+describe('service manifests', () => {
+  const noop: ServiceManifest = () => {};
+
+  it('returns no manifests by default', () => {
+    expect(getServiceManifests({})).toEqual([]);
+  });
+
+  it('appends contributed manifests in contribution order', () => {
+    const host = {};
+    const m1: ServiceManifest = () => {};
+    const m2: ServiceManifest = () => {};
+    contributeServiceManifest(m1, host);
+    contributeServiceManifest(m2, host);
+    expect(getServiceManifests(host)).toEqual([m1, m2]);
+  });
+
+  it('isolates manifests per carrier host (a fresh host sees none)', () => {
+    const a = {};
+    const b = {};
+    contributeServiceManifest(noop, a);
+    expect(getServiceManifests(a)).toEqual([noop]);
+    expect(getServiceManifests(b)).toEqual([]);
   });
 });

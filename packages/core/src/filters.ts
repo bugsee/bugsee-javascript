@@ -1,4 +1,5 @@
 import type { NetworkEvent } from '@bugsee/protocol';
+import { serviceToken } from '@bugsee/service';
 import type { Breadcrumb, LogEvent } from './events';
 import type { ReportingRequest } from './reporting';
 
@@ -56,9 +57,5 @@ export function runFilter<T>(
   }
 }
 
-// The `filters` service's typed identity in the internal container (resolved by the capture pipeline).
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    filters: FilterStore;
-  }
-}
+/** Service token for the redaction filter store (resolved live by the capture pipeline). */
+export const FiltersToken = serviceToken<FilterStore>('filters');

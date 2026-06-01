@@ -10,6 +10,8 @@ export {
   type Service,
   type ServiceContainer,
   type ServiceFactory,
+  type ServiceToken,
+  serviceToken,
 } from '@bugsee/service';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
@@ -27,11 +29,14 @@ export { CaptureProviderBase } from './capture-provider-base';
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
+  contributeServiceManifest,
   getCarrier,
   getCarrierClient,
   getFilters,
   getInternal,
   getOrCreateInterceptor,
+  getServiceManifests,
+  type ServiceManifest,
   setCarrierClient,
 } from './carrier';
 export {
@@ -42,8 +47,9 @@ export {
   createClient,
   type LogExceptionOptions,
   type Scheduler,
+  SchedulerToken,
 } from './client';
-export { type Clock, createSystemClock } from './clock';
+export { type Clock, ClockToken, createSystemClock } from './clock';
 export type {
   CaptureAggregator,
   CaptureDataEntry,
@@ -64,6 +70,7 @@ export type {
   OptionsContainer,
   StoredEntry,
 } from './contracts';
+export { CaptureStoreToken, FileStorageAdapterToken } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {
   createDetectionCoordinator,
@@ -73,6 +80,7 @@ export {
 export { DetectionProviderBase } from './detection-provider-base';
 export {
   type BundleStore,
+  BundleStoreToken,
   createDurableUploadPipeline,
   type DurableUploadPipeline,
   type DurableUploadPipelineOptions,
@@ -96,6 +104,7 @@ export {
   type BreadcrumbFilter,
   createFilterStore,
   type FilterStore,
+  FiltersToken,
   type LogEventFilter,
   type NetworkEventFilter,
   type ReportHandler,
@@ -146,6 +155,7 @@ export type {
   UploadPipeline,
   UploadResult,
 } from './transport';
+export { TransportToken, UploadPipelineToken } from './transport';
 export {
   createTriggerPipeline,
   type TriggerPipeline,

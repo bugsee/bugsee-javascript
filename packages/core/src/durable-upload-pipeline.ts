@@ -1,4 +1,5 @@
 import type { RequestJson } from '@bugsee/protocol';
+import { serviceToken } from '@bugsee/service';
 import { strFromU8, strToU8 } from '@bugsee/util';
 import type {
   Bundle,
@@ -28,13 +29,9 @@ export interface BundleStore {
   remove(id: string): void;
 }
 
-// The durable bundle store's typed identity in the internal container (DI Phase 3). Present only in
-// file-backed mode (a dataDir / explicit store); the platform registers it so it is resolvable.
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    bundleStore: BundleStore;
-  }
-}
+// Service token for the durable bundle store. Present only in file-backed mode (a dataDir / explicit
+// store); the platform registers it so it is resolvable.
+export const BundleStoreToken = serviceToken<BundleStore>('bundleStore');
 
 export interface DurableUploadPipeline extends UploadPipeline {
   /** Re-enqueue every bundle left persisted by a prior run (crash / kill / failed upload). */

@@ -21,7 +21,7 @@ import { createLogCaptureProvider } from './log-provider';
 
 const publishFilters = (store: FilterStore): void => {
   setCarrierClient({
-    getService: (name: string) => (name === 'filters' ? store : undefined),
+    getService: (token: { name: string }) => (token.name === 'filters' ? store : undefined),
     getServiceProvider: () => undefined as never,
   });
 };

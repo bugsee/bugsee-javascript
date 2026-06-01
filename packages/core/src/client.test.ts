@@ -1,22 +1,32 @@
 import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
-import { createServiceContainer, defineService } from '@bugsee/service';
+import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { createClient, type Scheduler } from './client';
-import type { Clock } from './clock';
-import type {
-  CaptureProvider,
-  CaptureSnapshot,
-  CaptureStore,
-  DetectionProvider,
+import { createClient, type Scheduler, SchedulerToken } from './client';
+import { type Clock, ClockToken } from './clock';
+import {
+  type CaptureProvider,
+  type CaptureSnapshot,
+  type CaptureStore,
+  CaptureStoreToken,
+  type DetectionProvider,
 } from './contracts';
 import { BugseeError } from './errors';
+import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createReportingRequest, type ReportingRequest } from './reporting';
-import type { Bundle, UploadPipeline, UploadResult } from './transport';
+import {
+  type Bundle,
+  type UploadPipeline,
+  UploadPipelineToken,
+  type UploadResult,
+} from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
+
+/** Test-only service token (mirrors how a real contract exports its token). */
+const Svc = serviceToken<{ v: number }>('svc');
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
@@ -29,13 +39,10 @@ const fixedClock = (wall = 1000): Clock => ({ wallNow: () => wall, monotonicNow:
 const firstEntry = async (store: CaptureStore, type: FileType) =>
   (await createCaptureExporter(store).drain()).get(type)?.[0];
 
-// Test-only extension + service typing so registerExt/ext and addService/getService are exercised.
+// Test-only extension typing so registerExt/ext is exercised (services use tokens — see `Svc`).
 declare module '@bugsee/types' {
   interface NameExtensionMapping {
     demo: { ping(): string };
-  }
-  interface NameServiceMapping {
-    svc: { v: number };
   }
 }
 
@@ -98,35 +105,35 @@ describe('createClient — internal service container (DI)', () => {
   it('lazily instantiates a registered service exactly once (singleton)', () => {
     const factory = vi.fn(() => ({ v: 7 }));
     const client = createClient();
-    client.addService(defineService('svc', factory));
-    expect(client.getService('svc')).toEqual({ v: 7 });
-    expect(client.getService('svc')).toBe(client.getService('svc'));
+    client.addService(defineService(Svc, factory));
+    expect(client.getService(Svc)).toEqual({ v: 7 });
+    expect(client.getService(Svc)).toBe(client.getService(Svc));
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
   it('resolves a service registered AFTER getServiceProvider (late registration)', async () => {
     const client = createClient();
-    const pending = client.getServiceProvider('svc').get();
-    client.addService(defineService('svc', () => ({ v: 9 })));
+    const pending = client.getServiceProvider(Svc).get();
+    client.addService(defineService(Svc, () => ({ v: 9 })));
     expect(await pending).toEqual({ v: 9 });
   });
 
   it('uses an injected container when provided', () => {
     const container = createServiceContainer();
-    container.addService(defineService('svc', () => ({ v: 42 })));
+    container.addService(defineService(Svc, () => ({ v: 42 })));
     const client = createClient({ services: container });
-    expect(client.getService('svc')).toEqual({ v: 42 });
+    expect(client.getService(Svc)).toEqual({ v: 42 });
   });
 
   it('registers the provided captureStore as a resolvable service', () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
-    expect(client.getService('captureStore')).toBe(store); // same instance the aggregator uses
+    expect(client.getService(CaptureStoreToken)).toBe(store); // same instance the aggregator uses
   });
 
   it('registers the default in-memory captureStore as a service when none is provided', () => {
     const client = createClient();
-    const store = client.getService('captureStore');
+    const store = client.getService(CaptureStoreToken);
     // it is the SAME store the aggregator writes to (drains what was added)
     client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
     return createCaptureExporter(store)
@@ -138,8 +145,8 @@ describe('createClient — internal service container (DI)', () => {
     const clock = fixedClock(1234);
     const scheduler = { setInterval: () => 'h', clearInterval: () => {} };
     const client = createClient({ clock, scheduler });
-    expect(client.getService('clock')).toBe(clock);
-    expect(client.getService('scheduler')).toBe(scheduler);
+    expect(client.getService(ClockToken)).toBe(clock);
+    expect(client.getService(SchedulerToken)).toBe(scheduler);
   });
 
   it('registers the uploadPipeline as a service when one is provided', () => {
@@ -149,12 +156,12 @@ describe('createClient — internal service container (DI)', () => {
       drop: () => {},
     };
     const client = createClient({ uploadPipeline });
-    expect(client.getService('uploadPipeline')).toBe(uploadPipeline);
+    expect(client.getService(UploadPipelineToken)).toBe(uploadPipeline);
   });
 
   it('does not register an uploadPipeline service when none is provided', () => {
     const client = createClient();
-    expect(() => client.getService('uploadPipeline')).toThrow();
+    expect(() => client.getService(UploadPipelineToken)).toThrow();
   });
 });
 
@@ -167,9 +174,9 @@ describe('createClient — redaction filters', () => {
     const client = createClient();
     const nf = (e: { url: string }) => e as never;
     client.setNetworkEventFilter(nf as never);
-    expect(client.getService('filters').network).toBe(nf);
+    expect(client.getService(FiltersToken).network).toBe(nf);
     client.setNetworkEventFilter(null);
-    expect(client.getService('filters').network).toBeNull();
+    expect(client.getService(FiltersToken).network).toBeNull();
   });
 
   it('setBreadcrumbFilter mutates, drops, and clears', async () => {

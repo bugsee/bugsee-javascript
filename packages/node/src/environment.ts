@@ -1,5 +1,6 @@
 import os from 'node:os';
 import process from 'node:process';
+import { serviceToken } from '@bugsee/core';
 import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for Node from process/os. System reads go through an
@@ -20,14 +21,9 @@ export interface SystemProbe {
   locale(): string;
 }
 
-// The Node SystemProbe's typed identity in the internal container (DI Phase 3). SystemProbe is
-// Node-specific (other platforms supply different probes), so the contract is declared here, not in
-// core; `launch` registers the resolved probe so it is resolvable via getService('systemProbe').
-declare module '@bugsee/types' {
-  interface NameServiceMapping {
-    systemProbe: SystemProbe;
-  }
-}
+// Service token for the Node SystemProbe — Node-specific (other platforms supply different probes), so
+// the token lives here, not in core; `launch` registers the resolved probe so it is resolvable.
+export const SystemProbeToken = serviceToken<SystemProbe>('systemProbe');
 
 export const realSystemProbe: SystemProbe = {
   nodeVersion: () => process.versions.node,

@@ -16,13 +16,33 @@ export interface Service<T = unknown> {
   readonly mode: InstantiationMode;
 }
 
-/** Defines a service. Default mode is LAZY (instantiated on first access). */
+/**
+ * A typed handle for a contract: pairs a stable string `name` with a phantom type `T`, so the
+ * container's register/resolve API is type-checked end-to-end instead of keyed by a magic string.
+ * Define one per contract with {@link serviceToken}; pass the token (not a raw string) to
+ * {@link defineService} and {@link ServiceContainer.getProvider}.
+ */
+export interface ServiceToken<T> {
+  readonly name: string;
+  /**
+   * Phantom carrier of `T` — never set at runtime. It BRANDS the token by its instance type: without
+   * a `T`-bearing member, `ServiceToken<A>` and `ServiceToken<B>` would be structurally identical
+   * (`{ name: string }`) and mutually assignable, so a token for one contract could be passed where
+   * another is required. This field makes them distinct, so the type system catches a wrong-token use.
+   */
+  readonly __type?: T;
+}
+
+/** Mint a {@link ServiceToken} for a contract: `export const Transport = serviceToken<HttpTransport>('transport')`. */
+export const serviceToken = <T>(name: string): ServiceToken<T> => ({ name });
+
+/** Defines a service for a token. Default mode is LAZY (instantiated on first access). */
 export function defineService<T>(
-  name: string,
+  token: ServiceToken<T>,
   factory: ServiceFactory<T>,
   mode: InstantiationMode = 'LAZY',
 ): Service<T> {
-  return { name, factory, mode };
+  return { name: token.name, factory, mode };
 }
 
 export interface Provider<T> {
@@ -49,7 +69,7 @@ export interface Provider<T> {
 
 export interface ServiceContainer {
   addService<T>(service: Service<T>): void;
-  getProvider<T>(name: string): Provider<T>;
+  getProvider<T>(token: ServiceToken<T>): Provider<T>;
 }
 
 function createProvider<T>(name: string, container: ServiceContainer): Provider<T> {
@@ -219,8 +239,8 @@ export function createServiceContainer(): ServiceContainer {
     addService<T>(service: Service<T>): void {
       getOrCreate<T>(service.name).setService(service);
     },
-    getProvider<T>(name: string): Provider<T> {
-      return getOrCreate<T>(name);
+    getProvider<T>(token: ServiceToken<T>): Provider<T> {
+      return getOrCreate<T>(token.name);
     },
   };
 
