@@ -149,6 +149,14 @@ export interface FileStorageAdapter {
   remove(name: string): void;
 }
 
+// The file-storage primitive's typed identity in the internal container (DI Phase 3). Present only in
+// file-backed mode (a dataDir, no captureStore override); the platform registers it so it is resolvable.
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    fileStorageAdapter: FileStorageAdapter;
+  }
+}
+
 /**
  * The single data adapter every provider feeds (Android BugseeCaptureAggregator parity). Data flows
  * ONE direction: accept an entry → transform (entry.serialize()) → route the record to the

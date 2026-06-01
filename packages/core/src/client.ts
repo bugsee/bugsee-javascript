@@ -65,6 +65,14 @@ export interface Scheduler {
   clearInterval(handle: unknown): void;
 }
 
+// The scheduler's typed identity in the internal container (DI Phase 3); the client registers the
+// resolved scheduler (injected or the default global timers) so it is resolvable via getService.
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    scheduler: Scheduler;
+  }
+}
+
 const globalTimers = globalThis as unknown as {
   setInterval(cb: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
@@ -203,6 +211,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // The resolved store (platform override or default) is a container service — resolvable process-wide
   // via getService('captureStore'), alongside transport/filters (DI Phase 3).
   services.addService(defineService('captureStore', () => captureStore));
+  services.addService(defineService('clock', () => clock));
   const captureAggregator = createCaptureAggregator(captureStore);
   const captureExporter = createCaptureExporter(captureStore);
   // The capture-pipeline deps every provider gets once at registration (Android
@@ -213,6 +222,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
+  services.addService(defineService('scheduler', () => scheduler));
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
@@ -226,6 +236,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
   const { uploadPipeline, appToken, getEnvironment } = options;
+  // The platform's assembled upload orchestrator, when present, is also a container service (DI Phase 3).
+  if (uploadPipeline !== undefined) {
+    services.addService(defineService('uploadPipeline', () => uploadPipeline));
+  }
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
     const assemble = async (request: ReportingRequest): Promise<Bundle> =>

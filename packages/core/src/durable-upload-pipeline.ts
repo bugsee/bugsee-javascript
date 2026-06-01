@@ -28,6 +28,14 @@ export interface BundleStore {
   remove(id: string): void;
 }
 
+// The durable bundle store's typed identity in the internal container (DI Phase 3). Present only in
+// file-backed mode (a dataDir / explicit store); the platform registers it so it is resolvable.
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    bundleStore: BundleStore;
+  }
+}
+
 export interface DurableUploadPipeline extends UploadPipeline {
   /** Re-enqueue every bundle left persisted by a prior run (crash / kill / failed upload). */
   recover(): void;

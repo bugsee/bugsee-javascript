@@ -12,6 +12,14 @@ export interface Clock {
   monotonicNow(): number;
 }
 
+// The clock's typed identity in the internal container (DI Phase 3); the client registers the resolved
+// clock (injected or createSystemClock) so it is resolvable via getService('clock').
+declare module '@bugsee/types' {
+  interface NameServiceMapping {
+    clock: Clock;
+  }
+}
+
 interface PerfLike {
   now(): number;
   timeOrigin: number;

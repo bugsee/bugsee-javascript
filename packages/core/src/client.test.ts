@@ -133,6 +133,29 @@ describe('createClient — internal service container (DI)', () => {
       .drain()
       .then((parts) => expect(parts.get('log')).toHaveLength(1));
   });
+
+  it('registers the resolved clock and scheduler as services', () => {
+    const clock = fixedClock(1234);
+    const scheduler = { setInterval: () => 'h', clearInterval: () => {} };
+    const client = createClient({ clock, scheduler });
+    expect(client.getService('clock')).toBe(clock);
+    expect(client.getService('scheduler')).toBe(scheduler);
+  });
+
+  it('registers the uploadPipeline as a service when one is provided', () => {
+    const uploadPipeline = {
+      enqueue: async () => ({ ok: true }),
+      flush: async () => true,
+      drop: () => {},
+    };
+    const client = createClient({ uploadPipeline });
+    expect(client.getService('uploadPipeline')).toBe(uploadPipeline);
+  });
+
+  it('does not register an uploadPipeline service when none is provided', () => {
+    const client = createClient();
+    expect(() => client.getService('uploadPipeline')).toThrow();
+  });
 });
 
 describe('createClient — redaction filters', () => {

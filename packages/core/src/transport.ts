@@ -121,5 +121,8 @@ export interface UploadPipeline {
 declare module '@bugsee/types' {
   interface NameServiceMapping {
     transport: HttpTransport;
+    // The assembled upload orchestrator (built by the platform from transport); resolvable so triggers
+    // / flush can reach it process-wide (DI Phase 3).
+    uploadPipeline: UploadPipeline;
   }
 }

@@ -199,6 +199,28 @@ describe('launch', () => {
     expect(client.getService('captureStore')).toBe(store);
   });
 
+  it('registers bundleStore + fileStorageAdapter as services in file-backed (dataDir) mode', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-di-'));
+    const client = launchTracked('tok', baseOptions({ dataDir: dir }));
+    expect(typeof client.getService('bundleStore').put).toBe('function');
+    expect(typeof client.getService('fileStorageAdapter').append).toBe('function');
+  });
+
+  it('registers an injected bundleStore as the resolvable service (by identity)', () => {
+    const { store } = bundleMemStore();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ bundleStore: store, captureStore: memStore() }),
+    );
+    expect(client.getService('bundleStore')).toBe(store); // the exact instance the durable queue uses
+  });
+
+  it('does not register bundleStore/fileStorageAdapter in in-memory mode', () => {
+    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    expect(() => client.getService('bundleStore')).toThrow();
+    expect(() => client.getService('fileStorageAdapter')).toThrow();
+  });
+
   it('threads captureNetworkBodies to the fetch interceptor: bodies captured by default (clones)', async () => {
     const slot = globalThis as unknown as {
       fetch?: (i: unknown, init?: unknown) => Promise<unknown>;

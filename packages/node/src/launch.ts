@@ -210,6 +210,9 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     (options.dataDir !== undefined
       ? createNodeBundleStore(join(options.dataDir, 'pending'))
       : undefined);
+  if (bundleStore !== undefined) {
+    services.addService(defineService('bundleStore', () => bundleStore)); // container service (DI Phase 3)
+  }
   const durable =
     (options.recover ?? true) && bundleStore !== undefined
       ? createDurableUploadPipeline({
@@ -247,10 +250,19 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
+  // The file-storage adapter exists only when a dataDir is used without an explicit captureStore; it is
+  // a container service (DI Phase 3) and the input to the file-backed store.
+  const fileStorageAdapter =
+    options.captureStore === undefined && options.dataDir !== undefined
+      ? createNodeFileStorageAdapter(options.dataDir)
+      : undefined;
+  if (fileStorageAdapter !== undefined) {
+    services.addService(defineService('fileStorageAdapter', () => fileStorageAdapter));
+  }
   const captureStore =
     options.captureStore ??
-    (options.dataDir !== undefined
-      ? createFileCaptureStore(createNodeFileStorageAdapter(options.dataDir), storeOptions)
+    (fileStorageAdapter !== undefined
+      ? createFileCaptureStore(fileStorageAdapter, storeOptions)
       : createMemoryCaptureStore(storeOptions));
 
   const client = createClient({
