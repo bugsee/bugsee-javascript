@@ -33,6 +33,15 @@ process-wide **through the carrier's client** — we do **not** add a global ser
   `Client.addService`/`getService`** are the `NameServiceMapping`-typed facade. A platform package
   declaration-merges its services into `NameServiceMapping`, so `client.getService('transport')` is
   typed in core without core importing the node impl. This is "auto-registered, not hard-declared".
+  - **AS-BUILT (2026-06-01, commit `437f14e`):** the declaration-merge approach was REPLACED by typed
+    **`ServiceToken<T>`** handles. `NameServiceMapping` is removed from `@bugsee/types`; instead each
+    contract exports a `serviceToken<T>('name')` const (e.g. `TransportToken`) and the facade is
+    `getService<T>(token)` / `addService<T>(service)` — so `client.getService(TransportToken)` is typed
+    by the token's phantom `__type` (which also brands it, making a wrong-token use a compile error). The
+    "auto-registered, not hard-declared" goal is now served by the **service-manifest registry**
+    (`contributeServiceManifest` on the carrier; `launch()` runs each manifest against the internal
+    container) — a package contributes a manifest and its services join WITHOUT `launch`/`createClient`
+    naming them. See `PROGRESS.md` §7 "DI Phase 3 / token migration".
 - **No import-time registration** (design §294): platform packages register services imperatively from
   `launch()`/`register(client)`, never at module load — keeps `sideEffects:false` honest.
 
