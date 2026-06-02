@@ -28,17 +28,13 @@ function scrubFramePath(path: string): string {
 
 const LOCATION = /^(.+):(\d+):(\d+)$/;
 
-function parseFrame(site: string): StackFrame {
-  // `site` is either "funcName (location)" or a bare "location". The FIRST " (" separates the
-  // function from the location — a function name never contains " (", but a file path can (e.g. a
-  // directory named "app (prod)"), so indexOf (not lastIndexOf) is correct.
-  let location = site;
+/**
+ * Parse a `file:line:column` location (or a bare file) into a path-scrubbed {@link StackFrame}
+ * fragment (file/line/column, no function). Shared by the V8 parser and the browser tier's
+ * SpiderMonkey/JavaScriptCore (`fn@location`) parser so the path-scrubbing rules are single-sourced.
+ */
+export function parseLocation(location: string): StackFrame {
   const frame: StackFrame = {};
-  const open = site.indexOf(' (');
-  if (open !== -1 && site.endsWith(')')) {
-    frame.function = site.slice(0, open);
-    location = site.slice(open + 2, -1);
-  }
   const match = LOCATION.exec(location);
   if (match) {
     frame.file = scrubFramePath(match[1] as string);
@@ -46,6 +42,24 @@ function parseFrame(site: string): StackFrame {
     frame.column = Number(match[3]);
   } else {
     frame.file = scrubFramePath(location);
+  }
+  return frame;
+}
+
+function parseFrame(site: string): StackFrame {
+  // `site` is either "funcName (location)" or a bare "location". The FIRST " (" separates the
+  // function from the location — a function name never contains " (", but a file path can (e.g. a
+  // directory named "app (prod)"), so indexOf (not lastIndexOf) is correct.
+  let location = site;
+  let fn: string | undefined;
+  const open = site.indexOf(' (');
+  if (open !== -1 && site.endsWith(')')) {
+    fn = site.slice(0, open);
+    location = site.slice(open + 2, -1);
+  }
+  const frame = parseLocation(location);
+  if (fn !== undefined) {
+    frame.function = fn;
   }
   return frame;
 }

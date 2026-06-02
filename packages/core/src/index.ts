@@ -138,7 +138,7 @@ export {
 } from './reporting';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
 export type { ServiceRegistrar, ServiceResolver } from './services';
-export { formatStack, parseV8Stack, type StackFrame } from './stack';
+export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
 export type {
   BugseeApi,
   Bundle,
