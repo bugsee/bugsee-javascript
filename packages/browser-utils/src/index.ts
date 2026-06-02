@@ -1,5 +1,5 @@
 // @bugsee/browser-utils
-// DOM utilities, click/keypress instrumentation, history API hooks
+// Browser runtime primitives shared by the browser / web-worker / service-worker tiers:
+// the fetch HttpTransport (+ IndexedDB stores, DOM instrumentation — pending).
 // Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+export { createFetchTransport, type FetchLike, fetchTransport } from './fetch-transport';
