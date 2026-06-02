@@ -18,11 +18,14 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/browser-utils": "workspace:*",
-    "@bugsee/integration-shims": "workspace:*"
+    "@bugsee/integration-shims": "workspace:*",
+    "@bugsee/protocol": "workspace:*"
   }
 }

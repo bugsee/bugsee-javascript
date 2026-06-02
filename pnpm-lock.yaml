@@ -80,6 +80,9 @@ importers:
       '@bugsee/integration-shims':
         specifier: workspace:*
         version: link:../integration-shims
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/browser-utils:
     dependencies:

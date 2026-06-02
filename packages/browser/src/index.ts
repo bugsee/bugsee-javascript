@@ -1,5 +1,10 @@
 // @bugsee/browser
-// Browser platform: fetch transport, IndexedDB storage, error handlers, stack-trace parser
-// Tier 2. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
+// and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
+export {
+  type BrowserEnvironmentInput,
+  type BrowserProbe,
+  BrowserProbeToken,
+  buildBrowserEnvironment,
+  realBrowserProbe,
+} from './environment';
