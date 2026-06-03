@@ -1,4 +1,8 @@
-import { fetchTransport } from '@bugsee/browser-utils';
+import {
+  createIdbBlobStore,
+  createPersistentBundleStore,
+  fetchTransport,
+} from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
   createLogCaptureProvider,
@@ -103,8 +107,14 @@ export interface BugseeLaunchOptions {
   /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
   maxDataSize?: number;
   /**
-   * Durably persist each bundle before upload and re-upload any left behind by a prior reload/crash.
-   * Requires a persistent bundleStore (an IndexedDB store lands in B5); a no-op without one. Default true.
+   * Persist the bundle queue to IndexedDB so a crash report survives a reload/kill mid-upload and is
+   * re-uploaded on the next launch (guaranteed crash delivery). Off by default (in-memory only). An
+   * explicit `bundleStore` overrides this.
+   */
+  persist?: boolean;
+  /**
+   * Re-upload any bundle left behind by a prior reload/crash on the next launch. Requires a persistent
+   * bundle store (`persist` or an injected `bundleStore`); a no-op without one. Default true.
    */
   recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
@@ -181,9 +191,15 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
 
-  // Durable bundle queue: persist each bundle before upload and re-upload any left by a prior run.
-  // Needs a persistent bundleStore (B5 supplies an IndexedDB one); with none there's nothing durable.
-  const bundleStore = options.bundleStore;
+  // Durable bundle queue: persist each bundle before upload and re-upload any left by a prior reload/
+  // crash. An explicit bundleStore wins; else `persist` builds an IndexedDB-backed store (its in-memory
+  // mirror hydrates asynchronously — recover() is deferred to whenReady below). With neither, nothing
+  // durable.
+  const bundleStore =
+    options.bundleStore ??
+    (options.persist === true
+      ? createPersistentBundleStore(createIdbBlobStore(), options.onError)
+      : undefined);
   if (bundleStore !== undefined) {
     services.addService(defineService(BundleStoreToken, () => bundleStore));
   }
@@ -269,8 +285,17 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
 
   client.launch();
 
-  // Re-upload any bundles a prior reload/crash left persisted (durable queue recovery).
-  durable?.recover();
+  // Re-upload any bundles a prior reload/crash left persisted (durable queue recovery). A persistent
+  // store hydrates its mirror asynchronously, so defer recover() until `whenReady` (else list() would
+  // miss the leftovers); a synchronous (injected) store recovers immediately.
+  if (durable !== undefined) {
+    const ready = (bundleStore as { whenReady?: Promise<void> }).whenReady;
+    if (ready !== undefined) {
+      void ready.then(() => durable.recover());
+    } else {
+      durable.recover();
+    }
+  }
 
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh. (No
   // process.exit handler to remove — the browser has none; the core client cleans up its providers.)

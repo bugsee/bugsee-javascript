@@ -28,5 +28,8 @@
     "@bugsee/browser-utils": "workspace:*",
     "@bugsee/integration-shims": "workspace:*",
     "@bugsee/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
   }
 }

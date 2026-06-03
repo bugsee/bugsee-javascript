@@ -1,4 +1,9 @@
 import {
+  type AsyncBlobStore,
+  createIdbBlobStore,
+  createPersistentBundleStore,
+} from '@bugsee/browser-utils';
+import {
   type BundleStore,
   BundleStoreToken,
   CaptureStoreToken,
@@ -22,6 +27,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserProbe, BrowserProbeToken } from './environment';
 import { type BugseeLaunchOptions, launch } from './launch';
@@ -499,5 +505,35 @@ describe('launch', () => {
     await client.logException(new Error('boom'));
     await vi.waitFor(() => expect(puts.length).toBeGreaterThan(0)); // persisted before upload
     await vi.waitFor(() => expect(map.size).toBe(0)); // removed after a successful upload
+  });
+
+  it('defers recovery until an async (persistent) bundle store has hydrated', async () => {
+    // A persistent store with controllable hydration: recover() must wait for whenReady so list() sees
+    // the leftover (a synchronous store recovers immediately and would miss a not-yet-hydrated one).
+    let resolveLoad: (entries: Array<[string, Uint8Array]>) => void = () => {};
+    const blob: AsyncBlobStore = {
+      loadAll: () => new Promise((resolve) => (resolveLoad = resolve)),
+      put: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    };
+    const store = createPersistentBundleStore(blob);
+    const transport = uploadTransport();
+    launchTracked('tok', baseOptions({ transport, bundleStore: store, captureStore: memStore() }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(false);
+    resolveLoad([['left', pendingBundle('prior reload')]]); // hydration surfaces a leftover
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true),
+    );
+  });
+
+  it('persist:true builds an IndexedDB bundle store and recovers a leftover across a reload', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    await createIdbBlobStore().put('left-1', pendingBundle('prior crash')); // a prior run's leftover
+    const transport = uploadTransport();
+    launchTracked('tok', baseOptions({ transport, persist: true, captureStore: memStore() }));
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true),
+    );
   });
 });

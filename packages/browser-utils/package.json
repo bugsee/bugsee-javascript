@@ -24,5 +24,8 @@
   },
   "dependencies": {
     "@bugsee/core": "workspace:*"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
   }
 }
