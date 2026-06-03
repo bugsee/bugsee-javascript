@@ -1,0 +1,287 @@
+import { fetchTransport } from '@bugsee/browser-utils';
+import {
+  createConsoleInterceptor,
+  createLogCaptureProvider,
+  createSystemEventsProvider,
+  createSystemTracesProvider,
+  installNetworkCapture,
+  type TraceSample,
+} from '@bugsee/capture';
+import {
+  type BugseeClient,
+  type BundleStore,
+  BundleStoreToken,
+  type CaptureStore,
+  type Clock,
+  COMMON_OPTION_DEFINITIONS,
+  createBugseeApi,
+  createBundleUploader,
+  createClient,
+  createDurableUploadPipeline,
+  createMemoryCaptureStore,
+  createServiceContainer,
+  createUploadPipeline,
+  defineService,
+  getCarrierClient,
+  getOrCreateInterceptor,
+  getServiceManifests,
+  type HttpRequestOptions,
+  type HttpResponse,
+  type HttpTransport,
+  resolveLaunchOptions,
+  type Scheduler,
+  setCarrierClient,
+  TransportToken,
+} from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
+import type { WindowEvents } from './detection-providers';
+import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
+import {
+  type BrowserProbe,
+  BrowserProbeToken,
+  buildBrowserEnvironment,
+  realBrowserProbe,
+} from './environment';
+import { createBrowserSystemEventsSource } from './system-events';
+import { createBrowserMemorySampler } from './system-metrics';
+
+// @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
+// launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
+// and the shared capture layer, then starts it:
+//   fetch transport → BugseeApi + BundleUploader → UploadPipeline ─┐
+//   browser EnvironmentEnvelope (navigator/screen) ────────────────┤→ createClient
+//   in-memory capture store (IndexedDB persistence lands in B5) ────┘
+//   providers: console→log · network (fetch/xhr/ws/sse/webtransport) · system traces (performance.memory)
+//              · system events (process_started + pagehide)
+//   detection: window error (crash) · unhandledrejection (error)
+// Unlike node there is no process.exit window — the browser flushes via the pipeline / pagehide. The
+// returned client IS the public surface.
+
+const SDK_VERSION = '0.0.0';
+const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
+// Browser/edge capture buffer ceiling (design §966: 10 MB on browser, 50 MB on Node).
+const DEFAULT_MAX_DATA_SIZE_MB = 10;
+
+// Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
+// (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
+const BROWSER_OPTION_DEFINITIONS = [
+  ...COMMON_OPTION_DEFINITIONS,
+  { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+];
+
+export interface BugseeLaunchOptions {
+  /** API origin (no trailing slash). Default https://api.bugsee.com. */
+  endpoint?: string;
+  /** SDK version reported in the environment. Default the package version. */
+  sdkVersion?: string;
+  /** app.package_id. */
+  appId?: string;
+  /** app.version. */
+  appVersion?: string;
+  /** app.build. */
+  appBuild?: string;
+
+  /** Capture console output as logs. Default true. */
+  captureLogs?: boolean;
+  /** Capture network (fetch/xhr/ws/sse/webtransport). Default true. */
+  captureNetwork?: boolean;
+  /** Capture request/response bodies (bounded read). Default true. */
+  captureNetworkBodies?: boolean;
+  /** Max captured request/response body size in bytes. Default 20480. */
+  maxNetworkBodySize?: number;
+  /** Capture a body even when its Content-Type is missing/blank. Default false. */
+  captureNetworkBodyWithoutType?: boolean;
+  /** Capture periodic system traces (performance.memory). Default true. */
+  captureSystemTraces?: boolean;
+  /** Capture system events (process_started + pagehide). Default true. */
+  captureSystemEvents?: boolean;
+  /** Detect window errors + unhandled rejections. Default true. */
+  detectCrashes?: boolean;
+
+  /** Rolling recording window in seconds. Default 60. */
+  maxRecordingTime?: number;
+  /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
+  maxDataSize?: number;
+  /**
+   * Durably persist each bundle before upload and re-upload any left behind by a prior reload/crash.
+   * Requires a persistent bundleStore (an IndexedDB store lands in B5); a no-op without one. Default true.
+   */
+  recover?: boolean;
+  /** Internal-error sink (provider-start / operation failures). Default no-op. */
+  onError?: (error: unknown) => void;
+
+  // Injectable seams (advanced / tests) — defaults target the real browser runtime.
+  /** HTTP primitive. Default the browser fetch transport. */
+  transport?: HttpTransport;
+  /** Window event target for detection + system events. Default the global `window`. */
+  window?: WindowEvents;
+  /** Time source. Default the system clock (createClient's default). */
+  clock?: Clock;
+  /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
+  scheduler?: Scheduler;
+  /** Capture store override. Default in-memory. */
+  captureStore?: CaptureStore;
+  /** System probe for the environment envelope. Default realBrowserProbe. */
+  systemProbe?: BrowserProbe;
+  /** System-traces sampler. Default the performance.memory sampler. */
+  systemMetricsSampler?: () => readonly TraceSample[];
+  /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
+  bundleStore?: BundleStore;
+  /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
+  carrier?: object;
+}
+
+/** The launched Bugsee client — the public browser SDK surface. */
+export type Bugsee = BugseeClient;
+
+// Wrap the transport so EVERY SDK request carries X-Bugsee-Internal — the network capture's default
+// self-isolation skips it, so the SDK never records its own traffic.
+const internalTagged =
+  (transport: HttpTransport): HttpTransport =>
+  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
+    transport(url, {
+      ...options,
+      headers: { ...options.headers, 'x-bugsee-internal': '1' },
+    });
+
+export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bugsee {
+  const sdkVersion = options.sdkVersion ?? SDK_VERSION;
+  const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
+  const win = options.window ?? window;
+
+  // Bugsee is a per-process singleton (§1497): if a client was already launched (same SDK version on
+  // the process Carrier), warn and return it rather than building a second client / second handler set.
+  const carrier = options.carrier;
+  const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
+  if (alreadyLaunched !== undefined) {
+    options.onError?.(
+      new Error(
+        'Bugsee.launch() called more than once in this process; the repeat call is ignored',
+      ),
+    );
+    return alreadyLaunched;
+  }
+
+  // Resolve friendly options to canonical com.bugsee.option.* form once (the gate, the OptionsContainer,
+  // and the wire-form record in environment.sdk.options).
+  const resolved = resolveLaunchOptions(
+    options as unknown as Record<string, unknown>,
+    BROWSER_OPTION_DEFINITIONS,
+  );
+
+  // The internal service container (the client's "BugseeInternal"). Register the fetch transport, then
+  // resolve it to assemble the pipeline; hand the SAME container to createClient.
+  const services = createServiceContainer();
+  services.addService(
+    defineService(TransportToken, () => internalTagged(options.transport ?? fetchTransport)),
+  );
+
+  const transport = services.getProvider(TransportToken).getImmediate();
+  const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
+  const uploader = createBundleUploader(transport);
+  const baseUploadPipeline = createUploadPipeline({ api, uploader });
+
+  // Durable bundle queue: persist each bundle before upload and re-upload any left by a prior run.
+  // Needs a persistent bundleStore (B5 supplies an IndexedDB one); with none there's nothing durable.
+  const bundleStore = options.bundleStore;
+  if (bundleStore !== undefined) {
+    services.addService(defineService(BundleStoreToken, () => bundleStore));
+  }
+  const durable =
+    (options.recover ?? true) && bundleStore !== undefined
+      ? createDurableUploadPipeline({
+          store: bundleStore,
+          pipeline: baseUploadPipeline,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
+  const uploadPipeline = durable ?? baseUploadPipeline;
+
+  // Browser environment envelope, rebuilt at each report. Canonical options are wire-translated inside.
+  const probe = options.systemProbe ?? realBrowserProbe;
+  services.addService(defineService(BrowserProbeToken, () => probe));
+  const getEnvironment = () =>
+    buildBrowserEnvironment(
+      {
+        sdkVersion,
+        options: resolved.canonical,
+        ...(options.appId !== undefined ? { appId: options.appId } : {}),
+        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
+        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+      },
+      probe,
+    );
+
+  // Capture store: explicit override > in-memory (IndexedDB persistence lands in B5). Bounds:
+  // maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap).
+  const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
+  const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  const captureStore =
+    options.captureStore ??
+    createMemoryCaptureStore({
+      maxRecordingTimeMs: maxRecordingTime * 1000,
+      maxDataSizeBytes: maxDataSize * 1024 * 1024,
+      ...(options.clock !== undefined ? { clock: options.clock } : {}),
+    });
+
+  const client = createClient({
+    isEnabled: resolved.isEnabled,
+    launchOptions: resolved.options,
+    services,
+    uploadPipeline,
+    appToken,
+    getEnvironment,
+    captureStore,
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+    ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
+
+  // Run every contributed service manifest against the now-populated container.
+  for (const manifest of getServiceManifests(carrier)) {
+    manifest(client);
+  }
+
+  // Capture providers (each gated by its controllingOption). Console→log; network umbrella over the
+  // cross-runtime fetch/xhr/ws/sse/webtransport leaves; system traces (performance.memory); system
+  // events (process_started + pagehide). Each global-patching interceptor is shared via the Carrier.
+  const consoleInterceptor = getOrCreateInterceptor(
+    'console',
+    () => createConsoleInterceptor(),
+    carrier,
+  );
+  client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
+  const captureBodies = resolved.options.get(BugseeOption.CaptureNetworkBodies, true);
+  const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
+  const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
+  client.addCaptureProvider(network.provider);
+  client.addCaptureProvider(
+    createSystemTracesProvider({
+      sample: options.systemMetricsSampler ?? createBrowserMemorySampler(),
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+    }),
+  );
+  client.addCaptureProvider(createSystemEventsProvider(createBrowserSystemEventsSource(win)));
+
+  // Detection providers: window error → crash, unhandledrejection → error.
+  client.addDetectionProvider(createWindowErrorProvider(win));
+  client.addDetectionProvider(createUnhandledRejectionProvider(win));
+
+  client.launch();
+
+  // Re-upload any bundles a prior reload/crash left persisted (durable queue recovery).
+  durable?.recover();
+
+  // The public client. stop() clears the process Carrier slot so a later launch() starts fresh. (No
+  // process.exit handler to remove — the browser has none; the core client cleans up its providers.)
+  const stopCore = client.stop;
+  const publicClient: Bugsee = {
+    ...client,
+    stop(timeout?: number): Promise<boolean> {
+      setCarrierClient(undefined, carrier);
+      return stopCore(timeout);
+    },
+  };
+  setCarrierClient(publicClient, carrier);
+  return publicClient;
+}

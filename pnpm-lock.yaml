@@ -74,6 +74,9 @@ importers:
       '@bugsee/browser-utils':
         specifier: workspace:*
         version: link:../browser-utils
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core

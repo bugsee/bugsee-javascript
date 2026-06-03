@@ -10,7 +10,10 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/**/*.test-d.ts', 'src/**/*.d.ts'],
+      // `@bugsee/browser-utils` source leaks into coverage because vitest's external-file check is a
+      // string-prefix test and "browser-utils" starts with this package's dir name "browser". It has
+      // its own suite — exclude it so only @bugsee/browser's own files count.
+      exclude: ['src/**/*.test.ts', 'src/**/*.test-d.ts', 'src/**/*.d.ts', '**/browser-utils/**'],
       thresholds: {
         lines: 100,
         functions: 100,
