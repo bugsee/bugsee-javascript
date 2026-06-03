@@ -8,3 +8,8 @@ export {
   createPersistentBundleStore,
   type PersistentBundleStore,
 } from './idb-bundle-store';
+export {
+  createPersistentCaptureStore,
+  type PersistentCaptureStore,
+  type PersistentCaptureStoreOptions,
+} from './idb-capture-store';

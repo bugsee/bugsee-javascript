@@ -1,6 +1,7 @@
 import {
   createIdbBlobStore,
   createPersistentBundleStore,
+  createPersistentCaptureStore,
   fetchTransport,
 } from '@bugsee/browser-utils';
 import {
@@ -228,17 +229,31 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       probe,
     );
 
-  // Capture store: explicit override > in-memory (IndexedDB persistence lands in B5). Bounds:
-  // maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap).
+  // Capture store: explicit override > (persist → IndexedDB-backed rolling buffer) > in-memory. Bounds:
+  // maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap). The persistent store wraps an
+  // in-memory mirror, persisting each closed part to its own IndexedDB database ('bugsee-capture',
+  // distinct from the bundle queue) and hydrating it back on open so a post-reload report still
+  // includes pre-reload capture.
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
-  const captureStore =
-    options.captureStore ??
+  const memoryStore = () =>
     createMemoryCaptureStore({
       maxRecordingTimeMs: maxRecordingTime * 1000,
       maxDataSizeBytes: maxDataSize * 1024 * 1024,
       ...(options.clock !== undefined ? { clock: options.clock } : {}),
     });
+  const captureStore =
+    options.captureStore ??
+    (options.persist === true
+      ? createPersistentCaptureStore(
+          createIdbBlobStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
+          memoryStore(),
+          {
+            maxRecordingTimeMs: maxRecordingTime * 1000,
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          },
+        )
+      : memoryStore());
 
   const client = createClient({
     isEnabled: resolved.isEnabled,

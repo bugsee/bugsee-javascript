@@ -536,4 +536,42 @@ describe('launch', () => {
       expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true),
     );
   });
+
+  it('persist:true wraps the capture store in an IndexedDB-backed persistent store', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    // No captureStore override → launch builds the persistent capture store (db 'bugsee-capture').
+    const client = launchTracked('tok', baseOptions({ persist: true }));
+    expect(client.isLaunched()).toBe(true);
+    await new Promise((r) => setTimeout(r, 0)); // let async hydration settle
+  });
+
+  it('threads onError into the persistent capture store', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const client = launchTracked('tok', baseOptions({ persist: true, onError: vi.fn() }));
+    expect(client.isLaunched()).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('persist:true actually persists a captured part to the bugsee-capture database', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const tickCbs: Array<() => void> = [];
+    const scheduler = {
+      setInterval: (cb: () => void) => {
+        tickCbs.push(cb);
+        return 'h';
+      },
+      clearInterval: () => {},
+    };
+    launchTracked('tok', baseOptions({ persist: true, scheduler })); // no captureStore override
+    console.log('persist-me');
+    await new Promise((r) => setTimeout(r, 0)); // let the log reach the store
+    for (const cb of tickCbs) cb(); // fire the capture-store tick → flush the closed part to IDB
+    await vi.waitFor(async () => {
+      const parts = await createIdbBlobStore({
+        databaseName: 'bugsee-capture',
+        storeName: 'capture',
+      }).loadAll();
+      expect(parts.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
+    });
+  });
 });
