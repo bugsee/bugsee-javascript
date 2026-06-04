@@ -13,6 +13,7 @@ import {
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
+  ChunkStorageToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   createBugseeApi,
@@ -24,7 +25,6 @@ import {
   createServiceContainer,
   createUploadPipeline,
   defineService,
-  FileStorageAdapterToken,
   getCarrierClient,
   getOrCreateInterceptor,
   getServiceManifests,
@@ -36,11 +36,7 @@ import {
   setCarrierClient,
   TransportToken,
 } from '@bugsee/core';
-import {
-  createNodeBundleStore,
-  createNodeFileStorageAdapter,
-  httpRequest,
-} from '@bugsee/node-utils';
+import { createFsChunkStorage, createNodeBundleStore, httpRequest } from '@bugsee/node-utils';
 import { BugseeOption } from '@bugsee/protocol';
 import {
   createUncaughtExceptionProvider,
@@ -259,19 +255,19 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
-  // The file-storage adapter exists only when a dataDir is used without an explicit captureStore; it is
+  // The chunk-storage medium exists only when a dataDir is used without an explicit captureStore; it is
   // a container service (DI Phase 3) and the input to the file-backed store.
-  const fileStorageAdapter =
+  const chunkStorage =
     options.captureStore === undefined && options.dataDir !== undefined
-      ? createNodeFileStorageAdapter(options.dataDir)
+      ? createFsChunkStorage(join(options.dataDir, 'capture'))
       : undefined;
-  if (fileStorageAdapter !== undefined) {
-    services.addService(defineService(FileStorageAdapterToken, () => fileStorageAdapter));
+  if (chunkStorage !== undefined) {
+    services.addService(defineService(ChunkStorageToken, () => chunkStorage));
   }
   const captureStore =
     options.captureStore ??
-    (fileStorageAdapter !== undefined
-      ? createFileCaptureStore(fileStorageAdapter, storeOptions)
+    (chunkStorage !== undefined
+      ? createFileCaptureStore(chunkStorage, storeOptions)
       : createMemoryCaptureStore(storeOptions));
 
   const client = createClient({

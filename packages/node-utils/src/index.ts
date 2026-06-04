@@ -2,7 +2,7 @@
 // (design §5). Built test-first per docs/implementation-standards.md.
 
 export { createNodeBundleStore } from './bundle-store';
-export { createNodeFileStorageAdapter } from './file-storage-adapter';
+export { createFsChunkStorage } from './fs-chunk-storage';
 export {
   appendFileSecure,
   ensureDir,

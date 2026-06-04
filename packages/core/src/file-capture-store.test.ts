@@ -1,7 +1,8 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
+import { type ChunkStorage, createInMemoryChunkStorage } from './chunk-storage';
 import type { Clock } from './clock';
-import type { FileStorageAdapter, StoredEntry } from './contracts';
+import type { StoredEntry } from './contracts';
 import { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 
 const rec = (type: FileType, timestamp: number, serialized = '{}'): StoredEntry => ({
@@ -11,40 +12,21 @@ const rec = (type: FileType, timestamp: number, serialized = '{}'): StoredEntry 
 });
 const clockAt = (now: number): Clock => ({ wallNow: () => now, monotonicNow: () => 0 });
 
-// Capture-file name helper: <gen13>__<part12>__<type>. Default generation is the clock's wallNow at
-// construction — clockAt(10_000) below, so the default `mk` store's generation is 10_000.
-const cf = (type: string, part = 0, gen = 10_000): string =>
-  `${String(gen).padStart(13, '0')}__${String(part).padStart(12, '0')}__${type}`;
+// The default generation is the clock's wallNow at construction — clockAt(10_000) below → generation G.
+const G = 10_000;
+const mk = (storage: ChunkStorage, over: FileCaptureStoreOptions = {}) =>
+  createFileCaptureStore(storage, { clock: clockAt(10_000), ...over });
 
-// In-memory fake FileStorageAdapter (a name→text map), so the part logic is tested without disk.
-function fakeAdapter() {
-  const streams = new Map<string, string>();
-  const adapter: FileStorageAdapter = {
-    append: (name, data) => streams.set(name, (streams.get(name) ?? '') + data),
-    read: (name) => streams.get(name),
-    names: () => [...streams.keys()],
-    remove: (name) => {
-      streams.delete(name);
-    },
-  };
-  return { adapter, streams };
-}
-
-const mk = (adapter: FileStorageAdapter, over: FileCaptureStoreOptions = {}) =>
-  createFileCaptureStore(adapter, { clock: clockAt(10_000), ...over });
-
-// A 20-char ASCII payload record; with a 5-digit timestamp every such record encodes to the same
-// number of on-disk bytes (`enc` below), so byte-cap math in the tests is exact.
+// A 20-char ASCII payload; every such record encodes to the same on-disk bytes (`enc`), so the byte-cap
+// math in the tests is exact. `enc` mirrors the backend's encoding: JSON.stringify({ t, s }) + '\n'.
 const PAYLOAD = 'x'.repeat(20);
 const recBytes = (type: FileType, timestamp: number): StoredEntry => rec(type, timestamp, PAYLOAD);
-// Mirrors the store's on-disk encoding: JSON.stringify({ t, s }) + '\n' (ASCII → bytes == chars).
 const enc = (timestamp: number): number => JSON.stringify({ t: timestamp, s: PAYLOAD }).length + 1;
 const U = enc(10_000); // one record's on-disk byte size (5-digit timestamp)
 
 describe('createFileCaptureStore — add + snapshot', () => {
   it('persists records and snapshots them grouped by file type', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
+    const store = mk(createInMemoryChunkStorage());
     const log = rec('log', 10_000, '{"m":"hi"}');
     const net = rec('network', 10_000, '{"u":"x"}');
     store.add(log);
@@ -54,15 +36,35 @@ describe('createFileCaptureStore — add + snapshot', () => {
     expect(snap.get('network')).toEqual([net]);
   });
 
-  it('writes one file per (part, type), named <gen13>__<part12>__<type> (default gen = clock)', () => {
-    const { adapter, streams } = fakeAdapter();
-    mk(adapter).add(rec('log', 10_000));
-    expect([...streams.keys()]).toEqual([cf('log')]);
+  it('lays each part out as a chunk dir: a meta file + one data file per type', () => {
+    const storage = createInMemoryChunkStorage();
+    mk(storage).add(rec('log', 10_000));
+    expect(storage.chunks(G)).toEqual([0]); // one part → one chunk
+    expect(new Set(storage.files(G, 0))).toEqual(new Set(['meta', 'log']));
+    expect(storage.read(G, 0, 'log')).toBe('{"t":10000,"s":"{}"}\n');
+  });
+
+  it('writes a durable meta file on open (end null) and rewrites it on close (end + byteSize)', () => {
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage);
+    store.add(rec('log', 10_000));
+    expect(JSON.parse(storage.read(G, 0, 'meta') as string)).toEqual({
+      n: 0,
+      s: 10_000,
+      e: null,
+      b: 0,
+    });
+    store.tick(11_000); // closes part 0
+    expect(JSON.parse(storage.read(G, 0, 'meta') as string)).toEqual({
+      n: 0,
+      s: 10_000,
+      e: 11_000,
+      b: JSON.stringify({ t: 10_000, s: '{}' }).length + 1, // the one '{}' record's on-disk bytes
+    });
   });
 
   it('keeps same-type records in part order across a rotation', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
+    const store = mk(createInMemoryChunkStorage());
     store.add(rec('log', 10_000));
     store.tick(11_000);
     store.add(rec('log', 11_000));
@@ -72,20 +74,19 @@ describe('createFileCaptureStore — add + snapshot', () => {
     ]);
   });
 
-  it('ignores files belonging to no active part (a leftover/evicted part of this generation)', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
-    store.add(rec('log', 10_000)); // part0 (active)
-    adapter.append(cf('log', 99), '{"t":99,"s":"{}"}\n'); // a file for a part the store doesn't track
+  it('ignores a chunk the store does not track (a leftover/evicted part of this generation)', async () => {
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage);
+    store.add(rec('log', 10_000)); // part 0 (active)
+    storage.append(G, 99, 'log', '{"t":99,"s":"{}"}\n'); // a chunk the store doesn't track
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
 
-  it('skips a corrupt line and a stray (non-part) file', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
+  it('skips a corrupt line in a part data file', async () => {
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage);
     store.add(rec('log', 10_000, '{"m":"a"}'));
-    adapter.append(cf('log'), 'corrupt-not-json\n'); // a bad line in the part file
-    adapter.append('stray-file', 'whatever\n'); // not a part file
+    storage.append(G, 0, 'log', 'corrupt-not-json\n'); // a bad line appended to the part file
     expect((await store.snapshot().drainAll()).get('log')).toEqual([
       rec('log', 10_000, '{"m":"a"}'),
     ]);
@@ -93,80 +94,69 @@ describe('createFileCaptureStore — add + snapshot', () => {
 });
 
 describe('createFileCaptureStore — tick rotation + cleanup', () => {
-  it('deletes the files of parts outside the recording window on tick', async () => {
-    const { adapter, streams } = fakeAdapter();
-    const store = mk(adapter, { maxRecordingTimeMs: 2000 }); // cutting = now - 3000
-    store.add(rec('log', 10_000)); // part0
-    store.tick(11_000); // part0 closes @11000, part1 opens
-    store.add(rec('log', 11_000)); // part1
-    store.tick(15_000); // cutting 12000 → part0 (end 11000) evicted, its files removed
-    expect([...streams.keys()]).toEqual([cf('log', 1)]); // only part1's file remains
+  it('deletes the chunk dirs of parts outside the recording window on tick', async () => {
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage, { maxRecordingTimeMs: 2000 }); // cutting = now - 3000
+    store.add(rec('log', 10_000)); // part 0
+    store.tick(11_000); // part 0 closes @11000, part 1 opens
+    store.add(rec('log', 11_000)); // part 1
+    store.tick(15_000); // cutting 12000 → part 0 (end 11000) evicted, its chunk removed
+    expect(storage.chunks(G)).not.toContain(0); // part 0's chunk gone
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 11_000)]);
   });
 
   it('keeps a part whose end is exactly at the cutting edge (strict <)', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter, { maxRecordingTimeMs: 2000 });
+    const store = mk(createInMemoryChunkStorage(), { maxRecordingTimeMs: 2000 });
     store.add(rec('log', 10_000));
-    store.tick(12_000); // part0 end = 12000
+    store.tick(12_000); // part 0 end = 12000
     store.tick(15_000); // cutting 12000; 12000 is NOT < 12000 → kept
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
 });
 
 describe('createFileCaptureStore — generations', () => {
-  it('namespaces files by generation (a different generation does not see this one’s data)', async () => {
-    const { adapter } = fakeAdapter();
-    const a = createFileCaptureStore(adapter, { clock: clockAt(10_000), generation: 1 });
+  it('namespaces chunks by generation (a different generation does not see this one’s data)', async () => {
+    const storage = createInMemoryChunkStorage();
+    const a = createFileCaptureStore(storage, { clock: clockAt(10_000), generation: 1 });
     a.add(rec('log', 1));
-    // a second store on the same adapter for a different generation; do not let it clean a's files
-    const b = createFileCaptureStore(adapter, {
+    const b = createFileCaptureStore(storage, {
       clock: clockAt(10_000),
       generation: 2,
-      cleanOtherGenerations: false,
+      cleanOtherGenerations: false, // do not let it clean a's chunks
     });
     expect((await b.snapshot().drainAll()).size).toBe(0); // gen 2 has no records
     expect((await a.snapshot().drainAll()).get('log')).toEqual([rec('log', 1)]); // gen 1 still sees its own
   });
 
-  it('on a fresh launch, deletes other generations’ leftover capture files', () => {
-    const { adapter, streams } = fakeAdapter();
-    adapter.append(cf('log', 0, 5), '{"t":1,"s":"{}"}\n'); // a prior launch (generation 5) left this
-    createFileCaptureStore(adapter, { clock: clockAt(10_000), generation: 9 });
-    expect([...streams.keys()]).toEqual([]); // the stale generation’s file is discarded
+  it('on a fresh launch, deletes other generations’ leftover chunks', () => {
+    const storage = createInMemoryChunkStorage();
+    storage.append(5, 0, 'log', '{"t":1,"s":"{}"}\n'); // a prior launch (generation 5) left this
+    createFileCaptureStore(storage, { clock: clockAt(10_000), generation: 9 });
+    expect(storage.generations()).not.toContain(5); // the stale generation is discarded
   });
 
-  it('leaves foreign (non capture-part) files untouched on a fresh launch', () => {
-    const { adapter, streams } = fakeAdapter();
-    adapter.append('bundle_abc.zip', 'zipdata'); // e.g. a persisted crash bundle
-    adapter.append(cf('log', 0, 5), 'stale'); // a prior generation’s capture file
-    createFileCaptureStore(adapter, { clock: clockAt(10_000), generation: 9 });
-    expect([...streams.keys()]).toEqual(['bundle_abc.zip']); // bundle kept, stale capture file removed
+  it('does not delete its OWN generation’s pre-existing chunks on construction', () => {
+    const storage = createInMemoryChunkStorage();
+    storage.append(9, 0, 'log', 'mine'); // same generation as the store about to launch
+    createFileCaptureStore(storage, { clock: clockAt(10_000), generation: 9 });
+    expect(storage.read(9, 0, 'log')).toBe('mine');
   });
 
-  it('does not delete its OWN generation’s pre-existing files on construction', () => {
-    const { adapter, streams } = fakeAdapter();
-    adapter.append(cf('log', 0, 9), 'mine'); // same generation as the store about to launch
-    createFileCaptureStore(adapter, { clock: clockAt(10_000), generation: 9 });
-    expect(streams.has(cf('log', 0, 9))).toBe(true);
-  });
-
-  it('cleanOtherGenerations: false keeps other generations’ files', () => {
-    const { adapter, streams } = fakeAdapter();
-    adapter.append(cf('log', 0, 5), 'stale');
-    createFileCaptureStore(adapter, {
+  it('cleanOtherGenerations: false keeps other generations’ chunks', () => {
+    const storage = createInMemoryChunkStorage();
+    storage.append(5, 0, 'log', 'stale');
+    createFileCaptureStore(storage, {
       clock: clockAt(10_000),
       generation: 9,
       cleanOtherGenerations: false,
     });
-    expect(streams.has(cf('log', 0, 5))).toBe(true);
+    expect(storage.generations()).toContain(5);
   });
 });
 
 describe('createFileCaptureStore — maxDataSize byte bound', () => {
   it('is unbounded by default (no byte eviction)', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter); // no maxDataSizeBytes
+    const store = mk(createInMemoryChunkStorage()); // no maxDataSizeBytes
     store.add(recBytes('log', 10_000));
     store.tick(10_100);
     store.add(recBytes('log', 10_001));
@@ -175,10 +165,10 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
     expect((await store.snapshot().drainAll()).get('log')).toHaveLength(3);
   });
 
-  it('evicts whole oldest closed parts and removes their files once over the byte cap', async () => {
+  it('evicts whole oldest closed parts and removes their chunk dirs once over the byte cap', async () => {
     // cap = 3 records: part0(r0) + part1(r1) + part2(r2,r3) = 4U > 3U → drop oldest closed part0.
-    const { adapter, streams } = fakeAdapter();
-    const store = mk(adapter, { maxDataSizeBytes: 3 * U });
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage, { maxDataSizeBytes: 3 * U });
     store.add(recBytes('log', 10_000)); // part0
     store.tick(10_100);
     store.add(recBytes('log', 10_001)); // part1
@@ -187,23 +177,19 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
     store.add(recBytes('log', 10_003)); // part2 → total 4U → evict part0
     const got = (await store.snapshot().drainAll()).get('log') ?? [];
     expect(got.map((r) => r.timestamp)).toEqual([10_001, 10_002, 10_003]);
-    expect(streams.has(cf('log', 0))).toBe(false); // part0's file deleted
-    expect(streams.has(cf('log', 1))).toBe(true); // part1's file kept
+    expect(storage.chunks(G)).not.toContain(0); // part0's chunk deleted
+    expect(storage.chunks(G)).toContain(1); // part1's chunk kept
   });
 
   it('never evicts the open current part (soft bound): a single oversized part is kept', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter, { maxDataSizeBytes: 1 }); // far below one record
+    const store = mk(createInMemoryChunkStorage(), { maxDataSizeBytes: 1 }); // far below one record
     store.add(recBytes('log', 10_000)); // only (open) part → kept despite exceeding the cap
     expect((await store.snapshot().drainAll()).get('log')).toHaveLength(1);
   });
 
   it('evicts MULTIPLE oldest parts in a single add when one record overflows past several', async () => {
-    // Two 20-char records (enc = 39 bytes each, total 78, under cap 80) in their own parts, then a
-    // 40-char record (enc = 59 bytes) lands → total 137, so a SINGLE add must evict BOTH older parts.
     const recPay = (ts: number, chars: number): StoredEntry => rec('log', ts, 'x'.repeat(chars));
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter, { maxDataSizeBytes: 80 });
+    const store = mk(createInMemoryChunkStorage(), { maxDataSizeBytes: 80 });
     store.add(recPay(10_000, 20)); // part0 (39B)
     store.tick(10_100);
     store.add(recPay(10_001, 20)); // part1 (39B) → total 78
@@ -214,10 +200,10 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
   });
 
   it('keeps the byte total accurate when time-eviction also runs (no double-count drift)', async () => {
-    // window 2000ms, cap 3U. part0 is time-evicted at tick(15_000); if its bytes were not subtracted
-    // from the running total, the later adds would over-evict part1.
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter, { maxRecordingTimeMs: 2000, maxDataSizeBytes: 3 * U });
+    const store = mk(createInMemoryChunkStorage(), {
+      maxRecordingTimeMs: 2000,
+      maxDataSizeBytes: 3 * U,
+    });
     store.add(recBytes('log', 10_000)); // part0
     store.tick(11_000); // part0 closes @11000
     store.add(recBytes('log', 11_000)); // part1
@@ -231,8 +217,7 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
 
 describe('createFileCaptureStore — snapshot isolation', () => {
   it('freezes the snapshot: capture after snapshot() does not change it', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
+    const store = mk(createInMemoryChunkStorage());
     store.add(rec('log', 10_000));
     const snap = store.snapshot();
     store.add(rec('log', 10_001)); // after the snapshot
@@ -244,8 +229,7 @@ describe('createFileCaptureStore — snapshot isolation', () => {
   });
 
   it('release() empties the snapshot', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter);
+    const store = mk(createInMemoryChunkStorage());
     store.add(rec('log', 10_000));
     const snap = store.snapshot();
     snap.release();
@@ -253,42 +237,45 @@ describe('createFileCaptureStore — snapshot isolation', () => {
   });
 
   it('snapshot of an empty store yields nothing', async () => {
-    expect((await mk(fakeAdapter().adapter).snapshot().drainAll()).size).toBe(0);
+    expect((await mk(createInMemoryChunkStorage()).snapshot().drainAll()).size).toBe(0);
   });
 
   it('works with default options (system clock, 60s window)', async () => {
-    const { adapter } = fakeAdapter();
-    const store = createFileCaptureStore(adapter); // no clock/window → defaults
+    const store = createFileCaptureStore(createInMemoryChunkStorage()); // no clock/window → defaults
     store.add(rec('log', 10_000)); // no tick → current part never evicted
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
 
-  it('tolerates an active part file that reads as undefined (removed mid-snapshot)', async () => {
-    const adapter: FileStorageAdapter = {
+  it('tolerates an active part data file that reads as undefined (removed mid-snapshot)', async () => {
+    // A ChunkStorage that lists a data file but reads it as undefined.
+    const storage: ChunkStorage = {
       append: () => {},
+      write: () => {},
       read: () => undefined,
-      names: () => [cf('log', 0)], // part 0 is active, but its file reads undefined
-      remove: () => {},
+      files: () => ['log'],
+      removeChunk: () => {},
+      chunks: () => [],
+      generations: () => [],
+      removeGeneration: () => {},
     };
-    expect((await mk(adapter).snapshot().drainAll()).size).toBe(0);
+    expect((await mk(storage).snapshot().drainAll()).size).toBe(0);
   });
 });
 
 describe('createFileCaptureStore — clear', () => {
-  it('removes this generation’s files and keeps working afterwards', async () => {
-    const { adapter, streams } = fakeAdapter();
-    const store = mk(adapter);
+  it('removes this generation’s chunks and keeps working afterwards', async () => {
+    const storage = createInMemoryChunkStorage();
+    const store = mk(storage);
     store.add(rec('log', 10_000));
     store.add(rec('network', 10_000));
     store.clear();
-    expect(streams.size).toBe(0);
+    expect(storage.chunks(G).length).toBeLessThanOrEqual(1); // only the fresh post-clear part may exist
     store.add(rec('log', 10_001));
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_001)]);
   });
 
   it('resets the byte total so post-clear captures are not wrongly evicted', async () => {
-    const { adapter } = fakeAdapter();
-    const store = mk(adapter, { maxDataSizeBytes: 3 * U });
+    const store = mk(createInMemoryChunkStorage(), { maxDataSizeBytes: 3 * U });
     store.add(recBytes('log', 10_000));
     store.add(recBytes('log', 10_001));
     store.add(recBytes('log', 10_002)); // total 3U
@@ -300,16 +287,16 @@ describe('createFileCaptureStore — clear', () => {
     expect(got.map((r) => r.timestamp)).toEqual([10_003, 10_004]);
   });
 
-  it('clear() leaves another generation’s files intact', () => {
-    const { adapter, streams } = fakeAdapter();
-    adapter.append(cf('log', 0, 5), 'other-gen');
-    const store = createFileCaptureStore(adapter, {
+  it('clear() leaves another generation’s chunks intact', () => {
+    const storage = createInMemoryChunkStorage();
+    storage.append(5, 0, 'log', 'other-gen');
+    const store = createFileCaptureStore(storage, {
       clock: clockAt(10_000),
       generation: 9,
       cleanOtherGenerations: false,
     });
     store.add(rec('log', 10_000));
     store.clear();
-    expect(streams.has(cf('log', 0, 5))).toBe(true); // only generation 9’s files were cleared
+    expect(storage.read(5, 0, 'log')).toBe('other-gen'); // only generation 9’s chunks were cleared
   });
 });

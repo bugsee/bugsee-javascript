@@ -7,12 +7,12 @@ import {
   type BundleStore,
   BundleStoreToken,
   CaptureStoreToken,
+  ChunkStorageToken,
   type Clock,
   contributeServiceManifest,
   createCaptureExporter,
   createMemoryCaptureStore,
   defineService,
-  FileStorageAdapterToken,
   getCarrier,
   type HttpRequestOptions,
   type HttpResponse,
@@ -209,11 +209,11 @@ describe('launch', () => {
     expect(client.getService(CaptureStoreToken)).toBe(store);
   });
 
-  it('registers bundleStore + fileStorageAdapter as services in file-backed (dataDir) mode', () => {
+  it('registers bundleStore + chunkStorage as services in file-backed (dataDir) mode', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-di-'));
     const client = launchTracked('tok', baseOptions({ dataDir: dir }));
     expect(typeof client.getService(BundleStoreToken).put).toBe('function');
-    expect(typeof client.getService(FileStorageAdapterToken).append).toBe('function');
+    expect(typeof client.getService(ChunkStorageToken).append).toBe('function');
   });
 
   it('registers an injected bundleStore as the resolvable service (by identity)', () => {
@@ -225,10 +225,10 @@ describe('launch', () => {
     expect(client.getService(BundleStoreToken)).toBe(store); // the exact instance the durable queue uses
   });
 
-  it('does not register bundleStore/fileStorageAdapter in in-memory mode', () => {
+  it('does not register bundleStore/chunkStorage in in-memory mode', () => {
     const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
     expect(() => client.getService(BundleStoreToken)).toThrow();
-    expect(() => client.getService(FileStorageAdapterToken)).toThrow();
+    expect(() => client.getService(ChunkStorageToken)).toThrow();
   });
 
   it('runs a carrier-contributed service manifest against the launched container (auto-registration)', () => {
@@ -651,16 +651,16 @@ describe('launch', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-launch-'));
     launchTracked('tok', baseOptions({ dataDir: dir })); // no clock → default system clock
     console.log('to-disk-from-launch-test');
-    // The file store writes per-part capture files (generation__part__type).
-    expect(readdirSync(dir).some((name) => /^\d{13}__\d{12}__/.test(name))).toBe(true);
+    // The file store lays out chunk dirs under <dataDir>/capture/<gen13>/<chunk12>/{meta,<type>}.
+    expect(readdirSync(join(dir, 'capture')).some((name) => /^\d{13}$/.test(name))).toBe(true);
   });
 
   it('uses the injected clock for the file-backed generation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-launch-clk-'));
     launchTracked('tok', baseOptions({ dataDir: dir, clock: fixedClock }));
     console.log('to-disk-with-clock');
-    // generation = clock.wallNow() = 1000, zero-padded to 13 digits.
-    expect(readdirSync(dir).some((name) => name.startsWith('0000000001000__'))).toBe(true);
+    // generation = clock.wallNow() = 1000 → the zero-padded-to-13 generation dir name.
+    expect(readdirSync(join(dir, 'capture'))).toContain('0000000001000');
   });
 
   it('defaults the transport to node-utils httpRequest when none is injected', () => {

@@ -41,6 +41,7 @@ export {
 } from './carrier';
 export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
+export { type ChunkStorage, ChunkStorageToken, createInMemoryChunkStorage } from './chunk-storage';
 export {
   type Breadcrumb,
   type BreadcrumbInput,
@@ -64,7 +65,6 @@ export type {
   Client,
   DetectionProvider,
   Extension,
-  FileStorageAdapter,
   Interceptor,
   Operation,
   OperationDispatcher,
@@ -72,7 +72,7 @@ export type {
   OptionsContainer,
   StoredEntry,
 } from './contracts';
-export { CaptureStoreToken, FileStorageAdapterToken } from './contracts';
+export { CaptureStoreToken } from './contracts';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {
   createDetectionCoordinator,
@@ -102,6 +102,7 @@ export { createEventEmitter, type EventEmitter, type Listener } from './event-em
 export type { InputEvent, LogEvent } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
+export { createFileChunkBackend, type FileChunkBackendOptions } from './file-chunk-backend';
 export {
   type BreadcrumbFilter,
   createFilterStore,
