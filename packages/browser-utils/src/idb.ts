@@ -84,3 +84,91 @@ export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlob
     remove: (id) => run('readwrite', (store) => store.delete(id)).then(() => undefined),
   };
 }
+
+/**
+ * A minimal async keyed byte store with PREFIX range reads/deletes — the durable substrate for the
+ * IndexedDB chunk backend (the durable-as-captured capture store). Keys are strings; a prefix scan uses
+ * an inclusive [prefix, prefix+'￿'] key range, so fixed-width zero-padded keys (`d/<gen>/<chunk>/
+ * <seq>`, `m/<gen>/<chunk>`) read/delete a chunk or generation as one range.
+ */
+export interface AsyncKeyedStore {
+  /** Persist `bytes` under `key`, replacing any existing value. */
+  put(key: string, bytes: Uint8Array): Promise<void>;
+  /** Read every [key, bytes] whose key starts with `prefix`, ascending by key. */
+  readPrefix(prefix: string): Promise<Array<[string, Uint8Array]>>;
+  /** Delete every key starting with `prefix`; a no-op if none match. */
+  deletePrefix(prefix: string): Promise<void>;
+}
+
+/** Build an {@link AsyncKeyedStore} over IndexedDB (lazily opening the database on first use). */
+export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKeyedStore {
+  const databaseName = options.databaseName ?? 'bugsee';
+  const storeName = options.storeName ?? 'keyed';
+  const idb = options.indexedDB ?? globalThis.indexedDB;
+
+  let dbPromise: Promise<IDBDatabase> | undefined;
+  const open = (): Promise<IDBDatabase> => {
+    if (dbPromise === undefined) {
+      dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+        const request = idb.open(databaseName, 1);
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore(storeName);
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(reqError(request));
+      });
+    }
+    return dbPromise;
+  };
+
+  // The inclusive prefix range: all keys k with prefix ≤ k ≤ prefix+'￿'. With fixed-width padded
+  // keys this matches exactly the intended chunk/generation group and nothing beyond it.
+  const prefixRange = (prefix: string): IDBKeyRange => IDBKeyRange.bound(prefix, `${prefix}￿`);
+
+  return {
+    put: (key, bytes) =>
+      open().then(
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const request = db
+              .transaction(storeName, 'readwrite')
+              .objectStore(storeName)
+              .put(bytes, key);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(reqError(request));
+          }),
+      ),
+
+    readPrefix: (prefix) =>
+      open().then(
+        (db) =>
+          new Promise<Array<[string, Uint8Array]>>((resolve, reject) => {
+            const transaction = db.transaction(storeName, 'readonly');
+            const store = transaction.objectStore(storeName);
+            const range = prefixRange(prefix);
+            const keysRequest = store.getAllKeys(range);
+            const valuesRequest = store.getAll(range);
+            transaction.oncomplete = () => {
+              const keys = keysRequest.result;
+              const values = valuesRequest.result as Uint8Array[];
+              resolve(keys.map((key, index) => [String(key), values[index] as Uint8Array]));
+            };
+            transaction.onerror = () =>
+              reject(transaction.error ?? new Error('indexedDB readPrefix failed'));
+          }),
+      ),
+
+    deletePrefix: (prefix) =>
+      open().then(
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const request = db
+              .transaction(storeName, 'readwrite')
+              .objectStore(storeName)
+              .delete(prefixRange(prefix));
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(reqError(request));
+          }),
+      ),
+  };
+}

@@ -23,7 +23,9 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "@bugsee/protocol": "workspace:*",
+    "@bugsee/util": "workspace:*"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0"

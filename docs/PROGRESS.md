@@ -67,15 +67,15 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 ### Browser platform (Milestone 3 — COMPLETE, on `master`)
 **`@bugsee/browser-utils`** (runtime primitives, shared by browser/web-worker/service-worker):
 - `fetchTransport` / `createFetchTransport(fetchImpl?)` — `HttpTransport` over `fetch` (AbortController timeout, string/Uint8Array body, lowercased response headers, non-2xx resolves). Drops the node gzip/Accept-Encoding logic (the browser owns content negotiation).
-- `createIdbBlobStore(opts)` — a minimal async key→bytes `AsyncBlobStore` over IndexedDB (memoized open, injectable `IDBFactory`).
+- `createIdbBlobStore(opts)` — a minimal async key→bytes `AsyncBlobStore` over IndexedDB (memoized open, injectable `IDBFactory`); `createIdbKeyedStore(opts)` — an `AsyncKeyedStore` with prefix range reads/deletes (`put`/`readPrefix`/`deletePrefix`), the substrate for the chunk backend.
 - `createPersistentBundleStore(blob, onError?)` — the SYNC core `BundleStore` over async IDB via an in-memory mirror + async write-through + `whenReady` hydrate-on-open (a `touched` set so a live put/remove during hydration wins).
-- `createPersistentCaptureStore(blob, mirror, opts)` — the SYNC core `CaptureStore` over async IDB: closed parts flush to IDB + window eviction; hydrate-back on open; run-unique part-id prefix avoids hydration-window collisions.
+- `createIdbChunkBackend(keyed, {generation, cleanOtherGenerations?, onError?})` + `createIdbChunkCaptureStore(keyed, opts)` — the durable IndexedDB `CaptureStore`, **durable-as-captured** (replaces the removed B5b `createPersistentCaptureStore` in-memory mirror): each captured entry is written through as `d/<gen13>/<chunk12>/<seq12>` and each chunk's metadata as `m/<gen13>/<chunk12>` (the same chunk-group model as the node file store, over async keyed records). Writes are sync-issue / async-complete on a single in-order queue (loss window ≤1 entry); `snapshot()` pins frozen parts (eviction defers the delete until `release()`) and reads each part's data range bounded by the snapshot-time count; `listParts`/`listGenerations` read durable meta (the recovery index). See the capture-storage note below.
 
 **`@bugsee/browser`**:
 - `buildBrowserEnvironment(input, probe)` — §8.6 envelope (`platform.type: 'web'`) via injectable `BrowserProbe` (navigator/screen/Intl; raw UA as `platform.version` — backend parses; deviceMemory/hardwareConcurrency optional). `optionsToWire` on `sdk.options`.
 - `createWindowErrorProvider` / `createUnhandledRejectionProvider` — window `error` → crash / `unhandledrejection` → error; `parseStack` dispatches V8 (`at fn (loc)`) vs SpiderMonkey/JSC (`fn@loc`) dialects (core's `parseLocation` reused).
 - `createBrowserMemorySampler` (performance.memory traces, []-when-absent) + `createBrowserSystemEventsSource` (`process_started` + `pagehide`).
-- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; memory traces; system events) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + a persistent capture store (in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
+- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; memory traces; system events) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
 
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
 No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §372). `createNoopCaptureProvider`/`createNoopInterceptor` (extend `CaptureProviderBase`/`InterceptorBase`) + named shims `createViewHierarchyProviderShim`/`createBreadcrumbsProviderShim`/`createXhrInterceptorShim`. Each is a structurally-valid provider/interceptor that captures nothing and warns ONCE (`logger.warnOnce`, keyed `shim:<name>`, message `<name> is a no-op on <runtime>; ignored`) on ACTIVATION (provider start / interceptor activate) — construction is side-effect-free. Logger (`Pick<Logger,'warnOnce'>`) + runtime label are injected by the platform (runtime-agnostic). **`replay` is intentionally NOT a shim** (design §372: option-driven, ignored-with-warn at option resolution). Per-platform named re-exports land with the platform packages.
@@ -196,11 +196,35 @@ A runnable browser SDK + IndexedDB persistence, built in five reviewed slices (c
 detection + V8/SpiderMonkey/JSC stack-dialect dispatch (core `parseLocation` extracted) · **B4** the
 `launch()` composition root (console + network + system traces/events + detection; no `process.exit`
 path) · **B5a** IndexedDB durable bundle queue (crash recovery across a reload, `recover()` deferred to
-hydration) · **B5b** persistent IndexedDB capture store (rolling buffer survives a reload). Full detail
+hydration) · **B5b** persistent IndexedDB capture store (**superseded** by the capture-storage redesign
+below — its in-memory mirror lost the open chunk on an unpredicted termination). Full detail
 in §1 "Browser platform". Each slice: test-first + mutator loop + multi-agent review to convergence,
 100% line/fn/stmt coverage. `fake-indexeddb` is the only new (dev) dependency. Deferred follow-ups:
 UA parsing (backend does it), richer DOM lifecycle events (freeze/resume/bfcache), DOM-snapshot capture
 (view hierarchy / click breadcrumbs — a later replay milestone).
+
+### Capture-storage redesign — durable-as-captured chunk store — **COMPLETE (2026-06-04, on `master`)**
+The persistent capture store now follows the **Android directory-per-chunk** model (user-pinned): the
+durable store is the source of truth, memory holds ONLY a chunk metadata index, and every entry is
+written through **as captured** — so an unpredicted termination (tab close, OOM/kill, navigation) loses
+at most ~1 entry, not the whole open chunk (B5b's flaw). Two layers in core, one chunk-store impl for
+every backend:
+- **Layer 1 `createChunkCaptureStore(backend, opts)`** (Android `CapturePartManager`) — 1s parts, an
+  in-memory `PartMeta` index only, time-window + `maxDataSize` byte-cap eviction, sync `snapshot()`.
+- **Layer 2 `ChunkBackend`** — `openPart`/`appendEntry`→bytes/`closePart`/`removePart`/
+  `removeGeneration`/`snapshot(frozenParts)`/`listParts`/`listGenerations` (the durable recovery index).
+  Backends: `createMemoryChunkBackend` (RAM, ephemeral; behind `createMemoryCaptureStore`) ·
+  `createFileChunkBackend` over a **`ChunkStorage`** directory seam (node `createFsChunkStorage` at
+  `<root>/<gen13>/<chunk12>/{meta,<type>}`; behind `createFileCaptureStore`) · `createIdbChunkBackend`
+  over `createIdbKeyedStore` (per-entry `d/…` + per-chunk `m/…` records; async in-order write queue;
+  snapshot pinning; behind `createIdbChunkCaptureStore` — replaces B5b in the browser launch).
+Each part persists a `meta` record (number/start/end/byteSize) on open + close, so `listParts`/
+`listGenerations` are a real recovery index (no data scan). The flat `FileStorageAdapter` was removed
+(superseded). Built S1→S4, each test-first + mutator loop + multi-agent review to convergence, 100%
+line/fn coverage. Behavior-preserving for the memory + node-file stores. **Recovery** (consuming a
+preserved prior generation that didn't shut down cleanly — clean-shutdown flag, continuation, terminating
+snapshot, recovered-report assembly) is the explicit NEXT milestone, built on the `listParts`/
+`listGenerations` + `cleanOtherGenerations:false` seam this delivered.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).

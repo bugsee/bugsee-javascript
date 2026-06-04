@@ -3,13 +3,20 @@
 // the fetch HttpTransport + IndexedDB-backed durable stores (DOM instrumentation — pending).
 // Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
 export { createFetchTransport, type FetchLike, fetchTransport } from './fetch-transport';
-export { type AsyncBlobStore, createIdbBlobStore, type IdbBlobStoreOptions } from './idb';
+export {
+  type AsyncBlobStore,
+  type AsyncKeyedStore,
+  createIdbBlobStore,
+  createIdbKeyedStore,
+  type IdbBlobStoreOptions,
+} from './idb';
 export {
   createPersistentBundleStore,
   type PersistentBundleStore,
 } from './idb-bundle-store';
 export {
-  createPersistentCaptureStore,
-  type PersistentCaptureStore,
-  type PersistentCaptureStoreOptions,
-} from './idb-capture-store';
+  createIdbChunkBackend,
+  createIdbChunkCaptureStore,
+  type IdbChunkBackendOptions,
+  type IdbChunkCaptureStoreOptions,
+} from './idb-chunk-backend';

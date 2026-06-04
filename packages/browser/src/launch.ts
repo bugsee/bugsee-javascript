@@ -1,7 +1,8 @@
 import {
   createIdbBlobStore,
+  createIdbChunkCaptureStore,
+  createIdbKeyedStore,
   createPersistentBundleStore,
-  createPersistentCaptureStore,
   fetchTransport,
 } from '@bugsee/browser-utils';
 import {
@@ -229,31 +230,29 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       probe,
     );
 
-  // Capture store: explicit override > (persist → IndexedDB-backed rolling buffer) > in-memory. Bounds:
-  // maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap). The persistent store wraps an
-  // in-memory mirror, persisting each closed part to its own IndexedDB database ('bugsee-capture',
-  // distinct from the bundle queue) and hydrating it back on open so a post-reload report still
-  // includes pre-reload capture.
+  // Capture store: explicit override > (persist → IndexedDB-backed durable chunk store) > in-memory.
+  // Bounds: maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap). The persistent store is the
+  // chunk store over an IndexedDB chunk backend (durable-as-captured: each entry is written through as
+  // captured, only chunk metadata lives in RAM) in its own database ('bugsee-capture', distinct from the
+  // bundle queue), so a post-reload/crash report can recover the prior generation's chunks.
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
-  const memoryStore = () =>
-    createMemoryCaptureStore({
-      maxRecordingTimeMs: maxRecordingTime * 1000,
-      maxDataSizeBytes: maxDataSize * 1024 * 1024,
-      ...(options.clock !== undefined ? { clock: options.clock } : {}),
-    });
+  const storeBounds = {
+    maxRecordingTimeMs: maxRecordingTime * 1000,
+    maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  };
   const captureStore =
     options.captureStore ??
     (options.persist === true
-      ? createPersistentCaptureStore(
-          createIdbBlobStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
-          memoryStore(),
+      ? createIdbChunkCaptureStore(
+          createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
           {
-            maxRecordingTimeMs: maxRecordingTime * 1000,
+            ...storeBounds,
             ...(options.onError !== undefined ? { onError: options.onError } : {}),
           },
         )
-      : memoryStore());
+      : createMemoryCaptureStore(storeBounds));
 
   const client = createClient({
     isEnabled: resolved.isEnabled,

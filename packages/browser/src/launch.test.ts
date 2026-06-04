@@ -564,14 +564,15 @@ describe('launch', () => {
     };
     launchTracked('tok', baseOptions({ persist: true, scheduler })); // no captureStore override
     console.log('persist-me');
-    await new Promise((r) => setTimeout(r, 0)); // let the log reach the store
-    for (const cb of tickCbs) cb(); // fire the capture-store tick → flush the closed part to IDB
+    await new Promise((r) => setTimeout(r, 0)); // let the log reach the store (persisted as captured)
+    for (const cb of tickCbs) cb(); // a tick closes the part (rewrites its durable meta)
     await vi.waitFor(async () => {
-      const parts = await createIdbBlobStore({
+      // The durable chunk store writes data + meta records to the 'capture' store as entries are captured.
+      const records = await createIdbBlobStore({
         databaseName: 'bugsee-capture',
         storeName: 'capture',
       }).loadAll();
-      expect(parts.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
+      expect(records.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
     });
   });
 });

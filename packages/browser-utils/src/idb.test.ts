@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createIdbBlobStore } from './idb';
+import { createIdbBlobStore, createIdbKeyedStore } from './idb';
 
 const bytes = (...n: number[]) => new Uint8Array(n);
 
@@ -72,6 +72,95 @@ describe('createIdbBlobStore', () => {
     const store = createIdbBlobStore({ databaseName: 'global-db' });
     await store.put('a', bytes(3));
     expect(await store.loadAll()).toEqual([['a', bytes(3)]]);
+  });
+});
+
+describe('createIdbKeyedStore', () => {
+  it('put + readPrefix round-trips, ascending by key', async () => {
+    const store = createIdbKeyedStore({ indexedDB: new IDBFactory() });
+    await store.put('d/5/02', bytes(2));
+    await store.put('d/5/00', bytes(0));
+    await store.put('d/5/01', bytes(1));
+    expect(await store.readPrefix('d/5/')).toEqual([
+      ['d/5/00', bytes(0)],
+      ['d/5/01', bytes(1)],
+      ['d/5/02', bytes(2)],
+    ]);
+  });
+
+  it('readPrefix returns only keys under the prefix (not siblings)', async () => {
+    const store = createIdbKeyedStore({ indexedDB: new IDBFactory() });
+    await store.put('m/5/0', bytes(1));
+    await store.put('d/5/0/000', bytes(2)); // a data record, different keyspace
+    await store.put('m/6/0', bytes(3)); // a different generation
+    expect(await store.readPrefix('m/5/')).toEqual([['m/5/0', bytes(1)]]);
+  });
+
+  it('put replaces an existing value', async () => {
+    const store = createIdbKeyedStore({ indexedDB: new IDBFactory() });
+    await store.put('m/5/0', bytes(1));
+    await store.put('m/5/0', bytes(9, 9));
+    expect(await store.readPrefix('m/5/')).toEqual([['m/5/0', bytes(9, 9)]]);
+  });
+
+  it('deletePrefix removes the whole range (and is a no-op when none match)', async () => {
+    const store = createIdbKeyedStore({ indexedDB: new IDBFactory() });
+    await store.put('d/5/00', bytes(0));
+    await store.put('d/5/01', bytes(1));
+    await store.put('d/6/00', bytes(2)); // a different generation, kept
+    await store.deletePrefix('d/5/');
+    await store.deletePrefix('d/9/'); // no match → no-op
+    expect(await store.readPrefix('d/')).toEqual([['d/6/00', bytes(2)]]);
+  });
+
+  it('durably persists across a reopen (new store instance, same database)', async () => {
+    const idb = new IDBFactory();
+    const first = createIdbKeyedStore({ indexedDB: idb, databaseName: 'cap', storeName: 'chunks' });
+    await first.put('m/5/0', bytes(7));
+    const second = createIdbKeyedStore({
+      indexedDB: idb,
+      databaseName: 'cap',
+      storeName: 'chunks',
+    });
+    expect(await second.readPrefix('m/')).toEqual([['m/5/0', bytes(7)]]);
+  });
+
+  it('reuses the same open database across operations (opens once)', async () => {
+    const idb = new IDBFactory();
+    const openSpy = vi.spyOn(idb, 'open');
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    await store.put('a', bytes(1));
+    await store.readPrefix('a');
+    await store.deletePrefix('a');
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults to globalThis.indexedDB', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const store = createIdbKeyedStore({ databaseName: 'global-keyed' });
+    await store.put('a', bytes(3));
+    expect(await store.readPrefix('a')).toEqual([['a', bytes(3)]]);
+  });
+
+  it('rejects put/readPrefix/deletePrefix when the database fails to open', async () => {
+    const store = createIdbKeyedStore({
+      indexedDB: openFailsFactory(new DOMException('open fail')),
+    });
+    await expect(store.put('a', bytes(1))).rejects.toThrow('open fail');
+    await expect(store.readPrefix('a')).rejects.toThrow('open fail');
+    await expect(store.deletePrefix('a')).rejects.toThrow('open fail');
+  });
+
+  it('rejects when a request or the readPrefix transaction errors', async () => {
+    const store = createIdbKeyedStore({ indexedDB: requestsFailFactory() });
+    await expect(store.put('a', bytes(1))).rejects.toThrow('req fail');
+    await expect(store.deletePrefix('a')).rejects.toThrow('req fail');
+    await expect(store.readPrefix('a')).rejects.toThrow('tx fail');
+  });
+
+  it('falls back to a generic error when the readPrefix transaction carries no error object', async () => {
+    const store = createIdbKeyedStore({ indexedDB: requestsFailFactory(null) });
+    await expect(store.readPrefix('a')).rejects.toThrow('indexedDB readPrefix failed');
   });
 });
 

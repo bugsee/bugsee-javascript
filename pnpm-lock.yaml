@@ -96,6 +96,12 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
     devDependencies:
       fake-indexeddb:
         specifier: ^6.0.0
