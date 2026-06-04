@@ -39,6 +39,8 @@ export {
   type ServiceManifest,
   setCarrierClient,
 } from './carrier';
+export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
+export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
 export {
   type Breadcrumb,
   type BreadcrumbInput,
@@ -115,6 +117,7 @@ export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,
 } from './memory-capture-store';
+export { createMemoryChunkBackend, type MemoryChunkBackendOptions } from './memory-chunk-backend';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   COMMON_OPTION_DEFINITIONS,
