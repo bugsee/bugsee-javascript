@@ -16,6 +16,7 @@ import { BugseeError } from './errors';
 import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
+import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import {
   type Bundle,
@@ -378,6 +379,139 @@ function fakeUpload() {
   const uploadPipeline: UploadPipeline = { enqueue, flush, drop: vi.fn() };
   return { uploadPipeline, flush, enqueue };
 }
+
+function fakeMarkers() {
+  const put = vi.fn<(marker: ReportMarker) => void>();
+  const remove = vi.fn<(id: string) => void>();
+  const store: ReportMarkerStore = { put, list: () => [], remove };
+  return { store, put, remove };
+}
+
+describe('createClient — capture-recovery markers', () => {
+  it('logException persists a recovery marker BEFORE assembly and clears it on settle', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put, remove } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 42 },
+    });
+    client.setAttribute('k', 1);
+    client.setUserIdentifier('u@e.com');
+
+    const result = await client.logException(new Error('boom'));
+
+    expect(result.ok).toBe(true);
+    expect(put).toHaveBeenCalledTimes(1);
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    expect(marker.generation).toBe(42);
+    expect(marker.attributes).toEqual({ k: 1 }); // incident-time global attributes
+    expect(marker.userIdentifier).toBe('u@e.com');
+    expect(marker.request.report.summary).toBe('boom');
+    // put happened before the bundle was enqueued (so a crash during assembly still leaves the marker).
+    expect(
+      (put.mock.invocationCallOrder[0] as number) < (enqueue.mock.invocationCallOrder[0] as number),
+    ).toBe(true);
+    expect(remove).toHaveBeenCalledWith(marker.request.id); // cleared on settle
+  });
+
+  it('a detection report also routes through the marker hook', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put, remove } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 7 },
+    });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+
+    fire(createReportingRequest({ source: { type: 'crash' }, id: 'det-1' }));
+
+    expect(put).toHaveBeenCalledTimes(1);
+    expect((put.mock.calls[0]?.[0] as ReportMarker).generation).toBe(7);
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith('det-1')); // cleared on settle
+  });
+
+  it('a marker put failure routes to onError and the report still proceeds', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const store: ReportMarkerStore = {
+      put: () => {
+        throw new Error('put boom');
+      },
+      list: () => [],
+      remove: vi.fn(),
+    };
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+      onError,
+    });
+    const result = await client.logException(new Error('x'));
+    expect(result.ok).toBe(true); // report still delivered
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('a marker remove failure on settle routes to onError', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const onError = vi.fn();
+    const store: ReportMarkerStore = {
+      put: vi.fn(),
+      list: () => [],
+      remove: () => {
+        throw new Error('remove boom');
+      },
+    };
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+      onError,
+    });
+    await client.logException(new Error('x'));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
+  });
+
+  it('clears the marker even when the upload fails (the durable bundle queue then owns delivery)', async () => {
+    const enqueue = vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false }));
+    const uploadPipeline: UploadPipeline = {
+      enqueue,
+      flush: vi.fn(async () => true),
+      drop: vi.fn(),
+    };
+    const { store, remove } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    expect(await client.logException(new Error('x'))).toEqual({ ok: false });
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1)); // still cleared
+  });
+
+  it('a vetoed report writes no marker', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({ before: () => null });
+    expect(await client.logException(new Error('x'))).toEqual({ ok: false });
+    expect(put).not.toHaveBeenCalled();
+  });
+});
 
 describe('createClient — lifecycle', () => {
   it('is not launched initially', () => {

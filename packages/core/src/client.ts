@@ -49,6 +49,7 @@ import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
+import type { ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
@@ -187,6 +188,13 @@ export interface CreateClientOptions {
   /** Trigger pipeline override; when omitted, built from uploadPipeline + appToken + getEnvironment. */
   triggerPipeline?: TriggerPipeline;
   /**
+   * Capture-recovery marker hook: a durable marker store + this launch's capture generation. When set,
+   * each report persists a pending marker (tagged with the generation) BEFORE assembly and clears it on
+   * settle — so an incident that beats the bundle assembly is rebuilt next launch from the durable
+   * capture chunks. Omitted = no recovery markers (e.g. in-memory store / recovery disabled).
+   */
+  reportMarkers?: { store: ReportMarkerStore; generation: number };
+  /**
    * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
@@ -324,6 +332,38 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const applyReportBefore = (request: ReportingRequest): ReportingRequest | null =>
     runFilter(filters.report?.before ?? null, request, onError);
 
+  // Submit a finalized (post-before-filter) report. When a capture-recovery marker hook is present,
+  // persist a pending marker (with the incident-time attributes + user identifier) BEFORE assembly, then
+  // clear it on settle — by which point the durable bundle queue owns delivery, so capture recovery need
+  // not re-deliver it. All marker I/O is guarded; it must never block or throw the capture path.
+  const reportMarkers = options.reportMarkers;
+  const submitReport = (handled: ReportingRequest): Promise<UploadResult> => {
+    if (reportMarkers !== undefined) {
+      try {
+        reportMarkers.store.put({
+          generation: reportMarkers.generation,
+          request: handled,
+          attributes: environment.getAllAttributes(),
+          userIdentifier: environment.getUserIdentifier(),
+        });
+      } catch (error) {
+        onError(error);
+      }
+    }
+    const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+    if (reportMarkers !== undefined) {
+      const clear = (): void => {
+        try {
+          reportMarkers.store.remove(handled.id);
+        } catch (error) {
+          onError(error);
+        }
+      };
+      result.then(clear, clear);
+    }
+    return result;
+  };
+
   // The provider/extension-facing surface (§16.3) passed to providers at start().
   const context: Client = {
     operations,
@@ -452,7 +492,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       if (handled === null) {
         return Promise.resolve({ ok: false }); // vetoed by the report handler
       }
-      return track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+      return submitReport(handled);
     },
 
     isLaunched(): boolean {
@@ -477,7 +517,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         detectionCoordinator.start(context, isEnabled, (request) => {
           const handled = applyReportBefore(request);
           if (handled !== null) {
-            void track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+            void submitReport(handled);
           }
         });
       } catch (error) {
