@@ -26,6 +26,7 @@ export {
 export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry';
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
+export { type RecoverReportsOptions, recoverReports } from './capture-recovery';
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
