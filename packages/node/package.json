@@ -30,6 +30,7 @@
     "@bugsee/protocol": "workspace:*"
   },
   "devDependencies": {
+    "@bugsee/util": "workspace:*",
     "@types/node": "^25.9.1"
   }
 }

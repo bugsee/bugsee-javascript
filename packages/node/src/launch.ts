@@ -21,8 +21,10 @@ import {
   createClient,
   createDurableUploadPipeline,
   createFileCaptureStore,
+  createFileChunkBackend,
   createMemoryCaptureStore,
   createServiceContainer,
+  createSystemClock,
   createUploadPipeline,
   defineService,
   getCarrierClient,
@@ -31,12 +33,19 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
+  recoverReports,
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
   TransportToken,
 } from '@bugsee/core';
-import { createFsChunkStorage, createNodeBundleStore, httpRequest } from '@bugsee/node-utils';
+import {
+  createFsChunkStorage,
+  createNodeBundleStore,
+  createNodeReportMarkerStore,
+  httpRequest,
+} from '@bugsee/node-utils';
 import { BugseeOption } from '@bugsee/protocol';
 import {
   createUncaughtExceptionProvider,
@@ -264,10 +273,28 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   if (chunkStorage !== undefined) {
     services.addService(defineService(ChunkStorageToken, () => chunkStorage));
   }
+  // Capture recovery (the detected-incident gap): keep this launch's generation explicit and shared by
+  // the live store, the marker hook, and the recovery read-back. When recovery is on (file-backed +
+  // recover) we PRESERVE prior generations for the recovery pass (it cleans them up afterwards); else we
+  // clean-on-init so nothing leaks. The marker store is a stable on-disk location, distinct from chunks.
+  const clock = options.clock ?? createSystemClock();
+  const captureGeneration = clock.wallNow();
+  const recoverEnabled = (options.recover ?? true) && chunkStorage !== undefined;
+  const reportMarkers =
+    recoverEnabled && options.dataDir !== undefined
+      ? createNodeReportMarkerStore(join(options.dataDir, 'incidents'), options.onError)
+      : undefined;
+  if (reportMarkers !== undefined) {
+    services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers)); // container service
+  }
   const captureStore =
     options.captureStore ??
     (chunkStorage !== undefined
-      ? createFileCaptureStore(chunkStorage, storeOptions)
+      ? createFileCaptureStore(chunkStorage, {
+          ...storeOptions,
+          generation: captureGeneration,
+          cleanOtherGenerations: !recoverEnabled,
+        })
       : createMemoryCaptureStore(storeOptions));
 
   const client = createClient({
@@ -278,6 +305,9 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     appToken,
     getEnvironment,
     captureStore,
+    ...(reportMarkers !== undefined
+      ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
+      : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -332,6 +362,24 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
 
   // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
   durable?.recover();
+
+  // Capture recovery: rebuild + re-deliver any detected incident whose bundle never reached the durable
+  // queue (the process died during assembly), from its prior generation's preserved capture chunks. Runs
+  // AFTER the durable-queue recover; best-effort (failures → onError, never throws), then it sweeps the
+  // recovered + no-incident prior generations.
+  if (reportMarkers !== undefined && chunkStorage !== undefined) {
+    void recoverReports({
+      backend: createFileChunkBackend(chunkStorage, {
+        generation: captureGeneration,
+        cleanOtherGenerations: false,
+      }),
+      currentGeneration: captureGeneration,
+      markers: reportMarkers,
+      context: () => ({ appToken, environment: getEnvironment(), clock }),
+      uploadPipeline,
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+  }
 
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
   // was registered during launch, so BEFORE this one) submits the crash report; flush() now awaits

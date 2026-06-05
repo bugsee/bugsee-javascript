@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import http, { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,16 +11,21 @@ import {
   type Clock,
   contributeServiceManifest,
   createCaptureExporter,
+  createFileChunkBackend,
   createMemoryCaptureStore,
+  createReportingRequest,
   defineService,
   getCarrier,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
+  type StoredEntry,
   serializeBundle,
   serviceToken,
   TransportToken,
 } from '@bugsee/core';
+import { createFsChunkStorage, createNodeReportMarkerStore } from '@bugsee/node-utils';
 import {
   BugseeOption,
   type EnvironmentEnvelope,
@@ -29,6 +34,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type SystemProbe, SystemProbeToken } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
@@ -787,5 +793,148 @@ describe('launch', () => {
     });
     clients.push(client);
     expect(client.isLaunched()).toBe(true);
+  });
+});
+
+// --- capture recovery (R4): a prior run's detected incident is rebuilt + delivered next launch -------
+
+// A transport that satisfies the upload path AND records every signed-PUT body (the delivered bundle).
+function recordingTransport() {
+  const puts: Uint8Array[] = [];
+  const fn = vi.fn<HttpTransport>(async (url: string, options: HttpRequestOptions = {}) => {
+    if (url.endsWith('/v2/sessions')) {
+      return { status: 200, headers: {}, body: jsonBody({ access_token: 'access' }) };
+    }
+    if (url.endsWith('/v2/issues')) {
+      return {
+        status: 200,
+        headers: {},
+        body: jsonBody({ endpoint: 'https://s3.test/put', issueId: 'i1', recordingId: 'r1' }),
+      };
+    }
+    if (url === 'https://s3.test/put') {
+      puts.push(options.body as Uint8Array);
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    }
+    return { status: 200, headers: {}, body: new Uint8Array() };
+  });
+  return { fn, puts };
+}
+
+const genDir = (gen: number): string => String(gen).padStart(13, '0');
+const logRecord = (data: unknown): StoredEntry => ({
+  type: 'log',
+  timestamp: 1,
+  serialized: JSON.stringify({ timestamp: 1, data }),
+});
+
+// Seed a prior generation's closed chunk + (optionally) a pending-incident marker under `dataDir`.
+function seedPriorGeneration(
+  dataDir: string,
+  gen: number,
+  data: unknown,
+  withMarker: boolean,
+): void {
+  const backend = createFileChunkBackend(createFsChunkStorage(join(dataDir, 'capture')), {
+    generation: gen,
+    cleanOtherGenerations: false,
+  });
+  backend.openPart({ generation: gen, number: 0 }, gen);
+  backend.appendEntry({ generation: gen, number: 0 }, logRecord(data));
+  backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+  if (withMarker) {
+    createNodeReportMarkerStore(join(dataDir, 'incidents')).put({
+      generation: gen,
+      request: createReportingRequest({ source: { type: 'crash' }, id: 'inc-1' }),
+      attributes: {},
+      userIdentifier: null,
+    });
+  }
+}
+
+describe('launch — capture recovery', () => {
+  // The launch generation is fixedClock.wallNow() = 1000, so prior gens use 500 (≠ 1000).
+  it('rebuilds + uploads a prior run’s detected incident, then sweeps its generation + marker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-'));
+    seedPriorGeneration(dir, 500, { m: 'pre-crash' }, true);
+    const { fn: transport, puts } = recordingTransport();
+    const onError = vi.fn();
+
+    launchTracked('tok', baseOptions({ transport, clock: fixedClock, dataDir: dir, onError }));
+
+    // The recovered bundle is uploaded (the only thing that triggers a signed PUT here).
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'pre-crash' }]);
+    expect(strFromU8(files.apptoken as Uint8Array)).toBe('tok'); // assembled with the launch app token
+
+    // The incident's marker is cleared and its generation swept.
+    await vi.waitFor(() => expect(readdirSync(join(dir, 'incidents'))).toEqual([]));
+    await vi.waitFor(() => expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500)));
+    // The LIVE generation (this launch's own = the marker hook's generation, 1000) is NEVER swept by
+    // recovery — only prior generations are. (Pins live-store generation == currentGeneration.)
+    expect(readdirSync(join(dir, 'capture'))).toContain(genDir(1000));
+    expect(onError).not.toHaveBeenCalled(); // recovery completed cleanly
+  });
+
+  it('writes a recovery marker for a live incident, tagged with this launch’s generation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-write-'));
+    const client = launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir }));
+    // The client uses the SAME marker store the container registered (the launch wiring link).
+    const putSpy = vi.spyOn(client.getService(ReportMarkerStoreToken), 'put');
+
+    await client.logException(new Error('live boom'));
+
+    expect(putSpy).toHaveBeenCalledTimes(1);
+    const marker = putSpy.mock.calls[0]?.[0];
+    expect(marker?.generation).toBe(1000); // fixedClock.wallNow() = this launch's capture generation
+    expect(marker?.request.report.summary).toBe('live boom');
+  });
+
+  it('sweeps a no-incident prior generation without uploading anything', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-noinc-'));
+    seedPriorGeneration(dir, 500, { m: 'orphan' }, false); // chunks, but NO marker
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked('tok', baseOptions({ transport, clock: fixedClock, dataDir: dir }));
+
+    await vi.waitFor(() => expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500)));
+    expect(puts).toEqual([]); // no incident → no report
+  });
+
+  it('registers the report-marker store as a service in file-backed recovery mode', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-svc-'));
+    const client = launchTracked('tok', baseOptions({ dataDir: dir }));
+    expect(typeof client.getService(ReportMarkerStoreToken).put).toBe('function');
+  });
+
+  it('does not recover (or build a marker store) when recover:false', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-off-'));
+    seedPriorGeneration(dir, 500, { m: 'x' }, true);
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, clock: fixedClock, dataDir: dir, recover: false }),
+    );
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // no marker store built
+    expect(puts).toEqual([]); // no recovery upload
+    expect(existsSync(dir)).toBe(true);
+    // With recovery off, the file store falls back to clean-on-init: the prior generation is discarded.
+    expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500));
+  });
+
+  it('builds no marker store when an explicit captureStore overrides the file backend', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-override-'));
+    const client = launchTracked('tok', baseOptions({ captureStore: memStore(), dataDir: dir }));
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // override → no file recovery
+  });
+
+  it('routes a corrupt pending marker to onError during recovery (best-effort)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-corrupt-'));
+    mkdirSync(join(dir, 'incidents'), { recursive: true });
+    writeFileSync(join(dir, 'incidents', 'bad.marker'), 'not-json'); // a torn marker a prior run left
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir, onError }));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
   });
 });
