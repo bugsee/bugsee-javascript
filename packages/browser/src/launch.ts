@@ -319,7 +319,9 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
-  client.addCaptureProvider(createSystemEventsProvider(createBrowserSystemEventsSource(win)));
+  client.addCaptureProvider(
+    createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+  );
 
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));
