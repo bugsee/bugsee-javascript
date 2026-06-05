@@ -54,7 +54,7 @@ import {
   realBrowserProbe,
 } from './environment';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserMemorySampler } from './system-metrics';
+import { createBrowserSystemTracesSampler } from './system-metrics';
 
 // @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
 // launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
@@ -315,7 +315,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserMemorySampler(),
+      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

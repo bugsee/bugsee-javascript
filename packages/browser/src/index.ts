@@ -15,5 +15,5 @@ export {
 } from './environment';
 export { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 export { parseStack } from './stack';
-export { createBrowserSystemEventsSource } from './system-events';
-export { createBrowserMemorySampler, type MemoryReader } from './system-metrics';
+export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
+export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
