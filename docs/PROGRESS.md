@@ -221,10 +221,33 @@ every backend:
 Each part persists a `meta` record (number/start/end/byteSize) on open + close, so `listParts`/
 `listGenerations` are a real recovery index (no data scan). The flat `FileStorageAdapter` was removed
 (superseded). Built S1→S4, each test-first + mutator loop + multi-agent review to convergence, 100%
-line/fn coverage. Behavior-preserving for the memory + node-file stores. **Recovery** (consuming a
-preserved prior generation that didn't shut down cleanly — clean-shutdown flag, continuation, terminating
-snapshot, recovered-report assembly) is the explicit NEXT milestone, built on the `listParts`/
-`listGenerations` + `cleanOtherGenerations:false` seam this delivered.
+line/fn coverage. Behavior-preserving for the memory + node-file stores. **Capture recovery** consumes
+this seam — see below.
+
+### Capture recovery (detected-incidents-only, Node) — **COMPLETE (2026-06-05, on `master`)**
+Closes the gap the durable bundle queue doesn't: an incident was **detected** but the process died
+before its bundle was assembled+persisted (the assembly is async; a fast kill/OOM beats it). The capture
+chunks are already durable; recovery persists the in-RAM incident metadata too, then rebuilds the report
+on the next launch. Policy (user-chosen): detected incidents only (no "unexpected termination" → no
+clean-shutdown flag → zero false positives); Node first.
+- **R1 `ReportMarkerStore`** (`core/report-marker-store.ts` + node fs impl): a durable per-incident
+  marker `{generation, request, attributes, userIdentifier}` keyed by `request.id` (incident-time global
+  state snapshotted in), under a STABLE `<dataDir>/incidents`.
+- **R2 `recoverReports`** (`core/capture-recovery.ts`): runtime-portable, pure over injected ports.
+  Groups markers by generation (excluding current), drains each prior gen ONCE, reassembles per marker
+  (reuse `assembleBundle` + a snapshot drain), enqueues through the durable pipeline, removes a marker
+  only on delivery; a single SWEEP frees recovered + no-incident prior gens, keeping undelivered ones.
+- **R3 client hook** (`client.ts` `submitReport`): both report paths persist a marker BEFORE assembly +
+  clear it on settle (the bundle queue owns delivery thereafter). Behavior-preserving without the hook.
+- **R4 node launch** (`node/launch.ts`): one shared `captureGeneration`; build the marker store; PRESERVE
+  prior gens when recovering (else clean-on-init); after the durable `recover()`, run `recoverReports`
+  over a read backend on the same chunk storage. E2e: a seeded prior gen + marker → the recovered bundle
+  uploads (logs unzip to the prior capture), marker + gen swept, live gen survives.
+Each slice test-first + mutator loop + multi-agent review to convergence, 100% line/fn coverage.
+Accepted v1 limitation (documented): clearing the marker on report SETTLE leaves a narrow
+post-persist/pre-upload window where a crash double-delivers (server `signatures` dedup mitigates) — a
+tighter "clear on persist" hook is a deferred drop-in. **Next:** the browser tier (IndexedDB marker store
++ recovery after `whenReady`); optionally the "unexpected-termination" (broad) policy.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
