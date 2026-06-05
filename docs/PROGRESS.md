@@ -229,7 +229,8 @@ Closes the gap the durable bundle queue doesn't: an incident was **detected** bu
 before its bundle was assembled+persisted (the assembly is async; a fast kill/OOM beats it). The capture
 chunks are already durable; recovery persists the in-RAM incident metadata too, then rebuilds the report
 on the next launch. Policy (user-chosen): detected incidents only (no "unexpected termination" → no
-clean-shutdown flag → zero false positives); Node first.
+clean-shutdown flag → zero false positives). Wired on **Node + browser**; the core (R2) + client hook
+(R3) are runtime-portable.
 - **R1 `ReportMarkerStore`** (`core/report-marker-store.ts` + node fs impl): a durable per-incident
   marker `{generation, request, attributes, userIdentifier}` keyed by `request.id` (incident-time global
   state snapshotted in), under a STABLE `<dataDir>/incidents`.
@@ -243,11 +244,19 @@ clean-shutdown flag → zero false positives); Node first.
   prior gens when recovering (else clean-on-init); after the durable `recover()`, run `recoverReports`
   over a read backend on the same chunk storage. E2e: a seeded prior gen + marker → the recovered bundle
   uploads (logs unzip to the prior capture), marker + gen swept, live gen survives.
+- **BR1 IndexedDB marker store** (`browser-utils/idb-report-marker-store.ts`): the async-medium analog —
+  a sync `ReportMarkerStore` façade over `AsyncBlobStore` (in-memory mirror + write-through + `whenReady`
+  hydrate-on-open + corrupt-marker purge), mirroring `createPersistentBundleStore`.
+- **BR2 browser launch** (`browser/launch.ts`): the IndexedDB parallel of R4 (own db `bugsee-markers`;
+  the `bugsee-capture` keyed store shared by the live store + the recovery read backend). Async-ordered:
+  capture recovery runs only after BOTH the durable `recover()` has run (no double-upload) AND the marker
+  mirror hydrated; `void`-ed/best-effort. E2e via fake-indexeddb (a controllable bundle-store `whenReady`
+  pins the ordering).
 Each slice test-first + mutator loop + multi-agent review to convergence, 100% line/fn coverage.
 Accepted v1 limitation (documented): clearing the marker on report SETTLE leaves a narrow
 post-persist/pre-upload window where a crash double-delivers (server `signatures` dedup mitigates) — a
-tighter "clear on persist" hook is a deferred drop-in. **Next:** the browser tier (IndexedDB marker store
-+ recovery after `whenReady`); optionally the "unexpected-termination" (broad) policy.
+tighter "clear on persist" hook is a deferred drop-in. **Optional follow-up:** the
+"unexpected-termination" (broad) policy with a clean-shutdown flag (currently out of scope by choice).
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
