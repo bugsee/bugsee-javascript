@@ -74,7 +74,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 **`@bugsee/browser`**:
 - `buildBrowserEnvironment(input, probe)` — §8.6 envelope (`platform.type: 'web'`) via injectable `BrowserProbe` (navigator/screen/Intl; raw UA as `platform.version` — backend parses; deviceMemory/hardwareConcurrency optional). `optionsToWire` on `sdk.options`.
 - `createWindowErrorProvider` / `createUnhandledRejectionProvider` — window `error` → crash / `unhandledrejection` → error; `parseStack` dispatches V8 (`at fn (loc)`) vs SpiderMonkey/JSC (`fn@loc`) dialects (core's `parseLocation` reused).
-- `createBrowserMemorySampler` (performance.memory traces, []-when-absent) + `createBrowserSystemEventsSource` (`process_started` + `pagehide`).
+- `createBrowserSystemTracesSampler` (traces: `browser_memory_*` + `connection` + `orientation` + `battery`/`charging`, each degrading where its API is absent) + `createBrowserSystemEventsSource` (events: `process_started`, `pagehide`→`process_exiting`, `visibilitychange`→`process_foreground`/`process_background`, `online`/`offline`, `orientationchange`→`orientation_changed`). See the capture-completeness milestone in §7.
 - **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; memory traces; system events) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
 
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
@@ -257,6 +257,22 @@ Accepted v1 limitation (documented): clearing the marker on report SETTLE leaves
 post-persist/pre-upload window where a crash double-delivers (server `signatures` dedup mitigates) — a
 tighter "clear on persist" hook is a deferred drop-in. **Optional follow-up:** the
 "unexpected-termination" (broad) policy with a clean-shutdown flag (currently out of scope by choice).
+
+### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
+The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
+the Android/iOS SDKs + competitors (Sentry/Firebase/BugSnag/Datadog) — gap analysis: see
+[[capture-completeness-vs-parity]] in memory. Closing it, browser-first (Node's traces are already
+solid), in slices:
+- **CE1 — system EVENTS breadth (DONE, `master`):** `createBrowserSystemEventsSource` now maps
+  visibilitychange→`process_foreground`/`process_background`, online/offline, orientationchange→
+  `orientation_changed`, alongside `process_started`/`pagehide`. Injected env (window/document/screen),
+  graceful degradation.
+- **CE2 — system TRACES breadth (DONE, `master`):** `createBrowserSystemTracesSampler` adds `connection`
+  (navigator.connection), `orientation` (screen.orientation), `battery`/`charging` (cached BatteryManager)
+  to the existing `browser_memory_*`. Android trace-name parity; degrades per-API.
+- **Remaining (chosen order):** input capture (pointer/click/keydown/scroll/focus + target + masking →
+  `events.user`); view hierarchy (DOM snapshot at report → `viewtree`); Web Vitals / performance
+  (LCP/CLS/INP/FCP/TTFB + long tasks + resource timing → `performance`).
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
