@@ -20,3 +20,7 @@ export {
   type IdbChunkBackendOptions,
   type IdbChunkCaptureStoreOptions,
 } from './idb-chunk-backend';
+export {
+  createPersistentReportMarkerStore,
+  type PersistentReportMarkerStore,
+} from './idb-report-marker-store';
