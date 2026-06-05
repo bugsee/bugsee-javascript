@@ -133,6 +133,11 @@ export {
   type RateLimiterOptions,
 } from './rate-limiter';
 export {
+  type ReportMarker,
+  type ReportMarkerStore,
+  ReportMarkerStoreToken,
+} from './report-marker-store';
+export {
   createReportingRequest,
   type Report,
   type ReportingRequest,

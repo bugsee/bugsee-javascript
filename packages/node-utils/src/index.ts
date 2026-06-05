@@ -13,3 +13,4 @@ export {
 } from './fs-storage';
 // httpRequest implements core's HttpTransport; the transport contract types live in @bugsee/core.
 export { httpRequest, transportFor } from './http-request';
+export { createNodeReportMarkerStore } from './report-marker-store';
