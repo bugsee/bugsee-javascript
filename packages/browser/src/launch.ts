@@ -1,8 +1,10 @@
 import {
   createIdbBlobStore,
+  createIdbChunkBackend,
   createIdbChunkCaptureStore,
   createIdbKeyedStore,
   createPersistentBundleStore,
+  createPersistentReportMarkerStore,
   fetchTransport,
 } from '@bugsee/browser-utils';
 import {
@@ -26,6 +28,7 @@ import {
   createDurableUploadPipeline,
   createMemoryCaptureStore,
   createServiceContainer,
+  createSystemClock,
   createUploadPipeline,
   defineService,
   getCarrierClient,
@@ -34,6 +37,8 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
+  recoverReports,
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
@@ -242,16 +247,36 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
+  // Capture recovery (the detected-incident gap): one generation shared by the live store, the marker
+  // hook, and the recovery read-back. Enabled only for the IndexedDB store (persist, no captureStore
+  // override) with recover on; preserve prior generations when recovering (the recovery pass sweeps
+  // them), else clean-on-init. The capture keyed store is reused by the recovery read backend.
+  const clock = options.clock ?? createSystemClock();
+  const captureGeneration = clock.wallNow();
+  const recoverEnabled =
+    (options.recover ?? true) && options.persist === true && options.captureStore === undefined;
+  const captureKeyed =
+    options.persist === true && options.captureStore === undefined
+      ? createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' })
+      : undefined;
+  const reportMarkers = recoverEnabled
+    ? createPersistentReportMarkerStore(
+        createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }),
+        options.onError,
+      )
+    : undefined;
+  if (reportMarkers !== undefined) {
+    services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers));
+  }
   const captureStore =
     options.captureStore ??
-    (options.persist === true
-      ? createIdbChunkCaptureStore(
-          createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
-          {
-            ...storeBounds,
-            ...(options.onError !== undefined ? { onError: options.onError } : {}),
-          },
-        )
+    (captureKeyed !== undefined
+      ? createIdbChunkCaptureStore(captureKeyed, {
+          ...storeBounds,
+          generation: captureGeneration,
+          cleanOtherGenerations: !recoverEnabled,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
       : createMemoryCaptureStore(storeBounds));
 
   const client = createClient({
@@ -262,6 +287,9 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     appToken,
     getEnvironment,
     captureStore,
+    ...(reportMarkers !== undefined
+      ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
+      : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -299,16 +327,32 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
 
   client.launch();
 
-  // Re-upload any bundles a prior reload/crash left persisted (durable queue recovery). A persistent
-  // store hydrates its mirror asynchronously, so defer recover() until `whenReady` (else list() would
-  // miss the leftovers); a synchronous (injected) store recovers immediately.
-  if (durable !== undefined) {
-    const ready = (bundleStore as { whenReady?: Promise<void> }).whenReady;
-    if (ready !== undefined) {
-      void ready.then(() => durable.recover());
-    } else {
-      durable.recover();
-    }
+  // Recovery on the next launch, in order: (1) re-upload bundles a prior reload/crash already assembled +
+  // persisted (durable queue); then (2) rebuild + deliver detected incidents whose bundle never got
+  // assembled, from the preserved capture chunks. Each waits for its async IndexedDB mirror to hydrate
+  // (so list() sees the leftovers); (2) runs AFTER (1) so a freshly rebuilt bundle the queue is
+  // mid-uploading is not also re-enqueued by recover(). An injected (sync) bundle store recovers at once.
+  const bundleRecovered =
+    durable !== undefined
+      ? ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
+          durable.recover(),
+        )
+      : Promise.resolve();
+  if (reportMarkers !== undefined && captureKeyed !== undefined) {
+    void Promise.all([bundleRecovered, reportMarkers.whenReady]).then(() =>
+      recoverReports({
+        backend: createIdbChunkBackend(captureKeyed, {
+          generation: captureGeneration,
+          cleanOtherGenerations: false,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        }),
+        currentGeneration: captureGeneration,
+        markers: reportMarkers,
+        context: () => ({ appToken, environment: getEnvironment(), clock }),
+        uploadPipeline,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
+    );
   }
 
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh. (No

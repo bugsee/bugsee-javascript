@@ -1,6 +1,9 @@
+import 'fake-indexeddb/auto'; // polyfills IDBKeyRange et al.; per-test `vi.stubGlobal('indexedDB', …)` still isolates
 import {
   type AsyncBlobStore,
   createIdbBlobStore,
+  createIdbChunkBackend,
+  createIdbKeyedStore,
   createPersistentBundleStore,
 } from '@bugsee/browser-utils';
 import {
@@ -10,11 +13,14 @@ import {
   contributeServiceManifest,
   createCaptureExporter,
   createMemoryCaptureStore,
+  createReportingRequest,
   defineService,
   getCarrier,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
+  type StoredEntry,
   serializeBundle,
   serviceToken,
   TransportToken,
@@ -27,6 +33,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserProbe, BrowserProbeToken } from './environment';
@@ -574,5 +581,187 @@ describe('launch', () => {
       }).loadAll();
       expect(records.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
     });
+  });
+});
+
+// --- capture recovery (BR2): a prior run's detected incident is rebuilt + delivered next launch -------
+
+// A transport that satisfies the upload path AND records every signed-PUT body (the delivered bundle).
+function recordingTransport() {
+  const puts: Uint8Array[] = [];
+  const fn = vi.fn<HttpTransport>(async (url: string, options: HttpRequestOptions = {}) => {
+    if (url.endsWith('/v2/sessions')) {
+      return { status: 200, headers: {}, body: jsonBody({ access_token: 'access' }) };
+    }
+    if (url.endsWith('/v2/issues')) {
+      return {
+        status: 200,
+        headers: {},
+        body: jsonBody({ endpoint: 'https://s3.test/put', issueId: 'i1', recordingId: 'r1' }),
+      };
+    }
+    if (url === 'https://s3.test/put') {
+      puts.push(options.body as Uint8Array);
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    }
+    return { status: 200, headers: {}, body: new Uint8Array() } satisfies HttpResponse;
+  });
+  return { fn, puts };
+}
+
+const recoveryClock = { wallNow: () => 1000, monotonicNow: () => 0 }; // launch generation 1000
+// No-op scheduler: the live store never ticks, so the live generation is created once (openPart) and
+// never re-created after a sweep — making "the live generation survives recovery" deterministic.
+const noopScheduler = { setInterval: () => 'h', clearInterval: () => {} };
+const logRecord = (data: unknown): StoredEntry => ({
+  type: 'log',
+  timestamp: 1,
+  serialized: JSON.stringify({ timestamp: 1, data }),
+});
+// The generations present in the bugsee-capture meta keyspace (`m/<gen13>/<chunk12>`).
+const captureGenerations = async (): Promise<Set<number>> => {
+  const metas = await createIdbKeyedStore({
+    databaseName: 'bugsee-capture',
+    storeName: 'capture',
+  }).readPrefix('m/');
+  return new Set(metas.map(([key]) => Number(key.slice(2, key.indexOf('/', 2)))));
+};
+const persistedMarkers = (): Promise<Array<[string, Uint8Array]>> =>
+  createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }).loadAll();
+
+// Seed a prior generation's closed chunk + (optionally) a pending marker into the (stubbed) IndexedDB.
+async function seedPrior(gen: number, data: unknown, withMarker: boolean): Promise<void> {
+  const backend = createIdbChunkBackend(
+    createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
+    { generation: gen, cleanOtherGenerations: false },
+  );
+  backend.openPart({ generation: gen, number: 0 }, gen);
+  backend.appendEntry({ generation: gen, number: 0 }, logRecord(data));
+  backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+  await backend.listGenerations(); // drain the async write queue
+  if (withMarker) {
+    const marker = {
+      generation: gen,
+      request: createReportingRequest({ source: { type: 'crash' }, id: 'inc-1' }),
+      attributes: {},
+      userIdentifier: null,
+    };
+    await createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }).put(
+      'inc-1',
+      new TextEncoder().encode(JSON.stringify(marker)),
+    );
+  }
+}
+
+describe('launch — capture recovery', () => {
+  it('rebuilds + uploads a prior incident, sweeps its generation + marker, keeps the live generation', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    await seedPrior(500, { m: 'pre-crash' }, true); // prior gen 500 (≠ launch gen 1000)
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({ transport, persist: true, clock: recoveryClock, scheduler: noopScheduler }),
+    );
+
+    // The recovered bundle is uploaded (the only thing that triggers a signed PUT here).
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'pre-crash' }]);
+    expect(strFromU8(files.apptoken as Uint8Array)).toBe('tok');
+
+    // The incident marker is cleared, gen 500 swept, and the live gen 1000 survives.
+    await vi.waitFor(async () => expect(await persistedMarkers()).toEqual([]));
+    await vi.waitFor(async () => {
+      const gens = await captureGenerations();
+      expect(gens.has(500)).toBe(false); // recovered + swept
+      expect(gens.has(1000)).toBe(true); // the live generation is never swept
+    });
+  });
+
+  it('sweeps a no-incident prior generation without uploading anything', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    await seedPrior(500, { m: 'orphan' }, false); // chunks, but NO marker
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked('tok', baseOptions({ transport, persist: true, clock: recoveryClock }));
+
+    await vi.waitFor(async () => expect((await captureGenerations()).has(500)).toBe(false));
+    expect(puts).toEqual([]); // no incident → no report
+  });
+
+  it('writes a recovery marker for a live incident through the launch wiring', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const client = launchTracked('tok', baseOptions({ persist: true, clock: recoveryClock }));
+    const putSpy = vi.spyOn(client.getService(ReportMarkerStoreToken), 'put');
+
+    await client.logException(new Error('live boom'));
+
+    expect(putSpy).toHaveBeenCalledTimes(1);
+    const marker = putSpy.mock.calls[0]?.[0];
+    expect(marker?.generation).toBe(1000); // this launch's capture generation
+    expect(marker?.request.report.summary).toBe('live boom');
+  });
+
+  it('defers capture recovery until the durable bundle-queue recover() has run (no double-upload race)', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    await seedPrior(500, { m: 'x' }, true); // a marker to recover
+    const { fn: transport, puts } = recordingTransport();
+    // A bundle store whose hydration (and thus durable.recover()) stays PENDING until released.
+    let releaseBundle: () => void = () => {};
+    const bundleStore: BundleStore & { whenReady: Promise<void> } = {
+      whenReady: new Promise<void>((resolve) => {
+        releaseBundle = resolve;
+      }),
+      put: () => {},
+      list: () => [],
+      read: () => undefined,
+      remove: () => {},
+    };
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        bundleStore,
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 20)); // the marker mirror hydrates within this window
+    expect(puts).toEqual([]); // capture recovery is gated on the (pending) bundle-queue recover()
+    releaseBundle(); // bundle store hydrates → durable.recover() runs → capture recovery may proceed
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1)); // now the rebuilt bundle uploads
+  });
+
+  it('registers the marker store as a service in persist (recovery) mode', () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const client = launchTracked('tok', baseOptions({ persist: true }));
+    expect(typeof client.getService(ReportMarkerStoreToken).put).toBe('function');
+  });
+
+  it('builds no marker store without persist', () => {
+    const client = launchTracked('tok', baseOptions({})); // in-memory store
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+  });
+
+  it('builds no marker store when a captureStore overrides the IndexedDB backend', () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const client = launchTracked('tok', baseOptions({ persist: true, captureStore: memStore() }));
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+  });
+
+  it('does not recover when recover:false (no marker store, no upload)', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    await seedPrior(500, { m: 'x' }, true);
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, persist: true, recover: false, clock: recoveryClock }),
+    );
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(puts).toEqual([]);
   });
 });

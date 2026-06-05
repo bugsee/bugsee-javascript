@@ -30,6 +30,7 @@
     "@bugsee/protocol": "workspace:*"
   },
   "devDependencies": {
+    "@bugsee/util": "workspace:*",
     "fake-indexeddb": "^6.0.0"
   }
 }
