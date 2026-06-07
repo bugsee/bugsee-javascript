@@ -48,6 +48,8 @@ export const BugseeOption = {
   CaptureSystemTraces: 'com.bugsee.option.capture.system-traces',
   /** Capture system events (process / app lifecycle). */
   CaptureSystemEvents: 'com.bugsee.option.capture.system-events',
+  /** Capture user interactions (clicks/keys/changes/focus → events.user). Browser/DOM only. */
+  CaptureInteractions: 'com.bugsee.option.capture.interactions',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Rolling recording window in seconds. */
@@ -73,6 +75,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.network.default-sanitizer': boolean;
   'com.bugsee.option.capture.system-traces': boolean;
   'com.bugsee.option.capture.system-events': boolean;
+  'com.bugsee.option.capture.interactions': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;

@@ -13,6 +13,12 @@ export {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+export {
+  type BrowserInputEnv,
+  createBrowserInputSource,
+  describeTarget,
+  type TargetDescriptor,
+} from './input-source';
 export { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';

@@ -12,6 +12,7 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  createUserEventsProvider,
   installNetworkCapture,
   type TraceSample,
 } from '@bugsee/capture';
@@ -53,6 +54,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+import { type BrowserInputEnv, createBrowserInputSource } from './input-source';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
 
@@ -78,6 +80,8 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 const BROWSER_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+  // Input capture is browser/DOM-only (Node has no user input), so its gate lives here, not in COMMON.
+  { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
 ];
 
 export interface BugseeLaunchOptions {
@@ -106,6 +110,8 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process_started + pagehide). Default true. */
   captureSystemEvents?: boolean;
+  /** Capture user interactions (clicks/keys/changes/focus → events.user). Default true. */
+  captureInteractions?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
 
@@ -132,6 +138,8 @@ export interface BugseeLaunchOptions {
   transport?: HttpTransport;
   /** Window event target for detection + system events. Default the global `window`. */
   window?: WindowEvents;
+  /** DOM event target for input capture (clicks/keys/changes/focus). Default `window.document`. */
+  document?: BrowserInputEnv['target'];
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -322,6 +330,15 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
   client.addCaptureProvider(
     createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
   );
+  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.
+  const inputDocument =
+    options.document ?? (win as { document?: BrowserInputEnv['target'] }).document;
+  const inputSource = getOrCreateInterceptor(
+    'browser-input',
+    () => createBrowserInputSource({ target: inputDocument }),
+    carrier,
+  );
+  client.addCaptureProvider(createUserEventsProvider(inputSource));
 
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));

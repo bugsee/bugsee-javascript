@@ -75,7 +75,8 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 - `buildBrowserEnvironment(input, probe)` — §8.6 envelope (`platform.type: 'web'`) via injectable `BrowserProbe` (navigator/screen/Intl; raw UA as `platform.version` — backend parses; deviceMemory/hardwareConcurrency optional). `optionsToWire` on `sdk.options`.
 - `createWindowErrorProvider` / `createUnhandledRejectionProvider` — window `error` → crash / `unhandledrejection` → error; `parseStack` dispatches V8 (`at fn (loc)`) vs SpiderMonkey/JSC (`fn@loc`) dialects (core's `parseLocation` reused).
 - `createBrowserSystemTracesSampler` (traces: `browser_memory_*` + `connection` + `orientation` + `battery`/`charging`, each degrading where its API is absent) + `createBrowserSystemEventsSource` (events: `process_started`, `pagehide`→`process_exiting`, `visibilitychange`→`process_foreground`/`process_background`, `online`/`offline`, `orientationchange`→`orientation_changed`). See the capture-completeness milestone in §7.
-- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; memory traces; system events) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
+- `createBrowserInputSource` (input: capture-phase/passive DOM listeners → `events.user` via the runtime-agnostic `createUserEventsProvider`) — click/keydown/change/submit/focusin with a PII-safe `describeTarget` (tag/id/class/type/text/selector, masking password + `[data-bugsee-hidden]`); typed text never captured (AltGr/emoji/IME-robust); throw-isolated. See the capture-completeness milestone in §7.
+- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; system traces; system events; user-interaction input) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
 
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
 No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §372). `createNoopCaptureProvider`/`createNoopInterceptor` (extend `CaptureProviderBase`/`InterceptorBase`) + named shims `createViewHierarchyProviderShim`/`createBreadcrumbsProviderShim`/`createXhrInterceptorShim`. Each is a structurally-valid provider/interceptor that captures nothing and warns ONCE (`logger.warnOnce`, keyed `shim:<name>`, message `<name> is a no-op on <runtime>; ignored`) on ACTIVATION (provider start / interceptor activate) — construction is side-effect-free. Logger (`Pick<Logger,'warnOnce'>`) + runtime label are injected by the platform (runtime-agnostic). **`replay` is intentionally NOT a shim** (design §372: option-driven, ignored-with-warn at option resolution). Per-platform named re-exports land with the platform packages.
@@ -270,9 +271,18 @@ solid), in slices:
 - **CE2 — system TRACES breadth (DONE, `master`):** `createBrowserSystemTracesSampler` adds `connection`
   (navigator.connection), `orientation` (screen.orientation), `battery`/`charging` (cached BatteryManager)
   to the existing `browser_memory_*`. Android trace-name parity; degrades per-API.
-- **Remaining (chosen order):** input capture (pointer/click/keydown/scroll/focus + target + masking →
-  `events.user`); view hierarchy (DOM snapshot at report → `viewtree`); Web Vitals / performance
-  (LCP/CLS/INP/FCP/TTFB + long tasks + resource timing → `performance`).
+- **CE3 — input capture (DONE, `master`):** `createBrowserInputSource` (browser) — capture-phase,
+  passive, observe-only DOM listeners for click/keydown/change/submit/focusin → `events.user`, via the
+  runtime-agnostic `createUserEventsProvider` (capture, mirrors system-events-provider) gated by the new
+  `captureInteractions` option (protocol). `describeTarget` produces a PII-safe target descriptor
+  (tag/id/class/type/text/selector) and **masks** password fields + `[data-bugsee-hidden]` subtrees to
+  `{tag, masked}`. PII discipline (multi-agent-reviewed): typed text is NEVER captured — plain printable
+  keys are dropped, and the drop is robust to AltGr (`getModifierState('AltGraph')` + the Windows
+  ctrl+alt signature), supplementary-plane/emoji (`[...key]` code-point count), and IME (`isComposing`);
+  input/textarea/select values and editable text are never read; handlers are throw-isolated so a bad
+  selector / exotic target can never disrupt the app. Carrier-shared like `console`.
+- **Remaining (chosen order):** view hierarchy (DOM snapshot at report → `viewtree`); Web Vitals /
+  performance (LCP/CLS/INP/FCP/TTFB + long tasks + resource timing → `performance`).
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).

@@ -39,6 +39,12 @@ export {
   type TraceSample,
 } from './system-traces-provider';
 export {
+  createUserEventsProvider,
+  type UserEvent,
+  type UserEventSource,
+  type UserEventsProviderOptions,
+} from './user-events-provider';
+export {
   createWebSocketInterceptor,
   type WebSocketInterceptorOptions,
   type WebSocketTarget,

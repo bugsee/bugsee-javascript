@@ -298,6 +298,47 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
+  it('captures a document interaction (click) as an events.user entry', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    launchTracked('tok', baseOptions({ captureStore: store, document: doc.win }));
+    doc.emit('click', {
+      target: {
+        tagName: 'BUTTON',
+        getAttribute: () => null,
+        closest: () => null,
+        textContent: 'Buy',
+      },
+      clientX: 3,
+      clientY: 4,
+      button: 0,
+    });
+    const events = await drain(store, 'events.user');
+    const click = events?.find((e) => (e.data as { name: string }).name === 'click');
+    expect((click?.data as { params: unknown }).params).toEqual({
+      target: { tag: 'button', text: 'Buy', selector: 'button' },
+      x: 3,
+      y: 4,
+      button: 0,
+    });
+  });
+
+  it('does not capture interactions when captureInteractions is disabled', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, captureInteractions: false, document: doc.win }),
+    );
+    doc.emit('click', {
+      target: { tagName: 'BUTTON', getAttribute: () => null, closest: () => null },
+      clientX: 0,
+      clientY: 0,
+      button: 0,
+    });
+    expect(await drain(store, 'events.user')).toBeUndefined();
+  });
+
   it('takes an initial system-traces sample from the injected sampler', async () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store }));
@@ -459,8 +500,10 @@ describe('launch', () => {
     const reg = getCarrier(carrier).interceptors;
     expect(reg.get('console')).toBeDefined();
     expect(reg.get('fetch')).toBeDefined();
-    // console + the 5 cross-runtime network leaves (fetch/xhr/websocket/sse/webtransport) = 6. No node-http.
-    expect(reg.size).toBe(6);
+    expect(reg.get('browser-input')).toBeDefined();
+    // console + browser-input + the 5 cross-runtime network leaves (fetch/xhr/websocket/sse/
+    // webtransport) = 7. No node-http.
+    expect(reg.size).toBe(7);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', () => {
