@@ -287,6 +287,12 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/types':
+        specifier: workspace:*
+        version: link:../types
 
   packages/protocol:
     dependencies:

@@ -10,6 +10,16 @@ export {
   type StartTransactionOptions,
 } from './controller';
 export {
+  createPerformanceExtension,
+  type PerformanceExtension,
+  type PerformanceExtensionOptions,
+} from './extension';
+export {
+  PERFORMANCE_OPTION_DEFINITIONS,
+  PerformanceOption,
+  type PerformanceUploadMode,
+} from './options';
+export {
   type CreateTransactionDeps,
   createTransaction,
   defaultSpanId,
