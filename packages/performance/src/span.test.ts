@@ -131,6 +131,34 @@ describe('finish', () => {
   });
 });
 
+describe('onFinish hook', () => {
+  it('fires once when the root transaction finishes, with the finished transaction', () => {
+    const finished: unknown[] = [];
+    const clock = clockAt(1, 1);
+    const txn = createTransaction(
+      { name: 'N', operation: 'op' },
+      { clock, newTraceId: () => 't', newSpanId: ids('s'), onFinish: (t) => finished.push(t) },
+    );
+    expect(finished).toEqual([]); // not yet
+    txn.finish('OK');
+    expect(finished).toEqual([txn]);
+    expect((finished[0] as typeof txn).isFinished()).toBe(true); // already finished when delivered
+  });
+
+  it('does not fire when a child span finishes, and fires only once on a double finish', () => {
+    let count = 0;
+    const txn = createTransaction(
+      { name: 'N', operation: 'op' },
+      { clock: clockAt(1, 1), onFinish: () => count++ },
+    );
+    txn.startChildSpan('c').finish(); // child finish → no onFinish
+    expect(count).toBe(0);
+    txn.finish();
+    txn.finish(); // idempotent
+    expect(count).toBe(1);
+  });
+});
+
 describe('serializeTransaction (§8.8 wire)', () => {
   it('emits the documented transaction shape with child spans (parentSpanId linkage)', () => {
     const clock = clockAt(1000, 0);

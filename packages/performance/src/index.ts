@@ -4,6 +4,12 @@
 // nothing when unused; the umbrella `bugsee` package auto-registers it (passive web-vitals on by
 // default, active span API opt-in). See docs/PROGRESS.md.
 export {
+  createPerformanceController,
+  type PerformanceApi,
+  type PerformanceControllerDeps,
+  type StartTransactionOptions,
+} from './controller';
+export {
   type CreateTransactionDeps,
   createTransaction,
   defaultSpanId,
@@ -16,3 +22,8 @@ export {
   type TransactionOptions,
   type TransactionWire,
 } from './span';
+export {
+  createTransactionStore,
+  type TransactionStore,
+  type TransactionStoreOptions,
+} from './transaction-store';

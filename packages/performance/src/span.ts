@@ -82,6 +82,8 @@ export interface CreateTransactionDeps {
   newTraceId?: () => string;
   /** Span id generator; default a random 8-byte hex. */
   newSpanId?: () => string;
+  /** Called ONCE when the root transaction finishes (child-span finishes do not trigger it). */
+  onFinish?: (transaction: Transaction) => void;
 }
 
 // --- id generation (runtime-portable: WebCrypto when present, Math.random fallback) ---------------
@@ -222,14 +224,21 @@ class TransactionImpl extends SpanImpl implements Transaction {
   readonly #isSnapshot: boolean;
   readonly #appVersion: string | undefined;
   readonly #appBuild: string | undefined;
+  readonly #onFinish: ((transaction: Transaction) => void) | undefined;
 
-  constructor(env: TraceEnv, traceId: string, options: TransactionOptions) {
+  constructor(
+    env: TraceEnv,
+    traceId: string,
+    options: TransactionOptions,
+    onFinish: ((transaction: Transaction) => void) | undefined,
+  ) {
     super(env, traceId, undefined, options.operation, options.description);
     this.name = options.name;
     this.#sampled = options.sampled ?? true;
     this.#isSnapshot = options.isSnapshot ?? false;
     this.#appVersion = options.appVersion;
     this.#appBuild = options.appBuild;
+    this.#onFinish = onFinish;
   }
 
   getName(): string {
@@ -237,6 +246,11 @@ class TransactionImpl extends SpanImpl implements Transaction {
   }
   isSampled(): boolean {
     return this.#sampled;
+  }
+  override finish(status?: SpanStatus): void {
+    const alreadyFinished = this.isFinished();
+    super.finish(status);
+    if (!alreadyFinished) this.#onFinish?.(this); // fire once, after the span is closed
   }
 
   /** Serialize the whole trace to the §8.8 transaction wire (root fields + non-root spans). */
@@ -271,7 +285,7 @@ export function createTransaction(
     spans: [],
   };
   const traceId = (deps.newTraceId ?? defaultTraceId)();
-  return new TransactionImpl(env, traceId, options);
+  return new TransactionImpl(env, traceId, options, deps.onFinish);
 }
 
 /** Serialize a transaction (and its spans) to the §8.8 wire shape. */
