@@ -1,0 +1,80 @@
+// Minimal structural views of the browser performance APIs the web-vitals capture needs, so the
+// @bugsee/performance package stays portable (no DOM lib) and the capture self-noops where an API is
+// absent (workers, Safari gaps, Node). The real env resolves the globals via a globalThis cast; tests
+// inject fakes. Reimplemented from the algorithms in Google's `web-vitals` (design reference only).
+
+export interface PerformanceEntryLike {
+  readonly name: string;
+  readonly entryType: string;
+  readonly startTime: number;
+  readonly duration: number;
+}
+
+export interface PerformanceObserverEntryListLike {
+  getEntries(): PerformanceEntryLike[];
+}
+
+export interface PerformanceObserverLike {
+  observe(options: { type: string; buffered?: boolean; durationThreshold?: number }): void;
+  disconnect(): void;
+  takeRecords(): PerformanceEntryLike[];
+}
+
+export interface PerformanceObserverCtor {
+  new (callback: (list: PerformanceObserverEntryListLike) => void): PerformanceObserverLike;
+  readonly supportedEntryTypes?: readonly string[];
+}
+
+export interface DocumentLike {
+  readonly visibilityState: string;
+  readonly wasDiscarded?: boolean;
+  readonly prerendering?: boolean;
+  addEventListener(type: string, listener: () => void, options?: { capture?: boolean }): void;
+}
+
+export interface PageTransitionEventLike {
+  readonly persisted?: boolean;
+  readonly timeStamp?: number;
+}
+
+export interface EventTargetLike {
+  addEventListener(
+    type: string,
+    listener: (event: PageTransitionEventLike) => void,
+    options?: { capture?: boolean },
+  ): void;
+}
+
+export interface PerformanceLike {
+  now(): number;
+  readonly timeOrigin?: number;
+  getEntriesByType(type: string): PerformanceEntryLike[];
+}
+
+/** The injected browser surfaces the web-vitals capture needs (each optional → that signal self-noops). */
+export interface WebVitalsEnv {
+  PerformanceObserver?: PerformanceObserverCtor;
+  performance?: PerformanceLike;
+  document?: DocumentLike;
+  /** The window (pagehide/pageshow). */
+  window?: EventTargetLike;
+  /** Microtask scheduler (Safari fires observer callbacks sync; we defer). Default the global. */
+  queueMicrotask?: (callback: () => void) => void;
+}
+
+export function realWebVitalsEnv(): WebVitalsEnv {
+  const g = globalThis as unknown as {
+    PerformanceObserver?: PerformanceObserverCtor;
+    performance?: PerformanceLike;
+    document?: DocumentLike;
+    window?: EventTargetLike;
+    queueMicrotask?: (callback: () => void) => void;
+  };
+  return {
+    PerformanceObserver: g.PerformanceObserver,
+    performance: g.performance,
+    document: g.document,
+    window: g.window,
+    queueMicrotask: g.queueMicrotask,
+  };
+}
