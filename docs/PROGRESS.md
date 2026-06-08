@@ -291,8 +291,31 @@ solid), in slices:
   collapse to `{tag, masked, rect}` with no recursion; bounded by maxNodes(2000)/maxDepth(32);
   per-node throw-isolated. Gated by the new `captureViewHierarchy` option (protocol). The launch
   `document` option is now the shared `Document` for both input + viewtree.
-- **Remaining (chosen order):** Web Vitals / performance (LCP/CLS/INP/FCP/TTFB + long tasks + resource
-  timing → `performance`) — the last item of the capture-completeness milestone.
+- **Web Vitals / performance** is the last capture-completeness item, but by design it is the
+  `@bugsee/performance` **extension** (§0.6) rather than a browser-core provider — tracked as its own
+  milestone below.
+
+### Performance / APM extension (`@bugsee/performance`) — IN PROGRESS (started 2026-06-08)
+Full extension (web-vitals + page-load detail + active APM), **on by default via the umbrella**, built
+from competitor source as a design reference (Google `web-vitals`, Sentry, Firebase, Datadog) so we ship
+past their known rakes — see [[performance-apm-extension-plan]] in memory for the metric catalog + the
+rakes-as-tests + the packaging decision (extension, umbrella auto-registers, active span API opt-in).
+- **Phase 0 — DONE (`master`):** the Android-canonical Span/Transaction model (`SpanStatus`, fluent API,
+  `startChildSpan`, idempotent `finish`, `Clock`-driven timestamps + clamped `durationNanos`) +
+  `serializeTransaction` → the §8.8 wire; the bounded FIFO transaction buffer; the controller
+  (`startTransaction`/`getActiveSpan`, head-sampled, finish→buffer); the extension shell
+  (`createPerformanceExtension` → `setup(client)`/`stop()`, launch-wired — no `addExtension` lifecycle
+  yet, so `setup` takes the FULL `BugseeClient`); the `performance.*` options (decl-merged). Reviewed to
+  convergence (one real fix: clamp negative `durationNanos`).
+- **Remaining:** P1 web-vitals (observe/lifecycle machinery → LCP/FCP/TTFB → CLS → INP) → the pageload
+  transaction; P2 nav/resource/long-task spans; P3 active span API + http spans + sampling + the
+  continuous `/v2/performance/transactions` upload; umbrella auto-register.
+- **P1.5 integration decision to make (flagged by review):** the bundle assembler emits each file type as
+  `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
+  `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to
+  the capture aggregator. So P1.5 must choose: (a) push finished transactions to the aggregator as
+  `performance`-typed entries **and** add a `type === 'performance'` wrapping branch / custom serializer
+  to the assembler, or (b) drain `extension.store` separately via a bundle hook. Decide before P1.5.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).

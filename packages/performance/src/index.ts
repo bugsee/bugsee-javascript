@@ -1,6 +1,8 @@
 // @bugsee/performance
-// APM extension (Tier 3, design §0.6/§16): ext()/registerExt; owns /v2/performance/transactions, the
-// Span/Transaction model + §8.8 wire, web-vitals capture, and performance.* options. Tree-shakes to
+// APM extension (Tier 3, design §0.6/§16): ext()/registerExt. BUILT (Phase 0): the Span/Transaction
+// model + §8.8 wire, the transaction buffer, the controller (startTransaction/getActiveSpan), the
+// extension shell, and the performance.* options. PLANNED (later slices): web-vitals capture, the bundle
+// performance.json emission, and the continuous /v2/performance/transactions upload. Tree-shakes to
 // nothing when unused; the umbrella `bugsee` package auto-registers it (passive web-vitals on by
 // default, active span API opt-in). See docs/PROGRESS.md.
 export {

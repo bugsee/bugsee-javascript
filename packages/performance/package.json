@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "APM extension (opt-in, off by default); ext()/registerExt; owns /v2/performance/transactions, Span/Transaction types, performance.* options",
+  "description": "APM extension; passive web-vitals on by default via the umbrella, active span API opt-in; ext()/registerExt; owns /v2/performance/transactions, Span/Transaction types, performance.* options",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

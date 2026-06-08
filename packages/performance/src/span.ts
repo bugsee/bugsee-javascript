@@ -198,7 +198,12 @@ class SpanImpl implements Span {
     if (this.#finished) return;
     if (status !== undefined) this.#status = status;
     this.#endTimestampMs = this.env.clock.wallNow();
-    this.#durationNanos = Math.round((this.env.clock.monotonicNow() - this.#startMono) * 1_000_000);
+    // Clamp to >=0: monotonicNow() falls back to the non-monotonic Date.now() on some runtimes, where a
+    // backwards adjustment could otherwise put a negative duration on the wire.
+    this.#durationNanos = Math.max(
+      0,
+      Math.round((this.env.clock.monotonicNow() - this.#startMono) * 1_000_000),
+    );
     this.#finished = true;
   }
 

@@ -20,7 +20,11 @@ export interface StartTransactionOptions {
 export interface PerformanceApi {
   /** Begin a transaction (the root of a trace). */
   startTransaction(options: StartTransactionOptions): Transaction;
-  /** The currently active span (the most recently started, not-yet-finished transaction). */
+  /**
+   * The active span: the most recently STARTED transaction, cleared when it finishes. A minimal
+   * single-slot tracker (starting a second transaction overwrites the first; no span stack) — proper
+   * async-context nesting is a later slice.
+   */
   getActiveSpan(): Span | undefined;
 }
 

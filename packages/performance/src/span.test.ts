@@ -122,12 +122,28 @@ describe('finish', () => {
     expect(txn.getStatus()).toBe('TIMEOUT');
   });
 
-  it('rounds durationNanos (sub-nanosecond fractions)', () => {
-    const clock = clockAt(0, 1.0000005); // 0.0000005 ms = 0.5 ns after start at... set start then finish
+  it('rounds durationNanos to the NEAREST nanosecond (not floor/ceil/trunc)', () => {
+    const c1 = clockAt(0, 0);
+    const t1 = mk(c1);
+    c1.mono = 0.0000014; // 1.4 ns → rounds DOWN to 1 (ceil would give 2)
+    t1.finish();
+    expect(serializeTransaction(t1).durationNanos).toBe(1);
+    const c2 = clockAt(0, 0);
+    const t2 = mk(c2);
+    c2.mono = 0.0000016; // 1.6 ns → rounds UP to 2 (floor/trunc would give 1)
+    t2.finish();
+    expect(serializeTransaction(t2).durationNanos).toBe(2);
+  });
+
+  it('clamps durationNanos to 0 when the monotonic clock does not advance (or regresses)', () => {
+    // monotonicNow() falls back to the non-monotonic Date.now() on some runtimes; a backwards
+    // adjustment must never put a negative duration on the wire.
+    const clock = clockAt(1000, 5);
     const txn = mk(clock);
-    clock.mono = 1.0000015; // delta 0.000001 ms = 1.0 ns → rounds to 1
+    clock.wall = 1100;
+    clock.mono = 3; // regressed below the start reading (5)
     txn.finish();
-    expect(serializeTransaction(txn).durationNanos).toBe(1);
+    expect(serializeTransaction(txn).durationNanos).toBe(0);
   });
 });
 
@@ -227,10 +243,17 @@ describe('serializeTransaction (§8.8 wire)', () => {
         },
       ],
     });
-    expect('endTimestampMs' in wire).toBe(false);
-    expect('appVersion' in wire).toBe(false);
-    // The child wire carries ONLY the present fields — no undefined-valued end/duration/description/
-    // attributes keys (toEqual ignores undefined, so assert the exact key set).
+    // Both the ROOT wire and the child wire carry ONLY present fields — no undefined-valued
+    // end/duration/appVersion/appBuild/attributes keys (toEqual ignores undefined → assert exact keys).
+    expect(Object.keys(wire).sort()).toEqual([
+      'isSnapshot',
+      'name',
+      'operation',
+      'spans',
+      'startTimestampMs',
+      'status',
+      'traceId',
+    ]);
     expect(Object.keys(wire.spans[0] as object).sort()).toEqual([
       'operation',
       'parentSpanId',
@@ -249,7 +272,8 @@ describe('serializeTransaction (§8.8 wire)', () => {
 });
 
 describe('default id generators', () => {
-  it('defaultTraceId/defaultSpanId produce lowercase hex of the expected length, and are unique', () => {
+  it('defaultTraceId/defaultSpanId convert the random bytes to lowercase hex of the expected length', () => {
+    // Distinct per-byte values so the hex mapping (padStart(2,'0'), radix 16, byte order) is pinned.
     vi.stubGlobal('crypto', {
       getRandomValues: (a: Uint8Array) => {
         for (let i = 0; i < a.length; i++) a[i] = (i * 17 + 3) & 0xff;
@@ -258,15 +282,17 @@ describe('default id generators', () => {
     });
     const t = defaultTraceId();
     const s = defaultSpanId();
-    expect(t).toMatch(/^[0-9a-f]{32}$/); // 16 bytes
-    expect(s).toMatch(/^[0-9a-f]{16}$/); // 8 bytes
-    expect(defaultTraceId()).not.toBe(s);
+    expect(t).toMatch(/^[0-9a-f]{32}$/); // 16 bytes → 32 hex chars
+    expect(s).toMatch(/^[0-9a-f]{16}$/); // 8 bytes → 16 hex chars
+    expect(t.startsWith('031425')).toBe(true); // bytes 3,20,37,... → '03','14','25' (pins byte→hex order)
   });
 
   it('falls back to Math.random when no crypto.getRandomValues is present', () => {
     vi.stubGlobal('crypto', undefined);
-    expect(defaultTraceId()).toMatch(/^[0-9a-f]{32}$/);
-    expect(defaultSpanId()).toMatch(/^[0-9a-f]{16}$/);
+    const rand = vi.spyOn(Math, 'random').mockReturnValue(0.5); // floor(0.5 * 256) = 128 = 0x80
+    expect(defaultTraceId()).toBe('80'.repeat(16)); // 16 bytes of 0x80 (pins the *256 range + floor + hex)
+    expect(defaultSpanId()).toBe('80'.repeat(8));
+    rand.mockRestore();
   });
 
   it('createTransaction uses the default id generators when none are injected', () => {

@@ -5,7 +5,10 @@ import { createTransactionStore, type TransactionStore } from './transaction-sto
 // The @bugsee/performance extension shell (design §0.6/§16). There is no addExtension lifecycle on the
 // client yet, so the launch / umbrella wires it directly: build it, call setup(client) to register the
 // ext('performance') API (the controller, over the injected clock + a shared store), and stop() to tear
-// it down. The active span API + transaction buffering are live now; the web-vitals capture, the bundle
+// it down. setup takes the FULL BugseeClient (not the core minimal `Client` contract) deliberately — it
+// needs getService(ClockToken) + registerExt, which the minimal Client lacks; reconcile when an
+// addExtension lifecycle lands (the minimal Client would have to grow those, or Extension.setup widen).
+// The active span API + transaction buffering are live now; the web-vitals capture, the bundle
 // performance.json emission, and the continuous /v2/performance/transactions upload land in later slices.
 
 declare module '@bugsee/types' {
