@@ -21,6 +21,7 @@ import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import { type Clock, ClockToken, createSystemClock } from './clock';
 import {
+  type CaptureDataEntry,
   type CaptureProviderInit,
   type CaptureStore,
   CaptureStoreToken,
@@ -158,6 +159,13 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   flush(timeout?: number): Promise<boolean>;
 }
 
+/**
+ * A pull-at-report snapshot source: given the report's wall-clock timestamp, returns extra capture
+ * entries to merge into the assembled bundle (e.g. a browser DOM `viewtree`). Synchronous and called
+ * once per live report at assembly time.
+ */
+export type ReportSnapshotSource = (now: number) => readonly CaptureDataEntry[];
+
 export interface CreateClientOptions {
   /** Time source; injectable for tests. Default createSystemClock(). */
   clock?: Clock;
@@ -194,6 +202,17 @@ export interface CreateClientOptions {
    * capture chunks. Omitted = no recovery markers (e.g. in-memory store / recovery disabled).
    */
   reportMarkers?: { store: ReportMarkerStore; generation: number };
+  /**
+   * Report-time snapshot sources (the browser DOM viewtree, a screenshot on platforms that have one).
+   * Each is PULLED once per LIVE report at bundle assembly, with the assembly-time wall clock
+   * (`clock.wallNow()`), and its entries are APPENDED to their file type in the drained capture map (so
+   * e.g. a `viewtree` entry lands in the bundle). Appended AFTER any drained entries with no timestamp
+   * re-sort — correct for a dedicated type like `viewtree` (its own file, one entry); a source that
+   * emitted into a rolling-buffer type (log/events) would therefore land last regardless of its stamp.
+   * A throwing source is isolated (→ onError) and the report still uploads. NOT used by capture-recovery
+   * (a next-launch DOM is not the incident's), so a recovered bundle carries no snapshot. Default none.
+   */
+  reportSnapshots?: readonly ReportSnapshotSource[];
   /**
    * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
@@ -259,8 +278,29 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   }
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
-    const assemble = async (request: ReportingRequest): Promise<Bundle> =>
-      assembleBundle(request, await captureExporter.drain(), {
+    const assemble = async (request: ReportingRequest): Promise<Bundle> => {
+      const capturedByType = await captureExporter.drain();
+      // Merge report-time snapshots (e.g. the DOM viewtree) into the drained map. Each source is
+      // isolated: a throw goes to onError and the report still uploads (a missing snapshot must never
+      // block delivery).
+      if (options.reportSnapshots !== undefined) {
+        const snapshotAt = clock.wallNow();
+        for (const source of options.reportSnapshots) {
+          try {
+            for (const entry of source(snapshotAt)) {
+              const existing = capturedByType.get(entry.type);
+              if (existing !== undefined) {
+                existing.push(entry);
+              } else {
+                capturedByType.set(entry.type, [entry]);
+              }
+            }
+          } catch (error) {
+            onError(error);
+          }
+        }
+      }
+      return assembleBundle(request, capturedByType, {
         appToken,
         environment: getEnvironment(),
         attributes: environment.getAllAttributes(),
@@ -268,6 +308,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         clock,
         ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
       });
+    };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
 

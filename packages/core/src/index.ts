@@ -50,6 +50,7 @@ export {
   type CreateClientOptions,
   createClient,
   type LogExceptionOptions,
+  type ReportSnapshotSource,
   type Scheduler,
   SchedulerToken,
 } from './client';

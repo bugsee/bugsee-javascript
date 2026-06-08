@@ -76,6 +76,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 - `createWindowErrorProvider` / `createUnhandledRejectionProvider` — window `error` → crash / `unhandledrejection` → error; `parseStack` dispatches V8 (`at fn (loc)`) vs SpiderMonkey/JSC (`fn@loc`) dialects (core's `parseLocation` reused).
 - `createBrowserSystemTracesSampler` (traces: `browser_memory_*` + `connection` + `orientation` + `battery`/`charging`, each degrading where its API is absent) + `createBrowserSystemEventsSource` (events: `process_started`, `pagehide`→`process_exiting`, `visibilitychange`→`process_foreground`/`process_background`, `online`/`offline`, `orientationchange`→`orientation_changed`). See the capture-completeness milestone in §7.
 - `createBrowserInputSource` (input: capture-phase/passive DOM listeners → `events.user` via the runtime-agnostic `createUserEventsProvider`) — click/keydown/change/submit/focusin with a PII-safe `describeTarget` (tag/id/class/type/text/selector, masking password + `[data-bugsee-hidden]`); typed text never captured (AltGr/emoji/IME-robust); throw-isolated. See the capture-completeness milestone in §7.
+- `createDomSnapshot` / `createViewtreeSnapshotSource` (view hierarchy: an at-report DOM-tree snapshot → `viewtree`, via the core `reportSnapshots` pull-seam) — reuses `describeTarget` per node + rounded `getBoundingClientRect`; masked subtrees collapse to `{tag, masked, rect}`; bounded (maxNodes/maxDepth) + per-node throw-isolated. Gated by `captureViewHierarchy`. See §7.
 - **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; system traces; system events; user-interaction input) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
 
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
@@ -201,8 +202,8 @@ hydration) · **B5b** persistent IndexedDB capture store (**superseded** by the 
 below — its in-memory mirror lost the open chunk on an unpredicted termination). Full detail
 in §1 "Browser platform". Each slice: test-first + mutator loop + multi-agent review to convergence,
 100% line/fn/stmt coverage. `fake-indexeddb` is the only new (dev) dependency. Deferred follow-ups:
-UA parsing (backend does it), richer DOM lifecycle events (freeze/resume/bfcache), DOM-snapshot capture
-(view hierarchy / click breadcrumbs — a later replay milestone).
+UA parsing (backend does it), richer DOM lifecycle events (freeze/resume/bfcache). (Input/click capture
+and the DOM-snapshot view hierarchy have since landed — see the capture-completeness milestone in §7.)
 
 ### Capture-storage redesign — durable-as-captured chunk store — **COMPLETE (2026-06-04, on `master`)**
 The persistent capture store now follows the **Android directory-per-chunk** model (user-pinned): the
@@ -281,8 +282,17 @@ solid), in slices:
   ctrl+alt signature), supplementary-plane/emoji (`[...key]` code-point count), and IME (`isComposing`);
   input/textarea/select values and editable text are never read; handlers are throw-isolated so a bad
   selector / exotic target can never disrupt the app. Carrier-shared like `console`.
-- **Remaining (chosen order):** view hierarchy (DOM snapshot at report → `viewtree`); Web Vitals /
-  performance (LCP/CLS/INP/FCP/TTFB + long tasks + resource timing → `performance`).
+- **CE4 — view hierarchy (DONE, `master`):** an at-report DOM snapshot (the browser analog of mobile's
+  at-report screenshot) → a `viewtree` entry, via a new generic **`reportSnapshots`** pull-seam on the
+  client's assemble closure (each source PULLED once per LIVE report, merged into the drained map;
+  throw-isolated; NOT used by capture-recovery — a next-launch DOM is not the incident's). Browser
+  `createDomSnapshot`/`createViewtreeSnapshotSource` walk the DOM reusing the reviewed `describeTarget`
+  per node (+ rounded `getBoundingClientRect`): masked subtrees (password / `[data-bugsee-hidden]`)
+  collapse to `{tag, masked, rect}` with no recursion; bounded by maxNodes(2000)/maxDepth(32);
+  per-node throw-isolated. Gated by the new `captureViewHierarchy` option (protocol). The launch
+  `document` option is now the shared `Document` for both input + viewtree.
+- **Remaining (chosen order):** Web Vitals / performance (LCP/CLS/INP/FCP/TTFB + long tasks + resource
+  timing → `performance`) — the last item of the capture-completeness milestone.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).

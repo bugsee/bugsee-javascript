@@ -67,6 +67,20 @@ function fakeWindow() {
   };
 }
 
+// A minimal DOM element for the viewtree snapshot (tagName + the surfaces describeTarget/readRect use).
+const viewEl = (tag: string, extra: Record<string, unknown> = {}) => ({
+  tagName: tag.toUpperCase(),
+  id: '',
+  getAttribute: () => null,
+  closest: () => null,
+  getBoundingClientRect: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+  children: [] as unknown[],
+  ...extra,
+});
+
+// A document fake combining the input-capture listener surface with a viewtree-snapshottable body.
+const fakeDocument = (body: unknown) => ({ ...fakeWindow().win, body }) as unknown as Document;
+
 const probe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 (Test) Browser/9.0',
   locale: () => 'en-US',
@@ -301,7 +315,10 @@ describe('launch', () => {
   it('captures a document interaction (click) as an events.user entry', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    launchTracked('tok', baseOptions({ captureStore: store, document: doc.win }));
+    launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+    );
     doc.emit('click', {
       target: {
         tagName: 'BUTTON',
@@ -328,7 +345,11 @@ describe('launch', () => {
     const doc = fakeWindow();
     launchTracked(
       'tok',
-      baseOptions({ captureStore: store, captureInteractions: false, document: doc.win }),
+      baseOptions({
+        captureStore: store,
+        captureInteractions: false,
+        document: doc.win as unknown as Document,
+      }),
     );
     doc.emit('click', {
       target: { tagName: 'BUTTON', getAttribute: () => null, closest: () => null },
@@ -337,6 +358,44 @@ describe('launch', () => {
       button: 0,
     });
     expect(await drain(store, 'events.user')).toBeUndefined();
+  });
+
+  it('captures a DOM viewtree into the report bundle at report time', async () => {
+    const transport = uploadTransport();
+    const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: memStore(), document: doc }),
+    );
+    await client.logException(new Error('boom'));
+    const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    const viewtree = JSON.parse(strFromU8(files['viewtree.json'] as Uint8Array));
+    expect(viewtree).toEqual([
+      {
+        tag: 'body',
+        rect: { x: 0, y: 0, width: 0, height: 0 },
+        children: [{ tag: 'main', rect: { x: 0, y: 0, width: 0, height: 0 } }],
+      },
+    ]);
+  });
+
+  it('omits the viewtree when captureViewHierarchy is disabled', async () => {
+    const transport = uploadTransport();
+    const doc = fakeDocument(viewEl('body'));
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        captureViewHierarchy: false,
+        document: doc,
+      }),
+    );
+    await client.logException(new Error('boom'));
+    const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect(files['viewtree.json']).toBeUndefined();
   });
 
   it('takes an initial system-traces sample from the injected sampler', async () => {

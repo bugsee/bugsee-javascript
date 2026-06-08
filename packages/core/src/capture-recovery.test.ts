@@ -249,6 +249,30 @@ describe('recoverReports', () => {
     expect((pipe.bundles[0] as Bundle).request).toBeDefined();
   });
 
+  it('swallows a failure with the default (no-op) onError: it does not throw, others recover', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 200, [logRecord(1, { m: 'ok' })]);
+    const backend = readBackend(storage);
+    const wrapped: ChunkBackend = {
+      ...backend,
+      listParts: (gen: number) =>
+        gen === 100 ? Promise.reject(new Error('boom')) : backend.listParts(gen),
+    };
+    const pipe = fakePipeline();
+
+    // No onError → the default no-op sink. The failing generation is swallowed (no throw).
+    await expect(
+      recoverReports({
+        backend: wrapped,
+        currentGeneration: 999,
+        markers: fakeMarkers([marker('bad', 100), marker('good', 200)]),
+        context: baseContext,
+        uploadPipeline: pipe,
+      }),
+    ).resolves.toBeUndefined();
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // generation 200 still recovered
+  });
+
   it('routes a per-marker assembly/enqueue THROW to onError and keeps that generation', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);

@@ -23,3 +23,9 @@ export { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
+export {
+  createDomSnapshot,
+  createViewtreeSnapshotSource,
+  type DomSnapshotEnv,
+  type ViewNode,
+} from './viewtree';

@@ -62,6 +62,7 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.CaptureSystemTraces).toBe('com.bugsee.option.capture.system-traces');
     expect(BugseeOption.CaptureSystemEvents).toBe('com.bugsee.option.capture.system-events');
     expect(BugseeOption.CaptureInteractions).toBe('com.bugsee.option.capture.interactions');
+    expect(BugseeOption.CaptureViewHierarchy).toBe('com.bugsee.option.capture.view-hierarchy');
     expect(BugseeOption.DetectCrash).toBe('com.bugsee.option.detect.crash');
     expect(BugseeOption.Duration).toBe('com.bugsee.option.config.duration');
     expect(BugseeOption.MaxDataSize).toBe('com.bugsee.option.config.data-size');

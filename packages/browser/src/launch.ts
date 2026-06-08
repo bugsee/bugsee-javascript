@@ -54,9 +54,10 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-import { type BrowserInputEnv, createBrowserInputSource } from './input-source';
+import { createBrowserInputSource } from './input-source';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
+import { createViewtreeSnapshotSource } from './viewtree';
 
 // @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
 // launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
@@ -82,6 +83,8 @@ const BROWSER_OPTION_DEFINITIONS = [
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   // Input capture is browser/DOM-only (Node has no user input), so its gate lives here, not in COMMON.
   { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
+  // View hierarchy is browser/DOM-only too.
+  { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
 ];
 
 export interface BugseeLaunchOptions {
@@ -112,6 +115,8 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Capture user interactions (clicks/keys/changes/focus → events.user). Default true. */
   captureInteractions?: boolean;
+  /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
+  captureViewHierarchy?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
 
@@ -138,8 +143,8 @@ export interface BugseeLaunchOptions {
   transport?: HttpTransport;
   /** Window event target for detection + system events. Default the global `window`. */
   window?: WindowEvents;
-  /** DOM event target for input capture (clicks/keys/changes/focus). Default `window.document`. */
-  document?: BrowserInputEnv['target'];
+  /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
+  document?: Document;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -287,6 +292,16 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
         })
       : createMemoryCaptureStore(storeBounds));
 
+  // The DOM document drives BOTH input capture and the report-time viewtree (the same physical object).
+  const domDocument: Document | undefined =
+    options.document ?? (win as { document?: Document }).document;
+  // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
+  // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
+  const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
+  const reportSnapshots = captureViewtree
+    ? [createViewtreeSnapshotSource({ document: domDocument })]
+    : undefined;
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
@@ -295,6 +310,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     appToken,
     getEnvironment,
     captureStore,
+    ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
       : {}),
@@ -331,11 +347,9 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
   );
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.
-  const inputDocument =
-    options.document ?? (win as { document?: BrowserInputEnv['target'] }).document;
   const inputSource = getOrCreateInterceptor(
     'browser-input',
-    () => createBrowserInputSource({ target: inputDocument }),
+    () => createBrowserInputSource({ target: domDocument }),
     carrier,
   );
   client.addCaptureProvider(createUserEventsProvider(inputSource));

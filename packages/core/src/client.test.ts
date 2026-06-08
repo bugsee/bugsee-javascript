@@ -1,5 +1,6 @@
 import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
+import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
@@ -803,6 +804,52 @@ describe('createClient — report path (built trigger pipeline)', () => {
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
     expect(bundle.request.summary).toBe('boom');
     expect(bundle.fileName).toBe('x.bundle.zip');
+  });
+
+  it('merges report-snapshot entries (e.g. a viewtree) into the assembled bundle at the report time', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    // Two entries of the same (new) type exercise BOTH merge branches: the first creates the list, the
+    // second appends to it — and the order is preserved.
+    const snap = vi.fn((now: number) => [
+      new CaptureDataEntryBase('viewtree' as FileType, now, { tag: 'body', children: [] }),
+      new CaptureDataEntryBase('viewtree' as FileType, now, { tag: 'dialog' }),
+    ]);
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      clock: fixedClock(1000),
+      reportSnapshots: [snap],
+    });
+    await client.logException(new Error('boom'));
+    expect(snap).toHaveBeenCalledWith(1000); // pulled with the report's wall-clock timestamp
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body);
+    // viewtree.json holds the array of entry data, in source order.
+    expect(JSON.parse(strFromU8(files['viewtree.json'] as Uint8Array))).toEqual([
+      { tag: 'body', children: [] },
+      { tag: 'dialog' },
+    ]);
+  });
+
+  it('isolates a throwing snapshot source: onError fires and the report still uploads', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportSnapshots: [
+        () => {
+          throw new Error('snapshot failed');
+        },
+      ],
+    });
+    const result = await client.logException(new Error('boom'));
+    expect(result).toEqual({ ok: true }); // delivered despite the snapshot failure
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('puts the global userIdentifier on the wire as request.json email', async () => {
