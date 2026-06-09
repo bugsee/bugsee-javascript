@@ -295,6 +295,9 @@ class TransactionImpl extends SpanImpl implements Transaction {
   }
 
   getName(): string {
+    // `name` is always assigned in the constructor (a required TransactionOptions field); the `?? ''`
+    // only satisfies the base field's `string | undefined` type and is unreachable for a Transaction.
+    /* v8 ignore next */
     return this.name ?? '';
   }
   isSampled(): boolean {

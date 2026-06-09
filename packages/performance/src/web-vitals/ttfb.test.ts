@@ -48,4 +48,16 @@ describe('onTTFB', () => {
   it('does not report when there is no navigation entry', () => {
     expect(collect(env())).toEqual([]);
   });
+
+  it('treats a navigation entry as invalid when performance.now() is unavailable (the ?? 0 fallback)', () => {
+    const e: WebVitalsEnv = {
+      performance: {
+        now: () => undefined as unknown as number, // → `?? 0`, so any responseStart is >= 0 → invalid
+        getEntriesByType: () => [
+          { name: '', entryType: 'navigation', startTime: 0, duration: 0, responseStart: 300 },
+        ],
+      },
+    };
+    expect(collect(e)).toEqual([]);
+  });
 });

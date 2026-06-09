@@ -138,6 +138,20 @@ describe('recordChildSpan', () => {
       endTimestampMs: 50,
       durationNanos: 0,
     });
+    // toEqual ignores undefined-valued props, so it would NOT catch a stray `description: undefined`
+    // (or `attributes: undefined`) shipped on the wire — pin the EXACT key set so the omit-when-absent
+    // branches are validated, not merely executed.
+    expect(
+      Object.keys(serializeTransaction(txn).spans[0] as unknown as Record<string, unknown>).sort(),
+    ).toEqual([
+      'durationNanos',
+      'endTimestampMs',
+      'operation',
+      'parentSpanId',
+      'spanId',
+      'startTimestampMs',
+      'status',
+    ]);
   });
 });
 
