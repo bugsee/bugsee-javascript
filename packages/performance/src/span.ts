@@ -17,6 +17,11 @@ export interface Span {
   setStatus(status: SpanStatus): this;
   /** Open a child span parented to this one, sharing the trace. */
   startChildSpan(operation: string, description?: string): Span;
+  /**
+   * Record an ALREADY-COMPLETED child span with explicit start/end times — for post-hoc timing data
+   * (navigation/resource timing, long tasks) read from completed PerformanceEntrys, not opened live.
+   */
+  recordChildSpan(operation: string, options: RecordChildSpanOptions): void;
   getSpanId(): string;
   getTraceId(): string;
   getStatus(): SpanStatus;
@@ -33,6 +38,14 @@ export interface Span {
 export interface Transaction extends Span {
   getName(): string;
   isSampled(): boolean;
+}
+
+/** Explicit timing for a recorded (already-completed) child span. */
+export interface RecordChildSpanOptions {
+  startTimestampMs: number;
+  endTimestampMs: number;
+  description?: string;
+  attributes?: Record<string, unknown>;
 }
 
 /** A child span on the §8.8 wire. */
@@ -112,11 +125,27 @@ export const defaultSpanId = (): string => toHex(randomBytes(8));
 
 // --- the model -----------------------------------------------------------------------------------
 
+/** Anything that can serialize itself to the §8.8 child-span wire (a live SpanImpl or a RecordedSpan). */
+interface SerializableSpan {
+  toSpanWire(): SpanWire;
+}
+
 interface TraceEnv {
   readonly clock: Clock;
   readonly newSpanId: () => string;
   /** The shared per-trace recorder: the root span (index 0) followed by every descendant, in order. */
-  readonly spans: SpanImpl[];
+  readonly spans: SerializableSpan[];
+}
+
+/** An already-completed span recorded with explicit times (no live Clock capture). */
+class RecordedSpan implements SerializableSpan {
+  readonly #wire: SpanWire;
+  constructor(wire: SpanWire) {
+    this.#wire = wire;
+  }
+  toSpanWire(): SpanWire {
+    return this.#wire;
+  }
 }
 
 class SpanImpl implements Span {
@@ -172,6 +201,25 @@ class SpanImpl implements Span {
   }
   startChildSpan(operation: string, description?: string): Span {
     return new SpanImpl(this.env, this.#traceId, this.#spanId, operation, description);
+  }
+  recordChildSpan(operation: string, options: RecordChildSpanOptions): void {
+    const wire: SpanWire = {
+      spanId: this.env.newSpanId(),
+      parentSpanId: this.#spanId,
+      operation,
+      status: 'OK',
+      startTimestampMs: options.startTimestampMs,
+      endTimestampMs: options.endTimestampMs,
+      durationNanos: Math.max(
+        0,
+        Math.round((options.endTimestampMs - options.startTimestampMs) * 1_000_000),
+      ),
+    };
+    if (options.description !== undefined) wire.description = options.description;
+    if (options.attributes !== undefined && Object.keys(options.attributes).length > 0) {
+      wire.attributes = options.attributes;
+    }
+    this.env.spans.push(new RecordedSpan(wire));
   }
   getSpanId(): string {
     return this.#spanId;

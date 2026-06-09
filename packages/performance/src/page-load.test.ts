@@ -1,7 +1,8 @@
 import type { Clock } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createPerformanceController } from './controller';
-import { collectNavigationTiming, collectPageLoadVitals } from './page-load';
+import { collectNavigationTiming, collectPageLoadVitals, collectResourceTiming } from './page-load';
+import type { RecordChildSpanOptions } from './span';
 import { createTransactionStore } from './transaction-store';
 import type { PerformanceEntryLike, WebVitalsEnv } from './web-vitals/env';
 
@@ -205,6 +206,94 @@ describe('collectPageLoadVitals', () => {
     expect(attrsFor({ requestStart: 500, responseStart: 100 })).toEqual({});
 
     expect(attrsFor()).toEqual({}); // no navigation entry → nothing
+  });
+
+  it('resource timing: records resource.<initiatorType> spans with normalized url + size/status attrs', () => {
+    const recordOn = (resources: Record<string, unknown>[], timeOrigin = 1000) => {
+      const calls: { op: string; opts: RecordChildSpanOptions }[] = [];
+      const span = {
+        recordChildSpan: (op: string, opts: RecordChildSpanOptions) => {
+          calls.push({ op, opts });
+        },
+      };
+      const env: WebVitalsEnv = {
+        performance: {
+          now: () => 0,
+          timeOrigin,
+          getEntriesByType: (type: string) =>
+            type === 'resource' ? resources.map((r) => entry({ entryType: 'resource', ...r })) : [],
+        } as never,
+      };
+      collectResourceTiming(env, span as never);
+      return calls;
+    };
+
+    // a normal asset → resource.<type> span with times (timeOrigin + start .. +duration), cleaned url, attrs
+    expect(
+      recordOn([
+        {
+          name: 'https://x.test/app.js?v=2#h',
+          startTime: 10,
+          duration: 40,
+          initiatorType: 'script',
+          responseStatus: 200,
+          transferSize: 5000,
+          encodedBodySize: 4000,
+          decodedBodySize: 9000,
+        },
+      ]),
+    ).toEqual([
+      {
+        op: 'resource.script',
+        opts: {
+          startTimestampMs: 1010,
+          endTimestampMs: 1050,
+          description: 'https://x.test/app.js', // query + fragment stripped
+          attributes: {
+            'http.status_code': 200,
+            'http.transfer_size': 5000,
+            'http.encoded_body_size': 4000,
+            'http.decoded_body_size': 9000,
+          },
+        },
+      },
+    ]);
+
+    // fetch/xhr are skipped (deduped by the http instrumentation); a no-initiatorType resource → other.
+    expect(
+      recordOn([
+        { name: 'a', startTime: 0, duration: 1, initiatorType: 'fetch' },
+        { name: 'b', startTime: 0, duration: 1, initiatorType: 'xmlhttprequest' },
+        { name: 'https://x/p', startTime: 0, duration: 1 },
+      ]).map((c) => c.op),
+    ).toEqual(['resource.other']);
+
+    // data:/blob: collapsed; a 0 status / 0 sizes (cross-origin opaque) yield no attributes.
+    const collapsed = recordOn([
+      { name: 'data:image/png;base64,AAAA', startTime: 0, duration: 1, initiatorType: 'img' },
+      {
+        name: 'x.js',
+        startTime: 0,
+        duration: 1,
+        initiatorType: 'script',
+        responseStatus: 0,
+        transferSize: 0,
+      },
+    ]);
+    expect(collapsed[0]?.opts.description).toBe('data:…');
+    expect(collapsed[1]?.opts.attributes).toEqual({});
+
+    // capped so a resource-heavy page can't bloat the bundle.
+    expect(
+      recordOn(
+        Array.from({ length: 150 }, (_, i) => ({
+          name: `r${i}.js`,
+          startTime: 0,
+          duration: 1,
+          initiatorType: 'script',
+        })),
+      ),
+    ).toHaveLength(100);
   });
 
   it('still finishes the pageload transaction even where the vitals APIs are absent, finalizing once', () => {

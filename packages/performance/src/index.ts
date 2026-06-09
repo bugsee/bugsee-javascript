@@ -26,6 +26,7 @@ export {
 export {
   collectNavigationTiming,
   collectPageLoadVitals,
+  collectResourceTiming,
   type PageLoadVitalsOptions,
 } from './page-load';
 export {

@@ -1,7 +1,7 @@
 import type { PerformanceApi } from './controller';
 import type { Span } from './span';
 import { onCLS } from './web-vitals/cls';
-import type { WebVitalsEnv } from './web-vitals/env';
+import type { PerformanceEntryLike, WebVitalsEnv } from './web-vitals/env';
 import { onFCP } from './web-vitals/fcp';
 import { onINP } from './web-vitals/inp';
 import { onLCP } from './web-vitals/lcp';
@@ -34,6 +34,55 @@ export function collectNavigationTiming(env: WebVitalsEnv, transaction: Span): v
   milestone('dom_interactive', nav.domInteractive);
   milestone('dom_content_loaded', nav.domContentLoadedEventEnd);
   milestone('load', nav.loadEventEnd);
+}
+
+// Resource timing → one `resource.<initiatorType>` child span per asset (Sentry resource.* parity).
+// Rakes: skip fetch/xhr (those are covered by the http-span instrumentation, avoiding duplicates);
+// normalize the URL (strip query/fragment + collapse data:/blob:) so it is low-cardinality + PII-free;
+// omit a 0 status (cross-origin opaque); cap the count so a resource-heavy page can't bloat the bundle.
+const MAX_RESOURCE_SPANS = 100;
+const SKIP_INITIATORS = new Set(['fetch', 'xmlhttprequest']);
+
+interface ResourceTimingLike extends PerformanceEntryLike {
+  readonly initiatorType?: string;
+  readonly transferSize?: number;
+  readonly encodedBodySize?: number;
+  readonly decodedBodySize?: number;
+  readonly responseStatus?: number;
+}
+
+const normalizeResourceUrl = (url: string): string => {
+  if (url.startsWith('data:') || url.startsWith('blob:')) {
+    return `${url.slice(0, url.indexOf(':') + 1)}…`; // collapse the (huge) inline payload
+  }
+  return url.replace(/[?#].*$/, ''); // strip query + fragment
+};
+
+const resourceAttributes = (r: ResourceTimingLike): Record<string, unknown> => {
+  const attrs: Record<string, unknown> = {};
+  if (r.responseStatus) attrs['http.status_code'] = r.responseStatus; // 0 = cross-origin opaque → omit
+  if (r.transferSize) attrs['http.transfer_size'] = r.transferSize;
+  if (r.encodedBodySize) attrs['http.encoded_body_size'] = r.encodedBodySize;
+  if (r.decodedBodySize) attrs['http.decoded_body_size'] = r.decodedBodySize;
+  return attrs;
+};
+
+export function collectResourceTiming(env: WebVitalsEnv, transaction: Span): void {
+  const resources = (env.performance?.getEntriesByType('resource') ?? []) as ResourceTimingLike[];
+  const timeOrigin = env.performance?.timeOrigin ?? 0;
+  let count = 0;
+  for (const r of resources) {
+    if (count >= MAX_RESOURCE_SPANS) break;
+    const initiatorType = r.initiatorType ?? 'other';
+    if (SKIP_INITIATORS.has(initiatorType)) continue; // deduped by the http-span instrumentation
+    count += 1;
+    transaction.recordChildSpan(`resource.${initiatorType}`, {
+      startTimestampMs: timeOrigin + r.startTime,
+      endTimestampMs: timeOrigin + r.startTime + r.duration,
+      description: normalizeResourceUrl(r.name),
+      attributes: resourceAttributes(r),
+    });
+  }
 }
 
 // Collect the five Core Web Vitals into a single `pageload` transaction (the Sentry/Datadog page-load
@@ -71,6 +120,7 @@ export function collectPageLoadVitals(
     if (finalized) return;
     finalized = true;
     collectNavigationTiming(env, transaction);
+    collectResourceTiming(env, transaction);
     transaction.finish();
   });
 }

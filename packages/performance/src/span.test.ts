@@ -96,6 +96,51 @@ describe('startChildSpan', () => {
   });
 });
 
+describe('recordChildSpan', () => {
+  it('records an already-completed child span with explicit times, parent linkage, and computed duration', () => {
+    const txn = mk(clockAt(1000, 0));
+    txn.recordChildSpan('resource.script', {
+      startTimestampMs: 1010,
+      endTimestampMs: 1050,
+      description: 'app.js',
+      attributes: { 'http.status': 200 },
+    });
+    txn.finish();
+    expect(serializeTransaction(txn).spans).toEqual([
+      {
+        spanId: 'span-1',
+        parentSpanId: 'span-0',
+        operation: 'resource.script',
+        status: 'OK',
+        startTimestampMs: 1010,
+        endTimestampMs: 1050,
+        durationNanos: 40_000_000, // (1050 - 1010) * 1e6
+        description: 'app.js',
+        attributes: { 'http.status': 200 },
+      },
+    ]);
+  });
+
+  it('clamps the duration to 0 when end precedes start, and omits an empty description/attributes', () => {
+    const txn = mk(clockAt(1, 0));
+    txn.recordChildSpan('browser.dns', {
+      startTimestampMs: 100,
+      endTimestampMs: 50,
+      attributes: {},
+    });
+    // toEqual: an empty attributes object would NOT be omitted → asserts the exact key set.
+    expect(serializeTransaction(txn).spans[0]).toEqual({
+      spanId: 'span-1',
+      parentSpanId: 'span-0',
+      operation: 'browser.dns',
+      status: 'OK',
+      startTimestampMs: 100,
+      endTimestampMs: 50,
+      durationNanos: 0,
+    });
+  });
+});
+
 describe('finish', () => {
   it('records the end timestamp + duration (nanos from the monotonic clock) and is idempotent', () => {
     const clock = clockAt(1000, 5);
