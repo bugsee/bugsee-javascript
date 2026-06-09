@@ -322,10 +322,17 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
     (the `onBFCacheRestore` hook exists but is unwired, so `navigationType:'back-forward-cache'` is
     currently unreachable); prerender `whenActivated` deferral (mitigated by the `activationStart`
     subtraction); soft-navigations; the buffered `visibility-state` perf-entry.
-- **Remaining:** P2 nav/resource/long-task spans on the pageload transaction; P3 active span API +
-  fetch/xhr http spans + head sampling + the continuous `/v2/performance/transactions` upload; P3.x
-  umbrella auto-register (on-by-default wiring lives there, NOT `@bugsee/browser`, to keep the extension
-  tree-shakeable).
+- **Phase 2 — DONE (`master`):** the page-load detail on the pageload transaction. P2a navigation-timing
+  breakdown → `nav.<phase>_ms` attributes (dns/connect/tls/request/response + dom_interactive/
+  dom_content_loaded/load; skips zero/missing/reversed phases). P2b a new `recordChildSpan` primitive
+  (post-hoc explicit-time spans; recorder is now `SerializableSpan[]`) + `collectResourceTiming` →
+  `resource.<initiatorType>` spans (URL query/fragment stripped + data:/blob: collapsed for cardinality/
+  PII, fetch/xhr deduped, status/size attributes, capped 100). P2c `collectLongTasks` → `ui.long-task`
+  spans (observed live, capped 50; the back-dating rake is structurally avoided since recordChildSpan is
+  independent). All wired into `collectPageLoadVitals`.
+- **Remaining:** P3 active span API + fetch/xhr http spans + head sampling + the continuous
+  `/v2/performance/transactions` upload; P3.x umbrella auto-register (on-by-default wiring lives there,
+  NOT `@bugsee/browser`, to keep the extension tree-shakeable).
 - **Delivery decision to make (P3):** the bundle assembler emits each file type as
   `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
   `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to

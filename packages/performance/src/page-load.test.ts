@@ -1,7 +1,12 @@
 import type { Clock } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createPerformanceController } from './controller';
-import { collectNavigationTiming, collectPageLoadVitals, collectResourceTiming } from './page-load';
+import {
+  collectLongTasks,
+  collectNavigationTiming,
+  collectPageLoadVitals,
+  collectResourceTiming,
+} from './page-load';
 import type { RecordChildSpanOptions } from './span';
 import { createTransactionStore } from './transaction-store';
 import type { PerformanceEntryLike, WebVitalsEnv } from './web-vitals/env';
@@ -294,6 +299,63 @@ describe('collectPageLoadVitals', () => {
         })),
       ),
     ).toHaveLength(100);
+  });
+
+  it('long tasks: records a ui.long-task span per observed long task (capped, attribution as description)', () => {
+    const instances: { emit: (e: PerformanceEntryLike[]) => void }[] = [];
+    class FakePO {
+      static supportedEntryTypes = ['longtask'];
+      cb: (list: { getEntries(): PerformanceEntryLike[] }) => void;
+      constructor(cb: (list: { getEntries(): PerformanceEntryLike[] }) => void) {
+        this.cb = cb;
+        instances.push({ emit: (e) => this.cb({ getEntries: () => e }) });
+      }
+      observe() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    }
+    const calls: { op: string; opts: RecordChildSpanOptions }[] = [];
+    const span = {
+      recordChildSpan: (op: string, opts: RecordChildSpanOptions) => {
+        calls.push({ op, opts });
+      },
+    };
+    const env: WebVitalsEnv = {
+      PerformanceObserver: FakePO as never,
+      performance: { now: () => 0, timeOrigin: 1000, getEntriesByType: () => [] } as never,
+      queueMicrotask: (cb) => cb(),
+    };
+    collectLongTasks(env, span as never);
+
+    instances[0]?.emit([
+      entry({ name: 'self', entryType: 'longtask', startTime: 200, duration: 80 }),
+    ]);
+    expect(calls[0]).toEqual({
+      op: 'ui.long-task',
+      opts: { startTimestampMs: 1200, endTimestampMs: 1280, description: 'self' },
+    });
+    // a nameless long task → no description
+    instances[0]?.emit([entry({ name: '', entryType: 'longtask', startTime: 0, duration: 60 })]);
+    expect(calls[1]?.opts).toEqual({ startTimestampMs: 1000, endTimestampMs: 1060 });
+    // cap: emit far more than the limit
+    instances[0]?.emit(
+      Array.from({ length: 60 }, (_, i) =>
+        entry({ name: 'self', entryType: 'longtask', startTime: i, duration: 50 }),
+      ),
+    );
+    expect(calls).toHaveLength(50); // 2 already + 48 more before hitting the cap of 50
+
+    // no longtask support → no-op, no throw
+    const noop: { op: string; opts: RecordChildSpanOptions }[] = [];
+    collectLongTasks(
+      {} as never,
+      {
+        recordChildSpan: (op: string, opts: RecordChildSpanOptions) => noop.push({ op, opts }),
+      } as never,
+    );
+    expect(noop).toEqual([]);
   });
 
   it('still finishes the pageload transaction even where the vitals APIs are absent, finalizing once', () => {

@@ -7,7 +7,7 @@ import { onINP } from './web-vitals/inp';
 import { onLCP } from './web-vitals/lcp';
 import type { Metric } from './web-vitals/metric';
 import { getNavigationEntry } from './web-vitals/navigation';
-import { onHidden } from './web-vitals/observe';
+import { observe, onHidden } from './web-vitals/observe';
 import { onTTFB } from './web-vitals/ttfb';
 
 // Navigation-timing breakdown (Sentry browser.* / Datadog view.* parity) → `nav.<phase>_ms` attributes
@@ -67,6 +67,28 @@ const resourceAttributes = (r: ResourceTimingLike): Record<string, unknown> => {
   return attrs;
 };
 
+// Long tasks (main-thread blocks >50ms) → one `ui.long-task` span each, observed live across the page
+// load (recordChildSpan creates an INDEPENDENT span, so — unlike Sentry's startAndEndSpan — a long task
+// can never back-date the transaction; the classic back-dating rake is structurally avoided here). The
+// longtask startTime is timeOrigin-relative, so it is always within the page load. Capped for safety.
+const MAX_LONGTASK_SPANS = 50;
+
+export function collectLongTasks(env: WebVitalsEnv, transaction: Span): void {
+  const timeOrigin = env.performance?.timeOrigin ?? 0;
+  let count = 0;
+  observe(env, 'longtask', (entries) => {
+    for (const e of entries) {
+      if (count >= MAX_LONGTASK_SPANS) return;
+      count += 1;
+      transaction.recordChildSpan('ui.long-task', {
+        startTimestampMs: timeOrigin + e.startTime,
+        endTimestampMs: timeOrigin + e.startTime + e.duration,
+        ...(e.name ? { description: e.name } : {}), // the long-task attribution (self / same-origin / …)
+      });
+    }
+  });
+}
+
 export function collectResourceTiming(env: WebVitalsEnv, transaction: Span): void {
   const resources = (env.performance?.getEntriesByType('resource') ?? []) as ResourceTimingLike[];
   const timeOrigin = env.performance?.timeOrigin ?? 0;
@@ -113,8 +135,9 @@ export function collectPageLoadVitals(
   onLCP(env, stamp('lcp'));
   onCLS(env, stamp('cls'));
   onINP(env, stamp('inp'));
-  // Finalize ONCE (hidden fires for both visibilitychange + pagehide): collect navigation timing then
-  // finish — registered after the vital onHidden listeners, so LCP/CLS/INP report their final values first.
+  collectLongTasks(env, transaction); // observed live across the load (records as they arrive)
+  // Finalize ONCE (hidden fires for both visibilitychange + pagehide): collect navigation + resource
+  // timing then finish — registered after the vital onHidden listeners, so LCP/CLS/INP report final first.
   let finalized = false;
   onHidden(env, () => {
     if (finalized) return;

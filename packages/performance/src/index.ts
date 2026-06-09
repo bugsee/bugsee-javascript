@@ -24,6 +24,7 @@ export {
   type PerformanceUploadMode,
 } from './options';
 export {
+  collectLongTasks,
   collectNavigationTiming,
   collectPageLoadVitals,
   collectResourceTiming,
