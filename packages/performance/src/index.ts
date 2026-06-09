@@ -35,6 +35,7 @@ export {
   type PerformanceUploader,
   type PerformanceUploaderDeps,
 } from './performance-uploader';
+export { createRateSampler } from './sampling';
 export {
   type CreateTransactionDeps,
   createTransaction,
