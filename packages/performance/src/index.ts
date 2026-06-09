@@ -36,6 +36,10 @@ export {
   type PageLoadVitalsOptions,
 } from './page-load';
 export {
+  createPerformanceSend,
+  type PerformanceSendDeps,
+} from './performance-send';
+export {
   createPerformanceUploader,
   type PerformanceUploader,
   type PerformanceUploaderDeps,
