@@ -330,9 +330,29 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
   PII, fetch/xhr deduped, status/size attributes, capped 100). P2c `collectLongTasks` → `ui.long-task`
   spans (observed live, capped 50; the back-dating rake is structurally avoided since recordChildSpan is
   independent). All wired into `collectPageLoadVitals`.
-- **Remaining:** P3 active span API + fetch/xhr http spans + head sampling + the continuous
-  `/v2/performance/transactions` upload; P3.x umbrella auto-register (on-by-default wiring lives there,
-  NOT `@bugsee/browser`, to keep the extension tree-shakeable).
+- **Phase 3 — DONE (`master`), reviewed to convergence (3 rounds):** the active-APM delivery layer.
+  `createRateSampler` (head sampling: rate≥1 always / ≤0 never / else `random()<rate`); `collectHttpSpans`
+  (subscribe the network interceptor → `http.client` child spans on the active transaction, correlate by
+  request id, query-stripped URL + method/status/mechanism attrs, capped `MAX_HTTP_SPANS=100` counting
+  only RECORDED spans); `createPerformanceUploader` (interval drain → injected `send`, best-effort
+  drop-on-failure→onError, idempotent start/stop); `createPerformanceSend` (POST
+  `/v2/performance/transactions`, reuses core `BugseeApi.ensureSession` Bearer auth, throws on non-2xx);
+  and **`wirePerformance`** — the on-by-default assembly the umbrella runs after `launch()`: gated by
+  `monitoring`, registers `ext('performance')` with the rate sampler, collects page-load vitals +
+  nav/resource/long-task spans, wires http spans when a `networkSource` is given, starts the uploader,
+  returns a teardown. `send`/`networkSource`/`env` are injected so it stays decoupled + fully testable.
+  - **Convergent review (CLAUDE.md §6):** 5 parallel agents (algorithm fidelity, span/wire model,
+    delivery+assembly, test strength, portability) → **zero correctness defects**; closed 3 test gaps
+    (appVersion/appBuild + onError plumbing untested on the defined side; a `recordChildSpan`
+    omit-when-absent `description` that survived a `toEqual`) + 2 within-gate defensive branches; round 2
+    added the http-span cap + pinned CLS/INP finalize idempotence; round 3 → **NO FINDINGS**. Coverage
+    **100% line/fn/branch** (259/259). Every fix per-entity mutator-verified.
+- **Remaining — P3.x umbrella (cross-package, NOT YET BUILT):** the `bugsee` umbrella package (a thin
+  caller of `wirePerformance`) + a seam on the platform `launch()` to expose the internals the umbrella
+  needs (the `installNetworkCapture` umbrella `.interceptor` as the `networkSource`, and api/transport/
+  baseUrl/getEnvironment to build the real `send`). On-by-default wiring lives in the umbrella, NOT
+  `@bugsee/browser`, to keep the extension tree-shakeable. **The seam shape is an open decision** (a
+  `launchCore()` returning `{client, internals}` vs service-container discovery vs an `onLaunched` hook).
 - **Delivery decision to make (P3):** the bundle assembler emits each file type as
   `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
   `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to
