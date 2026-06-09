@@ -19,6 +19,11 @@ export {
   type PerformanceExtensionOptions,
 } from './extension';
 export {
+  collectHttpSpans,
+  type HttpSpanCollectorDeps,
+  type NetworkSource,
+} from './http-spans';
+export {
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
   type PerformanceUploadMode,
