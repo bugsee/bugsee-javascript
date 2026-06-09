@@ -97,6 +97,36 @@ describe('collectHttpSpans', () => {
     expect(calls).toEqual([]);
   });
 
+  it('caps the http.client spans per collector and drops the overflow (symmetric with resource/long-task caps)', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    for (let i = 0; i < 150; i++) {
+      emit('before', netEvent({ id: `r${i}`, timestamp: i, method: 'GET', url: `https://x/${i}` }));
+      emit('complete', netEvent({ id: `r${i}`, timestamp: i + 1, status: 200 }));
+    }
+    expect(calls).toHaveLength(100); // MAX_HTTP_SPANS — beyond it, completed requests are dropped
+    expect(calls[99]?.opts.description).toBe('GET https://x/99'); // the first 100 are kept, in order
+  });
+
+  it('counts only RECORDED spans toward the cap — drops (no active span) do not consume the budget', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    let active: typeof span | undefined;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+    // 100 requests complete while there is NO active transaction → all dropped, none counted.
+    for (let i = 0; i < 100; i++) {
+      emit('before', netEvent({ id: `d${i}`, timestamp: i, method: 'GET', url: `https://x/${i}` }));
+      emit('complete', netEvent({ id: `d${i}`, timestamp: i + 1, status: 200 }));
+    }
+    expect(calls).toHaveLength(0);
+    // Now a transaction is active: a real request must still record (the budget wasn't burned by drops).
+    active = span;
+    emit('before', netEvent({ id: 'real', timestamp: 5, method: 'GET', url: 'https://x/real' }));
+    emit('complete', netEvent({ id: 'real', timestamp: 6, status: 200 }));
+    expect(calls).toHaveLength(1);
+  });
+
   it('unsubscribes from every stage', () => {
     const { source, count } = fakeNetworkSource();
     const off = collectHttpSpans({ source, getActiveSpan: () => undefined });

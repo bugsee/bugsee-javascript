@@ -19,8 +19,14 @@ export interface HttpSpanCollectorDeps {
 
 const END_STAGES = ['complete', 'error', 'abort'] as const;
 
+// Per-collector ceiling on http.client spans, symmetric with the resource/long-task caps in page-load
+// (bounds the §8.8 wire when a single transaction is long-lived, e.g. the SPA continuous-transaction
+// mode — a classic pageload finishes on hide and never approaches this).
+const MAX_HTTP_SPANS = 100;
+
 export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
   const pending = new Map<string, { startTimestampMs: number; method: string; url: string }>();
+  let recorded = 0;
   const offs: Array<() => void> = [
     deps.source.on('before', (e) => {
       pending.set(e.id, { startTimestampMs: e.timestamp, method: e.method, url: e.url });
@@ -33,6 +39,8 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     pending.delete(e.id);
     const active = deps.getActiveSpan();
     if (active === undefined) return; // no transaction in flight → not part of a trace
+    if (recorded >= MAX_HTTP_SPANS) return; // cap reached → drop the overflow
+    recorded++;
     active.recordChildSpan('http.client', {
       startTimestampMs: start.startTimestampMs,
       endTimestampMs: e.timestamp,

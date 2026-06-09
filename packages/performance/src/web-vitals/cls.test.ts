@@ -93,6 +93,24 @@ describe('onCLS', () => {
     );
   });
 
+  it('does not double-report when the page hides twice (bindReporter delta-dedup)', () => {
+    const { Ctor, instances } = fakeShiftObserver();
+    const win = fakeWindow();
+    const env: WebVitalsEnv = {
+      PerformanceObserver: Ctor,
+      performance: { now: () => 0, getEntriesByType: () => [] },
+      queueMicrotask: (cb) => cb(),
+      window: win as never,
+    };
+    const seen: Metric[] = [];
+    onCLS(env, (m) => seen.push(m));
+    instances[0]?.emit([shift(0, 0.1)]);
+    win.emit('pagehide'); // first finalize → exactly one report
+    win.emit('pagehide'); // second hidden: value unchanged → delta 0 → callback suppressed
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.value).toBeCloseTo(0.1);
+  });
+
   it('reports a CLS of 0 for a shift-free page (CLS initializes to 0)', () => {
     expect(clsOf([])).toBe(0);
   });

@@ -81,6 +81,15 @@ describe('onINP', () => {
     expect(inp()).toBe(120);
   });
 
+  it('does not double-report when the page hides twice (bindReporter delta-dedup)', () => {
+    const { find, win, seen } = setup(1);
+    find('event', 40)?.emit([ev(1, 120)]);
+    win.emit('pagehide'); // first finalize → exactly one report
+    win.emit('pagehide'); // second hidden: value unchanged → delta 0 → callback suppressed
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.value).toBe(120);
+  });
+
   it('groups entries by interactionId, taking the MAX duration as the latency', () => {
     const { find, win, inp } = setup(1);
     find('event', 40)?.emit([ev(7, 100), ev(7, 180), ev(7, 90)]); // one interaction (pointerdown/up/...)
