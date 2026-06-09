@@ -76,3 +76,8 @@ export type {
 } from './web-vitals/metric';
 export { onTTFB } from './web-vitals/ttfb';
 export type { VitalReportOptions } from './web-vitals/vitals';
+export {
+  type WiredPerformance,
+  type WirePerformanceOptions,
+  wirePerformance,
+} from './wire-performance';
