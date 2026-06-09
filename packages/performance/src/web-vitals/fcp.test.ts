@@ -72,6 +72,14 @@ describe('onFCP', () => {
     expect(seen[0]?.value).toBe(150);
   });
 
+  it('clamps the activationStart-adjusted value to >= 0', () => {
+    const { Ctor, instances } = fakePaintObserver();
+    const seen: Metric[] = [];
+    onFCP(env(Ctor, {}, { activationStart: 300 }), (m) => seen.push(m));
+    instances[0]?.emit([paintEntry('first-contentful-paint', 100)]); // 100 - 300 = -200 → clamp 0
+    expect(seen[0]?.value).toBe(0);
+  });
+
   it('drops an FCP that occurs after the page was first hidden (background tab)', () => {
     const { Ctor, instances } = fakePaintObserver();
     const seen: Metric[] = [];

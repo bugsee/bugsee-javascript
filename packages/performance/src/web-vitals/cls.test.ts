@@ -74,10 +74,15 @@ describe('onCLS', () => {
     expect(clsOf([shift(0, 0.1), shift(500, 0.1), shift(2500, 0.1)])).toBeCloseTo(0.2);
   });
 
-  it('starts a NEW window when the window exceeds 5s, even if the gap is small', () => {
-    // shifts every 900ms (gaps <1s) until the window passes 5s → splits into two windows.
-    const shifts = [0, 900, 1800, 2700, 3600, 4500, 5400].map((t) => shift(t, 0.1));
-    // window 1 = t0..t4500 (6 shifts → 0.6); at t5400 window-from-first = 5400 >= 5000 → new window (0.1)
+  it('splits at a gap of EXACTLY 1s (the gap boundary is strict <1000)', () => {
+    // gap 0→1000 is exactly 1000ms → NOT < 1000 → a new window → CLS = max(0.1, 0.1) = 0.1, not 0.2.
+    expect(clsOf([shift(0, 0.1), shift(1000, 0.1)])).toBeCloseTo(0.1);
+  });
+
+  it('splits at a window age of EXACTLY 5s (the window boundary is strict <5000)', () => {
+    // shifts every 900ms (gaps <1s); at t=5000 the window-from-first is exactly 5000 → NOT < 5000 → new
+    // window. window 1 = t0..t4500 (6 shifts → 0.6); t5000 opens a new window (0.1) → CLS = 0.6, not 0.7.
+    const shifts = [0, 900, 1800, 2700, 3600, 4500, 5000].map((t) => shift(t, 0.1));
     expect(clsOf(shifts)).toBeCloseTo(0.6);
   });
 

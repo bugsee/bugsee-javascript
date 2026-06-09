@@ -98,6 +98,23 @@ describe('onINP', () => {
     expect(inp()).toBe(80);
   });
 
+  it('the p98 index boundary: a count of 49 maps to index 0 (floor(49 / 50))', () => {
+    // 10 interactions [100..10]; count 49 → floor(49/50)=0 → the single worst (100). With /49 it would
+    // be index 1 → 90, so this pins the /50 divisor at its boundary.
+    const { find, win, inp } = setup(49);
+    find('event', 40)?.emit(Array.from({ length: 10 }, (_, i) => ev(i + 1, (i + 1) * 10)));
+    win.emit('pagehide');
+    expect(inp()).toBe(100);
+  });
+
+  it('the polyfill divides the interactionId range by 7 (ids 1..337 → count 49 → index 0)', () => {
+    const { find, win, inp } = setup(undefined);
+    find('event', 0)?.emit([ev(1, 5), ev(337, 5)]); // range 336 → count = 336/7 + 1 = 49
+    find('event', 40)?.emit([ev(1, 50), ev(8, 40), ev(15, 30), ev(22, 20), ev(29, 10)]);
+    win.emit('pagehide');
+    expect(inp()).toBe(50); // floor(49/50)=0 → worst (with /6 → count 57 → index 1 → 40)
+  });
+
   it('drops interactions beyond the 10 longest', () => {
     // 12 interactions, latencies 10..120; count 1 → index 0 → the single worst = 120; the buffer holds 10.
     const { find, win, inp } = setup(1);

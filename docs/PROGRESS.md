@@ -307,15 +307,32 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
   (`createPerformanceExtension` → `setup(client)`/`stop()`, launch-wired — no `addExtension` lifecycle
   yet, so `setup` takes the FULL `BugseeClient`); the `performance.*` options (decl-merged). Reviewed to
   convergence (one real fix: clamp negative `durationNanos`).
-- **Remaining:** P1 web-vitals (observe/lifecycle machinery → LCP/FCP/TTFB → CLS → INP) → the pageload
-  transaction; P2 nav/resource/long-task spans; P3 active span API + http spans + sampling + the
-  continuous `/v2/performance/transactions` upload; umbrella auto-register.
-- **P1.5 integration decision to make (flagged by review):** the bundle assembler emits each file type as
+- **Phase 1 — DONE (`master`), reviewed to convergence:** the full Core Web Vitals capture
+  (`packages/performance/src/web-vitals/`), each reimplemented from Google `web-vitals` (design ref) over
+  an injected `WebVitalsEnv` (no DOM lib; self-noops where an API is absent): the machinery (`observe`
+  buffered+Safari-microtask, `onHidden`/`onBFCacheRestore`, `firstHiddenTime` watcher, navigation
+  entry/activationStart, the `Metric`/`getRating`/`bindReporter` model) → **LCP** (last-entry, trusted
+  keydown/click-or-hidden finalize, takeRecords drain) · **FCP** (first-contentful-paint, report-once) ·
+  **TTFB** (responseStart validity) · **CLS** (session windows, max-not-sum) · **INP** (p98-of-10,
+  interactionId grouping, /7 polyfill, >60s clamp). `collectPageLoadVitals` ties all five into a
+  `pageload` transaction (`web_vital.<name>.value/.rating` attributes, finish-on-hidden). The Phase-1
+  3-lens review found ZERO correctness defects + all 15 rakes correct; only boundary-test gaps (CLS
+  1s/5s, INP /50, /7) — closed.
+  - **Deferred (acceptable, not bugs):** CLS FCP-gating; the full bfcache per-metric reset/re-measure
+    (the `onBFCacheRestore` hook exists but is unwired, so `navigationType:'back-forward-cache'` is
+    currently unreachable); prerender `whenActivated` deferral (mitigated by the `activationStart`
+    subtraction); soft-navigations; the buffered `visibility-state` perf-entry.
+- **Remaining:** P2 nav/resource/long-task spans on the pageload transaction; P3 active span API +
+  fetch/xhr http spans + head sampling + the continuous `/v2/performance/transactions` upload; P3.x
+  umbrella auto-register (on-by-default wiring lives there, NOT `@bugsee/browser`, to keep the extension
+  tree-shakeable).
+- **Delivery decision to make (P3):** the bundle assembler emits each file type as
   `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
   `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to
-  the capture aggregator. So P1.5 must choose: (a) push finished transactions to the aggregator as
-  `performance`-typed entries **and** add a `type === 'performance'` wrapping branch / custom serializer
-  to the assembler, or (b) drain `extension.store` separately via a bundle hook. Decide before P1.5.
+  the capture aggregator. The continuous `/v2/performance/transactions` POST body is controlled directly
+  (`{transactions: store.drain()}`); the bundle `performance.json` needs either (a) push finished
+  transactions to the aggregator as `performance`-typed entries + a `type==='performance'` wrapping
+  branch / per-type serializer on the assembler, or (b) a separate store-drain bundle hook.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
