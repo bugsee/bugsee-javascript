@@ -31,6 +31,11 @@ export {
   type PageLoadVitalsOptions,
 } from './page-load';
 export {
+  createPerformanceUploader,
+  type PerformanceUploader,
+  type PerformanceUploaderDeps,
+} from './performance-uploader';
+export {
   type CreateTransactionDeps,
   createTransaction,
   defaultSpanId,
