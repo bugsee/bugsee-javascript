@@ -47,11 +47,14 @@ export function generateUniqueID(): string {
   return `v1-${Date.now()}-${Math.floor(Math.random() * (9e12 - 1)) + 1e12}`;
 }
 
-/** A fresh metric, value initialized to the -1 sentinel (which never reports). */
-export function initMetric(name: MetricName, navigationType: NavigationType): Metric {
+/**
+ * A fresh metric. `value` defaults to the -1 sentinel (which never reports); CLS passes 0 so a
+ * shift-free page still reports a (good) CLS of 0.
+ */
+export function initMetric(name: MetricName, navigationType: NavigationType, value = -1): Metric {
   return {
     name,
-    value: -1,
+    value,
     rating: 'good',
     delta: 0,
     id: generateUniqueID(),

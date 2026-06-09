@@ -50,6 +50,10 @@ describe('initMetric', () => {
     });
     expect(m.id).toMatch(/^v1-\d+-\d+$/);
   });
+
+  it('accepts an explicit initial value (CLS starts at 0, not the sentinel)', () => {
+    expect(initMetric('CLS', 'navigate', 0).value).toBe(0);
+  });
 });
 
 describe('bindReporter', () => {
