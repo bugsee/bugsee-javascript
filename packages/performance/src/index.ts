@@ -24,6 +24,7 @@ export {
   type PerformanceUploadMode,
 } from './options';
 export {
+  collectNavigationTiming,
   collectPageLoadVitals,
   type PageLoadVitalsOptions,
 } from './page-load';

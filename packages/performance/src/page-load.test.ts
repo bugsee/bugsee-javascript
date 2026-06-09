@@ -1,7 +1,7 @@
 import type { Clock } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createPerformanceController } from './controller';
-import { collectPageLoadVitals } from './page-load';
+import { collectNavigationTiming, collectPageLoadVitals } from './page-load';
 import { createTransactionStore } from './transaction-store';
 import type { PerformanceEntryLike, WebVitalsEnv } from './web-vitals/env';
 
@@ -76,7 +76,22 @@ describe('collectPageLoadVitals', () => {
         interactionCount: 1, // native counter → no INP polyfill observer
         getEntriesByType: (type: string) =>
           type === 'navigation'
-            ? [entry({ entryType: 'navigation', type: 'navigate', responseStart: 300 })]
+            ? [
+                entry({
+                  entryType: 'navigation',
+                  type: 'navigate',
+                  domainLookupStart: 10,
+                  domainLookupEnd: 30,
+                  connectStart: 30,
+                  secureConnectionStart: 50,
+                  connectEnd: 80,
+                  requestStart: 80,
+                  responseStart: 300,
+                  responseEnd: 400,
+                  domInteractive: 500,
+                  loadEventEnd: 800,
+                }),
+              ]
             : [],
       } as never,
       queueMicrotask: (cb) => cb(),
@@ -116,18 +131,93 @@ describe('collectPageLoadVitals', () => {
       'web_vital.cls.value': 0.05,
       'web_vital.inp.value': 90,
       'web_vital.inp.rating': 'good',
+      // navigation-timing breakdown collected at finalize
+      'nav.dns_ms': 20,
+      'nav.connect_ms': 50,
+      'nav.tls_ms': 30,
+      'nav.request_ms': 220,
+      'nav.response_ms': 100,
+      'nav.dom_interactive_ms': 500,
+      'nav.load_ms': 800,
     });
   });
 
-  it('still finishes the pageload transaction even where the vitals APIs are absent', () => {
+  it('navigation timing: emits nav.<phase>_ms durations + milestones, skipping zero/missing phases', () => {
+    const attrsFor = (nav?: Record<string, unknown>) => {
+      const attrs: Record<string, unknown> = {};
+      const span = {
+        setAttribute: (k: string, v: unknown) => {
+          attrs[k] = v;
+          return span;
+        },
+      };
+      const env: WebVitalsEnv = {
+        performance: {
+          now: () => 0,
+          getEntriesByType: (type: string) =>
+            type === 'navigation' && nav ? [entry({ entryType: 'navigation', ...nav })] : [],
+        } as never,
+      };
+      collectNavigationTiming(env, span as never);
+      return attrs;
+    };
+
+    expect(
+      attrsFor({
+        domainLookupStart: 10,
+        domainLookupEnd: 30,
+        connectStart: 30,
+        secureConnectionStart: 50,
+        connectEnd: 80,
+        requestStart: 80,
+        responseStart: 300,
+        responseEnd: 400,
+        domInteractive: 500,
+        domContentLoadedEventEnd: 600,
+        loadEventEnd: 800,
+      }),
+    ).toEqual({
+      'nav.dns_ms': 20,
+      'nav.connect_ms': 50,
+      'nav.tls_ms': 30,
+      'nav.request_ms': 220,
+      'nav.response_ms': 100,
+      'nav.dom_interactive_ms': 500,
+      'nav.dom_content_loaded_ms': 600,
+      'nav.load_ms': 800,
+    });
+
+    // cache hit (dns 0), no TLS (secureConnectionStart 0), HTML still streaming (responseEnd 0) → skipped
+    expect(
+      attrsFor({
+        domainLookupStart: 0,
+        domainLookupEnd: 0,
+        connectStart: 30,
+        connectEnd: 80,
+        secureConnectionStart: 0,
+        requestStart: 80,
+        responseStart: 300,
+        responseEnd: 0,
+      }),
+    ).toEqual({ 'nav.connect_ms': 50, 'nav.request_ms': 220 });
+
+    // a phase whose end precedes its start (clock anomaly) → skipped, never a negative duration
+    expect(attrsFor({ requestStart: 500, responseStart: 100 })).toEqual({});
+
+    expect(attrsFor()).toEqual({}); // no navigation entry → nothing
+  });
+
+  it('still finishes the pageload transaction even where the vitals APIs are absent, finalizing once', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({ clock, store });
     const win = fakeTarget();
     collectPageLoadVitals({ window: win as never }, api, { name: '/' });
     expect(store.size()).toBe(0);
     win.emit('pagehide');
-    const [txn] = store.drain();
-    expect(txn).toMatchObject({ name: '/', operation: 'pageload' });
-    expect(txn?.attributes).toBeUndefined(); // no vitals collected → no attributes
+    win.emit('pagehide'); // a second hidden is a no-op (the finalized guard)
+    const drained = store.drain();
+    expect(drained).toHaveLength(1); // finished exactly once
+    expect(drained[0]).toMatchObject({ name: '/', operation: 'pageload' });
+    expect(drained[0]?.attributes).toBeUndefined(); // no vitals collected → no attributes
   });
 });

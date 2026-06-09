@@ -8,6 +8,18 @@ import type { NavigationType } from './metric';
 
 export interface NavigationTimingLike extends PerformanceEntryLike {
   readonly responseStart?: number;
+  readonly responseEnd?: number;
+  readonly requestStart?: number;
+  readonly domainLookupStart?: number;
+  readonly domainLookupEnd?: number;
+  readonly connectStart?: number;
+  readonly connectEnd?: number;
+  readonly secureConnectionStart?: number;
+  readonly redirectStart?: number;
+  readonly redirectEnd?: number;
+  readonly domInteractive?: number;
+  readonly domContentLoadedEventEnd?: number;
+  readonly loadEventEnd?: number;
   readonly activationStart?: number;
   /** 'navigate' | 'reload' | 'back_forward' | 'prerender'. */
   readonly type?: string;
