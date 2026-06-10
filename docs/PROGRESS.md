@@ -372,18 +372,28 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
   transactions to the aggregator as `performance`-typed entries + a `type==='performance'` wrapping
   branch / per-type serializer on the assembler, or (b) a separate store-drain bundle hook.
 
-### OpenTelemetry integration — DESIGNED, not built (2026-06-10) → `docs/design/opentelemetry-integration.md`
-Two-way OTel interop as a pluggable `@bugsee/opentelemetry` extension (peers, never piercing core/perf),
-sequenced AFTER the perf follow-ups above. Decisions: two-way (produce+consume); a runtime-portable
-mapping core + per-runtime adapters; **Hybrid boundary** (SDK-level Consume via `SpanProcessor` + light
-OTLP/HTTP-JSON Produce); scope = Consume + Produce + Propagation (OTel-API facade deferred); the
-"interceptors must not alter app behavior" principle **refined** — capture stays observe-only, and a new
-general **interception-transformer** seam (sync, truthful-capture, in `@bugsee/capture`/`InterceptorBase`)
-is the opt-in way piped data is altered; the **propagation transformer** (`traceparent`, opt-in,
-allowlist-gated, same-origin default) is its first consumer → the Next.js frontend↔backend story. Our
-perf `traceId`/`spanId` are already W3C-shaped. Phases: **A** mapping core · **B** Produce (OTLP-JSON) ·
-**C** Consume (`BugseeSpanProcessor`, peer `sdk-trace-base`, Node-first) · **T** transformer seam · **D**
-propagation. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) recorded in the design note.
+### OpenTelemetry integration (`@bugsee/opentelemetry`) — Produce+Consume BUILT (2026-06-10) → `docs/design/opentelemetry-integration.md`
+Two-way OTel interop as a pluggable extension (peers, never piercing core/perf). Design: two-way; a
+runtime-portable mapping core; **Hybrid boundary** (SDK-level Consume + light OTLP/HTTP-JSON Produce);
+scope = Consume + Produce + Propagation (OTel-API facade deferred); the "interceptors must not alter app
+behavior" principle **refined** — a new general **interception-transformer** seam is the opt-in way piped
+data is altered; the **propagation transformer** (`traceparent`, opt-in, allowlist-gated, same-origin) is
+its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in the note.
+- **A — DONE (`master`), reviewed:** the mapping core — Bugsee §8.8 transactions → OTLP/HTTP-JSON
+  (`to-otlp.ts`), hand-rolled, ZERO `@opentelemetry/*` deps. Spec-verified (hex ids, uint64-string ns,
+  AnyValue, status/kind); derives the implicit root span id + remaps dangling child parents.
+- **B — DONE (`master`), reviewed:** `createOtlpTraceExporter` — a `send`-shaped function (drop-in for
+  the perf uploader) POSTing the mapped OTLP request to any collector. **Produce works end-to-end.**
+- **C — DONE (`master`), reviewed:** Consume, native-transactions shape. C1 `from-otlp` (OTel span →
+  §8.8, round-trip-consistent status). C2 `createTraceAssembler` (root-end + bounded eviction: emit on
+  root-span-end, drop a never-rooted trace after maxAgeMs / cap at maxTraces). C3 `createBugseeSpanProcessor`
+  — STRUCTURAL `ReadableSpanLike`/`SpanProcessor` (no OTel import; covers SDK 1.x `parentSpanId` + 2.x
+  `parentSpanContext`/`isRemote`→local-root); `@opentelemetry/*` are OPTIONAL peers (verified not pulled
+  into node_modules) + a dev-only `.test-d.ts` drift guard. **OTel spans now flow INTO Bugsee.**
+- **Remaining: T** (the interception-transformer seam in `@bugsee/capture`/`InterceptorBase`) · **D**
+  (the `traceparent` propagation transformer) · the launch/umbrella **wiring** to make produce+consume
+  live (an OTel analog of `wirePerformance`: feed `extension.store`/finished transactions to the
+  exporter, register the `SpanProcessor`). Node-perf wiring is a prerequisite for node consume delivery.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
