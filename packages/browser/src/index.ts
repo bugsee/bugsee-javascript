@@ -19,7 +19,14 @@ export {
   describeTarget,
   type TargetDescriptor,
 } from './input-source';
-export { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
+export {
+  type Bugsee,
+  type BugseeLaunchOptions,
+  type LaunchInternals,
+  type LaunchResult,
+  launch,
+  launchCore,
+} from './launch';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
