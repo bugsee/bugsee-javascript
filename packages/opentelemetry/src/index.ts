@@ -7,6 +7,12 @@
 // propagation (T/D).
 
 export {
+  type ConsumedSpan,
+  consumedRootToTransaction,
+  consumedSpanToSpanWire,
+  fromOtlpStatus,
+} from './from-otlp';
+export {
   createOtlpTraceExporter,
   type OtlpTraceExporterOptions,
 } from './otlp-exporter';
