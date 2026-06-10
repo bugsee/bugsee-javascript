@@ -40,3 +40,8 @@ export {
   toUnixNanoString,
   transactionToOtlpSpans,
 } from './to-otlp';
+export {
+  createTraceAssembler,
+  type TraceAssembler,
+  type TraceAssemblerDeps,
+} from './trace-assembler';
