@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Umbrella package; the only package with multi-runtime exports conditions",
+  "description": "Batteries-included umbrella: the platform composition root + the on-by-default extensions (performance) wired in (browser entry today; per-runtime exports conditions to follow)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -25,7 +25,6 @@
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/browser": "workspace:*",
-    "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*"
   }
 }
