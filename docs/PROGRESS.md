@@ -347,12 +347,23 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
     omit-when-absent `description` that survived a `toEqual`) + 2 within-gate defensive branches; round 2
     added the http-span cap + pinned CLS/INP finalize idempotence; round 3 → **NO FINDINGS**. Coverage
     **100% line/fn/branch** (259/259). Every fix per-entity mutator-verified.
-- **Remaining — P3.x umbrella (cross-package, NOT YET BUILT):** the `bugsee` umbrella package (a thin
-  caller of `wirePerformance`) + a seam on the platform `launch()` to expose the internals the umbrella
-  needs (the `installNetworkCapture` umbrella `.interceptor` as the `networkSource`, and api/transport/
-  baseUrl/getEnvironment to build the real `send`). On-by-default wiring lives in the umbrella, NOT
-  `@bugsee/browser`, to keep the extension tree-shakeable. **The seam shape is an open decision** (a
-  `launchCore()` returning `{client, internals}` vs service-container discovery vs an `onLaunched` hook).
+- **Phase 3.x — DONE (`master`), reviewed to convergence:** the on-by-default umbrella wiring, via the
+  **`launchCore()` seam** (the user-chosen option A: explicit/typed over a callback hook or service
+  discovery). `@bugsee/browser` now exports `launchCore(token, opts): { client, internals }`; `launch()`
+  is `launchCore(...).client` (public surface unchanged, behaviour-preserving extract). `LaunchInternals`
+  is the typed handoff — everything NOT already a DI service: `api`/`transport`/`baseUrl`/`getEnvironment`
+  (to build the perf `send`), the `installNetworkCapture` umbrella (its `.interceptor` is the http-span
+  source), + `appVersion`/`appBuild`/`onError`; the clock/scheduler stay services (`getService(ClockToken/
+  SchedulerToken)`). `internals` is `undefined` on a repeat launch. The **`bugsee` umbrella** package
+  (was a stub) now has a `launch()` that runs `launchCore`, resolves the `performance.*` options, builds
+  `createPerformanceSend` over the internals, and calls `wirePerformance` — performance ON BY DEFAULT
+  without `@bugsee/browser` depending on the extension (tree-shakeable). Teardown is composed **in place**
+  on the client object `launchCore` registered as the process singleton (a wrapper-object approach broke
+  singleton identity — caught + fixed in review). Integration-tested through the real `launchCore` with
+  injected seams (network globals stubbed → the always-wired http-span subscription patches no real
+  fetch/XHR). Convergent review (2 agents): correctness NO findings; only 2 LOW packaging-metadata items
+  (an unused `@bugsee/node` dep + a stale description) — fixed. 100% line/branch/fn across the new code.
+- **`@bugsee/performance` is COMPLETE** (P0–P3.x) and live by default in the `bugsee` umbrella.
 - **Delivery decision to make (P3):** the bundle assembler emits each file type as
   `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
   `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to
