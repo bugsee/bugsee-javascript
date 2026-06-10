@@ -284,6 +284,9 @@ importers:
 
   packages/opentelemetry:
     dependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
