@@ -119,16 +119,22 @@ describe('createTraceAssembler', () => {
     expect(a.size()).toBe(2); // edge NOT evicted
   });
 
-  it('caps the buffer at maxTraces, evicting the oldest', () => {
+  it('caps the buffer at maxTraces, evicting the OLDEST (not the newest)', () => {
+    const emitted: TransactionWire[] = [];
     const a = createTraceAssembler({
-      onTransaction: () => {},
+      onTransaction: (t) => emitted.push(t),
       clock: fakeClock().clock,
       maxTraces: 2,
     });
-    a.add(span({ traceId: 'T1', spanId: 'c', parentSpanId: 'r' }));
-    a.add(span({ traceId: 'T2', spanId: 'c', parentSpanId: 'r' }));
-    a.add(span({ traceId: 'T3', spanId: 'c', parentSpanId: 'r' })); // over cap → evict T1 (oldest)
+    a.add(span({ traceId: 'T1', spanId: 'c1', parentSpanId: 'r' }));
+    a.add(span({ traceId: 'T2', spanId: 'c2', parentSpanId: 'r' }));
+    a.add(span({ traceId: 'T3', spanId: 'c3', parentSpanId: 'r' })); // over cap → evict T1 (oldest)
     expect(a.size()).toBe(2);
+    // Prove T1 (the OLDEST) was evicted and T2 survived — an "evict newest" bug would flip these.
+    a.add(span({ traceId: 'T1', spanId: 'r1', name: 'rootT1' }));
+    expect(emitted.find((t) => t.traceId === 'T1')?.spans).toEqual([]); // T1's child c1 was evicted
+    a.add(span({ traceId: 'T2', spanId: 'r2', name: 'rootT2' }));
+    expect(emitted.find((t) => t.traceId === 'T2')?.spans.map((s) => s.spanId)).toEqual(['c2']); // T2 survived
   });
 
   it('clear() drops all buffered traces', () => {

@@ -47,7 +47,10 @@ export function createTraceAssembler(deps: TraceAssemblerDeps): TraceAssembler {
     const cutoff = deps.clock.wallNow() - maxAgeMs;
     for (const [traceId, buffer] of traces) {
       if (buffer.firstSeenMs < cutoff) traces.delete(traceId);
-      else break; // the rest are newer
+      // The early break assumes firstSeenMs is non-decreasing in insertion order (a non-backward wall
+      // clock). A backward clock step could leave one aged trace un-evicted for a cycle — harmless: it is
+      // still bounded by maxTraces and re-checked on the next add.
+      else break;
     }
   };
 

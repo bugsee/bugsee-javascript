@@ -16,6 +16,7 @@ describe('fromOtlpStatus', () => {
     expect(fromOtlpStatus({ code: 2, message: 'TIMEOUT' })).toBe('TIMEOUT');
     expect(fromOtlpStatus({ code: 2, message: 'DEADLINE_EXCEEDED' })).toBe('DEADLINE_EXCEEDED');
     expect(fromOtlpStatus({ code: 2, message: 'CANCELLED' })).toBe('CANCELLED');
+    expect(fromOtlpStatus({ code: 2, message: 'ERROR' })).toBe('ERROR'); // 'ERROR' is itself a known name
   });
   it('falls back to ERROR for an unrecognised error message, and UNKNOWN for an unknown code', () => {
     expect(fromOtlpStatus({ code: 2, message: 'boom' })).toBe('ERROR');

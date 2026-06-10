@@ -51,6 +51,13 @@ describe('readableSpanToConsumed', () => {
     });
   });
 
+  it('passes OTel attribute values through faithfully (string/number/boolean/array)', () => {
+    const consumed = readableSpanToConsumed(
+      readable({ attributes: { s: 'x', n: 3, ok: true, tags: ['a', 'b'] } }),
+    );
+    expect(consumed.attributes).toEqual({ s: 'x', n: 3, ok: true, tags: ['a', 'b'] });
+  });
+
   it('prefers the OTel 2.x parentSpanContext over the 1.x parentSpanId', () => {
     const consumed = readableSpanToConsumed(
       readable({
