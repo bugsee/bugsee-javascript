@@ -30,6 +30,15 @@ export {
   OtlpStatusCode,
 } from './otlp-wire';
 export {
+  type BugseeSpanProcessor,
+  type BugseeSpanProcessorOptions,
+  createBugseeSpanProcessor,
+  type HrTime,
+  type ReadableSpanLike,
+  readableSpanToConsumed,
+  type SpanContextLike,
+} from './span-processor';
+export {
   deriveRootSpanId,
   spanKindFor,
   type ToOtlpOptions,
