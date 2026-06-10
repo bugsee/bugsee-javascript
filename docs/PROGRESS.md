@@ -372,6 +372,19 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
   transactions to the aggregator as `performance`-typed entries + a `type==='performance'` wrapping
   branch / per-type serializer on the assembler, or (b) a separate store-drain bundle hook.
 
+### OpenTelemetry integration — DESIGNED, not built (2026-06-10) → `docs/design/opentelemetry-integration.md`
+Two-way OTel interop as a pluggable `@bugsee/opentelemetry` extension (peers, never piercing core/perf),
+sequenced AFTER the perf follow-ups above. Decisions: two-way (produce+consume); a runtime-portable
+mapping core + per-runtime adapters; **Hybrid boundary** (SDK-level Consume via `SpanProcessor` + light
+OTLP/HTTP-JSON Produce); scope = Consume + Produce + Propagation (OTel-API facade deferred); the
+"interceptors must not alter app behavior" principle **refined** — capture stays observe-only, and a new
+general **interception-transformer** seam (sync, truthful-capture, in `@bugsee/capture`/`InterceptorBase`)
+is the opt-in way piped data is altered; the **propagation transformer** (`traceparent`, opt-in,
+allowlist-gated, same-origin default) is its first consumer → the Next.js frontend↔backend story. Our
+perf `traceId`/`spanId` are already W3C-shaped. Phases: **A** mapping core · **B** Produce (OTLP-JSON) ·
+**C** Consume (`BugseeSpanProcessor`, peer `sdk-trace-base`, Node-first) · **T** transformer seam · **D**
+propagation. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) recorded in the design note.
+
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` (currently single entry).
