@@ -1,0 +1,311 @@
+import type { TransactionWire } from '@bugsee/performance';
+import { describe, expect, it } from 'vitest';
+import { OtlpSpanKind, OtlpStatusCode } from './otlp-wire';
+import {
+  deriveRootSpanId,
+  spanKindFor,
+  toAnyValue,
+  toKeyValues,
+  toOtlpExportRequest,
+  toStatus,
+  toUnixNanoString,
+  transactionToOtlpSpans,
+} from './to-otlp';
+
+describe('toUnixNanoString', () => {
+  it('converts wall-clock ms to a decimal ns string WITHOUT precision loss (BigInt, not Number*1e6)', () => {
+    // 1709990000123 * 1e6 = 1.709990000123e18 — beyond 2^53, so Number would lose the low digits.
+    expect(toUnixNanoString(1709990000123)).toBe('1709990000123000000');
+  });
+  it('rounds fractional ms to the nearest ms before scaling', () => {
+    expect(toUnixNanoString(10.7)).toBe('11000000');
+    expect(toUnixNanoString(0)).toBe('0');
+  });
+});
+
+describe('toAnyValue', () => {
+  it('maps a string to stringValue', () => {
+    expect(toAnyValue('x')).toEqual({ stringValue: 'x' });
+  });
+  it('maps a boolean to boolValue', () => {
+    expect(toAnyValue(true)).toEqual({ boolValue: true });
+    expect(toAnyValue(false)).toEqual({ boolValue: false });
+  });
+  it('maps an integer number to intValue as a STRING (int64 JSON)', () => {
+    expect(toAnyValue(42)).toEqual({ intValue: '42' });
+    expect(toAnyValue(-3)).toEqual({ intValue: '-3' });
+  });
+  it('maps a non-integer number to doubleValue', () => {
+    expect(toAnyValue(3.14)).toEqual({ doubleValue: 3.14 });
+  });
+  it('maps a bigint to intValue as a string', () => {
+    expect(toAnyValue(5n)).toEqual({ intValue: '5' });
+  });
+  it('JSON-stringifies an object/array into stringValue', () => {
+    expect(toAnyValue({ a: 1 })).toEqual({ stringValue: '{"a":1}' });
+    expect(toAnyValue([1, 2])).toEqual({ stringValue: '[1,2]' });
+  });
+  it('returns undefined for undefined/null (the key is dropped)', () => {
+    expect(toAnyValue(undefined)).toBeUndefined();
+    expect(toAnyValue(null)).toBeUndefined();
+  });
+  it('returns undefined for an unencodable value (function/symbol → JSON.stringify undefined)', () => {
+    expect(toAnyValue(() => 1)).toBeUndefined();
+    expect(toAnyValue(Symbol('x'))).toBeUndefined();
+  });
+});
+
+describe('toKeyValues', () => {
+  it('maps an attributes record to KeyValue[], dropping undefined/null values', () => {
+    expect(toKeyValues({ a: 'x', b: undefined, c: 2, d: null })).toEqual([
+      { key: 'a', value: { stringValue: 'x' } },
+      { key: 'c', value: { intValue: '2' } },
+    ]);
+  });
+  it('returns [] for undefined attributes', () => {
+    expect(toKeyValues(undefined)).toEqual([]);
+  });
+});
+
+describe('toStatus', () => {
+  it('maps OK to code OK, UNKNOWN to UNSET, and error-ish to ERROR with the status as message', () => {
+    expect(toStatus('OK')).toEqual({ code: OtlpStatusCode.OK });
+    expect(toStatus('UNKNOWN')).toEqual({ code: OtlpStatusCode.UNSET });
+    expect(toStatus('ERROR')).toEqual({ code: OtlpStatusCode.ERROR, message: 'ERROR' });
+    expect(toStatus('TIMEOUT')).toEqual({ code: OtlpStatusCode.ERROR, message: 'TIMEOUT' });
+    expect(toStatus('DEADLINE_EXCEEDED')).toEqual({
+      code: OtlpStatusCode.ERROR,
+      message: 'DEADLINE_EXCEEDED',
+    });
+  });
+});
+
+describe('spanKindFor', () => {
+  it('maps http.client operations to CLIENT and everything else to INTERNAL', () => {
+    expect(spanKindFor('http.client')).toBe(OtlpSpanKind.CLIENT);
+    expect(spanKindFor('ui.load')).toBe(OtlpSpanKind.INTERNAL);
+    expect(spanKindFor('resource.script')).toBe(OtlpSpanKind.INTERNAL);
+  });
+});
+
+describe('deriveRootSpanId', () => {
+  it('derives a stable 8-byte (16-hex) span id from the trace id', () => {
+    expect(deriveRootSpanId('0123456789abcdef0123456789abcdef')).toBe('0123456789abcdef');
+  });
+});
+
+const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
+  traceId: '0123456789abcdef0123456789abcdef',
+  name: '/checkout',
+  operation: 'ui.load',
+  status: 'OK',
+  startTimestampMs: 1000,
+  endTimestampMs: 1100,
+  isSnapshot: false,
+  appVersion: '1.2.3',
+  appBuild: '456',
+  attributes: { custom: 1 },
+  spans: [
+    {
+      spanId: 'aaaaaaaaaaaaaaaa',
+      parentSpanId: 'ffffffffffffffff', // the original (dropped) root id → dangling
+      operation: 'http.client',
+      description: 'GET https://x/a',
+      status: 'OK',
+      startTimestampMs: 1010,
+      endTimestampMs: 1080,
+    },
+    {
+      spanId: 'bbbbbbbbbbbbbbbb',
+      parentSpanId: 'aaaaaaaaaaaaaaaa', // a real child → kept as-is
+      operation: 'resource.script',
+      status: 'OK',
+      startTimestampMs: 1020,
+      endTimestampMs: 1040,
+    },
+  ],
+  ...over,
+});
+
+describe('transactionToOtlpSpans', () => {
+  it('emits a root span (derived id, no parent) plus the children, linking the tree', () => {
+    const spans = transactionToOtlpSpans(txn());
+    expect(spans).toHaveLength(3);
+    const [root, c1, c2] = spans;
+    // Root: id derived from traceId, no parentSpanId, name = transaction name, INTERNAL.
+    expect(root).toMatchObject({
+      traceId: '0123456789abcdef0123456789abcdef',
+      spanId: '0123456789abcdef',
+      name: '/checkout',
+      kind: OtlpSpanKind.INTERNAL,
+      startTimeUnixNano: '1000000000', // 1000 ms → ns
+      endTimeUnixNano: '1100000000',
+      status: { code: OtlpStatusCode.OK },
+    });
+    expect(root?.parentSpanId).toBeUndefined();
+    // Dangling child parent (pointed at the dropped root id) is remapped to the derived root id.
+    expect(c1).toMatchObject({
+      spanId: 'aaaaaaaaaaaaaaaa',
+      parentSpanId: '0123456789abcdef',
+      name: 'GET https://x/a', // description preferred over operation for the name
+      kind: OtlpSpanKind.CLIENT,
+    });
+    // A real child (parent present among the children) keeps its parentSpanId.
+    expect(c2).toMatchObject({
+      spanId: 'bbbbbbbbbbbbbbbb',
+      parentSpanId: 'aaaaaaaaaaaaaaaa',
+      name: 'resource.script', // no description → operation is the name
+      kind: OtlpSpanKind.INTERNAL,
+    });
+  });
+
+  it('maps a child to a COMPLETE OTLP span (traceId, ids, kind, timestamps, attributes, non-OK status)', () => {
+    // Full toEqual (not toMatchObject) so traceId / status / startTimeUnixNano are all pinned; a non-OK
+    // status catches a "collapse to OK" regression.
+    const spans = transactionToOtlpSpans(
+      txn({
+        spans: [
+          {
+            spanId: 'aaaaaaaaaaaaaaaa',
+            parentSpanId: 'ffffffffffffffff', // dangling → remapped to root
+            operation: 'http.client',
+            description: 'GET https://x/a',
+            status: 'ERROR',
+            startTimestampMs: 1010,
+            endTimestampMs: 1080,
+            attributes: { 'http.status_code': 500 },
+          },
+        ],
+      }),
+    );
+    expect(spans[1]).toEqual({
+      traceId: '0123456789abcdef0123456789abcdef',
+      spanId: 'aaaaaaaaaaaaaaaa',
+      parentSpanId: '0123456789abcdef',
+      name: 'GET https://x/a',
+      kind: OtlpSpanKind.CLIENT,
+      startTimeUnixNano: '1010000000',
+      endTimeUnixNano: '1080000000',
+      attributes: [
+        { key: 'http.status_code', value: { intValue: '500' } },
+        { key: 'bugsee.operation', value: { stringValue: 'http.client' } },
+      ],
+      status: { code: OtlpStatusCode.ERROR, message: 'ERROR' },
+    });
+  });
+
+  it('maps the root span kind from its operation (http.client → CLIENT)', () => {
+    expect(transactionToOtlpSpans(txn({ operation: 'http.client' }))[0]?.kind).toBe(
+      OtlpSpanKind.CLIENT,
+    );
+  });
+
+  it('lets the SDK bugsee.* attributes win over a colliding user attribute (no duplicate key)', () => {
+    const root = transactionToOtlpSpans(txn({ attributes: { 'bugsee.operation': 'USER' } }))[0];
+    expect(root?.attributes).toContainEqual({
+      key: 'bugsee.operation',
+      value: { stringValue: 'ui.load' },
+    });
+    expect(root?.attributes?.filter((a) => a.key === 'bugsee.operation')).toHaveLength(1);
+  });
+
+  it('stamps bugsee.operation + app version/build on the root attributes (user attrs preserved)', () => {
+    const root = transactionToOtlpSpans(txn())[0];
+    expect(root?.attributes).toEqual([
+      { key: 'custom', value: { intValue: '1' } },
+      { key: 'bugsee.operation', value: { stringValue: 'ui.load' } },
+      { key: 'bugsee.app.version', value: { stringValue: '1.2.3' } },
+      { key: 'bugsee.app.build', value: { stringValue: '456' } },
+    ]);
+  });
+
+  it('adds bugsee.snapshot only when isSnapshot is true; omits app version/build when absent', () => {
+    const root = transactionToOtlpSpans(
+      txn({ isSnapshot: true, appVersion: undefined, appBuild: undefined, attributes: undefined }),
+    )[0];
+    expect(root?.attributes).toEqual([
+      { key: 'bugsee.operation', value: { stringValue: 'ui.load' } },
+      { key: 'bugsee.snapshot', value: { boolValue: true } },
+    ]);
+  });
+
+  it('falls back to the start time for endTimeUnixNano when the transaction has no end', () => {
+    const root = transactionToOtlpSpans(txn({ endTimestampMs: undefined }))[0];
+    expect(root?.endTimeUnixNano).toBe('1000000000'); // == start
+  });
+
+  it('stamps bugsee.operation on child attributes too', () => {
+    const c1 = transactionToOtlpSpans(txn())[1];
+    expect(c1?.attributes).toEqual([
+      { key: 'bugsee.operation', value: { stringValue: 'http.client' } },
+    ]);
+  });
+
+  it('falls back to the child start time for endTimeUnixNano when a child has no end', () => {
+    const spans = transactionToOtlpSpans(
+      txn({
+        spans: [
+          {
+            spanId: 'dddddddddddddddd',
+            operation: 'ui.long-task',
+            status: 'OK',
+            startTimestampMs: 1234,
+          },
+        ],
+      }),
+    );
+    expect(spans[1]?.endTimeUnixNano).toBe('1234000000'); // == start
+  });
+
+  it('remaps a child with NO parentSpanId to the root', () => {
+    const spans = transactionToOtlpSpans(
+      txn({
+        spans: [
+          {
+            spanId: 'cccccccccccccccc',
+            operation: 'ui.long-task',
+            status: 'OK',
+            startTimestampMs: 1005,
+            endTimestampMs: 1006,
+          },
+        ],
+      }),
+    );
+    expect(spans[1]?.parentSpanId).toBe('0123456789abcdef');
+  });
+});
+
+describe('toOtlpExportRequest', () => {
+  it('wraps the spans in one resourceSpans/scopeSpans with the resource + scope', () => {
+    const req = toOtlpExportRequest([txn()], {
+      resource: { 'service.name': 'web', host: 2 },
+      scope: { name: 'custom-scope', version: '9.9' },
+    });
+    expect(req.resourceSpans).toHaveLength(1);
+    const rs = req.resourceSpans[0];
+    expect(rs?.resource.attributes).toEqual([
+      { key: 'service.name', value: { stringValue: 'web' } },
+      { key: 'host', value: { intValue: '2' } },
+    ]);
+    expect(rs?.scopeSpans[0]?.scope).toEqual({ name: 'custom-scope', version: '9.9' });
+    expect(rs?.scopeSpans[0]?.spans).toHaveLength(3); // root + 2 children
+  });
+
+  it('flattens spans across multiple transactions', () => {
+    const req = toOtlpExportRequest([txn(), txn({ traceId: 'fedcba9876543210fedcba9876543210' })]);
+    expect(req.resourceSpans[0]?.scopeSpans[0]?.spans).toHaveLength(6);
+  });
+
+  it('defaults the scope name/resource and omits the scope version when not given', () => {
+    const req = toOtlpExportRequest([txn()]);
+    const rs = req.resourceSpans[0];
+    expect(rs?.resource.attributes).toEqual([]);
+    expect(rs?.scopeSpans[0]?.scope).toEqual({ name: '@bugsee/opentelemetry' });
+    // toEqual ignores a stray `version: undefined`; pin the exact key set so the omit branch is real.
+    expect(Object.keys(rs?.scopeSpans[0]?.scope ?? {})).toEqual(['name']);
+  });
+
+  it('returns no resourceSpans for an empty transaction list', () => {
+    expect(toOtlpExportRequest([])).toEqual({ resourceSpans: [] });
+  });
+});

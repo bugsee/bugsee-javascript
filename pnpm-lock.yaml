@@ -282,6 +282,12 @@ importers:
         specifier: workspace:*
         version: link:../node
 
+  packages/opentelemetry:
+    dependencies:
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../performance
+
   packages/performance:
     dependencies:
       '@bugsee/core':
