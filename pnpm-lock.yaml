@@ -121,6 +121,9 @@ importers:
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../performance
 
   packages/bun:
     dependencies:
