@@ -7,6 +7,7 @@ import {
   readSyncRequestBody,
   type SyncBodyRead,
 } from './network-body';
+import type { RequestDecoratable, RequestDecorator } from './request-decorator';
 
 // Cross-runtime fetch capture SOURCE (design §16.2): wraps `fetch` and emits NetworkEvents per stage
 // (before → complete | error). global `fetch` is universal (browser/workers/Node≥18/Bun/Deno/edge),
@@ -200,8 +201,12 @@ export interface FetchInterceptorOptions {
   maxBodyBytes?: number;
 }
 
-class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
+class FetchInterceptor
+  extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
+  implements RequestDecoratable
+{
   readonly name = 'fetch';
+  readonly #decorators: RequestDecorator[] = [];
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
@@ -224,6 +229,37 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
     this.#target = options.target ?? globalFetchTarget;
     this.#captureBodies = options.captureBodies ?? true;
     this.#maxBodyBytes = options.maxBodyBytes ?? 20480;
+  }
+
+  /** Register a request decorator (the transformer seam); returns an unsubscribe. Observe-only until one
+   *  is added — with none registered the wrapped fetch is byte-identical to the unwrapped call. */
+  addRequestDecorator(decorator: RequestDecorator): () => void {
+    this.#decorators.push(decorator);
+    return () => {
+      const index = this.#decorators.indexOf(decorator);
+      if (index >= 0) {
+        this.#decorators.splice(index, 1);
+      }
+    };
+  }
+
+  // Run every decorator synchronously and merge their header outputs (later wins). Returns the additions,
+  // or undefined when nothing was added (so the caller leaves the request untouched).
+  #runDecorators(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+  ): Record<string, string> | undefined {
+    const additions: Record<string, string> = {};
+    let any = false;
+    for (const decorate of this.#decorators) {
+      const out = decorate({ url, method, headers });
+      if (out) {
+        Object.assign(additions, out);
+        any = true;
+      }
+    }
+    return any ? additions : undefined;
   }
 
   // Capture the RESPONSE body without disturbing the app's own consumption: clone immediately, then
@@ -291,13 +327,26 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
 
   #wrap(original: FetchFn): FetchFn {
     return (input, init) => {
-      const call = original(input, init); // always call through, unchanged
       const reqHeaders = requestHeaders(input, init);
       const url = resolveUrl(input);
       if (this.#isInternal(url, reqHeaders)) {
-        return call; // the SDK's own traffic — pass through without capturing
+        return original(input, init); // the SDK's own traffic — pass through untouched (no decorate/capture)
       }
       const method = resolveMethod(input, init);
+      // Request decorators (the transformer seam) — the ONLY place piped data is altered. With none
+      // registered, `effectiveInit === init`, so the call is byte-identical to the unwrapped fetch.
+      let effectiveInit = init;
+      if (this.#decorators.length > 0) {
+        const additions = this.#runDecorators(url, method, reqHeaders);
+        if (additions !== undefined) {
+          Object.assign(reqHeaders, additions); // truthful capture: the emitted headers match the wire
+          effectiveInit = {
+            ...(init as Record<string, unknown> | undefined),
+            headers: { ...reqHeaders },
+          };
+        }
+      }
+      const call = original(input, effectiveInit);
       const id = this.#newId();
       const startedAt = this.#now();
       const reqBody = readRequestBody(input, init);
@@ -372,6 +421,6 @@ class FetchInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent
 
 export function createFetchInterceptor(
   options?: FetchInterceptorOptions,
-): Interceptor<Record<NetworkStage, NetworkEvent>> {
+): Interceptor<Record<NetworkStage, NetworkEvent>> & RequestDecoratable {
   return new FetchInterceptor(options);
 }

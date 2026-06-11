@@ -22,6 +22,11 @@ export {
 export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
 export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
+export type {
+  OutgoingRequest,
+  RequestDecoratable,
+  RequestDecorator,
+} from './request-decorator';
 export {
   createSseInterceptor,
   type SseInterceptorOptions,

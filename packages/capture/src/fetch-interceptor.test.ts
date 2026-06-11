@@ -624,3 +624,117 @@ describe('createFetchInterceptor — activation', () => {
     expect(() => ic.onAny(() => {})).not.toThrow();
   });
 });
+
+describe('createFetchInterceptor — request decorators (the transformer seam)', () => {
+  // A target whose impl records exactly what the wrapped fetch passed through to the real fetch.
+  const recording = () => {
+    let received: { input: unknown; init: unknown } | undefined;
+    const h = harness(async (input, init) => {
+      received = { input, init };
+      return okResponse();
+    });
+    return { ...h, received: () => received };
+  };
+
+  it('does NOT alter the outgoing request when no decorator is registered (observe-only)', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic); // activate
+    const init = { method: 'GET', headers: { a: '1' } };
+    await call('https://api/x', init);
+    expect(received()?.input).toBe('https://api/x');
+    expect(received()?.init).toBe(init); // the SAME object — byte-identical passthrough
+  });
+
+  it('applies a decorator: injects headers into the outgoing request AND the captured event (truthful capture)', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    ic.addRequestDecorator((req) => ({ traceparent: `00-${req.url.length}` }));
+    await call('https://api/x', { method: 'POST', headers: { authorization: 's' } });
+    expect((received()?.init as { headers: unknown }).headers).toEqual({
+      authorization: 's',
+      traceparent: '00-13',
+    }); // original header + injected one on the WIRE
+    expect(events[0]?.event.custom?.headers).toEqual({ authorization: 's', traceparent: '00-13' }); // captured matches the wire
+  });
+
+  it('passes the request url/method/headers to the decorator', async () => {
+    const seen: unknown[] = [];
+    const { target, call } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    ic.addRequestDecorator((req) => {
+      seen.push({ url: req.url, method: req.method, headers: { ...req.headers } });
+      return undefined;
+    });
+    await call('https://api/y', { method: 'put', headers: { x: '1' } });
+    expect(seen[0]).toEqual({ url: 'https://api/y', method: 'PUT', headers: { x: '1' } });
+  });
+
+  it('leaves the outgoing request unchanged when the decorator returns nothing', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    const init = { headers: { a: '1' } };
+    ic.addRequestDecorator(() => undefined);
+    await call('https://api/x', init);
+    expect(received()?.init).toBe(init); // no additions → untouched (same ref)
+  });
+
+  it('does NOT decorate the SDK’s own internal requests (X-Bugsee-Internal)', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    const init = { headers: { 'x-bugsee-internal': '1' } };
+    await call('https://api/x', init);
+    expect(received()?.init).toBe(init); // SDK traffic passes through untouched (no traceparent)
+  });
+
+  it('stops applying a decorator after unsubscribe', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    const off = ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    off();
+    const init = { headers: {} };
+    await call('https://api/x', init);
+    expect(received()?.init).toBe(init); // no longer decorated
+  });
+
+  it('a second unsubscribe of the same decorator is a harmless no-op', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    const off = ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    off();
+    off(); // already removed → indexOf returns -1, nothing to splice
+    const init = { headers: {} };
+    await call('https://api/x', init);
+    expect(received()?.init).toBe(init);
+  });
+
+  it('merges multiple decorators (later wins on a key collision)', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    ic.addRequestDecorator(() => ({ a: '1', shared: 'first' }));
+    ic.addRequestDecorator(() => ({ b: '2', shared: 'second' }));
+    await call('https://api/x', {});
+    expect((received()?.init as { headers: unknown }).headers).toEqual({
+      a: '1',
+      b: '2',
+      shared: 'second',
+    });
+  });
+
+  it('builds an init with headers when the call had none', async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    collect(ic);
+    ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    await call('https://api/x'); // no init at all
+    expect(received()?.init).toEqual({ headers: { traceparent: 'X' } });
+  });
+});
