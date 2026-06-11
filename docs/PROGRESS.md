@@ -390,10 +390,23 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   — STRUCTURAL `ReadableSpanLike`/`SpanProcessor` (no OTel import; covers SDK 1.x `parentSpanId` + 2.x
   `parentSpanContext`/`isRemote`→local-root); `@opentelemetry/*` are OPTIONAL peers (verified not pulled
   into node_modules) + a dev-only `.test-d.ts` drift guard. **OTel spans now flow INTO Bugsee.**
-- **Remaining: T** (the interception-transformer seam in `@bugsee/capture`/`InterceptorBase`) · **D**
-  (the `traceparent` propagation transformer) · the launch/umbrella **wiring** to make produce+consume
-  live (an OTel analog of `wirePerformance`: feed `extension.store`/finished transactions to the
-  exporter, register the `SpanProcessor`). Node-perf wiring is a prerequisite for node consume delivery.
+- **T — DONE (`master`):** the interception-transformer seam in `@bugsee/capture`. Capture interceptors
+  stay observe-only; a `RequestDecorator` (sync, truthful-capture, never on SDK-internal traffic) is the
+  ONLY way piped data is altered — byte-identical when none registered. Shared `createRequestDecoratorRegistry`
+  on BOTH fetch (rebuilds `init.headers`) and xhr (original `setRequestHeader` at send). The "interceptors
+  must not alter app behavior" principle, refined into code.
+- **D — DONE (`master`):** `createTraceparentDecorator` — the W3C propagation transformer (the seam's
+  first consumer). Injects `traceparent` (`00-<traceId>-<spanId>-<flags>`) from the Bugsee active
+  transaction (already W3C-shaped; NO `@opentelemetry/*` dep). **SECURITY:** same-origin propagates by
+  default; cross-origin ONLY via an explicit allowlist (string/RegExp) — no trace-topology leak;
+  never overrides an existing `traceparent`; fail-closed on unparseable URLs. Security mutator loop
+  (same-origin inversion, default-deny removal, allowlist bypass, override, sampled-flag, format) all caught.
+- **Remaining — the live WIRING only:** expose `addRequestDecorator` on the network umbrella (fan out to
+  fetch+xhr leaves) + an OTel analog of `wirePerformance` that, after launch: registers the traceparent
+  decorator on the network source (perf `getActiveSpan` + the user's allowlist), feeds finished perf
+  transactions to `createOtlpTraceExporter` (produce), and exposes the `BugseeSpanProcessor` for the user
+  to register (consume). Node-perf wiring is a prerequisite for node consume delivery. **All algorithmic +
+  security building blocks are built, reviewed, and mutation-tested; only integration glue remains.**
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
