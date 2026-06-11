@@ -338,3 +338,70 @@ describe('createXhrInterceptor — activation', () => {
     expect(() => off()).not.toThrow();
   });
 });
+
+describe('createXhrInterceptor — request decorators (the transformer seam)', () => {
+  const setupD = () => {
+    const Xhr = makeXhr();
+    const target: XhrTarget = { get: () => Xhr };
+    const ic = createXhrInterceptor({ now: () => 100, newId: () => 'x1', target });
+    const events: Array<[NetworkStage, NetworkEvent]> = [];
+    ic.onAny((stage, event) => events.push([stage, event])); // activate → patches the prototype
+    return { Xhr, ic, events };
+  };
+
+  it('does NOT touch the outgoing request when no decorator is registered', () => {
+    const { Xhr, events } = setupD();
+    const xhr = new Xhr();
+    xhr.open('get', 'https://api/x');
+    xhr.setRequestHeader('authorization', 's');
+    xhr.send();
+    expect(xhr.reqHeaders).toEqual({ authorization: 's' }); // only the app header on the real request
+    expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 's' });
+  });
+
+  it('applies a decorator: sets the header on the real request AND the captured event (truthful capture)', () => {
+    const { Xhr, ic, events } = setupD();
+    ic.addRequestDecorator((req) => ({ traceparent: `00-${req.method}` }));
+    const xhr = new Xhr();
+    xhr.open('post', 'https://api/x');
+    xhr.setRequestHeader('authorization', 's');
+    xhr.send();
+    expect(xhr.reqHeaders).toEqual({ authorization: 's', traceparent: '00-POST' }); // on the WIRE
+    expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 's', traceparent: '00-POST' }); // captured matches
+  });
+
+  it('passes the request url/method/headers to the decorator', () => {
+    const { Xhr, ic } = setupD();
+    const seen: unknown[] = [];
+    ic.addRequestDecorator((req) => {
+      seen.push({ url: req.url, method: req.method, headers: { ...req.headers } });
+      return undefined;
+    });
+    const xhr = new Xhr();
+    xhr.open('put', 'https://api/y');
+    xhr.setRequestHeader('x', '1');
+    xhr.send();
+    expect(seen[0]).toEqual({ url: 'https://api/y', method: 'PUT', headers: { x: '1' } });
+  });
+
+  it('does NOT decorate the SDK’s own internal requests (X-Bugsee-Internal)', () => {
+    const { Xhr, ic, events } = setupD();
+    ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    const xhr = new Xhr();
+    xhr.open('get', 'https://api/x');
+    xhr.setRequestHeader('x-bugsee-internal', '1');
+    xhr.send();
+    expect(xhr.reqHeaders).toEqual({ 'x-bugsee-internal': '1' }); // untouched (no traceparent)
+    expect(events).toEqual([]); // internal → not captured
+  });
+
+  it('stops applying a decorator after unsubscribe', () => {
+    const { Xhr, ic } = setupD();
+    const off = ic.addRequestDecorator(() => ({ traceparent: 'X' }));
+    off();
+    const xhr = new Xhr();
+    xhr.open('get', 'https://api/x');
+    xhr.send();
+    expect(xhr.reqHeaders).toEqual({}); // no traceparent
+  });
+});

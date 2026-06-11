@@ -26,3 +26,37 @@ export interface RequestDecoratable {
   /** Register a request decorator. Returns an unsubscribe that removes it. */
   addRequestDecorator(decorator: RequestDecorator): () => void;
 }
+
+/** A registry of request decorators — the shared `addRequestDecorator` + `run` used by each interceptor. */
+export interface RequestDecoratorRegistry extends RequestDecoratable {
+  /** Run every registered decorator synchronously; the merged header additions, or undefined if none. */
+  run(request: OutgoingRequest): Record<string, string> | undefined;
+}
+
+/** Create a decorator registry (one per interceptor): hosts the decorators and merges their outputs. */
+export function createRequestDecoratorRegistry(): RequestDecoratorRegistry {
+  const decorators: RequestDecorator[] = [];
+  return {
+    addRequestDecorator(decorator) {
+      decorators.push(decorator);
+      return () => {
+        const index = decorators.indexOf(decorator);
+        if (index >= 0) {
+          decorators.splice(index, 1);
+        }
+      };
+    },
+    run(request) {
+      const additions: Record<string, string> = {};
+      let any = false;
+      for (const decorate of decorators) {
+        const out = decorate(request);
+        if (out) {
+          Object.assign(additions, out);
+          any = true;
+        }
+      }
+      return any ? additions : undefined;
+    },
+  };
+}

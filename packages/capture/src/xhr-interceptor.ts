@@ -6,6 +6,12 @@ import {
   readSyncRequestBody,
   type SyncBodyRead,
 } from './network-body';
+import {
+  createRequestDecoratorRegistry,
+  type RequestDecoratable,
+  type RequestDecorator,
+  type RequestDecoratorRegistry,
+} from './request-decorator';
 
 // XMLHttpRequest capture SOURCE (design §16.2). XHR is browser/electron-renderer only, so the wrap is
 // installed only when XMLHttpRequest exists (availability-detected) — on other runtimes onActivate is
@@ -79,8 +85,12 @@ export interface XhrInterceptorOptions {
   maxBodyBytes?: number;
 }
 
-class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
+class XhrInterceptor
+  extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
+  implements RequestDecoratable
+{
   readonly name = 'xhr';
+  readonly #decorators: RequestDecoratorRegistry = createRequestDecoratorRegistry();
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
@@ -106,6 +116,12 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
     this.#maxBodyBytes = options.maxBodyBytes ?? 20480;
   }
 
+  /** Register a request decorator (the transformer seam); returns an unsubscribe. Observe-only until one
+   *  is added — with none registered the wrapped XHR is byte-identical to the unwrapped request. */
+  addRequestDecorator(decorator: RequestDecorator): () => void {
+    return this.#decorators.addRequestDecorator(decorator);
+  }
+
   protected onActivate(): void {
     const ctor = this.#target.get();
     if (ctor === undefined) {
@@ -119,7 +135,7 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
     };
     proto.open = this.#wrapOpen(this.#originals.open);
     proto.setRequestHeader = this.#wrapSetHeader(this.#originals.setRequestHeader);
-    proto.send = this.#wrapSend(this.#originals.send);
+    proto.send = this.#wrapSend(this.#originals.send, this.#originals.setRequestHeader);
   }
 
   protected override onDeactivate(): void {
@@ -157,7 +173,10 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
     };
   }
 
-  #wrapSend(original: XhrMethods['send']): XhrMethods['send'] {
+  #wrapSend(
+    original: XhrMethods['send'],
+    originalSetHeader: XhrMethods['setRequestHeader'],
+  ): XhrMethods['send'] {
     const self = this;
     return function (this: XhrInstance, body?: unknown): unknown {
       const state = self.#state.get(this);
@@ -165,6 +184,21 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
         const id = self.#newId();
         state.id = id;
         state.startedAt = self.#now();
+        // Request decorators (the transformer seam) — the ONLY place piped data is altered. Apply each
+        // addition via the ORIGINAL setRequestHeader (so it lands on the real request without re-capture)
+        // and mirror it into state.headers (truthful capture). With none registered, nothing is applied
+        // and the request is byte-identical to the unwrapped XHR.
+        const additions = self.#decorators.run({
+          url: state.url,
+          method: state.method,
+          headers: state.headers,
+        });
+        if (additions !== undefined) {
+          for (const [name, value] of Object.entries(additions)) {
+            state.headers[name] = value;
+            originalSetHeader.call(this, name, value);
+          }
+        }
         // Capture the request body (string / URLSearchParams). Reflect the runtime-implied Content-Type
         // only when the caller set none (so the captured headers match the wire and the gate keeps it).
         const reqBody = readSyncRequestBody(body);
@@ -255,6 +289,6 @@ class XhrInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
 
 export function createXhrInterceptor(
   options?: XhrInterceptorOptions,
-): Interceptor<Record<NetworkStage, NetworkEvent>> {
+): Interceptor<Record<NetworkStage, NetworkEvent>> & RequestDecoratable {
   return new XhrInterceptor(options);
 }

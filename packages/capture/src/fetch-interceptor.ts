@@ -7,7 +7,12 @@ import {
   readSyncRequestBody,
   type SyncBodyRead,
 } from './network-body';
-import type { RequestDecoratable, RequestDecorator } from './request-decorator';
+import {
+  createRequestDecoratorRegistry,
+  type RequestDecoratable,
+  type RequestDecorator,
+  type RequestDecoratorRegistry,
+} from './request-decorator';
 
 // Cross-runtime fetch capture SOURCE (design §16.2): wraps `fetch` and emits NetworkEvents per stage
 // (before → complete | error). global `fetch` is universal (browser/workers/Node≥18/Bun/Deno/edge),
@@ -206,7 +211,7 @@ class FetchInterceptor
   implements RequestDecoratable
 {
   readonly name = 'fetch';
-  readonly #decorators: RequestDecorator[] = [];
+  readonly #decorators: RequestDecoratorRegistry = createRequestDecoratorRegistry();
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #isInternal: (url: string, headers: Record<string, string>) => boolean;
@@ -234,32 +239,7 @@ class FetchInterceptor
   /** Register a request decorator (the transformer seam); returns an unsubscribe. Observe-only until one
    *  is added — with none registered the wrapped fetch is byte-identical to the unwrapped call. */
   addRequestDecorator(decorator: RequestDecorator): () => void {
-    this.#decorators.push(decorator);
-    return () => {
-      const index = this.#decorators.indexOf(decorator);
-      if (index >= 0) {
-        this.#decorators.splice(index, 1);
-      }
-    };
-  }
-
-  // Run every decorator synchronously and merge their header outputs (later wins). Returns the additions,
-  // or undefined when nothing was added (so the caller leaves the request untouched).
-  #runDecorators(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-  ): Record<string, string> | undefined {
-    const additions: Record<string, string> = {};
-    let any = false;
-    for (const decorate of this.#decorators) {
-      const out = decorate({ url, method, headers });
-      if (out) {
-        Object.assign(additions, out);
-        any = true;
-      }
-    }
-    return any ? additions : undefined;
+    return this.#decorators.addRequestDecorator(decorator);
   }
 
   // Capture the RESPONSE body without disturbing the app's own consumption: clone immediately, then
@@ -334,17 +314,16 @@ class FetchInterceptor
       }
       const method = resolveMethod(input, init);
       // Request decorators (the transformer seam) — the ONLY place piped data is altered. With none
-      // registered, `effectiveInit === init`, so the call is byte-identical to the unwrapped fetch.
+      // registered (or none applicable), `run` returns undefined and `effectiveInit === init`, so the
+      // call is byte-identical to the unwrapped fetch.
       let effectiveInit = init;
-      if (this.#decorators.length > 0) {
-        const additions = this.#runDecorators(url, method, reqHeaders);
-        if (additions !== undefined) {
-          Object.assign(reqHeaders, additions); // truthful capture: the emitted headers match the wire
-          effectiveInit = {
-            ...(init as Record<string, unknown> | undefined),
-            headers: { ...reqHeaders },
-          };
-        }
+      const additions = this.#decorators.run({ url, method, headers: reqHeaders });
+      if (additions !== undefined) {
+        Object.assign(reqHeaders, additions); // truthful capture: the emitted headers match the wire
+        effectiveInit = {
+          ...(init as Record<string, unknown> | undefined),
+          headers: { ...reqHeaders },
+        };
       }
       const call = original(input, effectiveInit);
       const id = this.#newId();
