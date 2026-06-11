@@ -22,10 +22,12 @@ export {
 export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
 export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
-export type {
-  OutgoingRequest,
-  RequestDecoratable,
-  RequestDecorator,
+export {
+  createRequestDecoratorRegistry,
+  type OutgoingRequest,
+  type RequestDecoratable,
+  type RequestDecorator,
+  type RequestDecoratorRegistry,
 } from './request-decorator';
 export {
   createSseInterceptor,
@@ -43,6 +45,11 @@ export {
   type SystemTracesProviderOptions,
   type TraceSample,
 } from './system-traces-provider';
+export {
+  createTraceparentDecorator,
+  type TraceContextSource,
+  type TraceparentDecoratorOptions,
+} from './traceparent';
 export {
   createUserEventsProvider,
   type UserEvent,
