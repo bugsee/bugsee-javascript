@@ -37,7 +37,7 @@ import {
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type SystemProbe, SystemProbeToken } from './environment';
-import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
+import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
 
 /** A test-only contributed service token (an "extension"). */
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
@@ -936,5 +936,65 @@ describe('launch — capture recovery', () => {
     const onError = vi.fn();
     launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
+  });
+});
+
+// launchCore() is the seam the umbrella uses: it returns the same public client launch() returns, PLUS the
+// internal wiring the umbrella needs to wire performance/OTel. launch() = launchCore(...).client.
+describe('launchCore', () => {
+  it('returns the public client plus a populated internals bag', () => {
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore(), appVersion: '1.2.3', appBuild: '99' }),
+    );
+    clients.push(client);
+    expect(client).toBeDefined();
+    expect(internals).toBeDefined();
+    expect(internals?.baseUrl).toBe('https://api.bugsee.com'); // the default endpoint
+    expect(internals?.appVersion).toBe('1.2.3');
+    expect(internals?.appBuild).toBe('99');
+    expect(typeof internals?.transport).toBe('function');
+    expect(internals?.api).toBeDefined();
+    expect(typeof internals?.getEnvironment).toBe('function');
+    expect(internals?.getEnvironment().platform).toBeDefined(); // a real node envelope
+    expect(internals?.network.interceptor).toBeDefined(); // the network source (+ request-decorator seam)
+    expect(internals?.onError).toBeUndefined();
+  });
+
+  it('carries the injected endpoint + onError on the internals bag', () => {
+    const onError = vi.fn();
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        endpoint: 'https://eu.bugsee.test',
+        onError,
+      }),
+    );
+    clients.push(client);
+    expect(internals?.baseUrl).toBe('https://eu.bugsee.test');
+    expect(internals?.onError).toBe(onError);
+    expect(internals?.appVersion).toBeUndefined();
+  });
+
+  it('returns internals: undefined on a repeat launch (the process singleton is already owned)', () => {
+    const carrier = {};
+    const first = launchCore('tok', baseOptions({ carrier, captureStore: memStore() }));
+    clients.push(first.client);
+    const onError = vi.fn();
+    const second = launchCore('tok', baseOptions({ carrier, captureStore: memStore(), onError }));
+    expect(second.client).toBe(first.client); // the existing client, not a second one
+    expect(second.internals).toBeUndefined(); // nothing to re-wire
+    expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning still fires
+  });
+
+  it('launch() returns exactly launchCore().client (public surface unchanged)', () => {
+    const carrier = {};
+    const client = launch('tok', baseOptions({ carrier, captureStore: memStore() }));
+    clients.push(client);
+    expect(launchCore('tok', baseOptions({ carrier, captureStore: memStore() })).client).toBe(
+      client,
+    );
   });
 });

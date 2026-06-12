@@ -6,9 +6,11 @@ import {
   createSystemEventsProvider,
   createSystemTracesProvider,
   installNetworkCapture,
+  type NetworkCapture,
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  type BugseeApi,
   type BugseeClient,
   type BundleStore,
   BundleStoreToken,
@@ -46,7 +48,7 @@ import {
   createNodeReportMarkerStore,
   httpRequest,
 } from '@bugsee/node-utils';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -165,6 +167,43 @@ export interface BugseeLaunchOptions {
 /** The launched Bugsee client — the public Node SDK surface. */
 export type Bugsee = BugseeClient;
 
+/**
+ * The internal wiring `launchCore` hands back alongside the client — the seam the `bugsee` umbrella uses
+ * to wire on-by-default extensions (performance / OpenTelemetry) WITHOUT `@bugsee/node` depending on them.
+ * Structurally identical to `@bugsee/browser`'s `LaunchInternals` so the umbrella's wiring is
+ * runtime-agnostic. Exposes only what is NOT already resolvable from the client's DI container (the
+ * clock/scheduler ARE): the authenticated api + transport + base URL + environment builder, the network
+ * capture umbrella (its `.interceptor` is the listenable source + request-decorator seam), and the app
+ * version/build + error sink. NOT a stable public API — the composition root's internal handoff.
+ */
+export interface LaunchInternals {
+  /** API origin (no trailing slash) for extension endpoints. */
+  baseUrl: string;
+  /** The authenticated control-plane API (session/Bearer); reused so extensions share the session. */
+  api: BugseeApi;
+  /** The internal-tagged transport (carries X-Bugsee-Internal) the SDK uses for all its own requests. */
+  transport: HttpTransport;
+  /** Rebuilds the environment envelope on demand (an extension's `send` needs it for `ensureSession`). */
+  getEnvironment: () => EnvironmentEnvelope;
+  /** The network capture umbrella — `.interceptor` is the listenable source + accepts request decorators. */
+  network: NetworkCapture;
+  /** app.version, if provided. */
+  appVersion: string | undefined;
+  /** app.build, if provided. */
+  appBuild: string | undefined;
+  /** The internal-error sink. */
+  onError: ((error: unknown) => void) | undefined;
+}
+
+/**
+ * The result of `launchCore`: the public client plus the internal wiring. `internals` is `undefined` on a
+ * repeat launch (a prior call already owns the process singleton, so there is nothing new to wire).
+ */
+export interface LaunchResult {
+  client: Bugsee;
+  internals: LaunchInternals | undefined;
+}
+
 // Wrap the transport so EVERY SDK request (control-plane sessions/issues AND the signed S3 PUT)
 // carries X-Bugsee-Internal — the network capture's default self-isolation skips it, so the SDK
 // never records its own traffic. An extra unsigned header is harmless to the S3 signature.
@@ -176,7 +215,7 @@ const internalTagged =
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
 
-export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bugsee {
+export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   const proc = options.process ?? (process as unknown as NodeRuntime);
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
@@ -191,7 +230,7 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
         'Bugsee.launch() called more than once in this process; the repeat call is ignored',
       ),
     );
-    return alreadyLaunched;
+    return { client: alreadyLaunched, internals: undefined };
   }
 
   // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
@@ -415,5 +454,25 @@ export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bug
     },
   };
   setCarrierClient(publicClient, carrier);
-  return publicClient;
+
+  // The internal wiring the umbrella needs (everything not already a DI service). The clock/scheduler are
+  // intentionally omitted — they are resolvable via client.getService(ClockToken/SchedulerToken).
+  const internals: LaunchInternals = {
+    baseUrl,
+    api,
+    transport,
+    getEnvironment,
+    network,
+    appVersion: options.appVersion,
+    appBuild: options.appBuild,
+    onError: options.onError,
+  };
+  return { client: publicClient, internals };
+}
+
+// The public composition root: the launched client. Equivalent to `launchCore(...).client` — `launchCore`
+// additionally surfaces the internal wiring (`LaunchInternals`) the `bugsee` umbrella uses to wire
+// on-by-default extensions; bare `@bugsee/node` callers use this and never see the internals.
+export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bugsee {
+  return launchCore(appToken, options).client;
 }
