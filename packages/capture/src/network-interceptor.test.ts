@@ -3,6 +3,20 @@ import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createFetchInterceptor, type FetchTarget } from './fetch-interceptor';
 import { createNetworkInterceptor } from './network-interceptor';
+import type { RequestDecorator } from './request-decorator';
+
+// A source that is also RequestDecoratable (like the fetch/xhr leaves), recording add/remove.
+function mkDecoratableSource() {
+  const added: RequestDecorator[] = [];
+  const removed: RequestDecorator[] = [];
+  const source = Object.assign(createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>(), {
+    addRequestDecorator(decorator: RequestDecorator) {
+      added.push(decorator);
+      return () => removed.push(decorator);
+    },
+  });
+  return { source, added, removed };
+}
 
 type FetchFn = (input: unknown, init?: unknown) => Promise<unknown>;
 const mkSource = (): MultiKeyEmitter<Record<NetworkStage, NetworkEvent>> => createMultiKeyEmitter();
@@ -82,5 +96,32 @@ describe('createNetworkInterceptor (umbrella)', () => {
     expect(target.get()).not.toBe(impl); // patched via the cascade
     off(); // deactivate cascade → fetchIc restores
     expect(target.get()).toBe(impl);
+  });
+});
+
+describe('createNetworkInterceptor — request-decorator fan-out', () => {
+  it('fans addRequestDecorator out to the decoratable leaves only (ws/sse/wt skipped)', () => {
+    const d1 = mkDecoratableSource();
+    const plain = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>(); // not decoratable
+    const d2 = mkDecoratableSource();
+    const umbrella = createNetworkInterceptor(d1.source, plain, d2.source);
+    const decorator: RequestDecorator = () => ({ traceparent: 'X' });
+
+    const off = umbrella.addRequestDecorator(decorator);
+    expect(d1.added).toEqual([decorator]);
+    expect(d2.added).toEqual([decorator]); // both decoratable leaves got it
+    // the plain source has no addRequestDecorator and was simply skipped (no throw)
+
+    off(); // combined unsubscribe removes from every decoratable leaf
+    expect(d1.removed).toEqual([decorator]);
+    expect(d2.removed).toEqual([decorator]);
+  });
+
+  it('is a harmless no-op when no source is decoratable', () => {
+    const umbrella = createNetworkInterceptor(
+      createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>(),
+    );
+    const off = umbrella.addRequestDecorator(() => undefined);
+    expect(() => off()).not.toThrow();
   });
 });

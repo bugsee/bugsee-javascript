@@ -1,6 +1,10 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 import type { NetworkSource } from './network-provider';
+import type { RequestDecoratable, RequestDecorator } from './request-decorator';
+
+const isDecoratable = (source: NetworkSource): source is NetworkSource & RequestDecoratable =>
+  typeof (source as Partial<RequestDecoratable>).addRequestDecorator === 'function';
 
 // Umbrella network SOURCE (design §16): a composite interceptor that aggregates the per-mechanism
 // network interceptors (fetch/xhr/ws/sse/webtransport) into ONE subscribable stream — so a consumer
@@ -13,7 +17,10 @@ import type { NetworkSource } from './network-provider';
 // subscriber-presence activation, subscribing to the umbrella transitively activates every sub (and
 // the last unsubscribe deactivates them) — one subscription point with a full activation cascade.
 
-class NetworkInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
+class NetworkInterceptor
+  extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
+  implements RequestDecoratable
+{
   readonly name = 'network';
   readonly #sources: readonly NetworkSource[];
   #offs: Array<() => void> = [];
@@ -21,6 +28,19 @@ class NetworkInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEve
   constructor(sources: readonly NetworkSource[]) {
     super();
     this.#sources = sources;
+  }
+
+  /** Register a request decorator on every request-sending leaf (fetch/xhr); returns a combined
+   *  unsubscribe. Leaves that don't send decoratable requests (ws/sse/webtransport) are skipped. */
+  addRequestDecorator(decorator: RequestDecorator): () => void {
+    const offs = this.#sources
+      .filter(isDecoratable)
+      .map((source) => source.addRequestDecorator(decorator));
+    return () => {
+      for (const off of offs) {
+        off();
+      }
+    };
   }
 
   protected onActivate(): void {
@@ -41,6 +61,6 @@ class NetworkInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEve
 
 export function createNetworkInterceptor(
   ...sources: NetworkSource[]
-): Interceptor<Record<NetworkStage, NetworkEvent>> {
+): Interceptor<Record<NetworkStage, NetworkEvent>> & RequestDecoratable {
   return new NetworkInterceptor(sources);
 }

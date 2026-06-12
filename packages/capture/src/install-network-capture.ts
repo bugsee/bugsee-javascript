@@ -3,6 +3,7 @@ import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 import { createFetchInterceptor, type FetchTarget } from './fetch-interceptor';
 import { createNetworkInterceptor } from './network-interceptor';
 import { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
+import type { RequestDecoratable } from './request-decorator';
 import { createSseInterceptor } from './sse-interceptor';
 import { createWebSocketInterceptor } from './web-socket-interceptor';
 import { createWebTransportInterceptor } from './web-transport-interceptor';
@@ -44,8 +45,9 @@ export interface InstallNetworkCaptureOptions {
 }
 
 export interface NetworkCapture {
-  /** The umbrella network source — subscribe once for ALL network events. */
-  interceptor: NetworkUmbrella;
+  /** The umbrella network source — subscribe once for ALL network events; also accepts request
+   *  decorators (fanned out to the fetch/xhr leaves) for trace-context propagation. */
+  interceptor: NetworkUmbrella & RequestDecoratable;
   /** The network capture provider — register with the client to record `network` entries. */
   provider: CaptureProvider;
 }
