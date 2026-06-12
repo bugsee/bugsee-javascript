@@ -118,6 +118,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/opentelemetry':
+        specifier: workspace:*
+        version: link:../opentelemetry
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
@@ -284,6 +287,9 @@ importers:
 
   packages/opentelemetry:
     dependencies:
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core

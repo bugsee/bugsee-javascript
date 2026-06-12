@@ -1,5 +1,6 @@
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import { resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
+import { wireOpenTelemetry } from '@bugsee/opentelemetry';
 import {
   createPerformanceSend,
   PERFORMANCE_OPTION_DEFINITIONS,
@@ -23,6 +24,17 @@ export interface BugseeLaunchOptionsWithPerformance extends BugseeLaunchOptions 
   performanceFlushIntervalMs?: number;
   /** The pageload transaction name. Default the current path (`location.pathname`) or `pageload`. */
   pageName?: string;
+
+  /**
+   * Enable W3C `traceparent` propagation on outgoing requests (the OTel distributed-trace / Next.js
+   * story), linking the Bugsee frontend trace to the backend. OPT-IN (off by default). Same-origin
+   * requests propagate; cross-origin requires `tracePropagationAllowlist`. Requires performance on.
+   */
+  tracePropagation?: boolean;
+  /** Cross-origin URLs allowed to receive `traceparent` (string substring or RegExp). */
+  tracePropagationAllowlist?: ReadonlyArray<string | RegExp>;
+  /** App origin override for same-origin detection. Default `location.origin`. */
+  tracePropagationOrigin?: string;
 }
 
 export function launch(appToken: string, options: BugseeLaunchOptionsWithPerformance = {}): Bugsee {
@@ -60,12 +72,27 @@ export function launch(appToken: string, options: BugseeLaunchOptionsWithPerform
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
   if (wired === undefined) return client;
 
+  // OTel trace-context propagation (opt-in) — propagate the active performance transaction's trace onto
+  // outgoing requests via the network umbrella's request-decorator seam.
+  const otel = wireOpenTelemetry({
+    networkSource: internals.network.interceptor,
+    getActiveSpan: () => client.ext('performance').getActiveSpan(),
+    propagate: options.tracePropagation ?? false,
+    ...(options.tracePropagationAllowlist !== undefined
+      ? { allowlist: options.tracePropagationAllowlist }
+      : {}),
+    ...(options.tracePropagationOrigin !== undefined
+      ? { origin: options.tracePropagationOrigin }
+      : {}),
+  });
+
   // Compose teardown IN PLACE (not via a new wrapper object): `client` is the SAME object launchCore
   // already registered as the process singleton, so mutating its stop() here means the carrier singleton,
   // a repeat launch, and this return value are all one consistent client whose stop() tears performance
-  // down (uploader + http spans + extension) before the core teardown.
+  // (and OTel propagation) down before the core teardown.
   const stopClient = client.stop;
   client.stop = (timeout?: number): Promise<boolean> => {
+    otel?.stop();
     wired.stop();
     return stopClient(timeout);
   };

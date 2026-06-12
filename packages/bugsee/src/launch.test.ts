@@ -219,4 +219,67 @@ describe('bugsee umbrella launch', () => {
     expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning fired
     expect(() => second.ext('performance')).not.toThrow(); // still wired exactly once
   });
+
+  // The fetch leaf wraps globalThis.fetch once the http-span collector subscribes (perf on by default).
+  const okResp = { status: 200, statusText: 'OK', redirected: false, headers: { forEach() {} } };
+  const globalFetch = () =>
+    (globalThis as { fetch: (i: unknown, init?: unknown) => Promise<unknown> }).fetch;
+
+  it('tracePropagation injects a W3C traceparent on a same-origin fetch from the active transaction', async () => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    const client = track(
+      launch(
+        'tok',
+        base({ carrier: {}, tracePropagation: true, tracePropagationOrigin: 'https://app.test' }),
+      ),
+    );
+    const active = client.ext('performance').getActiveSpan() as Transaction;
+    await globalFetch()('https://app.test/api', { method: 'GET' });
+    const headers = (received?.init as { headers?: Record<string, string> }).headers;
+    expect(headers?.traceparent).toBe(`00-${active.getTraceId()}-${active.getSpanId()}-01`);
+  });
+
+  it('does NOT propagate cross-origin without an allowlist (no topology leak), but does with one', async () => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          tracePropagation: true,
+          tracePropagationOrigin: 'https://app.test',
+          tracePropagationAllowlist: ['api.partner.test'],
+        }),
+      ),
+    );
+    await globalFetch()('https://third-party.test/x', { method: 'GET' });
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeUndefined();
+    await globalFetch()('https://api.partner.test/x', { method: 'GET' });
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeDefined();
+  });
+
+  it('does NOT propagate when tracePropagation is off (default)', async () => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    // Set the origin so the request below WOULD be propagated if the feature were on — proving OFF.
+    track(launch('tok', base({ carrier: {}, tracePropagationOrigin: 'https://app.test' }))); // default off
+    const init = { method: 'GET' };
+    await globalFetch()('https://app.test/api', init); // same-origin → would get traceparent if on
+    expect(received?.init).toBe(init); // unchanged (same ref) — no decorator registered
+  });
 });
