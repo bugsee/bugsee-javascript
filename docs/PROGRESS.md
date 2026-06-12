@@ -401,12 +401,19 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   default; cross-origin ONLY via an explicit allowlist (string/RegExp) — no trace-topology leak;
   never overrides an existing `traceparent`; fail-closed on unparseable URLs. Security mutator loop
   (same-origin inversion, default-deny removal, allowlist bypass, override, sampled-flag, format) all caught.
-- **Remaining — the live WIRING only:** expose `addRequestDecorator` on the network umbrella (fan out to
-  fetch+xhr leaves) + an OTel analog of `wirePerformance` that, after launch: registers the traceparent
-  decorator on the network source (perf `getActiveSpan` + the user's allowlist), feeds finished perf
-  transactions to `createOtlpTraceExporter` (produce), and exposes the `BugseeSpanProcessor` for the user
-  to register (consume). Node-perf wiring is a prerequisite for node consume delivery. **All algorithmic +
-  security building blocks are built, reviewed, and mutation-tested; only integration glue remains.**
+- **Live wiring — PROPAGATION DONE (`master`):** the network umbrella exposes `addRequestDecorator` (fans
+  out to the fetch+xhr leaves); `wireOpenTelemetry` (the OTel analog of `wirePerformance`) registers the
+  traceparent decorator on the network source, and the `bugsee` umbrella wires it after launch
+  (`tracePropagation`/`tracePropagationAllowlist`/`tracePropagationOrigin` opts, fed perf `getActiveSpan`).
+  **`launch('tok', { tracePropagation: true })` now links the frontend trace to the backend end-to-end —
+  the Next.js / SSR story is LIVE** (integration-tested through the real launch driving a wrapped global
+  fetch: same-origin propagates, cross-origin needs the allowlist, off by default).
+- **Remaining (small finishing touches):** in the umbrella, **produce-tee** (compose the perf send as a
+  tee of the Bugsee upload + `createOtlpTraceExporter`, gated by an OTel-export option — default additive)
+  and **consume** (expose `createBugseeSpanProcessor` for the user to register on their `TracerProvider`).
+  **Node-perf wiring** is a prerequisite for node consume delivery. The full two-way feature (produce +
+  consume + propagation) is built, reviewed, mutation-tested; propagation is live; only these umbrella
+  conveniences remain.
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
