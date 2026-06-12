@@ -38,8 +38,9 @@ export interface WirePerformanceOptions {
 
 export interface WiredPerformance {
   stop(): void;
-  /** Buffer an already-finished transaction into the upload pipeline (e.g. consumed OTel spans assembled
-   *  into a §8.8 transaction) — externally sampled, so it bypasses head sampling and rides the uploader. */
+  /** Buffer an already-finished transaction (e.g. the Node `app.start` startup transaction, or consumed
+   *  OTel spans assembled into a §8.8 transaction) into BOTH sinks — the continuous uploader AND the
+   *  incident-bundle capture ring (performance.json). Externally sampled — it bypasses head sampling. */
   recordTransaction(transaction: TransactionWire): void;
 }
 
@@ -84,7 +85,8 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
       extension.stop();
     },
     recordTransaction(transaction) {
-      extension.store.add(transaction);
+      // Dual-write: the continuous uploader AND the incident-bundle capture ring (performance.json).
+      extension.recordExternal(transaction);
     },
   };
 }

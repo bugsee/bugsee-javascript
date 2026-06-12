@@ -318,6 +318,10 @@ importers:
       '@bugsee/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/protocol:
     dependencies:

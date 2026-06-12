@@ -108,10 +108,15 @@ export function assembleBundle(
     }
     const filename = fileNameForType(type);
     files.push({ filename, type });
-    // Core produces only JSON file types (log/network/events/traces/breadcrumbs). Binary streams
+    // Most JSON file types serialize to a top-level array of payloads. `performance` is the exception:
+    // §711/§8.8 specify `performance.json` = `{ transactions: [...] }` (an object). Binary streams
     // (§8.4: replay/screenshot/attachment) are platform-tier provider concerns; when those land the
-    // assembler must branch on type (pass Uint8Array `data` through) instead of JSON-stringifying.
-    typedFiles.push({ name: filename, data: JSON.stringify(entries.map((entry) => entry.data)) });
+    // assembler branches further (pass Uint8Array `data` through).
+    const payloads = entries.map((entry) => entry.data);
+    typedFiles.push({
+      name: filename,
+      data: JSON.stringify(type === 'performance' ? { transactions: payloads } : payloads),
+    });
   }
 
   const manifest: ManifestJson = {

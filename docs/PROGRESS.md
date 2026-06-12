@@ -364,13 +364,23 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
   fetch/XHR). Convergent review (2 agents): correctness NO findings; only 2 LOW packaging-metadata items
   (an unused `@bugsee/node` dep + a stale description) — fixed. 100% line/branch/fn across the new code.
 - **`@bugsee/performance` is COMPLETE** (P0–P3.x) and live by default in the `bugsee` umbrella.
-- **Delivery decision to make (P3):** the bundle assembler emits each file type as
-  `JSON.stringify(entries.map(e => e.data))` (a top-level ARRAY), but §711/§8.8 want `performance.json` =
-  `{transactions: [...]}` (an object), and the perf `TransactionStore` is a SEPARATE buffer not fed to
-  the capture aggregator. The continuous `/v2/performance/transactions` POST body is controlled directly
-  (`{transactions: store.drain()}`); the bundle `performance.json` needs either (a) push finished
-  transactions to the aggregator as `performance`-typed entries + a `type==='performance'` wrapping
-  branch / per-type serializer on the assembler, or (b) a separate store-drain bundle hook.
+- **P3 delivery — DONE (`master`), reviewed (3 agents → convergent):** chose option (a). A new
+  **`performance` capture provider** (`packages/performance/src/capture-provider.ts`, push-driven over
+  `CaptureProviderBase`) routes each finished SAMPLED transaction into the capture ring as a
+  `performance`-typed entry, alongside the `TransactionStore` continuous `/v2` upload (dual sink). The
+  controller gained an `onFinished(wire)` hook (called next to `store.add`); the extension wires
+  `onFinished → provider.record` + `client.addCaptureProvider(provider)`, and exposes `recordExternal(wire)`
+  so the EXTERNAL path (`wirePerformance.recordTransaction` — Node `app.start` + consumed OTel) ALSO
+  dual-writes to the ring. The bundle assembler (`bundle-assembler.ts`) wraps the `performance` file type
+  as `{transactions: [...]}` (the only object-wrapped type; all others stay bare arrays) — §711/§8.8.
+  Cross-package integration test (real provider → aggregator → memory store → exporter → `assembleBundle`)
+  pins the end-to-end §8.8 wire. Mutator-looped per entity; 100% line/fn/stmt across the new code.
+  - **Deferred parity gap (Android `PerformanceCaptureExporter` traceId dedup):** Android emits at most
+    ONE entry per `traceId`, resolving snapshot-vs-completed (completed wins). The JS bundle path has no
+    such dedup yet. Not currently triggerable — `isSnapshot` is always `false` (snapshot transactions are
+    not generated) and each finished transaction has a unique `traceId`, so no duplicate-traceId bundle is
+    producible today. Add the `traceId`/`isSnapshot` resolution (in the provider or a per-type assembler
+    serializer) WHEN snapshot transactions land.
 
 ### OpenTelemetry integration (`@bugsee/opentelemetry`) — Produce+Consume BUILT (2026-06-10) → `docs/design/opentelemetry-integration.md`
 Two-way OTel interop as a pluggable extension (peers, never piercing core/perf). Design: two-way; a

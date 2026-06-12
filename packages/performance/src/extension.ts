@@ -1,5 +1,10 @@
 import { type BugseeClient, ClockToken } from '@bugsee/core';
+import {
+  createPerformanceCaptureProvider,
+  type PerformanceCaptureProvider,
+} from './capture-provider';
 import { createPerformanceController, type PerformanceApi } from './controller';
+import type { TransactionWire } from './span';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
 
 // The @bugsee/performance extension shell (design §0.6/§16). There is no addExtension lifecycle on the
@@ -34,6 +39,14 @@ export interface PerformanceExtension {
   readonly store: TransactionStore;
   /** Register the ext('performance') API on the (full) client. */
   setup(client: BugseeClient): void;
+  /**
+   * Record an EXTERNALLY-finished transaction (one that did not go through `startTransaction().finish()`
+   * — e.g. the Node `app.start` startup transaction or a consumed OTel span assembled into a §8.8
+   * transaction). Dual-writes to BOTH sinks — the continuous-upload store AND the incident-bundle capture
+   * ring — mirroring what the controller's onFinish does for head-sampled transactions, so these reach
+   * `performance.json` too. A no-op on the ring before setup() (the provider does not exist yet).
+   */
+  recordExternal(transaction: TransactionWire): void;
   /** Tear down (no long-lived resources yet — observers/uploader teardown lands with those slices). */
   stop(): void;
 }
@@ -43,19 +56,30 @@ export function createPerformanceExtension(
 ): PerformanceExtension {
   const store =
     options.store ?? createTransactionStore({ maxTransactions: options.maxTransactions });
+  // The `performance` capture provider — routes finished transactions into the capture ring (the bundle's
+  // performance.json), alongside the store's continuous /v2 upload. Created in setup() once the client is
+  // available; `recordExternal` also feeds it (hence the closure-scoped handle).
+  let provider: PerformanceCaptureProvider | undefined;
   return {
     name: 'performance',
     store,
     setup(client) {
       const clock = client.getService(ClockToken);
+      provider = createPerformanceCaptureProvider();
       const api = createPerformanceController({
         clock,
         store,
+        onFinished: (wire) => provider?.record(wire),
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
         ...(options.sampler !== undefined ? { sampler: options.sampler } : {}),
       });
+      client.addCaptureProvider(provider); // started immediately (the client is already launched)
       client.registerExt('performance', api);
+    },
+    recordExternal(transaction) {
+      store.add(transaction); // continuous /v2 (+ OTLP tee) upload
+      provider?.record(transaction); // incident-bundle performance.json
     },
     stop() {},
   };

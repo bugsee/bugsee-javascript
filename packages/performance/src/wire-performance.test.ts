@@ -42,6 +42,7 @@ function fakeClient() {
     getService: (token: unknown) => (token === ClockToken ? clock : undefined),
     registerExt: (name: string, api: unknown) => registry.set(name, api),
     ext: (name: string) => registry.get(name),
+    addCaptureProvider: () => {}, // the perf provider is unused by these uploader/http-span tests
   } as unknown as BugseeClient;
   return { client, perf: () => registry.get('performance') as PerformanceApi | undefined };
 }

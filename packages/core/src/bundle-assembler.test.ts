@@ -159,6 +159,28 @@ describe('assembleBundle — manifest.json & files', () => {
     expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'a' }, { url: 'b' }]);
   });
 
+  it('wraps the performance file type as { transactions: [...] } (§8.8), not a bare array', () => {
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      [
+        'performance',
+        [
+          entry('performance', 1, { traceId: 't1', name: 'a' }),
+          entry('performance', 2, { traceId: 't2', name: 'b' }),
+        ],
+      ],
+      ['network', [entry('network', 3, { url: 'u' })]],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    expect(JSON.parse(out.text('performance.json'))).toEqual({
+      transactions: [
+        { traceId: 't1', name: 'a' },
+        { traceId: 't2', name: 'b' },
+      ],
+    });
+    // Only `performance` is object-wrapped; the other file types stay bare arrays.
+    expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
+  });
+
   it('sets time.start to the earliest entry timestamp and time.end to now', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       ['log', [entry('log', 1_699_999_999_000, {}), entry('log', 1_700_000_000_000, {})]],

@@ -1,5 +1,11 @@
 import type { Clock } from '@bugsee/core';
-import { createTransaction, type Span, serializeTransaction, type Transaction } from './span';
+import {
+  createTransaction,
+  type Span,
+  serializeTransaction,
+  type Transaction,
+  type TransactionWire,
+} from './span';
 import type { TransactionStore } from './transaction-store';
 
 // The performance controller — the runtime-portable implementation of the ext('performance') API. It
@@ -35,6 +41,9 @@ export interface PerformanceControllerDeps {
   appBuild?: string;
   /** Head sampling decision, made once per transaction. Default: sample everything. */
   sampler?: () => boolean;
+  /** Called with the serialized wire of each SAMPLED finished transaction (e.g. to also route it to the
+   *  capture ring for the bundle's performance.json, alongside the store's /v2 upload). */
+  onFinished?: (transaction: TransactionWire) => void;
 }
 
 export function createPerformanceController(deps: PerformanceControllerDeps): PerformanceApi {
@@ -55,7 +64,11 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
         {
           clock: deps.clock,
           onFinish: (finished) => {
-            if (finished.isSampled()) deps.store.add(serializeTransaction(finished));
+            if (finished.isSampled()) {
+              const wire = serializeTransaction(finished);
+              deps.store.add(wire); // the continuous /v2 (+ OTLP tee) buffer
+              deps.onFinished?.(wire); // also route it to the capture ring (bundle performance.json)
+            }
             if (active === finished) active = undefined;
           },
         },

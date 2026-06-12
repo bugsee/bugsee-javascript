@@ -1,6 +1,7 @@
 import type { Clock } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createPerformanceController } from './controller';
+import type { TransactionWire } from './span';
 import { createTransactionStore } from './transaction-store';
 
 const fixedClock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
@@ -70,12 +71,34 @@ describe('createPerformanceController', () => {
 
   it('drops an UNSAMPLED transaction (head sampling): returned but never buffered', () => {
     const store = createTransactionStore();
-    const api = createPerformanceController({ clock: fixedClock, store, sampler: () => false });
+    const finished: string[] = [];
+    const api = createPerformanceController({
+      clock: fixedClock,
+      store,
+      sampler: () => false,
+      onFinished: (wire) => finished.push(wire.name),
+    });
     const txn = api.startTransaction({ name: 'T', operation: 'op' });
     expect(txn.isSampled()).toBe(false);
     txn.finish();
     expect(store.size()).toBe(0); // unsampled → not buffered
+    expect(finished).toEqual([]); // …and not routed to the capture ring either
     expect(api.getActiveSpan()).toBeUndefined(); // still cleared as active
+  });
+
+  it('routes each SAMPLED finished transaction to onFinished (the capture ring), with the same wire', () => {
+    const store = createTransactionStore();
+    const finished: TransactionWire[] = [];
+    const api = createPerformanceController({
+      clock: fixedClock,
+      store,
+      onFinished: (wire) => finished.push(wire),
+    });
+    api.startTransaction({ name: 'A', operation: 'op' }).finish('OK');
+    api.startTransaction({ name: 'B', operation: 'op' }).finish('OK');
+    // onFinished sees one wire per sampled finish, in order, identical to what the store buffered.
+    expect(finished.map((w) => w.name)).toEqual(['A', 'B']);
+    expect(store.drain()).toEqual(finished);
   });
 
   it('defaults to sampling everything when no sampler is injected', () => {

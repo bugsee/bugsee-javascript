@@ -26,5 +26,8 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",
     "@bugsee/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@bugsee/util": "workspace:*"
   }
 }
