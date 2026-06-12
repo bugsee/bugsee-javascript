@@ -35,6 +35,9 @@ export interface WirePerformanceOptions {
 
 export interface WiredPerformance {
   stop(): void;
+  /** Buffer an already-finished transaction into the upload pipeline (e.g. consumed OTel spans assembled
+   *  into a §8.8 transaction) — externally sampled, so it bypasses head sampling and rides the uploader. */
+  recordTransaction(transaction: TransactionWire): void;
 }
 
 export function wirePerformance(options: WirePerformanceOptions): WiredPerformance | undefined {
@@ -72,6 +75,9 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
       offHttp?.();
       uploader.stop();
       extension.stop();
+    },
+    recordTransaction(transaction) {
+      extension.store.add(transaction);
     },
   };
 }

@@ -3,7 +3,7 @@ import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
-import { serializeTransaction, type Transaction } from './span';
+import { serializeTransaction, type Transaction, type TransactionWire } from './span';
 import type { WebVitalsEnv } from './web-vitals/env';
 import { type WirePerformanceOptions, wirePerformance } from './wire-performance';
 
@@ -86,6 +86,25 @@ describe('wirePerformance', () => {
     expect(wirePerformance(base({ client, scheduler, monitoring: false }))).toBeUndefined();
     expect(perf()).toBeUndefined(); // ext not registered
     expect(scheduled).toHaveLength(0); // uploader not started
+  });
+
+  it('recordTransaction buffers an external (already-finished) transaction into the uploader', async () => {
+    const { client } = fakeClient();
+    const { scheduler, fire } = fakeScheduler();
+    const send = vi.fn(async () => {});
+    const wired = wirePerformance(base({ client, scheduler, send, flushIntervalMs: 5000 }));
+    const wire = {
+      traceId: 't',
+      name: 'consumed',
+      operation: 'consumed',
+      status: 'OK',
+      startTimestampMs: 1,
+      isSnapshot: false,
+      spans: [],
+    } as TransactionWire;
+    wired?.recordTransaction(wire);
+    await fire(); // run the uploader's flush tick
+    expect(send).toHaveBeenCalledWith([wire]); // it rode the uploader to `send`, unsampled
   });
 
   it('registers ext(performance), starts a pageload transaction, and starts the uploader', () => {

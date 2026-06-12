@@ -1,10 +1,16 @@
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import { resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
-import { wireOpenTelemetry } from '@bugsee/opentelemetry';
+import {
+  type BugseeSpanProcessor,
+  createBugseeSpanProcessor,
+  createOtlpTraceExporter,
+  wireOpenTelemetry,
+} from '@bugsee/opentelemetry';
 import {
   createPerformanceSend,
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
+  type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
 
@@ -35,6 +41,36 @@ export interface BugseeLaunchOptionsWithPerformance extends BugseeLaunchOptions 
   tracePropagationAllowlist?: ReadonlyArray<string | RegExp>;
   /** App origin override for same-origin detection. Default `location.origin`. */
   tracePropagationOrigin?: string;
+
+  /**
+   * OTLP/HTTP-JSON traces endpoint (e.g. `https://api.honeycomb.io/v1/traces`). When set, finished
+   * performance transactions are ALSO exported here (a TEE — Bugsee still receives them), so your data
+   * lands in your own OTel backend. Requires performance on.
+   */
+  otelExportUrl?: string;
+  /** Headers for the OTLP export (e.g. `authorization`, `x-honeycomb-team`). Use lowercase keys. */
+  otelExportHeaders?: Record<string, string>;
+  /** OTLP resource attributes for the export (e.g. `{ 'service.name': 'web' }`). */
+  otelExportResource?: Record<string, unknown>;
+  /**
+   * Consume the user's OpenTelemetry spans into Bugsee. With `onOtelSpanProcessor`, the umbrella hands you
+   * a `SpanProcessor` to register on YOUR `TracerProvider`; consumed traces become native Bugsee
+   * transactions that ride the same upload (and OTLP tee). Requires performance on.
+   */
+  otelConsume?: boolean;
+  /** Receives the wired `SpanProcessor` (register it on your OTel `TracerProvider`). */
+  onOtelSpanProcessor?: (spanProcessor: BugseeSpanProcessor) => void;
+}
+
+/** Fan a drained batch to several `send`s (Bugsee upload + OTLP export); surface any failure to onError. */
+function teeSend(
+  ...sends: Array<(transactions: TransactionWire[]) => Promise<void>>
+): (transactions: TransactionWire[]) => Promise<void> {
+  return async (transactions) => {
+    const results = await Promise.allSettled(sends.map((send) => send(transactions)));
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed !== undefined) throw failed.reason; // best-effort: the batch already drained, onError logs it
+  };
 }
 
 export function launch(appToken: string, options: BugseeLaunchOptionsWithPerformance = {}): Bugsee {
@@ -48,12 +84,28 @@ export function launch(appToken: string, options: BugseeLaunchOptionsWithPerform
     PERFORMANCE_OPTION_DEFINITIONS,
   );
 
-  const send = createPerformanceSend({
+  const bugseeSend = createPerformanceSend({
     api: internals.api,
     transport: internals.transport,
     baseUrl: internals.baseUrl,
     getEnvironment: internals.getEnvironment,
   });
+  // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
+  // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
+  const otlpSend =
+    options.otelExportUrl !== undefined
+      ? createOtlpTraceExporter({
+          transport: internals.transport,
+          url: options.otelExportUrl,
+          ...(options.otelExportHeaders !== undefined
+            ? { headers: options.otelExportHeaders }
+            : {}),
+          ...(options.otelExportResource !== undefined
+            ? { resource: options.otelExportResource }
+            : {}),
+        })
+      : undefined;
+  const send = otlpSend !== undefined ? teeSend(bugseeSend, otlpSend) : bugseeSend;
 
   const wired = wirePerformance({
     client,
@@ -71,6 +123,14 @@ export function launch(appToken: string, options: BugseeLaunchOptionsWithPerform
 
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
   if (wired === undefined) return client;
+
+  // Consume (opt-in): hand the user a SpanProcessor to register on their OTel TracerProvider. Consumed
+  // spans are assembled into §8.8 transactions (recordTransaction) and ride the same upload + OTLP tee.
+  let spanProcessor: BugseeSpanProcessor | undefined;
+  if (options.otelConsume === true && options.onOtelSpanProcessor !== undefined) {
+    spanProcessor = createBugseeSpanProcessor({ onTransaction: wired.recordTransaction });
+    options.onOtelSpanProcessor(spanProcessor);
+  }
 
   // OTel trace-context propagation (opt-in) — propagate the active performance transaction's trace onto
   // outgoing requests via the network umbrella's request-decorator seam.
@@ -92,6 +152,7 @@ export function launch(appToken: string, options: BugseeLaunchOptionsWithPerform
   // (and OTel propagation) down before the core teardown.
   const stopClient = client.stop;
   client.stop = (timeout?: number): Promise<boolean> => {
+    void spanProcessor?.shutdown();
     otel?.stop();
     wired.stop();
     return stopClient(timeout);

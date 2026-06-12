@@ -1,5 +1,6 @@
 import type { BrowserProbe, Bugsee } from '@bugsee/browser';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { serializeTransaction, type Transaction } from '@bugsee/performance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeLaunchOptionsWithPerformance, launch } from './launch';
@@ -281,5 +282,116 @@ describe('bugsee umbrella launch', () => {
     const init = { method: 'GET' };
     await globalFetch()('https://app.test/api', init); // same-origin → would get traceparent if on
     expect(received?.init).toBe(init); // unchanged (same ref) — no decorator registered
+  });
+
+  it('produce-tee: exports finished transactions to BOTH Bugsee and the OTLP endpoint (headers/resource)', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const calls: { url: string; body: string; headers: Record<string, string> | undefined }[] = [];
+    const transport = vi.fn<HttpTransport>(async (url: string, opts: HttpRequestOptions = {}) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+      }
+      calls.push({ url, body: opts.body as string, headers: opts.headers });
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    });
+    const client = track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          performanceFlushIntervalMs: 7777,
+          otelExportUrl: 'https://collector.test/v1/traces',
+          otelExportHeaders: { 'x-honeycomb-team': 'k' },
+          otelExportResource: { 'service.name': 'web' },
+        }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish();
+    await fire(7777);
+    expect(calls.find((c) => c.url.endsWith('/v2/performance/transactions'))).toBeDefined(); // Bugsee still gets it
+    const otlp = calls.find((c) => c.url.endsWith('/v1/traces'));
+    expect(otlp).toBeDefined();
+    expect(otlp?.headers?.['x-honeycomb-team']).toBe('k');
+    const body = JSON.parse(otlp?.body ?? '{}');
+    expect(body.resourceSpans[0].resource.attributes).toContainEqual({
+      key: 'service.name',
+      value: { stringValue: 'web' },
+    });
+    expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
+  });
+
+  it('produce-tee: an OTLP failure surfaces to onError, but Bugsee still receives the batch', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const onError = vi.fn();
+    let bugseePosted = false;
+    const transport = vi.fn<HttpTransport>(async (url: string) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+      }
+      if (url.endsWith('/v1/traces')) {
+        return { status: 500, headers: {}, body: new Uint8Array() }; // OTLP export fails
+      }
+      bugseePosted = true; // /v2/performance/transactions
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    });
+    const client = track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          onError,
+          performanceFlushIntervalMs: 7777,
+          otelExportUrl: 'https://collector.test/v1/traces',
+        }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish();
+    await fire(7777);
+    expect(bugseePosted).toBe(true); // allSettled → Bugsee got it despite the OTLP failure
+    expect(onError).toHaveBeenCalled(); // the OTLP failure surfaced
+  });
+
+  it('consume: hands over a SpanProcessor whose consumed spans ride the Bugsee upload', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const { fn: transport, perfPosts } = recordingTransport();
+    let sp: BugseeSpanProcessor | undefined;
+    track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          performanceFlushIntervalMs: 7777,
+          otelConsume: true,
+          onOtelSpanProcessor: (p) => {
+            sp = p;
+          },
+        }),
+      ),
+    );
+    expect(sp).toBeDefined();
+    // A finished OTel root span (no parent) → assembled into a transaction → recorded into the pipeline.
+    sp?.onEnd({
+      spanContext: () => ({
+        traceId: '0123456789abcdef0123456789abcdef',
+        spanId: 'aaaaaaaaaaaaaaaa',
+      }),
+      name: 'GET /api',
+      startTime: [1, 0],
+      endTime: [2, 0],
+      status: { code: 1 },
+    });
+    await fire(7777);
+    expect(perfPosts).toHaveLength(1);
+    expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions[0].name).toBe('GET /api');
+  });
+
+  it('otelConsume without onOtelSpanProcessor wires no SpanProcessor (no throw)', () => {
+    expect(() => track(launch('tok', base({ carrier: {}, otelConsume: true })))).not.toThrow();
   });
 });
