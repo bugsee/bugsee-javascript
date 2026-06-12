@@ -417,12 +417,19 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   `TracerProvider`, consumed spans riding the same upload + tee. **Two-way OpenTelemetry is COMPLETE** —
   produce (export+tee) + consume (SpanProcessor) + W3C propagation, all wired in the umbrella, each
   integration-tested through the real launch + mutation-verified.
-- **Only follow-up: node-perf wiring** (a deferred perf follow-up, not OTel-specific) is the prerequisite
-  for node-side consume *delivery* (browser is fully live).
+- **Node-perf wiring — DONE (`master`):** the `bugsee` umbrella has a NODE entry (per-runtime `exports`
+  conditions: browser→`index.ts`, node→`index.node.ts`) running `@bugsee/node`'s `launchCore` + the shared
+  runtime-agnostic `wireUmbrella`. `wirePerformance` gained `pageload?:boolean` (Node skips the browser
+  pageload/web-vitals/hidden lifecycle); Node instead records an **`app.start` startup transaction**
+  (process-start → launch; `appStartTimeMs` override) so it uploads immediately. **Two-way OTel is now LIVE
+  on BOTH browser and node** — consume + produce-tee automatic; http-spans + propagation attach to the
+  app's per-request transaction (the span API). The umbrella compiles both entries (DOM lib + node types).
+  **The whole two-way OpenTelemetry feature is complete and live on both runtimes.**
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
-- Per-runtime `exports` conditions in `package.json` (currently single entry).
+- Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
+  the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
 - Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — thin pass-throughs that wrap `@bugsee/<runtime>`.
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - Per-runtime smoke harness; mutation-testing CI (Stryker, opt-in).
