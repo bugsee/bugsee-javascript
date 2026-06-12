@@ -408,12 +408,17 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   **`launch('tok', { tracePropagation: true })` now links the frontend trace to the backend end-to-end —
   the Next.js / SSR story is LIVE** (integration-tested through the real launch driving a wrapped global
   fetch: same-origin propagates, cross-origin needs the allowlist, off by default).
-- **Remaining (small finishing touches):** in the umbrella, **produce-tee** (compose the perf send as a
-  tee of the Bugsee upload + `createOtlpTraceExporter`, gated by an OTel-export option — default additive)
-  and **consume** (expose `createBugseeSpanProcessor` for the user to register on their `TracerProvider`).
-  **Node-perf wiring** is a prerequisite for node consume delivery. The full two-way feature (produce +
-  consume + propagation) is built, reviewed, mutation-tested; propagation is live; only these umbrella
-  conveniences remain.
+- **Live wiring — PRODUCE-TEE + CONSUME DONE (`master`):** `wirePerformance` gained `recordTransaction`
+  (buffer an already-finished, externally-sampled transaction into the upload pipeline). The umbrella:
+  **produce-tee** — `otelExportUrl`/`otelExportHeaders`/`otelExportResource` opts make the perf `send` a
+  tee of the Bugsee upload + `createOtlpTraceExporter` (allSettled; failures → onError; internal-tagged
+  transport keeps the export out of capture); **consume** — `otelConsume` + `onOtelSpanProcessor` hand the
+  user a wired `BugseeSpanProcessor` (onTransaction → recordTransaction) to register on THEIR
+  `TracerProvider`, consumed spans riding the same upload + tee. **Two-way OpenTelemetry is COMPLETE** —
+  produce (export+tee) + consume (SpanProcessor) + W3C propagation, all wired in the umbrella, each
+  integration-tested through the real launch + mutation-verified.
+- **Only follow-up: node-perf wiring** (a deferred perf follow-up, not OTel-specific) is the prerequisite
+  for node-side consume *delivery* (browser is fully live).
 
 ### After browser
 - `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
