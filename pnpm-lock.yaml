@@ -118,6 +118,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
       '@bugsee/opentelemetry':
         specifier: workspace:*
         version: link:../opentelemetry

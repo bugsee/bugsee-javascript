@@ -3,14 +3,24 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Batteries-included umbrella: the platform composition root + the on-by-default extensions (performance) wired in (browser entry today; per-runtime exports conditions to follow)",
+  "description": "Batteries-included umbrella: the platform composition root + the on-by-default extensions (performance + opentelemetry) wired in, with per-runtime (browser/node) exports conditions",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts"
+      "browser": {
+        "types": "./src/index.ts",
+        "import": "./src/index.ts"
+      },
+      "node": {
+        "types": "./src/index.node.ts",
+        "import": "./src/index.node.ts"
+      },
+      "default": {
+        "types": "./src/index.ts",
+        "import": "./src/index.ts"
+      }
     }
   },
   "files": [
@@ -25,6 +35,7 @@
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/browser": "workspace:*",
+    "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*"
   }

@@ -88,6 +88,14 @@ describe('wirePerformance', () => {
     expect(scheduled).toHaveLength(0); // uploader not started
   });
 
+  it('skips the pageload transaction when pageload is false (Node — no pageload lifecycle)', () => {
+    const { client, perf } = fakeClient();
+    const wired = wirePerformance(base({ client, pageload: false }));
+    expect(wired).toBeDefined();
+    expect(perf()).toBeDefined(); // the extension is still registered (store/controller/uploader)
+    expect(perf()?.getActiveSpan()).toBeUndefined(); // but NO pageload transaction was started
+  });
+
   it('recordTransaction buffers an external (already-finished) transaction into the uploader', async () => {
     const { client } = fakeClient();
     const { scheduler, fire } = fakeScheduler();

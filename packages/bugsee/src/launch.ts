@@ -14,5 +14,7 @@ export interface BugseeLaunchOptionsWithPerformance
 export function launch(appToken: string, options: BugseeLaunchOptionsWithPerformance = {}): Bugsee {
   const { client, internals } = launchCore(appToken, options);
   // No internals → a prior launch already owns the process singleton (and already wired the extensions).
-  return internals === undefined ? client : wireUmbrella(client, internals, options);
+  return internals === undefined
+    ? client
+    : wireUmbrella(client, internals, options, { pageload: true }); // browser: pageload transaction
 }

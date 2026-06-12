@@ -1,5 +1,5 @@
 import type { Bugsee, LaunchInternals } from '@bugsee/browser';
-import { resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
+import { ClockToken, resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
 import {
   type BugseeSpanProcessor,
   createBugseeSpanProcessor,
@@ -8,11 +8,24 @@ import {
 } from '@bugsee/opentelemetry';
 import {
   createPerformanceSend,
+  defaultTraceId,
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
   type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
+
+/**
+ * Per-runtime root-transaction policy. The browser collects a pageload transaction (+ web-vitals); Node
+ * has no pageload lifecycle, so it skips that and records a startup transaction spanning process-start →
+ * launch (`startupAtMs` is the process start time).
+ */
+export interface UmbrellaPlatform {
+  /** Collect the browser pageload transaction + web-vitals. */
+  pageload: boolean;
+  /** Process start time (ms) — when set, record an `app.start` startup transaction up to launch. */
+  startupAtMs?: number;
+}
 
 // The runtime-agnostic umbrella wiring: given a launched client + its LaunchInternals (from EITHER the
 // browser or node launchCore — the two are structurally identical), turn on the on-by-default extensions
@@ -86,6 +99,7 @@ export function wireUmbrella(
   client: Bugsee,
   internals: LaunchInternals,
   options: UmbrellaExtensionOptions,
+  platform: UmbrellaPlatform,
 ): Bugsee {
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
@@ -124,6 +138,7 @@ export function wireUmbrella(
     monitoring: perf.options.get(PerformanceOption.Monitoring, true),
     sampleRate: perf.options.get(PerformanceOption.SampleRate, 1),
     flushIntervalMs: perf.options.get(PerformanceOption.FlushIntervalMs, 30000),
+    pageload: platform.pageload,
     networkSource: internals.network.interceptor,
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),
@@ -132,6 +147,23 @@ export function wireUmbrella(
 
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
   if (wired === undefined) return client;
+
+  // Node startup transaction (the pageload analog): record an already-finished `app.start` transaction
+  // spanning process-start → launch, so it uploads immediately (no pageload/hidden lifecycle on Node).
+  if (platform.startupAtMs !== undefined) {
+    const endTimestampMs = client.getService(ClockToken).wallNow();
+    wired.recordTransaction({
+      traceId: defaultTraceId(),
+      name: 'app.start',
+      operation: 'app.start',
+      status: 'OK',
+      startTimestampMs: platform.startupAtMs,
+      endTimestampMs,
+      durationNanos: Math.max(0, Math.round((endTimestampMs - platform.startupAtMs) * 1_000_000)),
+      isSnapshot: false,
+      spans: [],
+    });
+  }
 
   // Consume (opt-in): hand the user a SpanProcessor to register on their OTel TracerProvider. Consumed
   // spans are assembled into §8.8 transactions (recordTransaction) and ride the same upload + OTLP tee.

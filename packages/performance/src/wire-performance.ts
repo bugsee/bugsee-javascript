@@ -24,6 +24,9 @@ export interface WirePerformanceOptions {
   monitoring: boolean;
   sampleRate: number;
   flushIntervalMs: number;
+  /** Collect the browser pageload transaction + web-vitals. Default true; Node sets false (no pageload
+   *  lifecycle — it records its own startup transaction instead). */
+  pageload?: boolean;
   appVersion?: string;
   appBuild?: string;
   /** The network interceptor source for http spans (omitted → no http spans). */
@@ -51,7 +54,11 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
   extension.setup(options.client);
   const api = options.client.ext('performance');
 
-  collectPageLoadVitals(options.env ?? realWebVitalsEnv(), api, { name: options.pageName });
+  // The browser pageload transaction + web-vitals (default). Node opts out (`pageload: false`) — it has
+  // no pageload/hidden lifecycle and records a startup transaction of its own instead.
+  if (options.pageload !== false) {
+    collectPageLoadVitals(options.env ?? realWebVitalsEnv(), api, { name: options.pageName });
+  }
 
   let offHttp: (() => void) | undefined;
   if (options.networkSource !== undefined) {
