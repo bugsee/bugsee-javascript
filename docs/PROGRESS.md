@@ -436,8 +436,36 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   app's per-request transaction (the span API). The umbrella compiles both entries (DOM lib + node types).
   **The whole two-way OpenTelemetry feature is complete and live on both runtimes.**
 
+### Bun runtime (`@bugsee/bun`) — COMPLETE (2026-06-14, on `master`)
+The first non-node/browser runtime tier. Bun is node-API-compatible (node:http/fs/os/process/perf_hooks),
+so `@bugsee/bun` reuses the ENTIRE `@bugsee/node` composition (transport, fs storage, node:http capture,
+crash detection, durable queue + capture recovery) and overrides only what differs (design §264: "node +
+Bun overrides"). Built in four reviewed slices (test-first + per-entity mutator loop + 3-agent review to
+convergence):
+- **S1 — runtime identity on the `SystemProbe`.** `@bugsee/node`'s `SystemProbe` gained `platformType()`
+  and renamed `nodeVersion()`→`runtimeVersion()`; `buildNodeEnvironment` now reads both FROM the probe
+  (was a hardcoded `'node'`). Behavior-preserving for Node (real probe → `'node'` + `process.versions.node`).
+  This is the seam: a sibling runtime swaps identity by injecting its own probe — `launchCore` is unchanged.
+  **Design note / known divergence:** identity-on-the-probe is how the node-family (node/bun, and deno next)
+  reports `platform.type`; the **browser** tier instead hardcodes `'web'` in `buildBrowserEnvironment` (UA
+  -derived version). Both are Android-consistent (Android co-locates `platform.type` with system reads in
+  `EnvironmentInfoProvider`); the asymmetry is intentional — do NOT try to unify them.
+- **S2 — `bunSystemProbe`** (`createBunSystemProbe(versions=process.versions)`): spreads `realSystemProbe`,
+  overrides `platformType→'bun'` + `runtimeVersion→ versions.bun ?? versions.node` (Bun version, node-compat
+  fallback). The injectable `versions` makes both `??` arms testable under Node.
+- **S3 — guarded `perf_hooks` sampler** (`createBunSystemMetricsSampler`): reuses node's sampler but supplies
+  GUARDED event-loop readers (Bun's `perf_hooks` event-loop APIs are partial). Each metric degrades to zero
+  on throw — at BOTH construction AND per-sample read (the system-traces provider runs its first sample
+  synchronously inside `launch()`, so a read-time throw would otherwise abort startup; review-hardened).
+- **S4 — `launch`/`launchCore` + `index`** delegate to node's `launchCore` with the Bun probe + sampler as
+  defaults (caller overrides win), and `export * from '@bugsee/node'` + explicit `launch`/`launchCore` that
+  SHADOW node's (ESM: an explicit re-export always wins over a star-export name, no dup error). E2e asserts
+  the Bun identity on the wire (session envelope AND the report bundle's request.json). Per-package
+  `vitest.config.ts` enforces the coverage gate; 100% line/fn/stmt. One documented equivalent mutant (the
+  sampler-default line: bun's and node's samplers are behaviorally identical under healthy perf_hooks).
+
 ### After browser
-- `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
+- ~~`@bugsee/bun`~~ (DONE, above), `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
 - Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — thin pass-throughs that wrap `@bugsee/<runtime>`.

@@ -18,11 +18,18 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/node-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@bugsee/util": "workspace:*",
+    "@types/node": "^25.9.1"
   }
 }
