@@ -63,6 +63,8 @@ import {
   type SystemProbe,
   SystemProbeToken,
 } from './environment';
+import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watchdog';
+import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
@@ -94,6 +96,12 @@ const NODE_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
+  // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
+  { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true },
+  { friendly: 'hangFairMs', key: BugseeOption.DetectHangFairMs, default: 3000 },
+  { friendly: 'hangMediumMs', key: BugseeOption.DetectHangMediumMs, default: 5000 },
+  { friendly: 'hangSevereMs', key: BugseeOption.DetectHangSevereMs, default: 10_000 },
 ];
 
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
@@ -129,6 +137,12 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Detect main-thread/event-loop hangs and report them (Android BugseeDetectionHang). Default true. */
+  detectHangs?: boolean;
+  /** Hang escalation thresholds in ms. Defaults 3000 (fair) / 5000 (medium) / 10000 (severe). */
+  hangFairMs?: number;
+  hangMediumMs?: number;
+  hangSevereMs?: number;
   /** Attach a rolling V8 CPU profile to incident bundles (profile.json). Default false (overhead). */
   profiling?: boolean;
   /** CPU profiler sampling interval in microseconds. Default 1000 (1ms; <1% overhead). */
@@ -168,6 +182,8 @@ export interface BugseeLaunchOptions {
   systemProbe?: SystemProbe;
   /** CPU profiler override (advanced / tests — avoids the real node:inspector). Default the V8 profiler. */
   cpuProfiler?: CpuProfiler;
+  /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
+  hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
   /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
@@ -426,9 +442,24 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   );
   client.addCaptureProvider(createSystemEventsProvider(createNodeSystemEventsSource(proc)));
 
-  // Detection providers: uncaughtException → crash, unhandledRejection → error.
+  // Detection providers: uncaughtException → crash, unhandledRejection → error, event-loop hang → error
+  // (Android BugseeDetectionHang). Each is gated by its controllingOption (the coordinator skips it when
+  // disabled), so they are added unconditionally.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc));
   client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+  client.addDetectionProvider(
+    createHangDetectionProvider({
+      thresholds: {
+        fairMs: resolved.options.get(BugseeOption.DetectHangFairMs, 3000),
+        mediumMs: resolved.options.get(BugseeOption.DetectHangMediumMs, 5000),
+        severeMs: resolved.options.get(BugseeOption.DetectHangSevereMs, 10_000),
+      },
+      scheduler: client.getService(SchedulerToken),
+      ...(options.hangWatchdogFactory !== undefined
+        ? { createWatchdog: options.hangWatchdogFactory }
+        : {}),
+    }),
+  );
 
   client.launch();
 

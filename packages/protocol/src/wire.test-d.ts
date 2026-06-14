@@ -272,6 +272,7 @@ export type WireAssertions = [
       | 'unhandledrejection'
       | 'console-error'
       | 'http-error'
+      | 'hang'
       | 'snapshot'
       | 'manual-dialog'
     >

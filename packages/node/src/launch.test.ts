@@ -37,6 +37,7 @@ import {
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type SystemProbe, SystemProbeToken } from './environment';
+import type { HangLevel } from './event-loop-watchdog';
 import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
 
 /** A test-only contributed service token (an "extension"). */
@@ -979,6 +980,62 @@ describe('launch — capture recovery', () => {
     expect('profile.json' in files).toBe(true);
     // profile.json is the single bare .cpuprofile object (the assembler's profile special-case).
     expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual(cpuProfile);
+  });
+
+  it('reports a main-thread hang as an AppHang error (detectHangs default on)', async () => {
+    // A FAKE watchdog (no real worker_threads); the launch captures its onHang and we drive a hang.
+    const transport = uploadTransport();
+    let onHang: ((l: HangLevel, d: number) => void) | undefined;
+    let thresholds: { fairMs: number; mediumMs: number; severeMs: number } | undefined;
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        scheduler: fakeScheduler().scheduler,
+        hangFairMs: 1234, // a non-default threshold must flow through from options
+        hangWatchdogFactory: (deps) => {
+          onHang = deps.onHang;
+          thresholds = deps.thresholds;
+          return { start() {}, stop() {} };
+        },
+      }),
+    );
+    expect(onHang).toBeDefined(); // provider built + started (default on)
+    expect(thresholds).toEqual({ fairMs: 1234, mediumMs: 5000, severeMs: 10_000 });
+    onHang?.('severe', 12_000);
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([u]) => u === 'https://s3.test/put')).toBe(true),
+    );
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const req = JSON.parse(
+      strFromU8(
+        unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array)[
+          'request.json'
+        ] as Uint8Array,
+      ),
+    );
+    expect(req.summary).toBe('Main thread hang detected');
+    expect(req.labels).toContain('AppHang::Severe');
+  });
+
+  it('does not start hang detection when detectHangs is false', () => {
+    let started = false;
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        scheduler: fakeScheduler().scheduler,
+        detectHangs: false,
+        hangWatchdogFactory: () => ({
+          start: () => {
+            started = true;
+          },
+          stop() {},
+        }),
+      }),
+    );
+    expect(started).toBe(false); // the controllingOption gate skips a disabled provider
   });
 
   it('attaches NO profile when profiling is disabled (the default)', async () => {

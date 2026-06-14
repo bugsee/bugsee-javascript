@@ -54,6 +54,12 @@ export const BugseeOption = {
   CaptureViewHierarchy: 'com.bugsee.option.capture.view-hierarchy',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
+  /** Detect main-thread/event-loop hangs (Android `BugseeDetectionHang` parity). */
+  DetectHang: 'com.bugsee.option.detect.hang',
+  /** Hang escalation thresholds in ms (Android-canonical defaults 3000 / 5000 / 10000). */
+  DetectHangFairMs: 'com.bugsee.option.detect.hang.level.fair',
+  DetectHangMediumMs: 'com.bugsee.option.detect.hang.level.medium',
+  DetectHangSevereMs: 'com.bugsee.option.detect.hang.level.severe',
   /** Rolling recording window in seconds. */
   Duration: 'com.bugsee.option.config.duration',
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
@@ -80,6 +86,10 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.interactions': boolean;
   'com.bugsee.option.capture.view-hierarchy': boolean;
   'com.bugsee.option.detect.crash': boolean;
+  'com.bugsee.option.detect.hang': boolean;
+  'com.bugsee.option.detect.hang.level.fair': number;
+  'com.bugsee.option.detect.hang.level.medium': number;
+  'com.bugsee.option.detect.hang.level.severe': number;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;
 }

@@ -16,6 +16,7 @@ export type Mechanism =
   | 'unhandledrejection'
   | 'console-error'
   | 'http-error'
+  | 'hang'
   | 'snapshot'
   | 'manual-dialog';
 

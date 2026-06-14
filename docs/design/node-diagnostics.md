@@ -45,9 +45,14 @@ domain**, so CPU profiling works on both runtimes while a live-inspector ANR sta
   of thing teams opt into; default-off matches Sentry's `profilesSampleRate=0`. Sampling interval
   configurable (default 1 ms).
 - **Android-canonical for ANR** (`BugseeDetectionHang`): escalating thresholds **Fair 3000 / Medium 5000 /
-  Severe 10000 ms**, domains `AppHang::Fair|Medium|Severe`, reported as an **Error** ("Main thread hang
-  detected"), per-session dedup on (call-site, domain). No new issue/trigger type — the domain is a string
-  attribute. Option `com.bugsee.option.detect.hang` + three `.level.*` int thresholds.
+  Severe 10000 ms** (validated strictly-increasing + positive, falling back to the defaults like Android),
+  domains `AppHang::Fair|Medium|Severe`, reported as an **Error** ("Main thread hang detected"). No new
+  issue/trigger type — the domain is carried as a label + signature. Option `com.bugsee.option.detect.hang`
+  + three `.level.*` int thresholds.
+  - **Dedup = per-EPISODE** (each level fires once per hang; recovery re-arms), a deliberate divergence
+    from Android's per-session dedup: a long-running SERVER should report EACH distinct hang, not just the
+    first one of a session. (Android's per-session dedup keys on a captured call-site stack, which we don't
+    capture at detection — the blocking frames come from the CPU profile instead.)
 - **CPU profile = a new `profile` bundle file** (`profile.json`), the bare V8 `.cpuprofile` object (directly
   loadable in DevTools / speedscope). Captured at report time via the existing at-report snapshot pull-seam
   (same mechanism as the viewtree DOM snapshot); the live profile is rolling-bounded to the recording window.
@@ -70,10 +75,13 @@ domain**, so CPU profiling works on both runtimes while a live-inspector ANR sta
   and, when `now - last ≥ threshold`, reports the stall + level back. A blocked loop simply stops updating
   the SAB → the worker sees staleness (the robust part). Injectable worker/clock/timer for tests.
 - `createHangDetectionProvider(...)` wraps it as a `DetectionProvider`: on a stall ≥ a level threshold →
-  `createErrorReport({ mechanism: 'anr', summary: 'Main thread hang detected' })` with `domain` =
-  `AppHang::{Fair|Medium|Severe}` + the stall duration as attributes; per-session dedup. The blocking stack
-  comes from the CPU profile in the bundle (when profiling is enabled). Gated by `detectHang` (default ON).
-- Capability-guarded for Bun (worker_threads + SharedArrayBuffer are supported on Bun — benchmarked).
+  `createErrorReport({ mechanism: 'hang', summary: 'Main thread hang detected' })` with the domain
+  `AppHang::{Fair|Medium|Severe}` as a label + signature and the stall duration in the description; dedup is
+  per-episode (above). The blocking stack comes from the CPU profile in the bundle (when profiling is
+  enabled). Gated by `detect.hang` (default ON — the watchdog worker is `unref()`'d so it never blocks a
+  clean process exit, addressing the only cost of defaulting on; Android defaults off for mobile-battery).
+- Capability-guarded for Bun (worker_threads + SharedArrayBuffer are supported on Bun — benchmarked); the
+  worker construction also guards `Worker#unref` so a runtime lacking it degrades to a no-op.
 
 ## Slice plan (each: test-first → mutator loop → multi-agent review → commit)
 

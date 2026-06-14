@@ -21,6 +21,18 @@ export {
   type SystemProbe,
 } from './environment';
 export {
+  createEventLoopWatchdog,
+  type EventLoopWatchdog,
+  type EventLoopWatchdogDeps,
+  evaluateHang,
+  type HangLevel,
+  type HangThresholds,
+} from './event-loop-watchdog';
+export {
+  createHangDetectionProvider,
+  type HangDetectionProviderDeps,
+} from './hang-detection-provider';
+export {
   createNodeHttpInterceptor,
   type HttpModule,
   type NodeHttpInterceptorOptions,
