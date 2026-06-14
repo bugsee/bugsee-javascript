@@ -3,6 +3,13 @@
 // docs/implementation-standards.md.
 
 export {
+  type CpuProfile,
+  type CpuProfiler,
+  type CpuProfilerOptions,
+  createCpuProfiler,
+  type ProfilerSession,
+} from './cpu-profiler';
+export {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
   type ProcessEvents,
