@@ -1,7 +1,7 @@
 import os from 'node:os';
 import process from 'node:process';
 import { serviceToken } from '@bugsee/core';
-import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, optionsToWire, type PlatformType } from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for Node from process/os. System reads go through an
 // injectable SystemProbe so the mapping is testable deterministically; realSystemProbe is the
@@ -10,7 +10,10 @@ import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 // server treats dots as nested-document paths (§2.4).
 
 export interface SystemProbe {
-  nodeVersion(): string;
+  /** The runtime tag for environment.platform.type ('node' here; a sibling tier supplies e.g. 'bun'). */
+  platformType(): PlatformType;
+  /** The runtime's own version string for environment.platform.version (process.versions.node here). */
+  runtimeVersion(): string;
   osType(): string;
   osRelease(): string;
   machine(): string;
@@ -26,7 +29,8 @@ export interface SystemProbe {
 export const SystemProbeToken = serviceToken<SystemProbe>('systemProbe');
 
 export const realSystemProbe: SystemProbe = {
-  nodeVersion: () => process.versions.node,
+  platformType: () => 'node',
+  runtimeVersion: () => process.versions.node,
   osType: () => os.type(),
   osRelease: () => os.release(),
   machine: () => os.machine(),
@@ -62,8 +66,8 @@ export function buildNodeEnvironment(
   const memoryTotal = probe.totalMemory();
   return {
     platform: {
-      type: 'node',
-      version: probe.nodeVersion(),
+      type: probe.platformType(),
+      version: probe.runtimeVersion(),
       kernel_version: probe.osRelease(),
       utc_offset: probe.utcOffsetMinutes(),
       memory_total: memoryTotal,

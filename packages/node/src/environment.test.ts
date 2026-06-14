@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { buildNodeEnvironment, realSystemProbe, type SystemProbe } from './environment';
 
 const fakeProbe: SystemProbe = {
-  nodeVersion: () => '24.0.0',
+  platformType: () => 'node',
+  runtimeVersion: () => '24.0.0',
   osType: () => 'Darwin',
   osRelease: () => '25.5.0',
   machine: () => 'arm64',
@@ -25,6 +26,16 @@ describe('buildNodeEnvironment — platform', () => {
       memory_total: 17_179_869_184,
       locale: 'en-US',
     });
+  });
+
+  it('drives platform.type and version FROM the probe (not a hardcoded node identity)', () => {
+    // A non-node probe (e.g. the Bun tier injects its own) must surface its own identity verbatim.
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0' },
+      { ...fakeProbe, platformType: () => 'bun', runtimeVersion: () => '1.1.0' },
+    );
+    expect(env.platform.type).toBe('bun');
+    expect(env.platform.version).toBe('1.1.0');
   });
 });
 
@@ -112,7 +123,8 @@ describe('realSystemProbe', () => {
   });
 
   it('exposes individual probe readers returning the live system values', () => {
-    expect(realSystemProbe.nodeVersion()).toBe(process.versions.node);
+    expect(realSystemProbe.platformType()).toBe('node');
+    expect(realSystemProbe.runtimeVersion()).toBe(process.versions.node);
     expect(realSystemProbe.osType()).toBe(os.type());
     expect(realSystemProbe.osRelease()).toBe(os.release());
     expect(realSystemProbe.machine()).toBe(os.machine());

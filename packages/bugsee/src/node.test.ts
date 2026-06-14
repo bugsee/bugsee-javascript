@@ -1,5 +1,5 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
-import type { Bugsee, NodeRuntime } from '@bugsee/node';
+import type { Bugsee, NodeRuntime, SystemProbe } from '@bugsee/node';
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeNodeLaunchOptions, launch } from './node';
@@ -25,8 +25,9 @@ function fakeProcess(): NodeRuntime {
   return proc;
 }
 
-const probe = {
-  nodeVersion: () => '20.1.2',
+const probe: SystemProbe = {
+  platformType: () => 'node',
+  runtimeVersion: () => '20.1.2',
   osType: () => 'Linux',
   osRelease: () => '6.0',
   machine: () => 'x86_64',

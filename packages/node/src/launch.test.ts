@@ -76,7 +76,8 @@ function fakeProcess(onExit?: (code?: number) => void) {
 }
 
 const probe: SystemProbe = {
-  nodeVersion: () => '20.1.2',
+  platformType: () => 'node',
+  runtimeVersion: () => '20.1.2',
   osType: () => 'Linux',
   osRelease: () => '6.0',
   machine: () => 'x86_64',
