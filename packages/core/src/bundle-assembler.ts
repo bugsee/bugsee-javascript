@@ -77,7 +77,10 @@ function serializeFileData(type: FileType, payloads: unknown[]): unknown {
     return { transactions: payloads };
   }
   if (type === 'profile') {
-    return payloads[0]; // the single CPU profile captured at report time
+    // The single CPU profile captured at report time. The assembler only iterates file types that have
+    // ≥1 entry (CaptureExporter.drain seeds non-empty groups; the profile snapshot emits 0-or-1 and omits
+    // the key when 0), so payloads[0] is always present here.
+    return payloads[0];
   }
   return payloads;
 }

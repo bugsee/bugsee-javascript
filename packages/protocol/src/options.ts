@@ -58,10 +58,6 @@ export const BugseeOption = {
   Duration: 'com.bugsee.option.config.duration',
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
   MaxDataSize: 'com.bugsee.option.config.data-size',
-  /** Attach a rolling V8 CPU profile to incident bundles (Node diagnostics; default off). */
-  Profiling: 'com.bugsee.option.profiling.enabled',
-  /** CPU profiler sampling interval in microseconds (lower = higher resolution + overhead). */
-  ProfilingSamplingInterval: 'com.bugsee.option.profiling.sampling-interval-micros',
 } as const;
 
 /** A canonical option identifier value (one of {@link BugseeOption}'s string values). */
@@ -86,6 +82,4 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;
-  'com.bugsee.option.profiling.enabled': boolean;
-  'com.bugsee.option.profiling.sampling-interval-micros': number;
 }
