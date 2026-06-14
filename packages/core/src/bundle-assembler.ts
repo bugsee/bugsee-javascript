@@ -67,6 +67,21 @@ function fileNameForType(type: FileType): string {
   return type === 'attachment' ? 'attachment' : DEFAULT_FILENAMES[type];
 }
 
+// Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Two exceptions:
+// `performance.json` = `{ transactions: [...] }` (§711/§8.8), and `profile.json` = the SINGLE bare V8 CPU
+// profile object (.cpuprofile — DevTools/speedscope-loadable). Binary streams (§8.4: replay/screenshot/
+// attachment) are platform-tier provider concerns; when those land the assembler branches further
+// (passing a Uint8Array `data` through).
+function serializeFileData(type: FileType, payloads: unknown[]): unknown {
+  if (type === 'performance') {
+    return { transactions: payloads };
+  }
+  if (type === 'profile') {
+    return payloads[0]; // the single CPU profile captured at report time
+  }
+  return payloads;
+}
+
 export function assembleBundle(
   request: ReportingRequest,
   capturedByType: Map<FileType, CaptureDataEntry[]>,
@@ -108,15 +123,8 @@ export function assembleBundle(
     }
     const filename = fileNameForType(type);
     files.push({ filename, type });
-    // Most JSON file types serialize to a top-level array of payloads. `performance` is the exception:
-    // §711/§8.8 specify `performance.json` = `{ transactions: [...] }` (an object). Binary streams
-    // (§8.4: replay/screenshot/attachment) are platform-tier provider concerns; when those land the
-    // assembler branches further (pass Uint8Array `data` through).
     const payloads = entries.map((entry) => entry.data);
-    typedFiles.push({
-      name: filename,
-      data: JSON.stringify(type === 'performance' ? { transactions: payloads } : payloads),
-    });
+    typedFiles.push({ name: filename, data: JSON.stringify(serializeFileData(type, payloads)) });
   }
 
   const manifest: ManifestJson = {

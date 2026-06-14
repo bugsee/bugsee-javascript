@@ -26,6 +26,7 @@ export type FileType =
   | 'network'
   | 'breadcrumbs'
   | 'performance'
+  | 'profile'
   | 'crash';
 
 /** Default filename per file type (§8.4). `attachment` is caller-supplied, so it has no default. */
@@ -42,5 +43,6 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   network: 'network.json',
   breadcrumbs: 'breadcrumbs', // NO .json extension — mobile contract (§8.4)
   performance: 'performance.json',
+  profile: 'profile.json', // V8 CPU profile (.cpuprofile object) — node diagnostics
   crash: 'crash.json',
 };

@@ -35,5 +35,6 @@ describe('wire constants', () => {
     expect(DEFAULT_FILENAMES['events.user']).toBe('events.user.json');
     expect(DEFAULT_FILENAMES['traces.system']).toBe('traces.system.json');
     expect(DEFAULT_FILENAMES.performance).toBe('performance.json');
+    expect(DEFAULT_FILENAMES.profile).toBe('profile.json'); // V8 CPU profile (node diagnostics)
   });
 });

@@ -181,6 +181,25 @@ describe('assembleBundle — manifest.json & files', () => {
     expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
   });
 
+  it('serializes the profile file type as the single bare V8 CPU profile object (not an array)', () => {
+    const cpuProfile = {
+      nodes: [{ id: 1 }],
+      startTime: 10,
+      endTime: 70,
+      samples: [1],
+      timeDeltas: [0],
+    };
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      ['profile', [entry('profile', 5, cpuProfile)]],
+      ['network', [entry('network', 6, { url: 'u' })]],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    // profile.json is the bare .cpuprofile object …
+    expect(JSON.parse(out.text('profile.json'))).toEqual(cpuProfile);
+    // … while other file types stay bare arrays.
+    expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
+  });
+
   it('sets time.start to the earliest entry timestamp and time.end to now', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       ['log', [entry('log', 1_699_999_999_000, {}), entry('log', 1_700_000_000_000, {})]],
