@@ -464,6 +464,30 @@ convergence):
   `vitest.config.ts` enforces the coverage gate; 100% line/fn/stmt. One documented equivalent mutant (the
   sampler-default line: bun's and node's samplers are behaviorally identical under healthy perf_hooks).
 
+### Node diagnostics — CPU profiling + ANR/event-loop-hang — COMPLETE (2026-06-14, on `master`)
+Closes the two in-DEPTH gaps vs Sentry on Node/Bun (we already lead on network-body capture + durable crash
+delivery). Design + benchmark + decision log: `docs/design/node-diagnostics.md`. Benchmark-driven: detection
+is ~free (worker heartbeat 0% CPU, +12 MB Node / +5 MB Bun), @1ms CPU profile <1% (~0.05 MB gz/60s), and the
+DECISIVE finding — **Bun supports the inspector `Profiler` but NOT the `Debugger` domain** — picked the
+profile-based ANR stack (works on both runtimes). Built P1→C1→C2→A1→A2→B, each test-first + mutator + 3-/2-agent
+review to convergence; both diagnostics verified on REAL Bun (worker_threads + SAB + `Worker#unref` + inspector
+Profiler all present).
+- **CPU profiling (opt-in, `profiling` off by default):** `profile` FileType → `profile.json` (bare V8
+  .cpuprofile, DevTools/speedscope-loadable). `createCpuProfiler` over an in-process `node:inspector` Session
+  (ASYNC — Bun defers callbacks; a sync stop() would drop the profile). A rolling controller pulls the current
+  segment into the bundle at report time via the now-async `ReportSnapshotSource` seam; serialized collect()
+  chain (a concurrent Profiler.stop would corrupt the session). **Gotcha:** a real inspector Profiler corrupts
+  vitest's v8 coverage → launch tests inject a fake via a `cpuProfiler` seam.
+- **ANR/hang (default ON):** worker + SharedArrayBuffer heartbeat (a blocked loop stops updating the buffer →
+  the worker sees staleness); dumb worker posts raw stalls, escalation/dedup on the main thread (`evaluateHang`).
+  `createHangDetectionProvider` → Error report "Main thread hang detected", domain `AppHang::{Fair|Medium|Severe}`,
+  thresholds 3000/5000/10000 (validated, Android-canonical), option `com.bugsee.option.detect.hang`. The worker
+  is `unref()`'d so default-ON never blocks a clean exit. Per-episode dedup (each distinct hang re-reports — a
+  documented divergence from Android's per-session, right for a long-running server). Blocking stack comes from
+  the CPU profile in the same bundle. `mechanism: 'hang'` added to the wire.
+- **Bun (B):** both inherited by `@bugsee/bun` via node-tier reuse; capability-guarded (degrade to no-op if
+  worker_threads/inspector absent). Deferred: Node-only live-inspector `Debugger.pause` stack; main-thread-misuse.
+
 ### After browser
 - ~~`@bugsee/bun`~~ (DONE, above), `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
