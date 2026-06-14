@@ -35,5 +35,10 @@ export {
   launchCore,
   type NodeRuntime,
 } from './launch';
+export {
+  createProfilingController,
+  type ProfilingController,
+  type ProfilingControllerDeps,
+} from './profiling-controller';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';

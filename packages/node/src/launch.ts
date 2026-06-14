@@ -36,9 +36,11 @@ import {
   type HttpResponse,
   type HttpTransport,
   ReportMarkerStoreToken,
+  type ReportSnapshotSource,
   recoverReports,
   resolveLaunchOptions,
   type Scheduler,
+  SchedulerToken,
   setCarrierClient,
   TransportToken,
 } from '@bugsee/core';
@@ -49,6 +51,7 @@ import {
   httpRequest,
 } from '@bugsee/node-utils';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -61,6 +64,7 @@ import {
   SystemProbeToken,
 } from './environment';
 import { createNodeHttpInterceptor } from './http-interceptor';
+import { createProfilingController, type ProfilingController } from './profiling-controller';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
 
@@ -88,6 +92,12 @@ const DEFAULT_MAX_DATA_SIZE_MB = 50;
 const NODE_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+  { friendly: 'profiling', key: BugseeOption.Profiling, default: false },
+  {
+    friendly: 'profilingSamplingIntervalMicros',
+    key: BugseeOption.ProfilingSamplingInterval,
+    default: 1000,
+  },
 ];
 
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
@@ -123,6 +133,10 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Attach a rolling V8 CPU profile to incident bundles (profile.json). Default false (overhead). */
+  profiling?: boolean;
+  /** CPU profiler sampling interval in microseconds. Default 1000 (1ms; <1% overhead). */
+  profilingSamplingIntervalMicros?: number;
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
@@ -156,6 +170,8 @@ export interface BugseeLaunchOptions {
   captureStore?: CaptureStore;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
+  /** CPU profiler override (advanced / tests — avoids the real node:inspector). Default the V8 profiler. */
+  cpuProfiler?: CpuProfiler;
   /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
@@ -336,6 +352,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         })
       : createMemoryCaptureStore(storeOptions));
 
+  // CPU profiling (opt-in): a rolling V8 profiler whose current segment is pulled into the incident
+  // bundle as profile.json at report time. The controller is built AFTER createClient (it needs the
+  // resolved scheduler service), so the report-snapshot source is late-bound to it here.
+  const profilingEnabled = resolved.isEnabled(BugseeOption.Profiling);
+  let profilingController: ProfilingController | undefined;
+  const profilingSnapshot: ReportSnapshotSource = (now) =>
+    profilingController !== undefined ? profilingController.snapshot(now) : [];
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
@@ -347,10 +371,26 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
       : {}),
+    ...(profilingEnabled ? { reportSnapshots: [profilingSnapshot] } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+
+  if (profilingEnabled) {
+    profilingController = createProfilingController({
+      profiler:
+        options.cpuProfiler ??
+        createCpuProfiler({
+          samplingIntervalMicros: resolved.options.get(
+            BugseeOption.ProfilingSamplingInterval,
+            1000,
+          ),
+        }),
+      scheduler: client.getService(SchedulerToken),
+      rollingIntervalMs: maxRecordingTime * 1000, // bound a single segment to the recording window
+    });
+  }
 
   // Run every service manifest contributed to the carrier (extensions / framework adapters / user code):
   // their contract-first services join the internal container — resolving deps from it — without launch
@@ -398,6 +438,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   client.addDetectionProvider(createUnhandledRejectionProvider(proc));
 
   client.launch();
+
+  // Start the rolling CPU profiler (after launch, so the scheduler service is live).
+  profilingController?.start();
 
   // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
   durable?.recover();
@@ -449,6 +492,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
       }
+      profilingController?.stop(); // clear the rolling timer + stop the profiler
       setCarrierClient(undefined, carrier);
       return stopCore(timeout);
     },

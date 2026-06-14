@@ -938,6 +938,59 @@ describe('launch — capture recovery', () => {
     launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
   });
+
+  // CPU profiling (opt-in): a rolling V8 profile attached to the bundle at report time (real inspector).
+  const profileInBundle = (transport: ReturnType<typeof uploadTransport>): boolean => {
+    const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    return 'profile.json' in files;
+  };
+
+  it('attaches a rolling CPU profile to the bundle when profiling is enabled', async () => {
+    // A FAKE profiler (no real node:inspector — a real V8 Profiler would corrupt vitest's v8 coverage).
+    // collect() is gated on start() like the real one, so a missing controller.start() yields no profile.
+    const cpuProfile = {
+      nodes: [{ id: 1 }],
+      startTime: 0,
+      endTime: 5,
+      samples: [1],
+      timeDeltas: [0],
+    };
+    let started = false;
+    const cpuProfiler = {
+      get running() {
+        return started;
+      },
+      start: async () => {
+        started = true;
+      },
+      collect: async () => (started ? cpuProfile : undefined),
+      stop: async () => cpuProfile,
+    };
+    const transport = uploadTransport();
+    const { scheduler } = fakeScheduler();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: memStore(), scheduler, profiling: true, cpuProfiler }),
+    );
+    await client.logException(new Error('boom'));
+    const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect('profile.json' in files).toBe(true);
+    // profile.json is the single bare .cpuprofile object (the assembler's profile special-case).
+    expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual(cpuProfile);
+  });
+
+  it('attaches NO profile when profiling is disabled (the default)', async () => {
+    const transport = uploadTransport();
+    const { scheduler } = fakeScheduler();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: memStore(), scheduler }),
+    );
+    await client.logException(new Error('boom'));
+    expect(profileInBundle(transport)).toBe(false);
+  });
 });
 
 // launchCore() is the seam the umbrella uses: it returns the same public client launch() returns, PLUS the

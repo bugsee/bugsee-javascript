@@ -161,10 +161,13 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
 
 /**
  * A pull-at-report snapshot source: given the report's wall-clock timestamp, returns extra capture
- * entries to merge into the assembled bundle (e.g. a browser DOM `viewtree`). Synchronous and called
- * once per live report at assembly time.
+ * entries to merge into the assembled bundle (e.g. a browser DOM `viewtree`, or a node CPU `profile`).
+ * Called once per live report at assembly time; may be synchronous (viewtree) OR async (a node CPU
+ * profile — the inspector delivers it asynchronously), and the assembler awaits it either way.
  */
-export type ReportSnapshotSource = (now: number) => readonly CaptureDataEntry[];
+export type ReportSnapshotSource = (
+  now: number,
+) => readonly CaptureDataEntry[] | Promise<readonly CaptureDataEntry[]>;
 
 export interface CreateClientOptions {
   /** Time source; injectable for tests. Default createSystemClock(). */
@@ -287,7 +290,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         const snapshotAt = clock.wallNow();
         for (const source of options.reportSnapshots) {
           try {
-            for (const entry of source(snapshotAt)) {
+            for (const entry of await source(snapshotAt)) {
               const existing = capturedByType.get(entry.type);
               if (existing !== undefined) {
                 existing.push(entry);

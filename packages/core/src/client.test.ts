@@ -832,6 +832,43 @@ describe('createClient — report path (built trigger pipeline)', () => {
     ]);
   });
 
+  it('merges entries from an ASYNC snapshot source (e.g. a node CPU profile)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const snap = vi.fn(async (now: number) => [
+      new CaptureDataEntryBase('profile' as FileType, now, { nodes: [], samples: [1] }),
+    ]);
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      clock: fixedClock(1000),
+      reportSnapshots: [snap],
+    });
+    await client.logException(new Error('boom'));
+    expect(snap).toHaveBeenCalledWith(1000);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    // profile.json is the single bare object (the assembler's profile special-case).
+    expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual({
+      nodes: [],
+      samples: [1],
+    });
+  });
+
+  it('isolates a REJECTING async snapshot source: onError fires and the report still uploads', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportSnapshots: [async () => Promise.reject(new Error('async snapshot failed'))],
+    });
+    expect(await client.logException(new Error('boom'))).toEqual({ ok: true });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it('isolates a throwing snapshot source: onError fires and the report still uploads', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn();
