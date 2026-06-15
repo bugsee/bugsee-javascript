@@ -8,15 +8,20 @@ import {
 
 // Ergonomic one-call setup over the two middlewares (design: docs/design/framework-adapters.md). Express
 // forces the error handler to be registered AFTER the routes (it only catches errors from layers before
-// it). setupExpress installs the request middleware now and, by default, appends the error handler on the
-// FIRST request — by which point all routes are registered (apps wire routes synchronously at startup),
-// so it lands last. Express walks its middleware stack live, so even that first request's error is caught.
+// it). setupExpress installs the request middleware now and, by default, the error handler after the
+// routes via two paths sharing an install-once flag:
+//   1. PRIMARY (deterministic) — wrap app.listen so the first listen() installs the handler before any
+//      request is served; routes are already registered (apps wire them synchronously before listen()).
+//   2. FALLBACK — apps that never call app.listen (http.createServer(app) / serverless) install on the
+//      first request instead. Express walks its stack live, so even that first request's error is caught.
 // If you have your OWN error-response middleware, set { autoErrorHandler: false } and call
 // setupExpressErrorHandler() yourself, right before yours.
 
 /** The minimal Express application surface setupExpress needs. */
 export interface ExpressApp {
   use(handler: RequestMiddleware | ErrorMiddleware): unknown;
+  /** Present on a real express app; wrapped so the error handler installs deterministically at listen. */
+  listen?: (...args: never[]) => unknown;
 }
 
 export interface SetupExpressOptions extends ExpressAdapterOptions {
@@ -36,11 +41,25 @@ export function setupExpress(app: ExpressApp, options: SetupExpressOptions = {})
   const { autoErrorHandler = true, ...adapter } = options;
   if (autoErrorHandler) {
     let installed = false;
-    const installer: RequestMiddleware = (_req, _res, next) => {
+    const installErrorHandler = (): void => {
       if (!installed) {
         installed = true;
         app.use(errorHandler(adapter));
       }
+    };
+    // (1) Primary: install deterministically when the server starts listening — after the routes, before
+    // any request. Wrap app.listen so the first call installs the handler, then delegates to the original.
+    const originalListen = app.listen;
+    if (typeof originalListen === 'function') {
+      app.listen = (...args) => {
+        installErrorHandler();
+        return originalListen.apply(app, args);
+      };
+    }
+    // (2) Fallback for apps that never call app.listen (http.createServer(app) / serverless): install on
+    // the first request. Shares the install-once flag, so it never double-installs.
+    const installer: RequestMiddleware = (_req, _res, next) => {
+      installErrorHandler();
       next();
     };
     app.use(installer);
