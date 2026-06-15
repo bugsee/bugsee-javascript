@@ -530,11 +530,38 @@ and produces the right wire output on each backend.
   `Deno.version.deno` end-to-end). **21 tests across node/bun/deno, all green.** Fulfils the deferred
   "per-runtime smoke harness" roadmap item (below).
 
+### Framework adapters — foundation + Express COMPLETE (2026-06-15, on `master`)
+The shared **per-request context foundation** + **`@bugsee/express`** as its first consumer (full
+Sentry-parity backend integration), per `docs/design/framework-adapters.md`. Key model (user-driven):
+**correlation-by-tagging, not physical isolation** — record everything globally, stamp each capture entry
+with its request's `contextId` (+ `traceId`/`spanId` when a trace is active), and the report carries that
+`contextId` as the join key; the dashboard can then focus the recording on one request while the full
+picture stays. Built in 7 test-first slices (each per-entity mutator-looped + multi-agent reviewed):
+- **S1–S3 core foundation** (`feat(core,protocol)`): portable `RequestContext` + `ContextProvider` DI seam;
+  the `CaptureAggregator` stamps each entry (onto a COPY — a review-caught MAJOR: never mutate the shared
+  source-event object); report assembly merges the active context's user/attributes + sets
+  `request.json.context_id`. The context is captured at report-**submit** time into a WeakMap keyed by the
+  request (the trigger pipeline queues/detaches assembly, so a by-then-stale active context can't bleed).
+  OFF by default → byte-identical for non-adapter users.
+- **S4 node binding**: `createNodeRequestContextStore()` over `AsyncLocalStorage`, wired by default as the
+  core `ContextProvider` (a no-op until a context opens). Bun/Deno inherit it via the node composition.
+- **S5 trace continuation**: `parseTraceparent` (`@bugsee/capture`, defensive W3C parser) + perf
+  `startTransaction({continuation:{traceId}})` adopting an inbound trace.
+- **S6 `@bugsee/express`**: `requestHandler` (open context + optional `http.server` APM transaction +
+  inbound-trace continuation, finishes on response) + `errorHandler` (report `http-error` with the context
+  merged, then `next(err)`); express is a PEER; fully defensive (review-caught MAJOR fixed: pass-through
+  `next()` moved out of the try so a downstream throw propagates + isn't double-called).
+- **S7 e2e**: a REAL express server + REAL SDK + real `AsyncLocalStorage` proving concurrency isolation —
+  3 interleaved concurrent requests, each report carries its own user + a distinct `contextId`, the log
+  line tagged with a report's `contextId` is that request's own (no bleed).
+The foundation (S1–S5) is reused verbatim by the next backend adapters (fastify/nestjs/next-server) — each
+is then a thin `requestHandler`/`errorHandler`-shaped binding.
+
 ### After browser
 - ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
-- Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — **DESIGNED** (`docs/design/framework-adapters.md`, approved 2026-06-15), building next. Full Sentry-parity, **shared per-request context foundation first** (a portable `RequestContext` + Node `AsyncLocalStorage` binding + a core seam; **correlation-by-tagging** — every capture entry stamped with `contextId` (+ `traceId`/`spanId` when a trace exists), user/attributes merged at report time), then **Express** as its first thin consumer. Slices S1 protocol → S2 core seam → S3 node ALS → S4 perf http.server txn → S5 express → S6 e2e.
+- Framework adapters: the **foundation + `@bugsee/express`** are **DONE** (see the milestone above). Remaining: **backend** `fastify`/`nestjs`/`nextjs`-server (thin bindings on the same foundation) and **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 

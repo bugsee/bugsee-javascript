@@ -1,8 +1,9 @@
 # Framework adapters + the per-request context foundation
 
-**Status:** Design approved 2026-06-15 (pre-implementation). Author dialogue + decision log below.
-Build order: the portable foundation first, then **Express** as its first consumer; every later backend
-adapter (fastify / nestjs / next-server) is a thin re-binding of the same foundation.
+**Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) BUILT** on `master` (2026-06-15). Design
+approved 2026-06-15; author dialogue + decision log below. Build order: the portable foundation first, then
+**Express** as its first consumer; every later backend adapter (fastify / nestjs / next-server) is a thin
+re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6 below.)
 
 Related: `docs/design/sdk-design.md` §5/§16, `docs/design/opentelemetry-integration.md` (trace
 propagation — the *outbound* half; this adds the *inbound* continuation), `docs/PROGRESS.md`.
