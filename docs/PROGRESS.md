@@ -503,13 +503,40 @@ version from `Deno.version.deno` with a node-compat fallback) + the shared guard
 - Test-first, per-entity mutator-looped, e2e asserts the Deno identity on the wire (session + bundle
   request.json), single-agent review clean. Per-package `vitest.config.ts`; 100% line/fn/stmt.
 
+### Cross-runtime e2e instrumentation harness (`@bugsee/instrumentation-tests`) — COMPLETE (2026-06-15, on `master`)
+The layer the in-process unit tests (vitest under node, injected fakes) cannot reach: it boots the REAL
+SDK in a REAL separate **node / bun / deno** process — no fakes, real timers, a real outgoing `fetch`,
+the real V8 CPU profiler, the real worker-thread hang watchdog — pointed at a local **mock collector**
+(`use mocking`, per the request), and asserts the actual uploaded bundle. Proves the *assembled* SDK runs
+and produces the right wire output on each backend.
+- **Per runtime, two scenarios** (`app/scenario.ts`): **main** (exit 0) — console→`logs.json`, a captured
+  `/echo`→`network.json`, `logException`→an error bundle, a rolling V8 CPU profile→`profile.json`, a
+  deliberate event-loop block→an **AppHang** bundle from the real watchdog, + one session carrying the
+  runtime's `platform.type`. **crash** (exit 1) — async throw→`uncaughtException`→flush→`process.exit(1)`.
+- **Cross-runtime workspace-TS resolution** (the linchpin): node via `tsx`; bun native; **deno via
+  `deno run -A --node-modules-dir=manual --sloppy-imports`** (manual = use pnpm's node_modules; sloppy =
+  our extensionless relative imports). A runtime whose binary is absent is skipped (node, via the `tsx`
+  devDep, is the guaranteed target; bun/deno probed on PATH + `~/.bun|.deno/bin`).
+- **Mock collector** (`test/collector.ts`) implements the real control plane (`/v2/sessions` →
+  `/v2/issues` → signed `PUT`) + `/echo`; runs in the runner process, app reaches it over loopback, so the
+  captured uploads ARE the assertion channel (no IPC).
+- **NOT in `pnpm test`** (root globs `*.test.ts`; these are `*.e2e.ts`) and **not coverage-gated** (it
+  spawns processes); run on demand via **`pnpm test:e2e`**. **Teeth-verified** (disabling profiling/ANR in
+  the scenario fails the matching assertions — not false-green). **Multi-agent reviewed** (3 parallel,
+  read-only): contract fidelity CLEAN (endpoints / response shapes / `source.mechanism`
+  programmatic·hang·uncaught / report types / file names / all launch-option names match the real SDK),
+  isolation confirmed empirically, robustness minors hardened (flush budget vs upload backoff,
+  `closeAllConnections`, file-presence asserts, a deno version-provenance check proving it reads
+  `Deno.version.deno` end-to-end). **21 tests across node/bun/deno, all green.** Fulfils the deferred
+  "per-runtime smoke harness" roadmap item (below).
+
 ### After browser
 - ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
 - Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — thin pass-throughs that wrap `@bugsee/<runtime>`.
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
-- Per-runtime smoke harness; mutation-testing CI (Stryker, opt-in).
+- ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 
 ---
 
