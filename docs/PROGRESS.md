@@ -550,7 +550,7 @@ and produces the right wire output on each backend.
   `Deno.version.deno` end-to-end). **21 tests across node/bun/deno, all green.** Fulfils the deferred
   "per-runtime smoke harness" roadmap item (below).
 
-### Framework adapters — foundation + Express + Fastify + NestJS COMPLETE (2026-06-15, on `master`)
+### Framework adapters — foundation + Express/Fastify/NestJS/Hono/Elysia/Hapi/Koa/Restify COMPLETE (2026-06-15, on `master`)
 The shared **per-request context foundation** + **`@bugsee/express`** as its first consumer (full
 Sentry-parity backend integration), per `docs/design/framework-adapters.md`. Key model (user-driven):
 **correlation-by-tagging, not physical isolation** — record everything globally, stamp each capture entry
@@ -599,6 +599,34 @@ The foundation (S1–S5) is reused verbatim by the next backend adapters — eac
     matrix, 4xx-skip, dedup, response preservation, concurrency isolation). 2 review-caught MAJORs fixed
     (Fastify `run`→`enterWith`; txn OK/ERROR from thrown-error status). `@nestjs/*` + `rxjs` are PEERs;
     `sideEffects` omitted (the filter applies `Catch()` metadata at module load).
+- **Five more server-side adapters** (`@bugsee/hono`, `@bugsee/elysia`, `@bugsee/hapi`, `@bugsee/koa`,
+  `@bugsee/restify`) — **COMPLETE (2026-06-15)**. Each is structural-peer (never imports the framework; the
+  framework is a devDep, not a peer dep — only nestjs needed peers, for `BaseExceptionFilter`/`rxjs`), uses
+  the global `crypto.randomUUID()`, ships dual ESM+CJS, and (except restify) has a REAL-framework e2e proving
+  error reporting, the framework's expected-error skip, response preservation, and concurrency isolation. The
+  per-framework deltas — each empirically probed before building — are the interesting part:
+  - **`@bugsee/hono`** (`setupHono`): a single middleware. Hono's `compose` routes a thrown error to
+    `app.onError` BEFORE it reaches the middleware, so the error is read from **`c.error`** after `next()`
+    (NOT a try/catch around next, and the user's onError is untouched). `c.res.status` is reliable → OK/ERROR
+    by `status >= 500`. Skips Hono `HTTPException` (duck-typed `getResponse`). e2e via `app.request`.
+  - **`@bugsee/elysia`** (`setupElysia`): 3 additive hooks — `onRequest` (`enterWith` + txn, WeakMap by
+    request), `onError` (report by Elysia's `code`: `UNKNOWN`/5xx report, named-4xx skip), `mapResponse`
+    (finish — `onAfterResponse` doesn't fire via `app.handle`, which is the only Node entry — `.listen` is
+    Bun-only). Code-derived status fidelity. e2e via `app.handle`. Elysia's deeply-generic hook types need a
+    structural cast (documented).
+  - **`@bugsee/hapi`** (`setupHapi`): `onRequest` (`enterWith` + txn) + `onPreResponse` (report a Boom error —
+    Hapi's `isServer` is the 5xx signal — + finish). A client disconnect finishes the txn `CANCELLED` (parity
+    with fastify). e2e via `server.inject`.
+  - **`@bugsee/koa`** (`setupKoa`): a single middleware. Koa's compose DOES propagate a throw up through
+    `await next()`, so the middleware catches → reports → re-throws (Koa's onerror still formats the
+    response). Status from the error on the error path (`ctx.status` is unreliable in the catch); skip 4xx
+    (`ctx.throw(404)`), report no-status/5xx. e2e via a real `http.Server`.
+  - **`@bugsee/restify`** (`setupRestify`): `use` middleware (`enterWith` + txn, WeakMap by req) + the server
+    `after` event (report + finish). The report **re-enters the saved context** via `store.run` so the
+    contextId is correct even if `after` runs off the request's async chain. **No e2e**: restify 11.x does not
+    import on Node ≥18 (its transitive spdy/http-deceiver uses the removed `process.binding('http_parser')`) —
+    a framework limitation, not the adapter's; the structural adapter is unit-tested (incl. a two-request
+    WeakMap-isolation test) and verified against `@types/restify` + restify source.
 
 ### Dual-module (ESM + CJS) packaging — COMPLETE (2026-06-15, on `master`)
 Every implemented package now publishes **both** ESM and CJS, per `docs/design/packaging-dual-module.md`
@@ -628,7 +656,7 @@ conditions). Shape:
   see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
   single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
   *module* split that already landed for every package.
-- Framework adapters: the **foundation + `@bugsee/express` + `@bugsee/fastify` + `@bugsee/nestjs`** are **DONE** (see the milestone above). Remaining: **backend** `nextjs`-server (DEFERRED — it straddles frontend RSC + backend + edge/middleware + the `instrumentation.ts` build hook, so it needs its own design pass) and `nestjs` microservice/GraphQL transports; **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
+- Framework adapters: **express + fastify + nestjs + hono + elysia + hapi + koa + restify** are **DONE** (see the milestone above). Remaining: **backend** `nextjs`-server (DEFERRED — it straddles frontend RSC + backend + edge/middleware + the `instrumentation.ts` build hook, so it needs its own design pass) and `nestjs` microservice/GraphQL transports; **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 

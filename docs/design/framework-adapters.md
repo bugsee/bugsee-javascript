@@ -1,10 +1,11 @@
 # Framework adapters + the per-request context foundation
 
-**Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) + Fastify + NestJS BUILT** on `master`
-(2026-06-15). Design approved 2026-06-15; author dialogue + decision log below. Build order: the portable
-foundation first, then **Express** as its first consumer; every later backend adapter (fastify / nestjs /
-next-server) is a thin re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6 below;
-the **NestJS** adapter — with the empirically-grounded seam decision — is documented in §N.)
+**Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) + Fastify + NestJS + Hono + Elysia + Hapi + Koa
++ Restify BUILT** on `master` (2026-06-15). Design approved 2026-06-15; author dialogue + decision log
+below. Build order: the portable foundation first, then **Express** as its first consumer; every later
+backend adapter is a thin re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6
+below; the **NestJS** adapter — with the empirically-grounded seam decision — is in §N; the five more
+server adapters in §N+1.)
 
 Related: `docs/design/sdk-design.md` §5/§16, `docs/design/opentelemetry-integration.md` (trace
 propagation — the *outbound* half; this adds the *inbound* continuation), `docs/PROGRESS.md`.
@@ -198,3 +199,27 @@ own global filter (Sentry ships a `@SentryExceptionCaptured` decorator escape ha
 Built test-first (unit per seam + a real-Nest e2e on **both** platforms: the coverage matrix, 4xx-skip, dedup,
 response preservation, concurrency isolation), multi-agent reviewed (2 MAJORs fixed: the Fastify `enterWith`
 and the thrown-error-status transaction outcome).
+
+## §N+1. Five more server adapters (Hono / Elysia / Hapi / Koa / Restify) — BUILT 2026-06-15
+
+All five are the same thin foundation re-binding, **structural-peer** (they never import the framework — it
+is a devDep, not a peer dep; only NestJS needed peers, for `BaseExceptionFilter`/`rxjs`), use the global
+`crypto.randomUUID()` (multi-runtime), ship dual ESM+CJS, and — except restify — carry a real-framework e2e
+(error reporting, the framework's expected-error skip, response preservation, concurrency isolation). The
+value is in the **per-framework error-capture seam**, which was *empirically probed* (a throwaway script
+against the real framework) before each build, because each framework surfaces a thrown error differently:
+
+| adapter | context open | error capture | the gotcha (probed) |
+| --- | --- | --- | --- |
+| **hono** | 1 middleware, `store.run` wraps `next()` | read `c.error` AFTER `next()` | Hono's `compose` routes a throw to `app.onError` BEFORE it reaches the middleware — a try/catch around `next()` sees nothing; `c.res.status` IS final → OK/ERROR by status. Non-`Error` throws are invisible (inherent to compose). e2e: `app.request`. |
+| **elysia** | `onRequest` hook, `enterWith` | `onError` hook (additive) | classify by Elysia's `code` (`UNKNOWN`/5xx → report, named-4xx → skip); `set.status` is unreliable in `onError`. Finish in `mapResponse` (fires for both; `onAfterResponse` does NOT via `app.handle`, which is the only Node entry — `.listen` is Bun-only). Generic hook types need a structural cast. e2e: `app.handle`. |
+| **hapi** | `onRequest` ext, `enterWith` | `onPreResponse` ext | report a Boom error (`isServer` = the 5xx signal). A client disconnect finishes the txn `CANCELLED` (parity with fastify). Method is lowercase. e2e: `server.inject`. |
+| **koa** | 1 middleware, `store.run` wraps `next()` | try/catch around `next()` → report → RE-THROW | Koa's compose DOES propagate the throw up through `await next()` (unlike Hono); `ctx.status` is unreliable in the catch → status from the error. Skip 4xx (`ctx.throw(404)`), report no-status/5xx. e2e: a real `http.Server`. |
+| **restify** | `use` middleware, `enterWith` | server `after` event | report + finish in `after` (fires for both); the report **re-enters the saved context** via `store.run` so the contextId is right even if `after` is off the request's async chain. **NO e2e** — restify 11.x doesn't import on Node ≥18 (spdy/http-deceiver uses the removed `process.binding('http_parser')`); structural adapter unit-tested (incl. two-request WeakMap isolation) + verified vs `@types/restify` + restify source. |
+
+Each was multi-agent reviewed against the real framework (or its types, for restify); review-driven fixes
+included the hapi client-abort `CANCELLED`, the elysia code-derived status fidelity, and the restify
+RegExp-path coercion + two-request isolation test. The default report policy everywhere: skip the
+framework's "expected" HTTP errors (4xx / control-flow exceptions), report genuine errors; `shouldReport`
+overrides. The remaining adapters (`nextjs`-server, frontend `react`/`vue`/`svelte`/`angular`) reuse the
+same foundation.
