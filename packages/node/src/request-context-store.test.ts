@@ -69,4 +69,30 @@ describe('createNodeRequestContextStore', () => {
     expect(provider.getCurrent()).toBeUndefined();
     expect(provider.getCurrent.call(store)).toBeUndefined();
   });
+
+  it('enterWith binds the context for the current async execution (Fastify hook model)', () => {
+    const store = createNodeRequestContextStore();
+    const ctx: RequestContext = { contextId: 'e1' };
+    expect(store.getCurrent()).toBeUndefined();
+    store.enterWith(ctx);
+    expect(store.getCurrent()).toBe(ctx);
+  });
+
+  it('isolates enterWith across separate async executions (no bleed)', async () => {
+    const store = createNodeRequestContextStore();
+    const seen: Array<string | undefined> = [];
+    // Each branch runs in its OWN async context (a fresh setImmediate resource), like a per-request hook —
+    // so enterWith in one does not leak into another despite interleaving.
+    const branch = (id: string, delayMs: number) =>
+      new Promise<void>((resolve) => {
+        setImmediate(async () => {
+          store.enterWith({ contextId: id });
+          await new Promise((r) => setTimeout(r, delayMs));
+          seen.push(store.getCurrent()?.contextId);
+          resolve();
+        });
+      });
+    await Promise.all([branch('A', 20), branch('B', 5), branch('C', 12)]);
+    expect([...seen].sort()).toEqual(['A', 'B', 'C']);
+  });
 });

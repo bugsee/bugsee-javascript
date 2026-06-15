@@ -15,6 +15,13 @@ import {
 export interface RequestContextStore extends ContextProvider {
   /** Run `fn` with `context` as the active request context for its (a)synchronous call-chain. */
   run<T>(context: RequestContext, fn: () => T): T;
+  /**
+   * Make `context` the active request context for the remainder of the current async execution (and its
+   * async descendants), without a callback. For hook-based frameworks (Fastify) whose request hook returns
+   * BEFORE the route handler runs, so `run()` cannot wrap it — the hook calls `enterWith` and the context
+   * follows the request's async chain. Each request runs in its own async context, so it stays isolated.
+   */
+  enterWith(context: RequestContext): void;
   /** Set the end-user identity on the active context (no-op when none is open). */
   setUser(user: string): void;
   /** Set a custom attribute on the active context (no-op when none is open). */
@@ -34,6 +41,7 @@ export function createNodeRequestContextStore(
   return {
     getCurrent: () => storage.getStore(),
     run: (context, fn) => storage.run(context, fn),
+    enterWith: (context) => storage.enterWith(context),
     setUser(user) {
       const current = storage.getStore();
       if (current !== undefined) {
