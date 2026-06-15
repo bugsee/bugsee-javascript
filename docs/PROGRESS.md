@@ -534,7 +534,7 @@ and produces the right wire output on each backend.
 - ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
-- Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — thin pass-throughs that wrap `@bugsee/<runtime>`.
+- Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — **DESIGNED** (`docs/design/framework-adapters.md`, approved 2026-06-15), building next. Full Sentry-parity, **shared per-request context foundation first** (a portable `RequestContext` + Node `AsyncLocalStorage` binding + a core seam; **correlation-by-tagging** — every capture entry stamped with `contextId` (+ `traceId`/`spanId` when a trace exists), user/attributes merged at report time), then **Express** as its first thin consumer. Slices S1 protocol → S2 core seam → S3 node ALS → S4 perf http.server txn → S5 express → S6 e2e.
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 
