@@ -561,7 +561,7 @@ is then a thin `requestHandler`/`errorHandler`-shaped binding.
 - ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
-- Framework adapters: the **foundation + `@bugsee/express`** are **DONE** (see the milestone above). Remaining: **backend** `fastify`/`nestjs`/`nextjs`-server (thin bindings on the same foundation) and **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
+- Framework adapters: the **foundation + `@bugsee/express` + `@bugsee/fastify`** are **DONE** (see the milestone above). Fastify proved the foundation reuses across a different framework model — a hook-based binding (`setupFastify`'s onRequest/onError/onResponse/onRequestAbort hooks + the store's new `enterWith`, since the hook returns before the handler) over the **same** foundation, with its own real-server concurrency-isolation e2e. Remaining: **backend** `nestjs`/`nextjs`-server (thin bindings on the same foundation) and **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 

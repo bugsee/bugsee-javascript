@@ -1,5 +1,10 @@
-// @bugsee/fastify
-// Fastify plugin adapter
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/fastify — Fastify adapter (tier 4, design: docs/design/framework-adapters.md).
+// One-call hook-based setup over the per-request context foundation. fastify is a PEER dependency.
+export {
+  type FastifyAdapterOptions,
+  type FastifyHookDone,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  setupFastify,
+} from './hooks';
