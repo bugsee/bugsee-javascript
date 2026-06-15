@@ -5,17 +5,40 @@ Express middleware adapter — the first framework binding over Bugsee's per-req
 
 ```ts
 import { launch } from '@bugsee/bugsee'; // or @bugsee/node
-import { requestHandler, errorHandler } from '@bugsee/express';
+import { setupExpress } from '@bugsee/express';
 import express from 'express';
 
 launch(appToken);
 
 const app = express();
-app.use(requestHandler({ user: (req) => req.user?.email })); // user getter is opt-in (privacy-safe default: off)
-
+setupExpress(app, { user: (req) => req.user?.email }); // one call: request middleware now + error handler after your routes
 // ... your routes ...
+app.listen(3000);
+```
 
-app.use(errorHandler()); // before your own error-response middleware
+`setupExpress` installs the request middleware immediately and, by default, appends the error handler on
+the first request — by which point your routes are registered, so it lands last (Express walks its stack
+live, so even that first request's error is caught). The `user` getter is opt-in (privacy-safe default:
+off).
+
+**If you have your own error-response middleware**, place Bugsee's handler explicitly before yours:
+
+```ts
+import { setupExpress, setupExpressErrorHandler } from '@bugsee/express';
+
+setupExpress(app, { autoErrorHandler: false });
+// ... your routes ...
+setupExpressErrorHandler(app);              // Bugsee: reports + next(err)
+app.use((err, req, res, next) => { /* your error response */ });
+```
+
+Or use the two raw middlewares directly for full control over placement:
+
+```ts
+import { requestHandler, errorHandler } from '@bugsee/express';
+app.use(requestHandler());   // first
+// ... routes ...
+app.use(errorHandler());     // after routes, before your own error handler
 ```
 
 ## What it does

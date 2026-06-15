@@ -3,7 +3,7 @@ import { type Bugsee, launch, type NodeRuntime } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
-import { errorHandler, requestHandler } from './index';
+import { errorHandler, requestHandler, setupExpress } from './index';
 
 // End-to-end integration over a REAL express server + the REAL @bugsee/node SDK + real AsyncLocalStorage.
 // The headline this proves (the whole point of the foundation): under CONCURRENT, interleaved requests on
@@ -60,9 +60,10 @@ interface ParsedBundle {
 }
 const parseBundle = (zip: Uint8Array): ParsedBundle => {
   const files = unzipSync(zip) as Record<string, Uint8Array>;
+  const logsFile = files['logs.json'];
   return {
     request: JSON.parse(strFromU8(files['request.json'] as Uint8Array)),
-    logs: JSON.parse(strFromU8(files['logs.json'] as Uint8Array)),
+    logs: logsFile !== undefined ? JSON.parse(strFromU8(logsFile)) : [], // a route may log nothing
   };
 };
 
@@ -141,6 +142,54 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
         const ownLine = p.logs.find((l) => l.context_id === p.request.context_id);
         expect(ownLine?.message).toBe(`processing for ${p.request.email}`);
       }
+    } finally {
+      server.close();
+    }
+  });
+
+  it('setupExpress(app) installs both middlewares — the auto error handler catches a route error', async () => {
+    const { transport, bundles } = recordingTransport();
+    const client = launch('tok', {
+      endpoint: 'https://api.test',
+      transport: transport as never,
+      process: fakeProcess(),
+      detectHangs: false,
+      captureNetwork: false,
+      recover: false,
+    });
+    clients.push(client);
+
+    const app = express();
+    // The whole setup is a single call — the error handler is auto-appended after the routes.
+    setupExpress(app, {
+      user: (req) => {
+        const u = req.headers['x-user'];
+        return typeof u === 'string' ? u : undefined;
+      },
+    });
+    app.get('/boom', async (_req: Request, _res: Response, next: NextFunction) => {
+      try {
+        throw new Error('kaboom');
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    const server = app.listen(0);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      // The FIRST request must already be covered by the auto-appended error handler.
+      const res = await fetch(`http://127.0.0.1:${port}/boom`, {
+        headers: { 'x-user': 'dave@x.com' },
+      });
+      await res.text();
+      await client.flush(5000);
+
+      expect(bundles).toHaveLength(1);
+      const bundle = parseBundle(bundles[0] as Uint8Array);
+      expect(bundle.request.source.mechanism).toBe('http-error');
+      expect(bundle.request.email).toBe('dave@x.com');
+      expect(bundle.request.context_id).toBeDefined();
     } finally {
       server.close();
     }

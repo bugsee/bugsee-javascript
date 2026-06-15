@@ -10,3 +10,9 @@ export {
   type RequestMiddleware,
   requestHandler,
 } from './middleware';
+export {
+  type ExpressApp,
+  type SetupExpressOptions,
+  setupExpress,
+  setupExpressErrorHandler,
+} from './setup';
