@@ -29,6 +29,9 @@
     "@bugsee/performance": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@bugsee/util": "workspace:*",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "express": "^5.0.0"
   }
 }
