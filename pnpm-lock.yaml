@@ -191,12 +191,25 @@ importers:
 
   packages/deno:
     dependencies:
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/integration-shims':
+      '@bugsee/node':
         specifier: workspace:*
-        version: link:../integration-shims
+        version: link:../node
+      '@bugsee/node-utils':
+        specifier: workspace:*
+        version: link:../node-utils
+    devDependencies:
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
 
   packages/electron:
     dependencies:
