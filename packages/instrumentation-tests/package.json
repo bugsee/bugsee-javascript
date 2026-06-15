@@ -1,0 +1,21 @@
+{
+  "name": "@bugsee/instrumentation-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cross-runtime end-to-end instrumentation harness: boots the real SDK under node/bun/deno against a mock collector and asserts the uploaded bundle.",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bugsee/bun": "workspace:*",
+    "@bugsee/deno": "workspace:*",
+    "@bugsee/node": "workspace:*",
+    "@bugsee/util": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
+  }
+}
