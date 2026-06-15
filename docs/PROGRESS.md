@@ -550,7 +550,7 @@ and produces the right wire output on each backend.
   `Deno.version.deno` end-to-end). **21 tests across node/bun/deno, all green.** Fulfils the deferred
   "per-runtime smoke harness" roadmap item (below).
 
-### Framework adapters — foundation + Express COMPLETE (2026-06-15, on `master`)
+### Framework adapters — foundation + Express + Fastify + NestJS COMPLETE (2026-06-15, on `master`)
 The shared **per-request context foundation** + **`@bugsee/express`** as its first consumer (full
 Sentry-parity backend integration), per `docs/design/framework-adapters.md`. Key model (user-driven):
 **correlation-by-tagging, not physical isolation** — record everything globally, stamp each capture entry
@@ -574,8 +574,31 @@ picture stays. Built in 7 test-first slices (each per-entity mutator-looped + mu
 - **S7 e2e**: a REAL express server + REAL SDK + real `AsyncLocalStorage` proving concurrency isolation —
   3 interleaved concurrent requests, each report carries its own user + a distinct `contextId`, the log
   line tagged with a report's `contextId` is that request's own (no bleed).
-The foundation (S1–S5) is reused verbatim by the next backend adapters (fastify/nestjs/next-server) — each
-is then a thin `requestHandler`/`errorHandler`-shaped binding.
+The foundation (S1–S5) is reused verbatim by the next backend adapters — each a thin
+`requestHandler`/`errorHandler`-shaped binding:
+- **`@bugsee/fastify`** (`setupFastify`): hook-based (onRequest `enterWith` + onError/onResponse/onRequestAbort);
+  proved the foundation reuses across a different framework model; own real-server concurrency-isolation e2e.
+- **`@bugsee/nestjs`** (`setupNest`) — **COMPLETE (2026-06-15)**. The first adapter with a *configurable*
+  error seam, decided after empirically probing (a real Nest app) which lifecycle phase each seam can see:
+  - **Context middleware** (`app.use`, **`enterWith`** — works across the Fastify body-parse async boundary,
+    unlike a `run()`-wrapped next()) opens the context earliest, before guards.
+  - **Default = a global interceptor** (`catchError` → report → **re-throw untouched**, so Nest's own filters
+    format the response; no `@nestjs/core` import; no conflict with a user's own filter). Empirically catches
+    handler/service/pipe errors — i.e. all real unhandled bugs — but **not guard-thrown errors** (guards run
+    before the interceptor subscribes; almost always expected 4xx anyway).
+  - **Opt-in `errorCapture: 'filter' | 'both'`** adds a global `ExceptionFilter extends BaseExceptionFilter`
+    (`Catch()` applied functionally) that ALSO catches guard errors and delegates via `super.catch()`; `'both'`
+    shares a per-request WeakSet so an error seen by both seams reports **once**. A `@BugseeExceptionCaptured()`
+    decorator is the escape hatch for users who already have their own global filter (the Sentry-studied
+    collision). `app.getHttpAdapter()` is passed to the filter so `super.catch()` works in the non-DI path.
+  - **APM** `http.server` txn finishes with OK/ERROR derived from the **thrown error's** status (a 4xx
+    HttpException is client control flow → OK; 5xx / non-HttpException → ERROR), since `res.statusCode` is
+    unreliable at the rxjs stream's terminal.
+  - **Report policy**: skip Nest `HttpException`s (4xx AND 5xx — control flow), report genuine errors;
+    overridable via `shouldReport`. Real-Nest e2e on **both** the express and fastify platforms (seam-coverage
+    matrix, 4xx-skip, dedup, response preservation, concurrency isolation). 2 review-caught MAJORs fixed
+    (Fastify `run`→`enterWith`; txn OK/ERROR from thrown-error status). `@nestjs/*` + `rxjs` are PEERs;
+    `sideEffects` omitted (the filter applies `Catch()` metadata at module load).
 
 ### Dual-module (ESM + CJS) packaging — COMPLETE (2026-06-15, on `master`)
 Every implemented package now publishes **both** ESM and CJS, per `docs/design/packaging-dual-module.md`
@@ -605,7 +628,7 @@ conditions). Shape:
   see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
   single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
   *module* split that already landed for every package.
-- Framework adapters: the **foundation + `@bugsee/express` + `@bugsee/fastify`** are **DONE** (see the milestone above). Fastify proved the foundation reuses across a different framework model — a hook-based binding (`setupFastify`'s onRequest/onError/onResponse/onRequestAbort hooks + the store's new `enterWith`, since the hook returns before the handler) over the **same** foundation, with its own real-server concurrency-isolation e2e. Remaining: **backend** `nestjs`/`nextjs`-server (thin bindings on the same foundation) and **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
+- Framework adapters: the **foundation + `@bugsee/express` + `@bugsee/fastify` + `@bugsee/nestjs`** are **DONE** (see the milestone above). Remaining: **backend** `nextjs`-server (DEFERRED — it straddles frontend RSC + backend + edge/middleware + the `instrumentation.ts` build hook, so it needs its own design pass) and `nestjs` microservice/GraphQL transports; **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
 

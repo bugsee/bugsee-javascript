@@ -4,4 +4,5 @@ packages:
 
 # esbuild (via tsup/vitest) needs its postinstall to fetch its native binary.
 allowBuilds:
+  '@nestjs/core': false
   esbuild: true

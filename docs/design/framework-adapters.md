@@ -1,9 +1,10 @@
 # Framework adapters + the per-request context foundation
 
-**Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) BUILT** on `master` (2026-06-15). Design
-approved 2026-06-15; author dialogue + decision log below. Build order: the portable foundation first, then
-**Express** as its first consumer; every later backend adapter (fastify / nestjs / next-server) is a thin
-re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6 below.)
+**Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) + Fastify + NestJS BUILT** on `master`
+(2026-06-15). Design approved 2026-06-15; author dialogue + decision log below. Build order: the portable
+foundation first, then **Express** as its first consumer; every later backend adapter (fastify / nestjs /
+next-server) is a thin re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6 below;
+the **NestJS** adapter — with the empirically-grounded seam decision — is documented in §N.)
 
 Related: `docs/design/sdk-design.md` §5/§16, `docs/design/opentelemetry-integration.md` (trace
 propagation — the *outbound* half; this adds the *inbound* continuation), `docs/PROGRESS.md`.
@@ -155,3 +156,45 @@ isolation; auto user extraction; the dashboard filter; non-Node (edge) context b
 S1–S4 are framework-agnostic. Each later backend adapter is an S5-shaped binding: open a context from its
 own request hook, start the server transaction, continue the inbound trace, capture handler errors. The
 "iterate one by one" cadence is: foundation once, then a small binding per framework.
+
+## §N. NestJS adapter (`@bugsee/nestjs`) — BUILT 2026-06-15
+
+NestJS is more than a thin binding because, unlike Express/Fastify, it has **two** places to catch errors
+with **different coverage**, and it runs on **two** platforms (express / fastify). The seam choice was made
+**empirically**: a throwaway probe registered a global interceptor AND a global filter on a real Nest app
+and threw in every lifecycle phase (`Middleware → Guards → Interceptors → Pipes → Handler → Filters`). Result:
+
+| Error thrown in | Interceptor `catchError` | Global filter |
+| --- | --- | --- |
+| Middleware | ✗ | ✗ (escapes to the platform default) |
+| **Guard** | ✗ (runs before the interceptor subscribes) | ✓ |
+| Pipe / Handler / Service / HttpException | ✓ | ✓ |
+
+So the filter is a strict superset (it adds guards), which is **why Sentry uses a global filter** — but its
+filter `extends BaseExceptionFilter` (imports `@nestjs/core`) and, being catch-all, collides with a user's
+own global filter (Sentry ships a `@SentryExceptionCaptured` decorator escape hatch for exactly that).
+
+**Decision (user-driven): configurable, interceptor by default.**
+- **Context** opens in an `app.use` middleware via **`enterWith`** (not `run`): on the Fastify platform a
+  `run()`-wrapped `next()` can lose the ALS context across the body-parse async boundary (nodejs/node#41285);
+  `enterWith` is uniformly safe and matches the `@bugsee/fastify` hook. Proven by a real Nest+Fastify
+  POST-with-body e2e.
+- **Default `errorCapture: 'interceptor'`** — `catchError` → report → **re-throw untouched** (Nest's own
+  filters still format the response; no `@nestjs/core` import; no filter conflict). Covers handler/service/pipe
+  = all real unhandled bugs; the guard gap is acceptable (guard throws are nearly always expected 4xx, skipped).
+- **Opt-in `'filter'` / `'both'`** — a global `ExceptionFilter extends BaseExceptionFilter` (`Catch()` applied
+  *functionally* so the source needs no decorator transform) that reports then `super.catch()` (response
+  unchanged). `setupNest` passes `app.getHttpAdapter()` to the constructor — REQUIRED, because a non-DI
+  `useGlobalFilters(new …)` filter has no injected `httpAdapterHost`, so `super.catch()` would otherwise throw.
+  `'both'` shares a per-request `WeakSet` → an error seen by both seams reports once. `@BugseeExceptionCaptured()`
+  decorates a user's own filter as the collision escape hatch.
+- **Report policy** — skip Nest `HttpException`s (4xx AND 5xx; control flow), report genuine errors;
+  `shouldReport` overrides. **Transaction OK/ERROR** comes from the **thrown error's** status (4xx → OK,
+  5xx/non-Http → ERROR), not `res.statusCode` (unreliable at the rxjs terminal) — matching express/fastify's
+  `status >= 500` intent.
+- **Packaging** — `@nestjs/common`/`@nestjs/core`/`rxjs` are PEERs; `sideEffects` is omitted (the filter
+  applies `Catch()` metadata at module load — a `false` hint would let a consumer's bundler tree-shake it away).
+
+Built test-first (unit per seam + a real-Nest e2e on **both** platforms: the coverage matrix, 4xx-skip, dedup,
+response preservation, concurrency isolation), multi-agent reviewed (2 MAJORs fixed: the Fastify `enterWith`
+and the thrown-error-status transaction outcome).

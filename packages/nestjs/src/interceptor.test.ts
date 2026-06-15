@@ -1,0 +1,333 @@
+import type { Bugsee, RequestContextStore } from '@bugsee/node';
+import type { Transaction } from '@bugsee/performance';
+import { type Observable, of, throwError } from 'rxjs';
+import { describe, expect, it, vi } from 'vitest';
+import type { CallHandlerLike, ExecutionContextLike } from './interceptor';
+import { BugseeInterceptor } from './interceptor';
+import type { NestHttpRequest, NestHttpResponse } from './shared';
+
+// ── Fakes ──
+const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transaction =>
+  ({
+    getTraceId: () => 'trace-1',
+    getSpanId: () => 'span-1',
+    isFinished: vi.fn(() => false),
+    setName: vi.fn(),
+    setAttribute: vi.fn(),
+    finish: vi.fn(),
+    ...over,
+  }) as unknown as Transaction;
+
+const fakeStore = (): RequestContextStore & { setTrace: ReturnType<typeof vi.fn> } =>
+  ({
+    getCurrent: vi.fn(),
+    run: vi.fn(),
+    enterWith: vi.fn(),
+    setAttribute: vi.fn(),
+    setTrace: vi.fn(),
+  }) as unknown as RequestContextStore & { setTrace: ReturnType<typeof vi.fn> };
+
+const fakeClient = (opts: {
+  store?: RequestContextStore;
+  perf?: { startTransaction: ReturnType<typeof vi.fn> };
+  logException?: ReturnType<typeof vi.fn>;
+  getClientThrows?: boolean;
+}): Bugsee =>
+  ({
+    getServiceProvider: () => ({ getImmediate: () => opts.store ?? undefined }),
+    ext: () => {
+      if (!opts.perf) throw new Error('no performance extension');
+      return opts.perf;
+    },
+    logException: opts.logException ?? vi.fn(() => Promise.resolve()),
+  }) as unknown as Bugsee;
+
+const ctx = (req: NestHttpRequest, res: NestHttpResponse): ExecutionContextLike =>
+  ({
+    switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+  }) as unknown as ExecutionContextLike;
+
+const handlerOf = (obs: Observable<unknown>): CallHandlerLike =>
+  ({ handle: () => obs }) as unknown as CallHandlerLike;
+
+const req = (over: Partial<NestHttpRequest> = {}): NestHttpRequest => ({
+  method: 'GET',
+  url: '/u',
+  headers: {},
+  ...over,
+});
+
+// Subscribe synchronously and collect the outcome.
+const drain = (
+  obs: Observable<unknown>,
+): { value?: unknown; error?: unknown; completed: boolean } => {
+  const out: { value?: unknown; error?: unknown; completed: boolean } = { completed: false };
+  obs.subscribe({
+    next: (v) => {
+      out.value = v;
+    },
+    error: (e) => {
+      out.error = e;
+    },
+    complete: () => {
+      out.completed = true;
+    },
+  });
+  return out;
+};
+
+describe('BugseeInterceptor', () => {
+  it('returns the handler stream untouched when no client is launched', () => {
+    const stream = of('passthrough');
+    const result = new BugseeInterceptor({ getClient: () => undefined }).intercept(
+      ctx(req(), {}),
+      handlerOf(stream),
+    );
+    expect(result).toBe(stream); // exact same observable, no wrapping
+  });
+
+  it('defaults to the carrier client (no options) — pass-through when none is launched', () => {
+    const stream = of('x');
+    // exercises `options.getClient ?? defaultGetClient` + the `options = {}` default
+    const result = new BugseeInterceptor().intercept(ctx(req(), {}), handlerOf(stream));
+    expect(result).toBe(stream);
+  });
+
+  it('returns the handler stream untouched when getClient throws', () => {
+    const stream = of('x');
+    const result = new BugseeInterceptor({
+      getClient: () => {
+        throw new Error('resolve failed');
+      },
+    }).intercept(ctx(req(), {}), handlerOf(stream));
+    expect(result).toBe(stream);
+  });
+
+  it('returns the handler stream untouched on a non-HTTP context (switchToHttp throws)', () => {
+    const stream = of('x');
+    const badCtx = {
+      switchToHttp: () => {
+        throw new Error('not an http context');
+      },
+    } as unknown as ExecutionContextLike;
+    const result = new BugseeInterceptor({ getClient: () => fakeClient({}) }).intercept(
+      badCtx,
+      handlerOf(stream),
+    );
+    expect(result).toBe(stream);
+  });
+
+  it('starts an http.server transaction (name + operation), publishes its trace, finishes OK on success', () => {
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const startTransaction = vi.fn(() => txn);
+    const client = fakeClient({ store, perf: { startTransaction } });
+    const res: NestHttpResponse = { statusCode: 200 };
+
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req({ method: 'POST', route: { path: '/orders/:id' } }), res),
+        handlerOf(of('ok')),
+      ),
+    );
+
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'POST /orders/:id', operation: 'http.server' }),
+    );
+    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(out.value).toBe('ok');
+    expect(out.completed).toBe(true);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+    expect(txn.setName).toHaveBeenCalledWith('POST /orders/:id'); // re-stamped with the parametrized route
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'POST');
+  });
+
+  it('continues an inbound W3C trace from the traceparent header', () => {
+    const startTransaction = vi.fn(() => fakeTxn());
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction } });
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(
+          req({
+            headers: { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+          }),
+          {},
+        ),
+        handlerOf(of('ok')),
+      ),
+    );
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+      }),
+    );
+  });
+
+  it('reports a thrown error (mechanism http-error) and re-throws it (response untouched)', () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) }, logException });
+    const err = new Error('handler boom');
+
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req({ route: { path: '/x/:id' } }), {}),
+        handlerOf(throwError(() => err)),
+      ),
+    );
+
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(out.error).toBe(err); // the SAME error propagates downstream
+    expect(txn.finish).toHaveBeenCalledWith('ERROR');
+  });
+
+  it('skips reporting a 4xx HttpException, re-throws it, and finishes the transaction OK', () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) }, logException });
+    const httpErr = { getStatus: () => 404, message: 'not found' };
+
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(throwError(() => httpErr)),
+      ),
+    );
+
+    expect(logException).not.toHaveBeenCalled();
+    expect(out.error).toBe(httpErr);
+    // a 4xx is client control flow → the server transaction is OK, not ERROR
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
+  it('finishes the transaction ERROR for a thrown 5xx HttpException', () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const httpErr = { getStatus: () => 503 };
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(throwError(() => httpErr)),
+      ),
+    );
+    expect(txn.finish).toHaveBeenCalledWith('ERROR');
+  });
+
+  it('honors a custom shouldReport', () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ logException });
+    const httpErr = { getStatus: () => 500 };
+    drain(
+      new BugseeInterceptor({
+        getClient: () => client,
+        shouldReport: () => true, // override: report even HttpExceptions
+      }).intercept(ctx(req(), {}), handlerOf(throwError(() => httpErr))),
+    );
+    expect(logException).toHaveBeenCalledWith(httpErr, { mechanism: 'http-error' });
+  });
+
+  it('works without the performance extension (reports, no transaction)', () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ logException }); // no perf
+    const err = new Error('boom');
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(throwError(() => err)),
+      ),
+    );
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(out.error).toBe(err);
+  });
+
+  it('swallows a synchronous logException failure (never breaks the stream)', () => {
+    const logException = vi.fn(() => {
+      throw new Error('reporting blew up');
+    });
+    const client = fakeClient({ logException });
+    const err = new Error('boom');
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(throwError(() => err)),
+      ),
+    );
+    expect(out.error).toBe(err); // original error still propagates
+  });
+
+  it('swallows a transaction.finish() failure on finalize', () => {
+    const txn = fakeTxn({
+      finish: vi.fn(() => {
+        throw new Error('finish blew up');
+      }),
+    });
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), { statusCode: 200 }),
+        handlerOf(of('ok')),
+      ),
+    );
+    expect(out.value).toBe('ok'); // success still flows
+    expect(out.completed).toBe(true);
+    expect(txn.finish).toHaveBeenCalled(); // the failure came FROM finish(), i.e. it was attempted
+  });
+
+  it('does not finish an already-finished transaction', () => {
+    const txn = fakeTxn({ isFinished: vi.fn(() => true) });
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(of('ok')),
+      ),
+    );
+    expect(txn.finish).not.toHaveBeenCalled();
+  });
+
+  it('swallows a startTransaction failure — APM wiring never breaks the request', () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({
+      perf: {
+        startTransaction: vi.fn(() => {
+          throw new Error('apm init blew up');
+        }),
+      },
+      logException,
+    });
+    const err = new Error('boom');
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), {}),
+        handlerOf(throwError(() => err)),
+      ),
+    );
+    expect(out.error).toBe(err); // request still flows
+    expect(logException).toHaveBeenCalled(); // reporting still works without APM
+  });
+
+  it('defaults the finished transaction method to GET when the request has none', () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const noMethod = { url: '/u', headers: {} } as NestHttpRequest; // no `method`
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(noMethod, { statusCode: 200 }),
+        handlerOf(of('ok')),
+      ),
+    );
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'GET');
+  });
+
+  it('records the best-effort http.status_code from the response', () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req(), { statusCode: 201 }),
+        handlerOf(of('ok')),
+      ),
+    );
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 201);
+  });
+});
