@@ -1,5 +1,11 @@
-// @bugsee/koa
-// Koa middleware adapter
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/koa — Koa middleware adapter (tier 4, design: docs/design/framework-adapters.md).
+// A single middleware over the per-request context foundation. koa is a PEER (structural types only).
+// Works on node/bun/deno-hosted Koa (wherever the launched @bugsee/node client provides the context store).
+export {
+  bugseeKoa,
+  type KoaAdapterOptions,
+  type KoaContextLike,
+  type KoaMiddleware,
+  type KoaNext,
+} from './middleware';
+export { type KoaApp, setupKoa } from './setup';

@@ -1,0 +1,257 @@
+import type { Bugsee, RequestContextStore } from '@bugsee/node';
+import type { Transaction } from '@bugsee/performance';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  bugseeKoa,
+  defaultShouldReport,
+  httpErrorStatus,
+  type KoaContextLike,
+  requestName,
+} from './middleware';
+
+const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transaction =>
+  ({
+    getTraceId: () => 'trace-1',
+    getSpanId: () => 'span-1',
+    isFinished: vi.fn(() => false),
+    setName: vi.fn(),
+    setAttribute: vi.fn(),
+    finish: vi.fn(),
+    ...over,
+  }) as unknown as Transaction;
+
+const fakeStore = (): RequestContextStore & {
+  run: ReturnType<typeof vi.fn>;
+  setTrace: ReturnType<typeof vi.fn>;
+  setAttribute: ReturnType<typeof vi.fn>;
+} =>
+  ({
+    getCurrent: vi.fn(),
+    run: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+    enterWith: vi.fn(),
+    setAttribute: vi.fn(),
+    setTrace: vi.fn(),
+  }) as never;
+
+const fakeClient = (opts: {
+  store?: RequestContextStore;
+  perf?: { startTransaction: ReturnType<typeof vi.fn> };
+  logException?: ReturnType<typeof vi.fn>;
+}): Bugsee =>
+  ({
+    getServiceProvider: () => ({ getImmediate: () => opts.store ?? undefined }),
+    ext: () => {
+      if (!opts.perf) throw new Error('no performance extension');
+      return opts.perf;
+    },
+    logException: opts.logException ?? vi.fn(() => Promise.resolve()),
+  }) as unknown as Bugsee;
+
+const ctx = (over: Partial<KoaContextLike> = {}): KoaContextLike => ({
+  method: over.method ?? 'GET',
+  path: over.path ?? '/u',
+  url: over.url ?? '/u',
+  status: over.status ?? 404,
+  headers: over.headers ?? {},
+  _matchedRoute: over._matchedRoute,
+});
+const okNext = (c: KoaContextLike, status: number) => async () => {
+  c.status = status;
+};
+const errNext = (err: unknown) => async () => {
+  throw err;
+};
+const httpError = (status: number) => Object.assign(new Error('http error'), { status });
+
+describe('httpErrorStatus', () => {
+  it('reads status, then statusCode, else undefined', () => {
+    expect(httpErrorStatus({ status: 404 })).toBe(404);
+    expect(httpErrorStatus({ statusCode: 503 })).toBe(503);
+    expect(httpErrorStatus(new Error('x'))).toBeUndefined();
+    expect(httpErrorStatus(null)).toBeUndefined();
+  });
+});
+
+describe('defaultShouldReport', () => {
+  it('reports a plain Error (no status) and a 5xx', () => {
+    expect(defaultShouldReport(new Error('x'))).toBe(true);
+    expect(defaultShouldReport(httpError(500))).toBe(true);
+  });
+  it('skips a 4xx', () => {
+    expect(defaultShouldReport(httpError(404))).toBe(false);
+  });
+});
+
+describe('requestName', () => {
+  it('uses the matched route when present, else the path', () => {
+    expect(requestName(ctx({ method: 'POST', _matchedRoute: '/o/:id' }))).toBe('POST /o/:id');
+    expect(requestName(ctx({ method: 'GET', path: '/raw' }))).toBe('GET /raw');
+  });
+});
+
+describe('bugseeKoa', () => {
+  it('passes through (next once, no report) when no client is launched', async () => {
+    const next = vi.fn(async () => undefined);
+    await bugseeKoa({ getClient: () => undefined })(ctx(), next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a context (store.run), continues a trace, finishes OK on success', async () => {
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    const c = ctx({
+      method: 'POST',
+      url: '/o/7',
+      _matchedRoute: '/o/:id',
+      headers: { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+    });
+    await bugseeKoa({ getClient: () => client, newContextId: () => 'cid-1' })(c, okNext(c, 200));
+    expect(store.run).toHaveBeenCalledTimes(1);
+    const startTx = (client.ext as () => { startTransaction: ReturnType<typeof vi.fn> })()
+      .startTransaction;
+    expect(startTx).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'POST /o/:id',
+        operation: 'http.server',
+        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+      }),
+    );
+    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    const [openedCtx] = store.run.mock.calls[0] as [{ attributes: object }];
+    expect(openedCtx.attributes).toEqual({ 'http.method': 'POST', 'http.url': '/o/7' });
+    expect(txn.setName).toHaveBeenCalledWith('POST /o/:id');
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'POST');
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 200);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
+  it('reports a thrown error (http-error), re-throws it, finishes ERROR (status 500)', async () => {
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => txn) },
+      logException,
+    });
+    const err = new Error('handler boom');
+    const c = ctx({ _matchedRoute: '/x/:id' });
+    await expect(bugseeKoa({ getClient: () => client })(c, errNext(err))).rejects.toBe(err);
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(store.setAttribute).toHaveBeenCalledWith('http.route', '/x/:id');
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 500);
+    expect(txn.finish).toHaveBeenCalledWith('ERROR');
+  });
+
+  it('does NOT report a 4xx error, re-throws it, finishes OK (status 404)', async () => {
+    const txn = fakeTxn();
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) }, logException });
+    const err = httpError(404);
+    const c = ctx();
+    await expect(bugseeKoa({ getClient: () => client })(c, errNext(err))).rejects.toBe(err);
+    expect(logException).not.toHaveBeenCalled();
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 404);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
+  it('reports a 5xx http error and finishes ERROR', async () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ logException });
+    const err = httpError(503);
+    await expect(bugseeKoa({ getClient: () => client })(ctx(), errNext(err))).rejects.toBe(err);
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+  });
+
+  it('honors a custom shouldReport (report a 4xx)', async () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ logException });
+    const err = httpError(404);
+    await expect(
+      bugseeKoa({ getClient: () => client, shouldReport: () => true })(ctx(), errNext(err)),
+    ).rejects.toBe(err);
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+  });
+
+  it('reports without the performance extension and without a store', async () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ logException });
+    const err = new Error('boom');
+    await expect(bugseeKoa({ getClient: () => client })(ctx(), errNext(err))).rejects.toBe(err);
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+  });
+
+  it('resolves the user and stamps it on the context', async () => {
+    const store = fakeStore();
+    const client = fakeClient({ store });
+    const c = ctx();
+    await bugseeKoa({ getClient: () => client, user: () => 'bob@x.com' })(c, okNext(c, 200));
+    const [openedCtx] = store.run.mock.calls[0] as [{ user?: string }];
+    expect(openedCtx.user).toBe('bob@x.com');
+  });
+
+  it('swallows a logException failure but still re-throws the original error', async () => {
+    const logException = vi.fn(() => {
+      throw new Error('reporting blew up');
+    });
+    const client = fakeClient({ logException });
+    const err = new Error('boom');
+    await expect(bugseeKoa({ getClient: () => client })(ctx(), errNext(err))).rejects.toBe(err);
+  });
+
+  it('swallows a startTransaction failure — APM never breaks the request, error still reported', async () => {
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({
+      perf: {
+        startTransaction: vi.fn(() => {
+          throw new Error('apm init blew up');
+        }),
+      },
+      logException,
+    });
+    const err = new Error('boom');
+    await expect(bugseeKoa({ getClient: () => client })(ctx(), errNext(err))).rejects.toBe(err);
+    expect(logException).toHaveBeenCalled();
+  });
+
+  it('does not finish an already-finished transaction', async () => {
+    const txn = fakeTxn({ isFinished: vi.fn(() => true) });
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const c = ctx();
+    await bugseeKoa({ getClient: () => client })(c, okNext(c, 200));
+    expect(txn.finish).not.toHaveBeenCalled();
+  });
+
+  it('continues a trace from an array-valued traceparent header (first element)', async () => {
+    const txn = fakeTxn();
+    const startTransaction = vi.fn(() => txn);
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction } });
+    const c = ctx({
+      headers: {
+        traceparent: ['00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01', 'second'],
+      },
+    });
+    await bugseeKoa({ getClient: () => client })(c, okNext(c, 200));
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' } }),
+    );
+  });
+
+  it('starts a transaction WITHOUT continuation when there is no inbound traceparent', async () => {
+    const txn = fakeTxn();
+    const startTransaction = vi.fn(() => txn);
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction } });
+    const c = ctx();
+    await bugseeKoa({ getClient: () => client })(c, okNext(c, 200));
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.not.objectContaining({ continuation: expect.anything() }),
+    );
+  });
+
+  it('defaults to the carrier client when no options are given (pass-through)', async () => {
+    const next = vi.fn(async () => undefined);
+    await bugseeKoa()(ctx(), next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});
