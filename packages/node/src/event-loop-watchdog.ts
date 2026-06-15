@@ -89,22 +89,30 @@ export interface EventLoopWatchdog {
 // The worker body (inline string so it runs without a build step — the monorepo consumes TS source). Dumb:
 // poll the heartbeat, post the raw stall duration while it is ≥ fair, and post a single recovered:true when
 // the loop resumes. The escalation/dedup logic is on the main thread (see the message handler below).
+//
+// worker_threads is loaded in a way that works whether the eval'd worker runs in a CJS context (Node:
+// `require` is a function) or an ESM context (Deno's node-compat data:-URL worker: only dynamic `import`).
+// A failed load is swallowed (`.catch`) so an unsupported runtime degrades to a silent no-op rather than
+// throwing an UNHANDLED worker error into the host app.
 const WORKER_SCRIPT = `
-const { parentPort, workerData } = require('node:worker_threads');
-const view = new BigInt64Array(workerData.sab);
-let wasHanging = false;
-setInterval(() => {
-  const last = Number(Atomics.load(view, 0));
-  if (last === 0) return;
-  const durationMs = Date.now() - last;
-  if (durationMs >= workerData.fairMs) {
-    parentPort.postMessage({ durationMs });
-    wasHanging = true;
-  } else if (wasHanging) {
-    parentPort.postMessage({ durationMs: 0, recovered: true });
-    wasHanging = false;
-  }
-}, workerData.pollMs);
+const start = (wt) => {
+  const { parentPort, workerData } = wt;
+  const view = new BigInt64Array(workerData.sab);
+  let wasHanging = false;
+  setInterval(() => {
+    const last = Number(Atomics.load(view, 0));
+    if (last === 0) return;
+    const durationMs = Date.now() - last;
+    if (durationMs >= workerData.fairMs) {
+      parentPort.postMessage({ durationMs });
+      wasHanging = true;
+    } else if (wasHanging) {
+      parentPort.postMessage({ durationMs: 0, recovered: true });
+      wasHanging = false;
+    }
+  }, workerData.pollMs);
+};
+Promise.resolve(typeof require === 'function' ? require('node:worker_threads') : import('node:worker_threads')).then(start).catch(() => {});
 `;
 
 type WorkerCtor = new (script: string, options: { eval: true; workerData: object }) => unknown;
