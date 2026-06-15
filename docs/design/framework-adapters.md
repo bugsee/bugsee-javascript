@@ -103,7 +103,7 @@ mid-request carries *that* request's identity — never a concurrent request's.
   `store.run(ctx, () => { start server transaction; setTrace; res.on('finish', finish-with-status+route);
   next() })`.
 - `errorHandler(options?)` → error middleware `(err, req, res, next)`: get client (else `next(err)`); in
-  a guard, `client.logException(err, { mechanism: 'unhandled' })` — runs inside the request's ALS chain,
+  a guard, `client.logException(err, { mechanism: 'http-error' })` — runs inside the request's ALS chain,
   so the report gets `contextId` + merged user/attributes; finish the transaction with error status;
   **always `next(err)`**.
 
