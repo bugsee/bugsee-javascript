@@ -4,6 +4,7 @@ import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import type { CaptureDataEntry, CaptureStore, StoredEntry } from './contracts';
 import { createMemoryCaptureStore } from './memory-capture-store';
+import type { RequestContext } from './request-context';
 
 function fakeStore() {
   const added: StoredEntry[] = [];
@@ -57,8 +58,98 @@ describe('createCaptureAggregator', () => {
     createCaptureAggregator(store).clear();
     expect(store.clear).toHaveBeenCalledTimes(1);
   });
+});
 
-  // Integration: write via the aggregator, read back via the exporter (snapshot) over the same store.
+describe('createCaptureAggregator context stamping', () => {
+  const log = (timestamp: number, data: unknown) =>
+    new CaptureDataEntryBase('log', timestamp, data);
+
+  it('stamps context_id from the active context into each entry payload (data + serialized record)', () => {
+    const { store, added } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1' };
+    const e = log(1, { message: 'hi' });
+    createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);
+    expect(e.data).toEqual({ message: 'hi', context_id: 'ctx-1' });
+    expect(JSON.parse(added[0]?.serialized as string)).toEqual({
+      timestamp: 1,
+      data: { message: 'hi', context_id: 'ctx-1' },
+    });
+  });
+
+  it('also stamps trace_id/span_id when the active context carries a trace', () => {
+    const { store } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const e = log(2, { url: 'u' });
+    createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);
+    expect(e.data).toEqual({ url: 'u', context_id: 'ctx-1', trace_id: 't1', span_id: 's1' });
+  });
+
+  it('stamps onto a COPY — never mutates the caller’s data object (no leak to a shared source event)', () => {
+    const { store } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const original = { message: 'hi' };
+    const e = log(1, original);
+    createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);
+    // The object the provider handed us (which a source emitter may broadcast to other subscribers, or
+    // app code may still reference) stays clean — the correlation ids went onto a copy.
+    expect(original).toEqual({ message: 'hi' });
+    expect(e.data).not.toBe(original);
+    expect(e.data).toEqual({ message: 'hi', context_id: 'ctx-1', trace_id: 't1', span_id: 's1' });
+  });
+
+  it('does not stamp trace ids when the context has no active trace', () => {
+    const { store } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1' };
+    const e = log(1, { message: 'hi' });
+    createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);
+    expect(Object.keys(e.data as object)).toEqual(['message', 'context_id']);
+  });
+
+  it('does not stamp when no context is active (getContext returns undefined)', () => {
+    const { store } = fakeStore();
+    const e = log(1, { message: 'hi' });
+    createCaptureAggregator(store, { getContext: () => undefined }).addEntry(e);
+    expect(e.data).toEqual({ message: 'hi' });
+  });
+
+  it('does not stamp when no provider is wired (default) — byte-identical to today', () => {
+    const { store, added } = fakeStore();
+    const e = log(1, { message: 'hi' });
+    createCaptureAggregator(store).addEntry(e);
+    expect(e.data).toEqual({ message: 'hi' });
+    expect(JSON.parse(added[0]?.serialized as string)).toEqual({
+      timestamp: 1,
+      data: { message: 'hi' },
+    });
+  });
+
+  it('leaves non-object entry data (array / primitive / null) untouched and never throws', () => {
+    const { store } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1' };
+    const agg = createCaptureAggregator(store, { getContext: () => ctx });
+    const arr = log(1, [1, 2, 3]);
+    const prim = log(2, 'raw');
+    const nul = log(3, null);
+    agg.addEntry(arr);
+    agg.addEntry(prim);
+    agg.addEntry(nul);
+    expect(arr.data).toEqual([1, 2, 3]);
+    expect(prim.data).toBe('raw');
+    expect(nul.data).toBeNull();
+  });
+
+  it('stamps every entry of a batch', () => {
+    const { store } = fakeStore();
+    const ctx: RequestContext = { contextId: 'ctx-1' };
+    const a = log(1, { a: 1 });
+    const b = new CaptureDataEntryBase('network', 2, { b: 2 });
+    createCaptureAggregator(store, { getContext: () => ctx }).addEntries([a, b]);
+    expect((a.data as Record<string, unknown>).context_id).toBe('ctx-1');
+    expect((b.data as Record<string, unknown>).context_id).toBe('ctx-1');
+  });
+});
+
+describe('createCaptureAggregator (exporter round-trip)', () => {
   it('round-trips entries through the in-memory store + exporter', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const aggregator = createCaptureAggregator(store);

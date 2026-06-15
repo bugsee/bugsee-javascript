@@ -17,6 +17,7 @@ import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
 import type { ReportingRequest } from './reporting';
+import type { RequestContext } from './request-context';
 import type { Bundle } from './transport';
 
 // Report assembly (design §7.7 trigger path, §8.4/§8.5 bundle layout, Android CaptureExporter). Turns
@@ -37,6 +38,12 @@ export interface BundleAssemblyContext {
    * Android maps the user identifier to the `email` field ("email from global scope"). Null when unset.
    */
   userIdentifier?: string | null;
+  /**
+   * The active request context captured at report-submit time (framework adapters). When present, its
+   * `contextId` becomes request.json `context_id`, and its `user`/`attributes` OVERRIDE the global ones
+   * (the report reflects the request it fired in). Absent → global behavior unchanged.
+   */
+  requestContext?: RequestContext;
   /** Clock for created_on + manifest time bounds. */
   clock: Clock;
   /** Bundle archive name; defaults to `<random20>.bundle.zip`. Injectable for tests. */
@@ -93,9 +100,14 @@ export function assembleBundle(
   const { report, source } = request;
   const now = context.clock.wallNow();
 
-  // Wire `email` = a per-report email if set, else the global user identifier (Android "email from
-  // global scope"). Emitted only when it is a non-empty string.
-  const email = report.email ?? context.userIdentifier ?? undefined;
+  // Wire `email` = a per-report email if set, else the request-context user (when the report fired in a
+  // request), else the global user identifier (Android "email from global scope"). Emitted only when it
+  // is a non-empty string.
+  const requestContext = context.requestContext;
+  // An empty request-context user means "no request user" → fall back to the global user (|| coerces ''
+  // to undefined so the ?? chain continues), rather than emitting/suppressing an empty email.
+  const email =
+    report.email ?? (requestContext?.user || undefined) ?? context.userIdentifier ?? undefined;
 
   // request.json (§8.5): metadata from the Report + the wire source mechanism + the environment.
   const requestJson: RequestJson = {
@@ -108,6 +120,7 @@ export function assembleBundle(
     },
     created_on: new Date(now).toISOString(),
     environment: context.environment,
+    ...(requestContext !== undefined ? { context_id: requestContext.contextId } : {}),
     ...(report.description !== undefined ? { description: report.description } : {}),
     ...(report.labels.length > 0 ? { labels: report.labels } : {}),
     ...(email !== undefined && email !== '' ? { email } : {}),
@@ -130,11 +143,16 @@ export function assembleBundle(
     typedFiles.push({ name: filename, data: JSON.stringify(serializeFileData(type, payloads)) });
   }
 
+  // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.
+  const attrs =
+    requestContext?.attributes !== undefined
+      ? { ...context.attributes, ...requestContext.attributes }
+      : context.attributes;
   const manifest: ManifestJson = {
     version: MANIFEST_VERSION,
     time: { start, end: now },
     files,
-    attrs: context.attributes,
+    attrs,
   };
 
   const body = writeBundleZip([

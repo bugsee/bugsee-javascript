@@ -235,3 +235,93 @@ describe('assembleBundle — file name', () => {
     expect(bundle.fileName).toMatch(/^[a-z0-9]{20}\.bundle\.zip$/);
   });
 });
+
+describe('assembleBundle — request context merge (framework adapters)', () => {
+  const errReq = (over = {}) =>
+    createReportingRequest({
+      source: { type: 'error', mechanism: 'programmatic' },
+      id: 'r1',
+      ...over,
+    });
+
+  it('emits context_id and prefers the request-context user + attributes over the global ones', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({
+        userIdentifier: 'global@x.com',
+        attributes: { app: 'a', shared: 'global' },
+        requestContext: {
+          contextId: 'ctx-1',
+          user: 'req@x.com',
+          attributes: { route: '/checkout', shared: 'req' },
+        },
+      }),
+    );
+    expect(bundle.request.context_id).toBe('ctx-1');
+    expect(bundle.request.email).toBe('req@x.com'); // request-context user wins over the global user
+    expect(unzip(bundle.body).manifest.attrs).toEqual({
+      app: 'a',
+      shared: 'req',
+      route: '/checkout',
+    });
+  });
+
+  it('falls back to the global user/attributes when the request context omits them', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({
+        userIdentifier: 'global@x.com',
+        attributes: { app: 'a' },
+        requestContext: { contextId: 'ctx-1' },
+      }),
+    );
+    expect(bundle.request.context_id).toBe('ctx-1');
+    expect(bundle.request.email).toBe('global@x.com');
+    expect(unzip(bundle.body).manifest.attrs).toEqual({ app: 'a' });
+  });
+
+  it('treats an empty request-context user as absent — falls back to the global user', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({ userIdentifier: 'global@x.com', requestContext: { contextId: 'ctx-1', user: '' } }),
+    );
+    expect(bundle.request.email).toBe('global@x.com');
+  });
+
+  it('carries only context_id on the report — never the trace ids (those live on the entries)', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({ requestContext: { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } } }),
+    );
+    expect(bundle.request.context_id).toBe('ctx-1');
+    expect('trace_id' in bundle.request).toBe(false);
+    expect('span_id' in bundle.request).toBe(false);
+  });
+
+  it('an explicit report email still wins over the request-context user', () => {
+    const bundle = assembleBundle(
+      errReq({ email: 'report@x.com' }),
+      new Map(),
+      context({
+        userIdentifier: 'global@x.com',
+        requestContext: { contextId: 'ctx-1', user: 'req@x.com' },
+      }),
+    );
+    expect(bundle.request.email).toBe('report@x.com');
+  });
+
+  it('omits context_id and stays global when no request context is present', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({ userIdentifier: 'global@x.com', attributes: { app: 'a' } }),
+    );
+    expect(bundle.request.context_id).toBeUndefined();
+    expect(bundle.request.email).toBe('global@x.com');
+    expect(unzip(bundle.body).manifest.attrs).toEqual({ app: 'a' });
+  });
+});

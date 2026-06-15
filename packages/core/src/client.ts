@@ -52,6 +52,7 @@ import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import type { ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
+import { type ContextProvider, ContextProviderToken, type RequestContext } from './request-context';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
   type Bundle,
@@ -217,6 +218,13 @@ export interface CreateClientOptions {
    */
   reportSnapshots?: readonly ReportSnapshotSource[];
   /**
+   * The active-request context provider (design: framework-adapters.md). When present, the capture
+   * aggregator stamps each entry's payload with the active context's correlation ids (contextId + trace
+   * ids), and it is registered as a container service (ContextProviderToken) for process-wide resolution.
+   * Absent (default) → no stamping; behavior is byte-identical to today for non-adapter users.
+   */
+  contextProvider?: ContextProvider;
+  /**
    * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
@@ -251,7 +259,22 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // via getService(CaptureStoreToken), alongside transport/filters (DI Phase 3).
   services.addService(defineService(CaptureStoreToken, () => captureStore));
   services.addService(defineService(ClockToken, () => clock));
-  const captureAggregator = createCaptureAggregator(captureStore);
+  // The active-request context provider (framework adapters). When injected, the aggregator stamps each
+  // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
+  const contextProvider = options.contextProvider;
+  if (contextProvider !== undefined) {
+    services.addService(defineService(ContextProviderToken, () => contextProvider));
+  }
+  const captureAggregator = createCaptureAggregator(
+    captureStore,
+    contextProvider !== undefined ? { getContext: () => contextProvider.getCurrent() } : {},
+  );
+  // The request context captured at report-SUBMIT time (synchronously, while the request's async context
+  // is still active), keyed by the report's request object. Read at ASSEMBLY time — which the trigger
+  // pipeline runs detached/queued, after the originating async context is gone — so the report reflects
+  // the request it fired in, not whatever is active when assembly happens to run. The WeakMap entry is
+  // collected with the request (no manual cleanup, no leak).
+  const reportContexts = new WeakMap<ReportingRequest, RequestContext>();
   const captureExporter = createCaptureExporter(captureStore);
   // The capture-pipeline deps every provider gets once at registration (Android
   // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
@@ -303,12 +326,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           }
         }
       }
+      const captured = reportContexts.get(request);
       return assembleBundle(request, capturedByType, {
         appToken,
         environment: getEnvironment(),
         attributes: environment.getAllAttributes(),
         userIdentifier: environment.getUserIdentifier(),
         clock,
+        ...(captured !== undefined ? { requestContext: captured } : {}),
         ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
       });
     };
@@ -382,6 +407,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // not re-deliver it. All marker I/O is guarded; it must never block or throw the capture path.
   const reportMarkers = options.reportMarkers;
   const submitReport = (handled: ReportingRequest): Promise<UploadResult> => {
+    // Capture the active request context NOW (submit is synchronous in the originating async context);
+    // assembly runs detached/queued later, so it reads this snapshot from the WeakMap rather than a
+    // by-then-stale active context. Absent contextProvider / no active context → nothing captured.
+    const captured = contextProvider?.getCurrent();
+    if (captured !== undefined) {
+      reportContexts.set(handled, captured);
+    }
     if (reportMarkers !== undefined) {
       try {
         reportMarkers.store.put({

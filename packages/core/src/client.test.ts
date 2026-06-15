@@ -19,6 +19,7 @@ import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
+import { ContextProviderToken, type RequestContext } from './request-context';
 import {
   type Bundle,
   type UploadPipeline,
@@ -74,6 +75,86 @@ describe('createClient — wiring', () => {
     const client = createClient({ captureStore: store });
     client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
     expect((await createCaptureExporter(store).drain()).get('log')).toHaveLength(1);
+  });
+});
+
+describe('createClient — request context', () => {
+  it('stamps captured entries with the active context when a contextProvider is injected', async () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const client = createClient({
+      captureStore: store,
+      contextProvider: { getCurrent: () => ctx },
+    });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
+    expect((await firstEntry(store, 'log'))?.data).toEqual({
+      msg: 'hi',
+      context_id: 'ctx-1',
+      trace_id: 't1',
+      span_id: 's1',
+    });
+  });
+
+  it('registers the injected contextProvider as a resolvable service', () => {
+    const provider = { getCurrent: () => undefined };
+    const client = createClient({ contextProvider: provider });
+    expect(client.getService(ContextProviderToken)).toBe(provider);
+  });
+
+  it('does not stamp or register a provider by default (today’s behavior)', async () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1, { msg: 'hi' }));
+    expect((await firstEntry(store, 'log'))?.data).toEqual({ msg: 'hi' });
+    expect(
+      client.getServiceProvider(ContextProviderToken).getImmediate({ optional: true }),
+    ).toBeNull();
+  });
+
+  it('merges the active request context (context_id + user) into the reported bundle', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const ctx: RequestContext = {
+      contextId: 'ctx-9',
+      user: 'req@x.com',
+      attributes: { route: '/pay' },
+    };
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      contextProvider: { getCurrent: () => ctx },
+    });
+    await client.logException(new Error('boom'));
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(bundle.request.context_id).toBe('ctx-9');
+    expect(bundle.request.email).toBe('req@x.com');
+  });
+
+  it('captures the context at SUBMIT time, not assembly time (survives ALS detachment)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const contexts: RequestContext[] = [{ contextId: 'submit-ctx' }, { contextId: 'later-ctx' }];
+    let calls = 0;
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      // The submit reads the context once; a (wrong) assembly-time read would advance to 'later-ctx'.
+      contextProvider: { getCurrent: () => contexts[Math.min(calls++, 1)] },
+    });
+    await client.logException(new Error('boom'));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.context_id).toBe('submit-ctx');
+  });
+
+  it('reports no context_id when no context is active at submit', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      contextProvider: { getCurrent: () => undefined },
+    });
+    await client.logException(new Error('boom'));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.context_id).toBeUndefined();
   });
 });
 

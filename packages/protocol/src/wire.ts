@@ -63,6 +63,12 @@ export interface RequestJson {
   source: { mechanism: Mechanism; origin?: string };
   created_on: string; // ISO-8601 with Z
   environment: EnvironmentEnvelope;
+  /**
+   * The id of the request/execution context this report fired in (framework adapters; design:
+   * framework-adapters.md). Matches the `context_id` stamped on the capture entries recorded within that
+   * context, so a viewer can focus the recording on this one request. Omitted when no context was active.
+   */
+  context_id?: string;
 }
 
 /** A file inventory entry in manifest.json (design §8.5). `attrs` lives here, not in request.json. */

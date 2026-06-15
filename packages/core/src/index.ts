@@ -147,6 +147,11 @@ export {
   type ReportingSource,
   type ReportingTriggerType,
 } from './reporting';
+export {
+  type ContextProvider,
+  ContextProviderToken,
+  type RequestContext,
+} from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
 export type { ServiceRegistrar, ServiceResolver } from './services';
 export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';

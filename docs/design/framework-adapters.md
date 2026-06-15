@@ -55,25 +55,33 @@ mid-request carries *that* request's identity — never a concurrent request's.
 ## 4. Architecture — six layers (built bottom-up)
 
 ### S1 · Protocol (`@bugsee/protocol`) — the only new wire
-- Add `contextId?: string` and `trace?: { traceId, spanId }` to the **capture entry** wire and
-  `contextId?` to the **report** (request.json). Wire names follow existing snake_case
-  (`context_id`/`trace_id`/`span_id`). Coordinate names here; flag for **Android cross-SDK parity** (a
-  JS-originated concept).
-- User → existing `environment.user`; attributes → the report's existing `custom`/`labels` surface
-  (no new report field needed — verify `custom` shape in S1).
+- Add `context_id?: string` to the **report** wire (`RequestJson`). The per-**entry** correlation ids
+  (`context_id` / `trace_id` / `span_id`, snake_case) ride inside each entry's `data` payload (see S2) —
+  not as a new protocol interface, matching the existing convention (per-entry wire fields live in the
+  providers' payloads, not in `@bugsee/protocol` constants). Flag the names for **Android cross-SDK
+  parity** (a JS-originated concept).
+- User → existing `environment.user` (wire `email`); attributes → the manifest `attrs` surface
+  (`Record<string, AttributeValue>`). No new report field beyond `context_id`.
 
 ### S2 · Core seam (`@bugsee/core`)
 - `RequestContext` (portable): `{ readonly contextId: string; user?: string; attributes?: Record<string,
-  string|number|boolean>; trace?: { traceId: string; spanId: string } }`.
+  AttributeValue>; trace?: { readonly traceId: string; readonly spanId: string } }` — `attributes` uses
+  the same `AttributeValue` (`string | number | boolean | string[]`) as the global attribute surface it
+  merges into.
 - `ContextProvider` (`getCurrent(): RequestContext | undefined`), injected via the DI container
   (`ContextProviderToken`).
-- **Stamp site (one):** `CaptureAggregator.addEntry` reads `getCurrent()` and stamps
-  `contextId`/`trace` onto the entry. `contextId`/`trace` become first-class optional fields on
-  `CaptureDataEntry` (alongside `timestamp`), serialized into each entry's wire JSON via
-  `CaptureDataEntryBase`. An entry carries the context active **when it was added** (not the report's).
-- **Merge site:** report assembly reads `getCurrent()` and sets `report.contextId`, merges
-  `user` (context over global env) and `attributes` (global then context). No provider → no stamp, no
-  merge.
+- **Stamp site (one):** `CaptureAggregator.addEntry` reads `getCurrent()` and stamps `context_id` (+
+  `trace_id`/`span_id` when a trace is active) onto the entry. **As-built:** the ids are written into the
+  entry's `data` payload — onto a **shallow copy** (`entry.data = { ...data, context_id, … }`), never the
+  caller's object, since a provider may hand the aggregator the very object a source emitter broadcast to
+  other subscribers / app code (the correlation stamp must not leak onto it). Only plain-object payloads
+  are stamped; arrays / primitives / null pass through uncorrelated (today's capture streams are all
+  objects). An entry carries the context active **when it was added** (not the report's).
+- **Merge site:** the report is assembled detached/queued, so the active context is **captured at report
+  submit time** (synchronously, in the originating async context) into a `WeakMap` keyed by the report
+  request, and read at assembly. It sets `request.json.context_id` and merges `user` (context over global,
+  empty → global) and `attributes` (global then context, per-key). Trace ids stay on **entries only** —
+  the report carries `context_id` as the join key. No provider → no stamp, no merge (byte-identical).
 
 ### S3 · Node binding (`@bugsee/node`)
 - `createNodeRequestContextStore()` over `AsyncLocalStorage<RequestContext>` (node:async_hooks):
