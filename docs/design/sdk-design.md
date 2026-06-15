@@ -1282,7 +1282,9 @@ Cut a release: `pnpm changeset` → `pnpm version-packages` → `pnpm release`. 
 
 ### 12.5 ESM / CJS strategy
 
-- **Tier-0**: **ESM-only** (Node ≥18, all bundlers, all frameworks support ESM). Drops dual-package hazard. Resolves **[R:mod MINOR-12]**.
+- **Tier-0**: ~~ESM-only~~ → **REFINED to ESM + CJS** by `docs/design/packaging-dual-module.md` (D1): a CJS
+  build of a platform package cannot `require()` an ESM-only tier-0 dep, so tier-0 ships dual too; deps are
+  externalized (no duplication) and the dual-package hazard is neutralized by the carrier-singleton design.
 - **Tier-1 (`@bugsee/core`)**: ESM + CJS (CJS for legacy Node integrations).
 - **Platform packages**: ESM + CJS (CJS for users still on `require()`).
 - **Framework adapters**: ESM + CJS as needed.
