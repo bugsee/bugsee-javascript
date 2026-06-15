@@ -20,6 +20,12 @@ export interface StartTransactionOptions {
   name: string;
   operation: string;
   description?: string;
+  /**
+   * Continue an inbound distributed trace (framework adapters; design: framework-adapters.md). The
+   * transaction adopts this W3C trace id, so an upstream (e.g. frontend) trace and this backend
+   * transaction share a trace and link in the trace view. Omitted → a fresh random trace id.
+   */
+  continuation?: { traceId: string };
 }
 
 /** The public ext('performance') surface. */
@@ -52,6 +58,7 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
 
   return {
     startTransaction(options) {
+      const continuation = options.continuation;
       const transaction = createTransaction(
         {
           name: options.name,
@@ -63,6 +70,9 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
         },
         {
           clock: deps.clock,
+          // Trace continuation: adopt the inbound trace id so the upstream trace and this transaction
+          // share a trace (the root span starts a new span id under that trace).
+          ...(continuation !== undefined ? { newTraceId: () => continuation.traceId } : {}),
           onFinish: (finished) => {
             if (finished.isSampled()) {
               const wire = serializeTransaction(finished);

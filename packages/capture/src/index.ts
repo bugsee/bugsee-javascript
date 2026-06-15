@@ -47,6 +47,8 @@ export {
 } from './system-traces-provider';
 export {
   createTraceparentDecorator,
+  type ParsedTraceparent,
+  parseTraceparent,
   type TraceContextSource,
   type TraceparentDecoratorOptions,
 } from './traceparent';

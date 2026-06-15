@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OutgoingRequest } from './request-decorator';
-import { createTraceparentDecorator, type TraceContextSource } from './traceparent';
+import {
+  createTraceparentDecorator,
+  parseTraceparent,
+  type TraceContextSource,
+} from './traceparent';
 
 const TID = '0123456789abcdef0123456789abcdef'; // 32 hex (16-byte trace id)
 const SID = 'aaaaaaaaaaaaaaaa'; // 16 hex (8-byte span id)
@@ -147,5 +151,58 @@ describe('createTraceparentDecorator', () => {
     });
     expect(d(req('::::bad'))).toBeUndefined(); // unparseable + not allowlisted → no propagation
     expect(calls).toContain('::::bad');
+  });
+});
+
+describe('parseTraceparent (inbound W3C continuation)', () => {
+  it('parses a valid sampled traceparent', () => {
+    expect(parseTraceparent(`00-${TID}-${SID}-01`)).toEqual({
+      traceId: TID,
+      spanId: SID,
+      sampled: true,
+    });
+  });
+
+  it('reads the sampled flag from the low bit', () => {
+    expect(parseTraceparent(`00-${TID}-${SID}-00`)?.sampled).toBe(false);
+    expect(parseTraceparent(`00-${TID}-${SID}-01`)?.sampled).toBe(true);
+    expect(parseTraceparent(`00-${TID}-${SID}-03`)?.sampled).toBe(true); // bit 0 set
+    expect(parseTraceparent(`00-${TID}-${SID}-02`)?.sampled).toBe(false); // bit 0 clear
+  });
+
+  it('normalizes uppercase hex and surrounding whitespace', () => {
+    expect(parseTraceparent(`  00-${TID.toUpperCase()}-${SID.toUpperCase()}-01 `)).toEqual({
+      traceId: TID,
+      spanId: SID,
+      sampled: true,
+    });
+  });
+
+  it('tolerates a future version with extra fields (parses the first four)', () => {
+    expect(parseTraceparent(`01-${TID}-${SID}-01-extra`)).toEqual({
+      traceId: TID,
+      spanId: SID,
+      sampled: true,
+    });
+  });
+
+  it('rejects non-string / empty / malformed input', () => {
+    expect(parseTraceparent(undefined)).toBeUndefined();
+    expect(parseTraceparent('')).toBeUndefined();
+    expect(parseTraceparent('not-a-traceparent')).toBeUndefined();
+    expect(parseTraceparent(`00-${TID}-${SID}`)).toBeUndefined(); // too few fields
+  });
+
+  it('rejects the forbidden version ff', () => {
+    expect(parseTraceparent(`ff-${TID}-${SID}-01`)).toBeUndefined();
+  });
+
+  it('rejects all-zero or wrong-length trace/span ids', () => {
+    expect(parseTraceparent(`00-${'0'.repeat(32)}-${SID}-01`)).toBeUndefined(); // zero trace id
+    expect(parseTraceparent(`00-${TID}-${'0'.repeat(16)}-01`)).toBeUndefined(); // zero span id
+    expect(parseTraceparent(`00-${TID.slice(0, 31)}-${SID}-01`)).toBeUndefined(); // short trace id
+    expect(parseTraceparent(`00-${TID}-${SID}a-01`)).toBeUndefined(); // long span id
+    expect(parseTraceparent(`00-${TID}-${SID}-1`)).toBeUndefined(); // 1-char flags
+    expect(parseTraceparent(`00-zzzz...-${SID}-01`)).toBeUndefined(); // non-hex
   });
 });

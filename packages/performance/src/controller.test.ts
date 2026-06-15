@@ -26,6 +26,25 @@ describe('createPerformanceController', () => {
     expect(txn.isSampled()).toBe(true);
   });
 
+  it('continues an inbound trace — the transaction adopts the given trace id', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const inbound = '0123456789abcdef0123456789abcdef';
+    const txn = api.startTransaction({
+      name: 'GET /x',
+      operation: 'http.server',
+      continuation: { traceId: inbound },
+    });
+    expect(txn.getTraceId()).toBe(inbound);
+  });
+
+  it('starts a fresh random trace id when there is no continuation', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const txn = api.startTransaction({ name: 'x', operation: 'op' });
+    expect(txn.getTraceId()).toMatch(/^[0-9a-f]{32}$/);
+  });
+
   it('tracks the active span: the started transaction, cleared when it finishes', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({ clock: fixedClock, store });

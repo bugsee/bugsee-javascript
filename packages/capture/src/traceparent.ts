@@ -32,6 +32,51 @@ export interface TraceparentDecoratorOptions {
 
 const W3C_VERSION = '00';
 
+const TRACE_ID_RE = /^[0-9a-f]{32}$/;
+const SPAN_ID_RE = /^[0-9a-f]{16}$/;
+const HEX2_RE = /^[0-9a-f]{2}$/;
+const ZERO_TRACE_ID = '0'.repeat(32);
+const ZERO_SPAN_ID = '0'.repeat(16);
+
+/** A parsed inbound W3C `traceparent` (for server-side trace continuation). */
+export interface ParsedTraceparent {
+  traceId: string;
+  spanId: string;
+  /** Whether the upstream sampled the trace (the low bit of the trace-flags). */
+  sampled: boolean;
+}
+
+/**
+ * Parse an inbound W3C `traceparent` for server-side trace CONTINUATION (the inverse of the decorator) —
+ * a backend adapter adopts the trace id so the frontend↔backend traces link. Defensive (the design's
+ * "trust the inbound header but parse defensively"): returns `undefined` for any non-conforming header, so
+ * the caller starts a fresh trace instead of throwing. Tolerates surrounding whitespace, uppercase hex,
+ * and future versions with extra fields (parses the first four); rejects the forbidden version `ff` and
+ * all-zero / wrong-length ids per the spec.
+ */
+export function parseTraceparent(header: string | undefined): ParsedTraceparent | undefined {
+  if (typeof header !== 'string') {
+    return undefined;
+  }
+  const [version = '', traceId = '', spanId = '', flags = ''] = header
+    .trim()
+    .toLowerCase()
+    .split('-');
+  if (!HEX2_RE.test(version) || version === 'ff') {
+    return undefined;
+  }
+  if (!TRACE_ID_RE.test(traceId) || traceId === ZERO_TRACE_ID) {
+    return undefined;
+  }
+  if (!SPAN_ID_RE.test(spanId) || spanId === ZERO_SPAN_ID) {
+    return undefined;
+  }
+  if (!HEX2_RE.test(flags)) {
+    return undefined;
+  }
+  return { traceId, spanId, sampled: (Number.parseInt(flags, 16) & 1) === 1 };
+}
+
 const defaultResolveOrigin = (url: string, base: string): string | undefined => {
   const URLCtor = (
     globalThis as unknown as { URL?: new (u: string, b?: string) => { origin: string } }
