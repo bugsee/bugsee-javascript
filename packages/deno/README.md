@@ -25,4 +25,11 @@ model: report upload needs `--allow-net`, file-backed capture/recovery (`dataDir
 capability-guarded (they degrade to a no-op if their API is unavailable); under denied network/fs
 permissions the corresponding paths surface errors via the `onError` sink rather than the bundle.
 
+**Supported Deno version:** **≥ 2.0** (matches `@sentry/deno`; verified on real Deno 2.0.0). The core
+(error/crash capture, network/console, the request-context framework adapters, durable queue + recovery)
+works on 2.0; the **diagnostics degrade gracefully** there — CPU profiling (`node:inspector`) and the ANR
+watchdog (`worker_threads`) self-disable until Deno's node-compat gains them. **Full support incl. CPU
+profiling + ANR on Deno 2.8+.** (Note: `Deno.version.deno` is the real version; `process.version` is the
+node-compat version — the probe reads the former.)
+
 **Status:** implemented. Built test-first per `docs/implementation-standards.md`.

@@ -159,8 +159,14 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
   worker_threads/SharedArrayBuffer ANR watchdog — all pass). Nothing in the shipped code needs > Node 18
   (no ES2023-only methods; `randomUUID` from `node:crypto`); newer **optional** globals (`WebSocket`
   Node 21+, WebCrypto, `fetch`/`ReadableStream`) are **capability-guarded → graceful degradation**.
-- **Bun / Deno** — inferred floors **~Bun 1.1+ / Deno 2.0+** (the node-compat APIs used), tested only on
-  Bun 1.3 / Deno 2.8; not yet pinned/version-matrix-tested.
+- **Deno ≥ 2.0** — chosen to match `@sentry/deno` (which declares 2.0.0 since its v8→v9) and **verified by
+  running the real SDK on Deno 2.0.0**: the core (context foundation + adapters' enterWith, report pipeline
+  with contextId tagging, the `platform.type: 'deno'` identity) works; the **diagnostics degrade gracefully
+  on 2.0** — CPU profiling (`node:inspector` not yet in Deno 2.0's node-compat) and the ANR watchdog
+  (worker_threads node-compat incomplete) self-disable rather than crash (the ANR worker fix above made the
+  Deno-2.0 path graceful instead of throwing). **Full support incl. diagnostics on Deno 2.8+** (verified).
+- **Bun ~1.1+** — inferred floor, tested only on Bun 1.3 (full feature set incl. profiling + ANR works).
+  Not pinned/version-matrix-tested.
 - **Tooling caveat:** **vitest 4 cannot run on Node 18** (its `rolldown` dep uses `node:util.styleText`,
   Node 20.12+), so `pnpm test` needs Node ≥ 20; test SDK *code* on Node 18 via `tsx`, not vitest. A CI
   Node-version matrix is still TODO (the `@bugsee/instrumentation-tests` harness already spawns
