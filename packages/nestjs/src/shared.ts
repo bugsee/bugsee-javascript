@@ -110,7 +110,8 @@ export const httpExceptionStatus = (err: unknown): number | undefined => {
  * deliberate control flow, so it is NOT reported; everything else (uncaught plain Errors, etc.) is a
  * genuine unhandled error and IS reported.
  */
-export const defaultShouldReport = (err: unknown): boolean => httpExceptionStatus(err) === undefined;
+export const defaultShouldReport = (err: unknown): boolean =>
+  httpExceptionStatus(err) === undefined;
 
 /**
  * Whether a thrown error represents a SERVER failure for the http.server transaction outcome: a

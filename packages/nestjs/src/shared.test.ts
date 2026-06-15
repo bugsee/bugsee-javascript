@@ -218,9 +218,13 @@ describe('reportErrorOnce', () => {
   });
   it('does not touch the store when no route is given', () => {
     const store = fakeStore();
-    reportErrorOnce(fakeClient({ store, logException: vi.fn(() => Promise.resolve()) }), new Error('x'), {
-      shouldReport: always,
-    });
+    reportErrorOnce(
+      fakeClient({ store, logException: vi.fn(() => Promise.resolve()) }),
+      new Error('x'),
+      {
+        shouldReport: always,
+      },
+    );
     expect(store.setAttribute).not.toHaveBeenCalled();
   });
   it('does not throw when a route is given but no store is resolvable', () => {
