@@ -22,6 +22,9 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",

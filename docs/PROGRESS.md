@@ -152,6 +152,20 @@ pnpm --filter @bugsee/<pkg> exec tsc --noEmit                    # single-packag
 
 Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` (no automated git hook installed).
 
+### Supported runtime versions (2026-06-15, matching Sentry's "Node 18+")
+- **Node ≥ 18** — declared (`engines` on root + `@bugsee/node`/`node-utils`/`express`/`fastify`) and
+  **verified by running the real SDK on Node 18 & 22** (AsyncLocalStorage.enterWith, the express adapter +
+  full report pipeline + contextId tagging, global fetch, node:inspector CPU profiling, the
+  worker_threads/SharedArrayBuffer ANR watchdog — all pass). Nothing in the shipped code needs > Node 18
+  (no ES2023-only methods; `randomUUID` from `node:crypto`); newer **optional** globals (`WebSocket`
+  Node 21+, WebCrypto, `fetch`/`ReadableStream`) are **capability-guarded → graceful degradation**.
+- **Bun / Deno** — inferred floors **~Bun 1.1+ / Deno 2.0+** (the node-compat APIs used), tested only on
+  Bun 1.3 / Deno 2.8; not yet pinned/version-matrix-tested.
+- **Tooling caveat:** **vitest 4 cannot run on Node 18** (its `rolldown` dep uses `node:util.styleText`,
+  Node 20.12+), so `pnpm test` needs Node ≥ 20; test SDK *code* on Node 18 via `tsx`, not vitest. A CI
+  Node-version matrix is still TODO (the `@bugsee/instrumentation-tests` harness already spawns
+  node/bun/deno — pointing it at pinned versions would make the bun/deno floors *tested*).
+
 ---
 
 ## 6. Conventions (binding)
