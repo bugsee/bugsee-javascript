@@ -28,9 +28,49 @@
   ],
   "sideEffects": false,
   "scripts": {
+    "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
+  },
+  "publishConfig": {
+    "main": "./dist/index.node.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "browser": {
+          "import": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+          },
+          "require": {
+            "types": "./dist/index.d.cts",
+            "default": "./dist/index.cjs"
+          }
+        },
+        "node": {
+          "import": {
+            "types": "./dist/index.node.d.ts",
+            "default": "./dist/index.node.js"
+          },
+          "require": {
+            "types": "./dist/index.node.d.cts",
+            "default": "./dist/index.node.cjs"
+          }
+        },
+        "default": {
+          "import": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+          },
+          "require": {
+            "types": "./dist/index.d.cts",
+            "default": "./dist/index.cjs"
+          }
+        }
+      }
+    }
   },
   "dependencies": {
     "@bugsee/core": "workspace:*",
