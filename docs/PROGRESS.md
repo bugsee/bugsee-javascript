@@ -577,10 +577,34 @@ picture stays. Built in 7 test-first slices (each per-entity mutator-looped + mu
 The foundation (S1–S5) is reused verbatim by the next backend adapters (fastify/nestjs/next-server) — each
 is then a thin `requestHandler`/`errorHandler`-shaped binding.
 
+### Dual-module (ESM + CJS) packaging — COMPLETE (2026-06-15, on `master`)
+Every implemented package now publishes **both** ESM and CJS, per `docs/design/packaging-dual-module.md`
+(D1 all-dual + externalize, D2 tsup, D3 publishConfig swap, D4 dual `.d.ts`/`.d.cts`, D5 umbrella
+conditions). Shape:
+- A shared `tsup.config.base.ts` preset (`entry: src/index.ts`, `format: ['esm','cjs']`, `dts`, externalize
+  `@bugsee/*` + declared deps) that each package's one-line `tsup.config.ts` spreads → `dist/index.js`
+  (ESM) + `dist/index.cjs` (CJS) + `dist/index.d.ts` + `dist/index.d.cts`.
+- **Dev still consumes `src` directly** — the top-level `exports` are unchanged; a per-package
+  `publishConfig.exports` (import→`.js`/`.d.ts`, require→`.cjs`/`.d.cts`) swaps in only at `pnpm publish`.
+  No build step for in-monorepo development.
+- The **`bugsee` umbrella** is special-cased: a **multi-entry** build (`src/index.ts` +
+  `src/index.node.ts`, each dual) and per-runtime × per-module `exports` conditions
+  (`browser|node|default` × `import|require`) routing to the matching dist artifact.
+- Rolled out test-by-proof, not by unit test: P1 (`build(util)`, commit `7db1e87`) established the pipeline +
+  proved it on `@bugsee/util`; P2 (commit `a696f31`) extended it to the other 17 + the umbrella. Verified
+  END-TO-END by packing the full `@bugsee` dependency tree into a temp `node_modules` and confirming both
+  `require('@bugsee/node')` and `import('@bugsee/node')` resolve through the built dist chain (incl. the
+  external `fflate`) and `launch()` returns a working client; the umbrella resolves
+  node→`index.node.{cjs,js}`, browser→`index.cjs`. Gates green (typecheck 57/57, tests 2013/2013, no cycles).
+- **Stub-only packages skipped** (electron, webworker, replay\*, edge/workers, framework frontend adapters):
+  they gain the identical dual config when implemented.
+
 ### After browser
 - ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
-- Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
-  the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
+- Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node,
+  see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
+  single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
+  *module* split that already landed for every package.
 - Framework adapters: the **foundation + `@bugsee/express` + `@bugsee/fastify`** are **DONE** (see the milestone above). Fastify proved the foundation reuses across a different framework model — a hook-based binding (`setupFastify`'s onRequest/onError/onResponse/onRequestAbort hooks + the store's new `enterWith`, since the hook returns before the handler) over the **same** foundation, with its own real-server concurrency-isolation e2e. Remaining: **backend** `nestjs`/`nextjs`-server (thin bindings on the same foundation) and **frontend** `react`/`vue`/`svelte`/`angular` (error boundaries over `@bugsee/browser`).
 - Pluggable extensions: `@bugsee/performance` (APM), `@bugsee/replay`, `@bugsee/replay-canvas`.
 - ~~Per-runtime smoke harness~~ (DONE — `@bugsee/instrumentation-tests`, above); mutation-testing CI (Stryker, opt-in).
