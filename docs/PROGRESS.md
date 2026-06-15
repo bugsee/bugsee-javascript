@@ -488,8 +488,23 @@ Profiler all present).
 - **Bun (B):** both inherited by `@bugsee/bun` via node-tier reuse; capability-guarded (degrade to no-op if
   worker_threads/inspector absent). Deferred: Node-only live-inspector `Debugger.pause` stack; main-thread-misuse.
 
+### Deno runtime (`@bugsee/deno`) — COMPLETE (2026-06-15, on `master`)
+Deno 2 is node-API-compatible, so `@bugsee/deno` mirrors `@bugsee/bun`: re-exports the ENTIRE `@bugsee/node`
+composition (transport, fs storage, node:http capture, crash detection, durable queue + capture recovery,
+**CPU profiling, ANR/hang detection**) and overrides only the Deno identity probe (`platform.type: 'deno'`,
+version from `Deno.version.deno` with a node-compat fallback) + the shared guarded `perf_hooks` sampler.
+- **Shared sampler refactor:** the guarded perf_hooks sampler moved from `@bugsee/bun` to `@bugsee/node` as
+  `createGuardedSystemMetricsSampler` (runtime-agnostic; Bun + Deno both use it; bun's local copy removed).
+- **Verified on REAL Deno 2.8.3:** `Deno.version.deno` = '2.8.3' (note: `process.version` is the *node-compat*
+  version, so the probe reads the Deno global, not `process.versions`); and ALL diagnostics primitives work —
+  `node:inspector` Profiler (CPU profiling), `worker_threads` + `SharedArrayBuffer` + `Worker#unref` (ANR),
+  `perf_hooks` (metrics). So node/bun feature parity is **full** on Deno; capability-guarded paths self-disable
+  where a partial API is absent. Deno permission caveats (net/fs/worker) noted in the package README.
+- Test-first, per-entity mutator-looped, e2e asserts the Deno identity on the wire (session + bundle
+  request.json), single-agent review clean. Per-package `vitest.config.ts`; 100% line/fn/stmt.
+
 ### After browser
-- ~~`@bugsee/bun`~~ (DONE, above), `@bugsee/deno`, `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
+- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node);
   the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch).
 - Framework adapters (`react`/`vue`/`svelte`/`angular`/`express`/`fastify`/`nextjs`/etc.) — thin pass-throughs that wrap `@bugsee/<runtime>`.
