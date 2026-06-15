@@ -18,9 +18,40 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
-    "@bugsee/node": "workspace:*"
+    "@bugsee/capture": "workspace:*",
+    "@bugsee/core": "workspace:*",
+    "@bugsee/node": "workspace:*",
+    "@bugsee/performance": "workspace:*"
+  },
+  "devDependencies": {
+    "@bugsee/util": "workspace:*",
+    "@types/node": "^22.0.0",
+    "hono": "^4.6.0"
+  },
+  "publishConfig": {
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    }
   }
 }
