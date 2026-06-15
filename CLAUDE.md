@@ -10,19 +10,24 @@ Design implication: runtime-portable code is the default. Anything runtime-speci
 
 ## Current state
 
-A **runnable Node SDK** exists. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`.
+Runnable **Node, Browser, Bun, and Deno** SDKs exist. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`.
 
 **Implemented (test-first, reviewed, on `master`):**
 - Tier-0: `@bugsee/types`, `@bugsee/util`, `@bugsee/logger`, `@bugsee/protocol`, `@bugsee/service`.
-- Kernel: `@bugsee/core` (Client, capture aggregator/store/exporter, coordinators, trigger/upload pipelines, durable bundle queue, interceptor/emitter base, options resolver).
+- Kernel: `@bugsee/core` (Client, capture aggregator/store/exporter, coordinators, trigger/upload pipelines, durable bundle queue + capture recovery, interceptor/emitter base, options resolver, internal DI ServiceContainer).
 - Shared capture: `@bugsee/capture` (console→log; fetch/xhr/ws/sse/webtransport → network umbrella; system traces/events providers).
-- Node platform: `@bugsee/node-utils` (httpRequest transport, fs storage + bundle store) and `@bugsee/node` (`launch()`, node:http interceptor, env builder, detection providers, system metrics). `launch(appToken, options)` returns the started client.
+- Node platform: `@bugsee/node-utils` (httpRequest transport, fs storage + bundle store) and `@bugsee/node` (`launch()`, node:http interceptor, env builder, detection providers, system metrics). Plus opt-in **node diagnostics**: rolling V8 CPU profiling (`profile.json`) + ANR/event-loop-hang detection (worker-thread watchdog → `AppHang` reports).
+- Browser platform: `@bugsee/browser-utils` (fetch transport, IndexedDB storage + bundle store) and `@bugsee/browser` (`launch()`, global error/network capture, IndexedDB-persisted capture).
+- Bun + Deno platforms: `@bugsee/bun` / `@bugsee/deno` — re-export the `@bugsee/node` composition and override only the runtime identity probe (+ a shared guarded `perf_hooks` sampler); **full Node feature parity incl. profiling + ANR**.
+- Extensions / umbrella: `@bugsee/performance` (APM — web-vitals + metric catalog, on-by-default via the umbrella) and `@bugsee/bugsee` (umbrella, with per-runtime browser/node `exports` conditions).
+- E2E: `@bugsee/instrumentation-tests` — boots the REAL SDK in real node/bun/deno processes against a mock collector and asserts the uploaded bundle (`pnpm test:e2e`; not in `pnpm test`).
+- `launch(appToken, options)` returns the started client (every platform).
 
-**Scaffold only (1-file stubs, no impl yet):** `browser`, `browser-utils`, `bun`, `deno`, `electron`, `webworker`, `integration-shims`, `performance`, `replay`/`replay-canvas`, `bugsee` (umbrella), and all framework adapters (`react`, `vue`, `svelte`, `express`, `fastify`, `nextjs`, …).
+**Scaffold only (1-file stubs, no impl yet):** `electron`, `webworker`, `replay`/`replay-canvas`, all framework adapters (`react`, `vue`, `svelte`, `express`, `fastify`, `nextjs`, …), and `integration-shims` (minimal — one impl file, deferred to follow-up).
 
 **Commands:** pnpm + turbo. `pnpm test` (all), `pnpm typecheck`, `pnpm lint` / `lint:fix`, `pnpm check:cycles`, `pnpm test:coverage`. Single file: `pnpm --filter @bugsee/<pkg> exec vitest run src/<file>.test.ts`. Single-package typecheck: `pnpm --filter @bugsee/<pkg> exec tsc --noEmit` (vitest does NOT typecheck — run tsc before committing). Full reference in `docs/dev-environment.md`.
 
-**Module strategy:** packages `exports` map `.` → `./src/index.ts` (source consumed directly inside the monorepo; no build step for dev). tsconfig `module: ESNext`, `moduleResolution: Bundler`, `verbatimModuleSyntax`. Per-runtime `exports` conditions (browser/node) are **not yet** split (single entry) — a follow-up (design §6/§12.2). Coverage gate per package: **100% line/fn/stmt, ≥90% branch** (vitest v8).
+**Module strategy:** packages `exports` map `.` → `./src/index.ts` (source consumed directly inside the monorepo; no build step for dev). tsconfig `module: ESNext`, `moduleResolution: Bundler`, `verbatimModuleSyntax`. Per-runtime `exports` conditions (browser/node): the `@bugsee/bugsee` umbrella now HAS them; the platform packages (`@bugsee/browser`/`node`) are still single-entry (split when their runtimes branch) — design §6/§12.2. Coverage gate per package: **100% line/fn/stmt, ≥90% branch** (vitest v8).
 
 **Runtime-adapter pattern:** shared tiers (`core`/`capture`/`protocol`/`util`) are runtime-portable — they reach runtime globals only via `globalThis as unknown as {…}` casts and **never** import `node:*`/DOM. Runtime-specific code lives in platform packages (`@bugsee/node` imports `node:process`/`node:http`/`node:fs`; `@bugsee/node-utils` owns the fs/http primitives). Platforms inject specifics through seams: `HttpTransport` (node:http vs fetch), `FileStorageAdapter` + `BundleStore` (fs vs IndexedDB), `CaptureStore` (in-memory shared / file via adapter), capture sources via `installNetworkCapture({ additionalSources })`, and injectable `Clock`/`Scheduler`/`SystemProbe`/`process`. Cross-runtime capture interceptors self-skip when their global is absent.
 
