@@ -29,6 +29,11 @@ export {
   type HangThresholds,
 } from './event-loop-watchdog';
 export {
+  createGuardedSystemMetricsSampler,
+  type GuardedSystemMetricsDeps,
+  type PerfHooks,
+} from './guarded-system-metrics';
+export {
   createHangDetectionProvider,
   type HangDetectionProviderDeps,
 } from './hang-detection-provider';

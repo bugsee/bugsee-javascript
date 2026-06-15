@@ -1,6 +1,6 @@
 import type { TraceSample } from '@bugsee/capture';
 import { describe, expect, it } from 'vitest';
-import { createBunSystemMetricsSampler } from './system-metrics';
+import { createGuardedSystemMetricsSampler } from './guarded-system-metrics';
 
 // A controllable event-loop delay histogram (readings in ns).
 function fakeHistogram(readings: { mean: number; max: number; p99: number }) {
@@ -36,10 +36,10 @@ const fakeElu =
 const metricValue = (samples: TraceSample[], name: string): number | undefined =>
   samples.find((s) => s.name === name)?.value as number | undefined;
 
-describe('createBunSystemMetricsSampler', () => {
+describe('createGuardedSystemMetricsSampler', () => {
   it('reads event-loop lag (ns→ms) + utilization from perf_hooks when supported', () => {
     const { histogram, state } = fakeHistogram({ mean: 5e6, max: 9e6, p99: 7e6 });
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: fakeElu(0.42) },
     })();
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(5);
@@ -50,8 +50,8 @@ describe('createBunSystemMetricsSampler', () => {
     expect(state.resets).toBe(1); // and reset after the read
   });
 
-  it('degrades event-loop LAG to zero when monitorEventLoopDelay throws (partial Bun perf_hooks)', () => {
-    const sample = createBunSystemMetricsSampler({
+  it('degrades event-loop LAG to zero when monitorEventLoopDelay throws (partial perf_hooks)', () => {
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: {
         monitorEventLoopDelay: () => {
           throw new Error('unsupported on this runtime');
@@ -67,7 +67,7 @@ describe('createBunSystemMetricsSampler', () => {
 
   it('degrades UTILIZATION to zero when eventLoopUtilization throws', () => {
     const { histogram } = fakeHistogram({ mean: 2e6, max: 2e6, p99: 2e6 });
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: {
         monitorEventLoopDelay: () => histogram,
         eventLoopUtilization: () => {
@@ -81,7 +81,7 @@ describe('createBunSystemMetricsSampler', () => {
 
   it('treats a non-finite histogram reading as zero lag', () => {
     const { histogram } = fakeHistogram({ mean: Number.NaN, max: 5e6, p99: 5e6 });
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: fakeElu(0) },
     })();
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(0); // NaN → 0
@@ -103,7 +103,7 @@ describe('createBunSystemMetricsSampler', () => {
         return 0;
       },
     };
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: {
         monitorEventLoopDelay: () => throwingHistogram,
         eventLoopUtilization: fakeElu(0),
@@ -122,15 +122,15 @@ describe('createBunSystemMetricsSampler', () => {
       return { utilization: 0 };
     };
     const { histogram } = fakeHistogram({ mean: 1e6, max: 1e6, p99: 1e6 });
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: elu },
     })();
     expect(metricValue(sample, 'event_loop_utilization')).toBe(0);
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(1); // lag unaffected
   });
 
-  it('defaults to real node:perf_hooks when no perfHooks are injected (Bun supports them)', () => {
-    const sample = createBunSystemMetricsSampler()();
+  it('defaults to real node:perf_hooks when no perfHooks are injected (the runtime supports them)', () => {
+    const sample = createGuardedSystemMetricsSampler()();
     // The default path uses the live perf_hooks; the entries exist and are finite numbers.
     expect(Number.isFinite(metricValue(sample, 'event_loop_lag_ms') ?? Number.NaN)).toBe(true);
     expect(Number.isFinite(metricValue(sample, 'event_loop_utilization') ?? Number.NaN)).toBe(true);
@@ -138,7 +138,7 @@ describe('createBunSystemMetricsSampler', () => {
 
   it('lets caller-supplied node deps override the guarded event-loop reader', () => {
     const { histogram } = fakeHistogram({ mean: 99e6, max: 99e6, p99: 99e6 });
-    const sample = createBunSystemMetricsSampler({
+    const sample = createGuardedSystemMetricsSampler({
       eventLoop: () => ({ meanMs: 1, maxMs: 2, p99Ms: 3 }),
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: fakeElu(0) },
     })();

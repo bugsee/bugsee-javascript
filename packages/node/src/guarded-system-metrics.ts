@@ -1,12 +1,14 @@
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type { TraceSample } from '@bugsee/capture';
-import { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from '@bugsee/node';
+import { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
 
-// The Bun system-metrics sampler. Process memory/CPU and OS memory reads work on Bun exactly as on Node,
-// so this reuses @bugsee/node's createNodeSystemMetricsSampler verbatim — EXCEPT the event-loop metrics,
-// which lean on perf_hooks APIs (monitorEventLoopDelay / eventLoopUtilization) that Bun supports only
-// partially. Those two primitives are injected (default node:perf_hooks) and GUARDED: if either is absent
-// or throws at construction, its metric degrades to zero instead of breaking the whole sampler.
+// A guarded system-metrics sampler for node-family runtimes with PARTIAL perf_hooks (Bun, Deno). Process
+// memory/CPU and OS memory reads work identically to Node, so this reuses createNodeSystemMetricsSampler
+// verbatim — EXCEPT the event-loop metrics, which lean on perf_hooks APIs (monitorEventLoopDelay /
+// eventLoopUtilization) that Bun and Deno support only partially. Those two primitives are injected (default
+// node:perf_hooks) and GUARDED: if either is absent or throws (at construction OR per-read), its metric
+// degrades to zero instead of breaking the whole sampler. On Node (full perf_hooks) the guard is a harmless
+// pass-through.
 
 type EventLoopSample = { meanMs: number; maxMs: number; p99Ms: number };
 
@@ -21,7 +23,7 @@ interface DelayHistogram {
 interface Elu {
   utilization: number;
 }
-/** The two perf_hooks primitives the event-loop metrics need (Bun's support is partial → injected). */
+/** The two perf_hooks primitives the event-loop metrics need (partial on Bun/Deno → injected). */
 export interface PerfHooks {
   monitorEventLoopDelay: () => DelayHistogram;
   eventLoopUtilization: (a?: Elu, b?: Elu) => Elu;
@@ -84,13 +86,13 @@ function guardedElu(elu: PerfHooks['eventLoopUtilization']): () => number {
   };
 }
 
-export interface BunSystemMetricsDeps extends NodeSystemMetricsDeps {
-  /** perf_hooks primitives for the event-loop metrics (Bun's support is partial). Default node:perf_hooks. */
+export interface GuardedSystemMetricsDeps extends NodeSystemMetricsDeps {
+  /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
 }
 
-export function createBunSystemMetricsSampler(
-  deps: BunSystemMetricsDeps = {},
+export function createGuardedSystemMetricsSampler(
+  deps: GuardedSystemMetricsDeps = {},
 ): () => TraceSample[] {
   const { perfHooks, ...nodeDeps } = deps;
   const perf = perfHooks ?? realPerfHooks;

@@ -7,8 +7,5 @@ export * from '@bugsee/node';
 export { bunSystemProbe, createBunSystemProbe } from './environment';
 // Bun's launch()/launchCore() — shadow the @bugsee/node ones re-exported by `export *` above.
 export { launch, launchCore } from './launch';
-export {
-  type BunSystemMetricsDeps,
-  createBunSystemMetricsSampler,
-  type PerfHooks,
-} from './system-metrics';
+// The guarded sampler (createGuardedSystemMetricsSampler + PerfHooks + GuardedSystemMetricsDeps) is now
+// shared in @bugsee/node and surfaced via `export *` above — no Bun-specific copy.

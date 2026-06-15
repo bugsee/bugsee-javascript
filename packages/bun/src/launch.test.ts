@@ -70,6 +70,7 @@ const base = (over: Partial<Parameters<typeof launch>[1]> = {}): Parameters<type
   scheduler: fakeScheduler,
   captureNetwork: false,
   captureSystemTraces: false,
+  detectHangs: false, // no real watchdog worker in unit tests
   captureStore: memStore(),
   carrier: {}, // fresh per launch → the per-process singleton guard never collides across tests
   ...over,

@@ -1,11 +1,11 @@
 import {
   type Bugsee,
   type BugseeLaunchOptions,
+  createGuardedSystemMetricsSampler,
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
 import { bunSystemProbe } from './environment';
-import { createBunSystemMetricsSampler } from './system-metrics';
 
 // @bugsee/bun launch() — the Bun composition root. Bun runs on a node-compatible API surface (node:http,
 // node:fs, process, timers), so this reuses the ENTIRE @bugsee/node composition (transport, fs storage,
@@ -17,7 +17,7 @@ import { createBunSystemMetricsSampler } from './system-metrics';
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
-    systemMetricsSampler: createBunSystemMetricsSampler(),
+    systemMetricsSampler: createGuardedSystemMetricsSampler(),
     ...options,
   });
 }
