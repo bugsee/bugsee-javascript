@@ -58,5 +58,10 @@ export {
   type ProfilingController,
   type ProfilingControllerDeps,
 } from './profiling-controller';
+export {
+  createNodeRequestContextStore,
+  type RequestContextStore,
+  RequestContextStoreToken,
+} from './request-context-store';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';

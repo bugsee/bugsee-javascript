@@ -13,6 +13,7 @@ export {
   type ServiceToken,
   serviceToken,
 } from '@bugsee/service';
+export type { AttributeValue } from '@bugsee/types';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 export { createBundleUploader } from './bundle-uploader';

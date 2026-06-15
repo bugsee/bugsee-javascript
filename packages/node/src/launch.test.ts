@@ -9,6 +9,7 @@ import {
   CaptureStoreToken,
   ChunkStorageToken,
   type Clock,
+  ContextProviderToken,
   contributeServiceManifest,
   createCaptureExporter,
   createFileChunkBackend,
@@ -39,6 +40,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type SystemProbe, SystemProbeToken } from './environment';
 import type { HangLevel } from './event-loop-watchdog';
 import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
+import { createNodeRequestContextStore, RequestContextStoreToken } from './request-context-store';
 
 /** A test-only contributed service token (an "extension"). */
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
@@ -215,6 +217,28 @@ describe('launch', () => {
     const client = launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
     expect(client.getService(SystemProbeToken)).toBe(probe);
     expect(client.getService(CaptureStoreToken)).toBe(store);
+  });
+
+  it('wires a request-context store as both the node store service and the core context provider', () => {
+    const client = launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), detectHangs: false }),
+    );
+    const store = client.getService(RequestContextStoreToken);
+    expect(typeof store.run).toBe('function');
+    expect(typeof store.setUser).toBe('function');
+    // The SAME instance is the core ContextProvider that feeds the aggregator/report merge.
+    expect(client.getService(ContextProviderToken)).toBe(store);
+  });
+
+  it('honors an injected requestContextStore override', () => {
+    const custom = createNodeRequestContextStore();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), detectHangs: false, requestContextStore: custom }),
+    );
+    expect(client.getService(RequestContextStoreToken)).toBe(custom);
+    expect(client.getService(ContextProviderToken)).toBe(custom);
   });
 
   it('registers bundleStore + chunkStorage as services in file-backed (dataDir) mode', () => {

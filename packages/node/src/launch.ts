@@ -68,6 +68,11 @@ import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
+import {
+  createNodeRequestContextStore,
+  type RequestContextStore,
+  RequestContextStoreToken,
+} from './request-context-store';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
 
@@ -190,6 +195,12 @@ export interface BugseeLaunchOptions {
   bundleStore?: BundleStore;
   /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /**
+   * Per-request context store (framework adapters; design: framework-adapters.md). Wired by default as
+   * the core ContextProvider so the Express adapter can open per-request contexts; a no-op until a
+   * context is opened. Injectable for tests. Default a fresh AsyncLocalStorage-backed store.
+   */
+  requestContextStore?: RequestContextStore;
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -372,6 +383,13 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const profilingSnapshot: ReportSnapshotSource = (now) =>
     profilingController !== undefined ? profilingController.snapshot(now) : [];
 
+  // Per-request context store (framework adapters): one AsyncLocalStorage-backed store, wired as the core
+  // ContextProvider (so capture entries are stamped + reports merge the active context) AND registered as
+  // a container service so adapters resolve it for run()/setUser/setAttribute. A no-op until run() opens a
+  // context, so non-adapter apps are unaffected.
+  const requestContextStore = options.requestContextStore ?? createNodeRequestContextStore();
+  services.addService(defineService(RequestContextStoreToken, () => requestContextStore));
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
@@ -380,6 +398,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appToken,
     getEnvironment,
     captureStore,
+    contextProvider: requestContextStore,
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
       : {}),
