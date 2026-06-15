@@ -276,6 +276,12 @@ importers:
         specifier: ^5.0.0
         version: 5.8.5
 
+  packages/hapi:
+    dependencies:
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
+
   packages/hono:
     dependencies:
       '@bugsee/node':
@@ -312,6 +318,12 @@ importers:
       '@bugsee/logger':
         specifier: workspace:*
         version: link:../logger
+
+  packages/koa:
+    dependencies:
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
 
   packages/logger: {}
 
@@ -484,6 +496,12 @@ importers:
       '@bugsee/replay':
         specifier: workspace:*
         version: link:../replay
+
+  packages/restify:
+    dependencies:
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
 
   packages/service:
     dependencies:
