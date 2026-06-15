@@ -4,6 +4,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "ignoreDeprecations": "6.0",
     "lib": ["ES2023"],
     "types": [],
 
