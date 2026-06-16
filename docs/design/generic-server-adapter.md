@@ -1,9 +1,16 @@
 # Generic framework-agnostic server adapter (`@bugsee/server-adapters`) — DESIGN (APPROVED)
 
-**Status:** APPROVED 2026-06-16 → implementing. Decisions: **build it** as **`@bugsee/server-adapters`**;
-**`enterWith` as the single context primitive** + **two-layer API** confirmed; **also refactor the 7 existing
-backend adapters onto it** (DRY); **cadence = engine first (own tests + review + commit), then one
-adapter-refactor commit each.**
+**Status:** **BUILT (engine only) + on `master` 2026-06-16** (`@bugsee/server-adapters`, commit `5f667ae`).
+Decisions: built it as **`@bugsee/server-adapters`**; **`enterWith` as the single context primitive** +
+**two-layer API**. The engine ships as a **purely additive** capability — it instruments any framework / raw
+`http.Server` directly.
+
+> **The DRY refactor of the 7 existing adapters onto the engine was reconsidered and DROPPED** (user call
+> 2026-06-16): express/fastify/nestjs/hono/elysia/hapi/koa are already tested, validated, reviewed, and on
+> `master` — leave their logic intact rather than re-touch working code for a DRY win. The engine remains the
+> shared *reference* implementation and the path for new/long-tail frameworks; the §4 mapping below stays as
+> the proof it COULD express all 7 if a refactor is ever revisited. Some helper duplication between the
+> engine and the 7 adapters is accepted.
 
 ## 1. Understanding / goal
 
@@ -123,11 +130,10 @@ nest's `'both'` mode dedup. **No adapter needs logic the engine can't express.**
    or the engine + all 7 in one sweep? (Recommend: engine first + its own tests/review, then one
    adapter-refactor commit each.)
 
-## 7. Plan (once approved)
+## 7. Plan — as-built
 
-1. Build `@bugsee/<name>` engine test-first (unit, per-entity mutator loop, 100%/≥90%, + a generic
-   "raw http.Server" e2e proving the long-tail path) → multi-agent review → commit.
-2. Refactor each of the 7 adapters onto it, one commit each: replace the duplicated helpers + lifecycle with
-   engine calls; keep the framework-specific req-reading + `shouldReport`; the existing e2e + unit suites
-   must stay green (re-run mutator on any changed logic) → review → commit.
-3. Update PROGRESS/CLAUDE/design-doc + memory.
+1. ~~Build `@bugsee/server-adapters` engine test-first (unit, per-entity mutator loop, 100% line/fn/branch,
+   + a raw-`http.Server` e2e proving the long-tail path) → multi-agent review → commit.~~ **DONE (`5f667ae`).**
+2. ~~Refactor each of the 7 adapters onto it.~~ **DROPPED** — leave the validated adapters intact (see the
+   status note above). The engine stands alone as the generic / long-tail path.
+3. Update PROGRESS/CLAUDE/design-doc + memory — **DONE.**

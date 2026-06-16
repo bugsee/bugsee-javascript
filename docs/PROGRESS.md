@@ -623,6 +623,18 @@ The foundation (S1–S5) is reused verbatim by the next backend adapters — eac
     (`ctx.throw(404)`), report no-status/5xx. e2e via a real `http.Server`.
   - (**Restify was built then dropped** — it is unmaintained (last release Jan 2024) and doesn't import on
     Node ≥18; not a target our customers would adopt. See the "After browser" note.)
+- **`@bugsee/server-adapters` — generic framework-agnostic engine** — **COMPLETE (2026-06-16, on `master`,
+  `5f667ae`)**, design `docs/design/generic-server-adapter.md`. Takes PLAIN VALUES (no framework objects):
+  `openBugseeRequest({method,url,route?,traceparent?,user?}) → span{setRoute, captureError(err,{shouldReport?})
+  →bool, finish(status), cancel()}`, so **any** backend framework / raw `http.Server` (Sails, Adonis, h3/Nitro,
+  Polka, …) can be instrumented in a few lines. Opens the context via `enterWith`; the caller computes the
+  final status and the engine maps it (finish `≥500`→ERROR else OK; cancel→CANCELLED). Plus decoupled
+  `openBugseeContext`/`startBugseeServerSpan` (split-hook frameworks) + a robust `defaultShouldReport`
+  (duck-types `getStatus`/`status`/`statusCode`/Boom `output.statusCode`). Test-first (mutator, 100%) + a
+  raw-`http.Server` e2e (no framework) proving the long-tail path with real concurrency isolation; reviewed.
+  Ships as a PURELY ADDITIVE capability — the **DRY refactor of the 7 existing adapters onto it was decided
+  AGAINST** (they're tested+validated+on master; don't re-touch working code). The §4 mapping in the design
+  doc records that the engine *could* express all 7 if a refactor is ever revisited.
 
 ### Dual-module (ESM + CJS) packaging — COMPLETE (2026-06-15, on `master`)
 Every implemented package now publishes **both** ESM and CJS, per `docs/design/packaging-dual-module.md`
