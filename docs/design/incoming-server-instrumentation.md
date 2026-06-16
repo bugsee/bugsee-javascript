@@ -48,7 +48,7 @@ raw `http.Server`) **and** idiomatic native servers (`Bun.serve({fetch})`, `Deno
 | **D9** | **Native surface = spike-first, common forms.** Slice 4 begins with gating real-runtime spikes (§8.0); v1 covers `Bun.serve({fetch})` + `Deno.serve` handler/overloads; `routes`/websocket/`reload` documented as gaps. Pin min Bun/Deno versions from the spikes. | Review (agent 3): the native surface is wider than `fetch` and `server.reload()` defeats a naive wrap. |
 | **D10** | **`finish(status, outcome?)` — explicit outcome.** Default outcome `status>=500?ERROR:OK`; callers may pass an explicit outcome. | Review (agent 4): nestjs + elysia derive outcome from the thrown error / `code` **independently** of the recorded status; single-arg finish would flip ERROR→OK. |
 | **D11** | **Incoming self-isolation.** Skip instrumenting any inbound request carrying `x-bugsee-internal`. `http.url` keeps the **raw** URL (current adapter behavior); query secrets are scrubbed by the existing **redaction-filter pipeline** like all captured data, and the span **name** already strips the query (low cardinality). | Review (agent 5) flagged `http.url` query (`/reset?token=…`) as a PII vector under default-on. **Round 2** (both agents) showed a default `http.url` strip would break the adapters' pinned behavior (`express/middleware.test.ts:94` asserts `/pay?x=1`; koa/fastify/nestjs also store query-bearing `http.url`). With D3 now default-OFF + the redaction pipeline, keep `http.url` raw (behavior-preserving); an opt-in strip is deferred (§10). |
-| **D12** | **Mechanism = a dedicated carrier slot with explicit `install()`/`uninstall()`**, NOT a subscriber-gated `InterceptorBase` and NOT the `getOrCreateInterceptor` interceptor map. `emit` is **restored by `delete`** when the original was inherited (it is — `http.Server.prototype` has no own `emit`). | Review (agent 5): §5.2/§6 contradicted each other (interceptor vs `ServerInstallable`); a server patch has no "subscriber"; reassigning `emit` leaves a residual own-property that alters the prototype shape ("interceptors must not alter app behavior"). |
+| **D12** | **Mechanism = an install-driven `ServerInstallable`** with explicit `install()`/`uninstall()`, NOT a subscriber-gated `InterceptorBase` and NOT the `getOrCreateInterceptor` interceptor map. `emit` is **restored by `delete`** when the original was inherited (it is — `http.Server.prototype` has no own `emit`). **AS-BUILT (slice 3):** the one-patch-per-process guarantee comes from the **launch singleton** (a repeat `launch()` short-circuits on `getCarrierClient` BEFORE the install block — `launchCore` is synchronous from that guard to `setCarrierClient`, so no interleaving), NOT a typed `carrier.serverPatch` slot — `BugseeCarrier` lives in runtime-portable `@bugsee/core` and must not hold a node-typed installable. Consequence (= the existing singleton semantics for ALL options): the flag is honored by the FIRST `launch()` only. Install is wrapped so a failure self-undoes + reports via `onError`, never breaking launch. | Review (agent 5): §5.2/§6 contradicted each other (interceptor vs `ServerInstallable`); a server patch has no "subscriber"; reassigning `emit` leaves a residual own-property. Slice-3 review: a typed carrier slot can't live in core; the launch singleton suffices + is forced. |
 
 ---
 
@@ -84,7 +84,7 @@ check:cycles`.
 |---|---|---|---|
 | **1** | **Shared core** | Move `server-adapters/src/server.ts` → `@bugsee/node/src/server-instrument.ts`; rename `openBugsee*`→`server*`; add `runServerRequest` + owner/refiner re-entrancy + `Symbol.for` span-stash + `finish(status, outcome?)` (D10); add `@bugsee/performance` to `node/package.json`. | §8.1 |
 | **2** | **`node:http` interceptor** | `http-server-interceptor.ts`: emit patch (http + https), `install()`/`uninstall()` (restore by `delete`, D12), inbound `x-bugsee-internal` skip (D11), `res.once` + `writableFinished` guard. | §8.2 |
-| **3** | **Launch wiring** | `instrumentIncomingRequests` (default **false**, D3) + the **concatenating** `serverInstrumentations` seam + the dedicated `carrier.serverPatch` slot (D12) + `stop()` uninstall + no-leak teardown. | §8.5 |
+| **3** | **Launch wiring** | `instrumentIncomingRequests` (default **false**, D3) + the **concatenating** `serverInstrumentations` seam + `serverInterceptor` test seam + install-driven via the **launch singleton** (D12 — no typed carrier slot) with self-undoing install + `stop()` uninstall. **DONE.** | §8.5 |
 | **4** | **Bun/Deno** | **START with the §8.0 gating spikes** on real bun/deno; then native `Bun.serve`/`Deno.serve` installers injected via the seam; pin min versions; document `routes`/websocket/`reload` gaps (D9). | §8.0 → §8.3 → §8.6 |
 | **5** | **Adapter refactor** | Refactor the 7 adapters onto the shared core (one commit each), keeping each adapter's own `shouldReport` + route extraction (D7); add per-adapter coexistence test. | §8.4 (existing suites + coexistence) |
 | **6** | **Retire `server-adapters`** | Delete the package + workspace/lockfile; update docs/memory. Can land **right after slice 1** (nothing imports it — verified). | `check:cycles` + full build green |
@@ -256,20 +256,23 @@ elysia**; the other 5 use the default outcome.
 
 ## 6. Launch wiring (`@bugsee/node` `launch.ts`)
 
-- `instrumentIncomingRequests?: boolean` — **default `false`** (D3). When true: build + `install()` the
-  `node:http` interceptor (dedicated carrier slot, D12) + `install()` each injected `serverInstrumentations`.
-- `serverInstrumentations?: ServerInstallable[]` — each `{ install(deps): void; uninstall(): void }`,
+- `instrumentIncomingRequests?: boolean` — **default `false`** (D3). When true: build `[serverInterceptor
+  ?? createHttpServerInterceptor({getClient}), ...serverInstrumentations]` and `install()` each. One patch
+  per process via the launch singleton (D12). The lazy `getClient` resolves the carrier client per request.
+- `serverInstrumentations?: ServerInstallable[]` — each `{ install(): void; uninstall(): void }`,
   self-skipping when its runtime global is absent. node always adds its own `node:http` installer when the
   flag is on, and **concatenates** platform-injected + caller-supplied ones
-  (`[...platformInstallers, ...(options.serverInstrumentations ?? [])]`) — bun/deno inject their native
-  `serve` installer this way, so a user passing their own array does NOT drop the platform's (a naive
-  spread-replace would).
-- `incomingRequestSpanName?: (method, url) => string` — forwarded to the core (D5 hook).
+  (`[nodeHttp, ...(options.serverInstrumentations ?? [])]`) — bun/deno inject their native `serve` installer
+  this way, so a user passing their own array does NOT drop the platform's (a naive spread-replace would).
+- `serverInterceptor?: ServerInstallable` — the node:http interceptor (advanced / tests — avoids patching
+  the real prototype). Default the real `createHttpServerInterceptor`.
+- **AS-BUILT:** the install loop is wrapped — an install failure undoes any partial install + reports via
+  `onError`, never breaking launch. (`incomingRequestSpanName` / the D5 spanName hook is **deferred** — the
+  default raw-path name covers v1; adding it later is additive to `ServerInstrumentOptions`.)
 - `stop()` calls `uninstall()` on every server instrumentation (restore `emit` via `delete`, restore
-  `Bun.serve`/`Deno.serve`), then clears the carrier slot — mirroring the existing interceptor teardown.
-  Because the installer is install-driven (not subscriber-gated), tests that `launch()` without `stop()`
-  must not leak the patch: the unit suite either always `stop()`s, or the installer is auto-restored on the
-  carrier-slot delete (decided in slice 3).
+  `Bun.serve`/`Deno.serve`) — install-driven, mirroring the other teardown in `stop()`. The unit suite uses
+  bare (untracked) `launch()` + `stop()` in `finally`, with a defense-in-depth `afterEach` that force-
+  restores the prototypes so a global patch can never leak across tests.
 - **Privacy (D11):** no end-user identity unless a `user` getter is supplied (default OFF); no request
   headers/bodies captured; `http.url` is raw (query secrets scrubbed by the redaction pipeline); inbound
   `x-bugsee-internal` skipped.

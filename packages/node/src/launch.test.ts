@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import http, { createServer, type Server } from 'node:http';
+import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1131,5 +1132,150 @@ describe('launchCore', () => {
     expect(launchCore('tok', baseOptions({ carrier, captureStore: memStore() })).client).toBe(
       client,
     );
+  });
+});
+
+describe('launch — incoming-server instrumentation wiring', () => {
+  const mk = (name: string, order: string[]) => ({
+    install: vi.fn(() => {
+      order.push(`install:${name}`);
+    }),
+    uninstall: vi.fn(() => {
+      order.push(`uninstall:${name}`);
+    }),
+  });
+  // These tests use BARE launch (untracked) + REAL prototype patching. detectHangs:false avoids spawning
+  // a real ANR worker per launch; the afterEach is a defense-in-depth net so a patched global never leaks
+  // to another test even if a stop() rejected.
+  const opts = (over: Partial<BugseeLaunchOptions> = {}) =>
+    baseOptions({ detectHangs: false, ...over });
+  afterEach(() => {
+    for (const proto of [http.Server.prototype, https.Server.prototype]) {
+      if (Object.hasOwn(proto, 'emit')) {
+        delete (proto as { emit?: unknown }).emit;
+      }
+    }
+  });
+
+  it('default (no flag): installs no server instrumentation', async () => {
+    const order: string[] = [];
+    const httpIc = mk('http', order);
+    const native = mk('native', order);
+    const client = launch(
+      'tok',
+      opts({ serverInterceptor: httpIc, serverInstrumentations: [native] }),
+    );
+    expect(httpIc.install).not.toHaveBeenCalled();
+    expect(native.install).not.toHaveBeenCalled();
+    expect(order).toEqual([]);
+    await client.stop();
+  });
+
+  it('flag on: installs the node:http interceptor then the injected serverInstrumentations; stop uninstalls all', async () => {
+    const order: string[] = [];
+    const httpIc = mk('http', order);
+    const native = mk('native', order);
+    const client = launch(
+      'tok',
+      opts({
+        instrumentIncomingRequests: true,
+        serverInterceptor: httpIc,
+        serverInstrumentations: [native],
+      }),
+    );
+    expect(httpIc.install).toHaveBeenCalledTimes(1);
+    expect(native.install).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['install:http', 'install:native']); // node:http first, injected after (concatenated)
+    await client.stop();
+    expect(httpIc.uninstall).toHaveBeenCalledTimes(1);
+    expect(native.uninstall).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['install:http', 'install:native', 'uninstall:http', 'uninstall:native']);
+  });
+
+  it('flag on with no serverInstrumentations: installs ONLY the node:http interceptor', async () => {
+    const order: string[] = [];
+    const httpIc = mk('http', order);
+    const client = launch(
+      'tok',
+      opts({ instrumentIncomingRequests: true, serverInterceptor: httpIc }),
+    );
+    expect(httpIc.install).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['install:http']); // the `?? []` fallback adds nothing
+    await client.stop();
+    expect(httpIc.uninstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('an install failure undoes the partial install, reports via onError, and does NOT break launch', async () => {
+    const order: string[] = [];
+    const onError = vi.fn();
+    const good = mk('good', order);
+    const bad = {
+      install: vi.fn(() => {
+        order.push('install:bad');
+        throw new Error('install blew up');
+      }),
+      uninstall: vi.fn(() => {
+        order.push('uninstall:bad');
+      }),
+    };
+    const client = launch(
+      'tok',
+      opts({
+        instrumentIncomingRequests: true,
+        serverInterceptor: good,
+        serverInstrumentations: [bad],
+        onError,
+      }),
+    );
+    expect(client.isLaunched()).toBe(true); // launch still succeeded
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(good.uninstall).toHaveBeenCalledTimes(1); // the partially-installed one was undone
+    expect(bad.uninstall).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['install:good', 'install:bad', 'uninstall:good', 'uninstall:bad']);
+    await client.stop();
+  });
+
+  it('flag on with the REAL interceptor patches + restores http(s).Server.prototype (idempotent stop)', async () => {
+    expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(false);
+    expect(Object.hasOwn(https.Server.prototype, 'emit')).toBe(false);
+    const client = launch('tok', opts({ instrumentIncomingRequests: true }));
+    try {
+      expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(true); // http patched
+      expect(Object.hasOwn(https.Server.prototype, 'emit')).toBe(true); // https patched too
+    } finally {
+      await client.stop();
+    }
+    expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(false); // http restored
+    expect(Object.hasOwn(https.Server.prototype, 'emit')).toBe(false); // https restored
+    await client.stop(); // idempotent — a second stop does not throw or re-corrupt the prototypes
+    expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(false);
+  });
+
+  it('flag on (real interceptor): a real request opens a context — the lazy getClient resolves the carrier client', async () => {
+    const client = launch('tok', opts({ instrumentIncomingRequests: true }));
+    const store = client.getService(RequestContextStoreToken);
+    let ctxDuring: string | undefined;
+    const server = createServer((_req, res) => {
+      ctxDuring = store.getCurrent()?.contextId;
+      res.end('ok');
+    });
+    try {
+      await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+      const port = (server.address() as AddressInfo).port;
+      await new Promise<void>((resolve, reject) => {
+        http
+          .get({ host: '127.0.0.1', port, path: '/p' }, (res) => {
+            res.on('data', () => {});
+            res.on('end', () => resolve());
+          })
+          .on('error', reject);
+      });
+      expect(ctxDuring).toBeDefined(); // context active in the handler → getClient resolved the carrier client
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      await client.stop();
+    }
+    expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(false); // restored
   });
 });

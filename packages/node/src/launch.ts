@@ -66,6 +66,7 @@ import {
 import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watchdog';
 import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
+import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
 import {
@@ -201,6 +202,22 @@ export interface BugseeLaunchOptions {
    * context is opened. Injectable for tests. Default a fresh AsyncLocalStorage-backed store.
    */
   requestContextStore?: RequestContextStore;
+
+  /**
+   * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
+   * a per-request context + an `http.server` APM transaction. Opt-in — default false (default-on is a
+   * follow-up). Captures NO handled errors (the framework swallows them before node:http) and NO
+   * headers/bodies. See docs/design/incoming-server-instrumentation.md.
+   */
+  instrumentIncomingRequests?: boolean;
+  /**
+   * Additional server instrumentations installed (when `instrumentIncomingRequests` is on) AFTER node's own
+   * node:http interceptor — the seam `@bugsee/bun` / `@bugsee/deno` use to inject their native Bun.serve /
+   * Deno.serve wraps. Concatenated (not spread-replaced), so a caller's array never drops the platform's.
+   */
+  serverInstrumentations?: ServerInstallable[];
+  /** The node:http server interceptor (advanced / tests — avoids patching the real prototype). Default the real one. */
+  serverInterceptor?: ServerInstallable;
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -525,6 +542,32 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     proc.on('uncaughtException', onUncaughtException);
   }
 
+  // Incoming-server auto-instrumentation (opt-in; default off — design D3). When on, install the node:http
+  // emit patch + any injected native serve wraps (bun/deno). getClient is lazy (the carrier client,
+  // resolved per request, so install order vs setCarrierClient does not matter). One patch per process —
+  // launch is a per-process singleton, so this install runs once; uninstalled on stop(). Default-off leaves
+  // the real http.Server.prototype untouched (the existing suite is unaffected).
+  const serverInstallables: ServerInstallable[] = [];
+  if (options.instrumentIncomingRequests === true) {
+    serverInstallables.push(
+      options.serverInterceptor ??
+        createHttpServerInterceptor({ getClient: () => getCarrierClient<Bugsee>(carrier) }),
+    );
+    serverInstallables.push(...(options.serverInstrumentations ?? []));
+    try {
+      for (const installable of serverInstallables) {
+        installable.install();
+      }
+    } catch (error) {
+      // Instrumentation must never break launch: undo any partial install (restoring the patched globals)
+      // and report. The client is still returned + registered, so a retry launch won't double-patch.
+      for (const installable of serverInstallables) {
+        installable.uninstall();
+      }
+      options.onError?.(error);
+    }
+  }
+
   // The public client. stop() also (a) removes launch's crash handler — the core client cleans up the
   // detection providers but knows nothing about this listener — and (b) clears the process Carrier slot
   // so a later launch() starts a fresh client (the singleton is released on stop).
@@ -536,6 +579,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         proc.off('uncaughtException', onUncaughtException);
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
+      for (const installable of serverInstallables) {
+        installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
+      }
       setCarrierClient(undefined, carrier);
       return stopCore(timeout);
     },

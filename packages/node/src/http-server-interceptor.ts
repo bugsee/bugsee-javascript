@@ -53,11 +53,16 @@ export interface HttpServerInterceptorOptions {
   isInternal?: (headers: IncomingHeaders) => boolean;
 }
 
-/** An installable server patch — `install()`/`uninstall()` are idempotent and driven by launch/stop. */
-export interface HttpServerInterceptor {
+/** An installable server instrumentation — `install()`/`uninstall()` are idempotent and driven by
+ * launch/stop. The shared shape for the node:http patch AND the per-runtime native serve wraps
+ * (Bun.serve/Deno.serve) that platforms inject via the launch seam. */
+export interface ServerInstallable {
   install(): void;
   uninstall(): void;
 }
+
+/** The node:http server interceptor — a {@link ServerInstallable} patching http(s).Server.prototype.emit. */
+export type HttpServerInterceptor = ServerInstallable;
 
 /** Default self-isolation: skip the SDK's own inbound traffic, tagged X-Bugsee-Internal (node lowercases). */
 const defaultIsInternal = (headers: IncomingHeaders): boolean =>
