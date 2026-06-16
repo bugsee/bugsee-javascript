@@ -329,3 +329,37 @@ describe('setupHapi extensions', () => {
     expect(cap.onRequest?.(req(), h)).toBe(CONTINUE);
   });
 });
+
+describe('re-entrancy with the http-layer owner', () => {
+  it('refines the owner — one txn, reports the Boom on the owner, onPreResponse finish no-op', async () => {
+    const { createNodeRequestContextStore, runServerRequest } = await import('@bugsee/node');
+    const store = createNodeRequestContextStore();
+    const ownerTxn = fakeTxn();
+    const startTransaction = vi.fn(() => ownerTxn);
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ store, perf: { startTransaction }, logException });
+    const cap = wire({ getClient: () => client, newContextId: () => 'adapter' });
+    runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      () => {
+        const r = req({
+          method: 'get',
+          path: '/users/7',
+          route: { path: '/users/{id}' },
+          response: boom(503, true),
+        });
+        cap.onRequest?.(r, h); // refiner (owner active) — no new context/txn
+        expect(store.getCurrent()?.contextId).toBe('owner');
+        cap.onPreResponse?.(r, h); // reports the Boom on the owner context; refiner finish is a no-op
+        expect(store.getCurrent()?.attributes?.['http.route']).toBe('/users/{id}');
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
+    expect(logException).toHaveBeenCalledWith(expect.objectContaining({ isBoom: true }), {
+      mechanism: 'http-error',
+    });
+    expect(ownerTxn.finish).not.toHaveBeenCalled(); // refiner finish was a no-op
+  });
+});

@@ -1,19 +1,25 @@
-import { parseTraceparent } from '@bugsee/capture';
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
-import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
-import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { getCarrierClient } from '@bugsee/core';
+import {
+  type Bugsee,
+  openServerRequest,
+  type RequestContextStore,
+  RequestContextStoreToken,
+  type ServerInstrumentOptions,
+  type ServerRequestSpan,
+} from '@bugsee/node';
 
-// The Hapi adapter (design: docs/design/framework-adapters.md). Hapi is a PEER (structural types only).
-// setupHapi registers two request-lifecycle extensions over the per-request context foundation:
-//   onRequest      — runs before routing; opens the per-request context (via store.enterWith, since the
-//                    extension returns before the route handler) + starts an http.server APM transaction +
-//                    continues an inbound W3C traceparent. The transaction is kept per-request on a WeakMap.
-//   onPreResponse  — runs for BOTH success and error, after the handler; if the response is a Boom error,
-//                    reports it (mechanism http-error) — Hapi marks 5xx as `isServer`, so the default
-//                    reports server errors and skips client (4xx) Boom; then finishes the transaction
-//                    (route-parametrized name + status). Returns h.continue, so it never alters the response.
-// Hapi extensions are additive (registering ours never replaces the app's). Fully defensive: a failure in
-// any extension never breaks the request, and h.continue is always returned.
+// The Hapi adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// Hapi is a PEER (structural types only). setupHapi registers two request-lifecycle extensions over the
+// shared server-instrumentation core (@bugsee/node):
+//   onRequest      — opens the per-request context + http.server transaction via `openServerRequest`
+//                    (enterWith, since the extension returns before the route handler) — or REFINES the
+//                    node:http-layer owner's span when that auto-instrument also runs (first-owner-wins
+//                    re-entrancy). The span is held per-request on a WeakMap; a client disconnect cancels it.
+//   onPreResponse  — runs for BOTH success and error; if the response is a Boom error, reports it
+//                    (logException directly — Hapi reports server (5xx, isServer) Boom, skips client (4xx);
+//                    direct reporting captures the active owner context under re-entrancy and supports the
+//                    standalone extension the tests pin). Then finishes the transaction (route name + status).
+// Hapi extensions are additive. Fully defensive: a failure never breaks the request; h.continue is returned.
 
 /** Minimal structural Hapi request. Hapi lowercases the method and the header names. */
 export interface HapiRequestLike {
@@ -58,20 +64,13 @@ export interface HapiAdapterOptions {
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
 
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined;
-  }
-};
-
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
 const methodOf = (request: HapiRequestLike): string => request.method.toUpperCase();
+const nameRoute = (request: HapiRequestLike): string => request.route?.path || request.path;
 
 export const requestName = (request: HapiRequestLike): string =>
-  `${methodOf(request)} ${request.route?.path || request.path}`;
+  `${methodOf(request)} ${nameRoute(request)}`;
 
 /** The HTTP status of the in-flight response (Boom output status, or the response statusCode, else 0). */
 export const responseStatus = (response: unknown): number => {
@@ -88,46 +87,49 @@ export const defaultShouldReport = (err: unknown): boolean =>
 
 const newRandomId = (): string => crypto.randomUUID();
 
+const toOptions = (options: HapiAdapterOptions): ServerInstrumentOptions => ({
+  ...(options.getClient !== undefined
+    ? { getClient: options.getClient }
+    : { getClient: defaultGetClient }),
+  ...(options.newContextId !== undefined
+    ? { newContextId: options.newContextId }
+    : { newContextId: newRandomId }),
+});
+
 /** Register the Bugsee Hapi lifecycle extensions. Call once on the server before start. */
 export function setupHapi(server: HapiServerLike, options: HapiAdapterOptions = {}): void {
+  const opts = toOptions(options);
   const getClient = options.getClient ?? defaultGetClient;
-  const newContextId = options.newContextId ?? newRandomId;
   const shouldReport = options.shouldReport ?? defaultShouldReport;
-  // Per-request transaction, keyed by the request object (GC'd with it; no request mutation).
-  const transactions = new WeakMap<object, Transaction>();
+  // Per-request span, keyed by the request object (GC'd with it; no request mutation).
+  const spans = new WeakMap<object, ServerRequestSpan>();
 
   server.ext('onRequest', (request, h) => {
     try {
-      const client = getClient();
-      if (client !== undefined) {
-        const store = resolveStore(client);
-        if (store !== undefined) {
-          const user = options.user?.(request);
-          const context: RequestContext = {
-            contextId: newContextId(),
-            attributes: { 'http.method': methodOf(request), 'http.url': request.path },
-            ...(user !== undefined ? { user } : {}),
-          };
-          store.enterWith(context);
+      const user = options.user?.(request);
+      const route = request.route?.path; // usually undefined at onRequest (pre-routing); refined later
+      const traceparent = request.headers.traceparent;
+      const info = {
+        method: methodOf(request),
+        url: request.path,
+        ...(route !== undefined ? { route } : {}),
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+      const span = openServerRequest(info, opts); // enterWith + own/refine + txn
+      spans.set(request, span);
+      // A client disconnect skips onPreResponse — cancel the transaction (still delivered) rather than leak.
+      request.events?.once('disconnect', () => {
+        try {
+          const s = spans.get(request);
+          if (s !== undefined) {
+            spans.delete(request);
+            s.cancel();
+          }
+        } catch {
+          // never break the abort lifecycle
         }
-        const transaction = startTransaction(client, request, store);
-        if (transaction !== undefined) {
-          transactions.set(request, transaction);
-          // A client disconnect skips onPreResponse — finish the transaction as CANCELLED (so it is still
-          // delivered) rather than leaking it. Matches the @bugsee/fastify onRequestAbort hook.
-          request.events?.once('disconnect', () => {
-            try {
-              const t = transactions.get(request);
-              if (t !== undefined && !t.isFinished()) {
-                transactions.delete(request);
-                t.finish('CANCELLED');
-              }
-            } catch {
-              // never break the abort lifecycle
-            }
-          });
-        }
-      }
+      });
     } catch {
       // never break the request
     }
@@ -137,51 +139,25 @@ export function setupHapi(server: HapiServerLike, options: HapiAdapterOptions = 
   server.ext('onPreResponse', (request, h) => {
     try {
       const client = getClient();
-      if (client !== undefined) {
-        const response = request.response;
-        if (
-          (response as HapiBoomLike | null | undefined)?.isBoom === true &&
-          shouldReport(response)
-        ) {
-          resolveStore(client)?.setAttribute('http.route', request.route?.path ?? request.path);
-          void client.logException(response, { mechanism: 'http-error' });
-        }
+      const response = request.response;
+      if (
+        client !== undefined &&
+        (response as HapiBoomLike | null | undefined)?.isBoom === true &&
+        shouldReport(response)
+      ) {
+        // Report the Boom directly against the active context (the owner's under re-entrancy).
+        resolveStore(client)?.setAttribute('http.route', request.route?.path ?? request.path);
+        void client.logException(response, { mechanism: 'http-error' });
       }
-      finishTransaction(transactions.get(request), request);
-      transactions.delete(request);
+      const span = spans.get(request);
+      if (span !== undefined) {
+        spans.delete(request);
+        span.setRoute(nameRoute(request)); // route now parametrized; refines the txn name
+        span.finish(responseStatus(response));
+      }
     } catch {
       // never break Hapi's response lifecycle
     }
     return h.continue;
   });
-}
-
-function startTransaction(
-  client: Bugsee,
-  request: HapiRequestLike,
-  store: RequestContextStore | undefined,
-): Transaction | undefined {
-  const perf = tryGetPerf(client);
-  if (perf === undefined) {
-    return undefined;
-  }
-  const inbound = parseTraceparent(request.headers.traceparent);
-  const transaction = perf.startTransaction({
-    name: requestName(request),
-    operation: 'http.server',
-    ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
-  });
-  store?.setTrace({ traceId: transaction.getTraceId(), spanId: transaction.getSpanId() });
-  return transaction;
-}
-
-function finishTransaction(transaction: Transaction | undefined, request: HapiRequestLike): void {
-  if (transaction === undefined || transaction.isFinished()) {
-    return;
-  }
-  const status = responseStatus(request.response);
-  transaction.setName(requestName(request)); // route now parametrized
-  transaction.setAttribute('http.method', methodOf(request));
-  transaction.setAttribute('http.status_code', status);
-  transaction.finish(status >= 500 ? 'ERROR' : 'OK');
 }
