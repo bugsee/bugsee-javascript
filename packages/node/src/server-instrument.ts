@@ -54,19 +54,39 @@ export interface ServerRequestSpan {
 // the SAME request (a refiner) finds it even across duplicate ESM/CJS copies of @bugsee/node. Stored
 // non-enumerable so it never leaks into report assembly / capture stamping (which read named fields only).
 const SERVER_SPAN = Symbol.for('bugsee.server.span');
-type ContextWithSpan = RequestContext & { [SERVER_SPAN]?: ServerRequestSpan };
+/**
+ * What an owner stashes: its span + whether it RUN-SCOPED the context (the http/native auto-instrument,
+ * via `store.run`) vs ENTERED it (an adapter, via `store.enterWith`). Only a run-scoped owner is REFINABLE
+ * — an enterWith adapter's context can linger across concurrent requests that share an async context (e.g.
+ * Elysia's `app.handle`), and must not be mistaken for THIS request's owner (which would collapse them).
+ */
+interface StashedOwner {
+  span: ServerRequestSpan;
+  runScoped: boolean;
+}
+type ContextWithSpan = RequestContext & { [SERVER_SPAN]?: StashedOwner };
 
-const stashSpan = (context: RequestContext, span: ServerRequestSpan): void => {
+const stashSpan = (context: RequestContext, span: ServerRequestSpan, runScoped: boolean): void => {
   Object.defineProperty(context, SERVER_SPAN, {
-    value: span,
+    value: { span, runScoped },
     enumerable: false,
     configurable: true,
     writable: true,
   });
 };
 
-const getStashedSpan = (context: RequestContext | undefined): ServerRequestSpan | undefined =>
+const stashedOwner = (context: RequestContext | undefined): StashedOwner | undefined =>
   context === undefined ? undefined : (context as ContextWithSpan)[SERVER_SPAN];
+
+/** The span a NEW opener should refine: ONLY a run-scoped owner (the http/native auto-instrument). */
+const refinableSpan = (context: RequestContext | undefined): ServerRequestSpan | undefined => {
+  const owner = stashedOwner(context);
+  return owner?.runScoped === true ? owner.span : undefined;
+};
+
+/** The in-flight span regardless of how the context was opened (for getActiveServerSpan). */
+const activeSpan = (context: RequestContext | undefined): ServerRequestSpan | undefined =>
+  stashedOwner(context)?.span;
 
 const resolveStore = (client: BugseeClient): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
@@ -190,11 +210,11 @@ export function startServerSpan(
     return NOOP_SPAN;
   }
   const store = resolveStore(client);
-  const existing = getStashedSpan(store?.getCurrent());
+  const existing = refinableSpan(store?.getCurrent());
   if (existing !== undefined) {
     return refiningHandle(existing, info, store, options);
   }
-  return makeSpan(client, info, options);
+  return makeSpan(client, info, options, false); // enterWith-based (Nest interceptor in the active context)
 }
 
 /**
@@ -210,7 +230,7 @@ export function getActiveServerSpan(
   if (client === undefined) {
     return undefined;
   }
-  return getStashedSpan(resolveStore(client)?.getCurrent());
+  return activeSpan(resolveStore(client)?.getCurrent());
 }
 
 /** Open the context (enterWith) AND start the http.server transaction — the common entry for hook adapters
@@ -224,7 +244,7 @@ export function openServerRequest(
     return NOOP_SPAN;
   }
   const store = resolveStore(client);
-  const existing = getStashedSpan(store?.getCurrent());
+  const existing = refinableSpan(store?.getCurrent());
   if (existing !== undefined) {
     return refiningHandle(existing, info, store, options);
   }
@@ -233,7 +253,7 @@ export function openServerRequest(
   } catch {
     // never break the request
   }
-  return makeSpan(client, info, options);
+  return makeSpan(client, info, options, false); // enterWith-based — NOT a refinable owner (see runScoped)
 }
 
 /**
@@ -252,15 +272,15 @@ export function runServerRequest<T>(
     return dispatch(NOOP_SPAN);
   }
   const store = resolveStore(client);
-  const existing = getStashedSpan(store?.getCurrent());
+  const existing = refinableSpan(store?.getCurrent());
   if (existing !== undefined) {
     return dispatch(refiningHandle(existing, info, store, options));
   }
   if (store === undefined) {
-    return dispatch(makeSpan(client, info, options));
+    return dispatch(makeSpan(client, info, options, true));
   }
   const context = buildContext(info, options.newContextId ?? defaultNewContextId);
-  return store.run(context, () => dispatch(makeSpan(client, info, options)));
+  return store.run(context, () => dispatch(makeSpan(client, info, options, true))); // run-scoped → refinable
 }
 
 /** A refining handle over the owner's span: setRoute / captureError act on the owner; finish/cancel are
@@ -292,6 +312,7 @@ function makeSpan(
   client: BugseeClient,
   info: ServerRequestInfo,
   options: ServerInstrumentOptions,
+  runScoped: boolean,
 ): ServerRequestSpan {
   const store = resolveStore(client);
   const shouldReportDefault = options.shouldReport ?? defaultShouldReport;
@@ -358,7 +379,7 @@ function makeSpan(
   // opening a second context/transaction (no-op when no context is active — e.g. the no-store path).
   const active = store?.getCurrent();
   if (active !== undefined) {
-    stashSpan(active, span);
+    stashSpan(active, span, runScoped);
   }
   return span;
 }

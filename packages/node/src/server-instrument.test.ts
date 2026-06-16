@@ -536,26 +536,25 @@ describe('runServerRequest (run-scoped owner/refiner)', () => {
     expect(ownerTxn.finish).not.toHaveBeenCalled();
   });
 
-  it('OWNER via openServerRequest (enterWith) stashes its span so a later opener refines (one txn)', () => {
+  it('an enterWith owner (openServerRequest) is NOT refinable — a later opener opens its OWN context', () => {
+    // Only a RUN-SCOPED owner (the http/native auto-instrument) is refined. An enterWith adapter's context
+    // must NOT be refined by a later opener — else concurrent requests sharing an async context (e.g.
+    // Elysia's app.handle) would collapse onto one context. So two openServerRequest opens TWO owners.
     const store = createNodeRequestContextStore();
-    const ownerTxn = fakeTxn();
-    const startTransaction = vi.fn(() => ownerTxn);
+    const startTransaction = vi.fn(() => fakeTxn());
     const client = fakeClient({ store, perf: { startTransaction } });
-    // enterWith makes the owner context active for the rest of this execution (fresh store → no leak)
     openServerRequest(info({ url: '/e/1' }), {
       getClient: () => client,
       newContextId: () => 'owner',
     });
     expect(store.getCurrent()?.contextId).toBe('owner');
-    expect(stashed(store.getCurrent())).toBeDefined(); // owner span stashed onto the active context
-    const refiner = openServerRequest(info({ url: '/e/1', route: '/e/:id' }), {
+    expect(stashed(store.getCurrent())).toBeDefined(); // its span is stashed (but marked NOT run-scoped)
+    openServerRequest(info({ url: '/e/1', route: '/e/:id' }), {
       getClient: () => client,
+      newContextId: () => 'second',
     });
-    refiner.setRoute('/e/:id');
-    refiner.finish(200); // no-op
-    expect(store.getCurrent()?.contextId).toBe('owner'); // not replaced
-    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
-    expect(ownerTxn.finish).not.toHaveBeenCalled();
+    expect(store.getCurrent()?.contextId).toBe('second'); // opened its OWN context — did NOT refine
+    expect(startTransaction).toHaveBeenCalledTimes(2); // two owners
   });
 
   it('REFINER captureError applies the refiner adapter policy, not the owner default', () => {

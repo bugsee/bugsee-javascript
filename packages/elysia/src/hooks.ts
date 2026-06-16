@@ -1,24 +1,27 @@
-import { parseTraceparent } from '@bugsee/capture';
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
-import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
-import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { getCarrierClient } from '@bugsee/core';
+import {
+  type Bugsee,
+  openServerRequest,
+  type RequestContextStore,
+  RequestContextStoreToken,
+  type ServerInstrumentOptions,
+  type ServerRequestSpan,
+} from '@bugsee/node';
 
-// The Elysia adapter (design: docs/design/framework-adapters.md). Elysia is a PEER (structural types only).
-// Elysia's lifecycle hooks are ADDITIVE (registering ours never replaces the user's), so setupElysia adds
-// three hooks over the per-request context foundation:
-//   onRequest    — opens the per-request context (via store.enterWith — the hook returns before the route
-//                  handler, like the @bugsee/fastify hook) + starts an http.server APM transaction +
-//                  continues an inbound W3C traceparent. The transaction is kept per-request on a WeakMap.
-//   onError      — reports a GENUINE error (mechanism http-error). Elysia classifies via `code`: a plain
-//                  throw is 'UNKNOWN', a status(n) throw is the number n, framework control flow is a named
-//                  code (NOT_FOUND/VALIDATION/PARSE/…). We report server errors (UNKNOWN/5xx) and skip the
-//                  rest; `set.status` is unreliable here, so the decision is code-based.
-//   mapResponse  — fires LAST for BOTH success and error (Elysia's .listen is unsupported on Node, so the
-//                  pipeline is driven via app.handle; onAfterResponse does NOT fire there, but mapResponse
-//                  does) — finishes the transaction (route-parametrized name + outcome). Returns nothing,
-//                  so it never alters the response.
-// Fully defensive: a failure in any hook never breaks the request. Register on the instance that owns your
-// routes (Elysia hooks are scoped per instance).
+// The Elysia adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// Elysia is a PEER (structural types only). setupElysia adds three hooks over the shared
+// server-instrumentation core (@bugsee/node):
+//   onRequest    — opens the per-request context + http.server transaction via `openServerRequest`
+//                  (enterWith, like @bugsee/fastify) — or REFINES the node:http-layer owner's span when that
+//                  auto-instrument also runs (first-owner-wins re-entrancy). The span + outcome are kept
+//                  per-request on a WeakMap.
+//   onError      — Elysia classifies the throw via `code`; we report server errors (UNKNOWN/5xx), skip the
+//                  rest (NOT_FOUND/VALIDATION/4xx), via logException directly (the decision is CODE-based,
+//                  not error-shape-based, so it does not flow through the span's shouldReport). `set.status`
+//                  is unreliable here, so the txn status is derived from the code.
+//   mapResponse  — fires LAST for BOTH success and error — finishes the transaction with the EXPLICIT
+//                  outcome (decoupled from the recorded status; D10) + the route-parametrized name.
+// Fully defensive: a failure in any hook never breaks the request.
 
 /** Minimal structural Elysia request (a Fetch Request). */
 export interface ElysiaRequestLike {
@@ -62,14 +65,6 @@ export interface ElysiaAdapterOptions {
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
 
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined;
-  }
-};
-
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
 /** The HTTP status an Elysia error `code` maps to, or undefined when it is not a server-classifiable code. */
@@ -97,13 +92,23 @@ const requestPath = (c: ElysiaContextLike): string => {
   }
 };
 
-export const requestName = (c: ElysiaContextLike): string =>
-  `${c.request.method} ${c.route || requestPath(c)}`;
+const nameRoute = (c: ElysiaContextLike): string => c.route || requestPath(c);
+
+export const requestName = (c: ElysiaContextLike): string => `${c.request.method} ${nameRoute(c)}`;
 
 const newRandomId = (): string => crypto.randomUUID();
 
+const toOptions = (options: ElysiaAdapterOptions): ServerInstrumentOptions => ({
+  ...(options.getClient !== undefined
+    ? { getClient: options.getClient }
+    : { getClient: defaultGetClient }),
+  ...(options.newContextId !== undefined
+    ? { newContextId: options.newContextId }
+    : { newContextId: newRandomId }),
+});
+
 interface RequestState {
-  transaction: Transaction | undefined;
+  span: ServerRequestSpan;
   outcome: 'OK' | 'ERROR';
   /** The true status derived from the error `code` (e.g. 503), since `c.set.status` is unreliable here. */
   status?: number;
@@ -111,28 +116,23 @@ interface RequestState {
 
 /** Register the Bugsee Elysia hooks. Call on the instance that owns your routes. */
 export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
+  const opts = toOptions(options);
   const getClient = options.getClient ?? defaultGetClient;
-  const newContextId = options.newContextId ?? newRandomId;
-  // Per-request transaction + outcome, keyed by the request object (GC'd with it; no context mutation).
+  // Per-request span + outcome, keyed by the request object (GC'd with it; no context mutation).
   const states = new WeakMap<object, RequestState>();
 
   app.onRequest((c) => {
     try {
-      const client = getClient();
-      if (client === undefined) {
-        return;
-      }
-      const store = resolveStore(client);
-      if (store !== undefined) {
-        const user = options.user?.(c);
-        const context: RequestContext = {
-          contextId: newContextId(),
-          attributes: { 'http.method': c.request.method, 'http.url': requestPath(c) },
-          ...(user !== undefined ? { user } : {}),
-        };
-        store.enterWith(context);
-      }
-      states.set(c.request, { transaction: startTransaction(client, c, store), outcome: 'OK' });
+      const user = options.user?.(c);
+      const traceparent = c.request.headers.get('traceparent') ?? undefined;
+      const info = {
+        method: c.request.method,
+        url: requestPath(c),
+        route: nameRoute(c), // c.route || path — refined again at mapResponse once routing has run
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+      states.set(c.request, { span: openServerRequest(info, opts), outcome: 'OK' });
     } catch {
       // never break the request
     }
@@ -167,46 +167,13 @@ export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = 
         return;
       }
       states.delete(c.request);
-      finishTransaction(state.transaction, c, state.outcome, state.status);
+      state.span.setRoute(nameRoute(c)); // route now parametrized; refines the txn name
+      // Prefer a numeric c.set.status, then the code-derived status (e.g. 503), then 200. The OUTCOME is
+      // explicit (D10): a server error finishes ERROR even when the recorded status is not >= 500.
+      const status = typeof c.set.status === 'number' ? c.set.status : (state.status ?? 200);
+      state.span.finish(status, state.outcome);
     } catch {
       // never break the response lifecycle
     }
   });
-}
-
-function startTransaction(
-  client: Bugsee,
-  c: ElysiaContextLike,
-  store: RequestContextStore | undefined,
-): Transaction | undefined {
-  const perf = tryGetPerf(client);
-  if (perf === undefined) {
-    return undefined;
-  }
-  const inbound = parseTraceparent(c.request.headers.get('traceparent') ?? undefined);
-  const transaction = perf.startTransaction({
-    name: requestName(c),
-    operation: 'http.server',
-    ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
-  });
-  store?.setTrace({ traceId: transaction.getTraceId(), spanId: transaction.getSpanId() });
-  return transaction;
-}
-
-function finishTransaction(
-  transaction: Transaction | undefined,
-  c: ElysiaContextLike,
-  outcome: 'OK' | 'ERROR',
-  statusHint: number | undefined,
-): void {
-  if (transaction === undefined || transaction.isFinished()) {
-    return;
-  }
-  transaction.setName(requestName(c)); // route now parametrized
-  transaction.setAttribute('http.method', c.request.method);
-  // Prefer a numeric c.set.status, then the code-derived status (e.g. 503), then 200. (statusHint is
-  // always set when outcome is ERROR — a server error always has a >= 500 code — so 200 is the OK default.)
-  const status = typeof c.set.status === 'number' ? c.set.status : (statusHint ?? 200);
-  transaction.setAttribute('http.status_code', status);
-  transaction.finish(outcome);
 }

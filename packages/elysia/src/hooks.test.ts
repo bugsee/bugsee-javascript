@@ -340,3 +340,37 @@ describe('setupElysia hooks', () => {
     expect(() => cap.onRequest?.(ctx())).not.toThrow();
   });
 });
+
+describe('refactor: mapResponse guard + re-entrancy', () => {
+  it('mapResponse is a no-op when no onRequest opened a span', () => {
+    const cap = wire({ getClient: () => fakeClient({}) });
+    expect(() => cap.mapResponse?.(ctx())).not.toThrow();
+  });
+
+  it('re-entrancy: refines a RUN-SCOPED owner — one txn, reports on the owner, finish no-op', async () => {
+    const { createNodeRequestContextStore, runServerRequest } = await import('@bugsee/node');
+    const store = createNodeRequestContextStore();
+    const ownerTxn = fakeTxn();
+    const startTransaction = vi.fn(() => ownerTxn);
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ store, perf: { startTransaction }, logException });
+    const cap = wire({ getClient: () => client, newContextId: () => 'adapter' });
+    const err = new Error('boom');
+    const c = errCtx({ url: 'http://x/users/7', route: '/users/:id', code: 'UNKNOWN', error: err });
+    runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      () => {
+        cap.onRequest?.(c); // refiner (run-scoped owner active) — no new context/txn
+        expect(store.getCurrent()?.contextId).toBe('owner');
+        cap.onError?.(c); // reports the UNKNOWN error on the owner context
+        cap.mapResponse?.(c); // refiner finish → no-op
+        expect(store.getCurrent()?.attributes?.['http.route']).toBe('/users/:id');
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(ownerTxn.finish).not.toHaveBeenCalled(); // refiner finish was a no-op
+  });
+});
