@@ -419,3 +419,47 @@ describe('review-driven coverage', () => {
     expect(done).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('refactor: route refinement, abort guard, re-entrancy', () => {
+  it('refines the txn name with the route discovered after onRequest (at onResponse)', () => {
+    const { perf, txn } = fakePerf();
+    const { client } = fakeClient({ perf });
+    const app = fakeApp({ getClient: () => client });
+    const req = fakeReq({ method: 'GET', url: '/users/7' }); // no routeOptions yet (pre-routing)
+    app.onRequest(req, fakeReply(), vi.fn());
+    req.routeOptions = { url: '/users/:id' }; // routing matches AFTER onRequest
+    app.onResponse(req, fakeReply(200), vi.fn());
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
+  });
+
+  it('onRequestAbort is a safe no-op when no span was opened (no onRequest)', () => {
+    const app = fakeApp({ getClient: () => fakeClient().client });
+    const done = vi.fn();
+    expect(() => app.onRequestAbort(fakeReq(), done)).not.toThrow();
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-entrancy: refines the http-layer owner — one txn; onResponse finish is a no-op', async () => {
+    const { runServerRequest } = await import('@bugsee/node');
+    const { perf, startTransaction, txn } = fakePerf();
+    const { client, store } = fakeClient({ perf });
+    const app = fakeApp({ getClient: () => client, newContextId: () => 'adapter' });
+    runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      () => {
+        const req = fakeReq({
+          method: 'GET',
+          url: '/users/7',
+          routeOptions: { url: '/users/:id' },
+        });
+        app.onRequest(req, fakeReply(), vi.fn()); // refiner (owner active) — no new context/txn
+        expect(store?.getCurrent()?.contextId).toBe('owner');
+        app.onResponse(req, fakeReply(200), vi.fn()); // refiner finish → no-op
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
+    expect(txn.finish).not.toHaveBeenCalled(); // the refiner did NOT finish the owner's txn
+  });
+});

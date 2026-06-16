@@ -1,20 +1,25 @@
-import { randomUUID } from 'node:crypto';
-import { parseTraceparent } from '@bugsee/capture';
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
-import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
-import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { getCarrierClient } from '@bugsee/core';
+import {
+  type Bugsee,
+  openServerRequest,
+  type RequestContextStore,
+  RequestContextStoreToken,
+  type ServerInstrumentOptions,
+  type ServerRequestSpan,
+} from '@bugsee/node';
 
-// The Fastify adapter (design: docs/design/framework-adapters.md). Unlike Express (middleware), Fastify is
-// hook-based, so a single setupFastify(app) call at the top installs three lifecycle hooks that cover the
-// whole app — no error-handler placement, no listen wrapping:
-//   onRequest  — open the request context (via the store's enterWith, since the hook returns before the
-//                route handler runs) + start an http.server APM transaction (when performance is wired) +
-//                continue an inbound W3C trace.
-//   onError    — report an unhandled route error (mechanism 'http-error') WITH the context merged.
-//   onResponse — finish the transaction (route-parametrized name + status).
-// Reuses the per-request context foundation verbatim; only the binding differs. Fully defensive: a failure
-// in any hook never breaks the request, and done() is always called. The client is the process-singleton
-// carrier client (a no-op when none is launched). fastify is a PEER dependency.
+// The Fastify adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// Fastify is hook-based, so a single setupFastify(app) call installs lifecycle hooks over the shared
+// server-instrumentation core (@bugsee/node):
+//   onRequest      — open the request context + http.server transaction via `openServerRequest` (enterWith,
+//                    since the hook returns before the route handler) — or REFINE the node:http-layer
+//                    owner's span when that auto-instrument also runs (first-owner-wins re-entrancy; the
+//                    core handles it). The span is held per-request in a WeakMap.
+//   onError        — report an unhandled route error against the request's span (fastify reports EVERY one).
+//   onResponse     — finish the transaction (route-parametrized name + status).
+//   onRequestAbort — cancel the transaction (a client abort fires this, not onResponse).
+// Fully defensive: a hook failure never breaks the request, and done() is always called. The client is the
+// process-singleton carrier client (a no-op when none is launched). fastify is a PEER dependency.
 
 /** Minimal structural Fastify request — fastify is a PEER, not a dependency. */
 export interface FastifyRequest {
@@ -54,24 +59,19 @@ const headerValue = (
   return Array.isArray(value) ? value[0] : value;
 };
 
+const routeOf = (req: FastifyRequest): string | undefined => req.routeOptions?.url;
+const urlOf = (req: FastifyRequest): string => req.url ?? '';
+const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
+
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
 
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined; // the performance extension is optional
-  }
-};
-
-const requestName = (req: FastifyRequest): string => {
-  const method = req.method ?? 'GET';
-  const path = req.routeOptions?.url ?? req.url ?? '';
-  return `${method} ${path}`;
-};
-
-const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
+const toOptions = (options: FastifyAdapterOptions): ServerInstrumentOptions => ({
+  ...(options.getClient !== undefined
+    ? { getClient: options.getClient }
+    : { getClient: defaultGetClient }),
+  ...(options.newContextId !== undefined ? { newContextId: options.newContextId } : {}),
+});
 
 /**
  * One-call Fastify setup: installs the request / error / response (+ request-abort) hooks. Call on the
@@ -80,49 +80,30 @@ const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
  * hooks at ready time), so it may be called before or after your routes — just register it on the root.
  */
 export function setupFastify(app: FastifyInstance, options: FastifyAdapterOptions = {}): void {
-  const getClient = options.getClient ?? defaultGetClient;
-  const newContextId = options.newContextId ?? randomUUID;
-  // Per-request transaction, keyed by the request object (GC'd with it — no decorator, no request mutation).
-  const transactions = new WeakMap<object, Transaction>();
+  const opts = toOptions(options);
+  // Per-request span, keyed by the request object (GC'd with it — no decorator, no request mutation).
+  const spans = new WeakMap<object, ServerRequestSpan>();
 
   const onRequest = (req: FastifyRequest, _reply: FastifyReply, done: FastifyHookDone): void => {
     try {
-      const client = getClient();
-      const store = client !== undefined ? resolveStore(client) : undefined;
-      if (client !== undefined && store !== undefined) {
-        const method = req.method ?? 'GET';
-        const url = req.url ?? '';
-        const user = options.user?.(req);
-        const context: RequestContext = {
-          contextId: newContextId(),
-          attributes: { 'http.method': method, 'http.url': url },
-          ...(user !== undefined ? { user } : {}),
-        };
-        // enterWith (not run) — the hook returns before the route handler runs; the context then follows
-        // the request's async chain. Each request is its own async context, so it stays isolated.
-        store.enterWith(context);
-
-        const inbound = parseTraceparent(headerValue(req.headers, 'traceparent'));
-        const perf = tryGetPerf(client);
-        if (perf !== undefined) {
-          const transaction = perf.startTransaction({
-            name: requestName(req),
-            operation: 'http.server',
-            ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
-          });
-          store.setTrace({
-            traceId: transaction.getTraceId(),
-            spanId: transaction.getSpanId(),
-          });
-          transactions.set(req, transaction);
-        }
-      }
+      const route = routeOf(req);
+      const traceparent = headerValue(req.headers, 'traceparent');
+      const user = options.user?.(req);
+      const info = {
+        method: req.method ?? 'GET',
+        url: urlOf(req),
+        ...(route !== undefined ? { route } : {}),
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+      spans.set(req, openServerRequest(info, opts)); // enterWith + own/refine + txn
     } catch {
       // never break the request
     }
     done();
   };
 
+  const getClient = options.getClient ?? defaultGetClient;
   const onError = (
     req: FastifyRequest,
     _reply: FastifyReply,
@@ -132,8 +113,10 @@ export function setupFastify(app: FastifyInstance, options: FastifyAdapterOption
     try {
       const client = getClient();
       if (client !== undefined) {
+        // Report against the active context (the in-flight request's — the http-layer owner's under
+        // re-entrancy), enriched with the matched route. Fastify reports EVERY unhandled route error.
         const store = resolveStore(client);
-        const route = req.routeOptions?.url;
+        const route = routeOf(req);
         if (store !== undefined && route !== undefined) {
           store.setAttribute('http.route', route);
         }
@@ -147,16 +130,14 @@ export function setupFastify(app: FastifyInstance, options: FastifyAdapterOption
 
   const onResponse = (req: FastifyRequest, reply: FastifyReply, done: FastifyHookDone): void => {
     try {
-      // onResponse fires once per request; the WeakMap delete makes a repeat call a no-op (and
-      // Transaction.finish is itself idempotent).
-      const transaction = transactions.get(req);
-      if (transaction !== undefined) {
-        transactions.delete(req);
-        const status = reply.statusCode ?? 0;
-        transaction.setName(requestName(req)); // now parametrized (routing done)
-        transaction.setAttribute('http.method', req.method ?? 'GET');
-        transaction.setAttribute('http.status_code', status);
-        transaction.finish(status >= 500 ? 'ERROR' : 'OK');
+      const span = spans.get(req);
+      if (span !== undefined) {
+        spans.delete(req); // onResponse fires once; the delete + the span's own guard make a repeat a no-op
+        const route = routeOf(req);
+        if (route !== undefined) {
+          span.setRoute(route);
+        }
+        span.finish(reply.statusCode ?? 0);
       }
     } catch {
       // never break the response lifecycle
@@ -164,14 +145,14 @@ export function setupFastify(app: FastifyInstance, options: FastifyAdapterOption
     done();
   };
 
-  // A client abort fires onRequestAbort, NOT onResponse — finish the transaction (as CANCELLED) so it is
-  // still delivered rather than dropped. (req, done) — no reply on this hook.
+  // A client abort fires onRequestAbort, NOT onResponse — cancel the transaction so it is still delivered
+  // rather than dropped. (req, done) — no reply on this hook.
   const onRequestAbort = (req: FastifyRequest, done: FastifyHookDone): void => {
     try {
-      const transaction = transactions.get(req);
-      if (transaction !== undefined) {
-        transactions.delete(req);
-        transaction.finish('CANCELLED');
+      const span = spans.get(req);
+      if (span !== undefined) {
+        spans.delete(req);
+        span.cancel();
       }
     } catch {
       // never break the abort lifecycle
