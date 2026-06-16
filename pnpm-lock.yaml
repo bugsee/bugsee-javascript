@@ -576,6 +576,28 @@ importers:
         specifier: workspace:*
         version: link:../replay
 
+  packages/server-adapters:
+    dependencies:
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../performance
+    devDependencies:
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+
   packages/service:
     dependencies:
       '@bugsee/util':
