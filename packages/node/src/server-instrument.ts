@@ -197,6 +197,22 @@ export function startServerSpan(
   return makeSpan(client, info, options);
 }
 
+/**
+ * The http.server span the current request's owner stashed on the active context, or `undefined` (no
+ * client, no active context, or no owner span yet). Lets a SEPARATE middleware (an error handler that runs
+ * after the opener) refine / capture against the in-flight request's span — without threading the span
+ * through framework state. Returns the owner's span directly (not a refining handle).
+ */
+export function getActiveServerSpan(
+  options: ServerInstrumentOptions = {},
+): ServerRequestSpan | undefined {
+  const client = safeGetClient(options.getClient ?? defaultGetClient);
+  if (client === undefined) {
+    return undefined;
+  }
+  return getStashedSpan(resolveStore(client)?.getCurrent());
+}
+
 /** Open the context (enterWith) AND start the http.server transaction — the common entry for hook adapters
  * and direct users. Refines instead when a context with an owner span is already active. */
 export function openServerRequest(

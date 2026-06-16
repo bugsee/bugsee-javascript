@@ -78,6 +78,7 @@ export {
 } from './request-context-store';
 export {
   defaultShouldReport,
+  getActiveServerSpan,
   openServerContext,
   openServerRequest,
   runServerRequest,

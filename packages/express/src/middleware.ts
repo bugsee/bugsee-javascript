@@ -1,18 +1,22 @@
-import { randomUUID } from 'node:crypto';
-import { parseTraceparent } from '@bugsee/capture';
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
-import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
-import type { PerformanceApi } from '@bugsee/performance';
+import { getCarrierClient } from '@bugsee/core';
+import {
+  type Bugsee,
+  type RequestContextStore,
+  RequestContextStoreToken,
+  runServerRequest,
+  type ServerInstrumentOptions,
+} from '@bugsee/node';
 
-// The Express adapter (design: docs/design/framework-adapters.md, S6). Two opt-in middlewares over the
-// per-request context foundation:
-//   requestHandler() — opens a RequestContext for the request's async chain (so logException/capture
-//     inside the route auto-attribute to it), continues an inbound W3C trace, and (when the performance
-//     extension is wired) starts an `http.server` transaction that finishes on response.
-//   errorHandler()  — reports an unhandled route error WITH the request context merged, then re-throws
-//     via next(err).
-// Fully defensive: the adapter never throws into the route pipeline and always calls next/next(err); the
-// client is the process-singleton carrier client (a no-op when none is launched).
+// The Express adapter (design: docs/design/framework-adapters.md S6 + incoming-server-instrumentation.md
+// §5.4). Two opt-in middlewares over the shared server-instrumentation core (@bugsee/node):
+//   requestHandler() — opens a per-request context + http.server transaction via `runServerRequest`
+//     (run-scoped), continues an inbound W3C trace, refines the route once routing has run, and finishes
+//     on response. When the node:http auto-instrument also owns the request, this REFINES that span
+//     instead of opening a second context/transaction (first-owner-wins re-entrancy — the core handles it).
+//   errorHandler() — reports an unhandled route error against the in-flight span, then forwards via
+//     next(err). Express reports EVERY unhandled route error (its policy is "always report").
+// Fully defensive: never throws into the route pipeline, always calls next/next(err); the client is the
+// process-singleton carrier client (a no-op when none is launched).
 
 /** Minimal structural Express request — express is a PEER, not a dependency. */
 export interface ExpressRequest {
@@ -60,24 +64,20 @@ const headerValue = (
   return Array.isArray(value) ? value[0] : value;
 };
 
+const routeOf = (req: ExpressRequest): string | undefined => req.route?.path;
+const urlOf = (req: ExpressRequest): string => req.originalUrl ?? req.url ?? '';
+
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
 
-// The performance extension is optional; ext() throws when it is not registered (bare @bugsee/node).
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined;
-  }
-};
-
-const requestName = (req: ExpressRequest): string => {
-  const method = req.method ?? 'GET';
-  // The matched route (`/users/:id`) is known only after routing; before that, fall back to the URL.
-  const path = req.route?.path ?? req.originalUrl ?? req.url ?? '';
-  return `${method} ${path}`;
-};
+// Express options → the core's instrument options (getClient/newContextId; express carries `user` per
+// request on the ServerRequestInfo instead). Only set keys that are provided (exactOptionalPropertyTypes).
+const toOptions = (options: ExpressAdapterOptions): ServerInstrumentOptions => ({
+  ...(options.getClient !== undefined
+    ? { getClient: options.getClient }
+    : { getClient: defaultGetClient }),
+  ...(options.newContextId !== undefined ? { newContextId: options.newContextId } : {}),
+});
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
@@ -86,99 +86,55 @@ const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
  * performance extension is wired) for the duration of the request.
  */
 export function requestHandler(options: ExpressAdapterOptions = {}): RequestMiddleware {
-  const getClient = options.getClient ?? defaultGetClient;
-  const newContextId = options.newContextId ?? randomUUID;
-
+  const opts = toOptions(options);
   return (req, res, next) => {
-    let client: Bugsee | undefined;
-    let store: RequestContextStore | undefined;
-    let context: RequestContext | undefined;
-    try {
-      client = getClient();
-      store = client !== undefined ? resolveStore(client) : undefined;
-      if (client !== undefined && store !== undefined) {
-        const method = req.method ?? 'GET';
-        const url = req.originalUrl ?? req.url ?? '';
-        const user = options.user?.(req);
-        context = {
-          contextId: newContextId(),
-          attributes: { 'http.method': method, 'http.url': url },
-          ...(user !== undefined ? { user } : {}),
-        };
-      }
-    } catch {
-      context = undefined; // adapter setup failed → pass through below, never break the request
-    }
-
-    // Pass-through (no client launched / no store / setup failed). OUTSIDE the try/catch so a downstream
-    // synchronous throw propagates to express and next() is called exactly once.
-    if (client === undefined || store === undefined || context === undefined) {
-      next();
-      return;
-    }
-
-    const activeClient = client;
-    const activeStore = store;
-    // Run the rest of the request INSIDE the context. A downstream throw propagates to express (it is NOT
-    // caught here — express routes it to the error handler); only the adapter's own wiring is guarded.
-    activeStore.run(context, () => {
-      try {
-        const inbound = parseTraceparent(headerValue(req.headers, 'traceparent'));
-        const perf = tryGetPerf(activeClient);
-        if (perf !== undefined) {
-          const transaction = perf.startTransaction({
-            name: requestName(req),
-            operation: 'http.server',
-            ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
-          });
-          // Publish the server transaction's trace onto the context so capture entries are stamped with it.
-          activeStore.setTrace({
-            traceId: transaction.getTraceId(),
-            spanId: transaction.getSpanId(),
-          });
-          const finalize = (): void => {
-            if (transaction.isFinished()) {
-              return;
-            }
-            const status = res.statusCode ?? 0;
-            transaction.setName(requestName(req)); // now parametrized (routing done)
-            transaction.setAttribute('http.method', req.method ?? 'GET');
-            transaction.setAttribute('http.status_code', status);
-            transaction.finish(status >= 500 ? 'ERROR' : 'OK');
-          };
-          res.once('finish', finalize);
-          res.once('close', finalize);
+    const route = routeOf(req);
+    const traceparent = headerValue(req.headers, 'traceparent');
+    const user = options.user?.(req);
+    const info = {
+      method: req.method ?? 'GET',
+      url: urlOf(req),
+      ...(route !== undefined ? { route } : {}),
+      ...(traceparent !== undefined ? { traceparent } : {}),
+      ...(user !== undefined ? { user } : {}),
+    };
+    runServerRequest(info, opts, (span) => {
+      const finalize = (): void => {
+        const finalRoute = routeOf(req); // the parametrized route is known once routing has run
+        if (finalRoute !== undefined) {
+          span.setRoute(finalRoute);
         }
-      } catch {
-        // APM wiring failure must never break the request — degrade to context-only.
-      }
+        span.finish(res.statusCode ?? 0);
+      };
+      res.once('finish', finalize);
+      res.once('close', finalize);
       next();
     });
   };
 }
 
 /**
- * Express error middleware: report an unhandled route error with the active request context merged, then
- * forward it via next(err). The 4-arg signature is what express uses to recognize an error handler.
+ * Express error middleware: report an unhandled route error against the in-flight span (enriched with the
+ * matched route), then forward it via next(err). The 4-arg signature is what express uses to recognize an
+ * error handler.
  */
 export function errorHandler(options: ExpressAdapterOptions = {}): ErrorMiddleware {
   const getClient = options.getClient ?? defaultGetClient;
-
   return (err, req, _res, next) => {
     try {
       const client = getClient();
       if (client !== undefined) {
         const store = resolveStore(client);
-        // Enrich the active context with the matched route (known now that routing has run) before reporting.
-        const routePath = req.route?.path;
-        if (store !== undefined && routePath !== undefined) {
-          store.setAttribute('http.route', routePath);
+        // Enrich the active context (the in-flight request's — the http-layer owner's under re-entrancy)
+        // with the matched route, then report. Express reports EVERY unhandled route error.
+        const route = routeOf(req);
+        if (store !== undefined && route !== undefined) {
+          store.setAttribute('http.route', route);
         }
-        // Synchronous submit captures the active context now; the upload is fire-and-forget.
         void client.logException(err, { mechanism: 'http-error' });
       }
     } catch {
-      // The adapter must never replace the app's own error handling.
+      // the adapter must never replace the app's own error handling
     }
     next(err);
   };

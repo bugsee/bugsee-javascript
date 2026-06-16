@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createNodeRequestContextStore, type RequestContextStore } from './request-context-store';
 import {
   defaultShouldReport,
+  getActiveServerSpan,
   openServerContext,
   openServerRequest,
   runServerRequest,
@@ -626,5 +627,37 @@ describe('runServerRequest (run-scoped owner/refiner)', () => {
     expect(startTransaction).toHaveBeenCalledTimes(1); // owner only — startServerSpan refined
     expect(logException).toHaveBeenCalledTimes(1);
     expect(ownerTxn.finish).not.toHaveBeenCalled(); // refiner finish was a no-op
+  });
+});
+
+describe('getActiveServerSpan', () => {
+  it('returns undefined without a client', () => {
+    expect(getActiveServerSpan({ getClient: () => undefined })).toBeUndefined();
+  });
+
+  it('returns undefined when no context is active', () => {
+    const store = createNodeRequestContextStore();
+    const client = fakeClient({ store });
+    expect(getActiveServerSpan({ getClient: () => client })).toBeUndefined();
+  });
+
+  it("returns the owner's stashed span during a request — a later seam can captureError against it", () => {
+    const store = createNodeRequestContextStore();
+    const ownerTxn = fakeTxn();
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => ownerTxn) },
+      logException,
+    });
+    runServerRequest(info({ url: '/o/7' }), { getClient: () => client }, () => {
+      const span = getActiveServerSpan({ getClient: () => client });
+      expect(span).toBeDefined();
+      span?.setRoute('/o/:id');
+      expect(span?.captureError(new Error('boom'))).toBe(true);
+      expect(store.getCurrent()?.attributes?.['http.route']).toBe('/o/:id');
+      return null;
+    });
+    expect(logException).toHaveBeenCalledWith(expect.any(Error), { mechanism: 'http-error' });
   });
 });

@@ -1,5 +1,10 @@
 import type { AttributeValue } from '@bugsee/core';
-import { type Bugsee, createNodeRequestContextStore, type RequestContextStore } from '@bugsee/node';
+import {
+  type Bugsee,
+  createNodeRequestContextStore,
+  type RequestContextStore,
+  runServerRequest,
+} from '@bugsee/node';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
 import { describe, expect, it, vi } from 'vitest';
 import { type ExpressRequest, type ExpressResponse, errorHandler, requestHandler } from './index';
@@ -244,6 +249,17 @@ describe('requestHandler', () => {
     expect(hadContext).toBe(true);
     expect(next).toHaveBeenCalledTimes(1);
   });
+
+  it('refines the txn name with the route discovered AFTER the handler opens (at finish)', () => {
+    const { perf, txn } = fakePerf();
+    const { client } = fakeClient({ perf });
+    const req = fakeReq({ method: 'GET', originalUrl: '/users/7' }); // no matched route yet (pre-routing)
+    const { res, fire } = fakeRes();
+    requestHandler({ getClient: () => client })(req, res, vi.fn());
+    req.route = { path: '/users/:id' }; // routing matches AFTER requestHandler opened the span
+    fire('finish');
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
+  });
 });
 
 describe('errorHandler', () => {
@@ -286,6 +302,45 @@ describe('errorHandler', () => {
     const next = vi.fn();
     errorHandler({ getClient: () => client })(err, fakeReq(), fakeRes().res, next);
     expect(next).toHaveBeenCalledWith(err);
+  });
+
+  it('reports without enriching http.route when no context store is registered', () => {
+    const { client, logException } = fakeClient({ store: null });
+    const next = vi.fn();
+    errorHandler({ getClient: () => client })(
+      new Error('e'),
+      fakeReq({ route: { path: '/x/:id' } }),
+      fakeRes().res,
+      next,
+    );
+    expect(logException).toHaveBeenCalledWith(expect.any(Error), { mechanism: 'http-error' });
+    expect(next).toHaveBeenCalled();
+  });
+});
+
+describe('re-entrancy with the http-layer owner', () => {
+  it('refines the owner instead of opening a 2nd context/txn; errorHandler reports on the owner context', () => {
+    const { perf, startTransaction } = fakePerf();
+    const { client, store, logException } = fakeClient({ perf });
+    const rh = requestHandler({ getClient: () => client, newContextId: () => 'adapter' });
+    const eh = errorHandler({ getClient: () => client });
+    // The node:http layer owns the request first (its own context + txn):
+    runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      () => {
+        const req = fakeReq({ originalUrl: '/users/7', route: { path: '/users/:id' } });
+        const { res, fire } = fakeRes();
+        rh(req, res, vi.fn()); // express requestHandler runs as a REFINER (owner already active)
+        expect(store?.getCurrent()?.contextId).toBe('owner'); // not 'adapter' — no new context minted
+        eh(new Error('boom'), req, res, vi.fn()); // errorHandler reports against the owner context
+        expect(store?.getCurrent()?.attributes?.['http.route']).toBe('/users/:id'); // route refined on owner
+        fire('finish'); // express finalize → refiner.setRoute + refiner.finish (no-op)
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // ONE transaction — the owner's; express refined
+    expect(logException).toHaveBeenCalledWith(expect.any(Error), { mechanism: 'http-error' });
   });
 });
 
