@@ -113,7 +113,8 @@ describe('createHttpServerInterceptor', () => {
         continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
       }),
     );
-    res.fire('finish');
+    res.writableFinished = true;
+    res.fire('close'); // the owner finishes on 'close' (after any refiner's 'finish' setRoute)
     expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 204);
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
@@ -320,7 +321,8 @@ describe('createHttpServerInterceptor', () => {
     const server = new target.http.Server(); // no requestHandler
     const res = makeRes({ statusCode: 200 });
     const ret = server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
-    res.fire('finish');
+    res.writableFinished = true;
+    res.fire('close');
     ic.uninstall();
     expect(ret).toBe(false); // original emit had no 'request' listener
     expect(startTransaction).toHaveBeenCalledTimes(1); // txn still opened
@@ -336,13 +338,14 @@ describe('createHttpServerInterceptor', () => {
     server.requestHandler = () => {};
     const res = makeRes({ statusCode: 503 });
     server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
-    res.fire('finish');
+    res.writableFinished = true;
+    res.fire('close');
     ic.uninstall();
     expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 503);
     expect(txn.finish).toHaveBeenCalledWith('ERROR');
   });
 
-  it('does not finish the txn until the response finishes or closes', () => {
+  it('does not finish the txn until the response closes', () => {
     const { txn, client } = launchedClient();
     const target = makeTarget();
     const ic = createHttpServerInterceptor({ target: asTarget(target), getClient: () => client });
@@ -351,9 +354,11 @@ describe('createHttpServerInterceptor', () => {
     server.requestHandler = () => {};
     const res = makeRes({ statusCode: 200 });
     server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
-    expect(txn.finish).not.toHaveBeenCalled(); // in-flight: neither finish nor close has fired
-    res.fire('finish');
-    expect(txn.finish).toHaveBeenCalledWith('OK'); // finished only now
+    res.fire('finish'); // 'finish' alone does NOT finish the span (the owner waits for 'close')
+    expect(txn.finish).not.toHaveBeenCalled(); // still in-flight
+    res.writableFinished = true;
+    res.fire('close');
+    expect(txn.finish).toHaveBeenCalledWith('OK'); // finished only on 'close'
     ic.uninstall();
   });
 

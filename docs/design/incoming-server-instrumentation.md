@@ -179,11 +179,19 @@ so patching `http.Server.prototype` alone misses HTTPS. (The outbound intercepto
 if (event !== 'request') return originalEmit.apply(this, args);   // all other events pass straight through
 if (hasInternalHeader(req.headers)) return originalEmit.apply(this, args);   // D11 incoming self-isolation
 return runServerRequest({ method: req.method, url: req.url, traceparent: req.headers.traceparent }, opts, (span) => {
-  res.once('finish', () => { span.setRoute(adapterRoute?); span.finish(res.statusCode); }); // once + idempotent
-  res.once('close',  () => { if (!res.writableFinished) span.cancel(); });                   // explicit guard
+  // Finish on 'close' (NOT 'finish'): 'close' fires AFTER 'finish', so a dedicated adapter's own 'finish'
+  // listener (which refines the route via setRoute) runs BEFORE the owner finishes → the route lands in the
+  // txn name even in re-entrancy mode. writableFinished distinguishes a completed response from a client abort.
+  res.once('close', () => { if (res.writableFinished) span.finish(res.statusCode); else span.cancel(); });
   return originalEmit.apply(this, args);   // synchronous dispatch, inside store.run(context); preserves emit's boolean return
 });
 ```
+> **Re-entrancy ordering (resolved):** finishing on `'close'` (after `'finish'`) is what makes the
+> route-refinement correct when the http layer OWNS and a dedicated adapter REFINES — the adapter's
+> `'finish'`-time `setRoute` runs first, then the owner finishes with the refined route. Proven by an
+> integration test (a refiner's `setRoute` on `'finish'` lands in the finished txn name). This is the
+> prerequisite for default-on (D3 flip): default-on puts EVERY adapter user in re-entrancy mode, so without
+> it every adapter user's txn names would degrade to the raw path.
 
 - **Prototype patch** covers servers created any way; must run before traffic flows — `launch()` at startup
   satisfies it (no `--import` preload, unlike outbound patching / Sentry).

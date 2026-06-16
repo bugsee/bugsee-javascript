@@ -6,6 +6,7 @@ import type { Transaction } from '@bugsee/performance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHttpServerInterceptor, type HttpServerInterceptor } from './http-server-interceptor';
 import { createNodeRequestContextStore, type RequestContextStore } from './request-context-store';
+import { getActiveServerSpan } from './server-instrument';
 
 // Integration: the REAL node:http Server, instrumented via the REAL http.Server.prototype.emit patch (no
 // injected target — exercises the production wiring). Proves context is active in the handler, the txn
@@ -40,6 +41,7 @@ const until = async (pred: () => boolean, timeoutMs = 2000): Promise<void> => {
 let store: RequestContextStore;
 let txns: Transaction[];
 let interceptor: HttpServerInterceptor;
+let client: BugseeClient;
 const servers: http.Server[] = [];
 
 beforeEach(() => {
@@ -50,7 +52,7 @@ beforeEach(() => {
     txns.push(t);
     return t;
   });
-  const client = {
+  client = {
     getServiceProvider: () => ({ getImmediate: () => store }),
     ext: () => ({ startTransaction }),
     logException: vi.fn(() => Promise.resolve()),
@@ -116,6 +118,20 @@ describe('http-server-interceptor (real node:http)', () => {
     await until(() => finishedWith(txns[0], 'ERROR'));
     expect(txns).toHaveLength(1);
     expect(txns[0]?.setAttribute).toHaveBeenCalledWith('http.status_code', 500);
+  });
+
+  it("a refiner's route set on 'finish' lands in the txn name (owner finishes on 'close', after)", async () => {
+    const port = await serve((_req, res) => {
+      // a dedicated adapter would refine the route on res 'finish' — which fires BEFORE the owner's 'close'.
+      res.on('finish', () =>
+        getActiveServerSpan({ getClient: () => client })?.setRoute('/widgets/:id'),
+      );
+      res.end('ok');
+    });
+    await get(port, '/widgets/42');
+    await until(() => finishedWith(txns[0], 'OK'));
+    expect(txns).toHaveLength(1);
+    expect(txns[0]?.setName).toHaveBeenCalledWith('GET /widgets/:id'); // refined route in the finished name
   });
 
   it('isolates concurrent in-flight requests — distinct contexts, each stable across an await', async () => {

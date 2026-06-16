@@ -114,9 +114,14 @@ export function createHttpServerInterceptor(
         },
         runOptions,
         (span) => {
-          res.once('finish', () => span.finish(res.statusCode));
+          // Finish on 'close' — it fires AFTER 'finish' (and after any dedicated adapter's own 'finish'
+          // listener), so when this span is the OWNER and an adapter refines it (re-entrancy), the adapter's
+          // route lands in the txn name before we finish. writableFinished distinguishes a completed
+          // response (finish OK/ERROR by status) from a client abort (cancel → CANCELLED).
           res.once('close', () => {
-            if (!res.writableFinished) {
+            if (res.writableFinished) {
+              span.finish(res.statusCode);
+            } else {
               span.cancel();
             }
           });
