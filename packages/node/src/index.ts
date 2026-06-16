@@ -63,5 +63,15 @@ export {
   type RequestContextStore,
   RequestContextStoreToken,
 } from './request-context-store';
+export {
+  defaultShouldReport,
+  openServerContext,
+  openServerRequest,
+  runServerRequest,
+  type ServerInstrumentOptions,
+  type ServerRequestInfo,
+  type ServerRequestSpan,
+  startServerSpan,
+} from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';

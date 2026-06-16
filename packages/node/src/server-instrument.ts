@@ -1,0 +1,348 @@
+import { parseTraceparent } from '@bugsee/capture';
+import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
+import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
+
+// Shared server-instrumentation core (design: docs/design/incoming-server-instrumentation.md). Absorbed
+// from the retired @bugsee/server-adapters engine and extended with (a) a `run`-scoped entry
+// (`runServerRequest`) for the node:http emit patch / native serve wraps / express / koa, and (b)
+// first-owner-wins RE-ENTRANCY: the first opener OWNS the per-request context + the `http.server`
+// transaction and stashes its span on the context; a later opener (a dedicated framework adapter) gets a
+// REFINING handle (setRoute / captureError on the owner's span; finish/cancel no-op) — so the http layer
+// and a dedicated adapter coexist as exactly one context + one transaction. It takes PLAIN VALUES (no
+// framework objects), is fully defensive (no client → safe no-op; nothing throws into the request
+// pipeline beyond a fire-and-forget report), and acquires the performance extension at runtime via
+// `client.ext('performance')` so @bugsee/node stays decoupled from it at the value level.
+
+/** Plain request facts the caller extracts from its framework (no framework objects). */
+export interface ServerRequestInfo {
+  method: string;
+  /** The request URL/path → `http.url` (raw; the redaction pipeline scrubs query secrets). The
+   * query-stripped path is the route-name fallback. */
+  url: string;
+  /** The matched route pattern (`/users/:id`) → `http.route` + span name; refine later via `setRoute`. */
+  route?: string;
+  /** The inbound W3C `traceparent` header value, for distributed-trace continuation. */
+  traceparent?: string;
+  /** The resolved end-user identity for reports produced during this request (privacy-safe — opt-in). */
+  user?: string;
+}
+
+export interface ServerInstrumentOptions {
+  /** Resolve the active client; default the process-singleton carrier client. */
+  getClient?: () => BugseeClient | undefined;
+  /** Mint a context id; default `crypto.randomUUID`. */
+  newContextId?: () => string;
+  /** Decide whether a thrown error is reported. Default {@link defaultShouldReport} (status-based). */
+  shouldReport?: (err: unknown) => boolean;
+}
+
+/** A handle over the in-flight request. All methods are safe no-ops when no client is launched. */
+export interface ServerRequestSpan {
+  /** Refine the matched route once routing has run (updates `http.route` + the finished span name). */
+  setRoute(route: string): void;
+  /** Report `err` iff it should be reported. Returns whether it reported (lets callers dedup across seams). */
+  captureError(err: unknown, opts?: { shouldReport?: (err: unknown) => boolean }): boolean;
+  /** Finish the http.server transaction. Outcome defaults to `OK` if `status < 500`, else `ERROR`; pass an
+   * explicit `outcome` when the framework decides it independently of the recorded status (Nest/Elysia). */
+  finish(status: number, outcome?: 'OK' | 'ERROR' | 'CANCELLED'): void;
+  /** Finish the http.server transaction as `CANCELLED` (e.g. a client abort). */
+  cancel(): void;
+}
+
+// The owner stashes its span on the active RequestContext under a realm-global key, so a later opener in
+// the SAME request (a refiner) finds it even across duplicate ESM/CJS copies of @bugsee/node. Stored
+// non-enumerable so it never leaks into report assembly / capture stamping (which read named fields only).
+const SERVER_SPAN = Symbol.for('bugsee.server.span');
+type ContextWithSpan = RequestContext & { [SERVER_SPAN]?: ServerRequestSpan };
+
+const stashSpan = (context: RequestContext, span: ServerRequestSpan): void => {
+  Object.defineProperty(context, SERVER_SPAN, {
+    value: span,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+};
+
+const getStashedSpan = (context: RequestContext | undefined): ServerRequestSpan | undefined =>
+  context === undefined ? undefined : (context as ContextWithSpan)[SERVER_SPAN];
+
+const resolveStore = (client: BugseeClient): RequestContextStore | undefined =>
+  client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
+
+const tryGetPerf = (client: BugseeClient): PerformanceApi | undefined => {
+  try {
+    return client.ext('performance');
+  } catch {
+    return undefined;
+  }
+};
+
+const defaultGetClient = (): BugseeClient | undefined => getCarrierClient<BugseeClient>();
+const defaultNewContextId = (): string => crypto.randomUUID();
+
+const urlPath = (url: string): string => {
+  const q = url.indexOf('?');
+  return q === -1 ? url : url.slice(0, q);
+};
+
+const spanName = (info: ServerRequestInfo, route: string | undefined): string =>
+  `${info.method} ${route || urlPath(info.url)}`;
+
+/**
+ * Default report policy: report a genuine unhandled error, skip an "expected" 4xx. Duck-types the common
+ * HTTP-error shapes across frameworks — `getStatus()` (Nest), `status`/`statusCode` (Koa/http-errors),
+ * `output.statusCode` (Boom). A value with no resolvable status (a plain Error) is reported.
+ */
+export const defaultShouldReport = (err: unknown): boolean => {
+  const status = httpErrorStatus(err);
+  return status === undefined || status >= 500;
+};
+
+const httpErrorStatus = (err: unknown): number | undefined => {
+  // Guarded as a whole: a hostile error with a throwing getStatus() or a throwing status/output getter must
+  // not throw out of the exported defaultShouldReport — it degrades to "no resolvable status" (→ reported).
+  try {
+    const e = err as
+      | {
+          getStatus?: unknown;
+          status?: unknown;
+          statusCode?: unknown;
+          output?: { statusCode?: unknown };
+        }
+      | null
+      | undefined;
+    if (typeof e?.getStatus === 'function') {
+      const s = (e as { getStatus: () => unknown }).getStatus();
+      if (typeof s === 'number') {
+        return s;
+      }
+    }
+    if (typeof e?.status === 'number') {
+      return e.status;
+    }
+    if (typeof e?.statusCode === 'number') {
+      return e.statusCode;
+    }
+    if (typeof e?.output?.statusCode === 'number') {
+      return e.output.statusCode;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// Shared singleton for the no-client path; frozen so a caller can't corrupt the process-wide no-op.
+const NOOP_SPAN: ServerRequestSpan = Object.freeze({
+  setRoute() {},
+  captureError() {
+    return false;
+  },
+  finish() {},
+  cancel() {},
+});
+
+const safeGetClient = (getClient: () => BugseeClient | undefined): BugseeClient | undefined => {
+  try {
+    return getClient();
+  } catch {
+    return undefined;
+  }
+};
+
+const buildContext = (info: ServerRequestInfo, newContextId: () => string): RequestContext => ({
+  contextId: newContextId(),
+  attributes: { 'http.method': info.method, 'http.url': info.url },
+  ...(info.user !== undefined ? { user: info.user } : {}),
+});
+
+/** Open the per-request context (via store.enterWith) for the active async chain. A no-op without a store,
+ * and a no-op when a context is already active (so it does not replace an http-layer owner's context). */
+export function openServerContext(
+  info: ServerRequestInfo,
+  options: ServerInstrumentOptions = {},
+): void {
+  const client = safeGetClient(options.getClient ?? defaultGetClient);
+  if (client === undefined) {
+    return;
+  }
+  try {
+    const store = resolveStore(client);
+    if (store === undefined || store.getCurrent() !== undefined) {
+      return;
+    }
+    store.enterWith(buildContext(info, options.newContextId ?? defaultNewContextId));
+  } catch {
+    // never break the request
+  }
+}
+
+/** Start an http.server transaction in the ALREADY-ACTIVE context. Refines instead when one is already
+ * owned. Returns a no-op span without a client. */
+export function startServerSpan(
+  info: ServerRequestInfo,
+  options: ServerInstrumentOptions = {},
+): ServerRequestSpan {
+  const client = safeGetClient(options.getClient ?? defaultGetClient);
+  if (client === undefined) {
+    return NOOP_SPAN;
+  }
+  const store = resolveStore(client);
+  const existing = getStashedSpan(store?.getCurrent());
+  if (existing !== undefined) {
+    return refiningHandle(existing, info, store, options);
+  }
+  return makeSpan(client, info, options);
+}
+
+/** Open the context (enterWith) AND start the http.server transaction — the common entry for hook adapters
+ * and direct users. Refines instead when a context with an owner span is already active. */
+export function openServerRequest(
+  info: ServerRequestInfo,
+  options: ServerInstrumentOptions = {},
+): ServerRequestSpan {
+  const client = safeGetClient(options.getClient ?? defaultGetClient);
+  if (client === undefined) {
+    return NOOP_SPAN;
+  }
+  const store = resolveStore(client);
+  const existing = getStashedSpan(store?.getCurrent());
+  if (existing !== undefined) {
+    return refiningHandle(existing, info, store, options);
+  }
+  try {
+    store?.enterWith(buildContext(info, options.newContextId ?? defaultNewContextId));
+  } catch {
+    // never break the request
+  }
+  return makeSpan(client, info, options);
+}
+
+/**
+ * Open the context via `store.run` and run `dispatch` inside it — the `run`-scoped entry for the node:http
+ * emit patch, native serve wraps, and express/koa. Returns whatever `dispatch` returns. When a context
+ * with an owner span is already active, this is a refiner: it runs `dispatch` in that context with a
+ * refining span (no second context/transaction). With no store it starts a transaction-only span.
+ */
+export function runServerRequest<T>(
+  info: ServerRequestInfo,
+  options: ServerInstrumentOptions,
+  dispatch: (span: ServerRequestSpan) => T,
+): T {
+  const client = safeGetClient(options.getClient ?? defaultGetClient);
+  if (client === undefined) {
+    return dispatch(NOOP_SPAN);
+  }
+  const store = resolveStore(client);
+  const existing = getStashedSpan(store?.getCurrent());
+  if (existing !== undefined) {
+    return dispatch(refiningHandle(existing, info, store, options));
+  }
+  if (store === undefined) {
+    return dispatch(makeSpan(client, info, options));
+  }
+  const context = buildContext(info, options.newContextId ?? defaultNewContextId);
+  return store.run(context, () => dispatch(makeSpan(client, info, options)));
+}
+
+/** A refining handle over the owner's span: setRoute / captureError act on the owner; finish/cancel are
+ * no-ops (the owner finishes). Propagates the refiner's user onto the active context and applies the
+ * refiner's report policy. */
+function refiningHandle(
+  owner: ServerRequestSpan,
+  info: ServerRequestInfo,
+  store: RequestContextStore | undefined,
+  options: ServerInstrumentOptions,
+): ServerRequestSpan {
+  if (info.user !== undefined) {
+    store?.setUser(info.user);
+  }
+  const refinerShouldReport = options.shouldReport ?? defaultShouldReport;
+  return {
+    setRoute(route) {
+      owner.setRoute(route);
+    },
+    captureError(err, opts) {
+      return owner.captureError(err, { shouldReport: opts?.shouldReport ?? refinerShouldReport });
+    },
+    finish() {},
+    cancel() {},
+  };
+}
+
+function makeSpan(
+  client: BugseeClient,
+  info: ServerRequestInfo,
+  options: ServerInstrumentOptions,
+): ServerRequestSpan {
+  const store = resolveStore(client);
+  const shouldReportDefault = options.shouldReport ?? defaultShouldReport;
+  let route = info.route;
+  let transaction: Transaction | undefined;
+  try {
+    const perf = tryGetPerf(client);
+    if (perf !== undefined) {
+      const inbound = parseTraceparent(info.traceparent);
+      transaction = perf.startTransaction({
+        name: spanName(info, route),
+        operation: 'http.server',
+        ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
+      });
+      store?.setTrace({
+        traceId: transaction.getTraceId(),
+        spanId: transaction.getSpanId(),
+      });
+    }
+  } catch {
+    transaction = undefined; // APM wiring failure must never break the request
+  }
+
+  const finishWith = (status: number, outcome: 'OK' | 'ERROR' | 'CANCELLED'): void => {
+    try {
+      if (transaction === undefined || transaction.isFinished()) {
+        return;
+      }
+      transaction.setName(spanName(info, route));
+      transaction.setAttribute('http.method', info.method);
+      transaction.setAttribute('http.status_code', status);
+      transaction.finish(outcome);
+    } catch {
+      // finishing APM must never break the response lifecycle
+    }
+  };
+
+  const span: ServerRequestSpan = {
+    setRoute(r) {
+      route = r;
+    },
+    captureError(err, opts) {
+      try {
+        const shouldReport = opts?.shouldReport ?? shouldReportDefault;
+        if (!shouldReport(err)) {
+          return false;
+        }
+        store?.setAttribute('http.route', route ?? urlPath(info.url));
+        void client.logException(err, { mechanism: 'http-error' });
+        return true;
+      } catch {
+        return false; // reporting must never replace the app's own error handling
+      }
+    },
+    finish(status, outcome) {
+      finishWith(status, outcome ?? (status >= 500 ? 'ERROR' : 'OK'));
+    },
+    cancel() {
+      finishWith(0, 'CANCELLED');
+    },
+  };
+
+  // Stash the owner span on the active context so a later opener in this request refines instead of
+  // opening a second context/transaction (no-op when no context is active — e.g. the no-store path).
+  const active = store?.getCurrent();
+  if (active !== undefined) {
+    stashSpan(active, span);
+  }
+  return span;
+}

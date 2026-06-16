@@ -469,6 +469,9 @@ importers:
       '@bugsee/node-utils':
         specifier: workspace:*
         version: link:../node-utils
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../performance
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
