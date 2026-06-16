@@ -1,15 +1,14 @@
-import { parseTraceparent } from '@bugsee/capture';
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
-import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
-import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { getCarrierClient } from '@bugsee/core';
+import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
 
-// The Koa adapter (design: docs/design/framework-adapters.md). Koa is a PEER (structural types only). A
-// single middleware over the per-request context foundation: Koa's compose propagates a downstream throw
-// up through `await next()` (verified), so the middleware catches it, REPORTS it, then RE-THROWS untouched
-// — Koa's own onerror still formats the response. It also opens the per-request context (store.run wraps
-// next), starts an http.server APM transaction + continues an inbound W3C traceparent, and finishes the
-// transaction (route name + status). Fully defensive: it never throws anything other than the original
-// downstream error, and never alters Koa's response.
+// The Koa adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// Koa is a PEER (structural types only). A single middleware over the shared server-instrumentation core:
+// Koa's compose propagates a downstream throw up through `await next()`, so the middleware catches it,
+// REPORTS it (per Koa's status-based policy), then RE-THROWS untouched — Koa's onerror still formats the
+// response. It opens the per-request context + http.server transaction via `runServerRequest` (run-scoped)
+// — or REFINES the node:http-layer owner's span when that auto-instrument also runs (first-owner-wins
+// re-entrancy) — and finishes from the error's status (catch) or ctx.status (success). Fully defensive: it
+// never throws anything other than the original downstream error, and never alters Koa's response.
 
 /** Minimal structural Koa context. */
 export interface KoaContextLike {
@@ -34,17 +33,6 @@ export interface KoaAdapterOptions {
   /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx. */
   shouldReport?: (err: unknown) => boolean;
 }
-
-const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
-  client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
-
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined;
-  }
-};
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
@@ -80,101 +68,46 @@ export const defaultShouldReport = (err: unknown): boolean => {
 
 const newRandomId = (): string => crypto.randomUUID();
 
+const toOptions = (options: KoaAdapterOptions): ServerInstrumentOptions => ({
+  ...(options.getClient !== undefined
+    ? { getClient: options.getClient }
+    : { getClient: defaultGetClient }),
+  ...(options.newContextId !== undefined
+    ? { newContextId: options.newContextId }
+    : { newContextId: newRandomId }),
+  shouldReport: options.shouldReport ?? defaultShouldReport,
+});
+
 /**
  * Build the Bugsee Koa middleware. Pass the result to `app.use(...)` (done for you by setupKoa). Install it
  * FIRST so it wraps the whole chain. A transparent pass-through when no client is launched.
  */
 export function bugseeKoa(options: KoaAdapterOptions = {}): KoaMiddleware {
-  const getClient = options.getClient ?? defaultGetClient;
-  const newContextId = options.newContextId ?? newRandomId;
-  const shouldReport = options.shouldReport ?? defaultShouldReport;
-
+  const opts = toOptions(options);
   return async (ctx, next) => {
-    const client = getClient();
-    if (client === undefined) {
-      await next();
-      return;
-    }
-    const store = resolveStore(client);
-    let context: RequestContext | undefined;
-    if (store !== undefined) {
-      const user = options.user?.(ctx);
-      context = {
-        contextId: newContextId(),
-        attributes: { 'http.method': ctx.method, 'http.url': ctx.url },
-        ...(user !== undefined ? { user } : {}),
-      };
-    }
-
-    const body = async (): Promise<void> => {
-      let transaction: Transaction | undefined;
-      try {
-        transaction = startTransaction(client, ctx, store);
-      } catch {
-        transaction = undefined;
-      }
+    const traceparent = headerValue(ctx.headers, 'traceparent');
+    const user = options.user?.(ctx);
+    const info = {
+      method: ctx.method,
+      url: ctx.url,
+      route: matchedRoute(ctx), // _matchedRoute || path — refined again at finish once routing has run
+      ...(traceparent !== undefined ? { traceparent } : {}),
+      ...(user !== undefined ? { user } : {}),
+    };
+    await runServerRequest(info, opts, async (span) => {
       let errorStatus: number | undefined;
       try {
         await next();
       } catch (err) {
-        try {
-          if (shouldReport(err)) {
-            resolveStore(client)?.setAttribute('http.route', matchedRoute(ctx));
-            void client.logException(err, { mechanism: 'http-error' });
-          }
-        } catch {
-          // reporting must never replace Koa's own error handling
-        }
+        span.setRoute(matchedRoute(ctx)); // route is parametrized once routing has run
+        span.captureError(err); // reports per Koa's shouldReport; sets http.route
         errorStatus = httpErrorStatus(err) ?? 500; // ctx.status is unreliable in the catch
         throw err; // re-throw untouched → Koa's onerror formats the response
       } finally {
-        finishTransaction(transaction, ctx, errorStatus);
+        span.setRoute(matchedRoute(ctx)); // refine the txn name (idempotent; covers the success path)
+        // On success use ctx.status (final); on error use the error's status (ctx.status is unreliable here).
+        span.finish(errorStatus ?? ctx.status);
       }
-    };
-
-    if (store !== undefined && context !== undefined) {
-      await store.run(context, body);
-    } else {
-      await body();
-    }
+    });
   };
-}
-
-function startTransaction(
-  client: Bugsee,
-  ctx: KoaContextLike,
-  store: RequestContextStore | undefined,
-): Transaction | undefined {
-  const perf = tryGetPerf(client);
-  if (perf === undefined) {
-    return undefined;
-  }
-  const inbound = parseTraceparent(headerValue(ctx.headers, 'traceparent'));
-  const transaction = perf.startTransaction({
-    name: requestName(ctx),
-    operation: 'http.server',
-    ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
-  });
-  store?.setTrace({ traceId: transaction.getTraceId(), spanId: transaction.getSpanId() });
-  return transaction;
-}
-
-function finishTransaction(
-  transaction: Transaction | undefined,
-  ctx: KoaContextLike,
-  errorStatus: number | undefined,
-): void {
-  try {
-    if (transaction === undefined || transaction.isFinished()) {
-      return;
-    }
-    // On success use ctx.status (final); on error use the error's status (ctx.status is unreliable here).
-    const status = errorStatus ?? ctx.status;
-    transaction.setName(requestName(ctx)); // route now parametrized
-    transaction.setAttribute('http.method', ctx.method);
-    transaction.setAttribute('http.status_code', status);
-    transaction.finish(status >= 500 ? 'ERROR' : 'OK');
-  } catch {
-    // finishing APM must never break the response lifecycle
-  }
 }

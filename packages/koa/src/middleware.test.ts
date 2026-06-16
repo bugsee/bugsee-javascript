@@ -255,3 +255,41 @@ describe('bugseeKoa', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('refactor: route refinement + re-entrancy', () => {
+  it('refines the txn name with the route discovered during routing (set before finish)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction: vi.fn(() => txn) } });
+    const c = ctx({ method: 'GET', url: '/users/7', path: '/users/7' }); // no _matchedRoute yet
+    await bugseeKoa({ getClient: () => client })(c, async () => {
+      c._matchedRoute = '/users/:id'; // @koa/router matches downstream, AFTER the bugsee middleware opened
+      c.status = 200;
+    });
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
+  });
+
+  it('re-entrancy: refines the http-layer owner — one txn, error on owner, refiner finish no-op', async () => {
+    const { createNodeRequestContextStore, runServerRequest } = await import('@bugsee/node');
+    const store = createNodeRequestContextStore();
+    const ownerTxn = fakeTxn();
+    const startTransaction = vi.fn(() => ownerTxn);
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ store, perf: { startTransaction }, logException });
+    const mw = bugseeKoa({ getClient: () => client, newContextId: () => 'adapter' });
+    const err = httpError(500);
+    await runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      async () => {
+        const c = ctx({ url: '/users/7', path: '/users/7', _matchedRoute: '/users/:id' });
+        await expect(mw(c, errNext(err))).rejects.toBe(err); // koa re-throws
+        expect(store.getCurrent()?.contextId).toBe('owner'); // refined — no new context
+        expect(store.getCurrent()?.attributes?.['http.route']).toBe('/users/:id');
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(ownerTxn.finish).not.toHaveBeenCalled(); // refiner finish was a no-op
+  });
+});
