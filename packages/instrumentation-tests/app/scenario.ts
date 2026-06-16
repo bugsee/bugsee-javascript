@@ -10,11 +10,20 @@ export type LaunchFn = (token: string, options?: BugseeLaunchOptions) => Bugsee;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Busy-block the main thread for ~ms so the event-loop watchdog observes a real hang. */
-function blockEventLoop(ms: number): void {
+/**
+ * Busy-block the main thread for ~ms so the event-loop watchdog observes a real hang. Named distinctively
+ * (`e2eHangSpin`) and given real arithmetic self-work so the V8 CPU profiler samples THIS frame during the
+ * stall — the e2e then asserts the AppHang bundle's profile contains it (the native-free "where is the main
+ * thread stuck" stack). `acc` is kept observably live so the spin work is not optimized away.
+ */
+function e2eHangSpin(ms: number): void {
   const end = Date.now() + ms;
+  let acc = 0;
   while (Date.now() < end) {
-    /* deliberate spin to stall the loop */
+    acc += Math.sqrt(acc + 1);
+  }
+  if (acc < 0) {
+    throw new Error('unreachable'); // keeps `acc` live (never thrown — acc is always >= 0)
   }
 }
 
@@ -54,7 +63,8 @@ async function runMainScenario(launch: LaunchFn, collectorUrl: string): Promise<
   await client.logException(new Error('e2e instrumented failure'));
 
   // A deliberate main-thread hang past the fair threshold → the worker watchdog fires an AppHang report.
-  blockEventLoop(400);
+  // The CPU profiler keeps sampling through the stall, so `e2eHangSpin` lands in the profile attached to it.
+  e2eHangSpin(400);
   // Let the watchdog's queued message process on the (now-unblocked) loop and the report assemble.
   await sleep(700);
 

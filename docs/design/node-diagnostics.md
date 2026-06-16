@@ -35,7 +35,11 @@ domain**, so CPU profiling works on both runtimes while a live-inspector ANR sta
 - **Profile-based ANR stack, both runtimes** (chosen over a Node-only live-inspector stack). The benchmark
   shows the two are equivalent on steady-state overhead; the differentiator is that profile-based works on
   Node AND Bun and avoids the cross-thread Debugger protocol. The precise live-inspector stack is a possible
-  Node-only refinement later (Bun would fall back to profile-based anyway).
+  Node-only refinement later (Bun would fall back to profile-based anyway). **Validated end-to-end** (real
+  node/bun/deno processes): the `@bugsee/instrumentation-tests` main scenario spins a named `e2eHangSpin`
+  past the fair threshold and asserts that frame appears in the CPU profile attached to the uploaded AppHang
+  bundle — concrete evidence the profile *is* the blocking-stack mechanism, so a native stack-capture addon
+  (`@sentry/node-native-stacktrace`) is not needed for the common-case "where is it stuck".
 - **Placement: both in `@bugsee/node`** (deeply runtime-specific: `node:inspector`, `worker_threads`),
   beside the existing crash detection providers. Bun inherits via reuse, **capability-guarded** (degrade to
   no-op where Bun lacks an API — same pattern as our guarded perf_hooks sampler). Not a new package (YAGNI).

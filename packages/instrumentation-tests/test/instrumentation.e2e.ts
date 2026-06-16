@@ -148,6 +148,25 @@ describe.each(
       expect(bundle.request.summary).toBe('Main thread hang detected');
       expect(bundle.request.environment.platform.type).toBe(target.name);
     });
+
+    it('the AppHang bundle carries a CPU profile whose samples include the blocking frame', () => {
+      // THE proof of our native-free "where is the main thread stuck" mechanism: V8 keeps sampling during
+      // the stall, so the spinning function (`e2eHangSpin`) appears in the profile attached to the hang
+      // report. This is what justifies NOT adopting a native stack-capture addon (see node-diagnostics.md).
+      const hang = bundles.find((b) => b.request.source.mechanism === 'hang');
+      expect(hang, 'no AppHang bundle was delivered').toBeDefined();
+      const bundle = hang as ParsedBundle;
+
+      expect(
+        bundle.files['profile.json'],
+        'the AppHang bundle carries no profile.json',
+      ).toBeDefined();
+      const profile = parseJson<{ nodes: Array<{ callFrame: { functionName: string } }> }>(
+        bundle.files['profile.json'],
+      );
+      const blocking = profile.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin');
+      expect(blocking, 'the blocking frame e2eHangSpin is not in the AppHang profile').toBe(true);
+    });
   });
 
   describe('server scenario: node:http incoming request → per-request context', () => {
