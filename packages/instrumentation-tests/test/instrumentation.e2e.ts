@@ -21,6 +21,8 @@ interface ReportEnvelope {
   summary: string;
   source: { mechanism: string };
   environment: { platform: { type: string; version: string } };
+  /** The per-request context id, present when a request context was active at report time. */
+  context_id?: string;
 }
 interface ParsedBundle {
   issueId: string;
@@ -30,6 +32,8 @@ interface ParsedBundle {
 interface LogEntry {
   message: string;
   level: string;
+  /** The context id the entry was stamped with (correlation-by-tagging). */
+  context_id?: string;
 }
 interface NetworkEntry {
   url?: string;
@@ -143,6 +147,50 @@ describe.each(
       const bundle = hang as ParsedBundle;
       expect(bundle.request.summary).toBe('Main thread hang detected');
       expect(bundle.request.environment.platform.type).toBe(target.name);
+    });
+  });
+
+  describe('server scenario: node:http incoming request → per-request context', () => {
+    let collector: MockCollector;
+    let exitCode: number | null;
+    let stderr: string;
+    let bundles: ParsedBundle[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      const result = await runScenarioProcess(target, collector.url, 'server');
+      exitCode = result.exitCode;
+      stderr = result.stderr;
+      bundles = parseBundles(collector);
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+    });
+
+    it('the app process exits cleanly', () => {
+      expect(exitCode, stderr).toBe(0);
+    });
+
+    it('the handler-raised report carries the incoming request context, correlated to the handler log', () => {
+      const err = bundles.find((b) => b.request.summary === 'e2e server handler failure');
+      expect(err, 'no handler error bundle was delivered').toBeDefined();
+      const bundle = err as ParsedBundle;
+
+      // The default-on node:http emit patch opened a per-request context → the report carries its id.
+      const contextId = bundle.request.context_id;
+      expect(
+        typeof contextId,
+        'report has no context_id (the emit patch did not open a context)',
+      ).toBe('string');
+      expect((contextId ?? '').length).toBeGreaterThan(0);
+
+      // THE proof: the log emitted INSIDE the handler carries the SAME context_id — it ran within the
+      // request's run-scoped context and the report correlated to it (no cross-request bleed).
+      expect(bundle.files['logs.json'], 'no logs.json in the bundle').toBeDefined();
+      const logs = parseJson<LogEntry[]>(bundle.files['logs.json']);
+      const own = logs.find((l) => l.context_id === contextId);
+      expect(own?.message).toContain('handling GET /orders/42');
     });
   });
 

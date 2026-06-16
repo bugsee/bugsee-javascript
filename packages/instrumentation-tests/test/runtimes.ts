@@ -78,7 +78,7 @@ export interface ProcessResult {
 export function runScenarioProcess(
   target: RuntimeTarget,
   collectorUrl: string,
-  scenario: 'main' | 'crash',
+  scenario: 'main' | 'crash' | 'server',
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {
     return Promise.reject(new Error(`runtime ${target.name} is unavailable`));

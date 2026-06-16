@@ -93,6 +93,49 @@ async function runCrashScenario(launch: LaunchFn, collectorUrl: string): Promise
   await sleep(10_000);
 }
 
+/**
+ * Incoming-server battery: launch with the default-on `instrumentIncomingRequests`, stand up a REAL
+ * `node:http` server (works on node/bun/deno via their node:http compat — the slice-4 spikes proved the
+ * emit patch fires on all three), hit it once with a real request, and report FROM the handler. The proof:
+ * the node:http emit patch opens a per-request context for the in-flight request, so (a) the handler's log
+ * line and (b) the handler-raised error report both carry the SAME request `context_id`. (The `http.server`
+ * APM transaction needs the performance extension, which the umbrella wires and this bare-@bugsee/node
+ * harness does not — that path is covered by the unit + per-adapter integration suites.) Exits 0.
+ */
+async function runServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+    // instrumentIncomingRequests defaults to TRUE — the server below is auto-instrumented, no flag passed.
+  });
+
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    // Emitted INSIDE the handler → it runs in the request's run-scoped context, so this line is stamped
+    // with the request's context_id (the end-to-end proof the emit patch opened the context).
+    client.log(`handling ${req.method} ${req.url}`);
+    // A report raised from the handler → an error bundle that merges the active context (same context_id).
+    void client.logException(new Error('e2e server handler failure'));
+    res.statusCode = 200;
+    res.end('ok');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+  // A real incoming request the default-on emit patch brackets with a per-request context.
+  const res = await fetch(`http://127.0.0.1:${port}/orders/42`);
+  await res.text();
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -100,6 +143,10 @@ export async function runScenario(
 ): Promise<void> {
   if (opts.scenario === 'crash') {
     await runCrashScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'server') {
+    await runServerScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);
