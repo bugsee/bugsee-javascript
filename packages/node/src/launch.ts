@@ -65,6 +65,7 @@ import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
 import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
+import { startLivenessHeartbeat } from './liveness-heartbeat';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
 import { recoverInstances } from './recover-instances';
@@ -517,6 +518,17 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // Start the rolling CPU profiler (after launch, so the scheduler service is live).
   profilingController?.start();
 
+  // Liveness heartbeat: while this instance lives it re-writes its `.live` (mtime) so a peer's recovery does
+  // not reclaim its subtree (multi-instance coexistence). Started after launch (scheduler service is live).
+  const heartbeat =
+    instanceLayout !== undefined
+      ? startLivenessHeartbeat({
+          liveFile: instanceLayout.liveFile,
+          scheduler: client.getService(SchedulerToken),
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
+
   // Re-upload any bundles THIS instance's own subtree left persisted (durable queue recovery — a no-op on a
   // fresh per-launch subtree, kept for symmetry/safety).
   durable?.recover();
@@ -594,6 +606,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         proc.off('uncaughtException', onUncaughtException);
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
+      heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)
       for (const installable of serverInstallables) {
         installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
       }

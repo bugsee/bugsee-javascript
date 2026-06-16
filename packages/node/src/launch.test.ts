@@ -700,6 +700,13 @@ describe('launch', () => {
     expect(readdirSync(join(dir, '1-0-x', 'capture'))).toContain('0000000001000');
   });
 
+  it('writes owner.json and the .live heartbeat under the instance subtree', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-owner-'));
+    launchTracked('tok', baseOptions({ dataDir: dir, instanceIdentity: FIXED_INSTANCE }));
+    expect(existsSync(join(dir, FIXED_INSTANCE_ID, 'owner.json'))).toBe(true); // peer attribution/liveness
+    expect(existsSync(join(dir, FIXED_INSTANCE_ID, '.live'))).toBe(true); // heartbeat beat once on launch
+  });
+
   it('defaults the transport to node-utils httpRequest when none is injected', () => {
     // No transport supplied → the real httpRequest is wired (assigned, never called: no report here).
     const client = launch('tok', {
