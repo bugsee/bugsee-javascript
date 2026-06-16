@@ -173,13 +173,27 @@ describe('@bugsee/bun launch', () => {
     }
   });
 
-  it('does NOT patch Bun.serve when instrumentIncomingRequests is off (default)', async () => {
+  it('patches Bun.serve BY DEFAULT (no flag)', async () => {
     type G = { Bun?: { serve: unknown } };
     const realServe = vi.fn(() => ({ stop() {} }));
     (globalThis as G).Bun = { serve: realServe };
     const client = launch('tok', base());
     try {
-      expect((globalThis as G).Bun?.serve).toBe(realServe); // untouched (default off)
+      expect((globalThis as G).Bun?.serve).not.toBe(realServe); // patched without any flag (default-on)
+    } finally {
+      await client.stop();
+      expect((globalThis as G).Bun?.serve).toBe(realServe); // restored on stop
+      delete (globalThis as G).Bun;
+    }
+  });
+
+  it('does NOT patch Bun.serve when instrumentIncomingRequests is false (escape hatch)', async () => {
+    type G = { Bun?: { serve: unknown } };
+    const realServe = vi.fn(() => ({ stop() {} }));
+    (globalThis as G).Bun = { serve: realServe };
+    const client = launch('tok', base({ instrumentIncomingRequests: false }));
+    try {
+      expect((globalThis as G).Bun?.serve).toBe(realServe); // untouched (opted out)
     } finally {
       await client.stop();
       delete (globalThis as G).Bun;

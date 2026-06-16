@@ -205,9 +205,10 @@ export interface BugseeLaunchOptions {
 
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
-   * a per-request context + an `http.server` APM transaction. Opt-in — default false (default-on is a
-   * follow-up). Captures NO handled errors (the framework swallows them before node:http) and NO
-   * headers/bodies. See docs/design/incoming-server-instrumentation.md.
+   * a per-request context + an `http.server` APM transaction. ON BY DEFAULT — set `false` to opt out (the
+   * escape hatch). Captures NO handled errors (the framework swallows them before node:http) and NO
+   * headers/bodies; coexists with the framework adapters via first-owner-wins re-entrancy (exactly one
+   * context + one transaction per request). See docs/design/incoming-server-instrumentation.md.
    */
   instrumentIncomingRequests?: boolean;
   /**
@@ -542,13 +543,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     proc.on('uncaughtException', onUncaughtException);
   }
 
-  // Incoming-server auto-instrumentation (opt-in; default off — design D3). When on, install the node:http
-  // emit patch + any injected native serve wraps (bun/deno). getClient is lazy (the carrier client,
-  // resolved per request, so install order vs setCarrierClient does not matter). One patch per process —
-  // launch is a per-process singleton, so this install runs once; uninstalled on stop(). Default-off leaves
-  // the real http.Server.prototype untouched (the existing suite is unaffected).
+  // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out —
+  // design D3, flipped default-on). When on, install the node:http emit patch + any injected native serve
+  // wraps (bun/deno). getClient is lazy (the carrier client, resolved per request, so install order vs
+  // setCarrierClient does not matter). One patch per process — launch is a per-process singleton, so this
+  // install runs once; uninstalled on stop(). The framework adapters coexist via first-owner-wins
+  // re-entrancy (the owner here run-scopes the context + http.server txn; an adapter refines it).
   const serverInstallables: ServerInstallable[] = [];
-  if (options.instrumentIncomingRequests === true) {
+  if (options.instrumentIncomingRequests !== false) {
     serverInstallables.push(
       options.serverInterceptor ??
         createHttpServerInterceptor({ getClient: () => getCarrierClient<Bugsee>(carrier) }),

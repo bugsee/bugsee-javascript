@@ -1157,13 +1157,33 @@ describe('launch — incoming-server instrumentation wiring', () => {
     }
   });
 
-  it('default (no flag): installs no server instrumentation', async () => {
+  it('default (no flag): installs server instrumentation (ON BY DEFAULT)', async () => {
     const order: string[] = [];
     const httpIc = mk('http', order);
     const native = mk('native', order);
     const client = launch(
       'tok',
       opts({ serverInterceptor: httpIc, serverInstrumentations: [native] }),
+    );
+    // Default-on: the node:http interceptor + the injected instrumentations install without any flag.
+    expect(httpIc.install).toHaveBeenCalledTimes(1);
+    expect(native.install).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['install:http', 'install:native']);
+    await client.stop();
+    expect(order).toEqual(['install:http', 'install:native', 'uninstall:http', 'uninstall:native']);
+  });
+
+  it('escape hatch (instrumentIncomingRequests: false): installs no server instrumentation', async () => {
+    const order: string[] = [];
+    const httpIc = mk('http', order);
+    const native = mk('native', order);
+    const client = launch(
+      'tok',
+      opts({
+        instrumentIncomingRequests: false,
+        serverInterceptor: httpIc,
+        serverInstrumentations: [native],
+      }),
     );
     expect(httpIc.install).not.toHaveBeenCalled();
     expect(native.install).not.toHaveBeenCalled();

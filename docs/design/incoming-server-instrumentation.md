@@ -15,7 +15,7 @@ per-request context **foundation** exists and 7 framework adapters wire it expli
 
 ## 1. Goal & non-goals
 
-**Goal.** With an opt-in flag (v1; default-on is a follow-up — §10), every incoming request on Node, Bun, and Deno gets
+**Goal.** On by default (`instrumentIncomingRequests`, opt out with `false` — D3), every incoming request on Node, Bun, and Deno gets
 (1) a **per-request context** (`contextId` + trace stamped on every capture entry — the correlation-by-
 tagging foundation) and (2) an **`http.server` APM transaction** (name / method / status / duration,
 continuing an inbound W3C `traceparent`), for **any** `node:http` framework (Express, Koa, Fastify, Hapi,
@@ -39,7 +39,7 @@ raw `http.Server`) **and** idiomatic native servers (`Bun.serve({fetch})`, `Deno
 |---|---|---|
 | **D1** | **Home = `@bugsee/node`.** Shared core + `node:http` installer + launch flag in `@bugsee/node`; `@bugsee/bun`/`@bugsee/deno` inject native `serve` wraps via the `launchCore` option seam they already use for `systemProbe`. | node **cannot** import `server-adapters` (cycle); all 7 adapters + bun + deno already dep `@bugsee/node` + `@bugsee/performance`. Verified (agent 1). |
 | **D2** | **Two interception mechanisms:** (a) `http(s).Server.prototype.emit('request')` patch (node:http, all 3 runtimes — gated by spike §8.0); (b) native `Bun.serve({fetch})` / `Deno.serve(handler)` wraps. | Idiomatic Bun/Deno apps never touch node:http; Express-on-Bun does. |
-| **D3** | **Opt-in (default-OFF) for v1**, via `instrumentIncomingRequests` (default `false`). Flip to default-on in a follow-up once the mechanism is proven on all 3 runtimes + all mitigations (D11/D12) land. | **Revised** from default-on after review round 1 (agent 5): default-on would self-instrument the SDK's own in-process control-plane server, change ~50 existing tests, risk teardown leaks, and capture `http.url` query PII universally. Default-off keeps the existing suite untouched and makes those mitigations correctness-when-opted-in rather than ship blockers. |
+| **D3** | **ON BY DEFAULT** (flipped after the mechanism was proven on all 3 runtimes + D11/D12 + the 7-adapter→refiner refactor landed), via `instrumentIncomingRequests` (default `true`; set `false` to opt out — the escape hatch). | History: shipped default-OFF for v1 (review round 1, agent 5: default-on would self-instrument the SDK's control-plane server, re-baseline ~50 tests, risk teardown leaks, capture `http.url` query PII). FLIPPED once every concern was closed: the node:http patch self-isolates `x-bugsee-internal` (D11); install/uninstall is leak-free (D12, verified); `http.url` query is scrubbed by the redaction pipeline + stripped from span names; and all 7 adapters now refine the owner under re-entrancy (one context + one txn). The actual flip re-baselined only **1** node + 1 bun + 1 deno wiring test (a stopped client's patch is a harmless pass-through) and every adapter e2e now exercises coexistence — all green. |
 | **D4** | **`run`-scoped context** for the emit patch + native wraps; `enterWith` variant retained for hook adapters. | **Rationale corrected** (agent 2, empirical Node v24): `run()` deterministically *reverts* the context when the synchronous dispatch returns (no residual context on the socket's post-dispatch async work); `enterWith` persists until overwritten. (The earlier "enterWith leaks across keep-alive" claim was NOT reproducible — Node dispatches each `emit('request')` in a fresh async context. `run` is still the correct, scoped choice.) `enterWith` stays where the hook returns before the handler (Fastify/Hapi/Elysia/Nest). |
 | **D5** | **Span name = raw path (query stripped) + optional `spanName(method,url)` hook.** Default `GET /users/123`. A dedicated adapter refines to `/users/:id` via `setRoute`. | OTel-aligned; cardinality caveat documented. |
 | **D6** | **Re-entrancy = guarded refine.** First opener (http layer) **owns** context + txn and stashes its span on the context; a later opener (adapter) gets a **refining** handle (no second context/txn). | Core mechanics SOUND (agent 2, empirical). When the flag is OFF, `getCurrent()===undefined` → adapters open exactly as today. |
@@ -84,7 +84,7 @@ check:cycles`.
 |---|---|---|---|
 | **1** | **Shared core** | Move `server-adapters/src/server.ts` → `@bugsee/node/src/server-instrument.ts`; rename `openBugsee*`→`server*`; add `runServerRequest` + owner/refiner re-entrancy + `Symbol.for` span-stash + `finish(status, outcome?)` (D10); add `@bugsee/performance` to `node/package.json`. | §8.1 |
 | **2** | **`node:http` interceptor** | `http-server-interceptor.ts`: emit patch (http + https), `install()`/`uninstall()` (restore by `delete`, D12), inbound `x-bugsee-internal` skip (D11), `res.once` + `writableFinished` guard. | §8.2 |
-| **3** | **Launch wiring** | `instrumentIncomingRequests` (default **false**, D3) + the **concatenating** `serverInstrumentations` seam + `serverInterceptor` test seam + install-driven via the **launch singleton** (D12 — no typed carrier slot) with self-undoing install + `stop()` uninstall. **DONE.** | §8.5 |
+| **3** | **Launch wiring** | `instrumentIncomingRequests` (default **true**, D3) + an escape hatch (`false`) + the **concatenating** `serverInstrumentations` seam + `serverInterceptor` test seam + install-driven via the **launch singleton** (D12 — no typed carrier slot) with self-undoing install + `stop()` uninstall. **DONE.** | §8.5 |
 | **4** | **Bun/Deno** | **START with the §8.0 gating spikes** on real bun/deno; then native `Bun.serve`/`Deno.serve` installers injected via the seam; pin min versions; document `routes`/websocket/`reload` gaps (D9). | §8.0 → §8.3 → §8.6 |
 | **5** | **Adapter refactor** | Refactor the 7 adapters onto the shared core (one commit each), keeping each adapter's own `shouldReport` + route extraction (D7); add per-adapter coexistence test. | §8.4 (existing suites + coexistence) |
 | **6** | **Retire `server-adapters`** | Delete the package + workspace/lockfile; update docs/memory. Can land **right after slice 1** (nothing imports it — verified). | `check:cycles` + full build green |
@@ -264,7 +264,7 @@ elysia**; the other 5 use the default outcome.
 
 ## 6. Launch wiring (`@bugsee/node` `launch.ts`)
 
-- `instrumentIncomingRequests?: boolean` — **default `false`** (D3). When true: build `[serverInterceptor
+- `instrumentIncomingRequests?: boolean` — **default `true`** (D3); `false` opts out. When on: build `[serverInterceptor
   ?? createHttpServerInterceptor({getClient}), ...serverInstrumentations]` and `install()` each. One patch
   per process via the launch singleton (D12). The lazy `getClient` resolves the carrier client per request.
 - `serverInstrumentations?: ServerInstallable[]` — each `{ install(): void; uninstall(): void }`,
@@ -345,7 +345,7 @@ no existing assertion changes). Per-adapter **coexistence** test: flag ON + adap
 one txn, route refined. For nestjs + elysia, pin the **cross-handle** path: the refiner passes the
 error/code-derived outcome and the **owner's** `finish` honors it (D10).
 
-**8.5 launch** — default-off installs nothing (existing suite untouched); `instrumentIncomingRequests:true`
+**8.5 launch** — default-ON installs the node:http interceptor + injected wraps; `instrumentIncomingRequests:false`
 installs; `stop()` uninstalls all; repeat launch after stop re-patches cleanly.
 
 **8.6 e2e harness** — add an **incoming-server scenario** (raw `http.Server` + native `Bun.serve`/

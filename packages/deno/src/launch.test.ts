@@ -167,13 +167,27 @@ describe('@bugsee/deno launch', () => {
     }
   });
 
-  it('does NOT patch Deno.serve when instrumentIncomingRequests is off (default)', async () => {
+  it('patches Deno.serve BY DEFAULT (no flag)', async () => {
     type G = { Deno?: { serve: unknown } };
     const realServe = vi.fn();
     (globalThis as G).Deno = { serve: realServe };
     const client = launch('tok', base());
     try {
-      expect((globalThis as G).Deno?.serve).toBe(realServe); // untouched (default off)
+      expect((globalThis as G).Deno?.serve).not.toBe(realServe); // patched without any flag (default-on)
+    } finally {
+      await client.stop();
+      expect((globalThis as G).Deno?.serve).toBe(realServe); // restored on stop
+      delete (globalThis as G).Deno;
+    }
+  });
+
+  it('does NOT patch Deno.serve when instrumentIncomingRequests is false (escape hatch)', async () => {
+    type G = { Deno?: { serve: unknown } };
+    const realServe = vi.fn();
+    (globalThis as G).Deno = { serve: realServe };
+    const client = launch('tok', base({ instrumentIncomingRequests: false }));
+    try {
+      expect((globalThis as G).Deno?.serve).toBe(realServe); // untouched (opted out)
     } finally {
       await client.stop();
       delete (globalThis as G).Deno;
