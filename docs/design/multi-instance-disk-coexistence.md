@@ -1,9 +1,13 @@
-# Multi-instance on-disk coexistence + recovery (worker_threads & multi-process) — DESIGN
+# Multi-instance on-disk coexistence + recovery (worker_threads & multi-process) — BUILT
 
-**Status:** DESIGN — approach accepted (liveness = Hybrid PID-probe + heartbeat; scope = on-disk only).
-Grounded in two read-only explorations: the **Bugsee Android SDK** canonical multi-process logic
-(`com.bugsee.library` NDK crash store) and our current Node on-disk model. Android-canonical (design rule).
-Build via the standard slice loop (test-first → mutator → multi-agent review → commit/push).
+**Status:** **BUILT + on `master`** (2026-06-17). Liveness = Hybrid PID-probe + (main-thread) heartbeat; scope
+= on-disk coexistence + recovery. Grounded in two read-only explorations: the **Bugsee Android SDK** canonical
+multi-process logic (`com.bugsee.library` NDK crash store) and our Node on-disk model. Android-canonical.
+Shipped as slices 1–5 (each test-first → mutator → multi-agent review → commit/push), all in `@bugsee/node`:
+`instance-layout.ts` (subtree + owner.json), `liveness.ts` (pid-probe + isSiblingDead), `liveness-heartbeat.ts`
+(`.live`), `recover-instances.ts` (the coordinator + liveness gate), launch wiring, and a real two-process
+cross-runtime e2e (node/bun/deno). Multi-agent review converged (1 real test gap closed, 1 false positive
+dismissed). Deferred hardening: worker-thread heartbeat carrier (D3) + the atomic-rename claim (D5) — see §8.
 
 ## 1. Problem & goal
 

@@ -280,6 +280,37 @@ post-persist/pre-upload window where a crash double-delivers (server `signatures
 tighter "clear on persist" hook is a deferred drop-in. **Optional follow-up:** the
 "unexpected-termination" (broad) policy with a clean-shutdown flag (currently out of scope by choice).
 
+### Multi-instance on-disk coexistence + recovery — COMPLETE (2026-06-17, on `master`)
+Several SDK aggregators — worker_threads in ONE process, or several processes — can now safely share one
+`dataDir` (the per-process carrier singleton does NOT collapse worker_threads, which have their own
+globalThis). Android-canonical (`com.bugsee.library` NDK per-process subtree + liveness + opportunistic
+recovery). Design `docs/design/multi-instance-disk-coexistence.md`. All in `@bugsee/node`:
+- **Per-instance subtree** `<dataDir>/<pid>-<threadId>-<nonce>/{capture,pending,incidents}` + `.live` +
+  `owner.json` (`instance-layout.ts`, D1) — concurrent writers never touch the same files (kills the
+  same-ms generation collision + interleaved-append corruption by construction). `threadId` separates
+  worker_threads; the random `nonce` separates relaunch / guards PID reuse. New advanced `instanceIdentity`
+  launch option pins a deterministic id for tests.
+- **Liveness** (`liveness.ts`, D2) — the portable replacement for Java's OS `FileLock`: a sibling is DEAD
+  iff `process.kill(pid,0)` says the owner is gone (instant + hang-correct — a hung process is a live pid),
+  OR an alive pid has gone heartbeat-stale beyond the 120 s patient window (dead worker_thread / PID reuse).
+  An alive pid with no heartbeat yet is a still-arming instance → kept.
+- **Heartbeat** (`liveness-heartbeat.ts`, D3) — a main-thread scheduler interval re-writes `.live` (mtime)
+  every 10 s, stopped on `stop()`. (Worker-thread carrier for true hang-proofness = deferred hardening; the
+  pid-probe already makes a hung process read alive and the patient window covers a hung worker_thread.)
+- **Coordinator** (`recover-instances.ts`, D4/D5) — on launch, scan the SIBLING subtrees; the liveness gate
+  recovers ONLY dead ones (never a live sibling), reusing the existing per-incident recovery pipeline
+  (durable-queue drain + marker rebuild) aimed at the sibling's dir, then removes it — but ONLY once fully
+  delivered (a failed upload survives to retry). Concurrent recovery is left unclaimed: it is idempotent +
+  server-side `signatures`-deduped, so the no-claim path is correct (the atomic-rename claim is a deferred
+  optimization). Wired in `launch.ts` (owner.json up front; heartbeat after launch; coordinator replaces the
+  old "recover my own prior generations" — a prior crashed run is now a dead sibling).
+- **Real two-process e2e** (`@bugsee/instrumentation-tests`): a doomed process persists an incident then
+  dies undelivered; a fresh process on the same dataDir recovers + delivers it. GREEN on node/bun/deno.
+Slice-0 spikes verified `threadId` / `kill(pid,0)`-ESRCH / worker-thread heartbeat on real node/bun/deno.
+Each slice test-first + mutator + multi-agent review to convergence (1 real gap closed, 1 false positive
+dismissed). **Deferred:** worker-thread heartbeat (D3) + atomic-rename claim (D5) + cross-machine dataDir +
+the browser/IndexedDB tier.
+
 ### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
 The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
 the Android/iOS SDKs + competitors (Sentry/Firebase/BugSnag/Datadog) — gap analysis: see
