@@ -623,18 +623,44 @@ The foundation (S1–S5) is reused verbatim by the next backend adapters — eac
     (`ctx.throw(404)`), report no-status/5xx. e2e via a real `http.Server`.
   - (**Restify was built then dropped** — it is unmaintained (last release Jan 2024) and doesn't import on
     Node ≥18; not a target our customers would adopt. See the "After browser" note.)
-- **`@bugsee/server-adapters` — generic framework-agnostic engine** — **COMPLETE (2026-06-16, on `master`,
-  `5f667ae`)**, design `docs/design/generic-server-adapter.md`. Takes PLAIN VALUES (no framework objects):
-  `openBugseeRequest({method,url,route?,traceparent?,user?}) → span{setRoute, captureError(err,{shouldReport?})
-  →bool, finish(status), cancel()}`, so **any** backend framework / raw `http.Server` (Sails, Adonis, h3/Nitro,
-  Polka, …) can be instrumented in a few lines. Opens the context via `enterWith`; the caller computes the
-  final status and the engine maps it (finish `≥500`→ERROR else OK; cancel→CANCELLED). Plus decoupled
-  `openBugseeContext`/`startBugseeServerSpan` (split-hook frameworks) + a robust `defaultShouldReport`
-  (duck-types `getStatus`/`status`/`statusCode`/Boom `output.statusCode`). Test-first (mutator, 100%) + a
-  raw-`http.Server` e2e (no framework) proving the long-tail path with real concurrency isolation; reviewed.
-  Ships as a PURELY ADDITIVE capability — the **DRY refactor of the 7 existing adapters onto it was decided
-  AGAINST** (they're tested+validated+on master; don't re-touch working code). The §4 mapping in the design
-  doc records that the engine *could* express all 7 if a refactor is ever revisited.
+- **Incoming-server auto-instrumentation + shared server-instrument core (in `@bugsee/node`)** —
+  **COMPLETE (2026-06-16, on `master`)**, design `docs/design/incoming-server-instrumentation.md` (the
+  authoritative doc; it absorbed & supersedes `generic-server-adapter.md`). `@bugsee/server-adapters` was
+  **RETIRED** — its engine is now `packages/node/src/server-instrument.ts`, renamed `openBugsee*`→`server*`
+  and **extended**. What landed:
+  - **Shared core** (`server-instrument.ts`): plain-values in (`ServerRequestInfo{method,url,route?,
+    traceparent?,user?}`), a `ServerRequestSpan{setRoute, captureError(err,{shouldReport?})→bool,
+    finish(status,outcome?), cancel()}` out. Entries: `runServerRequest` (`store.run`-scoped — the
+    node:http patch / native wraps / express / koa / hono), `openServerRequest` (`enterWith` — fastify /
+    hapi / elysia), split `openServerContext` + `startServerSpan` (nestjs middleware vs interceptor), and
+    `getActiveServerSpan`. **First-owner-wins re-entrancy:** the first opener OWNS the context + the
+    `http.server` txn and stashes its span (with a `runScoped` flag); a later opener gets a REFINING handle
+    (setRoute/captureError act on the owner; finish/cancel no-op) — exactly ONE context + ONE txn even when
+    the http layer AND a dedicated adapter both run. Only a **run-scoped** owner is refinable (an enterWith
+    adapter's context can linger across a shared async context — e.g. Elysia's `app.handle` — and must not
+    be mistaken for this request's owner). `finish(status, outcome?)` keeps an EXPLICIT outcome (D10) for
+    Nest/Elysia. Robust `defaultShouldReport` (duck-types `getStatus`/`status`/`statusCode`/Boom
+    `output.statusCode`).
+  - **node:http interceptor** (`http-server-interceptor.ts`): patches `http(s).Server.prototype.emit`
+    (`https` patched separately — it doesn't inherit via `http.Server.prototype`); brackets `'request'` via
+    `runServerRequest`; finishes on the response's `'close'` (AFTER `'finish'`, so an adapter's `setRoute`
+    lands in the txn name first), `writableFinished` → finish-by-status vs cancel; self-isolates
+    `x-bugsee-internal`; restores by `delete` (the prototype's `emit` is inherited). A `ServerInstallable`
+    (install/uninstall, launch/stop-driven — not subscriber-driven).
+  - **Native `Bun.serve`/`Deno.serve` wraps** (`@bugsee/bun`/`@bugsee/deno`): `wrapFetchHandler` (shared,
+    in `@bugsee/node`) instruments a Fetch `Request→Response` handler; the per-runtime interceptors patch
+    the global `serve` and self-skip when it is absent. Spiked first on real Bun 1.3 + Deno 2.8 (§8.0).
+  - **All 7 adapters refactored onto the core** (express/fastify/nestjs/hono/elysia/hapi/koa): each keeps
+    its own `shouldReport` + route extraction, but the context/txn mechanics + re-entrancy come from the
+    core. nestjs is split (middleware `openServerContext` skips when a context is already active;
+    interceptor `startServerSpan` refines the http owner; error capture stays `reportErrorOnce` for the
+    `both`-mode WeakSet dedup the core span does not model).
+  - **ON BY DEFAULT** (`instrumentIncomingRequests`, default `true`; `false` opts out — D3 flipped). The
+    flip re-baselined only 3 wiring tests (1 node + 1 bun + 1 deno + their escape-hatch tests); every
+    adapter e2e now exercises the coexistence path. All test-first (mutator, 100%) + multi-agent-reviewed.
+  - **Follow-ups:** a real-runtime incoming-server e2e in `@bugsee/instrumentation-tests`; an opt-in
+    `http.url` query-strip; Bun `routes`/websocket, `Deno.serve` non-handler options, `server.reload()`
+    survival, `node:http2`, WS upgrade (documented gaps — design §10).
 
 ### Dual-module (ESM + CJS) packaging — COMPLETE (2026-06-15, on `master`)
 Every implemented package now publishes **both** ESM and CJS, per `docs/design/packaging-dual-module.md`
