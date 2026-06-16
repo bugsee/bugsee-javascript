@@ -264,6 +264,20 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-alive'))).toBe(true);
   });
 
+  it('skips an ARMING sibling (alive pid, no heartbeat written yet)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-arming', 'b1', aBundle('arming'));
+    writeOwner(dir, '9-9-arming', LIVE_PID); // alive pid, but NO .live heartbeat yet
+    const pipe = fakePipeline();
+
+    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+
+    // alive pid + no heartbeat → a still-arming instance → kept (this proves the heartbeat read is wired,
+    // independent of the alive+fresh case; with the alive+stale case it pins the whole alive-pid branch).
+    expect(pipe.enqueue).not.toHaveBeenCalled();
+    expect(existsSync(join(dir, '9-9-arming'))).toBe(true);
+  });
+
   it('skips a sibling with no owner.json (cannot liveness-check → leave it)', async () => {
     const dir = mkDir();
     seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('x'));
