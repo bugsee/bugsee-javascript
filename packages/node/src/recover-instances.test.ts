@@ -270,7 +270,12 @@ describe('recoverInstances', () => {
     writeOwner(dir, '9-9-arming', LIVE_PID); // alive pid, but NO .live heartbeat yet
     const pipe = fakePipeline();
 
-    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
 
     // alive pid + no heartbeat → a still-arming instance → kept (this proves the heartbeat read is wired,
     // independent of the alive+fresh case; with the alive+stale case it pins the whole alive-pid branch).
