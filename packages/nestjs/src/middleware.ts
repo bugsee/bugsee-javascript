@@ -40,7 +40,12 @@ export function createBugseeMiddleware(options: NestAdapterOptions = {}): NestRe
     try {
       client = getClient();
       store = client !== undefined ? resolveStore(client) : undefined;
-      if (client !== undefined && store !== undefined) {
+      // Skip opening a context when one is ALREADY active (store.getCurrent()): under the node:http
+      // auto-instrument (re-entrancy) the owner has already `run`-scoped the request's context — a second
+      // `enterWith` here would OVERWRITE it (splitting the request across two contexts + dropping the
+      // owner's stashed span, so the interceptor would start a DUPLICATE transaction). The short-circuit
+      // also keeps the no-store path free of wasted work (the user getter / id minter never run).
+      if (client !== undefined && store !== undefined && store.getCurrent() === undefined) {
         context = buildContext(req, newContextId, options.user?.(req));
       }
     } catch {

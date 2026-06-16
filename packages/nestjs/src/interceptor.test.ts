@@ -18,14 +18,23 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
     ...over,
   }) as unknown as Transaction;
 
-const fakeStore = (): RequestContextStore & { setTrace: ReturnType<typeof vi.fn> } =>
+const fakeStore = (): RequestContextStore & {
+  setTrace: ReturnType<typeof vi.fn>;
+  setUser: ReturnType<typeof vi.fn>;
+  getCurrent: ReturnType<typeof vi.fn>;
+} =>
   ({
     getCurrent: vi.fn(),
     run: vi.fn(),
     enterWith: vi.fn(),
+    setUser: vi.fn(),
     setAttribute: vi.fn(),
     setTrace: vi.fn(),
-  }) as unknown as RequestContextStore & { setTrace: ReturnType<typeof vi.fn> };
+  }) as unknown as RequestContextStore & {
+    setTrace: ReturnType<typeof vi.fn>;
+    setUser: ReturnType<typeof vi.fn>;
+    getCurrent: ReturnType<typeof vi.fn>;
+  };
 
 const fakeClient = (opts: {
   store?: RequestContextStore;
@@ -329,5 +338,121 @@ describe('BugseeInterceptor', () => {
       ),
     );
     expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 201);
+  });
+
+  it('names the transaction from originalUrl (query stripped) when no route is matched', () => {
+    const startTransaction = vi.fn(() => fakeTxn());
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction } });
+    drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx({ method: 'GET', originalUrl: '/search?q=secret', headers: {} } as NestHttpRequest, {
+          statusCode: 200,
+        }),
+        handlerOf(of('ok')),
+      ),
+    );
+    // express Nest exposes originalUrl; with no matched route the span name falls back to its PATH (the
+    // query string — which may carry secrets — is stripped out of the name).
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'GET /search', operation: 'http.server' }),
+    );
+  });
+
+  it('REFINES the node:http owner span under re-entrancy (no second transaction; propagates route + user)', () => {
+    // A run-scoped owner span stashed on the active context exactly as the node:http interceptor does it
+    // (`runScoped: true` makes it the refinable owner). The Nest interceptor must REUSE it, not start a 2nd.
+    const ownerSpan = {
+      setRoute: vi.fn(),
+      captureError: vi.fn(() => false),
+      finish: vi.fn(),
+      cancel: vi.fn(),
+    };
+    const activeContext = {
+      contextId: 'owner-ctx',
+      attributes: {},
+      [Symbol.for('bugsee.server.span')]: { span: ownerSpan, runScoped: true },
+    };
+    const startTransaction = vi.fn(() => fakeTxn());
+    const store = fakeStore();
+    store.getCurrent.mockReturnValue(activeContext);
+    const client = fakeClient({ store, perf: { startTransaction } });
+
+    const out = drain(
+      new BugseeInterceptor({
+        getClient: () => client,
+        user: () => 'eve@example.com',
+      }).intercept(
+        ctx(req({ method: 'PUT', route: { path: '/items/:id' } }), { statusCode: 200 }),
+        handlerOf(of('ok')),
+      ),
+    );
+
+    expect(startTransaction).not.toHaveBeenCalled(); // refine the owner → NO second http.server transaction
+    expect(store.setUser).toHaveBeenCalledWith('eve@example.com'); // the adapter's user lands on the owner ctx
+    expect(ownerSpan.setRoute).toHaveBeenCalledWith('/items/:id'); // routing refines the owner's name
+    expect(ownerSpan.finish).not.toHaveBeenCalled(); // the owner (node:http) finishes on res 'close', not us
+    expect(out.value).toBe('ok');
+    expect(out.completed).toBe(true);
+  });
+
+  it('reports a thrown error under re-entrancy WITHOUT finishing the owner span (owner finishes on close)', () => {
+    // Same re-entrancy setup as above, but the handler THROWS. Error reporting must go through the direct
+    // `reportErrorOnce` path (logException) — NOT the owner span's captureError — and the refining span's
+    // finish must stay a no-op so the node:http owner alone finishes the transaction.
+    const ownerSpan = {
+      setRoute: vi.fn(),
+      captureError: vi.fn(() => false),
+      finish: vi.fn(),
+      cancel: vi.fn(),
+    };
+    const activeContext = {
+      contextId: 'owner-ctx',
+      attributes: {},
+      [Symbol.for('bugsee.server.span')]: { span: ownerSpan, runScoped: true },
+    };
+    const logException = vi.fn(() => Promise.resolve());
+    const store = fakeStore();
+    store.getCurrent.mockReturnValue(activeContext);
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+      logException,
+    });
+    const err = new Error('handler boom under re-entrancy');
+
+    const out = drain(
+      new BugseeInterceptor({ getClient: () => client }).intercept(
+        ctx(req({ method: 'GET', route: { path: '/items/:id' } }), { statusCode: 500 }),
+        handlerOf(throwError(() => err)),
+      ),
+    );
+
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' }); // reported directly
+    expect(ownerSpan.captureError).not.toHaveBeenCalled(); // NOT via the span (keeps the both-mode dedup seam)
+    expect(ownerSpan.finish).not.toHaveBeenCalled(); // refiner finish is a no-op → the node:http owner finishes
+    expect(ownerSpan.cancel).not.toHaveBeenCalled();
+    expect(out.error).toBe(err); // the original error re-propagates so Nest's filters still format the response
+  });
+
+  it('survives a throwing user getter — still starts the transaction (degrades to no user)', () => {
+    const startTransaction = vi.fn(() => fakeTxn());
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction } });
+    const out = drain(
+      new BugseeInterceptor({
+        getClient: () => client,
+        user: () => {
+          throw new Error('user getter blew up');
+        },
+      }).intercept(
+        ctx(req({ method: 'GET', route: { path: '/u/:id' } }), { statusCode: 200 }),
+        handlerOf(of('ok')),
+      ),
+    );
+    // The thrown user getter is swallowed: the http.server transaction is still started (name has no user).
+    expect(startTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'GET /u/:id', operation: 'http.server' }),
+    );
+    expect(out.value).toBe('ok');
+    expect(out.completed).toBe(true);
   });
 });

@@ -92,6 +92,25 @@ describe('createBugseeMiddleware', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it('skips opening a context when one is ALREADY active (node:http re-entrancy)', () => {
+    // The node:http auto-instrument has already run-scoped this request's context: getCurrent() returns it.
+    const store = fakeStore();
+    store.getCurrent = vi.fn(() => ({ contextId: 'owner', attributes: {} })) as never;
+    const next = vi.fn();
+    const user = vi.fn(() => 'x');
+    const newContextId = vi.fn(() => 'cid');
+    createBugseeMiddleware({ getClient: () => fakeClient(store), user, newContextId })(
+      req(),
+      {},
+      next,
+    );
+    // A second enterWith would OVERWRITE the owner's context → must NOT happen; the request still flows.
+    expect(store.enterWith).not.toHaveBeenCalled();
+    expect(user).not.toHaveBeenCalled(); // short-circuit: no wasted work
+    expect(newContextId).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   it('passes through when the user getter throws (setup failure is swallowed)', () => {
     const store = fakeStore();
     const next = vi.fn();
