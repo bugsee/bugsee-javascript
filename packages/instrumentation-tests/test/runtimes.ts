@@ -74,11 +74,13 @@ export interface ProcessResult {
   stderr: string;
 }
 
-/** Spawn one scenario in the target runtime; resolve when it exits. */
+/** Spawn one scenario in the target runtime; resolve when it exits. `extraEnv` parameterizes a scenario
+ * (e.g. a shared dataDir + the phase for the multi-instance recovery test). */
 export function runScenarioProcess(
   target: RuntimeTarget,
   collectorUrl: string,
-  scenario: 'main' | 'crash' | 'server',
+  scenario: 'main' | 'crash' | 'server' | 'multi-instance',
+  extraEnv: Record<string, string> = {},
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {
     return Promise.reject(new Error(`runtime ${target.name} is unavailable`));
@@ -90,6 +92,7 @@ export function runScenarioProcess(
         ...process.env,
         BUGSEE_E2E_COLLECTOR: collectorUrl,
         BUGSEE_E2E_SCENARIO: scenario,
+        ...extraEnv,
       },
     });
     let stdout = '';

@@ -11,6 +11,9 @@
 //
 // This is the layer the in-process vitest unit tests (which run under node with injected fakes) cannot
 // reach: it proves the assembled SDK actually runs and produces the right wire output on each runtime.
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type MockCollector, startMockCollector } from './collector';
@@ -210,6 +213,58 @@ describe.each(
       const logs = parseJson<LogEntry[]>(bundle.files['logs.json']);
       const own = logs.find((l) => l.context_id === contextId);
       expect(own?.message).toContain('handling GET /orders/42');
+    });
+  });
+
+  describe('multi-instance: a dead sibling process incident recovered across a shared dataDir', () => {
+    let collector: MockCollector;
+    let dataDir: string;
+    let seed: { exitCode: number | null; stderr: string };
+    let recover: { exitCode: number | null; stderr: string };
+    let seedSubtrees: string[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      dataDir = mkdtempSync(join(tmpdir(), 'bugsee-mi-'));
+      // Phase 1: a doomed process persists an incident to the shared dataDir then dies undelivered.
+      seed = await runScenarioProcess(target, collector.url, 'multi-instance', {
+        BUGSEE_E2E_DATADIR: dataDir,
+        BUGSEE_E2E_PHASE: 'seed',
+      });
+      // Diagnostic: the seed must have left a per-instance subtree on disk (its persisted, undelivered queue).
+      seedSubtrees = readdirSync(dataDir).filter((n) => /^\d+-\d+-/.test(n));
+      // Phase 2: a fresh process on the SAME dataDir recovers the dead sibling's incident.
+      recover = await runScenarioProcess(target, collector.url, 'multi-instance', {
+        BUGSEE_E2E_DATADIR: dataDir,
+        BUGSEE_E2E_PHASE: 'recover',
+      });
+    }, 120_000);
+
+    afterAll(async () => {
+      await collector.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('the seed process dies non-zero; the recover process exits cleanly', () => {
+      expect(seed.exitCode, seed.stderr).toBe(1);
+      expect(recover.exitCode, recover.stderr).toBe(0);
+    });
+
+    it('the seed left a persisted per-instance subtree on disk', () => {
+      expect(
+        seedSubtrees,
+        `seed left no instance subtree under dataDir (${seed.stderr})`,
+      ).toHaveLength(1);
+    });
+
+    it('a FRESH process delivers the dead sibling’s persisted incident (cross-process recovery)', () => {
+      const bundles = parseBundles(collector);
+      const incident = bundles.find((b) => b.request.summary === 'e2e multi-instance incident');
+      expect(
+        incident,
+        'the dead sibling process incident was not recovered + delivered by the fresh process',
+      ).toBeDefined();
+      expect(incident?.request.source.mechanism).toBe('programmatic');
     });
   });
 

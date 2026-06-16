@@ -146,6 +146,44 @@ async function runServerScenario(launch: LaunchFn, collectorUrl: string): Promis
   await client.stop(20_000);
 }
 
+/**
+ * Multi-instance recovery battery (two phases over a SHARED dataDir, one process each):
+ *   seed    — a DOOMED instance persists an incident to the shared dataDir, then dies (process.exit) WITHOUT
+ *             delivering it — its endpoint is unreachable, so the durable bundle stays in its own subtree's
+ *             pending/ queue and its pid is now gone.
+ *   recover — a FRESH instance launches on the SAME dataDir; its coordinator finds the dead sibling subtree
+ *             (dead pid), recovers its persisted bundle, and delivers it to the real collector.
+ * Proves cross-PROCESS recovery end-to-end with the real liveness gate, on each runtime.
+ */
+async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
+  if (process.env.BUGSEE_E2E_PHASE === 'seed') {
+    const client = launch('e2e-app-token', {
+      endpoint: 'http://127.0.0.1:1', // unreachable → the upload fails, the bundle stays persisted
+      dataDir,
+      detectHangs: false,
+      profiling: false,
+      recover: true,
+      onError: noteOnError,
+    });
+    await client.logException(new Error('e2e multi-instance incident'));
+    await client.flush(2000); // assembly+persist complete; the upload fails (unreachable) — bundle kept
+    process.exit(1); // die — this instance's pid is now gone (a dead sibling for the recoverer)
+    return;
+  }
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    dataDir,
+    detectHangs: false,
+    profiling: false,
+    recover: true,
+    onError: noteOnError,
+  });
+  await sleep(1500); // let the fire-and-forget sibling-recovery scan + enqueue the recovered bundle
+  await client.flush(10_000); // deliver it
+  await client.stop(3000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -157,6 +195,10 @@ export async function runScenario(
   }
   if (opts.scenario === 'server') {
     await runServerScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'multi-instance') {
+    await runMultiInstanceScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);
