@@ -14,6 +14,13 @@ import {
   listFiles,
   remove,
 } from '@bugsee/node-utils';
+import {
+  DEFAULT_PATIENT_MS,
+  isSiblingDead,
+  pidAlive,
+  readLiveMtimeMs,
+  readOwner,
+} from './liveness';
 
 // Multi-instance recovery coordinator (design: docs/design/multi-instance-disk-coexistence.md, D4). On
 // launch, a live aggregator scans the SIBLING instance subtrees under the shared `dataDir` and recovers each
@@ -39,6 +46,10 @@ export interface RecoverInstancesOptions {
   uploadPipeline: UploadPipeline;
   /** Base assembly context (appToken + environment + clock); the marker supplies per-incident state. */
   context: () => Omit<BundleAssemblyContext, 'attributes' | 'userIdentifier'>;
+  /** Now (ms) for the heartbeat-staleness check. Default Date.now. */
+  now?: () => number;
+  /** How long an alive-pid subtree may be heartbeat-stale before reclaim. Default DEFAULT_PATIENT_MS. */
+  patientMs?: number;
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
 }
@@ -111,12 +122,27 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
     onError(error);
     return;
   }
+  const now = options.now ?? Date.now;
+  const patientMs = options.patientMs ?? DEFAULT_PATIENT_MS;
   for (const id of entries) {
     if (id === options.ownInstanceId || !INSTANCE_DIR.test(id)) {
       continue;
     }
+    const sub = join(options.dataDir, id);
+    // Liveness gate (D2): only recover a DEAD sibling. A subtree with no owner.json can't be
+    // liveness-checked — leave it (an early-crash dir has no incident, since owner.json is written before
+    // any capture); a LIVE owner (pid alive + fresh heartbeat) is never touched.
+    const owner = readOwner(join(sub, 'owner.json'));
+    if (owner === undefined) {
+      continue;
+    }
+    if (
+      !isSiblingDead(pidAlive(owner.pid), readLiveMtimeMs(join(sub, '.live')), now(), patientMs)
+    ) {
+      continue;
+    }
     try {
-      await recoverSubtree(join(options.dataDir, id), options, onError);
+      await recoverSubtree(sub, options, onError);
     } catch (error) {
       onError(error); // a failed subtree is left in place to retry on a later launch
     }

@@ -1,12 +1,12 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type Bundle,
   createFileChunkBackend,
   createReportingRequest,
-  serializeBundle,
   type StoredEntry,
+  serializeBundle,
   type UploadResult,
 } from '@bugsee/core';
 import {
@@ -14,6 +14,7 @@ import {
   createNodeBundleStore,
   createNodeReportMarkerStore,
   ensureDir,
+  writeFileSecure,
 } from '@bugsee/node-utils';
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -58,23 +59,38 @@ const aBundle = (summary: string): Bundle => ({
   fileName: 'p.zip',
 });
 
-/** Seed a dead sibling subtree with a pending bundle blob. */
+const DEAD_PID = 999_999; // ESRCH → the owner process is gone
+const LIVE_PID = process.pid; // a real, alive pid
+
+/** Write a subtree's owner.json with the given pid (defines whether the liveness gate sees it as dead). */
+const writeOwner = (dataDir: string, sub: string, pid: number): void => {
+  ensureDir(join(dataDir, sub));
+  writeFileSecure(
+    join(dataDir, sub, 'owner.json'),
+    JSON.stringify({ instanceId: sub, pid, threadId: 0, startedAt: 1, version: '0' }),
+  );
+};
+
+/** Seed a DEAD sibling subtree (dead-pid owner) with a pending bundle blob. */
 const seedPendingBundle = (dataDir: string, sub: string, id: string, b: Bundle): void => {
+  writeOwner(dataDir, sub, DEAD_PID);
   createNodeBundleStore(join(dataDir, sub, 'pending')).put(id, serializeBundle(b));
 };
 
-/** Seed a dead sibling subtree with a closed chunk generation + a pending-incident marker. */
+/** Seed a DEAD sibling subtree (dead-pid owner) with a closed chunk generation + a pending-incident marker. */
 const seedIncident = (dataDir: string, sub: string, gen: number, incidentId: string): void => {
+  writeOwner(dataDir, sub, DEAD_PID);
   const root = join(dataDir, sub);
   const backend = createFileChunkBackend(createFsChunkStorage(join(root, 'capture')), {
     generation: gen,
     cleanOtherGenerations: false,
   });
   backend.openPart({ generation: gen, number: 0 }, gen);
-  backend.appendEntry(
-    { generation: gen, number: 0 },
-    { type: 'log', timestamp: 1, serialized: JSON.stringify({ timestamp: 1, data: incidentId }) } as StoredEntry,
-  );
+  backend.appendEntry({ generation: gen, number: 0 }, {
+    type: 'log',
+    timestamp: 1,
+    serialized: JSON.stringify({ timestamp: 1, data: incidentId }),
+  } as StoredEntry);
   backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
   createNodeReportMarkerStore(join(root, 'incidents')).put({
     generation: gen,
@@ -90,7 +106,12 @@ describe('recoverInstances', () => {
     seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
     const pipe = fakePipeline();
 
-    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     expect(pipe.bundles[0]?.request.summary).toBe('prior crash');
@@ -102,7 +123,12 @@ describe('recoverInstances', () => {
     seedIncident(dir, '9-9-dead', 500, 'inc-1');
     const pipe = fakePipeline();
 
-    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
@@ -115,7 +141,12 @@ describe('recoverInstances', () => {
     writeFileSync(join(dir, 'notes.txt'), 'foreign');
     const pipe = fakePipeline();
 
-    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
 
     expect(pipe.enqueue).not.toHaveBeenCalled(); // own subtree + foreign entries are skipped
     expect(existsSync(join(dir, '1-0-live'))).toBe(true);
@@ -128,7 +159,12 @@ describe('recoverInstances', () => {
     seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('flaky'));
     const pipe = fakePipeline({ ok: false }); // delivery not confirmed
 
-    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // NOT removed — left for a later launch
@@ -159,7 +195,7 @@ describe('recoverInstances', () => {
 
   it('routes a sibling whose store cannot be listed (pending is a FILE) to onError, leaving it', async () => {
     const dir = mkDir();
-    ensureDir(join(dir, '9-9-dead'));
+    writeOwner(dir, '9-9-dead', DEAD_PID);
     writeFileSync(join(dir, '9-9-dead', 'pending'), 'x'); // `pending` is a FILE → listFiles throws ENOTDIR
     const onError = vi.fn();
 
@@ -177,6 +213,7 @@ describe('recoverInstances', () => {
 
   it('purges an unparseable bundle blob (reports it) and removes the otherwise-empty subtree', async () => {
     const dir = mkDir();
+    writeOwner(dir, '9-9-dead', DEAD_PID);
     const pendingDir = join(dir, '9-9-dead', 'pending');
     ensureDir(pendingDir);
     writeFileSync(join(pendingDir, 'torn.bundle'), 'not-a-frame'); // a torn durable blob
@@ -207,6 +244,63 @@ describe('recoverInstances', () => {
         context,
       }),
     ).resolves.toBeUndefined(); // the default no-op sink absorbs the listFiles failure
+  });
+
+  it('NEVER touches a LIVE sibling (alive pid + fresh heartbeat)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-alive', 'b1', aBundle('do not touch'));
+    writeOwner(dir, '9-9-alive', LIVE_PID); // override to an alive pid
+    writeFileSecure(join(dir, '9-9-alive', '.live'), ''); // a fresh heartbeat
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // a live sibling is left entirely alone
+    expect(existsSync(join(dir, '9-9-alive'))).toBe(true);
+  });
+
+  it('skips a sibling with no owner.json (cannot liveness-check → leave it)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('x'));
+    rmSync(join(dir, '9-9-dead', 'owner.json')); // an early-crash subtree with no owner record
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled();
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true);
+  });
+
+  it('recovers a sibling whose pid is alive but heartbeat is stale beyond the patient window', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-stale', 'b1', aBundle('stale'));
+    writeOwner(dir, '9-9-stale', LIVE_PID); // alive pid …
+    const liveFile = join(dir, '9-9-stale', '.live');
+    writeFileSecure(liveFile, '');
+    utimesSync(liveFile, 1000, 1000); // … but an ancient heartbeat (mtime = 1_000_000 ms)
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      now: () => 1_000_000 + 200_000, // 200s later, > the 120s patient window
+      patientMs: 120_000,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // stale beyond patient → dead → recovered
+    expect(existsSync(join(dir, '9-9-stale'))).toBe(false);
   });
 
   it('routes a missing/unreadable dataDir to onError and never throws', async () => {

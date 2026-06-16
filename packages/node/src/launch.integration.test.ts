@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -134,6 +134,17 @@ describe('launch — loopback end-to-end', () => {
           sdk: { version: '0', type: 'javascript' },
         },
       };
+      mkdirSync(priorSub, { recursive: true });
+      writeFileSync(
+        join(priorSub, 'owner.json'),
+        JSON.stringify({
+          instanceId: '9-9-prior',
+          pid: 999_999,
+          threadId: 0,
+          startedAt: 1,
+          version: '0',
+        }),
+      );
       const queue = createNodeBundleStore(join(priorSub, 'pending'));
       queue.put(
         'crash-1',

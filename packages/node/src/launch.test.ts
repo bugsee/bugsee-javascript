@@ -871,6 +871,21 @@ const FIXED_INSTANCE_ID = '1-0-x';
 // A DEAD sibling instance's subtree name — a prior crashed run the coordinator must recover + remove.
 const PRIOR_INSTANCE = '9-9-prior';
 
+// Write a dead-pid owner.json so the liveness gate sees the seeded sibling as dead (recoverable).
+const writeDeadOwner = (sub: string): void => {
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(
+    join(sub, 'owner.json'),
+    JSON.stringify({
+      instanceId: PRIOR_INSTANCE,
+      pid: 999_999,
+      threadId: 0,
+      startedAt: 1,
+      version: '0',
+    }),
+  );
+};
+
 // Seed a prior crashed instance's subtree under `<dataDir>/<PRIOR_INSTANCE>/`: a closed chunk generation +
 // (optionally) a pending-incident marker. The live launch's coordinator scans it as a dead sibling.
 function seedPriorGeneration(
@@ -880,6 +895,7 @@ function seedPriorGeneration(
   withMarker: boolean,
 ): void {
   const sub = join(dataDir, PRIOR_INSTANCE);
+  writeDeadOwner(sub);
   const backend = createFileChunkBackend(createFsChunkStorage(join(sub, 'capture')), {
     generation: gen,
     cleanOtherGenerations: false,
@@ -985,6 +1001,7 @@ describe('launch — capture recovery', () => {
   it('routes a corrupt pending marker to onError during recovery (best-effort)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-corrupt-'));
     const sub = join(dir, PRIOR_INSTANCE);
+    writeDeadOwner(sub);
     mkdirSync(join(sub, 'incidents'), { recursive: true });
     writeFileSync(join(sub, 'incidents', 'bad.marker'), 'not-json'); // a torn marker a prior run left
     const onError = vi.fn();
