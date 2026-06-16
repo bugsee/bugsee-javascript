@@ -1,3 +1,4 @@
+import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
@@ -5,6 +6,7 @@ import {
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
+import { createDenoServeInterceptor } from './deno-serve-interceptor';
 import { denoSystemProbe } from './environment';
 
 // @bugsee/deno launch() — the Deno composition root. Deno 2 runs on a node-compatible API surface (node:http,
@@ -21,6 +23,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     systemProbe: denoSystemProbe,
     systemMetricsSampler: createGuardedSystemMetricsSampler(),
     ...options,
+    // Deno's native serve wrap (instruments idiomatic Deno.serve apps that bypass node:http), CONCATENATED
+    // before any caller-supplied server instrumentations — never spread-replaced. node still installs its
+    // own node:http interceptor first when the flag is on; all of it activates only when
+    // `instrumentIncomingRequests` is set. getClient binds to the carrier.
+    serverInstrumentations: [
+      createDenoServeInterceptor({ getClient: () => getCarrierClient<Bugsee>(options.carrier) }),
+      ...(options.serverInstrumentations ?? []),
+    ],
   });
 }
 

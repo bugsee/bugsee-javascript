@@ -137,4 +137,52 @@ describe('@bugsee/bun launch', () => {
     expect(typeof client.logException).toBe('function');
     expect(typeof client.stop).toBe('function');
   });
+
+  it('wires the Bun.serve native wrap (patch + restore) and a wrapped request resolves the carrier client', async () => {
+    type Served = { fetch?: (req: unknown) => unknown };
+    type G = { Bun?: { serve: (o: Served) => unknown } };
+    const served: Served[] = [];
+    const realServe = vi.fn((o: Served) => {
+      served.push(o);
+      return { stop() {} };
+    });
+    (globalThis as G).Bun = { serve: realServe };
+    const client = launch('tok', base({ instrumentIncomingRequests: true })); // untracked — stopped below
+    try {
+      expect((globalThis as G).Bun?.serve).not.toBe(realServe); // patched
+      // a Bun.serve({fetch}) call gets its handler wrapped; running it resolves the carrier client
+      (globalThis as G).Bun?.serve({ fetch: async () => ({ status: 200 }) });
+      const wrappedFetch = served[0]?.fetch as (req: unknown) => Promise<{ status: number }>;
+      const res = await wrappedFetch({ method: 'GET', url: '/x', headers: { get: () => null } });
+      expect(res).toEqual({ status: 200 }); // wrap ran getClient -> the launched carrier client -> handler
+      // a throwing handler re-throws through the FULL launch composition (error path, real carrier client)
+      (globalThis as G).Bun?.serve({
+        fetch: async () => {
+          throw new Error('handler-boom');
+        },
+      });
+      const throwingFetch = served[1]?.fetch as (req: unknown) => Promise<unknown>;
+      await expect(
+        throwingFetch({ method: 'GET', url: '/boom', headers: { get: () => null } }),
+      ).rejects.toThrow('handler-boom');
+      await client.stop();
+      expect((globalThis as G).Bun?.serve).toBe(realServe); // restored on stop
+    } finally {
+      await client.stop(); // idempotent — guarantees teardown of the node:http + native patches
+      delete (globalThis as G).Bun;
+    }
+  });
+
+  it('does NOT patch Bun.serve when instrumentIncomingRequests is off (default)', async () => {
+    type G = { Bun?: { serve: unknown } };
+    const realServe = vi.fn(() => ({ stop() {} }));
+    (globalThis as G).Bun = { serve: realServe };
+    const client = launch('tok', base());
+    try {
+      expect((globalThis as G).Bun?.serve).toBe(realServe); // untouched (default off)
+    } finally {
+      await client.stop();
+      delete (globalThis as G).Bun;
+    }
+  });
 });

@@ -135,4 +135,48 @@ describe('@bugsee/deno launch', () => {
     expect(typeof client.logException).toBe('function');
     expect(typeof client.stop).toBe('function');
   });
+
+  it('wires the Deno.serve native wrap (patch + restore) and a wrapped request resolves the carrier client', async () => {
+    type G = { Deno?: { serve: (...a: unknown[]) => unknown } };
+    const calls: unknown[][] = [];
+    const realServe = vi.fn((...args: unknown[]) => {
+      calls.push(args);
+      return { shutdown: async () => {}, addr: { port: 0 } };
+    });
+    (globalThis as G).Deno = { serve: realServe };
+    const client = launch('tok', base({ instrumentIncomingRequests: true })); // untracked — stopped below
+    try {
+      expect((globalThis as G).Deno?.serve).not.toBe(realServe); // patched
+      (globalThis as G).Deno?.serve(async () => ({ status: 200 })); // Deno.serve(handler)
+      const wrapped = calls[0]?.[0] as (req: unknown) => Promise<{ status: number }>;
+      const res = await wrapped({ method: 'GET', url: '/x', headers: { get: () => null } });
+      expect(res).toEqual({ status: 200 }); // wrap ran getClient -> the launched carrier client -> handler
+      // a throwing handler re-throws through the FULL launch composition (error path, real carrier client)
+      (globalThis as G).Deno?.serve(async () => {
+        throw new Error('handler-boom');
+      });
+      const throwing = calls[1]?.[0] as (req: unknown) => Promise<unknown>;
+      await expect(
+        throwing({ method: 'GET', url: '/boom', headers: { get: () => null } }),
+      ).rejects.toThrow('handler-boom');
+      await client.stop();
+      expect((globalThis as G).Deno?.serve).toBe(realServe); // restored on stop
+    } finally {
+      await client.stop(); // idempotent — guarantees teardown of the node:http + native patches
+      delete (globalThis as G).Deno;
+    }
+  });
+
+  it('does NOT patch Deno.serve when instrumentIncomingRequests is off (default)', async () => {
+    type G = { Deno?: { serve: unknown } };
+    const realServe = vi.fn();
+    (globalThis as G).Deno = { serve: realServe };
+    const client = launch('tok', base());
+    try {
+      expect((globalThis as G).Deno?.serve).toBe(realServe); // untouched (default off)
+    } finally {
+      await client.stop();
+      delete (globalThis as G).Deno;
+    }
+  });
 });

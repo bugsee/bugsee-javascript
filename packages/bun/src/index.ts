@@ -4,6 +4,10 @@
 // explicit launch/launchCore exports below shadow node's same-named exports.
 
 export * from '@bugsee/node';
+export {
+  type BunServeInterceptorOptions,
+  createBunServeInterceptor,
+} from './bun-serve-interceptor';
 export { bunSystemProbe, createBunSystemProbe } from './environment';
 // Bun's launch()/launchCore() — shadow the @bugsee/node ones re-exported by `export *` above.
 export { launch, launchCore } from './launch';

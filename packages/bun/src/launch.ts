@@ -1,3 +1,4 @@
+import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
@@ -5,6 +6,7 @@ import {
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
+import { createBunServeInterceptor } from './bun-serve-interceptor';
 import { bunSystemProbe } from './environment';
 
 // @bugsee/bun launch() — the Bun composition root. Bun runs on a node-compatible API surface (node:http,
@@ -19,6 +21,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     systemProbe: bunSystemProbe,
     systemMetricsSampler: createGuardedSystemMetricsSampler(),
     ...options,
+    // Bun's native serve wrap (instruments idiomatic Bun.serve({fetch}) apps that bypass node:http),
+    // CONCATENATED before any caller-supplied server instrumentations — never spread-replaced, so a user
+    // array does not drop it. node still installs its own node:http interceptor first when the flag is on;
+    // all of it activates only when `instrumentIncomingRequests` is set. getClient binds to the carrier.
+    serverInstrumentations: [
+      createBunServeInterceptor({ getClient: () => getCarrierClient<Bugsee>(options.carrier) }),
+      ...(options.serverInstrumentations ?? []),
+    ],
   });
 }
 

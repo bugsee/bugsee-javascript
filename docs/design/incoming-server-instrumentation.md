@@ -223,11 +223,11 @@ runServerRequest({ method: request.method, url: request.url, traceparent: reques
   (handler-first, options-first, `{ handler, onError }`). **`Bun.serve({ routes })`, websocket, and
   `server.reload()`-survival are KNOWN GAPS** (documented; `reload` rebinding is a follow-up — Sentry had to
   special-case it).
-- **Error-capture asymmetry (hedged, agent 3):** a throw escaping the handler round-trips through our wrap
-  → we *can* `captureError` it (unlike the node:http path). **Verified for Deno bare-handler; for Bun this
-  is conditional on the user's first-class `error` callback** (it may intercept the throw before our wrap).
-  Policy: if the user supplies `error`/`onError`, defer to it (don't double-report) — pinned by the §8.0
-  spike.
+- **Error-capture asymmetry (SPIKE-CONFIRMED, §8.0):** a throw escaping the handler round-trips through our
+  wrap → we `captureError` + re-throw (→ 500). Because our wrap is INSIDE the user's `fetch`/handler, our
+  catch fires BEFORE the runtime's `error`/`onError` callback regardless — so capture works even when the
+  user supplies one, and re-throwing preserves their handling (verified on Bun 1.3.14 + Deno 2.8.3, with
+  and without an error callback). (The node:http path captures nothing — the framework swallows it.)
 - **Injected** via `launchCore({ serverInstrumentations: [bunServeInstaller] })`; bun/deno installers stay
   on **plain-value types** (no `@bugsee/performance` types) so they need no new dep.
 
@@ -304,6 +304,19 @@ before the native wraps / adapter refactor depend on them:**
    load-bearing assumption.)
 3. Does a handler throw reach our wrap **with and without** a user `error`/`onError` callback?
    Pin minimum Bun/Deno versions from the outcomes.
+
+**SPIKE RESULTS — ALL GREEN (Node 24 / Bun 1.3.14 / Deno 2.8.3):**
+1. **The `http.Server.prototype.emit` patch intercepts incoming `'request'` on ALL THREE runtimes** (`node`,
+   `bun`, `deno`); the prototype has **no own `emit`** on any → the `delete`-restore is correct everywhere.
+   ⇒ the slices 1–3 interceptor already covers Express/Koa/Fastify/raw-http on Bun + Deno (via the
+   `@bugsee/bun`/`@bugsee/deno` re-export of node's launch). The round-1 "fallback isn't real" worry is moot.
+2. **`run`-scoped ALS isolates concurrent requests + survives awaits** in BOTH the node:http path AND native
+   `Bun.serve`/`Deno.serve` handlers, on Bun + Deno. (Resolves the round-2 Deno scope-separation concern —
+   wrapping INSIDE the handler with `als.run` works; Sentry's issue was a different integration shape.)
+3. **`Bun.serve` (writable data prop) + `Deno.serve` (getter/setter w/ setter) are both reassignable.**
+4. **A thrown handler error reaches our wrap → 500** on both; since our wrap is INSIDE the handler, it
+   catches before the runtime `error`/`onError`, so capture works regardless (re-throw preserves their
+   handling). Min versions: Bun ≥1.3 / Deno ≥2.0 (tested 1.3.14 / 2.8.3).
 
 **8.1 Shared core** — both primitives; owner & refiner paths; frozen no-op span; hostile-getter
 `defaultShouldReport`; `finish(status, outcome)` honors explicit outcome (D10); span stashed/read across

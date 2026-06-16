@@ -4,6 +4,10 @@
 // the explicit launch/launchCore exports below shadow node's same-named exports.
 
 export * from '@bugsee/node';
+export {
+  createDenoServeInterceptor,
+  type DenoServeInterceptorOptions,
+} from './deno-serve-interceptor';
 export { createDenoSystemProbe, denoSystemProbe } from './environment';
 // Deno's launch()/launchCore() — shadow the @bugsee/node ones re-exported by `export *` above.
 export { launch, launchCore } from './launch';

@@ -29,6 +29,12 @@ export {
   type HangThresholds,
 } from './event-loop-watchdog';
 export {
+  type FetchHandler,
+  type FetchRequestLike,
+  type FetchResponseLike,
+  wrapFetchHandler,
+} from './fetch-server-wrap';
+export {
   createGuardedSystemMetricsSampler,
   type GuardedSystemMetricsDeps,
   type PerfHooks,
@@ -43,6 +49,13 @@ export {
   type NodeHttpInterceptorOptions,
   type NodeHttpTarget,
 } from './http-interceptor';
+export {
+  createHttpServerInterceptor,
+  type HttpServerInterceptor,
+  type HttpServerInterceptorOptions,
+  type HttpServerTarget,
+  type ServerInstallable,
+} from './http-server-interceptor';
 export {
   type Bugsee,
   type BugseeLaunchOptions,
