@@ -271,3 +271,47 @@ describe('bugseeHono', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('refactor: route fallback + re-entrancy', () => {
+  it('falls back to the path for the txn name when routePath is empty', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction: vi.fn(() => txn) } });
+    const c = ctx({
+      req: { method: 'GET', path: '/users/7', routePath: '', header: () => undefined },
+    });
+    await bugseeHono({ getClient: () => client })(c, nextThatSets(c, 200));
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/7'); // routePath empty → path
+  });
+
+  it('re-entrancy: refines the http-layer owner — one txn, error on owner, refiner finish no-op', async () => {
+    const { createNodeRequestContextStore, runServerRequest } = await import('@bugsee/node');
+    const store = createNodeRequestContextStore();
+    const ownerTxn = fakeTxn();
+    const startTransaction = vi.fn(() => ownerTxn);
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({ store, perf: { startTransaction }, logException });
+    const mw = bugseeHono({ getClient: () => client, newContextId: () => 'adapter' });
+    const err = new Error('boom');
+    await runServerRequest(
+      { method: 'GET', url: '/users/7' },
+      { getClient: () => client, newContextId: () => 'owner' },
+      async () => {
+        const c = ctx({
+          req: {
+            method: 'GET',
+            path: '/users/7',
+            routePath: '/users/:id',
+            header: () => undefined,
+          },
+        });
+        await mw(c, nextThatSets(c, 500, err));
+        expect(store.getCurrent()?.contextId).toBe('owner'); // refined — no new context
+        expect(store.getCurrent()?.attributes?.['http.route']).toBe('/users/:id');
+        return null;
+      },
+    );
+    expect(startTransaction).toHaveBeenCalledTimes(1); // owner only
+    expect(logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(ownerTxn.finish).not.toHaveBeenCalled(); // refiner finish was a no-op
+  });
+});
