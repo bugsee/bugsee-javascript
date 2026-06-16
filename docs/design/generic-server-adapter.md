@@ -1,16 +1,18 @@
-# Generic framework-agnostic server adapter (`@bugsee/server-adapters`) — DESIGN (APPROVED)
+# Generic framework-agnostic server adapter — DESIGN (SUPERSEDED / HISTORICAL)
 
-**Status:** **BUILT (engine only) + on `master` 2026-06-16** (`@bugsee/server-adapters`, commit `5f667ae`).
-Decisions: built it as **`@bugsee/server-adapters`**; **`enterWith` as the single context primitive** +
-**two-layer API**. The engine ships as a **purely additive** capability — it instruments any framework / raw
-`http.Server` directly.
+**Status:** **SUPERSEDED — the `@bugsee/server-adapters` package is RETIRED.** Its engine was **absorbed
+into `@bugsee/node`** (`packages/node/src/server-instrument.ts`, `openBugsee*` → `server*`) and **extended**
+with a `run`-scoped entry (`runServerRequest`), `getActiveServerSpan`, and first-owner-wins **re-entrancy**.
+The current, authoritative design is **`docs/design/incoming-server-instrumentation.md`** (which also drives
+the node:http emit patch + native Bun.serve/Deno.serve wraps + the default-on flip). This file is kept for
+the §4 framework-mapping history only.
 
-> **The DRY refactor of the 7 existing adapters onto the engine was reconsidered and DROPPED** (user call
-> 2026-06-16): express/fastify/nestjs/hono/elysia/hapi/koa are already tested, validated, reviewed, and on
-> `master` — leave their logic intact rather than re-touch working code for a DRY win. The engine remains the
-> shared *reference* implementation and the path for new/long-tail frameworks; the §4 mapping below stays as
-> the proof it COULD express all 7 if a refactor is ever revisited. Some helper duplication between the
-> engine and the 7 adapters is accepted.
+> **History (reversed).** The package originally shipped (commit `5f667ae`) as a *purely additive* engine and
+> the DRY refactor of the 7 adapters onto it was deliberately DROPPED. That call was **later reversed** (user
+> decision): all 7 adapters (express/fastify/nestjs/hono/elysia/hapi/koa) were refactored onto the shared
+> core in `@bugsee/node`, the engine was rehomed there, and the standalone `@bugsee/server-adapters` package
+> was deleted (no external consumers — unreleased SDK; no facade/aliases needed). The helper duplication the
+> additive approach accepted is gone — the core is now the single substrate.
 
 ## 1. Understanding / goal
 
