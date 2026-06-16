@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import process from 'node:process';
 import {
   createConsoleInterceptor,
@@ -23,7 +22,6 @@ import {
   createClient,
   createDurableUploadPipeline,
   createFileCaptureStore,
-  createFileChunkBackend,
   createMemoryCaptureStore,
   createServiceContainer,
   createSystemClock,
@@ -37,7 +35,6 @@ import {
   type HttpTransport,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
-  recoverReports,
   resolveLaunchOptions,
   type Scheduler,
   SchedulerToken,
@@ -67,8 +64,10 @@ import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watc
 import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
+import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
+import { recoverInstances } from './recover-instances';
 import {
   createNodeRequestContextStore,
   type RequestContextStore,
@@ -219,6 +218,12 @@ export interface BugseeLaunchOptions {
   serverInstrumentations?: ServerInstallable[];
   /** The node:http server interceptor (advanced / tests — avoids patching the real prototype). Default the real one. */
   serverInterceptor?: ServerInstallable;
+  /**
+   * Override the per-instance identity (`<pid>-<threadId>-<nonce>`) that names this aggregator's on-disk
+   * subtree under `dataDir` (multi-instance coexistence). Advanced / tests — pin a deterministic id. Default
+   * derives from the real process + worker_threads + a random nonce.
+   */
+  instanceIdentity?: InstanceIdentity;
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -312,14 +317,25 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
 
+  // Per-instance on-disk subtree (multi-instance coexistence; design: multi-instance-disk-coexistence.md).
+  // When file-backed, every store lives under <dataDir>/<instanceId>/ so several aggregators (worker_threads
+  // / processes) sharing one dataDir never collide. owner.json is written up front so a peer can attribute +
+  // liveness-check this subtree. `clock` is hoisted here (used by the owner timestamp + later wiring).
+  const clock = options.clock ?? createSystemClock();
+  const instanceLayout =
+    options.dataDir !== undefined
+      ? createInstanceLayout(options.dataDir, options.instanceIdentity ?? {})
+      : undefined;
+  if (instanceLayout !== undefined) {
+    writeInstanceOwner(instanceLayout, clock.wallNow(), sdkVersion);
+  }
+
   // Durable bundle queue (guaranteed crash delivery): persist each bundle before upload and re-upload
   // any left behind by a crashed/killed run. Needs a stable on-disk location — the bundleStore
-  // override, else <dataDir>/pending; with neither (in-memory store) there's nothing durable to do.
+  // override, else <subtree>/pending; with neither (in-memory store) there's nothing durable to do.
   const bundleStore =
     options.bundleStore ??
-    (options.dataDir !== undefined
-      ? createNodeBundleStore(join(options.dataDir, 'pending'))
-      : undefined);
+    (instanceLayout !== undefined ? createNodeBundleStore(instanceLayout.pendingDir) : undefined);
   if (bundleStore !== undefined) {
     services.addService(defineService(BundleStoreToken, () => bundleStore)); // container service (DI Phase 3)
   }
@@ -363,22 +379,20 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // The chunk-storage medium exists only when a dataDir is used without an explicit captureStore; it is
   // a container service (DI Phase 3) and the input to the file-backed store.
   const chunkStorage =
-    options.captureStore === undefined && options.dataDir !== undefined
-      ? createFsChunkStorage(join(options.dataDir, 'capture'))
+    options.captureStore === undefined && instanceLayout !== undefined
+      ? createFsChunkStorage(instanceLayout.captureDir)
       : undefined;
   if (chunkStorage !== undefined) {
     services.addService(defineService(ChunkStorageToken, () => chunkStorage));
   }
   // Capture recovery (the detected-incident gap): keep this launch's generation explicit and shared by
-  // the live store, the marker hook, and the recovery read-back. When recovery is on (file-backed +
-  // recover) we PRESERVE prior generations for the recovery pass (it cleans them up afterwards); else we
-  // clean-on-init so nothing leaks. The marker store is a stable on-disk location, distinct from chunks.
-  const clock = options.clock ?? createSystemClock();
+  // the live store, the marker hook, and the recovery read-back. The marker store is a stable on-disk
+  // location under this instance's subtree, distinct from chunks.
   const captureGeneration = clock.wallNow();
   const recoverEnabled = (options.recover ?? true) && chunkStorage !== undefined;
   const reportMarkers =
-    recoverEnabled && options.dataDir !== undefined
-      ? createNodeReportMarkerStore(join(options.dataDir, 'incidents'), options.onError)
+    recoverEnabled && instanceLayout !== undefined
+      ? createNodeReportMarkerStore(instanceLayout.incidentsDir, options.onError)
       : undefined;
   if (reportMarkers !== undefined) {
     services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers)); // container service
@@ -503,23 +517,22 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // Start the rolling CPU profiler (after launch, so the scheduler service is live).
   profilingController?.start();
 
-  // Re-upload any bundles a prior crashed/killed run left persisted (durable queue recovery).
+  // Re-upload any bundles THIS instance's own subtree left persisted (durable queue recovery — a no-op on a
+  // fresh per-launch subtree, kept for symmetry/safety).
   durable?.recover();
 
-  // Capture recovery: rebuild + re-deliver any detected incident whose bundle never reached the durable
-  // queue (the process died during assembly), from its prior generation's preserved capture chunks. Runs
-  // AFTER the durable-queue recover; best-effort (failures → onError, never throws), then it sweeps the
-  // recovered + no-incident prior generations.
-  if (reportMarkers !== undefined && chunkStorage !== undefined) {
-    void recoverReports({
-      backend: createFileChunkBackend(chunkStorage, {
-        generation: captureGeneration,
-        cleanOtherGenerations: false,
-      }),
-      currentGeneration: captureGeneration,
-      markers: reportMarkers,
-      context: () => ({ appToken, environment: getEnvironment(), clock }),
+  // Multi-instance recovery: scan the SIBLING instance subtrees under the shared dataDir and recover each
+  // dead one's pending bundles + detected-incident markers (rebuilt from its capture chunks) through THIS
+  // instance's upload pipeline, then remove the fully-delivered subtree. This subsumes the old "recover my
+  // own prior generations" — a prior crashed run is just a dead sibling. Best-effort; never throws into
+  // launch. (Liveness skip + atomic-rename claim land in slice 4; for now every non-own subtree is recovered,
+  // correct while no live siblings exist.)
+  if (recoverEnabled && instanceLayout !== undefined && options.dataDir !== undefined) {
+    void recoverInstances({
+      dataDir: options.dataDir,
+      ownInstanceId: instanceLayout.instanceId,
       uploadPipeline,
+      context: () => ({ appToken, environment: getEnvironment(), clock }),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
     });
   }

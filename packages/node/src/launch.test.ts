@@ -680,20 +680,24 @@ describe('launch', () => {
     expect(env.sdk.version).toBe('9.9.9');
   });
 
-  it('persists capture to a file-backed store when dataDir is set', () => {
+  it('persists capture to a file-backed store under the per-instance subtree when dataDir is set', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-launch-'));
-    launchTracked('tok', baseOptions({ dataDir: dir })); // no clock → default system clock
+    launchTracked('tok', baseOptions({ dataDir: dir, instanceIdentity: FIXED_INSTANCE }));
     console.log('to-disk-from-launch-test');
-    // The file store lays out chunk dirs under <dataDir>/capture/<gen13>/<chunk12>/{meta,<type>}.
-    expect(readdirSync(join(dir, 'capture')).some((name) => /^\d{13}$/.test(name))).toBe(true);
+    // The file store lays out chunk dirs under <dataDir>/<instanceId>/capture/<gen13>/<chunk12>/{meta,…}.
+    const cap = join(dir, '1-0-x', 'capture');
+    expect(readdirSync(cap).some((name) => /^\d{13}$/.test(name))).toBe(true);
   });
 
   it('uses the injected clock for the file-backed generation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-launch-clk-'));
-    launchTracked('tok', baseOptions({ dataDir: dir, clock: fixedClock }));
+    launchTracked(
+      'tok',
+      baseOptions({ dataDir: dir, clock: fixedClock, instanceIdentity: FIXED_INSTANCE }),
+    );
     console.log('to-disk-with-clock');
     // generation = clock.wallNow() = 1000 → the zero-padded-to-13 generation dir name.
-    expect(readdirSync(join(dir, 'capture'))).toContain('0000000001000');
+    expect(readdirSync(join(dir, '1-0-x', 'capture'))).toContain('0000000001000');
   });
 
   it('defaults the transport to node-utils httpRequest when none is injected', () => {
@@ -848,21 +852,28 @@ function recordingTransport() {
   return { fn, puts };
 }
 
-const genDir = (gen: number): string => String(gen).padStart(13, '0');
 const logRecord = (data: unknown): StoredEntry => ({
   type: 'log',
   timestamp: 1,
   serialized: JSON.stringify({ timestamp: 1, data }),
 });
 
-// Seed a prior generation's closed chunk + (optionally) a pending-incident marker under `dataDir`.
+// A deterministic identity for the LIVE launch (so its subtree path is predictable in assertions).
+const FIXED_INSTANCE = { pid: 1, threadId: 0, nonce: () => 'x' };
+const FIXED_INSTANCE_ID = '1-0-x';
+// A DEAD sibling instance's subtree name — a prior crashed run the coordinator must recover + remove.
+const PRIOR_INSTANCE = '9-9-prior';
+
+// Seed a prior crashed instance's subtree under `<dataDir>/<PRIOR_INSTANCE>/`: a closed chunk generation +
+// (optionally) a pending-incident marker. The live launch's coordinator scans it as a dead sibling.
 function seedPriorGeneration(
   dataDir: string,
   gen: number,
   data: unknown,
   withMarker: boolean,
 ): void {
-  const backend = createFileChunkBackend(createFsChunkStorage(join(dataDir, 'capture')), {
+  const sub = join(dataDir, PRIOR_INSTANCE);
+  const backend = createFileChunkBackend(createFsChunkStorage(join(sub, 'capture')), {
     generation: gen,
     cleanOtherGenerations: false,
   });
@@ -870,7 +881,7 @@ function seedPriorGeneration(
   backend.appendEntry({ generation: gen, number: 0 }, logRecord(data));
   backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
   if (withMarker) {
-    createNodeReportMarkerStore(join(dataDir, 'incidents')).put({
+    createNodeReportMarkerStore(join(sub, 'incidents')).put({
       generation: gen,
       request: createReportingRequest({ source: { type: 'crash' }, id: 'inc-1' }),
       attributes: {},
@@ -887,7 +898,16 @@ describe('launch — capture recovery', () => {
     const { fn: transport, puts } = recordingTransport();
     const onError = vi.fn();
 
-    launchTracked('tok', baseOptions({ transport, clock: fixedClock, dataDir: dir, onError }));
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        onError,
+        instanceIdentity: FIXED_INSTANCE,
+      }),
+    );
 
     // The recovered bundle is uploaded (the only thing that triggers a signed PUT here).
     await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
@@ -895,12 +915,10 @@ describe('launch — capture recovery', () => {
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'pre-crash' }]);
     expect(strFromU8(files.apptoken as Uint8Array)).toBe('tok'); // assembled with the launch app token
 
-    // The incident's marker is cleared and its generation swept.
-    await vi.waitFor(() => expect(readdirSync(join(dir, 'incidents'))).toEqual([]));
-    await vi.waitFor(() => expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500)));
-    // The LIVE generation (this launch's own = the marker hook's generation, 1000) is NEVER swept by
-    // recovery — only prior generations are. (Pins live-store generation == currentGeneration.)
-    expect(readdirSync(join(dir, 'capture'))).toContain(genDir(1000));
+    // The dead sibling subtree is fully recovered and REMOVED (markers + chunks gone with it).
+    await vi.waitFor(() => expect(existsSync(join(dir, PRIOR_INSTANCE))).toBe(false));
+    // The LIVE instance's own subtree is never touched by recovery.
+    expect(existsSync(join(dir, FIXED_INSTANCE_ID, 'capture'))).toBe(true);
     expect(onError).not.toHaveBeenCalled(); // recovery completed cleanly
   });
 
@@ -925,7 +943,8 @@ describe('launch — capture recovery', () => {
 
     launchTracked('tok', baseOptions({ transport, clock: fixedClock, dataDir: dir }));
 
-    await vi.waitFor(() => expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500)));
+    // The dead sibling (no incident) is swept entirely — its subtree removed — and nothing is uploaded.
+    await vi.waitFor(() => expect(existsSync(join(dir, PRIOR_INSTANCE))).toBe(false));
     expect(puts).toEqual([]); // no incident → no report
   });
 
@@ -946,8 +965,8 @@ describe('launch — capture recovery', () => {
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // no marker store built
     expect(puts).toEqual([]); // no recovery upload
     expect(existsSync(dir)).toBe(true);
-    // With recovery off, the file store falls back to clean-on-init: the prior generation is discarded.
-    expect(readdirSync(join(dir, 'capture'))).not.toContain(genDir(500));
+    // With recovery off the coordinator never runs: the dead sibling's subtree is left untouched.
+    expect(existsSync(join(dir, PRIOR_INSTANCE))).toBe(true);
   });
 
   it('builds no marker store when an explicit captureStore overrides the file backend', () => {
@@ -958,8 +977,9 @@ describe('launch — capture recovery', () => {
 
   it('routes a corrupt pending marker to onError during recovery (best-effort)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-corrupt-'));
-    mkdirSync(join(dir, 'incidents'), { recursive: true });
-    writeFileSync(join(dir, 'incidents', 'bad.marker'), 'not-json'); // a torn marker a prior run left
+    const sub = join(dir, PRIOR_INSTANCE);
+    mkdirSync(join(sub, 'incidents'), { recursive: true });
+    writeFileSync(join(sub, 'incidents', 'bad.marker'), 'not-json'); // a torn marker a prior run left
     const onError = vi.fn();
     launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));

@@ -120,7 +120,9 @@ describe('launch — loopback end-to-end', () => {
   it('recovers a bundle a prior run persisted to disk and re-uploads it through the real transport', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-'));
     try {
-      // Simulate the leftover from a prior crashed run: a serialized bundle in <dataDir>/pending.
+      // Simulate the leftover from a prior crashed run: a serialized bundle in a DEAD sibling instance's
+      // subtree (<dataDir>/<priorInstanceId>/pending). The live launch's coordinator recovers it.
+      const priorSub = join(dir, '9-9-prior');
       const request: RequestJson = {
         type: 'crash',
         summary: 'prior-run crash',
@@ -132,7 +134,7 @@ describe('launch — loopback end-to-end', () => {
           sdk: { version: '0', type: 'javascript' },
         },
       };
-      const queue = createNodeBundleStore(join(dir, 'pending'));
+      const queue = createNodeBundleStore(join(priorSub, 'pending'));
       queue.put(
         'crash-1',
         serializeBundle({ request, body: new Uint8Array([1, 2, 3]), fileName: 'p.zip' }),
@@ -141,7 +143,7 @@ describe('launch — loopback end-to-end', () => {
       const client = launch('app-token', {
         endpoint: origin,
         process: fakeProcess(),
-        dataDir: dir, // → <dir>/pending durable queue; recover() runs on launch
+        dataDir: dir, // the coordinator recovers the dead sibling's queue on launch
         captureNetwork: false,
         captureSystemEvents: false,
         systemMetricsSampler: () => [],

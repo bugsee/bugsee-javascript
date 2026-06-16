@@ -56,6 +56,7 @@ export {
   type HttpServerTarget,
   type ServerInstallable,
 } from './http-server-interceptor';
+export type { InstanceIdentity } from './instance-layout';
 export {
   type Bugsee,
   type BugseeLaunchOptions,

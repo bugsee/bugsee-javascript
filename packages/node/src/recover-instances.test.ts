@@ -1,0 +1,228 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  type Bundle,
+  createFileChunkBackend,
+  createReportingRequest,
+  serializeBundle,
+  type StoredEntry,
+  type UploadResult,
+} from '@bugsee/core';
+import {
+  createFsChunkStorage,
+  createNodeBundleStore,
+  createNodeReportMarkerStore,
+  ensureDir,
+} from '@bugsee/node-utils';
+import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { recoverInstances } from './recover-instances';
+
+const dirs: string[] = [];
+const mkDir = (): string => {
+  const d = mkdtempSync(join(tmpdir(), 'bugsee-ri-'));
+  dirs.push(d);
+  return d;
+};
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+const env: EnvironmentEnvelope = {
+  platform: { type: 'node', version: '1' },
+  sdk: { version: '0', type: 'javascript' },
+};
+const clock = { wallNow: () => 1_700_000_000_000, monotonicNow: () => 0 };
+const context = () => ({ appToken: 'tok', environment: env, clock, fileName: () => 'b.zip' });
+
+function fakePipeline(result: UploadResult = { ok: true }) {
+  const bundles: Bundle[] = [];
+  const enqueue = vi.fn((bundle: Bundle): Promise<UploadResult> => {
+    bundles.push(bundle);
+    return Promise.resolve(result);
+  });
+  return { bundles, enqueue, flush: () => Promise.resolve(true), drop: () => {} };
+}
+
+const aBundle = (summary: string): Bundle => ({
+  request: {
+    type: 'crash',
+    summary,
+    severity: 3,
+    source: { mechanism: 'uncaught' },
+    created_on: '2026-05-29T00:00:00Z',
+    environment: env,
+  } as Bundle['request'],
+  body: new Uint8Array([1, 2, 3]),
+  fileName: 'p.zip',
+});
+
+/** Seed a dead sibling subtree with a pending bundle blob. */
+const seedPendingBundle = (dataDir: string, sub: string, id: string, b: Bundle): void => {
+  createNodeBundleStore(join(dataDir, sub, 'pending')).put(id, serializeBundle(b));
+};
+
+/** Seed a dead sibling subtree with a closed chunk generation + a pending-incident marker. */
+const seedIncident = (dataDir: string, sub: string, gen: number, incidentId: string): void => {
+  const root = join(dataDir, sub);
+  const backend = createFileChunkBackend(createFsChunkStorage(join(root, 'capture')), {
+    generation: gen,
+    cleanOtherGenerations: false,
+  });
+  backend.openPart({ generation: gen, number: 0 }, gen);
+  backend.appendEntry(
+    { generation: gen, number: 0 },
+    { type: 'log', timestamp: 1, serialized: JSON.stringify({ timestamp: 1, data: incidentId }) } as StoredEntry,
+  );
+  backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+  createNodeReportMarkerStore(join(root, 'incidents')).put({
+    generation: gen,
+    request: createReportingRequest({ source: { type: 'crash' }, id: incidentId }),
+    attributes: {},
+    userIdentifier: null,
+  });
+};
+
+describe('recoverInstances', () => {
+  it('re-uploads a dead sibling’s pending bundle and removes its subtree', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    const pipe = fakePipeline();
+
+    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(pipe.bundles[0]?.request.summary).toBe('prior crash');
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully delivered → subtree removed
+  });
+
+  it('rebuilds + delivers a dead sibling’s detected incident from its chunks, then removes the subtree', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    const pipe = fakePipeline();
+
+    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  it('never touches this instance’s OWN subtree or a foreign (non-instance) entry', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '1-0-live', 'own', aBundle('own — must not recover'));
+    ensureDir(join(dir, 'capture')); // a stray non-instance dir (e.g. a flat-layout leftover)
+    writeFileSync(join(dir, 'notes.txt'), 'foreign');
+    const pipe = fakePipeline();
+
+    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // own subtree + foreign entries are skipped
+    expect(existsSync(join(dir, '1-0-live'))).toBe(true);
+    expect(existsSync(join(dir, 'capture'))).toBe(true);
+    expect(existsSync(join(dir, 'notes.txt'))).toBe(true);
+  });
+
+  it('KEEPS a dead sibling’s subtree for retry when an upload is not confirmed', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('flaky'));
+    const pipe = fakePipeline({ ok: false }); // delivery not confirmed
+
+    await recoverInstances({ dataDir: dir, ownInstanceId: '1-0-live', uploadPipeline: pipe, context });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // NOT removed — left for a later launch
+    expect(existsSync(join(dir, '9-9-dead', 'pending'))).toBe(true); // the blob survives
+  });
+
+  it('KEEPS the blob and reports when an upload REJECTS (not just declines)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('rejecting'));
+    const onError = vi.fn();
+    const pipe = {
+      enqueue: vi.fn(() => Promise.reject(new Error('transport exploded'))),
+      flush: () => Promise.resolve(true),
+      drop: () => {},
+    };
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      onError,
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // kept for retry
+  });
+
+  it('routes a sibling whose store cannot be listed (pending is a FILE) to onError, leaving it', async () => {
+    const dir = mkDir();
+    ensureDir(join(dir, '9-9-dead'));
+    writeFileSync(join(dir, '9-9-dead', 'pending'), 'x'); // `pending` is a FILE → listFiles throws ENOTDIR
+    const onError = vi.fn();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: fakePipeline(),
+      context,
+      onError,
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error)); // the per-subtree failure is caught
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // left in place to retry on a later launch
+  });
+
+  it('purges an unparseable bundle blob (reports it) and removes the otherwise-empty subtree', async () => {
+    const dir = mkDir();
+    const pendingDir = join(dir, '9-9-dead', 'pending');
+    ensureDir(pendingDir);
+    writeFileSync(join(pendingDir, 'torn.bundle'), 'not-a-frame'); // a torn durable blob
+    const pipe = fakePipeline();
+    const onError = vi.fn();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      onError,
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // nothing deliverable
+    expect(onError).toHaveBeenCalledWith(expect.any(Error)); // the torn blob was reported
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // purged → empty → subtree removed
+  });
+
+  it('swallows an unreadable dataDir with no onError provided (default no-op sink)', async () => {
+    const file = join(mkDir(), 'a-file');
+    writeFileSync(file, 'x');
+    await expect(
+      recoverInstances({
+        dataDir: file,
+        ownInstanceId: '1-0-live',
+        uploadPipeline: fakePipeline(),
+        context,
+      }),
+    ).resolves.toBeUndefined(); // the default no-op sink absorbs the listFiles failure
+  });
+
+  it('routes a missing/unreadable dataDir to onError and never throws', async () => {
+    const file = join(mkDir(), 'a-file');
+    writeFileSync(file, 'x'); // listFiles on a FILE throws ENOTDIR
+    const onError = vi.fn();
+
+    await expect(
+      recoverInstances({
+        dataDir: file,
+        ownInstanceId: '1-0-live',
+        uploadPipeline: fakePipeline(),
+        context,
+        onError,
+      }),
+    ).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
