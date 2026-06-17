@@ -211,9 +211,31 @@ OS-driven cliff on bun/deno.)
    regression (within a budget), a `kill -9` mid-stream loses ≤ the window, a catchable crash loses nothing.
 6. **Docs + memory.**
 
+## 11c. Phase-1 review hardening (2026-06-17, commits 302e1f5 / R2 / R3)
+The multi-agent convergent review of Phase 1 drove these fixes (all test-first + mutator-verified):
+- **Batched-writer robustness (R1):** honor `writevSync`'s short-write contract (loop, don't truncate);
+  a throwing flush no longer leaks the fd (flush never throws → routes to onError + keeps the buffer for
+  retry; `flushSync` stays per-file resilient). Injectable `onError`/`writev`/`close` seams.
+- **Test gaps (R2):** an embedded-tab payload round-trip (locks the first-tab split) + a stale-`.live`
+  dead-pid reclaim (locks the heartbeat-freshness branch).
+- **Default-on-disk safety (R3):** (a) **graceful degradation** — any fs failure setting up the data root
+  (contended/read-only/full tmp) is caught and the launch DEGRADES to in-memory; an SDK must never crash the
+  host. (b) **Per-app-token root** restored (`os.tmpdir()/bugsee/<hash>`, sdk-design §12.5) so two apps
+  sharing a host never recover/sweep each other's data through the wrong token (a synchronous dependency-free
+  `hashAppToken`, NOT `node:crypto`, so launch's source still typechecks inside the framework adapters).
+  (c) The hygiene sweep now requires a valid `owner.json` marker before a recursive delete — a foreign
+  instance-shaped dir (e.g. `2024-01-02`) is never reaped.
+
+**Deferred (defense-in-depth, not blocking):** explicit `uid`-gating of the sibling recovery/sweep on a
+shared multi-USER `/tmp` (the `0700`/`0600` modes already make cross-user read/delete fail-with-EACCES and
+the graceful-degradation absorbs the create-EACCES, so this is hardening, not a live hole); a verify-root-
+ownership check against a pre-created hostile tmp root.
+
 ## 12. Risks / deferred
 - **Disk permanently slower than capture** → sustained drop-oldest (by design; surfaced via `dropped`). The
-  alternative (stall the host) is explicitly rejected.
+  alternative (stall the host) is explicitly rejected. (Phase-1 main-thread writer: an unwritable disk keeps
+  the buffer in RAM + routes to onError; bounded in practice by the store's part rotation — the Phase-2 ring
+  adds true drop-oldest.)
 - **Worker RSS** (~5–12 MB) added to every server process by default — acceptable; revisit if it matters.
 - **SAB-view `writev` correctness** — the main thread must not overwrite a region the worker is mid-write on
   (drop-oldest must not evict into the in-flight read region) — handled by the read-index ownership; a spike

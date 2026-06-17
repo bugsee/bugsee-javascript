@@ -79,21 +79,24 @@ describe('sweepAgedInstances', () => {
     expect(existsSync(sub)).toBe(false);
   });
 
-  it('removes an aged subtree that has no owner.json (an orphan that liveness can never check)', () => {
+  it('leaves an aged owner-LESS directory alone (no owner.json marker → cannot confirm it is a Bugsee subtree)', () => {
     root = mkRoot();
+    // Instance-id-shaped but no owner.json — could be a foreign directory (e.g. a date-named dir). Even aged,
+    // it must NEVER be recursive-deleted, since the sweep can't positively identify it as a Bugsee subtree.
     const sub = seed(root, '888-0-noowner', { data: true });
-    // No owner + no .live → age falls back to the directory mtime; pin it well in the past so `now` (NOW)
-    // is unambiguously beyond the TTL regardless of the real filesystem clock.
     const old = new Date(NOW - DEFAULT_INSTANCE_TTL_MS);
     utimesSync(sub, old, old);
+    const onError = vi.fn();
     sweepAgedInstances({
       dataDir: root,
       ownInstanceId: 'self',
       ttlMs: TTL,
       now: () => NOW,
       kill: killOver(new Set()),
+      onError,
     });
-    expect(existsSync(sub)).toBe(false);
+    expect(existsSync(sub)).toBe(true);
+    expect(onError).not.toHaveBeenCalled(); // a CLEAN skip on the missing marker — not a swallowed throw
   });
 
   it('keeps a subtree whose owning process is still alive (even if its owner.startedAt is old)', () => {
@@ -218,7 +221,9 @@ describe('sweepAgedInstances', () => {
 
   it('isolates a per-subtree failure to onError and keeps sweeping the rest (no throw, subtree kept)', () => {
     root = mkRoot();
-    const sub = seed(root, '444-0-boom', { data: true }); // owner-less → passes the alive gate
+    // Owner present (dead pid) so it passes the marker + alive gates and reaches the age check, where `now`
+    // throws — exercising the per-subtree catch.
+    const sub = seed(root, '444-0-boom', { owner: { pid: 999_999, startedAt: 1 }, data: true });
     const onError = vi.fn();
     const boom = new Error('clock boom');
     sweepAgedInstances({

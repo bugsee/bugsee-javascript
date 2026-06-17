@@ -1,15 +1,17 @@
-import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { listFiles, remove } from '@bugsee/node-utils';
+import type { InstanceOwner } from './instance-layout';
 import { pidAlive, readLiveMtimeMs, readOwner } from './liveness';
 
 // Age-based (TTL) hygiene sweep for default-on-disk capture (server write-path P1, D3). With disk capture
-// the DEFAULT, abandoned per-instance subtrees would otherwise accumulate under `os.tmpdir()/bugsee` — runs
-// that crashed and never relaunched, or whose owner.json was never written. Multi-instance recovery already
-// reclaims FRESH dead siblings (recover-then-remove); this sweep is the last-resort reaper for the truly
-// abandoned: a subtree whose owning process is dead (or unknown) AND whose newest activity is older than
-// the TTL is removed outright (its very-old capture is discarded, not recovered — an accepted tradeoff). A
-// LIVE owner is never touched (and a live instance heartbeats, so it never ages out anyway). Runs on launch
+// the DEFAULT, abandoned per-instance subtrees would otherwise accumulate under `os.tmpdir()/bugsee/<hash>`
+// — runs that crashed and never relaunched. Multi-instance recovery already reclaims FRESH dead siblings
+// (recover-then-remove); this sweep is the last-resort reaper for the truly abandoned: a subtree whose
+// owning process is dead AND whose newest activity is older than the TTL is removed outright (its very-old
+// capture is discarded, not recovered — an accepted tradeoff). A LIVE owner is never touched (and a live
+// instance heartbeats, so it never ages out anyway). To NEVER recursive-delete a non-Bugsee directory, a
+// subtree is only reclaimed when it carries a valid `owner.json` (the Bugsee marker) — a foreign dir whose
+// name merely matches the instance-id shape (e.g. a `2024-01-02` date dir) is left untouched. Runs on launch
 // whenever a shared on-disk dataDir is in use, independent of whether recovery is enabled. Fully defensive:
 // a per-subtree failure goes to onError and never blocks the rest or the launch.
 
@@ -34,22 +36,10 @@ export interface SweepInstancesOptions {
   onError?: (error: unknown) => void;
 }
 
-/** Newest activity signal (ms) for a subtree: heartbeat mtime, else owner.startedAt, else the dir mtime. */
-function lastActivityMs(sub: string): number | undefined {
+/** Newest activity signal (ms) for a subtree: the heartbeat mtime, else the owner's start time. */
+function lastActivityMs(sub: string, owner: InstanceOwner): number {
   const live = readLiveMtimeMs(join(sub, '.live'));
-  if (live !== undefined) {
-    return live;
-  }
-  const owner = readOwner(join(sub, 'owner.json'));
-  if (owner !== undefined) {
-    return owner.startedAt;
-  }
-  try {
-    return statSync(sub).mtimeMs;
-  } catch {
-    /* v8 ignore next -- dir vanished between listing and stat; the remove below is then a no-op */
-    return undefined;
-  }
+  return live !== undefined ? live : owner.startedAt;
 }
 
 /** Remove every abandoned (dead + aged) instance subtree under `dataDir`. Best-effort; never throws. */
@@ -70,14 +60,14 @@ export function sweepAgedInstances(options: SweepInstancesOptions): void {
     }
     const sub = join(options.dataDir, id);
     try {
-      // A subtree whose owning process is still alive is never reclaimed (it may be a live, quiet
-      // instance). An owner-less subtree can't be liveness-checked — it is eligible once aged.
+      // Only reclaim a subtree carrying a valid owner.json (the Bugsee marker) — never recursive-delete a
+      // foreign directory whose name merely matches the instance-id shape, and never reclaim a subtree whose
+      // owning process is still alive (it may be a live, quiet instance).
       const owner = readOwner(join(sub, 'owner.json'));
-      if (owner !== undefined && pidAlive(owner.pid, options.kill)) {
+      if (owner === undefined || pidAlive(owner.pid, options.kill)) {
         continue;
       }
-      const activity = lastActivityMs(sub);
-      if (activity !== undefined && now() - activity <= ttlMs) {
+      if (now() - lastActivityMs(sub, owner) <= ttlMs) {
         continue; // still within the TTL window — keep it (recovery may yet reclaim it)
       }
       remove(sub);

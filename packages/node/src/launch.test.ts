@@ -47,6 +47,7 @@ import {
 } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { hashAppToken } from './data-location';
 import { type SystemProbe, SystemProbeToken } from './environment';
 import type { HangLevel } from './event-loop-watchdog';
 import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
@@ -934,13 +935,15 @@ describe('launch', () => {
 
   it('launches with all defaults (in-memory store, global timers, no overrides)', async () => {
     // Only the seams needed to avoid real process/network/perf_hooks + global patching; everything
-    // else (store, clock, scheduler, onError) defaults — exercising those omitted branches.
+    // else (clock, scheduler, onError) defaults — exercising those omitted branches. capturedDataStore:
+    // 'memory' keeps this on the in-memory path (disk is the default now, D3) so it stays hermetic.
     const client = launch('tok', {
       process: fakeProcess().proc,
       transport: uploadTransport(),
       systemProbe: probe,
       systemMetricsSampler: () => [],
       captureNetwork: false,
+      capturedDataStore: 'memory',
     });
     clients.push(client);
     expect(client.isLaunched()).toBe(true);
@@ -1293,9 +1296,10 @@ describe('launchCore', () => {
 });
 
 describe('launch — capturedDataStore (disk by default, D3)', () => {
-  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee', () => {
+  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee/<appTokenHash>', () => {
     const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers
-    const ownerSub = join(tmpdir(), 'bugsee', '4242-0-disktest');
+    const appRoot = join(tmpdir(), 'bugsee', hashAppToken('tok'));
+    const ownerSub = join(appRoot, '4242-0-disktest');
     try {
       const client = launchTracked(
         'tok',
@@ -1307,10 +1311,10 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
       // Disk is the default — both on-disk services are registered without any dataDir/flag…
       expect(() => client.getService(ChunkStorageToken)).not.toThrow();
       expect(() => client.getService(BundleStoreToken)).not.toThrow();
-      // …and the instance subtree (owner.json) lands under the default tmp root.
+      // …and the instance subtree (owner.json) lands under the per-app-token default tmp root.
       expect(existsSync(join(ownerSub, 'owner.json'))).toBe(true);
     } finally {
-      rmSync(ownerSub, { recursive: true, force: true });
+      rmSync(appRoot, { recursive: true, force: true });
     }
   });
 
@@ -1322,6 +1326,22 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
     // 'memory' creates no default tmp root (only assert when it did not pre-exist from another run).
     if (!before) {
       expect(existsSync(join(tmpdir(), 'bugsee'))).toBe(false);
+    }
+  });
+
+  it('degrades to in-memory (never crashes the host) when the on-disk data root is unusable', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'bugsee-degrade-'));
+    const blocker = join(tmp, 'not-a-dir');
+    writeFileSync(blocker, 'x'); // a FILE where the SDK needs a directory → ensureDir under it fails (ENOTDIR)
+    const onError = vi.fn();
+    try {
+      const client = launchTracked('tok', baseOptions({ dataDir: blocker, onError }));
+      expect(client.isLaunched()).toBe(true); // launch did NOT throw — an SDK must never crash the host
+      expect(() => client.getService(ChunkStorageToken)).toThrow(); // degraded to in-memory: no on-disk seams
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(onError).toHaveBeenCalled(); // the fs failure was reported, not swallowed silently
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 

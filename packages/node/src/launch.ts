@@ -194,7 +194,7 @@ export interface BugseeLaunchOptions {
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
   scheduler?: Scheduler;
-  /** Capture store override; wins over dataDir. Default in-memory (or file-backed when dataDir set). */
+  /** Capture store override; wins over dataDir/capturedDataStore. Default file-backed on disk (D3); 'memory' opts out. */
   captureStore?: CaptureStore;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
@@ -336,15 +336,26 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // liveness-check this subtree. `clock` is hoisted here (used by the owner timestamp + later wiring).
   const clock = options.clock ?? createSystemClock();
   // Resolve where on-disk data lives + whether capture goes to disk (D3: disk is the default on servers).
-  // `effectiveDataDir` is the explicit dataDir, else os.tmpdir()/bugsee when disk capture is on, else
-  // undefined (a pure in-memory launch). Every on-disk seam below keys off `effectiveDataDir`.
-  const { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(options, tmpdir());
-  const instanceLayout =
+  // `effectiveDataDir` is the explicit dataDir, else os.tmpdir()/bugsee/<appTokenHash> when disk capture is
+  // on, else undefined (a pure in-memory launch). Every on-disk seam below keys off `effectiveDataDir`.
+  // (let, not const: a disk-setup failure below clears them to degrade to the in-memory path.)
+  let { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(options, tmpdir(), appToken);
+  let instanceLayout =
     effectiveDataDir !== undefined
       ? createInstanceLayout(effectiveDataDir, options.instanceIdentity ?? {})
       : undefined;
   if (instanceLayout !== undefined) {
-    writeInstanceOwner(instanceLayout, clock.wallNow(), sdkVersion);
+    try {
+      // The first eager fs write — the canary that the data root is usable. If it fails (a contended/
+      // read-only/full tmp, or a foreign-owned shared root), an observability SDK must NEVER crash the host
+      // app: report it and DEGRADE this launch to in-memory capture by clearing the on-disk seams.
+      writeInstanceOwner(instanceLayout, clock.wallNow(), sdkVersion);
+    } catch (error) {
+      options.onError?.(error);
+      instanceLayout = undefined;
+      effectiveDataDir = undefined;
+      diskCapture = false;
+    }
   }
 
   // Durable bundle queue (guaranteed crash delivery): persist each bundle before upload and re-upload
