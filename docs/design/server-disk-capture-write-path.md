@@ -211,8 +211,10 @@ OS-driven cliff on bun/deno.)
    regression (within a budget), a `kill -9` mid-stream loses ≤ the window, a catchable crash loses nothing.
 6. **Docs + memory.**
 
-## 11c. Phase-1 review hardening (2026-06-17, commits 302e1f5 / R2 / R3)
-The multi-agent convergent review of Phase 1 drove these fixes (all test-first + mutator-verified):
+## 11c. Phase-1 review hardening (2026-06-17, commits 302e1f5…3cac369) — CONVERGED over 4 rounds
+The multi-agent convergent review of Phase 1 ran **4 rounds** (round 1: real defects → R1-R3; round 2: LOW →
+R4 + the R5 test-hermeticity flake; round 3: impl declared converged, test gaps → R6; round 4: CONVERGED,
+one non-blocking edge → R7). Every real finding was fixed test-first + mutator-verified. The fixes:
 - **Batched-writer robustness (R1):** honor `writevSync`'s short-write contract (loop, don't truncate);
   a throwing flush no longer leaks the fd (flush never throws → routes to onError + keeps the buffer for
   retry; `flushSync` stays per-file resilient). Injectable `onError`/`writev`/`close` seams.
@@ -225,6 +227,15 @@ The multi-agent convergent review of Phase 1 drove these fixes (all test-first +
   `hashAppToken`, NOT `node:crypto`, so launch's source still typechecks inside the framework adapters).
   (c) The hygiene sweep now requires a valid `owner.json` marker before a recursive delete — a foreign
   instance-shaped dir (e.g. `2024-01-02`) is never reaped.
+- **Test hermeticity (R5):** the framework-adapter + node-umbrella integration tests now pin
+  `capturedDataStore: 'memory'` — under disk-default they were racing on the shared per-app-token root across
+  parallel vitest workers (intermittent full-suite failure). They test context/error capture, not storage.
+- **Buffer-consume-in-place (R7):** `writeAll` consumes the writer buffer in place, so a partial-write-then-
+  throw leaves only the unwritten tail buffered — the retry never duplicates an already-written prefix into
+  the append-mode file (closes the one edge the final round flagged).
+- **Test strength (R2/R4/R6):** embedded-tab frame round-trip; stale-`.live` reclaim; hashAppToken golden
+  vector + both-passes pin; sweep TTL-discrimination at the launch level; degradation proves a WORKING
+  in-memory store; writev no-progress guard + the partial-then-throw no-dup proof.
 
 **Deferred (defense-in-depth, not blocking):** explicit `uid`-gating of the sibling recovery/sweep on a
 shared multi-USER `/tmp` (the `0700`/`0600` modes already make cross-user read/delete fail-with-EACCES and
