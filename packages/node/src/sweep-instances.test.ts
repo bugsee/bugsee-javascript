@@ -135,6 +135,24 @@ describe('sweepAgedInstances', () => {
     expect(existsSync(sub)).toBe(true);
   });
 
+  it('reclaims a dead subtree whose .live heartbeat is STALE (a stale heartbeat does not protect it)', () => {
+    root = mkRoot();
+    // .live is present but its mtime is pinned well past the TTL; owner.startedAt is fresh (NOW). If the sweep
+    // used startedAt it would KEEP the subtree — so this pins that .live (the heartbeat) is the activity signal
+    // AND that a stale heartbeat fails to protect a dead instance.
+    const sub = seed(root, '222-0-stale', { owner: { pid: 222, startedAt: NOW }, live: true });
+    const old = new Date(NOW - DEFAULT_INSTANCE_TTL_MS - 1);
+    utimesSync(join(sub, '.live'), old, old);
+    sweepAgedInstances({
+      dataDir: root,
+      ownInstanceId: 'self',
+      ttlMs: TTL,
+      now: () => NOW,
+      kill: killOver(new Set()), // pid dead
+    });
+    expect(existsSync(sub)).toBe(false);
+  });
+
   it('never removes the own subtree even when it is aged + dead (instance-shaped, only the own-id guards it)', () => {
     root = mkRoot();
     // Instance-shaped + aged + dead-pid: without the own-id skip it WOULD be reclaimed — so this isolates

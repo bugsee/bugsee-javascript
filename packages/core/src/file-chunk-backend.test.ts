@@ -136,6 +136,15 @@ describe('createFileChunkBackend', () => {
     expect(await collect(snap)).toEqual(['good']);
   });
 
+  it('preserves a serialized payload that itself contains a tab (splits on the FIRST tab only)', async () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    // ts=1000, serialized='a\tb' — the frame separates the timestamp by the FIRST tab; later tabs are payload.
+    storage.append(5, 0, 'log', '1000\ta\tb\n');
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 99 }]);
+    expect(await collect(snap)).toEqual(['a\tb']); // embedded tab preserved, NOT treated as a delimiter
+  });
+
   it('removePart deletes the whole chunk group (meta + data)', () => {
     const storage = createInMemoryChunkStorage();
     const b = createFileChunkBackend(storage, { generation: 5 });
