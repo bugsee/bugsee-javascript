@@ -1,0 +1,210 @@
+# Server-tier disk capture: default-on, non-blocking batched writes — DESIGN
+
+**Status:** DESIGN — approach + all forks accepted (durability contract relaxed for servers; never stall the
+host; `capturedDataStore` option; **zero-copy/zero-alloc shared-ring** write path). Not yet built. Touches a
+BINDING rule ([[persistent-capture-durable-as-captured]]) and the capture hot path → warrants a multi-agent
+design review + a benchmark before implementation. Scope: `@bugsee/node` (+ bun/deno, which reuse it);
+browser unchanged.
+
+## 1. Problem
+
+File-backed capture (`dataDir` set) today does a **synchronous `appendFileSync` per captured entry on the
+host's event loop** (`fs-chunk-storage.ts` ← `file-chunk-backend.ts:appendEntry` ← `chunk-capture-store.add`),
+**reopening the file every append** (open+write+close = 3 syscalls/entry), and **double-encodes** each entry
+(`JSON.stringify({ t, s: serialized })` re-wraps an already-complete, already-timestamped JSON string). On a
+high-throughput backend — where capture volume tracks request volume — this blocks the event loop with
+syscalls on the hot path. And disk is **opt-in** (in-memory by default), which is backwards for a server.
+
+Goals: **(a) default to disk on the server runtimes**, and **(b) get the per-entry write off the event loop,
+zero-copy and without perturbing the host app.**
+
+## 2. The durability contract (binding-rule change — D1)
+
+The current rule is strict: *`add()` returns ⟹ the byte is on disk, surviving even an instantaneous
+`SIGKILL`* — which forces sync-per-entry. The new, **server-tier-scoped** rule:
+
+> Capture is durable with **ZERO loss across any *catchable* termination** — uncaught exception, `SIGTERM`,
+> `beforeExit`, explicit `stop()` — via a synchronous flush on that seam. An **un-catchable** termination
+> (`SIGKILL`, the OOM-killer delivering no runnable signal, power loss) loses **at most the last flush window**
+> (a bounded, sub-second slice set by the flush interval `M`).
+
+Catchable crashes — the common, *reportable* ones, which we already intercept for flush-then-exit — stay
+zero-loss. Only a hard kill with no chance to run JS gives up a tiny tail. Tier-scoped: Android/strict
+semantics untouched; this relaxation is node/bun/deno only.
+
+## 3. Architecture — a shared, fixed, reused ring drained by a dedicated I/O worker
+
+The write path is a **single fixed `SharedArrayBuffer` ring, allocated once and recycled** — chosen because it
+is the only design that is BOTH zero-copy AND zero-allocation: a Transferable `ArrayBuffer` is zero-copy for
+the handoff but DETACHES, forcing a fresh allocation per batch (GC churn); a shared ring is encoded *in place*
+and reused.
+
+```
+ HOST (main) thread                              SHARED RING (one SAB)                 I/O WORKER thread
+ ─────────────────                       ───────────────────────────────────         ────────────────────
+ capture entry
+   store.add(entry)
+     • metadata (chunk #, byte             header: [readIdx][writeIdx]                 loop:
+       accounting, maxDataSize             [dropped][shutdown/quiesce]                  1. read frames readIdx→writeIdx
+       window) — stays MAIN/sync           data: <frames>                               2. group by destination file
+     • encode the frame IN PLACE at        frame = [ts:8][len:4][type][payload]  ──▶    3. writevSync(fd_file, [iovecs])
+       writeIdx via TextEncoder.encodeInto   (payload bytes encodeInto'd directly         (zero-copy: iovecs are
+       (one encode; no string/byte alloc)     into the shared ring — no copy)              ring subarrays; held-open fds)
+     • bump writeIdx (Atomics)                                                           4. advance readIdx; Atomics.notify
+   returns immediately (NEVER stalls)                                                    5. else Atomics.wait(writeIdx)
+
+ crash/exit seam (uncaughtException / SIGTERM / beforeExit / stop):
+   set `shutdown` → notify → wait(quiesce, budget); worker does a final flush + sets quiesce.
+   FALLBACK if the worker is wedged: the main thread drains the SHARED residual itself (sync writev) — it can,
+   because the ring is shared (a worker-private heap buffer could not be reached).
+```
+
+- **Zero-copy / zero-alloc steady state.** Each entry is `encodeInto`'d once, directly into the ring at the
+  write index; the worker `writevSync`s straight out of the ring; the region is recycled. No intermediate
+  strings/buffers, no per-batch allocation, and the old double-encode is gone.
+- **`writev` coalescing (minimize `write()`).** On a flush the worker groups drained frames **by destination
+  file** and issues one vectored write per file — the iovecs are subarrays of the ring (zero-copy) — instead
+  of one `write()` per entry. (`writev` caps at `IOV_MAX` ≈ 1024 segments/call → split a giant flush.)
+- **Flush trigger.** A high-water mark on the ring **or** `M` ms elapsed, whichever first. `M` also bounds the
+  hard-kill tail (§2).
+- **Two properties this regains** (vs a main-private buffer + transfer): the worker keeps writing **during a
+  host hang** (the data already lives in shared memory — no main-thread handoff needed), and the **crash flush
+  is robust** (shared ⟹ the main thread can drain the residual if the worker is wedged).
+- **What moves vs stays.** Only the **per-entry append** uses the ring/worker. Chunk lifecycle + `meta` writes
+  (~1/s, open/close part) stay **synchronous on the main thread** — keeps `maxDataSize`/window accounting
+  authoritative. Recovery reads stay main-thread + off the hot path. The worker is a dumb "drain → group →
+  writev" executor.
+
+## 4. Backpressure — never the host; shed our own load (D2)
+
+The host's `add` is **always non-blocking** — we never apply backpressure to the customer's process
+(perturbing it is unacceptable and, under load, could make things worse). The ring is **fixed size** (no
+elastic growth — that would mean allocations, which D7 forbids); under sustained overload it is **drop-oldest**
+(advance the read index over the oldest unwritten frames — consistent with the rolling-window / `maxDataSize`
+contract; capture is a ring anyway). A `dropped` counter is surfaced as a diagnostic so loss is visible.
+Normal + bursty load drops nothing; dropping happens only when the disk genuinely can't keep up, where
+shedding *our* capture is correct and stalling the host is never.
+
+## 5. Oversized entries — their own write (D10)
+
+A fixed ring cannot hold an entry larger than itself, and a large-ish entry would evict a pile of small ones
+(drop-oldest) just to fit. So a **size threshold** (e.g. > a fraction of the ring): an entry above it
+**bypasses the ring** and goes on a one-off path — handed to the worker on its own and `write()`n alone. This
+is the *one* place an allocation is accepted: it's rare by definition, proportional to a payload already held,
+and batching it would gain nothing (it's already one big write).
+
+## 6. Crash-flush (zero-loss for catchable terminations — D5)
+
+On the crash/exit seam (we already intercept `uncaughtException` for flush-then-exit; add `SIGTERM` /
+`beforeExit` / `stop()`): the main thread sets the SAB `shutdown` flag, `Atomics.notify`s the worker, and
+`Atomics.wait`s on `quiesce` up to the **shutdown budget** (default 3 s). The worker — checking the flag
+between batches (≤ `M` ms apart) — does a final synchronous flush of the ring residual + any oversized in-flight
+write, then sets `quiesce`. **If the worker is wedged** (hung disk) and doesn't quiesce within the budget, the
+main thread **drains the shared ring residual itself** (sync `writev`) and exits — possible only because the
+ring is shared. Either way the catchable-crash window is closed to zero; `M` bounds the un-catchable tail.
+
+## 7. Default-to-disk semantics (D3)
+
+- **New launch option `capturedDataStore: 'memory' | 'disk'`** — default **`'disk'`** on node/bun/deno;
+  `'memory'` opts out to the current in-memory path (no disk, no ring, no worker). Browser ignores it (IDB).
+- **Default location:** when `'disk'` and no `dataDir`, default to `os.tmpdir()/bugsee/…` with the per-instance
+  subtree (`<pid>-<threadId>-<nonce>/`) from [[multi-instance-disk-coexistence]] layered under — disk-by-default
+  + multi-instance coexistence compose for free. An explicit `dataDir` overrides the location.
+- **Cleanup:** the multi-instance recovery sweep already reclaims *dead-instance* subtrees on launch;
+  default-on-disk adds an **age-based (TTL) sweep** of orphaned data from runs that crashed and never
+  relaunched, so `tmp` doesn't accumulate.
+
+## 8. Decision log
+
+| # | Decision | Rationale |
+|---|---|---|
+| **D1** | Relax durability to **catchable=zero-loss / hard-kill=bounded-tail**, server-tier only | Real target is process-crash (page cache + crash-flush), not power-loss (fsync); strict-even-SIGKILL forced sync-per-entry |
+| **D2** | **Never** backpressure the host; **fixed** ring, **drop-oldest** under overload (no elastic growth) | Perturbing the customer process is unacceptable; growth = allocations (forbidden by D7); capture is a rolling window so drop-oldest is in-contract |
+| **D3** | `capturedDataStore: 'memory'\|'disk'`, default `'disk'` on servers; default path under `os.tmpdir()` | Durable capture out of the box; composes with the per-instance subtree |
+| **D4** | Per-entry append → ring/worker; chunk lifecycle + `meta` + recovery stay main-thread (sync, infrequent) | Keeps `maxDataSize`/window authoritative; meta is ~1/s; recovery is off the hot path |
+| **D5** | Crash-flush = worker final-flush on `shutdown` signal; main drains the **shared** residual as fallback | Shared ring ⟹ main can take over if the worker is wedged; closes the catchable-crash window robustly |
+| **D6** | **Dedicated** I/O worker (not the ANR watchdog reused) | fs writes must not add jitter to hang detection |
+| **D7** | **Shared, fixed, reused SAB ring** — encode **in place**; NOT Transferable handoff | Only design that is zero-copy AND zero-alloc; transfer detaches → realloc per batch → GC |
+| **D8** | **`writevSync` per file** to coalesce; flush on high-water OR `M` ms; held-open fds | One vectored syscall per file per flush (not per entry), zero-copy from ring subarrays; `M` bounds the tail |
+| **D9** | **Encode-in-place compact frame** `[ts][len][type][payload]`; drop the `{t,s}` double-wrap + ts duplication | Smaller + faster + zero-escape; on-disk chunk format changes from NDJSON-of-`{t,s}` → framed records; recovery reader updated (NDJSON-of-`serialized` is the simpler text alternative — lock in slice 1) |
+| **D10** | **Oversized entry → one-off write**, bypassing the ring (the one allowed allocation) | Can't fit / would evict the ring; rare; batching it gains nothing |
+| **D11** | Accept eventual consistency between `meta` (main, sync) and the data file (worker, async) | Recovery reads data files defensively; the soft drift is tolerable |
+
+## 9. Portability & spikes
+`worker_threads` + `SharedArrayBuffer`/`Atomics` are proven on node/bun/deno (ANR watchdog +
+[[multi-instance-disk-coexistence]] heartbeat). New spikes before building: (a) `writevSync` from **SAB-backed
+views** + held-open fds on a worker, on bun/deno; (b) `TextEncoder.encodeInto` directly into a SAB subarray
+(behavior + throughput) on all 3; (c) the `shutdown`/`quiesce` handshake + the main-thread shared-residual
+fallback completing within the budget; (d) the variable-length ring with wraparound (a frame spanning the wrap
+→ two iovecs).
+
+## 10. Benchmark — DONE (2026-06-17, node 24, Apple SSD; `/tmp/cap-write-bench/`)
+
+Event-loop delay (`perf_hooks.monitorEventLoopDelay`) under capture writes, ~300 B entries:
+
+| | fast SSD (page cache) | adverse (write BLOCKS on I/O — fsync proxy) |
+|---|---|---|
+| **sync `appendFileSync`/`writeSync` per entry** | p99 ~1 ms, **max ~7 ms** @20k/s; ~135k syscalls/s | **4882–7046 ms** freezes; can't keep up (450–595/s) |
+| **batched `writevSync`** (held fd, HWM 64 KB) | p99 ~1 ms, max ~5.6 ms; **~330× fewer syscalls** (410 vs 135k) | **p99 1–5 ms, max 7–10 ms**, keeps full throughput |
+
+**Findings.** (1) Per-entry sync is harmless on a *fast local* SSD but produces **multi-second event-loop
+freezes the moment a write blocks on I/O** (slow/contended/network FS, writeback pressure) — and you can't
+assume the customer's disk is fast. (2) **Batching is the high-leverage fix**: held-fd + `writev` coalescing
+turns the *catastrophic* case (5 s freeze, can't keep up) into a **~10 ms max at full throughput** — a ~700×
+tail improvement, **no worker**, low complexity. (3) The off-thread worker is therefore **insurance**, not a
+throughput necessity: it removes the residual ~10 ms tail under adverse I/O + adds hang-resilience. (Caveat:
+`fsync` over-states our page-cache path, but is a valid proxy for a blocking write; node-only — confirm the
+OS-driven cliff on bun/deno.)
+
+**Conclusion → two phases** (the benchmark justifies phasing: Phase 1 alone removes ~99% of the danger).
+
+## 11. Slice plan — TWO PHASES
+
+**Phase 1 — batched main-thread writes (high value, low risk; captures the dramatic majority of the win):**
+1. **Batched file writer** in node-utils — held-open fds per chunk file + per-path buffer + `writevSync`
+   coalescing on a high-water mark **or** `M` ms timer; `flushSync()` for the crash seam; flush+close fd on
+   chunk close. Oversized single entry → its own flush.
+2. **Encode-in-place frame (D9)** — drop the `JSON.stringify({t,s})` double-wrap + ts duplication; write the
+   compact frame (lock NDJSON-of-`serialized` vs length-prefixed binary here); update the recovery reader.
+3. **`capturedDataStore` default-to-disk (D3)** + default `os.tmpdir()` path + TTL cleanup sweep; re-baseline
+   the in-memory-default tests.
+4. **Crash-flush wiring** — `flushSync()` on the uncaught/SIGTERM/beforeExit/stop seam (flush-then-exit).
+5. **Perf/e2e** — real-process high-rate capture: no host event-loop-lag regression vs the budget; a
+   catchable crash loses nothing.
+6. **Docs + memory.**
+
+**Phase 2 — off-thread worker + shared ring (insurance: zero host impact under adverse I/O + hang-resilience):**
+7. **Spikes** (§9) — SAB-view `writev`, `encodeInto` into SAB, the `shutdown`/`quiesce` handshake on
+   node/bun/deno.
+8. **`CaptureRingWriter`** — shared fixed ring (encode-in-place, drop-oldest, `dropped`) + dedicated worker
+   (drain → group → `writevSync`, held fds) + oversized side-channel; the main-thread shared-residual crash
+   fallback. Swaps in behind the Phase-1 writer interface.
+9. **Adverse-I/O e2e** — confirm zero host lag under a slow/contended disk; `kill -9` mid-stream loses ≤ the
+   window.
+10. **Docs + memory.**
+
+## 11. Slice plan (each: spike/benchmark as needed → test-first → mutator → multi-agent review → commit)
+0. **Spikes + benchmark** (§9/§10) — de-risk SAB-view `writev` + the handshake; pick the knobs from data;
+   decide (3) vs (4); lock the on-disk frame format (D9).
+1. **`CaptureRingWriter`** (node) — main-side API (`append(path, ts, type, bytes)`, `flushSync`, `stop`) +
+   the shared ring (encode-in-place, drop-oldest, `dropped`) + the dedicated worker (drain → group →
+   `writevSync`, held-open fds) + the oversized side-channel.
+2. **Wire into the fs chunk path** — `file-chunk-backend.appendEntry` routes through the writer; the frame
+   format (D9); meta/lifecycle stay sync; recovery reader updated to the new frame.
+3. **Crash-flush** — the `shutdown`/`quiesce` handshake + shared-residual fallback on the
+   uncaught/SIGTERM/beforeExit/stop seam, integrated with flush-then-exit.
+4. **`capturedDataStore` default-on-disk** + default `os.tmpdir()` path + the TTL cleanup sweep; re-baseline
+   tests that assumed the in-memory default.
+5. **Real-process e2e** — high-rate capture in a real node/bun/deno process: no host event-loop-lag
+   regression (within a budget), a `kill -9` mid-stream loses ≤ the window, a catchable crash loses nothing.
+6. **Docs + memory.**
+
+## 12. Risks / deferred
+- **Disk permanently slower than capture** → sustained drop-oldest (by design; surfaced via `dropped`). The
+  alternative (stall the host) is explicitly rejected.
+- **Worker RSS** (~5–12 MB) added to every server process by default — acceptable; revisit if it matters.
+- **SAB-view `writev` correctness** — the main thread must not overwrite a region the worker is mid-write on
+  (drop-oldest must not evict into the in-flight read region) — handled by the read-index ownership; a spike
+  target (§9a/d).
+- **Deferred:** an `fsync`/power-loss-durable opt-in mode; browser/IndexedDB write path (already async);
+  reusing one worker for ANR+I/O (rejected, D6); a per-chunk path→id registry to shrink ring frames.

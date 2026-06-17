@@ -91,6 +91,9 @@ export function createFileChunkBackend(
       const start = openStarts.get(startKey(ref)) ?? readMeta(ref.generation, ref.number).start;
       openStarts.delete(startKey(ref));
       writeMeta(ref.generation, ref.number, start, end, byteSize);
+      // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
+      // open-handle count bounded to the active chunk rather than the whole rolling window.
+      storage.sealChunk?.(ref.generation, ref.number);
     },
 
     removePart(ref: PartRef): void {

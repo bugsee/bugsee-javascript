@@ -24,6 +24,16 @@ export interface ChunkStorage {
   generations(): number[];
   /** Remove a whole generation (all its chunks). */
   removeGeneration(generation: number): void;
+
+  // --- Optional batched-writer lifecycle (the node batched fs storage; no-op/absent otherwise) ---
+  /** Flush any buffered appends to the OS (page cache), keeping the active chunk's handles open. Driven by
+   * a periodic timer + the crash/exit seam, so an un-catchable kill loses at most the last flush window. */
+  flushSync?(): void;
+  /** A chunk is sealed (closePart): flush + close its file handles — keeps the open-handle count bounded to
+   * the active chunk, not the whole rolling window. */
+  sealChunk?(generation: number, chunk: number): void;
+  /** Flush everything + close all handles (on stop()). */
+  dispose?(): void;
 }
 
 // Service token for the chunk-storage medium. Present only in file-backed mode (a dataDir, no captureStore
