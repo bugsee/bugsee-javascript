@@ -138,6 +138,27 @@ views** + held-open fds on a worker, on bun/deno; (b) `TextEncoder.encodeInto` d
 fallback completing within the budget; (d) the variable-length ring with wraparound (a frame spanning the wrap
 → two iovecs).
 
+### 9.1 Spike results — DONE (2026-06-17, node 24 / bun 1.3 / deno 2.8; `/tmp/cap-phase2-spikes/`) — ALL GREEN
+- **(a) SAB-view `writevSync`** — `writevSync(fd, [sab.subarray(...), …])` writes the SAB-backed iovec and
+  round-trips byte-exact on **node + bun + deno**. ✓
+- **(b) `encodeInto` into a SAB subarray** — `new TextEncoder().encodeInto(frame, sab.subarray(off))` reports
+  the full `read` + correct utf8 `written` (é/ö = 2 B) and the SAB is reused in place (same buffer identity
+  after `fill`) on all 3. ✓ Zero-copy encode-in-place is viable.
+- **(c) shutdown/quiesce handshake + main-thread fallback** — a worker drains the shared ring via `writevSync`
+  to a held fd; on a `SHUTDOWN` Atomics flag it flushes the residual + acks (`Atomics.store`+`notify`). Clean
+  shutdown loses nothing; a deliberately-WEDGED worker (never acks) → the main thread reads the shared ring
+  residual (`ring.subarray(head, tail)`) and writes it ITSELF → **zero loss on all 3 even with a hung worker**. ✓
+- **`Atomics.wait` on the MAIN thread** is permitted (returns `timed-out`) on **node + bun + deno** — usable
+  for the efficient blocking shutdown wait (no busy-poll). ✓
+- **⚠ Cross-runtime nuance (actionable):** `worker.terminate()` does NOT resolve for a wedged/idle worker on
+  **bun** (`terminate-timeout`), while node/deno resolve it. → The shutdown path must **bound `terminate()`**
+  (`Promise.race` with a timeout) or fire-and-forget it; never block shutdown on it. Does NOT affect zero-loss
+  (the shared-residual drain runs BEFORE terminate). (d) wraparound was not spiked separately — linear-region
+  iovecs are proven; the wrap is a two-iovec slice of the same proven primitive, deferred to the build.
+
+**Verdict: the Phase-2 primitives are viable on all three runtimes.** The one design constraint surfaced is the
+bounded-`terminate()` rule above.
+
 ## 10. Benchmark — DONE (2026-06-17, node 24, Apple SSD; `/tmp/cap-write-bench/`)
 
 Event-loop delay (`perf_hooks.monitorEventLoopDelay`) under capture writes, ~300 B entries:
