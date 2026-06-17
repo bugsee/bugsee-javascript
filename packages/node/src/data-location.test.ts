@@ -17,6 +17,11 @@ describe('hashAppToken', () => {
     const h = hashAppToken(TOKEN);
     expect(h.slice(0, 8)).not.toBe(h.slice(8));
   });
+
+  it('matches a golden vector (freezes BOTH passes’ seed/prime constants against silent drift)', () => {
+    // A swapped h2 seed/prime (or h1-constants reused for h2) keeps the halves differing but changes THIS.
+    expect(hashAppToken('app-token-xyz')).toBe('263edf727b588036');
+  });
 });
 
 describe('resolveDataLocation', () => {

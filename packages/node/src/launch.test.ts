@@ -1329,7 +1329,7 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
     }
   });
 
-  it('degrades to in-memory (never crashes the host) when the on-disk data root is unusable', () => {
+  it('degrades to a WORKING in-memory capture (never crashes the host) when the data root is unusable', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'bugsee-degrade-'));
     const blocker = join(tmp, 'not-a-dir');
     writeFileSync(blocker, 'x'); // a FILE where the SDK needs a directory → ensureDir under it fails (ENOTDIR)
@@ -1340,6 +1340,15 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
       expect(() => client.getService(ChunkStorageToken)).toThrow(); // degraded to in-memory: no on-disk seams
       expect(() => client.getService(BundleStoreToken)).toThrow();
       expect(onError).toHaveBeenCalled(); // the fs failure was reported, not swallowed silently
+      // Positively prove the fallback is a WORKING in-memory store (degradation ⇒ capture still functions).
+      const store = client.getService(CaptureStoreToken) as ReturnType<
+        typeof createMemoryCaptureStore
+      >;
+      console.log('degraded-capture-marker');
+      const logs = await drain(store, 'log');
+      expect(logs?.some((e) => JSON.stringify(e.data).includes('degraded-capture-marker'))).toBe(
+        true,
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -1404,34 +1413,37 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
     }
   });
 
-  it('on launch, sweeps an ABANDONED (aged + dead-pid) sibling subtree from the shared dataDir', () => {
+  it('on launch, sweeps an ABANDONED (aged + dead) sibling but KEEPS a fresh dead one (TTL discriminates)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-sweep-launch-'));
-    try {
-      // A prior run that crashed > the TTL ago and never relaunched (dead pid, owner.startedAt = 1).
-      const aged = join(dir, '1-0-aged');
-      mkdirSync(aged, { recursive: true });
+    const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
+    const seedSibling = (id: string, startedAt: number): string => {
+      const sub = join(dir, id);
+      mkdirSync(sub, { recursive: true });
       writeFileSync(
-        join(aged, 'owner.json'),
-        JSON.stringify({
-          instanceId: '1-0-aged',
-          pid: 999_999,
-          threadId: 0,
-          startedAt: 1,
-          version: '0',
-        }),
+        join(sub, 'owner.json'),
+        JSON.stringify({ instanceId: id, pid: 999_999, threadId: 0, startedAt, version: '0' }),
       );
+      return sub;
+    };
+    try {
+      // Two DEAD siblings: one that crashed > the 7-day TTL ago (startedAt 1, now = 8 days) and one that
+      // crashed just now (startedAt = now). Only the aged one is abandoned; the fresh one must survive — so
+      // the launch must pass a coherent `now` (the launch clock) AND the sweep must honor the TTL, not just
+      // "delete everything dead".
+      const aged = seedSibling('1-0-aged', 1);
+      const fresh = seedSibling('2-0-fresh', eightDaysMs);
       const { scheduler } = fakeScheduler();
-      const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
       launchTracked(
         'tok',
         baseOptions({
           dataDir: dir,
           scheduler,
-          clock: { wallNow: () => eightDaysMs, monotonicNow: () => 0 }, // now ≫ startedAt+TTL → aged
+          clock: { wallNow: () => eightDaysMs, monotonicNow: () => 0 }, // now ≫ aged.startedAt+TTL
           instanceIdentity: { pid: 1, threadId: 0, nonce: () => 'live' },
         }),
       );
       expect(existsSync(aged)).toBe(false); // the abandoned subtree was reclaimed on launch
+      expect(existsSync(fresh)).toBe(true); // the fresh dead sibling is within the TTL → kept (not nuked)
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
