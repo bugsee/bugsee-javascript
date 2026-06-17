@@ -732,6 +732,87 @@ describe('launch', () => {
     expect(data).toContain('batched-capture-marker-xyz'); // durable on disk after the dispose flush
   });
 
+  it('flushes the batched writer on process exit (the last synchronous hook — a clean shutdown loses nothing)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-flush-'));
+    const proc = fakeProcess();
+    try {
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          clock: fixedClock,
+          process: proc.proc,
+          instanceIdentity: FIXED_INSTANCE,
+          captureSystemEvents: false,
+          captureSystemTraces: false,
+        }),
+      );
+      console.log('exit-flush-marker-abc'); // → log capture → batched append (buffered, not yet on disk)
+      const cap = join(dir, FIXED_INSTANCE_ID, 'capture');
+      const read = (): string =>
+        readdirSync(cap, { recursive: true })
+          .map((n) => join(cap, n.toString()))
+          .filter((p) => statSync(p).isFile())
+          .map((p) => readFileSync(p, 'utf8'))
+          .join('');
+      expect(read()).not.toContain('exit-flush-marker-abc'); // still buffered before exit
+      proc.fire('exit', 0); // node's synchronous final hook
+      expect(read()).toContain('exit-flush-marker-abc'); // flushed to the page cache before the process goes
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the exit-flush handler on stop() (no leak across a relaunch)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-off-'));
+    const proc = fakeProcess();
+    try {
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          clock: fixedClock,
+          process: proc.proc,
+          instanceIdentity: FIXED_INSTANCE,
+          captureSystemEvents: false,
+        }),
+      );
+      expect(proc.count('exit')).toBe(1); // the exit-flush hook is installed
+      await client.stop();
+      expect(proc.count('exit')).toBe(0); // …and removed on stop
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('swallows a flush failure on exit, routing it to onError (never throws out of the exit hook)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-boom-'));
+    const proc = fakeProcess();
+    const onError = vi.fn();
+    try {
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          clock: fixedClock,
+          process: proc.proc,
+          onError,
+          instanceIdentity: FIXED_INSTANCE,
+          captureSystemEvents: false,
+        }),
+      );
+      const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+      const boom = new Error('exit flush boom');
+      cs.flushSync = () => {
+        throw boom;
+      };
+      expect(() => proc.fire('exit', 0)).not.toThrow();
+      expect(onError).toHaveBeenCalledWith(boom);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes owner.json and the .live heartbeat under the instance subtree', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-owner-'));
     launchTracked('tok', baseOptions({ dataDir: dir, instanceIdentity: FIXED_INSTANCE }));

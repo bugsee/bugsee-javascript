@@ -619,6 +619,24 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     proc.on('uncaughtException', onUncaughtException);
   }
 
+  // Flush-on-exit (P1.4): node's `'exit'` event is the LAST synchronous hook before the process goes — it
+  // fires on a drained event loop, an explicit process.exit(), and after the crash handler's exit. Flush the
+  // batched writer's buffers here so a graceful/clean shutdown reaches the page cache and loses nothing
+  // (bounding the un-flushed window the 1 s timer otherwise covers to ~0). Non-intrusive: it only does sync
+  // work DURING exit and never alters exit behavior (unlike installing a SIGTERM handler, which would swallow
+  // the signal). Installed only when the batched writer is in use; removed on stop().
+  const onProcessExit = (): void => {
+    try {
+      chunkStorage?.flushSync?.();
+    } catch (error) {
+      options.onError?.(error);
+    }
+  };
+  const flushesOnExit = chunkStorage?.flushSync !== undefined;
+  if (flushesOnExit) {
+    proc.on('exit', onProcessExit);
+  }
+
   // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out —
   // design D3, flipped default-on). When on, install the node:http emit patch + any injected native serve
   // wraps (bun/deno). getClient is lazy (the carrier client, resolved per request, so install order vs
@@ -655,6 +673,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     stop(timeout?: number): Promise<boolean> {
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
+      }
+      if (flushesOnExit) {
+        proc.off('exit', onProcessExit); // the dispose() below already flushes + closes
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
       heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)
