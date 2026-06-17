@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import http, { createServer, type Server } from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -698,6 +706,24 @@ describe('launch', () => {
     console.log('to-disk-with-clock');
     // generation = clock.wallNow() = 1000 → the zero-padded-to-13 generation dir name.
     expect(readdirSync(join(dir, '1-0-x', 'capture'))).toContain('0000000001000');
+  });
+
+  it('uses the BATCHED capture writer: buffered entries are flushed to disk on stop()', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-batched-'));
+    const client = launchTracked(
+      'tok',
+      baseOptions({ dataDir: dir, clock: fixedClock, instanceIdentity: FIXED_INSTANCE }),
+    );
+    console.log('batched-capture-marker-xyz'); // → console interceptor → log capture → batched append
+    await client.stop(); // dispose() flushes + closes the batched writer's handles
+
+    const cap = join(dir, '1-0-x', 'capture');
+    const data = readdirSync(cap, { recursive: true })
+      .map((n) => join(cap, n.toString()))
+      .filter((p) => statSync(p).isFile())
+      .map((p) => readFileSync(p, 'utf8'))
+      .join('');
+    expect(data).toContain('batched-capture-marker-xyz'); // durable on disk after the dispose flush
   });
 
   it('writes owner.json and the .live heartbeat under the instance subtree', () => {

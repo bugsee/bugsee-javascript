@@ -42,7 +42,7 @@ import {
   TransportToken,
 } from '@bugsee/core';
 import {
-  createFsChunkStorage,
+  createBatchedFsChunkStorage,
   createNodeBundleStore,
   createNodeReportMarkerStore,
   httpRequest,
@@ -93,6 +93,8 @@ const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
 // Node/Electron capture buffer ceiling (design §966: 50 MB on Node, 10 MB on browser/edge).
 const DEFAULT_MAX_DATA_SIZE_MB = 50;
+// Periodic flush cadence for the batched capture writer — bounds the un-catchable-kill loss window.
+const CAPTURE_FLUSH_MS = 1000;
 
 // Node's launch-option definitions = the shared cross-runtime set plus Node's own. maxDataSize is
 // platform-local because its default differs per runtime (50 MB on Node/Electron vs 10 MB on
@@ -379,9 +381,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   };
   // The chunk-storage medium exists only when a dataDir is used without an explicit captureStore; it is
   // a container service (DI Phase 3) and the input to the file-backed store.
+  // The live capture chunk medium is the BATCHED writer (server write-path P1): per-entry appends are
+  // buffered + `writev`-coalesced off the open-fd-per-chunk, instead of an open+write+close syscall per
+  // entry — turning a blocking write's multi-second event-loop freeze into a ~10 ms tail (design §10).
   const chunkStorage =
     options.captureStore === undefined && instanceLayout !== undefined
-      ? createFsChunkStorage(instanceLayout.captureDir)
+      ? createBatchedFsChunkStorage(instanceLayout.captureDir)
       : undefined;
   if (chunkStorage !== undefined) {
     services.addService(defineService(ChunkStorageToken, () => chunkStorage));
@@ -529,6 +534,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         })
       : undefined;
 
+  // Periodic flush of the batched capture writer's buffers to the OS page cache — bounds the data an
+  // un-catchable kill (SIGKILL/OOM) can lose to ~CAPTURE_FLUSH_MS (a chunk seal flushes sooner under load).
+  const captureFlushTimer = chunkStorage?.flushSync
+    ? client.getService(SchedulerToken).setInterval(() => {
+        try {
+          chunkStorage.flushSync?.();
+        } catch (error) {
+          options.onError?.(error);
+        }
+      }, CAPTURE_FLUSH_MS)
+    : undefined;
+
   // Re-upload any bundles THIS instance's own subtree left persisted (durable queue recovery — a no-op on a
   // fresh per-launch subtree, kept for symmetry/safety).
   durable?.recover();
@@ -558,6 +575,13 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const exitOnUncaught = options.exitOnUncaught ?? true;
   const onUncaughtException = (): void => {
+    // Synchronously flush the batched capture writer FIRST, so the crash report (assembled from capture)
+    // and the rolling buffer are durable before we exit — a catchable crash loses nothing.
+    try {
+      chunkStorage?.flushSync?.();
+    } catch {
+      // a flush failure must never replace the crash's own handling
+    }
     void client.flush(shutdownTimeoutMs).finally(() => {
       if (exitOnUncaught) {
         proc.exit(1);
@@ -607,6 +631,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
       heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)
+      if (captureFlushTimer !== undefined) {
+        client.getService(SchedulerToken).clearInterval(captureFlushTimer);
+      }
+      chunkStorage?.dispose?.(); // flush + close the batched writer's handles
       for (const installable of serverInstallables) {
         installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
       }
