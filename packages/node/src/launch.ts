@@ -400,7 +400,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // entry — turning a blocking write's multi-second event-loop freeze into a ~10 ms tail (design §10).
   const chunkStorage =
     options.captureStore === undefined && instanceLayout !== undefined && diskCapture
-      ? createBatchedFsChunkStorage(instanceLayout.captureDir)
+      ? createBatchedFsChunkStorage(instanceLayout.captureDir, {
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
       : undefined;
   if (chunkStorage !== undefined) {
     services.addService(defineService(ChunkStorageToken, () => chunkStorage));

@@ -24,6 +24,9 @@ const numericNames = (dir: string): number[] =>
     .map((name) => Number(name))
     .filter((value) => Number.isInteger(value));
 
+/** A `writev`-shaped sink: write the iovec, return the count of bytes actually written (may be short). */
+export type WritevFn = (fd: number, buffers: readonly Uint8Array[]) => number;
+
 interface OpenFile {
   fd: number;
   segments: Uint8Array[];
@@ -33,6 +36,43 @@ interface OpenFile {
 export interface BatchedFsChunkStorageOptions {
   /** Flush a file once its buffered bytes reach this (a single oversized entry flushes alone). Default 64 KiB. */
   highWaterMark?: number;
+  /** Failure sink for a flush/close error (a broken disk must never throw into the capture path). Default no-op. */
+  onError?: (error: unknown) => void;
+  /** `writev` primitive; injectable for tests (short-write simulation). Default node:fs `writevSync`. */
+  writev?: WritevFn;
+  /** `close` primitive; injectable for tests (close-failure simulation). Default node:fs `closeSync`. */
+  close?: (fd: number) => void;
+}
+
+/**
+ * Drain `segments` to `fd`, honoring `writev`'s short-write contract: a single `writev` may write FEWER
+ * bytes than requested, so loop — advance past fully-written segments, trim the partially-written one, and
+ * re-issue — until the whole batch is on disk. (IOV_MAX caps the iovec count per call.) A naive single call
+ * that ignored the return value would silently truncate a record mid-write on a short write.
+ */
+function writeAll(fd: number, segments: readonly Uint8Array[], writev: WritevFn): void {
+  let pending: Uint8Array[] = segments.slice();
+  while (pending.length > 0) {
+    const batch = pending.slice(0, IOV_MAX);
+    const want = batch.reduce((sum, b) => sum + b.length, 0);
+    const written = writev(fd, batch);
+    if (written >= want) {
+      pending = pending.slice(batch.length); // whole batch flushed
+      continue;
+    }
+    // Short write: skip the fully-written leading segments, slice the partial one, retry it + the rest.
+    let consumed = written;
+    let i = 0;
+    while (i < batch.length && consumed >= (batch[i] as Uint8Array).length) {
+      consumed -= (batch[i] as Uint8Array).length;
+      i++;
+    }
+    const remainder = pending.slice(i);
+    if (consumed > 0) {
+      remainder[0] = (remainder[0] as Uint8Array).subarray(consumed);
+    }
+    pending = remainder;
+  }
 }
 
 /** A batched, held-fd, `writev`-coalescing ChunkStorage. Implements the optional flushSync/sealChunk/dispose
@@ -43,6 +83,9 @@ export function createBatchedFsChunkStorage(
 ): ChunkStorage {
   ensureDir(root);
   const highWaterMark = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
+  const onError = options.onError ?? ((): void => {});
+  const writev = options.writev ?? writevSync;
+  const close = options.close ?? closeSync;
   const genDir = (generation: number): string => join(root, pad(generation, GEN_PAD));
   const chunkDir = (generation: number, chunk: number): string =>
     join(genDir(generation), pad(chunk, CHUNK_PAD));
@@ -57,8 +100,13 @@ export function createBatchedFsChunkStorage(
     if (entry === undefined || entry.segments.length === 0) {
       return;
     }
-    for (let i = 0; i < entry.segments.length; i += IOV_MAX) {
-      writevSync(entry.fd, entry.segments.slice(i, i + IOV_MAX));
+    try {
+      writeAll(entry.fd, entry.segments, writev);
+    } catch (error) {
+      // A broken/full disk must never throw into the capture path. Route it out and KEEP the buffer so a
+      // later flush retries — never clear unwritten data.
+      onError(error);
+      return;
     }
     entry.segments = [];
     entry.bytes = 0;
@@ -69,8 +117,12 @@ export function createBatchedFsChunkStorage(
     if (entry === undefined) {
       return;
     }
-    flushPath(path);
-    closeSync(entry.fd);
+    flushPath(path); // never throws (routes to onError); the fd is closed + dropped regardless, so no leak
+    try {
+      close(entry.fd);
+    } catch (error) {
+      onError(error);
+    }
     open.delete(path);
   };
 

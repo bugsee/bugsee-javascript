@@ -1,9 +1,17 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  closeSync as closeSyncReal,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeSync,
+  writevSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createBatchedFsChunkStorage } from './batched-fs-chunk-storage';
+import { createBatchedFsChunkStorage, type WritevFn } from './batched-fs-chunk-storage';
 
 const dirs: string[] = [];
 const mkRoot = (): string => {
@@ -104,14 +112,118 @@ describe('createBatchedFsChunkStorage', () => {
     s.dispose?.();
   });
 
-  it('splits a flush larger than IOV_MAX into multiple writev calls (all entries survive)', () => {
+  it('splits a flush larger than IOV_MAX into multiple writev calls, preserving order (all entries survive)', () => {
     const root = mkRoot();
     const s = createBatchedFsChunkStorage(root, { highWaterMark: 100 * 1024 * 1024 }); // never auto-flush
     for (let i = 0; i < 1500; i++) s.append(GEN, CHUNK, 'log', `${i}\n`); // > IOV_MAX (1024) segments
     s.flushSync?.();
-    expect(rawLines(diskPath(root, 'log'))).toHaveLength(1500);
-    expect(rawLines(diskPath(root, 'log'))[1499]).toBe('1499');
+    // Assert the FULL ordered sequence (not just count + tail) so a reorder/duplicate across the split seam fails.
+    expect(rawLines(diskPath(root, 'log'))).toEqual(
+      Array.from({ length: 1500 }, (_, i) => String(i)),
+    );
     s.dispose?.();
+  });
+
+  it('flushSync flushes ALL open files, not just the first', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 1 << 30 }); // never auto-flush
+    s.append(GEN, CHUNK, 'log', 'L\n');
+    s.append(GEN, CHUNK, 'network', 'N\n');
+    s.append(GEN, CHUNK, 'trace', 'T\n');
+    s.flushSync?.();
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['L']);
+    expect(rawLines(diskPath(root, 'network'))).toEqual(['N']);
+    expect(rawLines(diskPath(root, 'trace'))).toEqual(['T']);
+    s.dispose?.();
+  });
+
+  it('honors writev SHORT writes mid-segment AND across a full segment boundary (no truncation/duplication)', () => {
+    const root = mkRoot();
+    // Two genuine partial writes to the real fd: first exactly 5 bytes (the whole first segment — exercising
+    // the skip-full-segment loop with consumed landing on a boundary), then 3 bytes (mid second segment),
+    // then the rest. Covers both the on-boundary (consumed === 0) and mid-segment (consumed > 0) short-write cases.
+    const sizes = [5, 3];
+    let call = 0;
+    const writev: WritevFn = (fd, buffers) => {
+      const all = Buffer.concat(buffers.map((b) => Buffer.from(b)));
+      const n = sizes[call++];
+      if (n !== undefined) {
+        return writeSync(fd, all, 0, Math.min(n, all.length)); // partial: write only n bytes, report n
+      }
+      return writevSync(fd, buffers as NodeJS.ArrayBufferView[]);
+    };
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 1 << 30, writev });
+    s.append(GEN, CHUNK, 'log', 'aaaa\n'); // 5 bytes
+    s.append(GEN, CHUNK, 'log', 'bbbb\n'); // 5 bytes → total 10; flushed across several short writes
+    s.flushSync?.();
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['aaaa', 'bbbb']); // intact, no truncation, no duplication
+    s.dispose?.();
+  });
+
+  it('routes a close() failure to onError without throwing (the entry is still dropped)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    let closed = false;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      onError: (e) => errors.push(e),
+      close: (fd) => {
+        closeSyncReal(fd); // really close so no fd leaks in the test…
+        closed = true;
+        throw new Error('close failed'); // …but report a failure to exercise the catch
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'c\n');
+    expect(() => s.dispose?.()).not.toThrow();
+    expect(closed).toBe(true);
+    expect(errors.some((e) => (e as Error).message === 'close failed')).toBe(true);
+  });
+
+  it('a flush failure is routed to onError, the buffer is KEPT for retry, and other files still flush', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    let failNext = true; // throw on the FIRST writev only (the first file flushed), succeed after
+    const writev: WritevFn = (fd, buffers) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error('disk full');
+      }
+      return writevSync(fd, buffers as NodeJS.ArrayBufferView[]);
+    };
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      writev,
+      onError: (e) => errors.push(e),
+    });
+    s.append(GEN, CHUNK, 'log', 'L\n');
+    s.append(GEN, CHUNK, 'network', 'N\n');
+    s.flushSync?.(); // first file's writev throws → onError + buffer kept; the second still flushes
+    expect(errors).toHaveLength(1);
+    const landedAfterFirst = [
+      rawLines(diskPath(root, 'log')),
+      rawLines(diskPath(root, 'network')),
+    ].filter((lines) => lines.length > 0);
+    expect(landedAfterFirst).toHaveLength(1); // one file flushed despite the other's failure (resilient)
+    s.flushSync?.(); // retry — the kept buffer now lands (the data was NOT lost)
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['L']);
+    expect(rawLines(diskPath(root, 'network'))).toEqual(['N']);
+    s.dispose?.();
+  });
+
+  it('dispose never throws even when a flush fails — the fd is still closed, the error routed', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const writev: WritevFn = () => {
+      throw new Error('always broken');
+    };
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      writev,
+      onError: (e) => errors.push(e),
+    });
+    s.append(GEN, CHUNK, 'log', 'x\n');
+    expect(() => s.dispose?.()).not.toThrow(); // closePath flushes (fails → onError) but always closes the fd
+    expect(errors.length).toBeGreaterThanOrEqual(1);
   });
 
   it('lists generations + chunks by their numeric dir names', () => {
@@ -124,6 +236,47 @@ describe('createBatchedFsChunkStorage', () => {
     expect(s.generations().sort((a, b) => a - b)).toEqual([3, 5]);
     expect(s.chunks(3).sort((a, b) => a - b)).toEqual([7, 9]);
     expect(s.chunks(99)).toEqual([]); // absent generation
+  });
+
+  it('works with all default options (real writevSync/closeSync, default HWM + no-op onError)', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root); // no options at all
+    s.append(GEN, CHUNK, 'log', 'default\n');
+    expect(s.read(GEN, CHUNK, 'log')).toBe('default\n'); // real writevSync flush-on-read
+    s.dispose?.(); // real closeSync
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['default']);
+  });
+
+  it('a flush failure with NO onError supplied is silently swallowed by the default sink (never throws)', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      writev: () => {
+        throw new Error('broken');
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'z\n');
+    expect(() => s.flushSync?.()).not.toThrow(); // default no-op onError absorbs it
+    s.dispose?.();
+  });
+
+  it('read() returns undefined for a file that does not exist', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 1024 });
+    expect(s.read(GEN, CHUNK, 'never-written')).toBeUndefined();
+    s.dispose?.();
+  });
+
+  it('sealChunk closes only the sealed chunk’s handles, leaving another open chunk’s buffer intact', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 1 << 30 });
+    s.append(GEN, 0, 'log', 'chunk0\n'); // open chunk 0
+    s.append(GEN, 1, 'log', 'chunk1\n'); // open chunk 1 (a path NOT under chunk 0)
+    s.sealChunk?.(GEN, 0); // flush+close ONLY chunk 0; chunk 1 must stay buffered
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['chunk0']); // chunk 0 flushed
+    expect(rawLines(join(root, '0000000000001', '000000000001', 'log'))).toEqual([]); // chunk 1 still buffered
+    s.dispose?.();
+    expect(rawLines(join(root, '0000000000001', '000000000001', 'log'))).toEqual(['chunk1']); // flushed on dispose
   });
 
   it('round-trips through the real file chunk backend (append → snapshot reads it back)', async () => {
