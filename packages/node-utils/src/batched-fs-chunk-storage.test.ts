@@ -179,6 +179,31 @@ describe('createBatchedFsChunkStorage', () => {
     expect(errors.some((e) => (e as Error).message === 'close failed')).toBe(true);
   });
 
+  it('a partial write THEN a throw mid-drain does NOT duplicate the already-written prefix on retry', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    let call = 0;
+    const writev: WritevFn = (fd, buffers) => {
+      call++;
+      const all = Buffer.concat(buffers.map((b) => Buffer.from(b)));
+      if (call === 1) return writeSync(fd, all, 0, 4); // 4 bytes actually land ('aaaa')…
+      if (call === 2) throw new Error('ENOSPC mid-drain'); // …then the very next writev fails
+      return writevSync(fd, buffers as NodeJS.ArrayBufferView[]);
+    };
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      writev,
+      onError: (e) => errors.push(e),
+    });
+    s.append(GEN, CHUNK, 'log', 'aaaa\n'); // 5 bytes
+    s.append(GEN, CHUNK, 'log', 'bbbb\n'); // 5 bytes
+    s.flushSync?.(); // 'aaaa' lands, then the drain throws → onError; only the UNWRITTEN tail stays buffered
+    expect(errors).toHaveLength(1);
+    s.flushSync?.(); // retry writes ONLY the tail — not the whole buffer again
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['aaaa', 'bbbb']); // exactly once: no duplicated 'aaaa'
+    s.dispose?.();
+  });
+
   it('a flush failure is routed to onError, the buffer is KEPT for retry, and other files still flush', () => {
     const root = mkRoot();
     const errors: unknown[] = [];

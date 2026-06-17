@@ -45,39 +45,41 @@ export interface BatchedFsChunkStorageOptions {
 }
 
 /**
- * Drain `segments` to `fd`, honoring `writev`'s short-write contract: a single `writev` may write FEWER
- * bytes than requested, so loop — advance past fully-written segments, trim the partially-written one, and
- * re-issue — until the whole batch is on disk. (IOV_MAX caps the iovec count per call.) A naive single call
- * that ignored the return value would silently truncate a record mid-write on a short write.
+ * Drain `entry.segments` to `entry.fd`, honoring `writev`'s short-write contract: a single `writev` may
+ * write FEWER bytes than requested, so loop — advance past fully-written segments, trim the partially-written
+ * one, and re-issue — until the whole batch is on disk. (IOV_MAX caps the iovec count per call.) A naive
+ * single call that ignored the return value would silently truncate a record mid-write on a short write.
+ *
+ * Consumes the buffer IN PLACE (rewrites `entry.segments` as bytes land), so if a LATER `writev` in the same
+ * drain throws, `entry.segments` holds only the still-UNWRITTEN tail — the kept-buffer retry then re-writes
+ * exactly that, never duplicating an already-written prefix into the append-mode file.
  */
-function writeAll(fd: number, segments: readonly Uint8Array[], writev: WritevFn): void {
-  let pending: Uint8Array[] = segments.slice();
-  while (pending.length > 0) {
-    const batch = pending.slice(0, IOV_MAX);
+function writeAll(entry: OpenFile, writev: WritevFn): void {
+  while (entry.segments.length > 0) {
+    const batch = entry.segments.slice(0, IOV_MAX);
     const want = batch.reduce((sum, b) => sum + b.length, 0);
-    const written = writev(fd, batch);
+    const written = writev(entry.fd, batch);
     if (written >= want) {
-      pending = pending.slice(batch.length); // whole batch flushed
+      entry.segments = entry.segments.slice(batch.length); // whole batch flushed
       continue;
     }
     if (written <= 0) {
       // A non-empty batch that made NO progress would spin forever; a real writevSync never does this (it
       // advances ≥1 byte or throws), but the writev seam is injectable — bail out so flushPath routes to
-      // onError + keeps the buffer for a later retry, rather than hang the caller.
+      // onError + keeps the (unwritten) buffer for a later retry, rather than hang the caller.
       throw new Error(`writev made no progress (returned ${written} of ${want})`);
     }
-    // Short write: skip the fully-written leading segments, slice the partial one, retry it + the rest.
+    // Short write: drop the fully-written leading segments, trim the partial one — the remainder is retried.
     let consumed = written;
     let i = 0;
     while (i < batch.length && consumed >= (batch[i] as Uint8Array).length) {
       consumed -= (batch[i] as Uint8Array).length;
       i++;
     }
-    const remainder = pending.slice(i);
+    entry.segments = entry.segments.slice(i);
     if (consumed > 0) {
-      remainder[0] = (remainder[0] as Uint8Array).subarray(consumed);
+      entry.segments[0] = (entry.segments[0] as Uint8Array).subarray(consumed);
     }
-    pending = remainder;
   }
 }
 
@@ -107,15 +109,15 @@ export function createBatchedFsChunkStorage(
       return;
     }
     try {
-      writeAll(entry.fd, entry.segments, writev);
+      // writeAll consumes entry.segments in place — on success it empties them; on a mid-drain throw it
+      // leaves only the still-unwritten tail.
+      writeAll(entry, writev);
     } catch (error) {
-      // A broken/full disk must never throw into the capture path. Route it out and KEEP the buffer so a
-      // later flush retries — never clear unwritten data.
+      // A broken/full disk must never throw into the capture path. Route it out; the unwritten tail stays
+      // buffered for a later retry (never duplicating an already-written prefix, never dropping data).
       onError(error);
-      return;
     }
-    entry.segments = [];
-    entry.bytes = 0;
+    entry.bytes = entry.segments.reduce((sum, b) => sum + b.length, 0); // 0 on success, the remainder on error
   };
 
   const closePath = (path: string): void => {
