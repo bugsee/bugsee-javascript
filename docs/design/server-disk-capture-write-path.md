@@ -160,18 +160,28 @@ OS-driven cliff on bun/deno.)
 
 ## 11. Slice plan — TWO PHASES
 
-**Phase 1 — batched main-thread writes (high value, low risk; captures the dramatic majority of the win):**
-1. **Batched file writer** in node-utils — held-open fds per chunk file + per-path buffer + `writevSync`
-   coalescing on a high-water mark **or** `M` ms timer; `flushSync()` for the crash seam; flush+close fd on
-   chunk close. Oversized single entry → its own flush.
-2. **Encode-in-place frame (D9)** — drop the `JSON.stringify({t,s})` double-wrap + ts duplication; write the
-   compact frame (lock NDJSON-of-`serialized` vs length-prefixed binary here); update the recovery reader.
-3. **`capturedDataStore` default-to-disk (D3)** + default `os.tmpdir()` path + TTL cleanup sweep; re-baseline
-   the in-memory-default tests.
-4. **Crash-flush wiring** — `flushSync()` on the uncaught/SIGTERM/beforeExit/stop seam (flush-then-exit).
-5. **Perf/e2e** — real-process high-rate capture: no host event-loop-lag regression vs the budget; a
-   catchable crash loses nothing.
-6. **Docs + memory.**
+**Phase 1 — batched main-thread writes (high value, low risk; captures the dramatic majority of the win) — DONE (2026-06-17):**
+1. ✅ **Batched file writer** in node-utils (`batched-fs-chunk-storage.ts`, `b477b52`) — held-open fds per
+   chunk file + per-path buffer + `writevSync` coalescing on a 64 KB high-water mark; `flushSync()` for the
+   crash seam; `sealChunk`/`dispose` flush+close fds on chunk close. Oversized single entry → its own flush.
+   IOV_MAX-capped vectored writes.
+2. ✅ **Encode-in-place frame (D9)** (`file-chunk-backend.ts`, `803b96a`) — dropped the `JSON.stringify({t,s})`
+   double-wrap + ts duplication for the flat `<timestamp>\t<serialized>\n` frame (NDJSON-of-`serialized`, the
+   text alternative; locked). Snapshot reader splits on the first tab + skips torn/foreign lines.
+3. ✅ **`capturedDataStore` default-to-disk (D3)** (`data-location.ts` + `sweep-instances.ts` + `launch.ts`,
+   `5bc58b5`) — `capturedDataStore: 'memory'|'disk'` (default `'disk'`); default root `os.tmpdir()/bugsee`;
+   age-based (7-day) TTL hygiene sweep of abandoned sibling subtrees, run before recovery. Re-baselined the
+   in-memory-default tests.
+4. ✅ **Flush-on-exit wiring** (`launch.ts`, `b5972d1`) — `flushSync()` on node's `'exit'` hook (the last
+   synchronous chance), plus the existing uncaughtException + stop()/dispose() flushes. NOT a SIGTERM handler
+   (that would swallow the signal — [[interceptors-must-not-alter-app-behavior]]); `'exit'` is non-intrusive.
+5. ✅ **e2e validation** (`instrumentation-tests`) — the full real-process battery (node/bun/deno) now runs on
+   disk-by-default and passes; a new **disk-recovery** scenario proves the headline claim end-to-end: an
+   incident that crashed BEFORE its bundle assembled is rebuilt next launch from the marker + the durable
+   capture chunks, carrying the pre-crash breadcrumb. **Host-lag:** validated by the §10 benchmark (batched
+   `writev` keeps p99 1–5 ms / max 7–10 ms even under fsync-proxied blocking I/O), NOT a CI assertion — a
+   wall-clock lag gate is machine/CI-timing-dependent and would flake; the benchmark is the durable basis.
+6. ✅ **Docs + memory** (this section + PROGRESS.md + [[server-disk-capture-write-path]] memory).
 
 **Phase 2 — off-thread worker + shared ring (insurance: zero host impact under adverse I/O + hang-resilience):**
 7. **Spikes** (§9) — SAB-view `writev`, `encodeInto` into SAB, the `shutdown`/`quiesce` handshake on
@@ -183,9 +193,11 @@ OS-driven cliff on bun/deno.)
    window.
 10. **Docs + memory.**
 
-## 11. Slice plan (each: spike/benchmark as needed → test-first → mutator → multi-agent review → commit)
+## 11b. Phase 2 detail — off-thread worker + shared ring (NOT STARTED; the Phase-1 batched writer is the live path)
+(each: spike/benchmark as needed → test-first → mutator → multi-agent review → commit)
 0. **Spikes + benchmark** (§9/§10) — de-risk SAB-view `writev` + the handshake; pick the knobs from data;
-   decide (3) vs (4); lock the on-disk frame format (D9).
+   decide (3) vs (4); lock the on-disk frame format (D9). NOTE — the frame format is already locked by
+   Phase-1 slice 2 (D9, the `<timestamp>\t<serialized>\n` NDJSON frame); Phase 2 keeps it.
 1. **`CaptureRingWriter`** (node) — main-side API (`append(path, ts, type, bytes)`, `flushSync`, `stop`) +
    the shared ring (encode-in-place, drop-oldest, `dropped`) + the dedicated worker (drain → group →
    `writevSync`, held-open fds) + the oversized side-channel.

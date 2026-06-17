@@ -276,6 +276,53 @@ describe.each(
     });
   });
 
+  describe('disk-recovery: a crash that beat its bundle is rebuilt from the durable capture chunks', () => {
+    let collector: MockCollector;
+    let dataDir: string;
+    let seed: { exitCode: number | null; stderr: string };
+    let recover: { exitCode: number | null; stderr: string };
+    let uploadsAfterSeed: number;
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      dataDir = mkdtempSync(join(tmpdir(), 'bugsee-dr-'));
+      // Phase 1: capture a breadcrumb to disk, fire an incident (marker written sync), die before assembly.
+      seed = await runScenarioProcess(target, collector.url, 'disk-recovery', {
+        BUGSEE_E2E_DATADIR: dataDir,
+        BUGSEE_E2E_PHASE: 'seed',
+      });
+      uploadsAfterSeed = collector.uploads.length; // unreachable endpoint → nothing delivered live
+      // Phase 2: a fresh process on the SAME dataDir rebuilds the incident from the marker + capture chunks.
+      recover = await runScenarioProcess(target, collector.url, 'disk-recovery', {
+        BUGSEE_E2E_DATADIR: dataDir,
+        BUGSEE_E2E_PHASE: 'recover',
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('the seed exits before assembling/delivering anything; the recover process exits cleanly', () => {
+      expect(seed.exitCode, seed.stderr).toBe(0);
+      expect(recover.exitCode, recover.stderr).toBe(0);
+      expect(uploadsAfterSeed).toBe(0); // proves any delivered incident came ONLY from recovery
+    });
+
+    it('rebuilds the incident bundle from the marker + disk chunks, carrying the PRE-CRASH breadcrumb', () => {
+      const bundles = parseBundles(collector);
+      const incident = bundles.find((b) => b.request.summary === 'e2e disk-recovery incident');
+      expect(
+        incident,
+        `the marker-only incident was not recovered (${recover.stderr})`,
+      ).toBeDefined();
+      // The headline proof: capture written to disk BEFORE the crash survived and is in the recovered bundle.
+      const logs = parseJson<LogEntry[]>((incident as ParsedBundle).files['logs.json']);
+      expect(logs.some((l) => l.message.includes('e2e disk-recovery breadcrumb 7f3a'))).toBe(true);
+    });
+  });
+
   describe('crash scenario: uncaughtException → crash bundle → exit 1', () => {
     let collector: MockCollector;
     let exitCode: number | null;

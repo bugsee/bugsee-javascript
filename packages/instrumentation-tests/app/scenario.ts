@@ -185,6 +185,51 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
   await client.stop(3000);
 }
 
+/**
+ * Disk-capture recovery battery (server write-path P1: "a crash loses nothing"). Unlike multi-instance
+ * (which recovers an already-ASSEMBLED+persisted bundle), this proves the MARKER path: an incident that
+ * died BEFORE its bundle was assembled is rebuilt next launch from the durable on-disk CAPTURE chunks.
+ *   seed    — launch with the DEFAULT on-disk capture, log a distinctive breadcrumb, fire an incident (its
+ *             marker is written synchronously), then `process.exit` IMMEDIATELY — no graceful flush, so only
+ *             the marker + the capture chunks survive (the 'exit' hook persists the buffered chunk). No
+ *             bundle is assembled, and the endpoint is unreachable, so nothing delivers live.
+ *   recover — a FRESH instance on the SAME dataDir rebuilds the dead sibling's incident bundle from its
+ *             marker + capture chunks and delivers it; the bundle's logs.json carries the seed's breadcrumb,
+ *             proving the pre-crash capture survived on disk and was recovered.
+ */
+async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
+  if (process.env.BUGSEE_E2E_PHASE === 'seed') {
+    const client = launch('e2e-app-token', {
+      endpoint: 'http://127.0.0.1:1', // unreachable → nothing is delivered live
+      dataDir, // shared on-disk root; capturedDataStore defaults to 'disk'
+      detectHangs: false,
+      profiling: false,
+      recover: true, // arms the marker store + recovery
+      exitOnUncaught: false,
+      onError: noteOnError,
+    });
+    console.log('e2e disk-recovery breadcrumb 7f3a'); // must survive on disk → reappear in the recovered bundle
+    await sleep(150); // let the console→log capture append the breadcrumb to the disk chunk
+    // Fire an incident: the marker is written SYNCHRONOUSLY here. Then die at once WITHOUT assembling the
+    // bundle — only the marker + the on-disk chunks remain (the marker-recovery path must rebuild from them).
+    void client.logException(new Error('e2e disk-recovery incident'));
+    process.exit(0);
+    return;
+  }
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    dataDir,
+    detectHangs: false,
+    profiling: false,
+    recover: true,
+    onError: noteOnError,
+  });
+  await sleep(3000); // let the fire-and-forget recovery scan rebuild + enqueue the recovered bundle
+  await client.flush(10_000); // deliver it
+  await client.stop(3000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -200,6 +245,10 @@ export async function runScenario(
   }
   if (opts.scenario === 'multi-instance') {
     await runMultiInstanceScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'disk-recovery') {
+    await runDiskRecoveryScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);

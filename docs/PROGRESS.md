@@ -311,6 +311,28 @@ Each slice test-first + mutator + multi-agent review to convergence (1 real gap 
 dismissed). **Deferred:** worker-thread heartbeat (D3) + atomic-rename claim (D5) + cross-machine dataDir +
 the browser/IndexedDB tier.
 
+### Server disk capture write path — Phase 1 COMPLETE (2026-06-17, on `master`); Phase 2 (worker+ring) deferred
+Design `docs/design/server-disk-capture-write-path.md` (D1–D11). The old per-entry synchronous
+`appendFileSync`-per-record was dangerous on a high-load backend (benchmark §10: under blocking I/O it
+freezes the event loop for SECONDS); batched `writev` holds p99 1–5 ms / max 7–10 ms at full throughput.
+Phase 1 (the live path) — each slice test-first + mutator + 100% line/fn:
+- **Batched writer** (`node-utils/batched-fs-chunk-storage.ts`, `b477b52`) — held-open fd per chunk file,
+  per-path buffer, `writevSync` on a 64 KB HWM (IOV_MAX-capped), `flushSync`/`sealChunk`/`dispose`.
+- **Flat tab-frame (D9)** (`core/file-chunk-backend.ts`, `803b96a`) — `<timestamp>\t<serialized>\n` replaces
+  the `JSON.stringify({t,s})` double-wrap; reader splits on the first tab, skips torn lines.
+- **Disk is the DEFAULT (D3)** (`node/data-location.ts` + `sweep-instances.ts`, `5bc58b5`) — launch option
+  `capturedDataStore: 'memory'|'disk'` (default `'disk'`); no `dataDir` → `os.tmpdir()/bugsee/<instanceId>`;
+  a 7-day TTL hygiene sweep reaps abandoned (dead/aged) sibling subtrees before recovery.
+- **Flush-on-exit** (`node/launch.ts`, `b5972d1`) — node's `'exit'` hook (non-intrusive, NOT a SIGTERM
+  handler) + the existing uncaught/stop flushes, so a clean shutdown loses nothing.
+- **e2e** (`instrumentation-tests`): the full real-process battery runs on disk-by-default + a new
+  **disk-recovery** scenario proves "a crash loses nothing" (an incident that died before assembly is rebuilt
+  next launch from the marker + durable chunks, carrying the pre-crash breadcrumb). 45 e2e tests GREEN on
+  node/bun/deno. Host-lag is benchmark-backed, not a flaky CI gate.
+**Phase 2 (deferred, insurance):** a dedicated I/O worker + a shared fixed reused SAB ring (encode-in-place,
+drop-oldest), swapped behind the Phase-1 writer interface — for zero host impact under adverse/contended disk
++ hang-resilience (D5/D6/D7/D8). Build when adverse-I/O host-impact is shown to matter.
+
 ### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
 The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
 the Android/iOS SDKs + competitors (Sentry/Firebase/BugSnag/Datadog) — gap analysis: see
