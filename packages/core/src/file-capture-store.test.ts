@@ -17,11 +17,11 @@ const G = 10_000;
 const mk = (storage: ChunkStorage, over: FileCaptureStoreOptions = {}) =>
   createFileCaptureStore(storage, { clock: clockAt(10_000), ...over });
 
-// A 20-char ASCII payload; every such record encodes to the same on-disk bytes (`enc`), so the byte-cap
-// math in the tests is exact. `enc` mirrors the backend's encoding: JSON.stringify({ t, s }) + '\n'.
+// A 20-char ASCII payload; every such record (5-digit timestamp) encodes to the same on-disk bytes (`enc`),
+// so the byte-cap math in the tests is exact. `enc` mirrors the backend's frame: `<timestamp>\t<serialized>\n`.
 const PAYLOAD = 'x'.repeat(20);
 const recBytes = (type: FileType, timestamp: number): StoredEntry => rec(type, timestamp, PAYLOAD);
-const enc = (timestamp: number): number => JSON.stringify({ t: timestamp, s: PAYLOAD }).length + 1;
+const enc = (timestamp: number): number => `${timestamp}\t${PAYLOAD}\n`.length;
 const U = enc(10_000); // one record's on-disk byte size (5-digit timestamp)
 
 describe('createFileCaptureStore — add + snapshot', () => {
@@ -41,7 +41,7 @@ describe('createFileCaptureStore — add + snapshot', () => {
     mk(storage).add(rec('log', 10_000));
     expect(storage.chunks(G)).toEqual([0]); // one part → one chunk
     expect(new Set(storage.files(G, 0))).toEqual(new Set(['meta', 'log']));
-    expect(storage.read(G, 0, 'log')).toBe('{"t":10000,"s":"{}"}\n');
+    expect(storage.read(G, 0, 'log')).toBe('10000\t{}\n');
   });
 
   it('writes a durable meta file on open (end null) and rewrites it on close (end + byteSize)', () => {
@@ -59,7 +59,7 @@ describe('createFileCaptureStore — add + snapshot', () => {
       n: 0,
       s: 10_000,
       e: 11_000,
-      b: JSON.stringify({ t: 10_000, s: '{}' }).length + 1, // the one '{}' record's on-disk bytes
+      b: '10000\t{}\n'.length, // the one '{}' record's on-disk bytes
     });
   });
 
@@ -78,7 +78,7 @@ describe('createFileCaptureStore — add + snapshot', () => {
     const storage = createInMemoryChunkStorage();
     const store = mk(storage);
     store.add(rec('log', 10_000)); // part 0 (active)
-    storage.append(G, 99, 'log', '{"t":99,"s":"{}"}\n'); // a chunk the store doesn't track
+    storage.append(G, 99, 'log', '99\t{}\n'); // a chunk the store doesn't track
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
 
@@ -130,7 +130,7 @@ describe('createFileCaptureStore — generations', () => {
 
   it('on a fresh launch, deletes other generations’ leftover chunks', () => {
     const storage = createInMemoryChunkStorage();
-    storage.append(5, 0, 'log', '{"t":1,"s":"{}"}\n'); // a prior launch (generation 5) left this
+    storage.append(5, 0, 'log', '1\t{}\n'); // a prior launch (generation 5) left this
     createFileCaptureStore(storage, { clock: clockAt(10_000), generation: 9 });
     expect(storage.generations()).not.toContain(5); // the stale generation is discarded
   });
@@ -189,12 +189,13 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
 
   it('evicts MULTIPLE oldest parts in a single add when one record overflows past several', async () => {
     const recPay = (ts: number, chars: number): StoredEntry => rec('log', ts, 'x'.repeat(chars));
+    // Frame bytes = <5-digit ts>\t + payload + \n = chars + 7.
     const store = mk(createInMemoryChunkStorage(), { maxDataSizeBytes: 80 });
-    store.add(recPay(10_000, 20)); // part0 (39B)
+    store.add(recPay(10_000, 20)); // part0 (27B)
     store.tick(10_100);
-    store.add(recPay(10_001, 20)); // part1 (39B) → total 78
+    store.add(recPay(10_001, 20)); // part1 (27B) → total 54
     store.tick(10_200);
-    store.add(recPay(10_002, 40)); // part2 (59B) → total 137 → evict part0 AND part1 in this add
+    store.add(recPay(10_002, 60)); // part2 (67B) → total 121 → evict part0 AND part1 in this add
     const got = (await store.snapshot().drainAll()).get('log') ?? [];
     expect(got.map((r) => r.timestamp)).toEqual([10_002]); // both older parts gone, large record kept
   });

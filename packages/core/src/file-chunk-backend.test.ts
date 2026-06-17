@@ -47,16 +47,16 @@ describe('createFileChunkBackend', () => {
     const b = createFileChunkBackend(storage, { generation: 5 });
     b.openPart(ref(5, 0), 1000);
     const size = b.appendEntry(ref(5, 0), rec('hi', 'log', 1000));
-    expect(storage.read(5, 0, 'log')).toBe('{"t":1000,"s":"hi"}\n');
-    expect(size).toBe('{"t":1000,"s":"hi"}\n'.length);
+    expect(storage.read(5, 0, 'log')).toBe('1000\thi\n'); // <ts>\t<serialized>\n
+    expect(size).toBe('1000\thi\n'.length);
   });
 
   it('appendEntry returns the utf8 (not char) byte size for multi-byte payloads', () => {
     const storage = createInMemoryChunkStorage();
     const b = createFileChunkBackend(storage, { generation: 5 });
     b.openPart(ref(5, 0), 1000);
-    // é is 2 UTF-8 bytes: the line `{"t":0,"s":"é"}\n` is 16 chars but 17 bytes.
-    expect(b.appendEntry(ref(5, 0), rec('é'))).toBe(17);
+    // é is 2 UTF-8 bytes: the line `0\té\n` is 4 chars but 5 bytes.
+    expect(b.appendEntry(ref(5, 0), rec('é'))).toBe(5);
   });
 
   it('closePart rewrites the meta with end + final byteSize (durable, recoverable)', () => {
@@ -95,7 +95,7 @@ describe('createFileChunkBackend', () => {
   it('listParts derives a safe default for a chunk missing its meta file (a torn write)', () => {
     const storage = createInMemoryChunkStorage();
     const b = createFileChunkBackend(storage, { generation: 5, cleanOtherGenerations: false });
-    storage.append(5, 0, 'log', '{"t":1,"s":"x"}\n'); // data present, but no meta was ever written
+    storage.append(5, 0, 'log', '1\tx\n'); // data present, but no meta was ever written
     expect(b.listParts(5)).toEqual([
       { generation: 5, number: 0, start: 0, end: undefined, byteSize: 0 },
     ]);
@@ -123,6 +123,17 @@ describe('createFileChunkBackend', () => {
     ]);
     b.appendEntry(ref(5, 0), rec('after')); // appended after the snapshot was taken
     expect(await collect(snap)).toEqual(['a', 'c']); // frozen + oldest part first; meta excluded
+  });
+
+  it('snapshot skips torn lines (no tab separator, or a non-numeric timestamp)', async () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    storage.append(5, 0, 'log', '1000\tgood\n'); // a valid <ts>\t<serialized> frame
+    storage.append(5, 0, 'log', 'no-tab-here\n'); // no \t separator → skipped
+    storage.append(5, 0, 'log', '7777\n'); // a torn frame: numeric ts written, but no \t/serialized yet → skipped
+    storage.append(5, 0, 'log', 'NaN\tbad-ts\n'); // non-numeric timestamp → skipped
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 99 }]);
+    expect(await collect(snap)).toEqual(['good']);
   });
 
   it('removePart deletes the whole chunk group (meta + data)', () => {

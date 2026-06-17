@@ -82,7 +82,10 @@ export function createFileChunkBackend(
     },
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
-      const encoded = `${JSON.stringify({ t: record.timestamp, s: record.serialized })}\n`;
+      // Frame = `<timestamp>\t<serialized>\n` — no double-JSON-wrap, no escaping. `serialized` is the
+      // provider's COMPACT single-line JSON (no literal tab/newline), so `\t` separates the timestamp and
+      // `\n` delimits records. Smaller + faster than the former `JSON.stringify({t,s})` re-wrap.
+      const encoded = `${record.timestamp}\t${record.serialized}\n`;
       storage.append(ref.generation, ref.number, record.type, encoded);
       return utf8ByteLength(encoded);
     },
@@ -120,12 +123,15 @@ export function createFileChunkBackend(
             if (line === '') {
               continue;
             }
-            try {
-              const parsed = JSON.parse(line) as { t: number; s: string };
-              frozen.push({ type, timestamp: parsed.t, serialized: parsed.s });
-            } catch {
-              // skip a corrupt line
+            const tab = line.indexOf('\t');
+            if (tab === -1) {
+              continue; // a torn/foreign line with no timestamp separator — skip
             }
+            const timestamp = Number(line.slice(0, tab));
+            if (!Number.isFinite(timestamp)) {
+              continue; // skip a corrupt timestamp
+            }
+            frozen.push({ type, timestamp, serialized: line.slice(tab + 1) });
           }
         }
       }
