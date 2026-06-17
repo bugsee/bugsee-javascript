@@ -264,6 +264,32 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-alive'))).toBe(true);
   });
 
+  it('recovers ONLY the dead sibling when several LIVE siblings are also present (no clobber)', async () => {
+    const dir = mkDir();
+    // Two live siblings (alive pid + fresh heartbeat) + one dead sibling, all with pending bundles.
+    seedPendingBundle(dir, '7-0-liveA', 'a', aBundle('liveA — keep'));
+    writeOwner(dir, '7-0-liveA', LIVE_PID);
+    writeFileSecure(join(dir, '7-0-liveA', '.live'), '');
+    seedPendingBundle(dir, '7-1-liveB', 'b', aBundle('liveB — keep'));
+    writeOwner(dir, '7-1-liveB', LIVE_PID);
+    writeFileSecure(join(dir, '7-1-liveB', '.live'), '');
+    seedPendingBundle(dir, '9-9-dead', 'd', aBundle('dead — recover'));
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // exactly the dead one
+    expect(pipe.bundles[0]?.request.summary).toBe('dead — recover');
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // recovered + removed
+    expect(existsSync(join(dir, '7-0-liveA'))).toBe(true); // both live siblings left untouched
+    expect(existsSync(join(dir, '7-1-liveB'))).toBe(true);
+  });
+
   it('skips an ARMING sibling (alive pid, no heartbeat written yet)', async () => {
     const dir = mkDir();
     seedPendingBundle(dir, '9-9-arming', 'b1', aBundle('arming'));

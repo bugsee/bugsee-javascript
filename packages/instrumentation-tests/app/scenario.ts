@@ -179,7 +179,8 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
     recover: true,
     onError: noteOnError,
   });
-  await sleep(1500); // let the fire-and-forget sibling-recovery scan + enqueue the recovered bundle
+  await sleep(3000); // let the fire-and-forget sibling-recovery scan + enqueue the recovered bundle (generous
+  // so slow CI doesn't race the flush; recovery of one small bundle is normally well under this)
   await client.flush(10_000); // deliver it
   await client.stop(3000);
 }

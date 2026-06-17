@@ -221,7 +221,8 @@ describe.each(
     let dataDir: string;
     let seed: { exitCode: number | null; stderr: string };
     let recover: { exitCode: number | null; stderr: string };
-    let seedSubtrees: string[];
+    let seedPendingBundles: number; // bundles the seed actually PERSISTED under its subtree's pending/
+    let uploadsAfterSeed: number; // what the collector received during the seed phase (must be 0)
 
     beforeAll(async () => {
       collector = await startMockCollector();
@@ -231,8 +232,12 @@ describe.each(
         BUGSEE_E2E_DATADIR: dataDir,
         BUGSEE_E2E_PHASE: 'seed',
       });
-      // Diagnostic: the seed must have left a per-instance subtree on disk (its persisted, undelivered queue).
-      seedSubtrees = readdirSync(dataDir).filter((n) => /^\d+-\d+-/.test(n));
+      // The seed must have left exactly one per-instance subtree with a PERSISTED bundle in its pending/
+      // queue (not just an empty dir) — that durable blob is what recovery picks up.
+      const subs = readdirSync(dataDir).filter((n) => /^\d+-\d+-/.test(n));
+      seedPendingBundles =
+        subs.length === 1 ? readdirSync(join(dataDir, subs[0] as string, 'pending')).length : 0;
+      uploadsAfterSeed = collector.uploads.length; // the seed's unreachable endpoint delivered nothing
       // Phase 2: a fresh process on the SAME dataDir recovers the dead sibling's incident.
       recover = await runScenarioProcess(target, collector.url, 'multi-instance', {
         BUGSEE_E2E_DATADIR: dataDir,
@@ -250,11 +255,14 @@ describe.each(
       expect(recover.exitCode, recover.stderr).toBe(0);
     });
 
-    it('the seed left a persisted per-instance subtree on disk', () => {
+    it('the seed PERSISTED an undelivered bundle and delivered NOTHING (proves the incident must be recovered)', () => {
       expect(
-        seedSubtrees,
-        `seed left no instance subtree under dataDir (${seed.stderr})`,
-      ).toHaveLength(1);
+        seedPendingBundles,
+        `seed left no persisted bundle (${seed.stderr})`,
+      ).toBeGreaterThanOrEqual(1);
+      // The recover process never logs this incident itself — so if the collector got nothing in phase 1,
+      // any 'e2e multi-instance incident' it later holds can ONLY have come from cross-process recovery.
+      expect(uploadsAfterSeed).toBe(0);
     });
 
     it('a FRESH process delivers the dead sibling’s persisted incident (cross-process recovery)', () => {
