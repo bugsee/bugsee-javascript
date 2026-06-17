@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -267,7 +268,12 @@ describe('launch', () => {
   });
 
   it('does not register bundleStore/chunkStorage in in-memory mode', () => {
-    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    // capturedDataStore: 'memory' → no on-disk location at all (disk is the default now, D3), so neither the
+    // durable bundle store nor the chunk medium is built/registered.
+    const client = launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), capturedDataStore: 'memory' }),
+    );
     expect(() => client.getService(BundleStoreToken)).toThrow();
     expect(() => client.getService(ChunkStorageToken)).toThrow();
   });
@@ -1205,6 +1211,132 @@ describe('launchCore', () => {
   });
 });
 
+describe('launch — capturedDataStore (disk by default, D3)', () => {
+  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee', () => {
+    const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers
+    const ownerSub = join(tmpdir(), 'bugsee', '4242-0-disktest');
+    try {
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          instanceIdentity: { pid: 4242, threadId: 0, nonce: () => 'disktest' },
+        }),
+      );
+      // Disk is the default — both on-disk services are registered without any dataDir/flag…
+      expect(() => client.getService(ChunkStorageToken)).not.toThrow();
+      expect(() => client.getService(BundleStoreToken)).not.toThrow();
+      // …and the instance subtree (owner.json) lands under the default tmp root.
+      expect(existsSync(join(ownerSub, 'owner.json'))).toBe(true);
+    } finally {
+      rmSync(ownerSub, { recursive: true, force: true });
+    }
+  });
+
+  it("capturedDataStore: 'memory' keeps everything in RAM: no chunk/bundle store wired, no disk subtree", () => {
+    const before = existsSync(join(tmpdir(), 'bugsee'));
+    const client = launchTracked('tok', baseOptions({ capturedDataStore: 'memory' }));
+    expect(() => client.getService(ChunkStorageToken)).toThrow();
+    expect(() => client.getService(BundleStoreToken)).toThrow();
+    // 'memory' creates no default tmp root (only assert when it did not pre-exist from another run).
+    if (!before) {
+      expect(existsSync(join(tmpdir(), 'bugsee'))).toBe(false);
+    }
+  });
+
+  it("dataDir + capturedDataStore: 'memory' keeps capture in RAM yet still persists bundles durably", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-mem-dir-'));
+    try {
+      const { scheduler } = fakeScheduler();
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          capturedDataStore: 'memory',
+          scheduler,
+          instanceIdentity: { pid: 5, threadId: 0, nonce: () => 'memdir' },
+        }),
+      );
+      expect(() => client.getService(ChunkStorageToken)).toThrow(); // capture is in-memory (the memory flag)…
+      expect(() => client.getService(BundleStoreToken)).not.toThrow(); // …but bundles stay durable under dataDir
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('periodically flushes the batched writer, and routes a flush failure to onError (never throws)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-flush-'));
+    try {
+      const { scheduler, calls } = fakeScheduler();
+      const onError = vi.fn();
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          scheduler,
+          onError,
+          captureSystemTraces: false,
+          captureSystemEvents: false,
+          detectHangs: false,
+          instanceIdentity: { pid: 7, threadId: 0, nonce: () => 'flush' },
+        }),
+      );
+      // Two 1000 ms intervals exist — the capture-store tick (registered first) and the capture-flush timer
+      // (registered last, after the 10 s heartbeat); fire the LAST 1000 ms one (the flush timer).
+      const fire = (): void => {
+        const timer = calls.filter((c) => c.ms === 1000).at(-1);
+        timer?.cb();
+      };
+      // Happy path: flushing the real batched writer neither throws nor reaches onError.
+      expect(fire).not.toThrow();
+      expect(onError).not.toHaveBeenCalled();
+      // Failure path: make the writer's flush throw → the timer catches it and reports to onError.
+      const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+      const boom = new Error('flush boom');
+      cs.flushSync = () => {
+        throw boom;
+      };
+      expect(fire).not.toThrow();
+      expect(onError).toHaveBeenCalledWith(boom);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('on launch, sweeps an ABANDONED (aged + dead-pid) sibling subtree from the shared dataDir', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-sweep-launch-'));
+    try {
+      // A prior run that crashed > the TTL ago and never relaunched (dead pid, owner.startedAt = 1).
+      const aged = join(dir, '1-0-aged');
+      mkdirSync(aged, { recursive: true });
+      writeFileSync(
+        join(aged, 'owner.json'),
+        JSON.stringify({
+          instanceId: '1-0-aged',
+          pid: 999_999,
+          threadId: 0,
+          startedAt: 1,
+          version: '0',
+        }),
+      );
+      const { scheduler } = fakeScheduler();
+      const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          scheduler,
+          clock: { wallNow: () => eightDaysMs, monotonicNow: () => 0 }, // now ≫ startedAt+TTL → aged
+          instanceIdentity: { pid: 1, threadId: 0, nonce: () => 'live' },
+        }),
+      );
+      expect(existsSync(aged)).toBe(false); // the abandoned subtree was reclaimed on launch
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('launch — incoming-server instrumentation wiring', () => {
   const mk = (name: string, order: string[]) => ({
     install: vi.fn(() => {
@@ -1218,7 +1350,9 @@ describe('launch — incoming-server instrumentation wiring', () => {
   // a real ANR worker per launch; the afterEach is a defense-in-depth net so a patched global never leaks
   // to another test even if a stop() rejected.
   const opts = (over: Partial<BugseeLaunchOptions> = {}) =>
-    baseOptions({ detectHangs: false, ...over });
+    // capturedDataStore: 'memory' — these tests exercise server instrumentation, not capture storage; keep
+    // them on the in-memory path so they don't hit disk under os.tmpdir() now that disk is the default (D3).
+    baseOptions({ detectHangs: false, capturedDataStore: 'memory', ...over });
   afterEach(() => {
     for (const proto of [http.Server.prototype, https.Server.prototype]) {
       if (Object.hasOwn(proto, 'emit')) {

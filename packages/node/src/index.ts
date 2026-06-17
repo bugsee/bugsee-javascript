@@ -9,6 +9,7 @@ export {
   createCpuProfiler,
   type ProfilerSession,
 } from './cpu-profiler';
+export type { CapturedDataStore } from './data-location';
 export {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,

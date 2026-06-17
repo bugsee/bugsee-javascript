@@ -69,7 +69,7 @@ const launchTracked = (over?: Partial<BugseeLaunchOptions>) => {
 
 describe('launch — maxDataSize byte-bound wiring', () => {
   it('builds the in-memory store with a 50 MB byte cap and a 60 s window by default', () => {
-    launchTracked();
+    launchTracked({ capturedDataStore: 'memory' }); // disk is the default now (D3); pin the in-memory path
     expect(memSpy).toHaveBeenCalledTimes(1);
     expect(memSpy.mock.calls[0]?.[0]).toMatchObject({
       maxDataSizeBytes: 50 * MB,
@@ -78,12 +78,12 @@ describe('launch — maxDataSize byte-bound wiring', () => {
   });
 
   it('converts a maxDataSize override (MB) to bytes for the in-memory store', () => {
-    launchTracked({ maxDataSize: 1 });
+    launchTracked({ maxDataSize: 1, capturedDataStore: 'memory' });
     expect(memSpy.mock.calls[0]?.[0]).toMatchObject({ maxDataSizeBytes: 1 * MB });
   });
 
   it('threads both maxDataSize (MB→bytes) and maxRecordingTime (s→ms) together', () => {
-    launchTracked({ maxDataSize: 10, maxRecordingTime: 30 });
+    launchTracked({ maxDataSize: 10, maxRecordingTime: 30, capturedDataStore: 'memory' });
     expect(memSpy.mock.calls[0]?.[0]).toMatchObject({
       maxDataSizeBytes: 10 * MB,
       maxRecordingTimeMs: 30_000,

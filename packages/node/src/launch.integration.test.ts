@@ -141,7 +141,7 @@ describe('launch — loopback end-to-end', () => {
           instanceId: '9-9-prior',
           pid: 999_999,
           threadId: 0,
-          startedAt: 1,
+          startedAt: Date.now(), // a RECENT crash: within the TTL, so the hygiene sweep keeps it for recovery
           version: '0',
         }),
       );

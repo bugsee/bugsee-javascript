@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import process from 'node:process';
 import {
   createConsoleInterceptor,
@@ -49,6 +50,7 @@ import {
 } from '@bugsee/node-utils';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
+import { type CapturedDataStore, resolveDataLocation } from './data-location';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -74,6 +76,7 @@ import {
   type RequestContextStore,
   RequestContextStoreToken,
 } from './request-context-store';
+import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
 
@@ -160,7 +163,14 @@ export interface BugseeLaunchOptions {
   maxRecordingTime?: number;
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). Default 50. */
   maxDataSize?: number;
-  /** Persist capture to this directory (file-backed store). Default in-memory. */
+  /**
+   * Where the rolling capture buffer lives: `'disk'` (the default on node/bun/deno — durable capture out of
+   * the box, so a crash/OOM that beats bundle assembly still delivers the recording on the next launch) or
+   * `'memory'` (the legacy in-RAM path, no disk/recovery). On disk with no `dataDir`, data lives under
+   * `os.tmpdir()/bugsee`. See docs/design/server-disk-capture-write-path.md (D3).
+   */
+  capturedDataStore?: CapturedDataStore;
+  /** Persist on-disk data (capture chunks + durable bundles) to this directory. Default `os.tmpdir()/bugsee`. */
   dataDir?: string;
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
   shutdownTimeoutMs?: number;
@@ -325,9 +335,13 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // / processes) sharing one dataDir never collide. owner.json is written up front so a peer can attribute +
   // liveness-check this subtree. `clock` is hoisted here (used by the owner timestamp + later wiring).
   const clock = options.clock ?? createSystemClock();
+  // Resolve where on-disk data lives + whether capture goes to disk (D3: disk is the default on servers).
+  // `effectiveDataDir` is the explicit dataDir, else os.tmpdir()/bugsee when disk capture is on, else
+  // undefined (a pure in-memory launch). Every on-disk seam below keys off `effectiveDataDir`.
+  const { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(options, tmpdir());
   const instanceLayout =
-    options.dataDir !== undefined
-      ? createInstanceLayout(options.dataDir, options.instanceIdentity ?? {})
+    effectiveDataDir !== undefined
+      ? createInstanceLayout(effectiveDataDir, options.instanceIdentity ?? {})
       : undefined;
   if (instanceLayout !== undefined) {
     writeInstanceOwner(instanceLayout, clock.wallNow(), sdkVersion);
@@ -385,7 +399,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // buffered + `writev`-coalesced off the open-fd-per-chunk, instead of an open+write+close syscall per
   // entry — turning a blocking write's multi-second event-loop freeze into a ~10 ms tail (design §10).
   const chunkStorage =
-    options.captureStore === undefined && instanceLayout !== undefined
+    options.captureStore === undefined && instanceLayout !== undefined && diskCapture
       ? createBatchedFsChunkStorage(instanceLayout.captureDir)
       : undefined;
   if (chunkStorage !== undefined) {
@@ -550,15 +564,28 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // fresh per-launch subtree, kept for symmetry/safety).
   durable?.recover();
 
+  // Disk hygiene (D3): with disk capture default-on, reclaim ABANDONED sibling subtrees (a dead process,
+  // aged past the TTL) so os.tmpdir()/bugsee doesn't accumulate. Runs synchronously BEFORE recovery (so the
+  // two never race on the same subtree) and regardless of `recoverEnabled` — it's pure hygiene. The TTL is
+  // generous, so the FRESH dead siblings recovery wants are untouched here.
+  if (instanceLayout !== undefined && effectiveDataDir !== undefined) {
+    sweepAgedInstances({
+      dataDir: effectiveDataDir,
+      ownInstanceId: instanceLayout.instanceId,
+      now: () => clock.wallNow(), // the launch clock (testable; matches the owner.startedAt timebase)
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+  }
+
   // Multi-instance recovery: scan the SIBLING instance subtrees under the shared dataDir and recover each
   // dead one's pending bundles + detected-incident markers (rebuilt from its capture chunks) through THIS
   // instance's upload pipeline, then remove the fully-delivered subtree. This subsumes the old "recover my
   // own prior generations" — a prior crashed run is just a dead sibling. Best-effort; never throws into
   // launch. (Liveness skip + atomic-rename claim land in slice 4; for now every non-own subtree is recovered,
   // correct while no live siblings exist.)
-  if (recoverEnabled && instanceLayout !== undefined && options.dataDir !== undefined) {
+  if (recoverEnabled && instanceLayout !== undefined && effectiveDataDir !== undefined) {
     void recoverInstances({
-      dataDir: options.dataDir,
+      dataDir: effectiveDataDir,
       ownInstanceId: instanceLayout.instanceId,
       uploadPipeline,
       context: () => ({ appToken, environment: getEnvironment(), clock }),
