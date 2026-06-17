@@ -9,13 +9,14 @@ import { pidAlive, readLiveMtimeMs, readOwner } from './liveness';
 // (recover-then-remove); this sweep is the last-resort reaper for the truly abandoned: a subtree whose
 // owning process is dead AND whose newest activity is older than the TTL is removed outright (its very-old
 // capture is discarded, not recovered — an accepted tradeoff). A LIVE owner is never touched (and a live
-// instance heartbeats, so it never ages out anyway). To NEVER recursive-delete a non-Bugsee directory, a
-// subtree is only reclaimed when it carries a valid `owner.json` (the Bugsee marker) — a foreign dir whose
-// name merely matches the instance-id shape (e.g. a `2024-01-02` date dir) is left untouched. Runs on launch
-// whenever a shared on-disk dataDir is in use, independent of whether recovery is enabled. Fully defensive:
-// a per-subtree failure goes to onError and never blocks the rest or the launch.
+// instance heartbeats, so it never ages out anyway). The shape regex below is a cheap first filter, NOT the
+// safety boundary (it also matches e.g. a `2024-01-02` date dir): the real guard is that a subtree is
+// reclaimed ONLY when it carries a valid `owner.json` (the Bugsee marker), so a foreign directory is never
+// recursive-deleted even if its name matches the shape. Runs on launch whenever a shared on-disk dataDir is
+// in use, independent of whether recovery is enabled. Fully defensive: a per-subtree failure goes to onError
+// and never blocks the rest or the launch.
 
-/** Subtree names shaped like an instance id (`<pid>-<threadId>-<nonce>`) — never touch foreign files. */
+/** A cheap first-filter for instance-id-shaped names; the owner.json marker (not this) is the safety gate. */
 const INSTANCE_DIR = /^\d+-\d+-/;
 
 /** Default age after which an abandoned (dead) instance subtree is reclaimed for disk hygiene. */

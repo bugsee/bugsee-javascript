@@ -199,14 +199,34 @@ describe('createBatchedFsChunkStorage', () => {
     s.append(GEN, CHUNK, 'network', 'N\n');
     s.flushSync?.(); // first file's writev throws → onError + buffer kept; the second still flushes
     expect(errors).toHaveLength(1);
-    const landedAfterFirst = [
-      rawLines(diskPath(root, 'log')),
-      rawLines(diskPath(root, 'network')),
-    ].filter((lines) => lines.length > 0);
-    expect(landedAfterFirst).toHaveLength(1); // one file flushed despite the other's failure (resilient)
+    // Insertion order is log→network, so log's flush is the one that threw (kept) and network flushed anyway.
+    expect(rawLines(diskPath(root, 'log'))).toEqual([]); // the failed file's data is KEPT, not lost…
+    expect(rawLines(diskPath(root, 'network'))).toEqual(['N']); // …and a later file still flushed (resilient)
     s.flushSync?.(); // retry — the kept buffer now lands (the data was NOT lost)
     expect(rawLines(diskPath(root, 'log'))).toEqual(['L']);
     expect(rawLines(diskPath(root, 'network'))).toEqual(['N']);
+    s.dispose?.();
+  });
+
+  it('bails out (does not hang) when the writev sink makes no progress — routes to onError, keeps the buffer', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    let calls = 0;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 30,
+      onError: (e) => errors.push(e),
+      writev: (fd, buffers) => {
+        calls++;
+        if (calls === 1) return 0; // a stuck sink: non-empty batch, zero bytes written → must NOT spin
+        return writevSync(fd, buffers as NodeJS.ArrayBufferView[]);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'progress\n');
+    s.flushSync?.(); // no-progress → throws inside writeAll → caught → onError, buffer kept (no hang)
+    expect(errors).toHaveLength(1);
+    expect(rawLines(diskPath(root, 'log'))).toEqual([]); // nothing written yet (kept for retry)
+    s.flushSync?.(); // retry — the real writev now lands it
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['progress']);
     s.dispose?.();
   });
 

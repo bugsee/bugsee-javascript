@@ -60,6 +60,12 @@ function writeAll(fd: number, segments: readonly Uint8Array[], writev: WritevFn)
       pending = pending.slice(batch.length); // whole batch flushed
       continue;
     }
+    if (written <= 0) {
+      // A non-empty batch that made NO progress would spin forever; a real writevSync never does this (it
+      // advances ≥1 byte or throws), but the writev seam is injectable — bail out so flushPath routes to
+      // onError + keeps the buffer for a later retry, rather than hang the caller.
+      throw new Error(`writev made no progress (returned ${written} of ${want})`);
+    }
     // Short write: skip the fully-written leading segments, slice the partial one, retry it + the rest.
     let consumed = written;
     let i = 0;

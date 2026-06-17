@@ -11,6 +11,12 @@ describe('hashAppToken', () => {
     expect(hashAppToken('a')).not.toBe(hashAppToken('b')); // separates apps
     expect(hashAppToken('')).toMatch(/^[0-9a-f]{16}$/); // empty token still hashes
   });
+
+  it('uses BOTH FNV passes — the two 8-char halves carry independent entropy (not h1 duplicated)', () => {
+    // Pins the second pass (h2): a mutation collapsing the output to h1+h1 would make the halves equal.
+    const h = hashAppToken(TOKEN);
+    expect(h.slice(0, 8)).not.toBe(h.slice(8));
+  });
 });
 
 describe('resolveDataLocation', () => {
