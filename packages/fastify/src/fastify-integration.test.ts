@@ -77,6 +77,7 @@ describe('fastify adapter — real-server concurrency isolation (e2e)', () => {
       process: fakeProcess(),
       detectHangs: false,
       captureNetwork: false,
+      capturedDataStore: 'memory',
       recover: false,
     });
     clients.push(client);

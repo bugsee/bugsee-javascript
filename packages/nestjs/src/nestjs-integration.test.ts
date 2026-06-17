@@ -166,6 +166,7 @@ async function boot(
     process: fakeProcess(),
     detectHangs: false,
     captureNetwork: false,
+    capturedDataStore: 'memory',
     recover: false,
   });
   clients.push(client);
@@ -269,6 +270,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
       process: fakeProcess(),
       detectHangs: false,
       captureNetwork: false,
+      capturedDataStore: 'memory',
       recover: false,
     });
     clients.push(client);

@@ -83,6 +83,7 @@ const base = (over: Partial<BugseeNodeLaunchOptions> = {}): BugseeNodeLaunchOpti
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'process_memory_rss', value: 42 }],
   captureNetwork: false,
+  capturedDataStore: 'memory', // hermetic: stay off the shared default disk root (disk is the default now, D3)
   clock: fixedClock,
   ...over,
 });

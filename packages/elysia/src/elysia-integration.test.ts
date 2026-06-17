@@ -72,6 +72,7 @@ function boot(): { app: Elysia; client: Bugsee; bundles: Uint8Array[] } {
     process: fakeProcess(),
     detectHangs: false,
     captureNetwork: false,
+    capturedDataStore: 'memory',
     recover: false,
   });
   clients.push(client);
