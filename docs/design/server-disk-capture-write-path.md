@@ -156,8 +156,20 @@ fallback completing within the budget; (d) the variable-length ring with wraparo
   (the shared-residual drain runs BEFORE terminate). (d) wraparound was not spiked separately — linear-region
   iovecs are proven; the wrap is a two-iovec slice of the same proven primitive, deferred to the build.
 
-**Verdict: the Phase-2 primitives are viable on all three runtimes.** The one design constraint surfaced is the
-bounded-`terminate()` rule above.
+- **⚠⚠ DECISIVE (spike D): cross-thread fd sharing FAILS on deno.** main-thread `openSync` → worker
+  `writevSync(fd)` round-trips on **node + bun** (worker_threads share the process fd table) but THROWS
+  `EBADF "Bad file descriptor"` on **deno** (its workers do NOT share the fd table). → The clean "main owns the
+  fd + seal/close + read; worker is a dumb drain" model is NOT portable. The **WORKER must own ALL data-file
+  fd lifecycle** (open/writev/close), which spike C already proved works on all 3 — but it means a real
+  main↔worker **control protocol** (register-path→id, seal-chunk, remove-chunk, flush-and-ack for the
+  incident-time snapshot read) rather than shared fds. This ≈doubles the worker's coordination complexity vs.
+  the design's assumption.
+
+**Verdict: the Phase-2 primitives are viable on all three runtimes**, BUT spike D materially raises the
+off-thread-worker cost: the worker must own every data-file fd + a control protocol (deno can't share fds).
+The shared-ring + drop-oldest + encode-in-place value (D2/D7 — never stall the host, zero-alloc) is achievable
+on the MAIN thread with NONE of that complexity; only moving the write() syscall off-thread (D6) incurs it.
+Constraints surfaced: bounded-`terminate()` (bun) + worker-owns-fds (deno).
 
 ## 10. Benchmark — DONE (2026-06-17, node 24, Apple SSD; `/tmp/cap-write-bench/`)
 
