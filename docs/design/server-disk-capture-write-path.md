@@ -247,6 +247,38 @@ terminate timer; multi-byte-utf8 append test; the drop-storm integration test). 
 are `v8 ignore`-annotated; the off-thread worker is INSURANCE — the Phase-1 batched writer remains the default
 live path.
 
+**Whole-system holistic review (Phase 1 + Phase 2 together, 2026-06-18) — CONVERGED (3 rounds).** A review
+across the ENTIRE server disk-capture path (both writers + the recovery/multi-instance substrate + the launch
+integration), looking for cross-cutting issues the per-slice passes couldn't see. Round 1 (4 whole-system
+reviewers) confirmed the end-to-end flow composes (both writers are byte-identical on disk; recovery reads
+either) and surfaced three REAL findings, all fixed test-first:
+- **SEV-2 — torn-frame recovery poison** (`224a687`). The exact artifact a crash leaves — a torn trailing
+  frame (truncated JSON) — was accepted by `file-chunk-backend.snapshot` (only the timestamp is validated) and
+  then `JSON.parse`-thrown in `capture-recovery.drainReified`/`capture-exporter` with no per-record guard,
+  aborting the WHOLE generation → marker+chunks kept → repeats every launch (permanent loss). Fix: per-record
+  try/catch → skip + `onError`, never fail the generation/export.
+- **SEV-1 — disk/serialize errors throwing into the host** (`85772c2`). Both writers routed flush/close to
+  `onError` but left `append`(open/ensureDir), `write`, `removeChunk`/`removeGeneration`(remove) UNGUARDED — and
+  `append` is reached synchronously from interceptors (`console.log`→capture) and the tick, so a mid-run
+  ENOSPC/EROFS could throw inside the app or escape as an uncaughtException → `exitOnUncaught` kills the host.
+  The capture funnel (`aggregator.route`) also let a non-serializable payload (circular/BigInt) throw back into
+  the interceptor. Fix: guard all writer fs ops + the aggregator funnel + the tick timer → `onError`, never
+  throw (the binding "interceptors must not alter app behavior" principle); injectable open/ensureDir/writeFile/
+  removeDir seams make every disk-error path portably testable.
+- **A2 — insecure shared default root** (`8dde533`). `os.tmpdir()/bugsee/<hash>` is predictable and
+  `mkdirSync(recursive)` is a no-op on a pre-existing dir, so an attacker who pre-creates `<tmp>/bugsee` owns it
+  and could rename/symlink the subtree or redirect our `0600` writes (CWE-377/59). Fix: `ensureSecureDataRoot`
+  hardens+verifies the DEFAULT root (real dir, owned by us, no group/other access) before any write and degrades
+  to in-memory otherwise; explicit `dataDir` is the caller's choice (skipped). Deferred: O_NOFOLLOW + uid-
+  namespaced base. Plus test-gap fills (`718a320`): the off-thread worker→crash→recover round-trip (previously
+  only ASSUMED), worker eval-string close/shutdown branches, real-worker eviction, and on-disk mode-bit
+  assertions. Rounds 2–3 found only test-validity gaps (the A2 launch wiring was unasserted; the disk-error
+  tests didn't assert shedding; the base-before-leaf interleave wasn't locked) → fixed in `3c7e351` (added the
+  `dataRootBase` seam + mutation-verified launch tests). Dismissed (recorded): the off-thread `closeChunk`
+  async-vs-`remove` ordering (non-occurring under the store's monotonic-part lifecycle + benign POSIX
+  unlinked-but-open), uncancelled background recovery past `stop()`, and the no-concurrent-recovery-claim (both
+  already design-deferred). All gates green; the whole path is reviewed-to-convergence.
+
 ## 11b. Phase 2 detail — off-thread worker + shared ring (NOT STARTED; the Phase-1 batched writer is the live path)
 (each: spike/benchmark as needed → test-first → mutator → multi-agent review → commit)
 0. **Spikes + benchmark** (§9/§10) — de-risk SAB-view `writev` + the handshake; pick the knobs from data;
