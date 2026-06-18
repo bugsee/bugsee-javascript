@@ -1,10 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createFileChunkBackend } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { allocCaptureRing, RingProducer } from './capture-ring';
 import { encodePathId } from './capture-ring-drainer';
 import { createCaptureRingWriter, type RingWorkerArgs } from './capture-ring-writer';
+import { createFsChunkStorage } from './fs-chunk-storage';
 import { createWorkerThreadRingWorker } from './worker-ring-worker';
 
 const GEN = 1;
@@ -116,6 +118,158 @@ describe('createWorkerThreadRingWorker (real worker_threads)', () => {
       expect(Number((m as RegExpExecArray)[1])).toBe(Number((m as RegExpExecArray)[2])); // both ids agree → intact
     }
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('B1: off-thread-written capture is RECOVERABLE by the plain fs reader (worker → crash → recover)', async () => {
+    // The headline off-thread guarantee: a process that captured via captureWriter:'worker' and then died
+    // is recovered on the NEXT launch by the plain fs reader. Prove the off-thread on-disk format is byte-
+    // compatible with the recovery reader (it was previously only ASSUMED — recovery is otherwise tested
+    // exclusively against the batched/fs writer's output).
+    const root = mkRoot();
+    const writer = createCaptureRingWriter(root, {
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      workerFactory: createWorkerThreadRingWorker,
+    });
+    const backend = createFileChunkBackend(writer, {
+      generation: GEN,
+      cleanOtherGenerations: false,
+    });
+    backend.openPart({ generation: GEN, number: 0 }, GEN);
+    backend.appendEntry(
+      { generation: GEN, number: 0 },
+      { type: 'log', timestamp: 1, serialized: JSON.stringify({ timestamp: 1, data: 'crash-bc' }) },
+    );
+    backend.appendEntry(
+      { generation: GEN, number: 0 },
+      {
+        type: 'network',
+        timestamp: 2,
+        serialized: JSON.stringify({ timestamp: 2, data: { url: 'u' } }),
+      },
+    );
+    backend.closePart({ generation: GEN, number: 0 }, GEN + 1, 0); // seal → off-thread flush-and-ack to disk
+    writer.dispose?.(); // the process ends; the I/O worker stops
+
+    // NEXT launch: a FRESH plain fs reader (exactly what recovery uses) reads the off-thread-written chunks.
+    const recovery = createFileChunkBackend(createFsChunkStorage(root), {
+      generation: GEN,
+      cleanOtherGenerations: false,
+    });
+    const parts = await recovery.listParts(GEN);
+    const snap = recovery.snapshot(
+      parts.map((pt) => ({
+        ref: { generation: GEN, number: pt.number },
+        count: Number.MAX_SAFE_INTEGER,
+      })),
+    );
+    const records = await snap.drainAll();
+    snap.release();
+    expect(JSON.parse((records.get('log') ?? [])[0]?.serialized ?? '{}').data).toBe('crash-bc');
+    expect(JSON.parse((records.get('network') ?? [])[0]?.serialized ?? '{}').data).toEqual({
+      url: 'u',
+    });
+  });
+
+  it('B2: closeChunk with frames still PENDING in the ring does not lose them (the worker reopens)', () => {
+    const root = mkRoot();
+    const { data, control } = allocCaptureRing(64 * 1024);
+    const flags = new SharedArrayBuffer(16);
+    const onError = vi.fn();
+    const worker = createWorkerThreadRingWorker({
+      data,
+      control,
+      flags,
+      captureDir: root,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError,
+    });
+    const p = new RingProducer(data, control);
+    const enc = new TextEncoder();
+    const put = (s: string): void => {
+      const b = enc.encode(s);
+      const v = p.reserve(b.length) as Uint8Array;
+      v.set(b);
+      p.commit(encodePathId(0, 0), b.length);
+    };
+    put('A\n');
+    put('B\n');
+    worker.closeChunk(0); // close BEFORE draining — frames are (very likely) still in the ring
+    put('C\n'); // and keep producing into the just-closed chunk
+    worker.flushAndWait(3000); // the worker reopens the fd and drains everything — nothing lost
+    worker.stop();
+    expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toBe('A\nB\nC\n'); // all three survived, in order
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('B2: a frame committed after the last flush is persisted by stop() (the shutdown final-drain)', () => {
+    const root = mkRoot();
+    const { data, control } = allocCaptureRing(8192);
+    const flags = new SharedArrayBuffer(16);
+    const onError = vi.fn();
+    const worker = createWorkerThreadRingWorker({
+      data,
+      control,
+      flags,
+      captureDir: root,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError,
+    });
+    const p = new RingProducer(data, control);
+    const enc = new TextEncoder();
+    const b = enc.encode('LAST\n');
+    const v = p.reserve(b.length) as Uint8Array;
+    v.set(b);
+    p.commit(encodePathId(0, 0), b.length);
+    worker.stop(); // NO prior flush — stop()'s shutdown drain must still persist the committed frame
+    expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toBe('LAST\n');
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('B3: maxDataSize-style eviction over the real off-thread worker (removeChunk drains+closes+deletes)', () => {
+    const root = mkRoot();
+    const s = createCaptureRingWriter(root, {
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      workerFactory: createWorkerThreadRingWorker,
+    });
+    s.append(GEN, 0, 'log', 'old\n');
+    s.flushSync?.();
+    expect(existsSync(diskPath(root, 0, 'log'))).toBe(true);
+    s.removeChunk(GEN, 0); // drain + worker.closeChunk + delete — exercised against the REAL worker
+    expect(existsSync(diskPath(root, 0, 'log'))).toBe(false); // the evicted chunk is gone
+    s.append(GEN, 1, 'log', 'new\n'); // the writer + worker keep working after an eviction
+    s.flushSync?.();
+    expect(readFileSync(diskPath(root, 1, 'log'), 'utf8')).toBe('new\n');
+    s.dispose?.();
+  });
+
+  it('A1: the worker creates files 0600 + dirs 0700 (no group/other access)', () => {
+    const root = mkRoot();
+    const { data, control } = allocCaptureRing(8192);
+    const flags = new SharedArrayBuffer(16);
+    const worker = createWorkerThreadRingWorker({
+      data,
+      control,
+      flags,
+      captureDir: root,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError: vi.fn(),
+    });
+    const p = new RingProducer(data, control);
+    const enc = new TextEncoder();
+    const b = enc.encode('M\n');
+    const v = p.reserve(b.length) as Uint8Array;
+    v.set(b);
+    p.commit(encodePathId(0, 0), b.length);
+    worker.flushAndWait(3000);
+    worker.stop();
+    const file = diskPath(root, 0, 'log');
+    expect(statSync(file).mode & 0o077).toBe(0); // data file: no group/other access
+    expect(statSync(join(file, '..')).mode & 0o077).toBe(0); // chunk dir: no group/other access
   });
 
   it('main-side handshake edges with a fake Worker: flush timeout, control messages, error routing', () => {

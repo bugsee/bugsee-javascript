@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
@@ -270,6 +270,17 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     expect(() => s.removeChunk(GEN, 0)).not.toThrow();
     expect(() => s.removeGeneration(GEN)).not.toThrow();
     expect(errors).toHaveLength(2);
+    s.dispose?.();
+  });
+
+  it('A1: creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
+    const root = mkRoot();
+    const s = mk(root);
+    s.append(GEN, 0, 'log', 'm\n');
+    s.flushSync?.();
+    const file = diskPath(root, 0, 'log');
+    expect(statSync(file).mode & 0o077).toBe(0); // data file: owner-only
+    expect(statSync(join(file, '..')).mode & 0o077).toBe(0); // chunk dir: owner-only
     s.dispose?.();
   });
 

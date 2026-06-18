@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeSync,
   writevSync,
 } from 'node:fs';
@@ -314,6 +315,17 @@ describe('createBatchedFsChunkStorage', () => {
     expect(() => s.removeChunk(GEN, CHUNK)).not.toThrow();
     expect(() => s.removeGeneration(GEN)).not.toThrow();
     expect(errors).toHaveLength(2); // both eviction paths reported, neither threw
+    s.dispose?.();
+  });
+
+  it('A1: creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 1024 });
+    s.append(GEN, CHUNK, 'log', 'm\n');
+    s.flushSync?.();
+    const file = diskPath(root, 'log');
+    expect(statSync(file).mode & 0o077).toBe(0); // data file: owner-only
+    expect(statSync(join(file, '..')).mode & 0o077).toBe(0); // chunk dir: owner-only
     s.dispose?.();
   });
 
