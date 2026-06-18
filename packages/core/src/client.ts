@@ -265,10 +265,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   if (contextProvider !== undefined) {
     services.addService(defineService(ContextProviderToken, () => contextProvider));
   }
-  const captureAggregator = createCaptureAggregator(
-    captureStore,
-    contextProvider !== undefined ? { getContext: () => contextProvider.getCurrent() } : {},
-  );
+  const captureAggregator = createCaptureAggregator(captureStore, {
+    onError,
+    ...(contextProvider !== undefined ? { getContext: () => contextProvider.getCurrent() } : {}),
+  });
   // The request context captured at report-SUBMIT time (synchronously, while the request's async context
   // is still active), keyed by the report's request object. Read at ASSEMBLY time — which the trigger
   // pipeline runs detached/queued, after the originating async context is gone — so the report reflects
@@ -599,8 +599,16 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       } catch (error) {
         onError(error);
       }
-      // Drive part rotation + out-of-window cleanup while launched (Android PartManager tick).
-      tickTimer = scheduler.setInterval(() => captureStore.tick(clock.wallNow()), tickIntervalMs);
+      // Drive part rotation + out-of-window cleanup while launched (Android PartManager tick). Guarded: a
+      // capture tick must NEVER throw out of the timer (it would surface as an uncaughtException and could
+      // take down the host) — route any failure to onError instead.
+      tickTimer = scheduler.setInterval(() => {
+        try {
+          captureStore.tick(clock.wallNow());
+        } catch (error) {
+          onError(error);
+        }
+      }, tickIntervalMs);
     },
 
     stop(timeout?: number): Promise<boolean> {

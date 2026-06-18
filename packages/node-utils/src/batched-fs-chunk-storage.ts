@@ -42,6 +42,14 @@ export interface BatchedFsChunkStorageOptions {
   writev?: WritevFn;
   /** `close` primitive; injectable for tests (close-failure simulation). Default node:fs `closeSync`. */
   close?: (fd: number) => void;
+  /** Open a data file for appending. Default node:fs `openSync(path,'a',0o600)`; injectable for disk-error tests. */
+  open?: (path: string) => number;
+  /** Ensure a directory exists. Default fs-storage `ensureDir`; injectable for disk-error tests. */
+  ensureDir?: (dir: string) => void;
+  /** Replace a file's contents (meta/write). Default fs-storage `writeFileSecure`; injectable for disk-error tests. */
+  writeFile?: (path: string, data: string) => void;
+  /** Recursively remove a directory. Default fs-storage `remove`; injectable for disk-error tests. */
+  removeDir?: (dir: string) => void;
 }
 
 /**
@@ -89,11 +97,15 @@ export function createBatchedFsChunkStorage(
   root: string,
   options: BatchedFsChunkStorageOptions = {},
 ): ChunkStorage {
-  ensureDir(root);
   const highWaterMark = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
   const onError = options.onError ?? ((): void => {});
   const writev = options.writev ?? writevSync;
   const close = options.close ?? closeSync;
+  const openFile = options.open ?? ((path: string): number => openSync(path, 'a', FILE_MODE));
+  const ensure = options.ensureDir ?? ensureDir;
+  const writeFile = options.writeFile ?? writeFileSecure;
+  const removeDir = options.removeDir ?? remove;
+  ensure(root);
   const genDir = (generation: number): string => join(root, pad(generation, GEN_PAD));
   const chunkDir = (generation: number, chunk: number): string =>
     join(genDir(generation), pad(chunk, CHUNK_PAD));
@@ -149,8 +161,17 @@ export function createBatchedFsChunkStorage(
       const path = filePath(generation, chunk, file);
       let entry = open.get(path);
       if (entry === undefined) {
-        ensureDir(chunkDir(generation, chunk));
-        entry = { fd: openSync(path, 'a', FILE_MODE), segments: [], bytes: 0 };
+        let fd: number;
+        try {
+          ensure(chunkDir(generation, chunk));
+          fd = openFile(path);
+        } catch (error) {
+          // A broken/full disk must NEVER throw into the capture path — append is reached synchronously
+          // from interceptors (console.log → capture) and from the tick. Shed this entry + report instead.
+          onError(error);
+          return;
+        }
+        entry = { fd, segments: [], bytes: 0 };
         open.set(path, entry);
       }
       const bytes = encoder.encode(data);
@@ -166,8 +187,12 @@ export function createBatchedFsChunkStorage(
       // appended-to, so this never races a held append handle; defensive close in case it ever does.)
       const path = filePath(generation, chunk, file);
       closePath(path);
-      ensureDir(chunkDir(generation, chunk));
-      writeFileSecure(path, data);
+      try {
+        ensure(chunkDir(generation, chunk));
+        writeFile(path, data);
+      } catch (error) {
+        onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
+      }
     },
 
     read(generation, chunk, file): string | undefined {
@@ -183,7 +208,11 @@ export function createBatchedFsChunkStorage(
 
     removeChunk(generation, chunk): void {
       closeUnder(chunkDir(generation, chunk));
-      remove(chunkDir(generation, chunk));
+      try {
+        removeDir(chunkDir(generation, chunk));
+      } catch (error) {
+        onError(error); // eviction on a broken disk must never throw into the caller (the tick/add)
+      }
     },
 
     chunks(generation): number[] {
@@ -196,7 +225,11 @@ export function createBatchedFsChunkStorage(
 
     removeGeneration(generation): void {
       closeUnder(genDir(generation));
-      remove(genDir(generation));
+      try {
+        removeDir(genDir(generation));
+      } catch (error) {
+        onError(error); // generation eviction on a broken disk must never throw into the caller
+      }
     },
 
     flushSync(): void {

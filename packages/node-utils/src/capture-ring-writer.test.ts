@@ -228,6 +228,51 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     expect(w.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('append fallback: a disk error on the main-thread append routes to onError, never throws into the caller', () => {
+    // The mainAppend fallback (unknown type / foreign gen / oversized) runs on the MAIN thread — reached
+    // synchronously from interceptors + the tick — so a broken disk must NEVER throw out of append.
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = mk(root, {
+      onError: (e) => errors.push(e),
+      open: () => {
+        throw new Error('EROFS main-append');
+      },
+    });
+    expect(() => s.append(GEN, 0, 'crash', 'boom\n')).not.toThrow(); // 'crash' ∉ fileTypes → mainAppend
+    expect(errors.map((e) => (e as Error).message)).toEqual(['EROFS main-append']);
+    s.dispose?.();
+  });
+
+  it('write: a disk error on the meta write routes to onError, never throws into the caller (the tick)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = mk(root, {
+      onError: (e) => errors.push(e),
+      writeFile: () => {
+        throw new Error('ENOSPC meta');
+      },
+    });
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['ENOSPC meta']);
+    s.dispose?.();
+  });
+
+  it('removeChunk / removeGeneration: a disk error deleting the dir routes to onError, never throws (eviction)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = mk(root, {
+      onError: (e) => errors.push(e),
+      removeDir: () => {
+        throw new Error('EIO unlink');
+      },
+    });
+    expect(() => s.removeChunk(GEN, 0)).not.toThrow();
+    expect(() => s.removeGeneration(GEN)).not.toThrow();
+    expect(errors).toHaveLength(2);
+    s.dispose?.();
+  });
+
   it('createSyncRingWorker is the default worker (drains on the main thread)', () => {
     // No workerFactory → the sync worker is used; a flush drains to disk.
     const root = mkRoot();

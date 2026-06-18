@@ -1299,6 +1299,18 @@ describe('createClient — capture-store tick timer', () => {
     expect(sched.cleared).toEqual(['handle-1']);
   });
 
+  it('a throwing tick is routed to onError, never thrown out of the timer (no uncaughtException)', () => {
+    const { store } = tickStore();
+    (store.tick as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('tick boom'); // e.g. a backend that throws — must not crash the host via the timer
+    });
+    const sched = fakeScheduler();
+    const onError = vi.fn();
+    createClient({ captureStore: store, scheduler: sched.scheduler, onError }).launch();
+    expect(() => sched.calls[0]?.cb()).not.toThrow(); // the interval callback must never throw
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'tick boom' }));
+  });
+
   it('drives the store via the global timers by default, and stops on stop()', async () => {
     vi.useFakeTimers();
     try {

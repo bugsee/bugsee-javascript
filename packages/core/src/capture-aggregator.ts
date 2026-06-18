@@ -13,6 +13,13 @@ export interface CaptureAggregatorOptions {
    * can later be focused on one request. Absent (default) → no stamping; behavior is byte-identical.
    */
   getContext?: () => RequestContext | undefined;
+  /**
+   * Failure sink. This is the capture funnel every provider + interceptor feeds SYNCHRONOUSLY (the
+   * interceptor runs inside the app's own console.log/fetch). A throw here — a non-serializable payload
+   * (circular/BigInt → JSON.stringify), or a store/disk error — must NEVER propagate into the app
+   * ("interceptors must not alter app behavior"). It is reported here and the entry is dropped. Default no-op.
+   */
+  onError?: (error: unknown) => void;
 }
 
 export function createCaptureAggregator(
@@ -46,9 +53,16 @@ export function createCaptureAggregator(
     }
     entry.data = stamped;
   };
+  const onError = options.onError ?? ((): void => {});
   const route = (entry: CaptureDataEntry): void => {
-    stamp(entry);
-    store.add({ type: entry.type, timestamp: entry.timestamp, serialized: entry.serialize() });
+    try {
+      stamp(entry);
+      store.add({ type: entry.type, timestamp: entry.timestamp, serialized: entry.serialize() });
+    } catch (error) {
+      // Capture must never affect the app: a non-serializable payload or a store/disk error is reported,
+      // not propagated into the synchronous interceptor/provider call that fed us. The entry is dropped.
+      onError(error);
+    }
   };
   return {
     addEntry(entry: CaptureDataEntry): void {

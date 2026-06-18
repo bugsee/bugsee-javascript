@@ -271,6 +271,52 @@ describe('createBatchedFsChunkStorage', () => {
     expect(errors.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('append: a disk error opening the data file routes to onError and sheds — never throws into the caller', () => {
+    // append is reached SYNCHRONOUSLY from interceptors (console.log → capture → add → appendEntry) and
+    // from the capture tick; a mid-run broken/full disk must NEVER throw into that path (it would crash
+    // the host app or escape as an uncaughtException). It sheds the entry and reports via onError instead.
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      onError: (e) => errors.push(e),
+      open: () => {
+        throw new Error('EROFS open');
+      },
+    });
+    expect(() => s.append(GEN, CHUNK, 'log', 'x\n')).not.toThrow();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['EROFS open']);
+    s.dispose?.();
+  });
+
+  it('write: a disk error replacing the file routes to onError, never throws into the caller (the tick)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      onError: (e) => errors.push(e),
+      writeFile: () => {
+        throw new Error('ENOSPC write');
+      },
+    });
+    expect(() => s.write(GEN, CHUNK, 'meta', '{}')).not.toThrow();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['ENOSPC write']);
+    s.dispose?.();
+  });
+
+  it('removeChunk / removeGeneration: a disk error deleting the dir routes to onError, never throws (eviction)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      onError: (e) => errors.push(e),
+      removeDir: () => {
+        throw new Error('EIO unlink');
+      },
+    });
+    expect(() => s.removeChunk(GEN, CHUNK)).not.toThrow();
+    expect(() => s.removeGeneration(GEN)).not.toThrow();
+    expect(errors).toHaveLength(2); // both eviction paths reported, neither threw
+    s.dispose?.();
+  });
+
   it('lists generations + chunks by their numeric dir names', () => {
     const root = mkRoot();
     const s = createBatchedFsChunkStorage(root, { highWaterMark: 1024 });

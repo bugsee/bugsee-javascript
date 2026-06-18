@@ -58,6 +58,61 @@ describe('createCaptureAggregator', () => {
     createCaptureAggregator(store).clear();
     expect(store.clear).toHaveBeenCalledTimes(1);
   });
+
+  it('an entry whose serialize() throws goes to onError, never thrown into the caller (the interceptor)', () => {
+    // The funnel is reached SYNCHRONOUSLY from interceptors (e.g. console.log(circularObj) → serialize →
+    // JSON.stringify throws). Capture must NEVER throw into the app — report it + keep the funnel working.
+    const { store, added } = fakeStore();
+    const errors: unknown[] = [];
+    const bad: CaptureDataEntry = {
+      type: 'log',
+      timestamp: 1,
+      data: {},
+      serialize: () => {
+        throw new Error('circular');
+      },
+      deserialize: () => {},
+    };
+    const good = new CaptureDataEntryBase('log', 2, { ok: true });
+    const agg = createCaptureAggregator(store, { onError: (e) => errors.push(e) });
+    expect(() => agg.addEntry(bad)).not.toThrow();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['circular']);
+    agg.addEntry(good); // the funnel still works after a bad entry
+    expect(added).toEqual([{ type: 'log', timestamp: 2, serialized: good.serialize() }]);
+  });
+
+  it('addEntries isolates a throwing entry: the rest of the batch still routes, the error → onError', () => {
+    const { store, added } = fakeStore();
+    const errors: unknown[] = [];
+    const a = new CaptureDataEntryBase('log', 1, { a: 1 });
+    const bad: CaptureDataEntry = {
+      type: 'log',
+      timestamp: 2,
+      data: {},
+      serialize: () => {
+        throw new Error('boom');
+      },
+      deserialize: () => {},
+    };
+    const c = new CaptureDataEntryBase('log', 3, { c: 3 });
+    createCaptureAggregator(store, { onError: (e) => errors.push(e) }).addEntries([a, bad, c]);
+    expect(added.map((r) => r.timestamp)).toEqual([1, 3]); // the bad entry skipped, a + c still routed
+    expect(errors).toHaveLength(1);
+  });
+
+  it('without an onError, a throwing entry is silently swallowed (still never throws into the caller)', () => {
+    const { store } = fakeStore();
+    const bad: CaptureDataEntry = {
+      type: 'log',
+      timestamp: 1,
+      data: {},
+      serialize: () => {
+        throw new Error('x');
+      },
+      deserialize: () => {},
+    };
+    expect(() => createCaptureAggregator(store).addEntry(bad)).not.toThrow(); // default no-op sink
+  });
 });
 
 describe('createCaptureAggregator context stamping', () => {

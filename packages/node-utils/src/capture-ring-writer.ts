@@ -71,6 +71,12 @@ export interface CaptureRingWriterOptions {
   /** Worker factory; the seam the worker_threads impl swaps into. Default the sync (main-thread) worker. */
   workerFactory?: (args: RingWorkerArgs) => RingWorker;
   onError?: (error: unknown) => void;
+  /** Open a file for the main-thread append fallback. Default `openSync(path,'a',0o600)`; injectable for tests. */
+  open?: (path: string) => number;
+  /** Replace a file's contents (meta/write). Default fs-storage `writeFileSecure`; injectable for tests. */
+  writeFile?: (path: string, data: string) => void;
+  /** Recursively remove a directory. Default fs-storage `remove`; injectable for disk-error tests. */
+  removeDir?: (dir: string) => void;
 }
 
 /** Derive the on-disk path for a `pathId` (chunk + typeIndex) under `captureDir`/`generation`. */
@@ -122,6 +128,9 @@ export function createCaptureRingWriter(
   const { generation, fileTypes } = options;
   const onError = options.onError ?? ((): void => {});
   const flushTimeout = options.flushTimeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
+  const openFile = options.open ?? ((path: string): number => openSync(path, 'a', FILE_MODE));
+  const writeFile = options.writeFile ?? writeFileSecure;
+  const removeDir = options.removeDir ?? remove;
   ensureDir(root);
 
   const { data, control } = allocCaptureRing(options.ringCapacity ?? DEFAULT_RING_CAPACITY);
@@ -144,12 +153,23 @@ export function createCaptureRingWriter(
   // Append `data` directly on the main thread (the rare fallback: an unknown file type or a foreign
   // generation — the live worker writes only its own gen's known file types through the ring).
   const mainAppend = (g: number, c: number, file: string, dataStr: string): void => {
-    ensureDir(chunkDir(g, c));
-    const fd = openSync(filePath(g, c, file), 'a', FILE_MODE);
+    let fd: number | undefined;
     try {
+      ensureDir(chunkDir(g, c));
+      fd = openFile(filePath(g, c, file));
       writeSync(fd, dataStr);
+    } catch (error) {
+      // A broken/full disk must NEVER throw out of append — it is reached synchronously from interceptors
+      // and the tick (the fallback path: unknown type / foreign gen / oversized). Shed + report instead.
+      onError(error);
     } finally {
-      closeSync(fd);
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch (error) {
+          onError(error);
+        }
+      }
     }
   };
 
@@ -174,8 +194,12 @@ export function createCaptureRingWriter(
     },
 
     write(g, c, file, dataStr): void {
-      ensureDir(chunkDir(g, c));
-      writeFileSecure(filePath(g, c, file), dataStr); // meta / replace — main thread (D4)
+      try {
+        ensureDir(chunkDir(g, c));
+        writeFile(filePath(g, c, file), dataStr); // meta / replace — main thread (D4)
+      } catch (error) {
+        onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
+      }
     },
 
     read(g, c, file): string | undefined {
@@ -193,7 +217,11 @@ export function createCaptureRingWriter(
         worker.flushAndWait(flushTimeout); // drain any pending frames so the worker can't reopen the dir…
         worker.closeChunk(c); // …then release its fds before deleting (no resurrection)
       }
-      remove(chunkDir(g, c));
+      try {
+        removeDir(chunkDir(g, c));
+      } catch (error) {
+        onError(error); // eviction on a broken disk must never throw into the caller (the tick/add)
+      }
     },
 
     chunks(g): number[] {
@@ -209,7 +237,11 @@ export function createCaptureRingWriter(
         worker.flushAndWait(flushTimeout); // drain pending frames first, then release all fds (no resurrection)
         worker.closeAll();
       }
-      remove(join(root, pad(g, GEN_PAD)));
+      try {
+        removeDir(join(root, pad(g, GEN_PAD)));
+      } catch (error) {
+        onError(error); // generation eviction on a broken disk must never throw into the caller
+      }
     },
 
     flushSync(): void {
