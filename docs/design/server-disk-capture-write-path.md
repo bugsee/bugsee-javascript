@@ -216,15 +216,36 @@ OS-driven cliff on bun/deno.)
    wall-clock lag gate is machine/CI-timing-dependent and would flake; the benchmark is the durable basis.
 6. ✅ **Docs + memory** (this section + PROGRESS.md + [[server-disk-capture-write-path]] memory).
 
-**Phase 2 — off-thread worker + shared ring (insurance: zero host impact under adverse I/O + hang-resilience):**
-7. **Spikes** (§9) — SAB-view `writev`, `encodeInto` into SAB, the `shutdown`/`quiesce` handshake on
-   node/bun/deno.
-8. **`CaptureRingWriter`** — shared fixed ring (encode-in-place, drop-oldest, `dropped`) + dedicated worker
-   (drain → group → `writevSync`, held fds) + oversized side-channel; the main-thread shared-residual crash
-   fallback. Swaps in behind the Phase-1 writer interface.
-9. **Adverse-I/O e2e** — confirm zero host lag under a slow/contended disk; `kill -9` mid-stream loses ≤ the
-   window.
-10. **Docs + memory.**
+**Phase 2 — off-thread worker + shared ring (insurance) — BUILT + reviewed-to-convergence (2026-06-18, opt-in via `captureWriter: 'worker'`):**
+7. ✅ **Spikes (§9.1)** — SAB-view `writev` + `encodeInto`-into-SAB + the worker drain/handshake + the
+   main-thread fallback all GREEN on node/bun/deno; surfaced the bun-`terminate()` + **deno-can't-share-fds**
+   constraints → the worker OWNS all data-file fds (path-derived `pathId`, no register channel).
+8. ✅ **The write path** (six slices in `@bugsee/node-utils`): `capture-ring.ts` (the shared SAB byte-ring —
+   zero-copy reserve/commit/peek/consume, wrap-pad, **drop-oldest with a lock-free Dekker read-cursor**);
+   `capture-ring-drainer.ts` (the worker-side drain→fds + pathId codec); `capture-ring-writer.ts` (the drop-in
+   `ChunkStorage` + `createSyncRingWorker` default/fallback); `worker-ring-worker.ts` (the off-thread
+   worker_threads `RingWorker` — inline eval string mirroring the tested consumer + the `Atomics` flush-ack /
+   bounded-shutdown handshake); wired into `launch.ts` (`captureWriter: 'worker'`, opt-in). Oversized records +
+   foreign-gen/unknown-type → a main-thread fallback. Meta/read/seal/remove stay main-thread (D4) with
+   flush-and-ack first (so no resurrection/reorder).
+9. ⏳ **Adverse-I/O e2e** (deferred) — the off-thread path is validated by a real-worker drop-storm integration
+   test (real worker_threads + real Atomics + real fs, byte-integrity under heavy concurrent drops) + the
+   spikes on all 3 runtimes; a real-PROCESS adverse-I/O + cross-runtime `'worker'` e2e scenario is the
+   remaining incremental confidence.
+10. ✅ **Docs + memory** (this section + [[server-disk-capture-write-path]]).
+
+**Convergent review (3 rounds, 2026-06-18) — CONVERGED.** Round 1 found a CRITICAL two-thread ring race
+(C1/C2: `READING` protection published after the HEAD observation → torn read / backward HEAD) + ordering /
+lifecycle / test gaps. The C1/C2 fix (claim-then-verify + `compareExchange` HEAD advances + cached consume
+size) was found INCOMPLETE in round 2 — a residual **store-buffer (Dekker) race** survived (the producer set
+HEAD but never re-checked READING). Round 3 verified the **symmetric Dekker completion** (producer re-checks
+READING after its drop-CAS; both sides set-flag-then-check-other) **fully CLOSES the race** — proven rigorous
+against the JS `Atomics` seq-cst model: in every total order at least one side detects the conflict (consumer
+VERIFY sees advanced HEAD → retries, or producer post-check sees READING → backs off with a bounded, counted
+spurious drop). All ordering/lifecycle/test findings fixed (removeChunk/oversized flush-first; unref'd
+terminate timer; multi-byte-utf8 append test; the drop-storm integration test). The concurrency-only branches
+are `v8 ignore`-annotated; the off-thread worker is INSURANCE — the Phase-1 batched writer remains the default
+live path.
 
 ## 11b. Phase 2 detail — off-thread worker + shared ring (NOT STARTED; the Phase-1 batched writer is the live path)
 (each: spike/benchmark as needed → test-first → mutator → multi-agent review → commit)

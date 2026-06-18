@@ -329,9 +329,19 @@ Phase 1 (the live path) — each slice test-first + mutator + 100% line/fn:
   **disk-recovery** scenario proves "a crash loses nothing" (an incident that died before assembly is rebuilt
   next launch from the marker + durable chunks, carrying the pre-crash breadcrumb). 45 e2e tests GREEN on
   node/bun/deno. Host-lag is benchmark-backed, not a flaky CI gate.
-**Phase 2 (deferred, insurance):** a dedicated I/O worker + a shared fixed reused SAB ring (encode-in-place,
-drop-oldest), swapped behind the Phase-1 writer interface — for zero host impact under adverse/contended disk
-+ hang-resilience (D5/D6/D7/D8). Build when adverse-I/O host-impact is shown to matter.
+**Phase 2 — off-thread worker + lock-free SAB ring — BUILT + reviewed-to-convergence (2026-06-18, opt-in
+`captureWriter: 'worker'`).** Six slices in `@bugsee/node-utils`: `capture-ring.ts` (shared SAB byte-ring,
+zero-copy reserve/commit/peek/consume, wrap-pad, drop-oldest with a **lock-free Dekker read-cursor** —
+producer + consumer each set-flag-then-check-other so an in-flight `writev` is never clobbered),
+`capture-ring-drainer.ts` (worker-side drain→fds + self-describing pathId codec, no register channel),
+`capture-ring-writer.ts` (drop-in `ChunkStorage` + `createSyncRingWorker` default/fallback),
+`worker-ring-worker.ts` (off-thread worker_threads `RingWorker` — inline eval string mirroring the tested
+consumer + the Atomics flush-ack / bounded-shutdown handshake), wired in `launch.ts`. The worker owns all
+data-file fds (deno can't inherit fds); zero-copy hot path; meta/read/seal/remove stay main-thread. The
+3-round convergent review found + fully fixed a CRITICAL two-thread ring race (the Dekker completion is the
+load-bearing producer re-check, proven against the JS Atomics seq-cst model). The Phase-1 batched writer is
+the DEFAULT live path; the worker is INSURANCE. Deferred: a real-process adverse-I/O + cross-runtime e2e (the
+off-thread path is node-validated by a real-worker drop-storm integration test + spiked on node/bun/deno).
 
 ### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
 The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
