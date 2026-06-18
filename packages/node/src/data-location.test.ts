@@ -1,8 +1,98 @@
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_DATA_SUBDIR, hashAppToken, resolveDataLocation } from './data-location';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_DATA_SUBDIR,
+  ensureSecureDataRoot,
+  hashAppToken,
+  resolveDataLocation,
+  type SecureDirStat,
+} from './data-location';
 
 const TOKEN = 'app-token-xyz';
+
+describe('ensureSecureDataRoot', () => {
+  const dirStat = (uid: number, mode: number): SecureDirStat => ({
+    isDirectory: () => true,
+    uid,
+    mode,
+  });
+
+  it('passes for a directory we own with 0700 mode — creating the base BEFORE the leaf', () => {
+    const made: string[] = [];
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: (d) => made.push(d),
+        lstat: () => dirStat(1000, 0o40700),
+        getuid: () => 1000,
+      }),
+    ).not.toThrow();
+    expect(made).toEqual(['/tmp/bugsee', '/tmp/bugsee/abc']); // base verified before the leaf is created
+  });
+
+  it('throws when the root is foreign-owned (a pre-created attacker dir) → launch degrades to memory', () => {
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: () => {},
+        lstat: () => dirStat(31337, 0o40700), // owned by someone else
+        getuid: () => 1000,
+      }),
+    ).toThrow(/not owned by this user/);
+  });
+
+  it('throws when the root is group/other-accessible (unsafe mode)', () => {
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: () => {},
+        lstat: () => dirStat(1000, 0o40777),
+        getuid: () => 1000,
+      }),
+    ).toThrow(/group\/other-accessible/);
+  });
+
+  it('throws when the path is a symlink / not a real directory', () => {
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: () => {},
+        lstat: () => ({ isDirectory: () => false, uid: 1000, mode: 0o40700 }),
+        getuid: () => 1000,
+      }),
+    ).toThrow(/not a directory/);
+  });
+
+  it('skips the ownership check where there are no uids (Windows: getuid undefined)', () => {
+    // A foreign uid is NOT rejected when uids are unavailable; the directory + mode checks still apply.
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: () => {},
+        lstat: () => dirStat(31337, 0o40700),
+        getuid: undefined,
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects an unsafe mode even when uids are unavailable (Windows path)', () => {
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: () => {},
+        lstat: () => dirStat(31337, 0o40750),
+        getuid: undefined,
+      }),
+    ).toThrow(/group\/other-accessible/);
+  });
+
+  it('propagates a mkdir failure (a broken/contended tmp) so launch degrades to memory', () => {
+    const boom = new Error('EROFS mkdir');
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: vi.fn(() => {
+          throw boom;
+        }),
+        lstat: () => dirStat(1000, 0o40700),
+        getuid: () => 1000,
+      }),
+    ).toThrow(boom);
+  });
+});
 
 describe('hashAppToken', () => {
   it('is deterministic, 16 hex chars, and distinguishes different tokens (namespacing)', () => {

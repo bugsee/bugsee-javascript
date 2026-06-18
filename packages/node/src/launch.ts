@@ -52,7 +52,7 @@ import {
 } from '@bugsee/node-utils';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
-import { type CapturedDataStore, resolveDataLocation } from './data-location';
+import { type CapturedDataStore, ensureSecureDataRoot, resolveDataLocation } from './data-location';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -353,12 +353,20 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // on, else undefined (a pure in-memory launch). Every on-disk seam below keys off `effectiveDataDir`.
   // (let, not const: a disk-setup failure below clears them to degrade to the in-memory path.)
   let { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(options, tmpdir(), appToken);
+  // Only the PREDICTABLE, shared default root (<tmp>/bugsee/<appTokenHash>) is hardened/verified below; an
+  // explicit `dataDir` is the caller's own security decision (it may intentionally be a shared/symlinked dir).
+  const usingDefaultRoot = options.dataDir === undefined && diskCapture;
   let instanceLayout =
     effectiveDataDir !== undefined
       ? createInstanceLayout(effectiveDataDir, options.instanceIdentity ?? {})
       : undefined;
   if (instanceLayout !== undefined) {
     try {
+      // Harden + verify the shared default root against an attacker-pre-created/symlinked dir (CWE-377/59)
+      // BEFORE writing any capture there — a foreign/unsafe root throws here and degrades to memory below.
+      if (usingDefaultRoot && effectiveDataDir !== undefined) {
+        ensureSecureDataRoot(effectiveDataDir);
+      }
       // The first eager fs write — the canary that the data root is usable. If it fails (a contended/
       // read-only/full tmp, or a foreign-owned shared root), an observability SDK must NEVER crash the host
       // app: report it and DEGRADE this launch to in-memory capture by clearing the on-disk seams.
