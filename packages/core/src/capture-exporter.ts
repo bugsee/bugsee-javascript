@@ -24,6 +24,7 @@ function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEn
 export function createCaptureExporter(
   store: CaptureStore,
   factory: CaptureEntryFactory = defaultEntryFactory,
+  onError: (error: unknown) => void = (): void => {},
 ): CaptureExporter {
   return {
     stream(): AsyncIterableIterator<CaptureDataEntry> {
@@ -32,7 +33,16 @@ export function createCaptureExporter(
       return (async function* (): AsyncIterableIterator<CaptureDataEntry> {
         try {
           for await (const record of records) {
-            yield reify(record, factory);
+            let entry: CaptureDataEntry;
+            try {
+              entry = reify(record, factory);
+            } catch (error) {
+              // A torn/un-deserializable record (e.g. a crash's torn trailing frame): skip + report it,
+              // never let one bad record abort the whole export.
+              onError(error);
+              continue;
+            }
+            yield entry;
           }
         } finally {
           snapshot.release();
@@ -46,10 +56,15 @@ export function createCaptureExporter(
         const raw = await snapshot.drainAll();
         const result = new Map<FileType, CaptureDataEntry[]>();
         for (const [type, records] of raw) {
-          result.set(
-            type,
-            records.map((record) => reify(record, factory)),
-          );
+          const entries: CaptureDataEntry[] = [];
+          for (const record of records) {
+            try {
+              entries.push(reify(record, factory));
+            } catch (error) {
+              onError(error); // skip + report a torn record; never fail the whole drain
+            }
+          }
+          result.set(type, entries);
         }
         return result;
       } finally {

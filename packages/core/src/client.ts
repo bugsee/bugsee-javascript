@@ -275,7 +275,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // the request it fired in, not whatever is active when assembly happens to run. The WeakMap entry is
   // collected with the request (no manual cleanup, no leak).
   const reportContexts = new WeakMap<ReportingRequest, RequestContext>();
-  const captureExporter = createCaptureExporter(captureStore);
+  const captureExporter = createCaptureExporter(captureStore, undefined, onError);
   // The capture-pipeline deps every provider gets once at registration (Android
   // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
   const captureProviderInit: CaptureProviderInit = { operations, captureAggregator };

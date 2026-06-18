@@ -79,6 +79,21 @@ describe('createCaptureExporter — stream', () => {
     }
     expect(seen).toEqual([]);
   });
+
+  it('skips a torn/un-deserializable record and routes it to onError, continuing the stream', async () => {
+    const onError = vi.fn();
+    const { store } = fakeStore([
+      rec('log', 1, { m: 'a' }),
+      { type: 'log', timestamp: 2, serialized: 'not json' }, // torn record
+      rec('log', 3, { m: 'c' }),
+    ]);
+    const seen: unknown[] = [];
+    for await (const e of createCaptureExporter(store, undefined, onError).stream()) {
+      seen.push(e.data);
+    }
+    expect(seen).toEqual([{ m: 'a' }, { m: 'c' }]); // the torn record skipped, the stream continued
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('createCaptureExporter — drain', () => {
@@ -97,6 +112,18 @@ describe('createCaptureExporter — drain', () => {
 
   it('returns an empty map for an empty snapshot', async () => {
     expect((await createCaptureExporter(fakeStore([]).store).drain()).size).toBe(0);
+  });
+
+  it('skips a torn/un-deserializable record and routes it to onError, keeping the rest', async () => {
+    const onError = vi.fn();
+    const { store } = fakeStore([
+      rec('log', 1, { m: 'a' }),
+      { type: 'log', timestamp: 2, serialized: '{"timestamp":2,"data":"trunc' }, // torn JSON
+      rec('log', 3, { m: 'c' }),
+    ]);
+    const out = await createCaptureExporter(store, undefined, onError).drain();
+    expect(out.get('log')?.map((e) => e.data)).toEqual([{ m: 'a' }, { m: 'c' }]); // survivors only
+    expect(onError).toHaveBeenCalledTimes(1); // the torn record reported, not silently dropped
   });
 });
 

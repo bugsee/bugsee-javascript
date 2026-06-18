@@ -20,19 +20,27 @@ import type { UploadPipeline } from './transport';
 async function drainReified(
   snapshot: CaptureSnapshot,
   factory: CaptureEntryFactory,
+  onError: (error: unknown) => void,
 ): Promise<Map<FileType, CaptureDataEntry[]>> {
   try {
     const grouped = await snapshot.drainAll();
     const out = new Map<FileType, CaptureDataEntry[]>();
     for (const [type, records] of grouped) {
-      out.set(
-        type,
-        records.map((record) => {
+      const entries: CaptureDataEntry[] = [];
+      for (const record of records) {
+        try {
           const entry = factory(type);
           entry.deserialize(record.serialized);
-          return entry;
-        }),
-      );
+          entries.push(entry);
+        } catch (error) {
+          // A torn trailing frame — the exact artifact a crash/SIGKILL leaves mid-write — yields one
+          // un-deserializable record (the snapshot parser only guards the timestamp, not the payload).
+          // Skip it; NEVER let one bad record poison the whole generation's recovery (which would keep
+          // the marker + chunks and repeat the failure on every launch — a permanent loss). Route to onError.
+          onError(error);
+        }
+      }
+      out.set(type, entries);
     }
     return out;
   } finally {
@@ -83,7 +91,7 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
           count: Number.MAX_SAFE_INTEGER, // recover the whole part
         }));
         // Drain ONCE per generation — its markers share the same captured context.
-        const captured = await drainReified(backend.snapshot(frozen), entryFactory);
+        const captured = await drainReified(backend.snapshot(frozen), entryFactory, onError);
 
         for (const marker of group) {
           try {

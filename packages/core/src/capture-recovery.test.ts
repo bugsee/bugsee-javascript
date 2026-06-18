@@ -333,6 +333,36 @@ describe('recoverReports', () => {
     expect(onError).toHaveBeenCalledWith(boom);
   });
 
+  it('skips a single torn/un-deserializable record, recovering the rest (a crash leaves a torn trailing frame)', async () => {
+    const storage = createInMemoryChunkStorage();
+    // A good record + a TORN trailing frame (truncated JSON — exactly what a crash/SIGKILL mid-write
+    // leaves on disk). The snapshot parser accepts it (it has a tab + a finite timestamp), so it reaches
+    // reify, where JSON.parse throws. It must NOT poison the whole generation (keep marker+chunks forever).
+    seedGen(storage, 100, [
+      logRecord(1, { m: 'survivor' }),
+      { type: 'log', timestamp: 2, serialized: '{"timestamp":2,"data":"trunc' },
+    ]);
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const pipe = fakePipeline();
+    const onError = vi.fn();
+    const backend = readBackend(storage);
+
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers,
+      context: baseContext,
+      uploadPipeline: pipe,
+      onError,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // the generation still recovered…
+    expect(logsOf(pipe.bundles[0] as Bundle)).toEqual([{ m: 'survivor' }]); // …with the intact record only
+    expect(onError).toHaveBeenCalledTimes(1); // the torn record routed to onError, not swallowed silently
+    expect(markers.list()).toEqual([]); // delivered → marker removed (no poison pill)
+    expect(await backend.listGenerations()).not.toContain(100); // gen swept, not kept forever
+  });
+
   it('does nothing (no throw) when there are no markers and no prior generations', async () => {
     const storage = createInMemoryChunkStorage();
     const pipe = fakePipeline();
