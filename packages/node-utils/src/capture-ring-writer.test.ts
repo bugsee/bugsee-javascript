@@ -244,6 +244,18 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     s.dispose?.();
   });
 
+  it('append fallback: a write/close failure on the opened fd is fully contained (the finally-close guard)', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = mk(root, {
+      onError: (e) => errors.push(e),
+      open: () => 999, // a bogus fd → writeSync AND the finally closeSync both fail (EBADF), both contained
+    });
+    expect(() => s.append(GEN, 0, 'crash', 'x\n')).not.toThrow();
+    expect(errors).toHaveLength(2); // the write error AND the close error are both routed, never thrown
+    s.dispose?.();
+  });
+
   it('write: a disk error on the meta write routes to onError, never throws into the caller (the tick)', () => {
     const root = mkRoot();
     const errors: unknown[] = [];

@@ -125,6 +125,15 @@ describe('createCaptureExporter — drain', () => {
     expect(out.get('log')?.map((e) => e.data)).toEqual([{ m: 'a' }, { m: 'c' }]); // survivors only
     expect(onError).toHaveBeenCalledTimes(1); // the torn record reported, not silently dropped
   });
+
+  it('without an onError, a torn record is silently skipped by the default no-op sink (never throws)', async () => {
+    const { store } = fakeStore([
+      rec('log', 1, { m: 'a' }),
+      { type: 'log', timestamp: 2, serialized: 'not json' }, // torn record, no onError supplied
+    ]);
+    const out = await createCaptureExporter(store).drain(); // default no-op onError
+    expect(out.get('log')?.map((e) => e.data)).toEqual([{ m: 'a' }]); // survivor kept, no throw
+  });
 });
 
 describe('createCaptureExporter — factory', () => {
