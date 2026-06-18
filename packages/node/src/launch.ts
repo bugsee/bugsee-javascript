@@ -44,11 +44,13 @@ import {
 } from '@bugsee/core';
 import {
   createBatchedFsChunkStorage,
+  createCaptureRingWriter,
   createNodeBundleStore,
   createNodeReportMarkerStore,
+  createWorkerThreadRingWorker,
   httpRequest,
 } from '@bugsee/node-utils';
-import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import { type CapturedDataStore, resolveDataLocation } from './data-location';
 import {
@@ -98,6 +100,10 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
 const DEFAULT_MAX_DATA_SIZE_MB = 50;
 // Periodic flush cadence for the batched capture writer — bounds the un-catchable-kill loss window.
 const CAPTURE_FLUSH_MS = 1000;
+// Ordered capture file-type names (index = the typeIndex the off-thread ring writer packs into a pathId so
+// the worker reconstructs the path). Ephemeral per launch — recovery reads files by NAME, so the order is
+// not persisted; derived from the protocol's canonical set + the caller-named `attachment`.
+const CAPTURE_FILE_TYPES: readonly string[] = [...Object.keys(DEFAULT_FILENAMES), 'attachment'];
 
 // Node's launch-option definitions = the shared cross-runtime set plus Node's own. maxDataSize is
 // platform-local because its default differs per runtime (50 MB on Node/Electron vs 10 MB on
@@ -172,6 +178,13 @@ export interface BugseeLaunchOptions {
   capturedDataStore?: CapturedDataStore;
   /** Persist on-disk data (capture chunks + durable bundles) to this directory. Default `os.tmpdir()/bugsee`. */
   dataDir?: string;
+  /**
+   * Capture write path (Phase 2 insurance): `'inline'` (default) — the batched main-thread writer (P1); or
+   * `'worker'` — an off-thread worker_threads writer over a shared zero-copy SAB ring, so the host thread
+   * never blocks on a write() even under a pathologically slow disk (drop-oldest sheds load). Only applies to
+   * the disk path. See docs/design/server-disk-capture-write-path.md (Phase 2).
+   */
+  captureWriter?: 'inline' | 'worker';
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
   shutdownTimeoutMs?: number;
   /** Call process.exit(1) after flushing an uncaught exception. Default true. */
@@ -404,24 +417,35 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
+  // This launch's capture generation (the launch epoch); shared by the live store, the marker hook, the
+  // recovery read-back, and — for the off-thread writer — the worker's path derivation.
+  const captureGeneration = clock.wallNow();
   // The chunk-storage medium exists only when a dataDir is used without an explicit captureStore; it is
-  // a container service (DI Phase 3) and the input to the file-backed store.
-  // The live capture chunk medium is the BATCHED writer (server write-path P1): per-entry appends are
-  // buffered + `writev`-coalesced off the open-fd-per-chunk, instead of an open+write+close syscall per
-  // entry — turning a blocking write's multi-second event-loop freeze into a ~10 ms tail (design §10).
+  // a container service (DI Phase 3) and the input to the file-backed store. Two write paths:
+  //   'inline' (default, server write-path P1): the BATCHED main-thread writer — per-entry appends are
+  //     buffered + `writev`-coalesced off the open-fd-per-chunk (a blocking write's multi-second freeze
+  //     becomes a ~10 ms tail, design §10).
+  //   'worker' (Phase 2, opt-in insurance): the off-thread RING writer — the host thread encodes each frame
+  //     IN PLACE into a shared SAB ring (zero-copy) + a worker_threads worker drains it to disk, so the host
+  //     NEVER blocks on a write() even under a pathologically slow disk; drop-oldest sheds load.
   const chunkStorage =
     options.captureStore === undefined && instanceLayout !== undefined && diskCapture
-      ? createBatchedFsChunkStorage(instanceLayout.captureDir, {
-          ...(options.onError !== undefined ? { onError: options.onError } : {}),
-        })
+      ? options.captureWriter === 'worker'
+        ? createCaptureRingWriter(instanceLayout.captureDir, {
+            generation: captureGeneration,
+            fileTypes: CAPTURE_FILE_TYPES,
+            workerFactory: createWorkerThreadRingWorker,
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          })
+        : createBatchedFsChunkStorage(instanceLayout.captureDir, {
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          })
       : undefined;
   if (chunkStorage !== undefined) {
     services.addService(defineService(ChunkStorageToken, () => chunkStorage));
   }
-  // Capture recovery (the detected-incident gap): keep this launch's generation explicit and shared by
-  // the live store, the marker hook, and the recovery read-back. The marker store is a stable on-disk
-  // location under this instance's subtree, distinct from chunks.
-  const captureGeneration = clock.wallNow();
+  // Capture recovery (the detected-incident gap): the marker store is a stable on-disk location under this
+  // instance's subtree, distinct from chunks.
   const recoverEnabled = (options.recover ?? true) && chunkStorage !== undefined;
   const reportMarkers =
     recoverEnabled && instanceLayout !== undefined

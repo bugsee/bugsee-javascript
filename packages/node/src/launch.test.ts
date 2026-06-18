@@ -733,6 +733,31 @@ describe('launch', () => {
     expect(data).toContain('batched-capture-marker-xyz'); // durable on disk after the dispose flush
   });
 
+  it('captureWriter: "worker" wires the OFF-THREAD ring writer; entries are drained to disk by stop()', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-worker-ring-'));
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        dataDir: dir,
+        clock: fixedClock,
+        captureWriter: 'worker', // the Phase-2 off-thread path (real worker_threads + the SAB ring)
+        instanceIdentity: FIXED_INSTANCE,
+        captureSystemTraces: false,
+        captureSystemEvents: false,
+      }),
+    );
+    console.log('worker-ring-marker-xyz'); // → log capture → encode-in-place into the ring → worker → disk
+    await client.stop(); // dispose() → worker.stop() drains the ring + bounded-terminates the worker
+
+    const cap = join(dir, '1-0-x', 'capture');
+    const data = readdirSync(cap, { recursive: true })
+      .map((n) => join(cap, n.toString()))
+      .filter((p) => statSync(p).isFile())
+      .map((p) => readFileSync(p, 'utf8'))
+      .join('');
+    expect(data).toContain('worker-ring-marker-xyz'); // the off-thread worker drained it before stop returned
+  });
+
   it('flushes the batched writer on process exit (the last synchronous hook — a clean shutdown loses nothing)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-flush-'));
     const proc = fakeProcess();
