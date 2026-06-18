@@ -132,8 +132,23 @@ export class RingProducer extends RingBase {
       // Advance HEAD past the oldest frame via CAS so a concurrent consumer advance (consume / pad-skip) is
       // never clobbered and HEAD only ever moves forward. If the consumer won the race, retry from the new HEAD.
       const next = head + BigInt(this.frameSizeAt(head));
-      if (Atomics.compareExchange(this.ctl, HEAD, head, next) === head && !isPad) {
-        Atomics.add(this.ctl, DROPPED, 1n); // a real record was discarded (pad skips don't count)
+      if (Atomics.compareExchange(this.ctl, HEAD, head, next) === head) {
+        if (!isPad) {
+          Atomics.add(this.ctl, DROPPED, 1n); // a real record was discarded (pad skips don't count)
+        }
+        // Dekker completion (the symmetric half of the consumer's CLAIM-then-VERIFY): re-check READING AFTER
+        // advancing HEAD. If the consumer CLAIMED this frame in the store-buffer window after our pre-check
+        // (line 124) — i.e. its VERIFY observed HEAD still unmoved and it is now mid-`writev` on these bytes —
+        // we must NOT reuse them. Back off: drop THIS record instead of overwriting an in-flight read. (Seq-cst
+        // guarantees at least one side observes the other: either we see READING here, or the consumer's
+        // VERIFY saw our advanced HEAD and retried.)
+        // concurrency-only: needs the consumer claiming between our pre-check and CAS (a 2nd thread);
+        // validated by the real-worker drop-storm integration test.
+        /* v8 ignore next 3 */
+        if (Atomics.load(this.ctl, READING) === head) {
+          Atomics.add(this.ctl, DROPPED, 1n);
+          return null;
+        }
       }
     }
   }
