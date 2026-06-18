@@ -50,10 +50,11 @@ const start = (wt, fs) => {
       if (head >= tail) { Atomics.store(ctl, READING, NO_READ); return; }
       const p = Number(head % capBig);
       if (cap - p < HEADER || view.getUint32(p, true) === SKIP) {
-        Atomics.store(ctl, HEAD, head + BigInt(sizeAt(head))); continue;
+        Atomics.compareExchange(ctl, HEAD, head, head + BigInt(sizeAt(head))); continue; // pad skip (CAS)
       }
-      Atomics.store(ctl, READING, head);
-      const len = view.getUint32(p+4, true);
+      Atomics.store(ctl, READING, head); // CLAIM
+      if (Atomics.load(ctl, HEAD) !== head) continue; // VERIFY — dropped under us → retry from new HEAD
+      const len = view.getUint32(p+4, true), size = HEADER + len;
       const payload = bytes.subarray(p+HEADER, p+HEADER+len);
       try {
         let off = 0;
@@ -63,8 +64,7 @@ const start = (wt, fs) => {
           off += n;
         }
       } catch (e) { return; } // leave the frame; retry next tick (transient) or shed via drop-oldest
-      const rh = Atomics.load(ctl, READING);
-      Atomics.store(ctl, HEAD, rh + BigInt(sizeAt(rh)));
+      Atomics.store(ctl, HEAD, Atomics.load(ctl, READING) + BigInt(size)); // cached size, not a re-read
       Atomics.store(ctl, READING, NO_READ);
     }
   };
@@ -150,10 +150,16 @@ export function createWorkerThreadRingWorker(
     stop: () => {
       Atomics.store(fl, SHUTDOWN, 1);
       flushAndWait(TERMINATE_BUDGET_MS); // wait for the worker's final drain + close-all + ack
+      // Bounded — bun's terminate() can hang on an idle worker. The fallback timer is UNREF'd so a normal
+      // (fast-terminate) stop() never holds the host event loop for the budget.
+      let timer: ReturnType<typeof setTimeout>;
       void Promise.race([
         worker.terminate(),
-        new Promise((resolve) => setTimeout(resolve, TERMINATE_BUDGET_MS)),
-      ]); // bounded — bun's terminate() can hang on an idle worker
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, TERMINATE_BUDGET_MS);
+          timer.unref?.();
+        }),
+      ]).finally(() => clearTimeout(timer));
     },
   };
 }

@@ -72,6 +72,52 @@ describe('createWorkerThreadRingWorker (real worker_threads)', () => {
     s.dispose?.();
   });
 
+  it('drop-storm: a real worker drains while the producer drop-oldests — every survivor on disk is INTACT', async () => {
+    // Stress the cross-thread drop-oldest + read-cursor protection (C1/C2): a small ring forces constant
+    // drops while the worker is concurrently mid-writev. Each frame self-describes its id twice; a torn read
+    // (the producer overwriting a frame the worker is reading) would corrupt a line. With the claim-verify +
+    // CAS fix, every line that lands is intact.
+    const root = mkRoot();
+    const { data, control } = allocCaptureRing(2048); // tiny → heavy drop-oldest
+    const flags = new SharedArrayBuffer(16);
+    const onError = vi.fn();
+    const worker = createWorkerThreadRingWorker({
+      data,
+      control,
+      flags,
+      captureDir: root,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError,
+    });
+    const p = new RingProducer(data, control);
+    const enc = new TextEncoder();
+    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const N = 4000;
+    for (let id = 1; id <= N; id++) {
+      const s = `${id}:${String(id).padStart(10, '0')}\n`; // id, colon, the SAME id padded → self-check
+      const b = enc.encode(s);
+      const v = p.reserve(b.length);
+      if (v === null) continue; // transiently undroppable (consumer mid-read) — skip
+      v.set(b);
+      p.commit(encodePathId(0, 0), b.length);
+      if (id % 200 === 0) await sleep(1); // let the worker drain concurrently (maximize the race window)
+    }
+    worker.flushAndWait(3000); // drain the residual
+    worker.stop();
+
+    const text = readFileSync(diskPath(root, 0, 'log'), 'utf8');
+    const lines = text.split('\n').filter(Boolean);
+    expect(lines.length).toBeGreaterThan(50); // a meaningful number of survivors landed
+    expect(p.dropped).toBeGreaterThan(0); // and the drop path was genuinely exercised
+    for (const line of lines) {
+      const m = /^(\d+):(\d+)$/.exec(line);
+      expect(m, `corrupt/torn line: ${JSON.stringify(line)}`).not.toBeNull(); // well-formed
+      expect(Number((m as RegExpExecArray)[1])).toBe(Number((m as RegExpExecArray)[2])); // both ids agree → intact
+    }
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('main-side handshake edges with a fake Worker: flush timeout, control messages, error routing', () => {
     const { data, control } = allocCaptureRing(1024);
     const flags = new SharedArrayBuffer(16);

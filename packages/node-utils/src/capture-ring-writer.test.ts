@@ -64,6 +64,18 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     s.dispose?.();
   });
 
+  it('append round-trips MULTI-BYTE utf-8 exactly (the *3 reserve bound + the encodeInto byte length)', () => {
+    // char-length !== byte-length here, so it pins both the upper-bound reserve (a `length` reserve would
+    // truncate) AND committing `written` not `dataStr.length` (a char-count commit → a wrong frame length).
+    const root = mkRoot();
+    const s = mk(root);
+    const payload = '日本語\tcafé€ — \u{1F680}\n'; // CJK (3B) + accent (2B) + euro (3B) + astral emoji (4B)
+    s.append(GEN, 0, 'log', payload);
+    s.flushSync?.();
+    expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toBe(payload);
+    s.dispose?.();
+  });
+
   it('write() replaces a file straight-through on the MAIN thread (meta), independent of the ring', () => {
     const root = mkRoot();
     const s = mk(root);

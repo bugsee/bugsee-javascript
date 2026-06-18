@@ -129,8 +129,10 @@ export class RingProducer extends RingBase {
       const physHead = this.phys(head);
       const isPad =
         this.cap - physHead < HEADER || this.view.getUint32(physHead, true) === SKIP_PATH_ID;
-      Atomics.store(this.ctl, HEAD, head + BigInt(this.frameSizeAt(head)));
-      if (!isPad) {
+      // Advance HEAD past the oldest frame via CAS so a concurrent consumer advance (consume / pad-skip) is
+      // never clobbered and HEAD only ever moves forward. If the consumer won the race, retry from the new HEAD.
+      const next = head + BigInt(this.frameSizeAt(head));
+      if (Atomics.compareExchange(this.ctl, HEAD, head, next) === head && !isPad) {
         Atomics.add(this.ctl, DROPPED, 1n); // a real record was discarded (pad skips don't count)
       }
     }
@@ -147,10 +149,16 @@ export class RingProducer extends RingBase {
 
 /** The single consumer (I/O worker): peek → writev → consume. */
 export class RingConsumer extends RingBase {
+  #peekedSize = 0; // the byte size of the frame the last peek returned (so consume never re-reads ring bytes)
+
   /**
    * Return the next committed frame at HEAD WITHOUT consuming it — `{ pathId, payload }`, where `payload` is
-   * a subarray INTO the ring (zero-copy; `writev` it before `consume`). Skips wrap-pads. Marks the frame as
-   * in-read (READING) so the producer's drop-oldest won't reclaim it mid-`writev`. Null when the ring is empty.
+   * a subarray INTO the ring (zero-copy; `writev` it before `consume`). Skips wrap-pads. Null when empty.
+   *
+   * CLAIM-then-VERIFY: it publishes the READING protection BEFORE trusting the frame bytes, then re-checks
+   * HEAD — so the producer's drop-oldest can never overwrite a frame between our HEAD observation and our
+   * read of its header/payload (a torn read of the shared region). If the producer dropped it under us
+   * (HEAD moved), we retry from the new HEAD. Pad/wrap skips advance HEAD via CAS (never clobber a drop).
    */
   peek(): { pathId: number; payload: Uint8Array } | null {
     for (;;) {
@@ -161,28 +169,32 @@ export class RingConsumer extends RingBase {
         return null; // empty
       }
       const physHead = this.phys(head);
-      if (this.cap - physHead < HEADER) {
-        Atomics.store(this.ctl, HEAD, head + BigInt(this.frameSizeAt(head))); // implicit wrap
+      if (this.cap - physHead < HEADER || this.view.getUint32(physHead, true) === SKIP_PATH_ID) {
+        // wrap pad (explicit marker or <HEADER trailing) → advance via CAS, then re-read HEAD next pass
+        Atomics.compareExchange(this.ctl, HEAD, head, head + BigInt(this.frameSizeAt(head)));
         continue;
+      }
+      Atomics.store(this.ctl, READING, head); // CLAIM: protect from drop-oldest
+      if (Atomics.load(this.ctl, HEAD) !== head) {
+        /* v8 ignore next -- concurrency-only: the producer dropping between CLAIM and VERIFY needs a 2nd
+           thread (unreachable single-threaded); validated by the real-worker drop-storm integration test */
+        continue; // VERIFY failed — the producer dropped this frame before we claimed it; retry from new HEAD
       }
       const pathId = this.view.getUint32(physHead, true);
-      if (pathId === SKIP_PATH_ID) {
-        Atomics.store(this.ctl, HEAD, head + BigInt(this.frameSizeAt(head))); // explicit wrap pad
-        continue;
-      }
-      Atomics.store(this.ctl, READING, head); // protect this frame from drop-oldest until consume()
       const len = this.view.getUint32(physHead + 4, true);
+      this.#peekedSize = HEADER + len; // cache so consume() advances HEAD without re-reading the (mutable) ring
       return { pathId, payload: this.bytes.subarray(physHead + HEADER, physHead + HEADER + len) };
     }
   }
 
-  /** Consume the frame returned by the last `peek` (advance HEAD past it; clear the read cursor). */
+  /** Consume the frame returned by the last `peek` (advance HEAD past it; clear the read cursor). The frame
+   * stays READING-protected through here, so its size is stable — but use the cached size, never a re-read. */
   consume(): void {
     const head = Atomics.load(this.ctl, READING);
     if (head < 0n) {
       return; // nothing peeked
     }
-    Atomics.store(this.ctl, HEAD, head + BigInt(this.frameSizeAt(head)));
+    Atomics.store(this.ctl, HEAD, head + BigInt(this.#peekedSize));
     Atomics.store(this.ctl, READING, NO_READ);
   }
 }

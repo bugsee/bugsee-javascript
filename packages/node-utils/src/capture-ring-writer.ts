@@ -163,7 +163,10 @@ export function createCaptureRingWriter(
       // Reserve an upper bound, encode IN PLACE, commit the actual byte length (zero-copy hot path).
       const view = producer.reserve(dataStr.length * MAX_UTF8_PER_CHAR);
       if (view === null) {
-        mainAppend(g, c, file, dataStr); // oversized for the ring (shouldn't happen with the default cap)
+        // Oversized for the ring (shouldn't happen with the default cap). It targets the SAME file the worker
+        // owns — so drain the ring FIRST, then main-append, preserving per-file order.
+        worker.flushAndWait(flushTimeout);
+        mainAppend(g, c, file, dataStr);
         return;
       }
       const { written } = encoder.encodeInto(dataStr, view);
@@ -187,7 +190,8 @@ export function createCaptureRingWriter(
 
     removeChunk(g, c): void {
       if (g === generation) {
-        worker.closeChunk(c); // release the worker's fds for this chunk before deleting
+        worker.flushAndWait(flushTimeout); // drain any pending frames so the worker can't reopen the dir…
+        worker.closeChunk(c); // …then release its fds before deleting (no resurrection)
       }
       remove(chunkDir(g, c));
     },
@@ -202,6 +206,7 @@ export function createCaptureRingWriter(
 
     removeGeneration(g): void {
       if (g === generation) {
+        worker.flushAndWait(flushTimeout); // drain pending frames first, then release all fds (no resurrection)
         worker.closeAll();
       }
       remove(join(root, pad(g, GEN_PAD)));
