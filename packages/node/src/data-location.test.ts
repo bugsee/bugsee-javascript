@@ -29,6 +29,19 @@ describe('ensureSecureDataRoot', () => {
     expect(made).toEqual(['/tmp/bugsee', '/tmp/bugsee/abc']); // base verified before the leaf is created
   });
 
+  it('verifies the base BEFORE creating the leaf (a foreign base aborts before the leaf is ever made)', () => {
+    const made: string[] = [];
+    expect(() =>
+      ensureSecureDataRoot('/tmp/bugsee/abc', {
+        mkdir: (d) => made.push(d),
+        // The base is foreign-owned; the leaf would be fine — so this only throws if the base is verified FIRST.
+        lstat: (d) => (d === '/tmp/bugsee' ? dirStat(31337, 0o40700) : dirStat(1000, 0o40700)),
+        getuid: () => 1000,
+      }),
+    ).toThrow(/not owned by this user/);
+    expect(made).toEqual(['/tmp/bugsee']); // the leaf was NEVER created — the base is verified before the leaf
+  });
+
   it('throws when the root is foreign-owned (a pre-created attacker dir) → launch degrades to memory', () => {
     expect(() =>
       ensureSecureDataRoot('/tmp/bugsee/abc', {

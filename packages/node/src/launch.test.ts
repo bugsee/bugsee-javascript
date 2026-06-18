@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1376,6 +1377,51 @@ describe('launch — capturedDataStore (disk by default, D3)', () => {
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('A2: a foreign/unsafe DEFAULT root (group/other-accessible base) degrades to in-memory, never crashes', () => {
+    // Hermetic default-root test via dataRootBase: pre-create <base>/bugsee group/other-accessible (the
+    // attacker-pre-created-dir hazard). ensureSecureDataRoot must reject it → launch degrades to memory.
+    const base = mkdtempSync(join(tmpdir(), 'bugsee-a2-unsafe-'));
+    const bugseeBase = join(base, 'bugsee');
+    mkdirSync(bugseeBase);
+    chmodSync(bugseeBase, 0o777); // world-accessible → the security check must refuse this root
+    const onError = vi.fn();
+    try {
+      const { scheduler } = fakeScheduler();
+      const client = launchTracked('tok', baseOptions({ scheduler, dataRootBase: base, onError }));
+      expect(client.isLaunched()).toBe(true); // never crashes the host
+      expect(() => client.getService(ChunkStorageToken)).toThrow(); // degraded: no on-disk seams
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(onError).toHaveBeenCalled(); // the unsafe-root rejection was reported
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('A2: a fresh, safe DEFAULT root (via dataRootBase) passes the check and wires disk capture', () => {
+    const base = mkdtempSync(join(tmpdir(), 'bugsee-a2-safe-'));
+    try {
+      const { scheduler } = fakeScheduler();
+      const client = launchTracked('tok', baseOptions({ scheduler, dataRootBase: base }));
+      expect(() => client.getService(ChunkStorageToken)).not.toThrow(); // safe → disk capture active
+      expect(existsSync(join(base, 'bugsee'))).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('A2: an EXPLICIT dataDir is NOT subjected to the default-root security check (caller owns that choice)', () => {
+    // A group/other-accessible EXPLICIT dataDir must NOT degrade — the gate applies only to the default root.
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-a2-explicit-'));
+    chmodSync(dir, 0o777); // would FAIL the security check IF it were (wrongly) applied to an explicit dataDir
+    try {
+      const { scheduler } = fakeScheduler();
+      const client = launchTracked('tok', baseOptions({ scheduler, dataDir: dir }));
+      expect(() => client.getService(ChunkStorageToken)).not.toThrow(); // disk active — check correctly skipped
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

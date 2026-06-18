@@ -179,6 +179,12 @@ export interface BugseeLaunchOptions {
   /** Persist on-disk data (capture chunks + durable bundles) to this directory. Default `os.tmpdir()/bugsee`. */
   dataDir?: string;
   /**
+   * Base directory for the DEFAULT on-disk root (`<dataRootBase>/bugsee/<appTokenHash>`). Default
+   * `os.tmpdir()`. Ignored when an explicit `dataDir` is given. The default root is hardened + ownership/
+   * mode-verified before use (a foreign/unsafe root degrades to in-memory); an explicit `dataDir` is not.
+   */
+  dataRootBase?: string;
+  /**
    * Capture write path (Phase 2 insurance): `'inline'` (default) — the batched main-thread writer (P1); or
    * `'worker'` — an off-thread worker_threads writer over a shared zero-copy SAB ring, so the host thread
    * never blocks on a write() even under a pathologically slow disk (drop-oldest sheds load). Only applies to
@@ -352,7 +358,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // `effectiveDataDir` is the explicit dataDir, else os.tmpdir()/bugsee/<appTokenHash> when disk capture is
   // on, else undefined (a pure in-memory launch). Every on-disk seam below keys off `effectiveDataDir`.
   // (let, not const: a disk-setup failure below clears them to degrade to the in-memory path.)
-  let { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(options, tmpdir(), appToken);
+  let { dataDir: effectiveDataDir, diskCapture } = resolveDataLocation(
+    options,
+    options.dataRootBase ?? tmpdir(),
+    appToken,
+  );
   // Only the PREDICTABLE, shared default root (<tmp>/bugsee/<appTokenHash>) is hardened/verified below; an
   // explicit `dataDir` is the caller's own security decision (it may intentionally be a shared/symlinked dir).
   const usingDefaultRoot = options.dataDir === undefined && diskCapture;

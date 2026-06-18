@@ -286,6 +286,7 @@ describe('createBatchedFsChunkStorage', () => {
     });
     expect(() => s.append(GEN, CHUNK, 'log', 'x\n')).not.toThrow();
     expect(errors.map((e) => (e as Error).message)).toEqual(['EROFS open']);
+    expect(s.read(GEN, CHUNK, 'log')).toBeUndefined(); // SHED, not silently retained/buffered for a later flush
     s.dispose?.();
   });
 

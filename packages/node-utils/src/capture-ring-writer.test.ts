@@ -241,6 +241,7 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     });
     expect(() => s.append(GEN, 0, 'crash', 'boom\n')).not.toThrow(); // 'crash' ∉ fileTypes → mainAppend
     expect(errors.map((e) => (e as Error).message)).toEqual(['EROFS main-append']);
+    expect(s.read(GEN, 0, 'crash')).toBeUndefined(); // SHED, not silently retained
     s.dispose?.();
   });
 
