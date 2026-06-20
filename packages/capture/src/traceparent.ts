@@ -1,4 +1,11 @@
 import type { OutgoingRequest, RequestDecorator } from './request-decorator';
+import {
+  type BugseeTraceState,
+  encodeBugseeState,
+  parseTracestate,
+  serializeTracestate,
+  setTracestateEntry,
+} from './tracestate';
 
 // Phase D: the W3C trace-context propagation transformer — a RequestDecorator (the T seam's first
 // consumer) that injects `traceparent` on outgoing requests so a frontend trace links to the backend
@@ -28,6 +35,13 @@ export interface TraceparentDecoratorOptions {
   allowlist?: ReadonlyArray<string | RegExp>;
   /** Resolve a URL (against `base`) to its origin; injectable for tests. Default the global `URL`. */
   resolveOrigin?: (url: string, base: string) => string | undefined;
+  /**
+   * The Bugsee `tracestate` payload to propagate alongside `traceparent` (record flag + the originating
+   * session-correlation id; cross-project-tracing.md T4/T7). Absent or empty → no `tracestate` is added.
+   * On a forwarding hop this carries the INBOUND originator's state (so the originating session id flows
+   * through unchanged), set as the `bugsee=` vendor entry on any tracestate already on the outgoing request.
+   */
+  getBugseeState?: () => BugseeTraceState | undefined;
 }
 
 const W3C_VERSION = '00';
@@ -94,6 +108,18 @@ const defaultResolveOrigin = (url: string, base: string): string | undefined => 
 const hasHeader = (headers: Readonly<Record<string, string>>, lowercaseName: string): boolean =>
   Object.keys(headers).some((key) => key.toLowerCase() === lowercaseName);
 
+const headerValue = (
+  headers: Readonly<Record<string, string>>,
+  lowercaseName: string,
+): string | undefined => {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowercaseName) {
+      return headers[key];
+    }
+  }
+  return undefined;
+};
+
 export function createTraceparentDecorator(options: TraceparentDecoratorOptions): RequestDecorator {
   const origin =
     options.origin ??
@@ -124,6 +150,19 @@ export function createTraceparentDecorator(options: TraceparentDecoratorOptions)
       return undefined;
     }
     const flags = span.isSampled?.() === false ? '00' : '01';
-    return { traceparent: `${W3C_VERSION}-${span.getTraceId()}-${span.getSpanId()}-${flags}` };
+    const result: Record<string, string> = {
+      traceparent: `${W3C_VERSION}-${span.getTraceId()}-${span.getSpanId()}-${flags}`,
+    };
+    // Bugsee vendor tracestate (T4/T7): set our `bugsee=` entry on any tracestate already on the request,
+    // preserving other vendors + moving ours to the front. Skipped when there is no Bugsee state to carry.
+    const bugseeState = options.getBugseeState?.();
+    if (bugseeState !== undefined) {
+      const value = encodeBugseeState(bugseeState);
+      if (value.length > 0) {
+        const existing = parseTracestate(headerValue(request.headers, 'tracestate'));
+        result.tracestate = serializeTracestate(setTracestateEntry(existing, 'bugsee', value));
+      }
+    }
+    return result;
   };
 }

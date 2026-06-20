@@ -206,3 +206,54 @@ describe('parseTraceparent (inbound W3C continuation)', () => {
     expect(parseTraceparent(`00-zzzz...-${SID}-01`)).toBeUndefined(); // non-hex
   });
 });
+
+describe('createTraceparentDecorator — bugsee tracestate', () => {
+  it('emits a bugsee= tracestate entry alongside traceparent when a bugsee state is supplied', () => {
+    const d = createTraceparentDecorator({
+      getActiveSpan: () => span(),
+      origin: 'https://app.test',
+      getBugseeState: () => ({ record: true, sessionId: 'sess9' }),
+    });
+    expect(d(req('https://app.test/api/x'))).toEqual({
+      traceparent: `00-${TID}-${SID}-01`,
+      tracestate: 'bugsee=r1:ssess9',
+    });
+  });
+
+  it('adds no tracestate when no bugsee state is supplied (back-compat) or it is empty', () => {
+    const noFactory = createTraceparentDecorator({
+      getActiveSpan: () => span(),
+      origin: 'https://app.test',
+    });
+    expect(noFactory(req('https://app.test/x'))).toEqual({ traceparent: `00-${TID}-${SID}-01` });
+
+    const emptyState = createTraceparentDecorator({
+      getActiveSpan: () => span(),
+      origin: 'https://app.test',
+      getBugseeState: () => ({}), // encodes to '' → no tracestate
+    });
+    expect(emptyState(req('https://app.test/x'))).toEqual({ traceparent: `00-${TID}-${SID}-01` });
+  });
+
+  it('sets the bugsee entry on an EXISTING outgoing tracestate, preserving other vendors (front)', () => {
+    const d = createTraceparentDecorator({
+      getActiveSpan: () => span(),
+      origin: 'https://app.test',
+      getBugseeState: () => ({ record: false }),
+    });
+    const out = d(req('https://app.test/x', { tracestate: 'other=keep,bugsee=stale' }));
+    expect(out).toEqual({
+      traceparent: `00-${TID}-${SID}-01`,
+      tracestate: 'bugsee=r0,other=keep', // ours refreshed + moved to front, stale dropped, other kept
+    });
+  });
+
+  it('does not propagate (incl. tracestate) when an upstream traceparent is already present', () => {
+    const d = createTraceparentDecorator({
+      getActiveSpan: () => span(),
+      origin: 'https://app.test',
+      getBugseeState: () => ({ record: true, sessionId: 'x' }),
+    });
+    expect(d(req('https://app.test/x', { traceparent: `00-${TID}-${SID}-01` }))).toBeUndefined();
+  });
+});

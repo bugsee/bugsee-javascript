@@ -53,6 +53,15 @@ export {
   type TraceparentDecoratorOptions,
 } from './traceparent';
 export {
+  type BugseeTraceState,
+  decodeBugseeState,
+  encodeBugseeState,
+  parseTracestate,
+  serializeTracestate,
+  setTracestateEntry,
+  type TracestateEntry,
+} from './tracestate';
+export {
   createUserEventsProvider,
   type UserEvent,
   type UserEventSource,
