@@ -1,5 +1,6 @@
 import { getCarrierClient } from '@bugsee/core';
 import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
+import { randomId } from '@bugsee/util';
 
 // The Hono adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
 // Hono is a PEER (structural types only). A single middleware over the shared server-instrumentation core:
@@ -38,7 +39,7 @@ export interface HonoAdapterOptions {
   user?: (c: HonoContextLike) => string | undefined;
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. Injectable for tests. */
+  /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default: skip Hono HTTPExceptions, report genuine errors. */
   shouldReport?: (err: unknown) => boolean;
@@ -56,7 +57,8 @@ export const requestName = (c: HonoContextLike): string =>
 export const defaultShouldReport = (err: unknown): boolean =>
   typeof (err as { getResponse?: unknown } | null | undefined)?.getResponse !== 'function';
 
-const newRandomId = (): string => crypto.randomUUID();
+// Portable id (global crypto is undefined on Node 18; node:crypto is absent on edge) — see @bugsee/util.
+const newRandomId = (): string => randomId();
 
 const routeOf = (c: HonoContextLike): string => c.req.routePath || c.req.path;
 

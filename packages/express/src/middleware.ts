@@ -52,7 +52,7 @@ export interface ExpressAdapterOptions {
   user?: (req: ExpressRequest) => string | undefined;
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. Injectable for tests. */
+  /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
 }
 

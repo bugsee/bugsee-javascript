@@ -1,6 +1,7 @@
 import { parseTraceparent } from '@bugsee/capture';
 import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
 // Shared server-instrumentation core (design: docs/design/incoming-server-instrumentation.md). Absorbed
@@ -31,7 +32,7 @@ export interface ServerRequestInfo {
 export interface ServerInstrumentOptions {
   /** Resolve the active client; default the process-singleton carrier client. */
   getClient?: () => BugseeClient | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. */
+  /** Mint a context id; default a portable random id. */
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default {@link defaultShouldReport} (status-based). */
   shouldReport?: (err: unknown) => boolean;
@@ -100,7 +101,8 @@ const tryGetPerf = (client: BugseeClient): PerformanceApi | undefined => {
 };
 
 const defaultGetClient = (): BugseeClient | undefined => getCarrierClient<BugseeClient>();
-const defaultNewContextId = (): string => crypto.randomUUID();
+// Portable id (NOT the global `crypto`, undefined on Node 18; NOT `node:crypto`, absent on edge runtimes).
+const defaultNewContextId = (): string => randomId();
 
 const urlPath = (url: string): string => {
   const q = url.indexOf('?');

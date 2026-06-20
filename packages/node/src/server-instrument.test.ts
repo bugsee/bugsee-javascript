@@ -598,7 +598,7 @@ describe('runServerRequest (run-scoped owner/refiner)', () => {
       return null;
     });
     expect(typeof id).toBe('string');
-    expect(id).toHaveLength(36); // crypto.randomUUID()
+    expect(id).toMatch(/^[0-9a-f]{32}$/); // the portable randomId (Node-18 + edge safe)
   });
 
   it('startServerSpan REFINES an active owner: one txn, setRoute+captureError reach the owner, per-call override honored', () => {

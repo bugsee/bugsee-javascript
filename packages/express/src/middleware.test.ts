@@ -355,13 +355,13 @@ describe('defaults + edge branches (coverage)', () => {
     expect(errNext).toHaveBeenCalledWith(err);
   });
 
-  it('mints a random uuid contextId by default', () => {
+  it('mints a random contextId by default (portable 32-hex id)', () => {
     const { client, store } = fakeClient();
     let id: string | undefined;
     requestHandler({ getClient: () => client })(fakeReq(), fakeRes().res, () => {
       id = store?.getCurrent()?.contextId;
     });
-    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('reads the first value of an array-valued traceparent header', () => {

@@ -34,7 +34,7 @@ export interface NestAdapterOptions {
   user?: (req: NestHttpRequest) => string | undefined;
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. Injectable for tests. */
+  /** Mint a context id; default `randomUUID` (node:crypto). Injectable for tests. */
   newContextId?: () => string;
   /**
    * Decide whether a thrown error should be reported. Default {@link defaultShouldReport}: skip Nest

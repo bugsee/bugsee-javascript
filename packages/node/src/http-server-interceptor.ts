@@ -47,7 +47,7 @@ export interface HttpServerInterceptorOptions {
   target?: HttpServerTarget;
   /** Resolve the active client; forwarded to runServerRequest. Default the process-singleton carrier client. */
   getClient?: () => BugseeClient | undefined;
-  /** Mint a context id; forwarded. Default `crypto.randomUUID`. */
+  /** Mint a context id; forwarded. Default a portable random id. */
   newContextId?: () => string;
   /** Skip instrumenting a request (self-isolation). Default: the inbound `x-bugsee-internal` header. */
   isInternal?: (headers: IncomingHeaders) => boolean;

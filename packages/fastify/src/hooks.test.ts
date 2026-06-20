@@ -299,13 +299,11 @@ describe('defaults + edge branches (coverage)', () => {
     expect(d3).toHaveBeenCalledTimes(1);
   });
 
-  it('mints a random uuid contextId by default', () => {
+  it('mints a random contextId by default (portable 32-hex id)', () => {
     const { client, store } = fakeClient();
-    const app = fakeApp({ getClient: () => client }); // no newContextId → randomUUID
+    const app = fakeApp({ getClient: () => client }); // no newContextId → the core's portable randomId
     app.onRequest(fakeReq(), fakeReply(), vi.fn());
-    expect(store?.getCurrent()?.contextId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
+    expect(store?.getCurrent()?.contextId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('reads the first value of an array-valued traceparent header', () => {

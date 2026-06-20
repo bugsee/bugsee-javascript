@@ -1,5 +1,6 @@
 import { getCarrierClient } from '@bugsee/core';
 import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
+import { randomId } from '@bugsee/util';
 
 // The Koa adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
 // Koa is a PEER (structural types only). A single middleware over the shared server-instrumentation core:
@@ -28,7 +29,7 @@ export interface KoaAdapterOptions {
   user?: (ctx: KoaContextLike) => string | undefined;
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. Injectable for tests. */
+  /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
   /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx. */
   shouldReport?: (err: unknown) => boolean;
@@ -66,7 +67,8 @@ export const defaultShouldReport = (err: unknown): boolean => {
   return status === undefined || status >= 500;
 };
 
-const newRandomId = (): string => crypto.randomUUID();
+// Portable id (global crypto is undefined on Node 18; node:crypto is absent on edge) — see @bugsee/util.
+const newRandomId = (): string => randomId();
 
 const toOptions = (options: KoaAdapterOptions): ServerInstrumentOptions => ({
   ...(options.getClient !== undefined

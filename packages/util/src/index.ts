@@ -23,5 +23,6 @@ export {
 } from './env';
 export { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from './fflate';
 export { jsonSafeStringify } from './json-safe-stringify';
+export { randomId } from './random-id';
 export { sha256Hex } from './sha256';
 export { utf8ByteLength } from './utf8-byte-length';

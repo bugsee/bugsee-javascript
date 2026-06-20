@@ -7,6 +7,7 @@ import {
   type ServerInstrumentOptions,
   type ServerRequestSpan,
 } from '@bugsee/node';
+import { randomId } from '@bugsee/util';
 
 // The Elysia adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
 // Elysia is a PEER (structural types only). setupElysia adds three hooks over the shared
@@ -53,7 +54,7 @@ export interface ElysiaAdapterOptions {
   user?: (c: ElysiaContextLike) => string | undefined;
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
-  /** Mint a context id; default `crypto.randomUUID`. Injectable for tests. */
+  /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
   /**
    * Override the report decision. Default: report Elysia "server" errors (a plain throw / a 5xx status),
@@ -96,7 +97,8 @@ const nameRoute = (c: ElysiaContextLike): string => c.route || requestPath(c);
 
 export const requestName = (c: ElysiaContextLike): string => `${c.request.method} ${nameRoute(c)}`;
 
-const newRandomId = (): string => crypto.randomUUID();
+// Portable id (global crypto is undefined on Node 18; node:crypto is absent on edge) — see @bugsee/util.
+const newRandomId = (): string => randomId();
 
 const toOptions = (options: ElysiaAdapterOptions): ServerInstrumentOptions => ({
   ...(options.getClient !== undefined
