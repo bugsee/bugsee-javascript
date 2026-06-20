@@ -228,10 +228,16 @@ OS-driven cliff on bun/deno.)
    bounded-shutdown handshake); wired into `launch.ts` (`captureWriter: 'worker'`, opt-in). Oversized records +
    foreign-gen/unknown-type → a main-thread fallback. Meta/read/seal/remove stay main-thread (D4) with
    flush-and-ack first (so no resurrection/reorder).
-9. ⏳ **Adverse-I/O e2e** (deferred) — the off-thread path is validated by a real-worker drop-storm integration
-   test (real worker_threads + real Atomics + real fs, byte-integrity under heavy concurrent drops) + the
-   spikes on all 3 runtimes; a real-PROCESS adverse-I/O + cross-runtime `'worker'` e2e scenario is the
-   remaining incremental confidence.
+9. ✅ **Cross-runtime `'worker'` e2e** (2026-06-20) — `@bugsee/instrumentation-tests` now boots the REAL SDK
+   with `captureWriter: 'worker'` in real node/bun/deno processes (a breadcrumb + a 100-line burst + a
+   captured request + an error report) and asserts the off-thread-written capture round-trips into the
+   delivered bundle — **green on all three runtimes**. It **caught a real bug**: `file-chunk-backend.snapshot`
+   lists `storage.files()` BEFORE `read()`ing, and the ring writer creates files only on the worker's drain,
+   so a LIVE in-process assembly of an OPEN (un-sealed) part saw an empty dir → an empty bundle. Fixed by
+   flushing the worker in `files()`/`chunks()`/`generations()` (matching `read()`'s "a reader sees everything"
+   contract). No prior test caught it — they only read after a `closePart`/`dispose` or via a fresh recovery
+   reader, never a live snapshot of pending ring data. (Adverse-I/O host-lag stays benchmark-validated, §10 —
+   not a CI assertion, which would flake on machine/CI timing.)
 10. ✅ **Docs + memory** (this section + [[server-disk-capture-write-path]]).
 
 **Convergent review (3 rounds, 2026-06-18) — CONVERGED.** Round 1 found a CRITICAL two-thread ring race

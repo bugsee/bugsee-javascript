@@ -340,8 +340,13 @@ consumer + the Atomics flush-ack / bounded-shutdown handshake), wired in `launch
 data-file fds (deno can't inherit fds); zero-copy hot path; meta/read/seal/remove stay main-thread. The
 3-round convergent review found + fully fixed a CRITICAL two-thread ring race (the Dekker completion is the
 load-bearing producer re-check, proven against the JS Atomics seq-cst model). The Phase-1 batched writer is
-the DEFAULT live path; the worker is INSURANCE. Deferred: a real-process adverse-I/O + cross-runtime e2e (the
-off-thread path is node-validated by a real-worker drop-storm integration test + spiked on node/bun/deno).
+the DEFAULT live path; the worker is INSURANCE. **Cross-runtime `'worker'` e2e DONE (2026-06-20):** the
+instrumentation harness boots `captureWriter: 'worker'` in real node/bun/deno processes and asserts the
+off-thread-written capture round-trips into the delivered bundle — green on all three. It caught + fixed a
+real bug: the ring writer's `files()`/`chunks()`/`generations()` enumerators didn't flush the worker, so a
+LIVE in-process bundle assembly of an OPEN part read an empty dir → an empty bundle (no prior test hit the
+live-snapshot-of-pending-ring-data path). (Adverse-I/O host-lag stays §10-benchmark-validated, not a flaky
+CI gate.)
 
 ### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
 The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
