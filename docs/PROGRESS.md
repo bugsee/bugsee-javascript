@@ -168,9 +168,16 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
 - **Bun ~1.1+** — inferred floor, tested only on Bun 1.3 (full feature set incl. profiling + ANR works).
   Not pinned/version-matrix-tested.
 - **Tooling caveat:** **vitest 4 cannot run on Node 18** (its `rolldown` dep uses `node:util.styleText`,
-  Node 20.12+), so `pnpm test` needs Node ≥ 20; test SDK *code* on Node 18 via `tsx`, not vitest. A CI
-  Node-version matrix is still TODO (the `@bugsee/instrumentation-tests` harness already spawns
-  node/bun/deno — pointing it at pinned versions would make the bun/deno floors *tested*).
+  Node 20.12+), so `pnpm test` needs Node ≥ 20; test SDK *code* on Node 18 via `tsx`, not vitest.
+- **Node-version matrix — DONE as a portable nvm script (2026-06-20):** `pnpm test:matrix`
+  (`scripts/test-matrix.sh`) runs a vitest-free scenario smoke (`packages/instrumentation-tests/smoke.ts`:
+  the off-thread disk-capture worker path + the incoming-server context path) via `tsx` under each installed
+  Node version — so it covers Node 18, where vitest can't load (`--full` also runs the unit suite on ≥20).
+  CI-agnostic (this is a Gerrit repo with no in-repo CI). **It caught two real Node-18 crashes** — both used
+  the global `crypto` (unflagged only on Node 19+): `instance-layout`'s subtree nonce (→ every disk launch)
+  and the per-request context-id minter (`server-instrument` + 4 adapters → every instrumented request).
+  Fixed (`node:crypto` for instance-layout; a portable `@bugsee/util` `randomId()` for the minters);
+  re-verified green on real Node 18.20 / 22 / 24.
 
 ---
 

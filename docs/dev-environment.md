@@ -146,9 +146,11 @@ pnpm mutation                             # turbo run mutation (per-package Stry
 
 > Mutation testing is **not** a blocking gate. The always-on discipline is the per-entity **mutator loop** in `docs/implementation-standards.md` §2 (inject a bug → confirm a test catches it → restore). Stryker is run on demand to audit test strength.
 
-### Per-runtime smoke
+### Per-runtime smoke + Node-version matrix
 
-Not yet wired (no per-runtime smoke harness exists). The Node SDK's end-to-end coverage is in `packages/node/src/launch.integration.test.ts` (real loopback `http.createServer`, full session → issue → signed PUT → durable-queue recovery).
+- **Cross-runtime e2e:** `pnpm test:e2e` (`@bugsee/instrumentation-tests`) boots the REAL SDK in separate node (via tsx) / bun / deno processes against a mock collector and asserts the uploaded bundles (logs/network/profile/ANR/crash/server-context/disk-recovery/off-thread-worker). A runtime whose binary is absent is skipped.
+- **Cross-Node-version matrix:** `pnpm test:matrix` (`scripts/test-matrix.sh`, nvm-based, CI-agnostic) runs a vitest-free scenario smoke (`smoke.ts`) via `tsx` under each installed Node version — covering **Node 18**, where vitest 4 cannot load (`rolldown`'s `node:util.styleText`). `pnpm test:matrix 18 20` picks a subset; `--full` also runs `pnpm test` on each Node ≥ 20. (Complementary axes: `pnpm test` is the host-Node unit suite; `pnpm test:e2e` is the cross-runtime axis.)
+- The Node SDK's in-process e2e coverage is also in `packages/node/src/launch.integration.test.ts` (real loopback `http.createServer`, full session → issue → signed PUT → durable-queue recovery).
 
 ### Pre-commit checklist
 
