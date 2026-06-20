@@ -42,6 +42,10 @@ describe('createInstanceLayout', () => {
     const b = createInstanceLayout('/d');
     expect(a.instanceId).not.toBe(b.instanceId); // the nonce disambiguates relaunch / PID reuse
     expect(a.instanceId.startsWith(`${process.pid}-${threadId}-`)).toBe(true);
+    // The default nonce is an 8-char lowercase-hex slice of a randomUUID — pin the format so a regression
+    // (or a runtime where the UUID source is missing/different) is caught.
+    const nonce = a.instanceId.slice(`${process.pid}-${threadId}-`.length);
+    expect(nonce).toMatch(/^[0-9a-f]{8}$/);
   });
 });
 

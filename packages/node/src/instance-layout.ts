@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import process from 'node:process';
 import { threadId } from 'node:worker_threads';
@@ -46,7 +47,9 @@ export interface InstanceIdentity {
   nonce?: () => string;
 }
 
-const defaultNonce = (): string => crypto.randomUUID().replace(/-/g, '').slice(0, NONCE_LEN);
+// `node:crypto` randomUUID (since Node 14.17) — NOT the global `crypto`, which is unflagged only on Node 19+
+// (undefined on the declared-minimum Node 18, where it would crash every disk-backed launch).
+const defaultNonce = (): string => randomUUID().replace(/-/g, '').slice(0, NONCE_LEN);
 
 /** Derive the instanceId + subtree paths. Pure — does NOT touch the filesystem. */
 export function createInstanceLayout(
