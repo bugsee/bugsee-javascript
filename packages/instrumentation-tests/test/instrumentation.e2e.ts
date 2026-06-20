@@ -323,6 +323,59 @@ describe.each(
     });
   });
 
+  describe('worker writer: off-thread captureWriter:"worker" produces correct bundles on the real runtime', () => {
+    let collector: MockCollector;
+    let dataDir: string;
+    let result: { exitCode: number | null; stderr: string };
+    let bundles: ParsedBundle[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      dataDir = mkdtempSync(join(tmpdir(), 'bugsee-ww-'));
+      result = await runScenarioProcess(target, collector.url, 'worker', {
+        BUGSEE_E2E_DATADIR: dataDir,
+      });
+      bundles = parseBundles(collector);
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('the app process exits cleanly', () => {
+      expect(result.exitCode, result.stderr).toBe(0);
+    });
+
+    it('the off-thread-written capture round-trips into the delivered bundle (breadcrumb + burst + network)', () => {
+      const err = bundles.find((b) => b.request.summary === 'e2e worker-writer failure');
+      expect(err, `no worker-writer error bundle delivered (${result.stderr})`).toBeDefined();
+      const bundle = err as ParsedBundle;
+      expect(bundle.request.source.mechanism).toBe('programmatic');
+      expect(bundle.request.environment.platform.type).toBe(target.name);
+
+      expect(
+        bundle.files['logs.json'],
+        `no logs.json in the bundle (${result.stderr})`,
+      ).toBeDefined();
+      const logs = parseJson<LogEntry[]>(bundle.files['logs.json']);
+      // The breadcrumb written through the off-thread ring → worker → disk survived and was read back.
+      expect(logs.some((l) => l.message.includes('worker-writer breadcrumb 9b2e'))).toBe(true);
+      // The 100-line burst exercised the ring under real throughput; the worker drained it all to disk and
+      // the snapshot (flush-and-ack first) read it back — a large majority must survive (no ring loss).
+      const burst = logs.filter((l) => l.message.includes('worker-writer burst')).length;
+      expect(
+        burst,
+        `only ${burst}/100 off-thread burst lines survived into the bundle`,
+      ).toBeGreaterThanOrEqual(80);
+
+      // The captured network request also round-tripped through the off-thread path.
+      expect(bundle.files['network.json'], 'no network.json in the bundle').toBeDefined();
+      const net = parseJson<NetworkEntry[]>(bundle.files['network.json']);
+      expect(net.some((n) => typeof n.url === 'string' && n.url.includes('/echo'))).toBe(true);
+    });
+  });
+
   describe('crash scenario: uncaughtException → crash bundle → exit 1', () => {
     let collector: MockCollector;
     let exitCode: number | null;

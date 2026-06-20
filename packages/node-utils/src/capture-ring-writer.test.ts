@@ -110,6 +110,34 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     s.dispose?.();
   });
 
+  it('files() flushes the worker first, so a LIVE snapshot of an un-sealed part is visible (the e2e bug)', () => {
+    // file-chunk-backend.snapshot lists files() BEFORE read()ing them. The ring writer creates each file
+    // only when the worker DRAINS a frame, so without flushing in files() a live snapshot of an OPEN
+    // (un-sealed) part sees an empty dir → an empty bundle (the bug the worker→live-assembly e2e caught).
+    const root = mkRoot();
+    const s = mk(root);
+    s.append(GEN, 0, 'log', 'L1\n'); // committed to the ring, NOT yet drained / sealed
+    expect(s.files(GEN, 0)).toContain('log'); // files() must drain → the data file exists to be listed
+    expect(s.read(GEN, 0, 'log')).toBe('L1\n');
+    s.dispose?.();
+  });
+
+  it('chunks() flushes the worker first, so a still-pending chunk is enumerable', () => {
+    const root = mkRoot();
+    const s = mk(root);
+    s.append(GEN, 7, 'log', 'X\n'); // chunk 7, in the ring, not drained
+    expect(s.chunks(GEN)).toContain(7);
+    s.dispose?.();
+  });
+
+  it('generations() flushes the worker first, so a still-pending generation is enumerable', () => {
+    const root = mkRoot();
+    const s = mk(root);
+    s.append(GEN, 0, 'log', 'Y\n'); // gen GEN, in the ring, not drained
+    expect(s.generations()).toContain(GEN);
+    s.dispose?.();
+  });
+
   it('lists chunks + generations + files by their on-disk names', () => {
     const root = mkRoot();
     const s = mk(root);

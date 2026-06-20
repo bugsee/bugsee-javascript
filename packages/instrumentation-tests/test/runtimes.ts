@@ -79,7 +79,7 @@ export interface ProcessResult {
 export function runScenarioProcess(
   target: RuntimeTarget,
   collectorUrl: string,
-  scenario: 'main' | 'crash' | 'server' | 'multi-instance' | 'disk-recovery',
+  scenario: 'main' | 'crash' | 'server' | 'multi-instance' | 'disk-recovery' | 'worker',
   extraEnv: Record<string, string> = {},
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {

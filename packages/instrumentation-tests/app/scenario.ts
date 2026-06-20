@@ -230,6 +230,49 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
   await client.stop(3000);
 }
 
+/**
+ * Off-thread capture-writer battery (server write-path Phase 2 — the INSURANCE path). Boot with
+ * `captureWriter: 'worker'` so the rolling capture is drained to disk by a REAL worker_threads worker over
+ * the shared zero-copy SAB ring — exercising, on each runtime, the worker_threads spawn + the `Atomics`
+ * flush-and-ack handshake + the SharedArrayBuffer ring + the worker-owns-the-fds design. A burst of logs
+ * drives the ring under real throughput (the worker drains concurrently while the main thread keeps
+ * producing); the error report then drains the capture window, which reads the OFF-THREAD-written chunks
+ * back off disk — so the delivered bundle's logs.json + network.json are the end-to-end proof that the
+ * off-thread path produces correct bundles on the runtime. (If a runtime lacked worker_threads the writer
+ * would degrade to the on-thread drainer and still be correct — but node/bun/deno all have it.) Exits 0.
+ */
+async function runWorkerWriterScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    dataDir, // on-disk capture (capturedDataStore defaults to 'disk') → a ChunkStorage writer is used…
+    captureWriter: (process.env.BUGSEE_E2E_WRITER as 'inline' | 'worker') || 'worker', // off-thread by default
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  // A distinctive breadcrumb that MUST survive the off-thread path, then a burst that exercises the ring
+  // under real throughput (the producer keeps committing while the worker drains on its own thread).
+  console.log('e2e worker-writer breadcrumb 9b2e');
+  for (let i = 0; i < 100; i++) {
+    console.log(`e2e worker-writer burst ${i}`);
+  }
+
+  // A real outgoing request → network.json, captured + written through the same off-thread path.
+  const res = await fetch(`${collectorUrl}/echo?probe=worker`);
+  await res.text();
+
+  // An error report → drains the capture window: the bundle is rebuilt from the OFF-THREAD-written chunks
+  // (the ring writer's read() flush-and-acks the worker first, so the snapshot sees everything on disk).
+  await client.logException(new Error('e2e worker-writer failure'));
+
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -249,6 +292,10 @@ export async function runScenario(
   }
   if (opts.scenario === 'disk-recovery') {
     await runDiskRecoveryScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'worker') {
+    await runWorkerWriterScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);

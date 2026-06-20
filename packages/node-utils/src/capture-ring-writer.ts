@@ -209,7 +209,8 @@ export function createCaptureRingWriter(
     },
 
     files(g, c): string[] {
-      return listFiles(chunkDir(g, c));
+      worker.flushAndWait(flushTimeout); // the worker creates files lazily on drain — drain so a LIVE
+      return listFiles(chunkDir(g, c)); // snapshot (which lists files before reading) sees pending data
     },
 
     removeChunk(g, c): void {
@@ -225,10 +226,12 @@ export function createCaptureRingWriter(
     },
 
     chunks(g): number[] {
+      worker.flushAndWait(flushTimeout); // drain so pending-but-undrained chunks are enumerable (live read)
       return numericNames(join(root, pad(g, GEN_PAD)));
     },
 
     generations(): number[] {
+      worker.flushAndWait(flushTimeout); // drain so a pending-but-undrained generation is enumerable
       return numericNames(root);
     },
 
