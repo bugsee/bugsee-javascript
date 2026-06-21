@@ -107,6 +107,7 @@ describe('wirePerformance', () => {
       name: 'consumed',
       operation: 'consumed',
       status: 'OK',
+      sampled: true,
       startTimestampMs: 1,
       isSnapshot: false,
       spans: [],

@@ -67,6 +67,8 @@ export interface TransactionWire {
   name: string;
   operation: string;
   status: SpanStatus;
+  /** The head-sampling decision (Bugsee OTLP Profile v1 §6/§8: surfaced on the OTLP root as `bugsee.sampled`). */
+  sampled: boolean;
   startTimestampMs: number;
   endTimestampMs?: number;
   durationNanos?: number;
@@ -317,6 +319,7 @@ class TransactionImpl extends SpanImpl implements Transaction {
       name: this.getName(),
       operation: root.operation,
       status: root.status,
+      sampled: this.isSampled(),
       startTimestampMs: root.startTimestampMs,
       isSnapshot: this.#isSnapshot,
       spans: this.env.spans.filter((span) => span !== this).map((span) => span.toSpanWire()),

@@ -56,6 +56,11 @@ describe('createTransaction / Transaction', () => {
     expect(txn.getDescription()).toBe('root desc');
   });
 
+  it('serializes the sampling decision onto the wire (Profile v1 §6/§8)', () => {
+    expect(serializeTransaction(mk(clockAt(1, 1))).sampled).toBe(true);
+    expect(serializeTransaction(mk(clockAt(1, 1), { sampled: false })).sampled).toBe(false);
+  });
+
   it('fluent setters mutate and return the same span for chaining', () => {
     const txn = mk(clockAt(1, 1));
     const ret = txn
@@ -259,6 +264,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',
+      sampled: true,
       startTimestampMs: 1000,
       endTimestampMs: 1020,
       durationNanos: 10_000_000,
@@ -290,6 +296,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',
+      sampled: true,
       startTimestampMs: 1000,
       isSnapshot: false,
       spans: [
@@ -308,6 +315,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
       'isSnapshot',
       'name',
       'operation',
+      'sampled',
       'spans',
       'startTimestampMs',
       'status',

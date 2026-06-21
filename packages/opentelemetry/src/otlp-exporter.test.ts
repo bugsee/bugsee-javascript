@@ -10,6 +10,7 @@ const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   name: '/checkout',
   operation: 'ui.load',
   status: 'OK',
+  sampled: true,
   startTimestampMs: 1000,
   endTimestampMs: 1100,
   isSnapshot: false,
@@ -71,6 +72,8 @@ describe('createOtlpTraceExporter', () => {
 
     expect(body?.resourceSpans[0]?.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'web' } },
+      { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
+      { key: 'bugsee.profile.version', value: { stringValue: '1' } },
     ]);
     expect(body?.resourceSpans[0]?.scopeSpans[0]?.scope).toEqual({
       name: 'custom',

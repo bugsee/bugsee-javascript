@@ -72,6 +72,9 @@ export function consumedRootToTransaction(root: ConsumedSpan, spans: SpanWire[])
     name: root.name,
     operation: root.name, // OTel has no separate transaction name vs operation
     status: fromOtlpStatus(root.status),
+    // A consumed span reached us through the SpanProcessor → it is kept. (Profile v1 §14: a generic OTLP
+    // root carries no bugsee.sampled; we treat consumed spans as sampled.)
+    sampled: true,
     startTimestampMs: root.startTimeMs,
     endTimestampMs: root.endTimeMs,
     durationNanos: durationNanos(root.startTimeMs, root.endTimeMs),

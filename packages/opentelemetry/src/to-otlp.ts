@@ -67,9 +67,26 @@ export function toStatus(status: SpanStatus): OtlpStatus {
   return { code: OtlpStatusCode.ERROR, message: status };
 }
 
-/** OTLP span kind for an operation: outgoing http calls → CLIENT, everything else → INTERNAL. */
-export function spanKindFor(operation: string): number {
-  return operation.startsWith('http.client') ? OtlpSpanKind.CLIENT : OtlpSpanKind.INTERNAL;
+const KIND_BY_NAME: Record<string, number> = {
+  INTERNAL: OtlpSpanKind.INTERNAL,
+  SERVER: OtlpSpanKind.SERVER,
+  CLIENT: OtlpSpanKind.CLIENT,
+  PRODUCER: OtlpSpanKind.PRODUCER,
+  CONSUMER: OtlpSpanKind.CONSUMER,
+};
+
+/**
+ * OTLP span kind (Profile v1 §6): an explicit `bugsee.span.kind` attribute wins; else inbound server
+ * (`http.server`) → SERVER, outgoing call (`http.client`) → CLIENT, everything else → INTERNAL.
+ */
+export function spanKindFor(operation: string, attributes?: Record<string, unknown>): number {
+  const override = attributes?.['bugsee.span.kind'];
+  if (typeof override === 'string' && override in KIND_BY_NAME) {
+    return KIND_BY_NAME[override] as number;
+  }
+  if (operation.startsWith('http.server')) return OtlpSpanKind.SERVER;
+  if (operation.startsWith('http.client')) return OtlpSpanKind.CLIENT;
+  return OtlpSpanKind.INTERNAL;
 }
 
 /**
@@ -88,6 +105,11 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
 
   const rootAttributes: Record<string, unknown> = {
     ...txn.attributes,
+    // Profile v1 §6/§10 root requirements: the transaction name, the sampling decision, the lossless
+    // original status, plus the operation + app info + snapshot flag.
+    'bugsee.transaction.name': txn.name,
+    'bugsee.sampled': txn.sampled,
+    'bugsee.span.status': txn.status,
     'bugsee.operation': txn.operation,
     ...(txn.appVersion !== undefined ? { 'bugsee.app.version': txn.appVersion } : {}),
     ...(txn.appBuild !== undefined ? { 'bugsee.app.build': txn.appBuild } : {}),
@@ -97,7 +119,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
     traceId: txn.traceId,
     spanId: rootSpanId,
     name: txn.name,
-    kind: spanKindFor(txn.operation),
+    kind: spanKindFor(txn.operation, rootAttributes),
     startTimeUnixNano: toUnixNanoString(txn.startTimestampMs),
     endTimeUnixNano: toUnixNanoString(txn.endTimestampMs ?? txn.startTimestampMs),
     attributes: toKeyValues(rootAttributes),
@@ -111,10 +133,14 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
     parentSpanId:
       s.parentSpanId !== undefined && childIds.has(s.parentSpanId) ? s.parentSpanId : rootSpanId,
     name: s.description ?? s.operation,
-    kind: spanKindFor(s.operation),
+    kind: spanKindFor(s.operation, s.attributes),
     startTimeUnixNano: toUnixNanoString(s.startTimestampMs),
     endTimeUnixNano: toUnixNanoString(s.endTimestampMs ?? s.startTimestampMs),
-    attributes: toKeyValues({ ...s.attributes, 'bugsee.operation': s.operation }),
+    attributes: toKeyValues({
+      ...s.attributes,
+      'bugsee.operation': s.operation,
+      'bugsee.span.status': s.status,
+    }),
     status: toStatus(s.status),
   }));
 
@@ -143,7 +169,15 @@ export function toOtlpExportRequest(
   return {
     resourceSpans: [
       {
-        resource: { attributes: toKeyValues(options.resource) },
+        // Profile v1 §4: the two profile-fixed resource constants are always present (after the caller's
+        // resource, so they can't be overridden away); service.* + telemetry.sdk.language come from `resource`.
+        resource: {
+          attributes: toKeyValues({
+            ...options.resource,
+            'telemetry.sdk.name': 'bugsee',
+            'bugsee.profile.version': '1',
+          }),
+        },
         scopeSpans: [{ scope, spans }],
       },
     ],

@@ -32,6 +32,7 @@ const wire = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   name: 'n',
   operation: 'o',
   status: 'OK',
+  sampled: true,
   startTimestampMs: 5,
   isSnapshot: false,
   spans: [],

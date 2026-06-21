@@ -99,6 +99,7 @@ const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   name: '/checkout',
   operation: 'ui.load',
   status: 'OK',
+  sampled: true,
   startTimestampMs: 1000,
   endTimestampMs: 1100,
   isSnapshot: false,
@@ -189,6 +190,7 @@ describe('transactionToOtlpSpans', () => {
       attributes: [
         { key: 'http.status_code', value: { intValue: '500' } },
         { key: 'bugsee.operation', value: { stringValue: 'http.client' } },
+        { key: 'bugsee.span.status', value: { stringValue: 'ERROR' } },
       ],
       status: { code: OtlpStatusCode.ERROR, message: 'ERROR' },
     });
@@ -209,14 +211,22 @@ describe('transactionToOtlpSpans', () => {
     expect(root?.attributes?.filter((a) => a.key === 'bugsee.operation')).toHaveLength(1);
   });
 
-  it('stamps bugsee.operation + app version/build on the root attributes (user attrs preserved)', () => {
+  it('stamps the profile root attrs (transaction.name/sampled/span.status/operation + app version/build), user attrs preserved', () => {
     const root = transactionToOtlpSpans(txn())[0];
     expect(root?.attributes).toEqual([
       { key: 'custom', value: { intValue: '1' } },
+      { key: 'bugsee.transaction.name', value: { stringValue: '/checkout' } },
+      { key: 'bugsee.sampled', value: { boolValue: true } },
+      { key: 'bugsee.span.status', value: { stringValue: 'OK' } },
       { key: 'bugsee.operation', value: { stringValue: 'ui.load' } },
       { key: 'bugsee.app.version', value: { stringValue: '1.2.3' } },
       { key: 'bugsee.app.build', value: { stringValue: '456' } },
     ]);
+  });
+
+  it('reflects sampled:false as bugsee.sampled=false', () => {
+    const root = transactionToOtlpSpans(txn({ sampled: false }))[0];
+    expect(root?.attributes).toContainEqual({ key: 'bugsee.sampled', value: { boolValue: false } });
   });
 
   it('adds bugsee.snapshot only when isSnapshot is true; omits app version/build when absent', () => {
@@ -224,6 +234,9 @@ describe('transactionToOtlpSpans', () => {
       txn({ isSnapshot: true, appVersion: undefined, appBuild: undefined, attributes: undefined }),
     )[0];
     expect(root?.attributes).toEqual([
+      { key: 'bugsee.transaction.name', value: { stringValue: '/checkout' } },
+      { key: 'bugsee.sampled', value: { boolValue: true } },
+      { key: 'bugsee.span.status', value: { stringValue: 'OK' } },
       { key: 'bugsee.operation', value: { stringValue: 'ui.load' } },
       { key: 'bugsee.snapshot', value: { boolValue: true } },
     ]);
@@ -234,11 +247,24 @@ describe('transactionToOtlpSpans', () => {
     expect(root?.endTimeUnixNano).toBe('1000000000'); // == start
   });
 
-  it('stamps bugsee.operation on child attributes too', () => {
+  it('stamps bugsee.operation + bugsee.span.status on child attributes too', () => {
     const c1 = transactionToOtlpSpans(txn())[1];
     expect(c1?.attributes).toEqual([
       { key: 'bugsee.operation', value: { stringValue: 'http.client' } },
+      { key: 'bugsee.span.status', value: { stringValue: 'OK' } },
     ]);
+  });
+
+  it('maps kind: http.server → SERVER, and an explicit bugsee.span.kind attribute overrides', () => {
+    expect(transactionToOtlpSpans(txn({ operation: 'http.server' }))[0]?.kind).toBe(
+      OtlpSpanKind.SERVER,
+    );
+    // An explicit bugsee.span.kind wins over the operation-derived kind.
+    expect(
+      transactionToOtlpSpans(
+        txn({ operation: 'http.client', attributes: { 'bugsee.span.kind': 'SERVER' } }),
+      )[0]?.kind,
+    ).toBe(OtlpSpanKind.SERVER);
   });
 
   it('falls back to the child start time for endTimeUnixNano when a child has no end', () => {
@@ -286,6 +312,9 @@ describe('toOtlpExportRequest', () => {
     expect(rs?.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'web' } },
       { key: 'host', value: { intValue: '2' } },
+      // Profile v1 §4 fixed constants, always present (after the caller's resource).
+      { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
+      { key: 'bugsee.profile.version', value: { stringValue: '1' } },
     ]);
     expect(rs?.scopeSpans[0]?.scope).toEqual({ name: 'custom-scope', version: '9.9' });
     expect(rs?.scopeSpans[0]?.spans).toHaveLength(3); // root + 2 children
@@ -299,7 +328,11 @@ describe('toOtlpExportRequest', () => {
   it('defaults the scope name/resource and omits the scope version when not given', () => {
     const req = toOtlpExportRequest([txn()]);
     const rs = req.resourceSpans[0];
-    expect(rs?.resource.attributes).toEqual([]);
+    // No caller resource → still the Profile v1 §4 fixed constants.
+    expect(rs?.resource.attributes).toEqual([
+      { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
+      { key: 'bugsee.profile.version', value: { stringValue: '1' } },
+    ]);
     expect(rs?.scopeSpans[0]?.scope).toEqual({ name: '@bugsee/opentelemetry' });
     // toEqual ignores a stray `version: undefined`; pin the exact key set so the omit branch is real.
     expect(Object.keys(rs?.scopeSpans[0]?.scope ?? {})).toEqual(['name']);

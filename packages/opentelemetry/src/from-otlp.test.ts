@@ -96,6 +96,7 @@ describe('consumedRootToTransaction', () => {
       name: 'GET /checkout',
       operation: 'GET /checkout',
       status: 'OK',
+      sampled: true,
       startTimestampMs: 990,
       endTimestampMs: 1100,
       durationNanos: 110_000_000,

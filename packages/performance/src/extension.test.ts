@@ -19,6 +19,7 @@ const externalWire = (over: Partial<TransactionWire> = {}): TransactionWire => (
   name: 'app.start',
   operation: 'startup',
   status: 'OK',
+  sampled: true,
   startTimestampMs: 7,
   isSnapshot: false,
   spans: [],
