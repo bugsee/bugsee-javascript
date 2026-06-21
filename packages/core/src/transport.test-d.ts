@@ -36,6 +36,7 @@ const okPut: PutResult = { ok: true };
 const failPut: PutResult = { ok: false, status: 503, retryable: true };
 
 const api: BugseeApi = {
+  sessionId: 'sess',
   ensureSession: async () => token,
   createIssue: async () => issueResult,
   renewUpload: async () => issueResult,

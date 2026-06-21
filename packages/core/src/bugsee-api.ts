@@ -1,6 +1,6 @@
 import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
-import { strFromU8 } from '@bugsee/util';
+import { randomId, strFromU8 } from '@bugsee/util';
 import { BugseeError } from './errors';
 import type { BugseeApi, HttpTransport, IssueCreateResult } from './transport';
 
@@ -18,6 +18,8 @@ export interface BugseeApiOptions {
   appToken: string;
   /** SDK version for the user-agent header. */
   sdkVersion: string;
+  /** The per-launch session-correlation id. Default a fresh `randomId()`; injectable for deterministic tests. */
+  sessionId?: string;
 }
 
 const decode = (body: Uint8Array): unknown => JSON.parse(strFromU8(body));
@@ -25,6 +27,7 @@ const isOk = (status: number): boolean => status >= 200 && status < 300;
 
 export function createBugseeApi(transport: HttpTransport, options: BugseeApiOptions): BugseeApi {
   const { baseUrl, appToken, sdkVersion } = options;
+  const sessionId = options.sessionId ?? randomId();
   let accessToken: AccessToken | null = null;
 
   // Standard SDK headers on every control-plane call (§8.2). X-Bugsee-Internal lets the network
@@ -54,6 +57,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
   };
 
   return {
+    sessionId,
     async ensureSession(environment: EnvironmentEnvelope): Promise<AccessToken> {
       if (accessToken !== null) {
         return accessToken;
@@ -61,7 +65,8 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
       const response = await transport(`${baseUrl}/v2/sessions`, {
         method: 'POST',
         headers: baseHeaders(),
-        body: JSON.stringify({ app_token: appToken, environment }),
+        // `session_id`: the client-minted correlation id the collector joins to traces (Profile v1 §17).
+        body: JSON.stringify({ app_token: appToken, environment, session_id: sessionId }),
       });
       if (!isOk(response.status)) {
         throw new BugseeError(`session create failed (status ${response.status})`, response.status);

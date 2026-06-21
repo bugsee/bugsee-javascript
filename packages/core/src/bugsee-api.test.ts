@@ -60,13 +60,33 @@ const api = (
   });
 
 describe('createBugseeApi — ensureSession', () => {
-  it('posts /v2/sessions with { app_token, environment } and returns the access token', async () => {
+  it('posts /v2/sessions with { app_token, environment, session_id } and returns the access token', async () => {
     const { transport, calls } = recorder(() => sessionOk('tok-1'));
-    const token = await api(transport).ensureSession(env);
+    const token = await api(transport, { sessionId: 'sess-abc' }).ensureSession(env);
     expect(token).toBe('tok-1');
     expect(calls[0]?.url).toBe('https://api.test/v2/sessions');
     expect(calls[0]?.options?.method).toBe('POST');
-    expect(bodyJson(calls[0]?.options)).toEqual({ app_token: 'app-1', environment: env });
+    expect(bodyJson(calls[0]?.options)).toEqual({
+      app_token: 'app-1',
+      environment: env,
+      session_id: 'sess-abc', // the client-minted correlation id, sent for collector-side trace join
+    });
+  });
+
+  it('exposes the injected session-correlation id and sends THAT exact id', async () => {
+    const { transport, calls } = recorder(() => sessionOk());
+    const a = api(transport, { sessionId: 'sess-xyz' });
+    expect(a.sessionId).toBe('sess-xyz'); // dual-purpose: also read by the decorator + the OTLP resource
+    await a.ensureSession(env);
+    expect((bodyJson(calls[0]?.options) as { session_id: string }).session_id).toBe('sess-xyz');
+  });
+
+  it('mints a fresh 32-hex session id by default (per launch), stable for the api lifetime', async () => {
+    const a = api(recorder(() => sessionOk()).transport);
+    const b = api(recorder(() => sessionOk()).transport);
+    expect(a.sessionId).toMatch(/^[0-9a-f]{32}$/); // randomId()
+    expect(a.sessionId).not.toBe(b.sessionId); // distinct per api/launch
+    expect(a.sessionId).toBe(a.sessionId); // stable
   });
 
   it('memoizes the session (a second call issues no new request)', async () => {

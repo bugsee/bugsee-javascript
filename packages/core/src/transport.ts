@@ -49,6 +49,12 @@ export type PutResult = { ok: true } | { ok: false; status: number; retryable: b
 
 /** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
 export interface BugseeApi {
+  /**
+   * The client-minted per-launch session-correlation id (Bugsee OTLP Profile v1 §12 `bugsee=s<id>` +
+   * §10 `bugsee.session.id`). Sent at POST /v2/sessions so the collector can join the session to traces;
+   * read by the trace-propagation decorator and the OTLP resource. Stable for the life of the api.
+   */
+  readonly sessionId: string;
   /** Memoized; refreshes on 401. Returns the Bearer access token. */
   ensureSession(environment: EnvironmentEnvelope): Promise<AccessToken>;
   /** POST /v2/issues with the request.json body; returns signed PUT url + ids. */

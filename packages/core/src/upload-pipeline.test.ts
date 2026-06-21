@@ -31,6 +31,7 @@ const issue: IssueCreateResult = {
 
 function fakeApi(over: Partial<BugseeApi> = {}): BugseeApi {
   return {
+    sessionId: 'sess',
     ensureSession: vi.fn(async () => 'tok' as AccessToken),
     createIssue: vi.fn(async () => issue),
     renewUpload: vi.fn(async () => ({ ...issue, endpoint: 'https://put/2' })),
