@@ -10,9 +10,10 @@ export interface TracestateEntry {
   value: string;
 }
 
-// W3C SHOULD: at most 32 entries. (We don't enforce the 512-byte soft cap — the entry cap bounds it and our
-// own `bugsee=` value is tiny; a byte cap is a later refinement.)
+// W3C / Bugsee OTLP Profile v1 §12 (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
+// on overflow. Both caps are pinned so every Bugsee SDK truncates to identical bytes.
 const MAX_ENTRIES = 32;
+const MAX_BYTES = 512;
 // A permissive lowercase key (covers simple vendor keys + the `tenant@vendor` form's chars); strict enough to
 // drop garbage members, lenient enough to preserve real third-party entries.
 const KEY_RE = /^[a-z0-9][a-z0-9_\-*/@]*$/;
@@ -59,7 +60,12 @@ export function setTracestateEntry(
   value: string,
 ): TracestateEntry[] {
   const rest = entries.filter((entry) => entry.key !== key);
-  return [{ key, value }, ...rest].slice(0, MAX_ENTRIES);
+  let next = [{ key, value }, ...rest].slice(0, MAX_ENTRIES);
+  // 512-byte soft cap: drop the oldest (from the end) until it fits — but never our own (front) entry.
+  while (next.length > 1 && serializeTracestate(next).length > MAX_BYTES) {
+    next = next.slice(0, -1);
+  }
+  return next;
 }
 
 /** The Bugsee `tracestate` payload (cross-project-tracing.md): a record flag + a session-correlation id. */

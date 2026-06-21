@@ -111,6 +111,16 @@ describe('setTracestateEntry', () => {
     expect(out[0]).toEqual({ key: 'bugsee', value: 'r1' }); // kept, at the front
     expect(out.some((e) => e.key === 'k31')).toBe(false); // the oldest was dropped
   });
+
+  it('caps the SERIALIZED header at 512 bytes (Profile v1 §12), dropping oldest but keeping ours', () => {
+    // 14 entries × ~46 bytes ≈ 640 bytes > 512 (well under the 32-entry cap, so this exercises the byte cap).
+    const big = Array.from({ length: 14 }, (_, i) => ({ key: `key${i}`, value: 'v'.repeat(40) }));
+    const out = setTracestateEntry(big, 'bugsee', 'r1');
+    expect(serializeTracestate(out).length).toBeLessThanOrEqual(512);
+    expect(out[0]).toEqual({ key: 'bugsee', value: 'r1' }); // ours kept at the front
+    expect(out.length).toBeLessThan(15); // oldest dropped to fit the byte cap
+    expect(out.length).toBeGreaterThan(1); // but not over-pruned
+  });
 });
 
 describe('encodeBugseeState / decodeBugseeState', () => {
