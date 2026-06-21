@@ -166,3 +166,30 @@ move earlier if the distributed-trace story is the priority.
 - **Cross-origin trace leakage** — same-origin/allowlist default is a hard security requirement, not a knob.
 - **Mapping fidelity** — our model lacks OTel events/links/resource/scope; preserving the OTLP blob on
   Consume avoids lossy round-trips.
+
+---
+
+## Cross-SDK coordination addendum (2026-06-21, from the Android OTel workstream)
+
+The Android SDK is adding OTLP interop and the team decided to make **OTLP the native format of the internal
+Bugsee APM upload** (not just third-party export), across **all** SDKs. A shared, SDK-agnostic contract was
+drafted — **`Bugsee OTLP Profile v1`**, now hoisted to the shared workspace folder
+**`~/Projects/Bugsee/dev-docs/bugsee-otlp-profile-v1.md`** (reachable by all repos; indexed in the
+`bugsee-projects` skill). It lifts this repo's `bugsee=` tracestate codec and the cross-project-tracing
+protocol into an SDK-agnostic spec so Android/iOS implement the identical bytes. Two deltas for **this** SDK:
+
+1. **"Produce" must also feed Bugsee's own ingest, not only the customer's collector.** §103 here scopes the
+   OTLP-JSON exporter to "the user's collector / OTLP endpoint." Under the unified decision the *same*
+   OTLP-JSON encoder should *also* upload to Bugsee's ingest (one encoder, two destinations), replacing the
+   proprietary report/upload path for APM data. The Bugsee ingest accepts all three OTLP variants, so JS
+   staying **OTLP/HTTP-JSON is fully first-class** (no need to add protobuf — D3/non-goals hold).
+2. **The internal-upload path must keep delivery guarantees.** The Produce path here deliberately drops
+   gzip/retry/backoff ("acceptable v1") — fine for fire-and-forget third-party export, **not** for first-party
+   telemetry. When Produce targets Bugsee's ingest it must wrap the OTLP-JSON payload in a reliable transport
+   (disk-backed queue + retry), the way Android's `PerformanceUploadJob` already does.
+
+Confirmed alignments (no change needed): pluggable extension + OTel as peers; two-way Consume/Produce/Propagate;
+W3C trace-context; W3C-shaped ids (Android is changing its span-id width to match JS's existing 8-byte ids);
+same-origin/allowlist + `propagateTrace` security; `bugsee=` (`r`,`s`) tracestate. Backend items (ingest
+accepts all three encodings; join reports by `traceId`; consume the `/v2/sessions` session-correlation id) are
+shared cross-SDK dependencies on appserver/worker/collector — see profile §17.

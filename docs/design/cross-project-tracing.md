@@ -1,7 +1,18 @@
 # Cross-project distributed tracing (frontend ↔ backend ↔ frontend)
 
-**Status:** Design (2026-06-20). Backend gap-closure first; frontend hooks defined here, built with the
-frontend-adapters milestone. Builds on the propagation foundation in `opentelemetry-integration.md`.
+**Status:** Design (2026-06-20; aligned to the cross-SDK profile 2026-06-21). Backend gap-closure first;
+frontend hooks defined here, built with the frontend-adapters milestone. Builds on the propagation foundation
+in `opentelemetry-integration.md`.
+
+> **Canonical cross-SDK contract.** The wire protocol below (W3C `traceparent` + the `bugsee=` `tracestate`
+> entry, ids, propagation/continuation, option names) is now pinned by the SDK-agnostic **Bugsee OTLP Profile
+> v1** — `~/Projects/Bugsee/dev-docs/bugsee-otlp-profile-v1.md` (§3, §12; indexed in the `bugsee-projects`
+> skill). That profile **lifts this SDK's X1 `bugsee=` codec as the reference Android/iOS implement verbatim**,
+> so any change to the bytes here is a cross-SDK change — make it there first. X1 conforms (incl. the §12
+> 32-entry / **512-byte** caps, commit `21ef92a`). **Related cross-SDK item (in `opentelemetry-integration.md`
+> + profile §17), tracked separately from X0–X5:** the OTLP "Produce" encoder must *also* feed Bugsee's own
+> ingest (one encoder, two destinations) with reliable delivery (disk queue + retry), replacing the
+> proprietary APM upload path — OTLP becomes the native internal APM format, not just third-party export.
 
 ## Purpose
 
