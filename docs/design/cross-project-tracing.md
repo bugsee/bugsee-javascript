@@ -116,6 +116,24 @@ backend's reports carry the cross-project linkage). Missing/invalid header → f
 4. Report envelope (`request.json`) surfaces the active `traceId` (Open Q2) for collector-side cross-project
    stitching of reports.
 
+## Profile-conformance plan (comply-from-the-start, 2026-06-21)
+
+Per the "comply with the cross-SDK spec from the start" directive, the work conforms to **Bugsee OTLP
+Profile v1** as we build, rather than refactoring later. Scope decision: **conform everything the SDK
+controls now; STAGE the §17 upload cutover** (it needs the Bugsee OTLP ingest endpoint, a backend dependency).
+- **Y1 — OTLP data-model conformance** (`@bugsee/opentelemetry` `to-otlp.ts`): `to-otlp` is only ~60%
+  conformant. Add the root's `bugsee.transaction.name` + `bugsee.sampled` (§6/§10), lossless `bugsee.span.status`
+  (§6), kind **SERVER** for `http.server` + a `bugsee.span.kind` override (§6), the profile-mandated resource
+  constants `telemetry.sdk.name="bugsee"` + `bugsee.profile.version="1"` (§4); the scope name
+  `com.bugsee.<sdk>/<provider>` (§5) is set by the wiring. Pure encoding, no backend dep.
+- **X0 is DUAL-PURPOSE:** the minted session id feeds BOTH the `bugsee=s<id>` tracestate (X1) AND the OTLP
+  `bugsee.session.id` resource attribute (§10/§12) — one source, two consumers, conformant from the start.
+- **§17 internal OTLP upload (DEFERRED, backend-gated):** make the OTLP encoder feed Bugsee's own ingest
+  (one encoder, two destinations) with disk-queue+retry reliability, replacing the proprietary
+  `/v2/performance/transactions` path. Build when the ingest endpoint is confirmed; until then `/v2/performance`
+  stays the live internal APM upload. (The data model we emit is already profile-shaped via Y1, so the cutover
+  is a transport swap, not a re-encode.)
+
 ## Backend gap-closure slices (each: test-first → mutator → review → commit)
 - **X0** Client **session-correlation id** (T7): mint a per-launch id (`@bugsee/util` `randomId`) in
   core/launch, send it at `/v2/sessions`, expose it to the context/decorator. (Collector consumption =
