@@ -118,6 +118,8 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   const root: OtlpSpan = {
     traceId: txn.traceId,
     spanId: rootSpanId,
+    // A continued transaction's root is a CHILD of the upstream span (Profile v1 §12); a standalone root has none.
+    ...(txn.parentSpanId !== undefined ? { parentSpanId: txn.parentSpanId } : {}),
     name: txn.name,
     kind: spanKindFor(txn.operation, rootAttributes),
     startTimeUnixNano: toUnixNanoString(txn.startTimestampMs),

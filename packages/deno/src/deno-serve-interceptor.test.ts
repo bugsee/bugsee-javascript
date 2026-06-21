@@ -7,6 +7,7 @@ import { createDenoServeInterceptor } from './deno-serve-interceptor';
 const fakeTxn = () => ({
   getTraceId: () => 'trace-1',
   getSpanId: () => 'span-1',
+  isSampled: () => true,
   isFinished: vi.fn(() => false),
   setName: vi.fn(),
   setAttribute: vi.fn(),

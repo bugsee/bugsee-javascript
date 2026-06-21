@@ -295,7 +295,12 @@ describe('assembleBundle — request context merge (framework adapters)', () => 
     const bundle = assembleBundle(
       errReq(),
       new Map(),
-      context({ requestContext: { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } } }),
+      context({
+        requestContext: {
+          contextId: 'ctx-1',
+          trace: { traceId: 't1', spanId: 's1', sampled: true },
+        },
+      }),
     );
     expect(bundle.request.context_id).toBe('ctx-1');
     expect('trace_id' in bundle.request).toBe(false);

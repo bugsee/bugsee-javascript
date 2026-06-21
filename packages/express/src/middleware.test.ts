@@ -16,6 +16,7 @@ const fakeTransaction = (traceId = 'tid-1', spanId = 'sid-1') => {
   const txn = {
     getTraceId: () => traceId,
     getSpanId: () => spanId,
+    isSampled: () => true,
     isFinished: () => finished,
     setName: vi.fn(() => txn),
     setAttribute: vi.fn(() => txn),
@@ -140,7 +141,7 @@ describe('requestHandler', () => {
     expect(startTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'GET /users/1', operation: 'http.server' }),
     );
-    expect(trace).toEqual({ traceId: TRACE, spanId: SPAN });
+    expect(trace).toEqual({ traceId: TRACE, spanId: SPAN, sampled: true });
     expect(txn).toBeDefined();
   });
 
@@ -153,7 +154,9 @@ describe('requestHandler', () => {
       vi.fn(),
     );
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: TRACE } }),
+      expect.objectContaining({
+        continuation: { traceId: TRACE, parentSpanId: SPAN, sampled: true },
+      }),
     );
   });
 
@@ -373,7 +376,9 @@ describe('defaults + edge branches (coverage)', () => {
       vi.fn(),
     );
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: TRACE } }),
+      expect.objectContaining({
+        continuation: { traceId: TRACE, parentSpanId: SPAN, sampled: true },
+      }),
     );
   });
 

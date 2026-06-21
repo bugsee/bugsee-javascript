@@ -133,7 +133,10 @@ describe('createCaptureAggregator context stamping', () => {
 
   it('also stamps trace_id/span_id when the active context carries a trace', () => {
     const { store } = fakeStore();
-    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const ctx: RequestContext = {
+      contextId: 'ctx-1',
+      trace: { traceId: 't1', spanId: 's1', sampled: true },
+    };
     const e = log(2, { url: 'u' });
     createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);
     expect(e.data).toEqual({ url: 'u', context_id: 'ctx-1', trace_id: 't1', span_id: 's1' });
@@ -141,7 +144,10 @@ describe('createCaptureAggregator context stamping', () => {
 
   it('stamps onto a COPY — never mutates the caller’s data object (no leak to a shared source event)', () => {
     const { store } = fakeStore();
-    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const ctx: RequestContext = {
+      contextId: 'ctx-1',
+      trace: { traceId: 't1', spanId: 's1', sampled: true },
+    };
     const original = { message: 'hi' };
     const e = log(1, original);
     createCaptureAggregator(store, { getContext: () => ctx }).addEntry(e);

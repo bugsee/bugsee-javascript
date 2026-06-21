@@ -327,11 +327,22 @@ function makeSpan(
       transaction = perf.startTransaction({
         name: spanName(info, route),
         operation: 'http.server',
-        ...(inbound !== undefined ? { continuation: { traceId: inbound.traceId } } : {}),
+        // Continue the inbound trace as a true CHILD: adopt the trace id, make the http.server span a
+        // child of the upstream span, and adopt the upstream sampling decision (Profile v1 §12).
+        ...(inbound !== undefined
+          ? {
+              continuation: {
+                traceId: inbound.traceId,
+                parentSpanId: inbound.spanId,
+                sampled: inbound.sampled,
+              },
+            }
+          : {}),
       });
       store?.setTrace({
         traceId: transaction.getTraceId(),
         spanId: transaction.getSpanId(),
+        sampled: transaction.isSampled(),
       });
     }
   } catch {

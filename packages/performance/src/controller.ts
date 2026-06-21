@@ -21,11 +21,12 @@ export interface StartTransactionOptions {
   operation: string;
   description?: string;
   /**
-   * Continue an inbound distributed trace (framework adapters; design: framework-adapters.md). The
-   * transaction adopts this W3C trace id, so an upstream (e.g. frontend) trace and this backend
-   * transaction share a trace and link in the trace view. Omitted → a fresh random trace id.
+   * Continue an inbound distributed trace (Bugsee OTLP Profile v1 §12; design: cross-project-tracing.md).
+   * The transaction adopts this W3C `traceId`, makes its root a CHILD of the upstream `parentSpanId`, and
+   * adopts the upstream `sampled` decision — so the frontend and this backend transaction are one trace
+   * with a real parent/child link. Omitted → a fresh random trace id, no parent, local sampling.
    */
-  continuation?: { traceId: string };
+  continuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
 }
 
 /** The public ext('performance') surface. */
@@ -64,7 +65,12 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
           name: options.name,
           operation: options.operation,
           ...(options.description !== undefined ? { description: options.description } : {}),
-          sampled: sampler(),
+          // Continuation: the root becomes a child of the upstream span, and we ADOPT the upstream
+          // sampling decision (respect what the originator decided); otherwise our local sampler decides.
+          ...(continuation?.parentSpanId !== undefined
+            ? { parentSpanId: continuation.parentSpanId }
+            : {}),
+          sampled: continuation?.sampled ?? sampler(),
           ...(deps.appVersion !== undefined ? { appVersion: deps.appVersion } : {}),
           ...(deps.appBuild !== undefined ? { appBuild: deps.appBuild } : {}),
         },

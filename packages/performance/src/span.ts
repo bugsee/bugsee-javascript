@@ -66,6 +66,8 @@ export interface TransactionWire {
   traceId: string;
   name: string;
   operation: string;
+  /** The upstream parent span id when this transaction CONTINUES an inbound trace (else absent — a root). */
+  parentSpanId?: string;
   status: SpanStatus;
   /** The head-sampling decision (Bugsee OTLP Profile v1 §6/§8: surfaced on the OTLP root as `bugsee.sampled`). */
   sampled: boolean;
@@ -83,6 +85,12 @@ export interface TransactionOptions {
   name: string;
   operation: string;
   description?: string;
+  /**
+   * The parent span id for the root span — set ONLY when continuing an inbound distributed trace (the
+   * upstream caller's span). Makes this transaction's root a true child of the upstream span (Bugsee OTLP
+   * Profile v1 §12). Omitted → a fresh root with no parent (the default standalone transaction).
+   */
+  parentSpanId?: string;
   /** Whether the trace is sampled (kept). Default true. */
   sampled?: boolean;
   /** Marks a snapshot transaction (e.g. captured into an incident bundle). Default false. */
@@ -287,7 +295,7 @@ class TransactionImpl extends SpanImpl implements Transaction {
     options: TransactionOptions,
     onFinish: ((transaction: Transaction) => void) | undefined,
   ) {
-    super(env, traceId, undefined, options.operation, options.description);
+    super(env, traceId, options.parentSpanId, options.operation, options.description);
     this.name = options.name;
     this.#sampled = options.sampled ?? true;
     this.#isSnapshot = options.isSnapshot ?? false;
@@ -324,6 +332,7 @@ class TransactionImpl extends SpanImpl implements Transaction {
       isSnapshot: this.#isSnapshot,
       spans: this.env.spans.filter((span) => span !== this).map((span) => span.toSpanWire()),
     };
+    if (root.parentSpanId !== undefined) wire.parentSpanId = root.parentSpanId; // continuation: the upstream parent
     if (root.endTimestampMs !== undefined) wire.endTimestampMs = root.endTimestampMs;
     if (root.durationNanos !== undefined) wire.durationNanos = root.durationNanos;
     if (this.#appVersion !== undefined) wire.appVersion = this.#appVersion;

@@ -1,7 +1,7 @@
 import type { Clock } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createPerformanceController } from './controller';
-import type { TransactionWire } from './span';
+import { serializeTransaction, type TransactionWire } from './span';
 import { createTransactionStore } from './transaction-store';
 
 const fixedClock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
@@ -36,6 +36,27 @@ describe('createPerformanceController', () => {
       continuation: { traceId: inbound },
     });
     expect(txn.getTraceId()).toBe(inbound);
+  });
+
+  it('continuation makes the root a CHILD of the inbound span and ADOPTS the upstream sampling (§12)', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({
+      clock: fixedClock,
+      store,
+      sampler: () => true, // local sampler says sample…
+    });
+    const txn = api.startTransaction({
+      name: 'GET /x',
+      operation: 'http.server',
+      continuation: {
+        traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        parentSpanId: 'bbbbbbbbbbbbbbbb',
+        sampled: false,
+      },
+    });
+    expect(txn.getTraceId()).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(serializeTransaction(txn).parentSpanId).toBe('bbbbbbbbbbbbbbbb'); // root is a child
+    expect(txn.isSampled()).toBe(false); // …but the upstream UNSAMPLED decision wins
   });
 
   it('starts a fresh random trace id when there is no continuation', () => {

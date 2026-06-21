@@ -32,11 +32,11 @@ describe('createNodeRequestContextStore', () => {
       store.setUser('alice@x.com');
       store.setAttribute('route', '/pay');
       store.setAttribute('retries', 2);
-      store.setTrace({ traceId: 't1', spanId: 's1' });
+      store.setTrace({ traceId: 't1', spanId: 's1', sampled: true });
     });
     expect(ctx.user).toBe('alice@x.com');
     expect(ctx.attributes).toEqual({ route: '/pay', retries: 2 });
-    expect(ctx.trace).toEqual({ traceId: 't1', spanId: 's1' });
+    expect(ctx.trace).toEqual({ traceId: 't1', spanId: 's1', sampled: true });
   });
 
   it('mutators are no-ops outside a context and never throw', () => {
@@ -44,7 +44,7 @@ describe('createNodeRequestContextStore', () => {
     expect(() => {
       store.setUser('x');
       store.setAttribute('k', 'v');
-      store.setTrace({ traceId: 't', spanId: 's' });
+      store.setTrace({ traceId: 't', spanId: 's', sampled: true });
     }).not.toThrow();
     expect(store.getCurrent()).toBeUndefined();
   });

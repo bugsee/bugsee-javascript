@@ -17,6 +17,7 @@ const fakeTransaction = (traceId = 'tid-1', spanId = 'sid-1') => {
   const txn = {
     getTraceId: () => traceId,
     getSpanId: () => spanId,
+    isSampled: () => true,
     isFinished: () => finished,
     setName: vi.fn(() => txn),
     setAttribute: vi.fn(() => txn),
@@ -158,7 +159,7 @@ describe('onRequest hook', () => {
     expect(startTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'GET /users/:id', operation: 'http.server' }),
     );
-    expect(store?.getCurrent()?.trace).toEqual({ traceId: TRACE, spanId: SPAN });
+    expect(store?.getCurrent()?.trace).toEqual({ traceId: TRACE, spanId: SPAN, sampled: true });
   });
 
   it('continues an inbound W3C trace', () => {
@@ -171,7 +172,9 @@ describe('onRequest hook', () => {
       vi.fn(),
     );
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: TRACE } }),
+      expect.objectContaining({
+        continuation: { traceId: TRACE, parentSpanId: SPAN, sampled: true },
+      }),
     );
   });
 
@@ -316,7 +319,9 @@ describe('defaults + edge branches (coverage)', () => {
       vi.fn(),
     );
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: TRACE } }),
+      expect.objectContaining({
+        continuation: { traceId: TRACE, parentSpanId: SPAN, sampled: true },
+      }),
     );
   });
 

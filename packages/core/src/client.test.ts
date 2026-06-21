@@ -81,7 +81,10 @@ describe('createClient — wiring', () => {
 describe('createClient — request context', () => {
   it('stamps captured entries with the active context when a contextProvider is injected', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
-    const ctx: RequestContext = { contextId: 'ctx-1', trace: { traceId: 't1', spanId: 's1' } };
+    const ctx: RequestContext = {
+      contextId: 'ctx-1',
+      trace: { traceId: 't1', spanId: 's1', sampled: true },
+    };
     const client = createClient({
       captureStore: store,
       contextProvider: { getCurrent: () => ctx },

@@ -196,6 +196,13 @@ describe('transactionToOtlpSpans', () => {
     });
   });
 
+  it('a continued transaction maps the root span as a CHILD of the upstream parent (§12)', () => {
+    const root = transactionToOtlpSpans(txn({ parentSpanId: 'eeeeeeeeeeeeeeee' }))[0];
+    expect(root?.parentSpanId).toBe('eeeeeeeeeeeeeeee'); // the derived root links up to the inbound span
+    // a standalone (non-continued) transaction's root stays parentless:
+    expect(transactionToOtlpSpans(txn())[0]?.parentSpanId).toBeUndefined();
+  });
+
   it('maps the root span kind from its operation (http.client → CLIENT)', () => {
     expect(transactionToOtlpSpans(txn({ operation: 'http.client' }))[0]?.kind).toBe(
       OtlpSpanKind.CLIENT,

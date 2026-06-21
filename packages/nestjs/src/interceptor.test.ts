@@ -11,6 +11,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -143,7 +144,11 @@ describe('BugseeInterceptor', () => {
     expect(startTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'POST /orders/:id', operation: 'http.server' }),
     );
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
     expect(out.value).toBe('ok');
     expect(out.completed).toBe(true);
     expect(txn.finish).toHaveBeenCalledWith('OK');
@@ -167,7 +172,11 @@ describe('BugseeInterceptor', () => {
     );
     expect(startTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
   });

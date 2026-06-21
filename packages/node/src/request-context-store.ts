@@ -27,7 +27,7 @@ export interface RequestContextStore extends ContextProvider {
   /** Set a custom attribute on the active context (no-op when none is open). */
   setAttribute(key: string, value: AttributeValue): void;
   /** Set the active W3C trace on the active context (no-op when none is open). */
-  setTrace(trace: { traceId: string; spanId: string }): void;
+  setTrace(trace: { traceId: string; spanId: string; sampled: boolean }): void;
 }
 
 /** DI token for the full Node store (adapters resolve it for `run()` + the mutators). */

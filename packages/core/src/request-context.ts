@@ -18,8 +18,9 @@ export interface RequestContext {
   user?: string;
   /** Custom attributes merged into reports produced in this context (over the global attributes). */
   attributes?: Record<string, AttributeValue>;
-  /** The active W3C trace when a transaction is in flight; stamped onto capture entries for correlation. */
-  trace?: { readonly traceId: string; readonly spanId: string };
+  /** The active W3C trace when a transaction is in flight; stamped onto capture entries for correlation.
+   * `sampled` is the trace's sampling decision (Profile v1 §8) — used for the outbound `traceparent` flags. */
+  trace?: { readonly traceId: string; readonly spanId: string; readonly sampled: boolean };
 }
 
 /** Reads the active RequestContext for the current execution, or `undefined` when none is open. */

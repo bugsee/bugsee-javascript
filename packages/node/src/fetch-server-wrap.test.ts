@@ -8,6 +8,7 @@ const fakeTxn = (): Transaction =>
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -131,7 +132,13 @@ describe('wrapFetchHandler', () => {
       }),
     );
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' } }),
+      expect.objectContaining({
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
+      }),
     );
   });
 

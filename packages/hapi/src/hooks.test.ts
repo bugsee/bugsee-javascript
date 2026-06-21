@@ -19,6 +19,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -143,10 +144,18 @@ describe('setupHapi extensions', () => {
       expect.objectContaining({
         name: 'POST /{p*}', // start time: only the catch-all is known
         operation: 'http.server',
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
 
     r.route = { path: '/o/{id}' }; // routing has now resolved the real pattern
     expect(cap.onPreResponse?.(r, h)).toBe(CONTINUE);

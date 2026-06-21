@@ -8,6 +8,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -132,10 +133,18 @@ describe('bugseeHono', () => {
       expect.objectContaining({
         name: 'POST /o/:id',
         operation: 'http.server',
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
     expect(txn.finish).toHaveBeenCalledWith('OK');
     expect(txn.setName).toHaveBeenCalledWith('POST /o/:id');
     expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'POST');

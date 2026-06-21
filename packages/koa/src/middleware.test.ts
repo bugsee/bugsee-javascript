@@ -13,6 +13,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -114,10 +115,18 @@ describe('bugseeKoa', () => {
       expect.objectContaining({
         name: 'POST /o/:id',
         operation: 'http.server',
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
     const [openedCtx] = store.run.mock.calls[0] as [{ attributes: object }];
     expect(openedCtx.attributes).toEqual({ 'http.method': 'POST', 'http.url': '/o/7' });
     expect(txn.setName).toHaveBeenCalledWith('POST /o/:id');
@@ -234,7 +243,13 @@ describe('bugseeKoa', () => {
     });
     await bugseeKoa({ getClient: () => client })(c, okNext(c, 200));
     expect(startTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' } }),
+      expect.objectContaining({
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
+      }),
     );
   });
 

@@ -20,6 +20,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -149,10 +150,40 @@ describe('openServerRequest', () => {
       expect.objectContaining({
         name: 'POST /o/:id',
         operation: 'http.server',
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        // Continues as a CHILD of the inbound span, adopting the upstream sampling decision.
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
+  });
+
+  it('continues an UNSAMPLED inbound trace: continuation.sampled is the parsed flag (not hardcoded true)', () => {
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    openServerRequest(
+      info({
+        method: 'GET',
+        url: '/u',
+        traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00', // flags 00 → NOT sampled
+      }),
+      { getClient: () => client },
+    );
+    const startTx = (client.ext as () => { startTransaction: ReturnType<typeof vi.fn> })()
+      .startTransaction;
+    expect(startTx).toHaveBeenCalledWith(
+      expect.objectContaining({
+        continuation: expect.objectContaining({ sampled: false, parentSpanId: 'b7ad6b7169203331' }),
+      }),
+    );
   });
 
   it('finish(status) finishes OK (<500) / ERROR (>=500) with method + status_code + route name', () => {
@@ -377,7 +408,11 @@ describe('decoupled primitives (openServerContext / startServerSpan)', () => {
       getClient: () => client,
     });
     expect(store.enterWith).not.toHaveBeenCalled(); // context NOT opened here
-    expect(store.setTrace).toHaveBeenCalledWith({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(store.setTrace).toHaveBeenCalledWith({
+      traceId: 'trace-1',
+      spanId: 'span-1',
+      sampled: true,
+    });
     span.finish(200);
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });

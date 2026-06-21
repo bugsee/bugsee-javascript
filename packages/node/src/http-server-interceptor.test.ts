@@ -8,6 +8,7 @@ const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transa
   ({
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
@@ -110,7 +111,11 @@ describe('createHttpServerInterceptor', () => {
       expect.objectContaining({
         name: 'POST /o/7', // query stripped for the name
         operation: 'http.server',
-        continuation: { traceId: '0af7651916cd43dd8448eb211c80319c' },
+        continuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
       }),
     );
     res.writableFinished = true;

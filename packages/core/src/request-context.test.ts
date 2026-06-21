@@ -18,12 +18,12 @@ describe('request-context contracts', () => {
       contextId: 'ctx-1',
       user: 'alice@example.com',
       attributes,
-      trace: { traceId: 't1', spanId: 's1' },
+      trace: { traceId: 't1', spanId: 's1', sampled: true },
     };
     expect(ctx.contextId).toBe('ctx-1');
     expect(ctx.user).toBe('alice@example.com');
     expect(ctx.attributes).toBe(attributes);
-    expect(ctx.trace).toEqual({ traceId: 't1', spanId: 's1' });
+    expect(ctx.trace).toEqual({ traceId: 't1', spanId: 's1', sampled: true });
   });
 
   it('a ContextProvider returns the active RequestContext, or undefined when none is open', () => {
