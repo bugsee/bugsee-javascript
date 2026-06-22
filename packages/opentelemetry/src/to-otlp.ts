@@ -104,7 +104,8 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   const rootSpanId = deriveRootSpanId(txn.traceId);
   const childIds = new Set(txn.spans.map((s) => s.spanId));
   // Profile v1 §8: the OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
-  // Every span of a transaction shares that one decision (§8.8 has a single root-level sampled flag).
+  // Every span shares that one decision (the Bugsee §8.8 transaction wire carries a single root-level
+  // `sampled`, not a per-span one).
   const flags = txn.sampled ? OTLP_SPAN_FLAG_SAMPLED : 0;
 
   const rootAttributes: Record<string, unknown> = {
