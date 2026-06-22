@@ -91,14 +91,18 @@ Parse `traceparent` → `{traceId, spanId, sampled}` and `tracestate` → the `b
 the `RequestContext.trace` with `{traceId, spanId(=new), sampled}` + the inbound `bugsee` fields (so the
 backend's reports carry the cross-project linkage). Missing/invalid header → fresh root trace (defensive).
 
-### Return path BE→FE (each independently configurable)
+### Return path BE→FE (each independently configurable) — **BUILT (X4, see below)**
 1. **Implicit** (always): the shared `traceId` already links the BE span as a child of the FE span — no header.
-2. **`Server-Timing`** (`traceResponse.serverTiming`, default ?): append a `Server-Timing` entry the browser
-   exposes via PerformanceObserver — carries the BE span id (+ optionally a coarse `dur`) so the FE waterfall
-   shows backend attribution. Set on the response before headers flush; skipped if headers already sent.
-3. **`traceresponse`** (`traceResponse.traceresponse`, default ?): the W3C trace-context-L2 *draft* header
-   `00-<traceId>-<beSpanId>-<flags>` so the FE adopts the BE's exact span id as its network-span child. Set at
-   request-open (span id known immediately), so it survives streaming responses.
+2. **`Server-Timing`** (`traceResponse.serverTiming`, default **OFF** per T9): a `Server-Timing` entry the
+   browser exposes via PerformanceObserver — emitted as `traceparent;desc="00-<traceId>-<beSpanId>-<flags>"`
+   carrying the BE span id (the `dur` is deferred to the FE-consumption milestone). On the node:http path it
+   is set at request-open (skipped if headers already sent); on the native fetch path it is **appended** to
+   the returned Response so an app's own `Server-Timing` survives (binding: interceptors must not alter app
+   behavior).
+3. **`traceresponse`** (`traceResponse.traceresponse`, default **OFF** per T9): the W3C trace-context-L2
+   *draft* header `00-<traceId>-<beSpanId>-<flags>` so the FE adopts the BE's exact span id as its
+   network-span child. Set at request-open (span id known immediately), so it survives streaming responses;
+   a singleton header → `set` (never appended).
 
 ### Config surface (launch options)
 - `propagateTrace?: boolean` (default `true`) — the global kill-switch (T2).
@@ -135,6 +139,16 @@ controls now; STAGE the §17 upload cutover** (it needs the Bugsee OTLP ingest e
   is a transport swap, not a re-encode.)
 
 ## Backend gap-closure slices (each: test-first → mutator → review → commit)
+
+> **STATUS — ALL BACKEND SLICES COMPLETE + reviewed-to-convergence, on `master` (2026-06-22).** X0–X5 +
+> Y1 (OTLP profile conformance) are built. The backend half of the cross-project tracing protocol is
+> closed: a backend continues an inbound W3C trace as a child (X2), stamps the report envelope with the
+> join key (T8/X5), propagates outbound (X3), and emits the BE→FE return headers (X4) — all conformant to
+> Bugsee OTLP Profile v1 §12. Proven end-to-end on node/bun/deno (the X5 two-hop e2e). **Next milestone:
+> the frontend adapters** (which plug into this finished protocol). Deferred follow-ups: retire the
+> umbrella's OTel-gated propagation path (X3b), originating-session re-propagation (the BE currently
+> re-propagates its own session id, not the inbound FE's), and the §17 internal-OTLP upload cutover.
+
 - **X0** Client **session-correlation id** (T7): mint a per-launch id (`@bugsee/util` `randomId`) in
   core/launch, send it at `/v2/sessions`, expose it to the context/decorator. (Collector consumption =
   external coordination — flagged, not blocking the SDK side.)

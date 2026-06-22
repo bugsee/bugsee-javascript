@@ -531,6 +531,35 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   app's per-request transaction (the span API). The umbrella compiles both entries (DOM lib + node types).
   **The whole two-way OpenTelemetry feature is complete and live on both runtimes.**
 
+### Cross-project distributed tracing — BACKEND COMPLETE (2026-06-22, on `master`) → `docs/design/cross-project-tracing.md`
+A FE→BE→FE single distributed transaction, OTel-interoperable (wire = W3C trace-context), conforming to the
+cross-SDK **Bugsee OTLP Profile v1** (`~/Projects/Bugsee/dev-docs/bugsee-otlp-profile-v1.md`) from the start.
+Built as the *native* (non-OTel-gated) propagation substrate so the upcoming **frontend adapters plug into a
+finished protocol**. All slices test-first → per-entity mutator → multi-agent review to convergence:
+- **X0** per-launch **session-correlation id** (`@bugsee/util` `randomId`), sent at `/v2/sessions`, exposed
+  to the context/decorator; dual-purpose (the `bugsee=s<id>` tracestate + the OTLP `bugsee.session.id`).
+- **X1** W3C `tracestate` codec in `@bugsee/capture` (`parse/serialize` + the `bugsee=` `r<flag>:s<id>`
+  field; 32-entry/512-byte caps); `createTraceparentDecorator` now emits `tracestate` too.
+- **X2** trace **continuation as a CHILD**: `continuation` gained `parentSpanId`+`sampled`;
+  `RequestContext.trace` gained `sampled`; server-instrument makes the `http.server` span a child of the
+  inbound span, adopting the upstream sampling decision.
+- **X3** native outbound propagation in the node launch (`propagateTrace` default true,
+  `tracePropagationTargets` allowlist — a backend has no same-origin, so nothing leaks without targets),
+  sourced from the per-request context. De-gated from OTel (OTel keeps working, adds OTLP only).
+- **X4** **BE→FE return path** (`traceResponse: { traceresponse?, serverTiming? }`, both default OFF/T9):
+  `traceresponse` (W3C L2 draft) set at request-open; `Server-Timing` (`traceparent;desc=…`) appended on
+  the native-fetch path (coexists with an app's own) / set-at-open on node:http. Wired on node/bun/deno.
+- **X5 / T8** report envelope (`request.json`) carries `trace_id`/`span_id` (the cross-project join key);
+  proven by a real **two-hop e2e** (external inbound W3C traceparent → continued → report trace_id →
+  outbound injected traceparent: one shared traceId, BE-own child span, `bugsee=` riding along) green on
+  node/bun/deno — which also covers OTel-interop (the inbound header is arbitrary W3C).
+- **Y1** `to-otlp` conforms to Profile v1 §4/§5/§6/§8/§10 (resource constants, `bugsee.*` namespace,
+  http.server→SERVER kind, lossless status, root `parentSpanId`).
+- **Deferred follow-ups:** retire the umbrella's OTel-gated propagation path (X3b — map `tracePropagation*`
+  → native `propagateTrace`/`tracePropagationTargets`); **originating-session re-propagation** (the BE
+  re-propagates its OWN session id, not the inbound FE's — needs parsing inbound tracestate at
+  server-instrument); the §17 internal-OTLP **upload cutover** (backend-gated). **Next: frontend adapters.**
+
 ### Bun runtime (`@bugsee/bun`) — COMPLETE (2026-06-14, on `master`)
 The first non-node/browser runtime tier. Bun is node-API-compatible (node:http/fs/os/process/perf_hooks),
 so `@bugsee/bun` reuses the ENTIRE `@bugsee/node` composition (transport, fs storage, node:http capture,
