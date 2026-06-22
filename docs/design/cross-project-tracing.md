@@ -105,8 +105,13 @@ backend's reports carry the cross-project linkage). Missing/invalid header → f
    a singleton header → `set` (never appended).
 
 ### Config surface (launch options)
-- `propagateTrace?: boolean` (default `true`) — the global kill-switch (T2).
-- `tracePropagationTargets?: Array<string | RegExp>` — cross-origin allowlist (same-origin always on).
+- `propagateTrace?: boolean` — the kill-switch (T2). **Per-platform default:** `true` on the `@bugsee/node`
+  launch (allowlist-gated, so inert without `tracePropagationTargets` — a backend has no same-origin to leak
+  to); `false` (opt-in) on the browser umbrella (the browser has a meaningful same-origin, so it is opt-in to
+  avoid surprising same-origin injection). **Browser propagation is wired by the `bugsee` umbrella, not the
+  bare `@bugsee/browser` package** (it needs the performance extension's active span; X3b).
+- `tracePropagationTargets?: Array<string | RegExp>` — cross-origin allowlist (same-origin always on; on Node,
+  the ONLY way anything propagates — no same-origin there).
 - `traceResponse?: { serverTiming?: boolean; traceresponse?: boolean }` — the BE→FE return headers (T3).
 - (Frontend, next milestone) the FE reads `Server-Timing`/`traceresponse` off responses to refine its network span.
 
