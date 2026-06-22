@@ -291,7 +291,7 @@ describe('assembleBundle — request context merge (framework adapters)', () => 
     expect(bundle.request.email).toBe('global@x.com');
   });
 
-  it('carries only context_id on the report — never the trace ids (those live on the entries)', () => {
+  it('carries the active trace_id + span_id on the report (the cross-project join key, T8)', () => {
     const bundle = assembleBundle(
       errReq(),
       new Map(),
@@ -301,6 +301,17 @@ describe('assembleBundle — request context merge (framework adapters)', () => 
           trace: { traceId: 't1', spanId: 's1', sampled: true },
         },
       }),
+    );
+    expect(bundle.request.context_id).toBe('ctx-1');
+    expect(bundle.request.trace_id).toBe('t1'); // the cross-project join key
+    expect(bundle.request.span_id).toBe('s1');
+  });
+
+  it('omits trace_id/span_id when the context has no active trace', () => {
+    const bundle = assembleBundle(
+      errReq(),
+      new Map(),
+      context({ requestContext: { contextId: 'ctx-1' } }),
     );
     expect(bundle.request.context_id).toBe('ctx-1');
     expect('trace_id' in bundle.request).toBe(false);

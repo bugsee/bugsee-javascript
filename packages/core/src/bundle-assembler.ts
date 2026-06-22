@@ -121,6 +121,10 @@ export function assembleBundle(
     created_on: new Date(now).toISOString(),
     environment: context.environment,
     ...(requestContext !== undefined ? { context_id: requestContext.contextId } : {}),
+    // The active trace → the cross-project join key on the report envelope (Profile v1 §16, T8).
+    ...(requestContext?.trace !== undefined
+      ? { trace_id: requestContext.trace.traceId, span_id: requestContext.trace.spanId }
+      : {}),
     ...(report.description !== undefined ? { description: report.description } : {}),
     ...(report.labels.length > 0 ? { labels: report.labels } : {}),
     ...(email !== undefined && email !== '' ? { email } : {}),

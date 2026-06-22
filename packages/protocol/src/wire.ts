@@ -69,6 +69,14 @@ export interface RequestJson {
    * context, so a viewer can focus the recording on this one request. Omitted when no context was active.
    */
   context_id?: string;
+  /**
+   * The W3C trace this report fired in (Bugsee OTLP Profile v1 §16 / cross-project-tracing.md T8). `trace_id`
+   * is the cross-project JOIN KEY — a frontend report and the backend report it triggered share it, so the
+   * collector stitches them into one distributed transaction. Matches the `trace_id`/`span_id` stamped on the
+   * capture entries recorded in the context. Omitted when no trace was active.
+   */
+  trace_id?: string;
+  span_id?: string;
 }
 
 /** A file inventory entry in manifest.json (design §8.5). `attrs` lives here, not in request.json. */
