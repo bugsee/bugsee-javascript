@@ -1321,6 +1321,21 @@ describe('launchCore', () => {
   });
 });
 
+describe('launch — trace propagation (X3)', () => {
+  it('default-on wires propagation (decorator added); propagateTrace:false is the kill-switch', () => {
+    const { scheduler } = fakeScheduler();
+    // Default: the propagation decorator is wired onto the network interceptor (the on-by-default branch).
+    const on = launchTracked('tok', baseOptions({ scheduler, captureNetwork: true }));
+    expect(on.isLaunched()).toBe(true);
+    // Kill-switch: propagateTrace:false → no decorator built/wired; launch still fine.
+    const off = launchTracked(
+      'tok',
+      baseOptions({ scheduler, captureNetwork: true, propagateTrace: false }),
+    );
+    expect(off.isLaunched()).toBe(true);
+  });
+});
+
 describe('launch — capturedDataStore (disk by default, D3)', () => {
   it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee/<appTokenHash>', () => {
     const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers

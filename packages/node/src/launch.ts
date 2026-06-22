@@ -81,6 +81,7 @@ import {
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
+import { buildTracePropagationDecorator } from './trace-propagation';
 
 // @bugsee/node launch() — the Node composition root (design §7.1). It assembles the runtime-agnostic
 // kernel (createClient) with Node's platform pieces and the shared capture layer, then starts it:
@@ -148,6 +149,15 @@ export interface BugseeLaunchOptions {
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
+  /**
+   * Inject W3C `traceparent` + the `bugsee=` tracestate on outgoing requests for cross-project distributed
+   * tracing (Bugsee OTLP Profile v1 §12). Default `true` (the feature is on), but a backend has no
+   * same-origin concept, so nothing is injected without `tracePropagationTargets` — never leak the trace to
+   * third-party APIs the backend calls. `false` disables it entirely.
+   */
+  propagateTrace?: boolean;
+  /** Targets (substring or RegExp) allowed to receive the trace headers — your own downstream services. */
+  tracePropagationTargets?: ReadonlyArray<string | RegExp>;
   /** Capture periodic system traces (memory/cpu/event-loop lag). Default true. */
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
@@ -560,6 +570,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     maxBodyBytes,
   });
   client.addCaptureProvider(network.provider);
+  // Native trace-context propagation (X3): inject traceparent + bugsee= on outgoing requests from the active
+  // per-request context, default-on but allowlist-gated (no same-origin on a backend). Owns propagation in
+  // the base — the OTel extension no longer needs to wire it.
+  const propagationDecorator = buildTracePropagationDecorator(requestContextStore, api, {
+    ...(options.propagateTrace !== undefined ? { propagateTrace: options.propagateTrace } : {}),
+    ...(options.tracePropagationTargets !== undefined
+      ? { tracePropagationTargets: options.tracePropagationTargets }
+      : {}),
+  });
+  if (propagationDecorator !== undefined) {
+    network.interceptor.addRequestDecorator(propagationDecorator);
+  }
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createNodeSystemMetricsSampler(),
