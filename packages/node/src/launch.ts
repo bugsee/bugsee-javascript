@@ -78,6 +78,7 @@ import {
   type RequestContextStore,
   RequestContextStoreToken,
 } from './request-context-store';
+import type { TraceResponseConfig } from './server-instrument';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
@@ -158,6 +159,13 @@ export interface BugseeLaunchOptions {
   propagateTrace?: boolean;
   /** Targets (substring or RegExp) allowed to receive the trace headers — your own downstream services. */
   tracePropagationTargets?: ReadonlyArray<string | RegExp>;
+  /**
+   * BE→FE return headers on instrumented incoming responses (Profile v1 §12 return path), so a browser
+   * frontend can adopt the backend's span as a child. Both default OFF (T9) — there is no consumer until
+   * the frontend adapters read them. `traceresponse` = the W3C trace-context-L2 draft header;
+   * `serverTiming` = a `Server-Timing` entry exposing the trace context to browser RUM (PerformanceObserver).
+   */
+  traceResponse?: TraceResponseConfig;
   /** Capture periodic system traces (memory/cpu/event-loop lag). Default true. */
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
@@ -724,7 +732,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   if (options.instrumentIncomingRequests !== false) {
     serverInstallables.push(
       options.serverInterceptor ??
-        createHttpServerInterceptor({ getClient: () => getCarrierClient<Bugsee>(carrier) }),
+        createHttpServerInterceptor({
+          getClient: () => getCarrierClient<Bugsee>(carrier),
+          ...(options.traceResponse !== undefined ? { traceResponse: options.traceResponse } : {}),
+        }),
     );
     serverInstallables.push(...(options.serverInstrumentations ?? []));
     try {

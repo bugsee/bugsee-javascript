@@ -71,7 +71,10 @@ function fakeScheduler() {
 }
 
 const launched: Bugsee[] = [];
-const track = (c: Bugsee): Bugsee => (launched.push(c), c);
+const track = (c: Bugsee): Bugsee => {
+  launched.push(c);
+  return c;
+};
 afterEach(async () => {
   await Promise.all(launched.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();

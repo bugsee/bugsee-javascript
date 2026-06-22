@@ -1628,6 +1628,49 @@ describe('launch — incoming-server instrumentation wiring', () => {
     expect(httpIc.uninstall).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards traceResponse → the launch-built node:http interceptor writes the return headers (X4)', async () => {
+    // No serverInterceptor injection → launch builds the REAL createHttpServerInterceptor with traceResponse.
+    const client = launch(
+      'tok',
+      opts({ traceResponse: { traceresponse: true, serverTiming: true } }),
+    );
+    // Register a minimal performance ext on the (carrier) client so the http.server txn — hence the return
+    // headers — exists (the bare node launch omits performance; the umbrella wires it).
+    const txn = {
+      getTraceId: () => 'trace-1',
+      getSpanId: () => 'span-1',
+      isSampled: () => true,
+      isFinished: () => false,
+      setName() {},
+      setAttribute() {},
+      finish() {},
+    };
+    (client as unknown as { registerExt: (n: string, api: unknown) => void }).registerExt(
+      'performance',
+      { startTransaction: () => txn },
+    );
+    try {
+      const set: Record<string, string> = {};
+      const res = {
+        statusCode: 200,
+        writableFinished: false,
+        headersSent: false,
+        setHeader: (n: string, v: string) => {
+          set[n] = v;
+        },
+        once: () => {},
+      };
+      // Drive the REAL patched http.Server.prototype.emit (no socket needed).
+      new http.Server().emit('request', { method: 'GET', url: '/x', headers: {} }, res);
+      expect(set).toEqual({
+        traceresponse: '00-trace-1-span-1-01',
+        'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+      });
+    } finally {
+      await client.stop();
+    }
+  });
+
   it('an install failure undoes the partial install, reports via onError, and does NOT break launch', async () => {
     const order: string[] = [];
     const onError = vi.fn();

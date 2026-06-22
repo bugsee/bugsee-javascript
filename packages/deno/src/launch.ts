@@ -28,7 +28,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // own node:http interceptor first when the flag is on; all of it activates only when
     // `instrumentIncomingRequests` is set. getClient binds to the carrier.
     serverInstrumentations: [
-      createDenoServeInterceptor({ getClient: () => getCarrierClient<Bugsee>(options.carrier) }),
+      createDenoServeInterceptor({
+        getClient: () => getCarrierClient<Bugsee>(options.carrier),
+        ...(options.traceResponse !== undefined ? { traceResponse: options.traceResponse } : {}),
+      }),
       ...(options.serverInstrumentations ?? []),
     ],
   });

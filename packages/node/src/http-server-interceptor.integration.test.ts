@@ -80,14 +80,14 @@ const get = (
   port: number,
   path: string,
   agent?: http.Agent,
-): Promise<{ status: number; body: string }> =>
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> =>
   new Promise((resolve, reject) => {
     const req = http.get({ host: '127.0.0.1', port, path, ...(agent ? { agent } : {}) }, (res) => {
       let body = '';
       res.on('data', (c) => {
         body += c;
       });
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
     });
     req.on('error', reject);
   });
@@ -195,6 +195,24 @@ describe('http-server-interceptor (real node:http)', () => {
     expect(txns).toHaveLength(1); // one txn — txns[0] IS the aborted request's
     expect(finishedWith(txns[0], 'CANCELLED')).toBe(true);
     expect(finishedWith(txns[0], 'OK')).toBe(false);
+  });
+
+  it('writes the BE→FE return headers onto a REAL response when traceResponse is opted in (X4)', async () => {
+    // Swap the default interceptor for one with traceResponse on (afterEach uninstalls whatever `interceptor` is).
+    interceptor.uninstall();
+    interceptor = createHttpServerInterceptor({
+      getClient: () => client,
+      traceResponse: { traceresponse: true, serverTiming: true },
+    });
+    interceptor.install();
+    const port = await serve((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const { headers } = await get(port, '/x');
+    // The real http.Server.prototype.emit patch wrote them before the handler flushed the response.
+    expect(headers.traceresponse).toBe('00-trace-1-span-1-01');
+    expect(headers['server-timing']).toBe('traceparent;desc="00-trace-1-span-1-01"');
   });
 
   it('uninstall restores the pristine http.Server.prototype (no own emit)', () => {

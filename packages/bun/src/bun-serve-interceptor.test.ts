@@ -74,6 +74,36 @@ describe('createBunServeInterceptor', () => {
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
+  it('forwards traceResponse → the wrapped fetch decorates its Response with the return headers (X4)', async () => {
+    const { client } = fakeClient(createNodeRequestContextStore());
+    const { host, served } = fakeBunHost();
+    const ic = createBunServeInterceptor({
+      target: host,
+      getClient: () => client,
+      traceResponse: { traceresponse: true, serverTiming: true },
+    });
+    ic.install();
+    const set: Record<string, string> = {};
+    host.Bun.serve({
+      port: 0,
+      fetch: async (_req: FetchRequestLike) => ({
+        status: 200,
+        headers: {
+          set: (n: string, v: string) => {
+            set[n] = v;
+          },
+        },
+      }),
+    } as never);
+    const wrappedFetch = served[0]?.fetch as (req: FetchRequestLike) => Promise<unknown>;
+    await wrappedFetch(makeReq('GET', '/x'));
+    ic.uninstall();
+    expect(set).toEqual({
+      traceresponse: '00-trace-1-span-1-01',
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+    });
+  });
+
   it('self-skips when Bun is absent (install + uninstall are no-ops)', () => {
     const ic = createBunServeInterceptor({ target: {} }); // no Bun
     expect(() => {

@@ -305,7 +305,7 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
   );
 
   const http = await import('node:http');
-  const server = http.createServer((req, res) => {
+  const server = http.createServer((_req, res) => {
     void (async () => {
       // Runs inside the request's continued-trace context. This outgoing call is decorated: the propagation
       // injects `traceparent` (continuing the inbound trace) + `bugsee=` onto it → the collector records them.

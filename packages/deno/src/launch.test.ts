@@ -167,6 +167,53 @@ describe('@bugsee/deno launch', () => {
     }
   });
 
+  it('forwards traceResponse → a wrapped Deno.serve response carries the return headers (X4)', async () => {
+    type G = { Deno?: { serve: (...a: unknown[]) => unknown } };
+    const calls: unknown[][] = [];
+    const realServe = vi.fn((...args: unknown[]) => {
+      calls.push(args);
+      return { shutdown: async () => {}, addr: { port: 0 } };
+    });
+    (globalThis as G).Deno = { serve: realServe };
+    const client = launch(
+      'tok',
+      base({ traceResponse: { traceresponse: true, serverTiming: true } }),
+    );
+    const txn = {
+      getTraceId: () => 'trace-1',
+      getSpanId: () => 'span-1',
+      isSampled: () => true,
+      isFinished: () => false,
+      setName() {},
+      setAttribute() {},
+      finish() {},
+    };
+    (client as unknown as { registerExt: (n: string, api: unknown) => void }).registerExt(
+      'performance',
+      { startTransaction: () => txn },
+    );
+    try {
+      const set: Record<string, string> = {};
+      (globalThis as G).Deno?.serve(async () => ({
+        status: 200,
+        headers: {
+          set: (n: string, v: string) => {
+            set[n] = v;
+          },
+        },
+      }));
+      const wrapped = calls[0]?.[0] as (req: unknown) => Promise<unknown>;
+      await wrapped({ method: 'GET', url: '/x', headers: { get: () => null } });
+      expect(set).toEqual({
+        traceresponse: '00-trace-1-span-1-01',
+        'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+      });
+    } finally {
+      await client.stop();
+      delete (globalThis as G).Deno;
+    }
+  });
+
   it('patches Deno.serve BY DEFAULT (no flag)', async () => {
     type G = { Deno?: { serve: unknown } };
     const realServe = vi.fn();

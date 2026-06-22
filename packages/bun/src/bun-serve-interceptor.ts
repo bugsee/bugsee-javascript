@@ -36,6 +36,7 @@ export function createBunServeInterceptor(
     ...(options.getClient !== undefined ? { getClient: options.getClient } : {}),
     ...(options.newContextId !== undefined ? { newContextId: options.newContextId } : {}),
     ...(options.shouldReport !== undefined ? { shouldReport: options.shouldReport } : {}),
+    ...(options.traceResponse !== undefined ? { traceResponse: options.traceResponse } : {}),
   };
   let installed = false;
   let bun: BunLike | undefined;

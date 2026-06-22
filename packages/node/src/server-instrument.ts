@@ -29,6 +29,19 @@ export interface ServerRequestInfo {
   user?: string;
 }
 
+/**
+ * The BE→FE return headers (Profile v1 §12 return path), each independently toggleable. BOTH default OFF
+ * (T9) — there is no consumer until the frontend adapters read them, at which point they flip on. Built
+ * by {@link buildTraceResponseHeaders} and applied to the response by the CALLER (the node:http patch / the
+ * native serve wrap), which owns the response object — the core has no response handle.
+ */
+export interface TraceResponseConfig {
+  /** Append a `Server-Timing` entry carrying the trace context (browser-readable via PerformanceObserver). */
+  serverTiming?: boolean;
+  /** Emit the W3C trace-context-L2 draft `traceresponse` header so the FE adopts the BE's exact span id. */
+  traceresponse?: boolean;
+}
+
 export interface ServerInstrumentOptions {
   /** Resolve the active client; default the process-singleton carrier client. */
   getClient?: () => BugseeClient | undefined;
@@ -36,6 +49,8 @@ export interface ServerInstrumentOptions {
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default {@link defaultShouldReport} (status-based). */
   shouldReport?: (err: unknown) => boolean;
+  /** BE→FE return headers (default both off, T9). The caller writes {@link ServerRequestSpan.responseHeaders}. */
+  traceResponse?: TraceResponseConfig;
 }
 
 /** A handle over the in-flight request. All methods are safe no-ops when no client is launched. */
@@ -49,6 +64,9 @@ export interface ServerRequestSpan {
   finish(status: number, outcome?: 'OK' | 'ERROR' | 'CANCELLED'): void;
   /** Finish the http.server transaction as `CANCELLED` (e.g. a client abort). */
   cancel(): void;
+  /** The configured BE→FE return headers (traceresponse / Server-Timing) for this request's span. Empty
+   * when both are off (the default) or there is no transaction. The CALLER writes them to its response. */
+  responseHeaders(): Record<string, string>;
 }
 
 // The owner stashes its span on the active RequestContext under a realm-global key, so a later opener in
@@ -113,6 +131,27 @@ const spanName = (info: ServerRequestInfo, route: string | undefined): string =>
   `${info.method} ${route || urlPath(info.url)}`;
 
 /**
+ * Pure: the BE→FE return headers from the active trace, per the configured policy. `traceresponse` is the
+ * W3C trace-context-L2 draft format `00-<traceId>-<beSpanId>-<flags>` (flags = the sampling bit). The
+ * `Server-Timing` entry carries that same trace context as a `traceparent` metric `desc`, the de-facto
+ * browser-RUM channel for surfacing it via PerformanceObserver. Returns `{}` when both flags are off.
+ */
+function buildTraceResponseHeaders(
+  trace: { traceId: string; spanId: string; sampled: boolean },
+  config: TraceResponseConfig,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const traceContext = `00-${trace.traceId}-${trace.spanId}-${trace.sampled ? '01' : '00'}`;
+  if (config.traceresponse === true) {
+    headers.traceresponse = traceContext;
+  }
+  if (config.serverTiming === true) {
+    headers['Server-Timing'] = `traceparent;desc="${traceContext}"`;
+  }
+  return headers;
+}
+
+/**
  * Default report policy: report a genuine unhandled error, skip an "expected" 4xx. Duck-types the common
  * HTTP-error shapes across frameworks — `getStatus()` (Nest), `status`/`statusCode` (Koa/http-errors),
  * `output.statusCode` (Boom). A value with no resolvable status (a plain Error) is reported.
@@ -164,6 +203,9 @@ const NOOP_SPAN: ServerRequestSpan = Object.freeze({
   },
   finish() {},
   cancel() {},
+  responseHeaders() {
+    return {};
+  },
 });
 
 const safeGetClient = (getClient: () => BugseeClient | undefined): BugseeClient | undefined => {
@@ -307,6 +349,10 @@ function refiningHandle(
     },
     finish() {},
     cancel() {},
+    // The OWNER holds the real transaction + the return-header policy; the refiner forwards to it.
+    responseHeaders() {
+      return owner.responseHeaders();
+    },
   };
 }
 
@@ -385,6 +431,25 @@ function makeSpan(
     },
     cancel() {
       finishWith(0, 'CANCELLED');
+    },
+    responseHeaders() {
+      // Guarded: computing return headers must never throw into the response lifecycle. No transaction
+      // (no perf ext) → nothing to link, so no headers.
+      try {
+        if (transaction === undefined) {
+          return {};
+        }
+        return buildTraceResponseHeaders(
+          {
+            traceId: transaction.getTraceId(),
+            spanId: transaction.getSpanId(),
+            sampled: transaction.isSampled(),
+          },
+          options.traceResponse ?? {},
+        );
+      } catch {
+        return {};
+      }
     },
   };
 

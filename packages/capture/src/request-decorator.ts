@@ -17,9 +17,7 @@ export interface OutgoingRequest {
 }
 
 /** A request decorator: returns headers to add/override on the outgoing request, or nothing. SYNC only. */
-export type RequestDecorator = (
-  request: OutgoingRequest,
-) => Record<string, string> | undefined | void;
+export type RequestDecorator = (request: OutgoingRequest) => Record<string, string> | undefined;
 
 /** An interceptor that accepts request decorators (the opt-in mutation seam; observe-only without them). */
 export interface RequestDecoratable {

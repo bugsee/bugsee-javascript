@@ -73,6 +73,60 @@ describe('wrapFetchHandler', () => {
     expect(txn.finish).toHaveBeenCalledWith('ERROR'); // status>=500 → ERROR even on a normal return
   });
 
+  it('writes the BE→FE return headers onto the returned Response (traceResponse opted in)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const setHeaders: Record<string, string> = {};
+    const handler = wrapFetchHandler(
+      async () => ({
+        status: 200,
+        headers: {
+          set: (n: string, v: string) => {
+            setHeaders[n] = v;
+          },
+        },
+      }),
+      { getClient: () => client, traceResponse: { traceresponse: true, serverTiming: true } },
+    );
+    await handler(makeReq('GET', '/x'));
+    expect(setHeaders).toEqual({
+      traceresponse: '00-trace-1-span-1-01',
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+    });
+  });
+
+  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const setHeaders: Record<string, string> = {};
+    const handler = wrapFetchHandler(
+      async () => ({
+        status: 200,
+        headers: {
+          set: (n: string, v: string) => {
+            setHeaders[n] = v;
+          },
+        },
+      }),
+      { getClient: () => client },
+    );
+    await handler(makeReq('GET', '/x'));
+    expect(setHeaders).toEqual({});
+  });
+
+  it('a Response without a usable headers object never breaks the response (best-effort)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    // No `headers` on the returned Response → applying return headers must be a guarded no-op.
+    const handler = wrapFetchHandler(async () => ({ status: 200 }), {
+      getClient: () => client,
+      traceResponse: { traceresponse: true },
+    });
+    const res = await handler(makeReq('GET', '/x'));
+    expect(res).toEqual({ status: 200 }); // returned untouched
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
   it('forwards extra runtime args (the Bun server / Deno info 2nd arg) to the handler', async () => {
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => fakeTxn()) } });
     const sentinel = { runtimeArg: true };

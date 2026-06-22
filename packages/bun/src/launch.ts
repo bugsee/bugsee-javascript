@@ -26,7 +26,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // array does not drop it. node still installs its own node:http interceptor first when the flag is on;
     // all of it activates only when `instrumentIncomingRequests` is set. getClient binds to the carrier.
     serverInstrumentations: [
-      createBunServeInterceptor({ getClient: () => getCarrierClient<Bugsee>(options.carrier) }),
+      createBunServeInterceptor({
+        getClient: () => getCarrierClient<Bugsee>(options.carrier),
+        ...(options.traceResponse !== undefined ? { traceResponse: options.traceResponse } : {}),
+      }),
       ...(options.serverInstrumentations ?? []),
     ],
   });

@@ -38,6 +38,7 @@ export function createDenoServeInterceptor(
     ...(options.getClient !== undefined ? { getClient: options.getClient } : {}),
     ...(options.newContextId !== undefined ? { newContextId: options.newContextId } : {}),
     ...(options.shouldReport !== undefined ? { shouldReport: options.shouldReport } : {}),
+    ...(options.traceResponse !== undefined ? { traceResponse: options.traceResponse } : {}),
   };
   const wrap = (handler: DenoHandler): DenoHandler => wrapFetchHandler(handler, instrumentOptions);
   let installed = false;

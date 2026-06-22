@@ -53,14 +53,26 @@ const asTarget = (t: ReturnType<typeof makeTarget>): HttpServerTarget =>
 interface FakeRes {
   statusCode: number;
   writableFinished: boolean;
+  headersSent: boolean;
+  /** Headers the patch set via setHeader (the BE→FE return-path assertion channel). */
+  headers: Record<string, string>;
+  setHeader(name: string, value: string): void;
   once(event: string, listener: () => void): void;
   fire(event: string): void;
 }
-const makeRes = (opts: { statusCode?: number; writableFinished?: boolean } = {}): FakeRes => {
+const makeRes = (
+  opts: { statusCode?: number; writableFinished?: boolean; headersSent?: boolean } = {},
+): FakeRes => {
   const listeners = new Map<string, () => void>();
+  const headers: Record<string, string> = {};
   return {
     statusCode: opts.statusCode ?? 200,
     writableFinished: opts.writableFinished ?? false,
+    headersSent: opts.headersSent ?? false,
+    headers,
+    setHeader(name, value) {
+      headers[name] = value;
+    },
     once(event, listener) {
       listeners.set(event, listener);
     },
@@ -154,6 +166,60 @@ describe('createHttpServerInterceptor', () => {
     expect(txn.finish).toHaveBeenCalledTimes(1);
     expect(txn.finish).toHaveBeenCalledWith('OK');
     expect(txn.finish).not.toHaveBeenCalledWith('CANCELLED');
+  });
+
+  it('writes the BE→FE return headers (traceResponse) at request-open, before the handler runs', () => {
+    const { txn, client } = launchedClient();
+    const target = makeTarget();
+    const ic = createHttpServerInterceptor({
+      target: asTarget(target),
+      getClient: () => client,
+      traceResponse: { traceresponse: true, serverTiming: true },
+    });
+    ic.install();
+    const server = new target.http.Server();
+    let headersAtHandler: Record<string, string> | undefined;
+    const res = makeRes();
+    server.requestHandler = () => {
+      // The headers are present DURING the handler (set at open) → they survive a streaming response.
+      headersAtHandler = { ...res.headers };
+    };
+    server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
+    ic.uninstall();
+    expect(headersAtHandler).toEqual({
+      traceresponse: `00-${txn.getTraceId()}-${txn.getSpanId()}-01`,
+      'Server-Timing': `traceparent;desc="00-${txn.getTraceId()}-${txn.getSpanId()}-01"`,
+    });
+  });
+
+  it('writes NO return headers by default (traceResponse off — T9)', () => {
+    const { client } = launchedClient();
+    const target = makeTarget();
+    const ic = createHttpServerInterceptor({ target: asTarget(target), getClient: () => client });
+    ic.install();
+    const server = new target.http.Server();
+    server.requestHandler = () => {};
+    const res = makeRes();
+    server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
+    ic.uninstall();
+    expect(res.headers).toEqual({});
+  });
+
+  it('skips the return headers when the response has already flushed (headersSent)', () => {
+    const { client } = launchedClient();
+    const target = makeTarget();
+    const ic = createHttpServerInterceptor({
+      target: asTarget(target),
+      getClient: () => client,
+      traceResponse: { traceresponse: true },
+    });
+    ic.install();
+    const server = new target.http.Server();
+    server.requestHandler = () => {};
+    const res = makeRes({ headersSent: true });
+    server.emit('request', { method: 'GET', url: '/x', headers: {} }, res);
+    ic.uninstall();
+    expect(res.headers).toEqual({}); // never call setHeader after flush
   });
 
   it('passes a non-request event straight through (no context, no transaction)', () => {

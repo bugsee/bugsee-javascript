@@ -173,6 +173,57 @@ describe('@bugsee/bun launch', () => {
     }
   });
 
+  it('forwards traceResponse → a wrapped Bun.serve response carries the return headers (X4)', async () => {
+    type Served = { fetch?: (req: unknown) => unknown };
+    type G = { Bun?: { serve: (o: Served) => unknown } };
+    const served: Served[] = [];
+    const realServe = vi.fn((o: Served) => {
+      served.push(o);
+      return { stop() {} };
+    });
+    (globalThis as G).Bun = { serve: realServe };
+    const client = launch(
+      'tok',
+      base({ traceResponse: { traceresponse: true, serverTiming: true } }),
+    );
+    // A minimal performance ext on the carrier client so the http.server txn (hence the headers) exists.
+    const txn = {
+      getTraceId: () => 'trace-1',
+      getSpanId: () => 'span-1',
+      isSampled: () => true,
+      isFinished: () => false,
+      setName() {},
+      setAttribute() {},
+      finish() {},
+    };
+    (client as unknown as { registerExt: (n: string, api: unknown) => void }).registerExt(
+      'performance',
+      { startTransaction: () => txn },
+    );
+    try {
+      const set: Record<string, string> = {};
+      (globalThis as G).Bun?.serve({
+        fetch: async () => ({
+          status: 200,
+          headers: {
+            set: (n: string, v: string) => {
+              set[n] = v;
+            },
+          },
+        }),
+      });
+      const wrappedFetch = served[0]?.fetch as (req: unknown) => Promise<unknown>;
+      await wrappedFetch({ method: 'GET', url: '/x', headers: { get: () => null } });
+      expect(set).toEqual({
+        traceresponse: '00-trace-1-span-1-01',
+        'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+      });
+    } finally {
+      await client.stop();
+      delete (globalThis as G).Bun;
+    }
+  });
+
   it('patches Bun.serve BY DEFAULT (no flag)', async () => {
     type G = { Bun?: { serve: unknown } };
     const realServe = vi.fn(() => ({ stop() {} }));

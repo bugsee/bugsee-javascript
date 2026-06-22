@@ -1,7 +1,12 @@
 import http from 'node:http';
 import https from 'node:https';
 import type { BugseeClient } from '@bugsee/core';
-import { runServerRequest, type ServerInstrumentOptions } from './server-instrument';
+import {
+  runServerRequest,
+  type ServerInstrumentOptions,
+  type ServerRequestSpan,
+  type TraceResponseConfig,
+} from './server-instrument';
 
 // Incoming-server auto-instrumentation for node:http (design: docs/design/incoming-server-instrumentation.md
 // §5.2, decisions D2/D11/D12). Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
@@ -39,6 +44,9 @@ interface ServerResponseLike {
   statusCode: number;
   /** True once the response has been fully written — distinguishes a normal close from a client abort. */
   writableFinished: boolean;
+  /** True once the status line + headers have flushed — after this, setHeader is a no-op / throws. */
+  headersSent: boolean;
+  setHeader(name: string, value: string): void;
   once(event: string, listener: () => void): unknown;
 }
 
@@ -51,7 +59,24 @@ export interface HttpServerInterceptorOptions {
   newContextId?: () => string;
   /** Skip instrumenting a request (self-isolation). Default: the inbound `x-bugsee-internal` header. */
   isInternal?: (headers: IncomingHeaders) => boolean;
+  /** BE→FE return headers (traceresponse / Server-Timing), default both off (T9); forwarded to the core. */
+  traceResponse?: TraceResponseConfig;
 }
+
+/** Write the span's configured return headers onto `res` at request-open. Guarded: a flushed response or a
+ * hostile setHeader must never break the request (the headers are best-effort RUM correlation). */
+const applyReturnHeaders = (span: ServerRequestSpan, res: ServerResponseLike): void => {
+  try {
+    if (res.headersSent) {
+      return;
+    }
+    for (const [name, value] of Object.entries(span.responseHeaders())) {
+      res.setHeader(name, value);
+    }
+  } catch {
+    // best-effort: never break the response over a correlation header
+  }
+};
 
 /** An installable server instrumentation — `install()`/`uninstall()` are idempotent and driven by
  * launch/stop. The shared shape for the node:http patch AND the per-runtime native serve wraps
@@ -91,6 +116,9 @@ export function createHttpServerInterceptor(
   if (options.newContextId !== undefined) {
     runOptions.newContextId = options.newContextId;
   }
+  if (options.traceResponse !== undefined) {
+    runOptions.traceResponse = options.traceResponse;
+  }
 
   let installed = false;
   let patches: Patch[] = [];
@@ -114,6 +142,9 @@ export function createHttpServerInterceptor(
         },
         runOptions,
         (span) => {
+          // Write the BE→FE return headers NOW (before the handler runs) so they survive a streaming
+          // response that flushes headers early. A no-op unless traceResponse opted in (T9).
+          applyReturnHeaders(span, res);
           // Finish on 'close' — it fires AFTER 'finish' (and after any dedicated adapter's own 'finish'
           // listener), so when this span is the OWNER and an adapter refines it (re-entrancy), the adapter's
           // route lands in the txn name before we finish. writableFinished distinguishes a completed

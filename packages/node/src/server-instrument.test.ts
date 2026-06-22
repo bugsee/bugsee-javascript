@@ -695,3 +695,92 @@ describe('getActiveServerSpan', () => {
     expect(logException).toHaveBeenCalledWith(expect.any(Error), { mechanism: 'http-error' });
   });
 });
+
+describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return headers)', () => {
+  // The span exposes the configured return headers; the CALLER (http patch / native wrap) writes them to
+  // its response object. Default OFF (T9) until the frontend consumes them.
+  const ownerSpan = (traceResponse?: ServerInstrumentOptions['traceResponse'], txnOver = {}) => {
+    const txn = fakeTxn(txnOver);
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    return startServerSpan(info({ url: '/o/7' }), { getClient: () => client, traceResponse });
+  };
+
+  it('emits NOTHING when traceResponse is absent (default off, T9)', () => {
+    expect(ownerSpan().responseHeaders()).toEqual({});
+  });
+
+  it('emits NOTHING when both flags are explicitly false', () => {
+    expect(ownerSpan({ serverTiming: false, traceresponse: false }).responseHeaders()).toEqual({});
+  });
+
+  it('traceresponse:true → the W3C trace-context-L2 header (00-traceId-beSpanId-flags), sampled → 01', () => {
+    expect(ownerSpan({ traceresponse: true }).responseHeaders()).toEqual({
+      traceresponse: '00-trace-1-span-1-01',
+    });
+  });
+
+  it('traceresponse flags reflect the sampling decision (unsampled → 00)', () => {
+    const span = ownerSpan({ traceresponse: true }, { isSampled: () => false });
+    expect(span.responseHeaders().traceresponse).toBe('00-trace-1-span-1-00');
+  });
+
+  it('serverTiming:true → a Server-Timing entry carrying the trace context as desc', () => {
+    expect(ownerSpan({ serverTiming: true }).responseHeaders()).toEqual({
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+    });
+  });
+
+  it('both flags → both headers', () => {
+    expect(ownerSpan({ serverTiming: true, traceresponse: true }).responseHeaders()).toEqual({
+      traceresponse: '00-trace-1-span-1-01',
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+    });
+  });
+
+  it('emits NOTHING when there is no transaction (no performance extension)', () => {
+    const client = fakeClient({}); // no perf → no transaction
+    const span = startServerSpan(info({ url: '/o/7' }), {
+      getClient: () => client,
+      traceResponse: { serverTiming: true, traceresponse: true },
+    });
+    expect(span.responseHeaders()).toEqual({});
+  });
+
+  it('a transaction whose trace getters throw degrades to no headers (guarded, never throws out)', () => {
+    const span = ownerSpan(
+      { traceresponse: true },
+      {
+        getTraceId: () => {
+          throw new Error('hostile txn');
+        },
+      },
+    );
+    expect(() => span.responseHeaders()).not.toThrow();
+    expect(span.responseHeaders()).toEqual({});
+  });
+
+  it('the no-client NOOP span emits nothing', () => {
+    const span = startServerSpan(info(), {
+      getClient: () => undefined,
+      traceResponse: { traceresponse: true },
+    });
+    expect(span.responseHeaders()).toEqual({});
+  });
+
+  it('a refining handle delegates to the OWNER span (the owner holds the real transaction + config)', () => {
+    const store = createNodeRequestContextStore();
+    const txn = fakeTxn();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    // The run-scoped owner sets traceResponse; a later opener in the same request refines.
+    runServerRequest(
+      info({ url: '/o/7' }),
+      { getClient: () => client, traceResponse: { traceresponse: true } },
+      () => {
+        // The refiner passes NO traceResponse, yet still returns the owner's configured headers.
+        const refiner = openServerRequest(info({ url: '/o/7' }), { getClient: () => client });
+        expect(refiner.responseHeaders()).toEqual({ traceresponse: '00-trace-1-span-1-01' });
+        return null;
+      },
+    );
+  });
+});
