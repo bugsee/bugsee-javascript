@@ -26,6 +26,8 @@ interface ReportEnvelope {
   environment: { platform: { type: string; version: string } };
   /** The per-request context id, present when a request context was active at report time. */
   context_id?: string;
+  /** The W3C trace id the report fired in — the cross-project join key (T8). */
+  trace_id?: string;
 }
 interface ParsedBundle {
   issueId: string;
@@ -373,6 +375,44 @@ describe.each(
       expect(bundle.files['network.json'], 'no network.json in the bundle').toBeDefined();
       const net = parseJson<NetworkEntry[]>(bundle.files['network.json']);
       expect(net.some((n) => typeof n.url === 'string' && n.url.includes('/echo'))).toBe(true);
+    });
+  });
+
+  describe('propagation: cross-project trace round-trip (inbound continue → report → outbound)', () => {
+    let collector: MockCollector;
+    let result: { exitCode: number | null; stderr: string };
+    let bundles: ParsedBundle[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      result = await runScenarioProcess(target, collector.url, 'propagation');
+      bundles = parseBundles(collector);
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+    });
+
+    it('the app process exits cleanly', () => {
+      expect(result.exitCode, result.stderr).toBe(0);
+    });
+
+    it('the SAME trace id flows inbound → report → outbound (one distributed transaction)', () => {
+      // (1) The handler's report carries the CONTINUED inbound trace id (X2 continuation + T8 report stamp).
+      const report = bundles.find((b) => b.request.summary === 'e2e propagation handler failure');
+      expect(report, `no propagation report delivered (${result.stderr})`).toBeDefined();
+      expect((report as ParsedBundle).request.trace_id).toBe('0af7651916cd43dd8448eb211c80319c');
+
+      // (2) The handler's OUTGOING /echo call carried the SAME trace id — the propagation decorator injected
+      // it from the active per-request context (X3), with the backend's OWN span (a child of the inbound span).
+      const echo = collector.echoHeaders.find((h) => typeof h.traceparent === 'string');
+      expect(echo, 'no traceparent injected on the handler’s outgoing call').toBeDefined();
+      const traceparent = echo?.traceparent as string;
+      expect(traceparent).toContain('0af7651916cd43dd8448eb211c80319c'); // same trace, end to end
+      expect(traceparent).not.toContain('b7ad6b7169203331'); // NOT the inbound span — the backend's own span
+      // (3) …and the bugsee= vendor tracestate (X1) rode along with the session-correlation id.
+      expect(typeof echo?.tracestate).toBe('string');
+      expect(echo?.tracestate as string).toContain('bugsee=');
     });
   });
 

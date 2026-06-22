@@ -12,6 +12,7 @@
     "@bugsee/bun": "workspace:*",
     "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
+    "@bugsee/performance": "workspace:*",
     "@bugsee/util": "workspace:*"
   },
   "devDependencies": {

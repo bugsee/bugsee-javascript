@@ -356,6 +356,9 @@ importers:
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../performance
       '@bugsee/util':
         specifier: workspace:*
         version: link:../util

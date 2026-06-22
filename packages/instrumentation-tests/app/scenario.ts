@@ -273,6 +273,68 @@ async function runWorkerWriterScenario(launch: LaunchFn, collectorUrl: string): 
   await client.stop(20_000);
 }
 
+// A known upstream (frontend-like) trace context the test injects as the INBOUND request — so the assertions
+// can check that the backend continued THIS exact trace and re-propagated it onward.
+const INBOUND_TRACE = '0af7651916cd43dd8448eb211c80319c'; // 16-byte W3C trace id
+const INBOUND_SPAN = 'b7ad6b7169203331'; // 8-byte upstream span id
+
+/**
+ * Cross-project distributed-tracing round-trip (cross-project-tracing.md X1–X5). One auto-instrumented
+ * node:http backend, hit with an inbound `traceparent`+`tracestate` (the originator/frontend side). The
+ * backend (a) CONTINUES that trace as a child, (b) makes an allowlisted OUTGOING call from the handler that
+ * the propagation decorator stamps with the continued `traceparent` + `bugsee=` tracestate, and (c) reports
+ * from the handler — whose request.json carries `trace_id` = the inbound trace (T8). The e2e then asserts the
+ * SAME trace id flows: inbound → report → outbound. Exits 0.
+ */
+async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    propagateTrace: true,
+    tracePropagationTargets: [collectorUrl], // allow injecting onto the collector's /echo (our "downstream")
+    onError: noteOnError,
+  });
+  // Distributed tracing needs the performance extension (it mints the trace/span ids + the http.server txn).
+  // The bare @bugsee/node harness omits it (the umbrella normally wires it), so wire it here for the e2e.
+  const { createPerformanceExtension } = await import('@bugsee/performance');
+  createPerformanceExtension().setup(
+    client as unknown as Parameters<ReturnType<typeof createPerformanceExtension>['setup']>[0],
+  );
+
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      // Runs inside the request's continued-trace context. This outgoing call is decorated: the propagation
+      // injects `traceparent` (continuing the inbound trace) + `bugsee=` onto it → the collector records them.
+      const echo = await fetch(`${collectorUrl}/echo?probe=propagation`);
+      await echo.text();
+      // A report from the handler → request.json carries trace_id = the inbound trace (T8 + continuation).
+      await client.logException(new Error('e2e propagation handler failure'));
+      res.statusCode = 200;
+      res.end('ok');
+    })();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+  // The INBOUND request carries a known upstream W3C trace context (the originator/frontend).
+  const res = await fetch(`http://127.0.0.1:${port}/orders/42`, {
+    headers: {
+      traceparent: `00-${INBOUND_TRACE}-${INBOUND_SPAN}-01`,
+      tracestate: 'bugsee=r1:sfe-session',
+    },
+  });
+  await res.text();
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -296,6 +358,10 @@ export async function runScenario(
   }
   if (opts.scenario === 'worker') {
     await runWorkerWriterScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'propagation') {
+    await runPropagationScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);

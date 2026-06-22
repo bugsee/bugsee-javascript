@@ -24,6 +24,8 @@ export interface MockCollector {
   uploads: CapturedUpload[];
   /** How many times the app hit /echo (the captured outgoing request). */
   echoHits: number;
+  /** The request headers of each /echo hit (so a test can assert injected traceparent/tracestate). */
+  echoHeaders: Array<Record<string, string | string[] | undefined>>;
   close: () => Promise<void>;
 }
 
@@ -46,6 +48,7 @@ export async function startMockCollector(): Promise<MockCollector> {
   const sessions: Array<Record<string, unknown>> = [];
   const issues: Array<Record<string, unknown>> = [];
   const uploads: CapturedUpload[] = [];
+  const echoHeaders: Array<Record<string, string | string[] | undefined>> = [];
   let echoHits = 0;
   let issueSeq = 0;
   // Maps an upload path (/upload/<n>) to the issueId we minted for it, so a captured PUT can be
@@ -89,6 +92,7 @@ export async function startMockCollector(): Promise<MockCollector> {
         }
         if (url.startsWith('/echo')) {
           echoHits += 1;
+          echoHeaders.push({ ...req.headers }); // captures any injected traceparent/tracestate
           sendJson(res, 200, { ok: true, ts: 'e2e' });
           return;
         }
@@ -110,6 +114,7 @@ export async function startMockCollector(): Promise<MockCollector> {
     sessions,
     issues,
     uploads,
+    echoHeaders,
     get echoHits() {
       return echoHits;
     },
