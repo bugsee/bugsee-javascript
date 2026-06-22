@@ -144,10 +144,13 @@ controls now; STAGE the §17 upload cutover** (it needs the Bugsee OTLP ingest e
 > Y1 (OTLP profile conformance) are built. The backend half of the cross-project tracing protocol is
 > closed: a backend continues an inbound W3C trace as a child (X2), stamps the report envelope with the
 > join key (T8/X5), propagates outbound (X3), and emits the BE→FE return headers (X4) — all conformant to
-> Bugsee OTLP Profile v1 §12. Proven end-to-end on node/bun/deno (the X5 two-hop e2e). **Next milestone:
-> the frontend adapters** (which plug into this finished protocol). Deferred follow-ups: retire the
-> umbrella's OTel-gated propagation path (X3b), originating-session re-propagation (the BE currently
-> re-propagates its own session id, not the inbound FE's), and the §17 internal-OTLP upload cutover.
+> Bugsee OTLP Profile v1 §12. Proven end-to-end on node/bun/deno (the X5 two-hop e2e). **X3b DONE
+> (2026-06-22):** the umbrella's OTel-gated propagation path was retired — the umbrella now wires the native
+> `createTraceparentDecorator` (browser-only; node's launch owns it) + emits the `bugsee=` session, options
+> unified to `propagateTrace`/`tracePropagationTargets`. **Next milestone: the frontend adapters** (which
+> plug into this finished protocol). Deferred follow-ups: originating-session re-propagation (the BE
+> currently re-propagates its OWN session id, not the inbound FE's — the FE now emits its session via X3b,
+> so this is the remaining BE half), and the §17 internal-OTLP upload cutover.
 
 - **X0** Client **session-correlation id** (T7): mint a per-launch id (`@bugsee/util` `randomId`) in
   core/launch, send it at `/v2/sessions`, expose it to the context/decorator. (Collector consumption =

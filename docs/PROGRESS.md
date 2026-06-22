@@ -506,13 +506,16 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   default; cross-origin ONLY via an explicit allowlist (string/RegExp) — no trace-topology leak;
   never overrides an existing `traceparent`; fail-closed on unparseable URLs. Security mutator loop
   (same-origin inversion, default-deny removal, allowlist bypass, override, sampled-flag, format) all caught.
-- **Live wiring — PROPAGATION DONE (`master`):** the network umbrella exposes `addRequestDecorator` (fans
-  out to the fetch+xhr leaves); `wireOpenTelemetry` (the OTel analog of `wirePerformance`) registers the
-  traceparent decorator on the network source, and the `bugsee` umbrella wires it after launch
-  (`tracePropagation`/`tracePropagationAllowlist`/`tracePropagationOrigin` opts, fed perf `getActiveSpan`).
-  **`launch('tok', { tracePropagation: true })` now links the frontend trace to the backend end-to-end —
-  the Next.js / SSR story is LIVE** (integration-tested through the real launch driving a wrapped global
-  fetch: same-origin propagates, cross-origin needs the allowlist, off by default).
+- **Live wiring — PROPAGATION DONE (`master`); UNIFIED onto the native path (X3b, 2026-06-22):** the network
+  umbrella exposes `addRequestDecorator` (fans out to the fetch+xhr leaves); the `bugsee` umbrella now
+  registers the NATIVE `createTraceparentDecorator` (the shared `@bugsee/capture` transformer — the OTel-named
+  `wireOpenTelemetry` was retired) on the browser network source after launch, fed perf `getActiveSpan` AND
+  the `bugsee=` session tracestate (`internals.api.sessionId`, so the FE session floats to the backend).
+  Options use the native vocabulary: `propagateTrace` / `tracePropagationTargets` (+ browser-only
+  `tracePropagationOrigin`). **`launch('tok', { propagateTrace: true })` links the frontend trace+session to
+  the backend end-to-end — the Next.js / SSR story is LIVE** (browser-only in the umbrella; on Node the
+  `@bugsee/node` launch owns propagation, so the umbrella never double-wires; same-origin propagates,
+  cross-origin needs the allowlist, browser default off).
 - **Live wiring — PRODUCE-TEE + CONSUME DONE (`master`):** `wirePerformance` gained `recordTransaction`
   (buffer an already-finished, externally-sampled transaction into the upload pipeline). The umbrella:
   **produce-tee** — `otelExportUrl`/`otelExportHeaders`/`otelExportResource` opts make the perf `send` a
@@ -555,10 +558,14 @@ finished protocol**. All slices test-first → per-entity mutator → multi-agen
   node/bun/deno — which also covers OTel-interop (the inbound header is arbitrary W3C).
 - **Y1** `to-otlp` conforms to Profile v1 §4/§5/§6/§8/§10 (resource constants, `bugsee.*` namespace,
   http.server→SERVER kind, lossless status, root `parentSpanId`).
-- **Deferred follow-ups:** retire the umbrella's OTel-gated propagation path (X3b — map `tracePropagation*`
-  → native `propagateTrace`/`tracePropagationTargets`); **originating-session re-propagation** (the BE
-  re-propagates its OWN session id, not the inbound FE's — needs parsing inbound tracestate at
-  server-instrument); the §17 internal-OTLP **upload cutover** (backend-gated). **Next: frontend adapters.**
+- **X3b — DONE (2026-06-22):** retired the umbrella's OTel-gated propagation path (deleted `wireOpenTelemetry`);
+  the umbrella now wires the native `createTraceparentDecorator` browser-only (node's launch owns it — no
+  double-wire) + emits the `bugsee=` session, and the options use the native `propagateTrace`/
+  `tracePropagationTargets` vocabulary. One propagation path, not two.
+- **Deferred follow-ups:** **originating-session re-propagation** (the BE re-propagates its OWN session id,
+  not the inbound FE's — needs parsing inbound tracestate at server-instrument; the FE now DOES emit its
+  session via X3b, so this is the remaining BE half); the §17 internal-OTLP **upload cutover** (backend-gated).
+  **Next: frontend adapters.**
 
 ### Bun runtime (`@bugsee/bun`) — COMPLETE (2026-06-14, on `master`)
 The first non-node/browser runtime tier. Bun is node-API-compatible (node:http/fs/os/process/perf_hooks),
