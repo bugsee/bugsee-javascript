@@ -1,10 +1,10 @@
 import type { Bugsee, LaunchInternals } from '@bugsee/browser';
+import { createTraceparentDecorator } from '@bugsee/capture';
 import { ClockToken, resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
 import {
   type BugseeSpanProcessor,
   createBugseeSpanProcessor,
   createOtlpTraceExporter,
-  wireOpenTelemetry,
 } from '@bugsee/opentelemetry';
 import {
   createPerformanceSend,
@@ -46,14 +46,18 @@ export interface UmbrellaExtensionOptions {
   pageName?: string;
 
   /**
-   * Enable W3C `traceparent` propagation on outgoing requests (the OTel distributed-trace / Next.js
-   * story), linking the Bugsee frontend trace to the backend. OPT-IN (off by default). Same-origin
-   * requests propagate; cross-origin requires `tracePropagationAllowlist`. Requires performance on.
+   * Enable W3C `traceparent` + the `bugsee=` session tracestate propagation on outgoing requests (the
+   * cross-project / Next.js / SSR story), linking the Bugsee frontend trace to the backend. The SAME
+   * native option vocabulary as the `@bugsee/node` launch (one propagation path, not two). On the BROWSER
+   * this is OPT-IN (off by default — same-origin propagates, cross-origin requires `tracePropagationTargets`);
+   * on Node it is the `@bugsee/node` launch's own option (default on, allowlist-gated). Requires performance on.
    */
-  tracePropagation?: boolean;
-  /** Cross-origin URLs allowed to receive `traceparent` (string substring or RegExp). */
-  tracePropagationAllowlist?: ReadonlyArray<string | RegExp>;
-  /** App origin override for same-origin detection. Default `location.origin`. */
+  propagateTrace?: boolean;
+  /** URLs allowed to receive the trace headers — your own downstream services (string substring or RegExp).
+   *  On the browser, cross-origin requires this (same-origin always propagates); on Node nothing propagates
+   *  without it (a backend has no same-origin and must not leak its trace topology). */
+  tracePropagationTargets?: ReadonlyArray<string | RegExp>;
+  /** (Browser) app origin override for same-origin detection. Default `location.origin`. */
   tracePropagationOrigin?: string;
 
   /**
@@ -157,6 +161,7 @@ export function wireUmbrella(
       name: 'app.start',
       operation: 'app.start',
       status: 'OK',
+      sampled: true, // the startup transaction is always recorded + uploaded (Profile v1 §6 sampled flag)
       startTimestampMs: platform.startupAtMs,
       endTimestampMs,
       durationNanos: Math.max(0, Math.round((endTimestampMs - platform.startupAtMs) * 1_000_000)),
@@ -173,19 +178,29 @@ export function wireUmbrella(
     options.onOtelSpanProcessor(spanProcessor);
   }
 
-  // OTel trace-context propagation (opt-in) — propagate the active performance transaction's trace onto
-  // outgoing requests via the network umbrella's request-decorator seam.
-  const otel = wireOpenTelemetry({
-    networkSource: internals.network.interceptor,
-    getActiveSpan: () => client.ext('performance').getActiveSpan(),
-    propagate: options.tracePropagation ?? false,
-    ...(options.tracePropagationAllowlist !== undefined
-      ? { allowlist: options.tracePropagationAllowlist }
-      : {}),
-    ...(options.tracePropagationOrigin !== undefined
-      ? { origin: options.tracePropagationOrigin }
-      : {}),
-  });
+  // W3C trace-context propagation (opt-in) — register the NATIVE traceparent decorator (the shared
+  // `@bugsee/capture` transformer, NOT an OTel-gated path) on the network umbrella's request-decorator
+  // seam, propagating the active performance transaction's trace + the `bugsee=` session tracestate.
+  // BROWSER ONLY (`platform.pageload`): on Node the `@bugsee/node` launch already wires its OWN
+  // per-request-context-sourced decorator (concurrency-correct), so the umbrella must NOT double-wire —
+  // and must not wire this single-slot perf-sourced one, which would leak the ambient transaction's trace
+  // across concurrent server requests. Same-origin propagates by default; cross-origin only via the
+  // allowlist (`tracePropagationTargets`).
+  let offPropagation: (() => void) | undefined;
+  if (platform.pageload && (options.propagateTrace ?? false)) {
+    offPropagation = internals.network.interceptor.addRequestDecorator(
+      createTraceparentDecorator({
+        getActiveSpan: () => client.ext('performance').getActiveSpan(),
+        getBugseeState: () => ({ record: true, sessionId: internals.api.sessionId }),
+        ...(options.tracePropagationTargets !== undefined
+          ? { allowlist: options.tracePropagationTargets }
+          : {}),
+        ...(options.tracePropagationOrigin !== undefined
+          ? { origin: options.tracePropagationOrigin }
+          : {}),
+      }),
+    );
+  }
 
   // Compose teardown IN PLACE (not via a new wrapper object): `client` is the SAME object launchCore
   // already registered as the process singleton, so mutating its stop() here means the carrier singleton,
@@ -194,7 +209,7 @@ export function wireUmbrella(
   const stopClient = client.stop;
   client.stop = (timeout?: number): Promise<boolean> => {
     void spanProcessor?.shutdown();
-    otel?.stop();
+    offPropagation?.();
     wired.stop();
     return stopClient(timeout);
   };

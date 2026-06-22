@@ -226,7 +226,7 @@ describe('bugsee umbrella launch', () => {
   const globalFetch = () =>
     (globalThis as { fetch: (i: unknown, init?: unknown) => Promise<unknown> }).fetch;
 
-  it('tracePropagation injects a W3C traceparent on a same-origin fetch from the active transaction', async () => {
+  it('propagateTrace injects W3C traceparent + the bugsee= session tracestate on a same-origin fetch', async () => {
     let received: { init: unknown } | undefined;
     vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
       received = { init };
@@ -235,13 +235,15 @@ describe('bugsee umbrella launch', () => {
     const client = track(
       launch(
         'tok',
-        base({ carrier: {}, tracePropagation: true, tracePropagationOrigin: 'https://app.test' }),
+        base({ carrier: {}, propagateTrace: true, tracePropagationOrigin: 'https://app.test' }),
       ),
     );
     const active = client.ext('performance').getActiveSpan() as Transaction;
     await globalFetch()('https://app.test/api', { method: 'GET' });
     const headers = (received?.init as { headers?: Record<string, string> }).headers;
     expect(headers?.traceparent).toBe(`00-${active.getTraceId()}-${active.getSpanId()}-01`);
+    // X3b: the FE now also propagates its session-correlation id (so it floats to the backend).
+    expect(headers?.tracestate).toMatch(/(^|,)bugsee=r1:s[0-9a-f]+/);
   });
 
   it('does NOT propagate cross-origin without an allowlist (no topology leak), but does with one', async () => {
@@ -255,9 +257,9 @@ describe('bugsee umbrella launch', () => {
         'tok',
         base({
           carrier: {},
-          tracePropagation: true,
+          propagateTrace: true,
           tracePropagationOrigin: 'https://app.test',
-          tracePropagationAllowlist: ['api.partner.test'],
+          tracePropagationTargets: ['api.partner.test'],
         }),
       ),
     );
@@ -271,7 +273,22 @@ describe('bugsee umbrella launch', () => {
     ).toBeDefined();
   });
 
-  it('does NOT propagate when tracePropagation is off (default)', async () => {
+  it('defaults same-origin detection to location.origin when no tracePropagationOrigin is given', async () => {
+    vi.stubGlobal('location', { origin: 'https://default.test', pathname: '/' });
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    // propagateTrace on, NO explicit origin → the decorator falls back to globalThis.location.origin.
+    track(launch('tok', base({ carrier: {}, propagateTrace: true })));
+    await globalFetch()('https://default.test/api', { method: 'GET' });
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeDefined(); // same-origin (location.origin) → propagated without an explicit origin
+  });
+
+  it('does NOT propagate when propagateTrace is off (browser default)', async () => {
     let received: { init: unknown } | undefined;
     vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
       received = { init };

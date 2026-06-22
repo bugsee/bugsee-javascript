@@ -75,6 +75,7 @@
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/browser": "workspace:*",
+    "@bugsee/capture": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*"

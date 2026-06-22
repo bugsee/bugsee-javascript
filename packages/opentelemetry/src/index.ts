@@ -54,8 +54,3 @@ export {
   type TraceAssembler,
   type TraceAssemblerDeps,
 } from './trace-assembler';
-export {
-  type WiredOpenTelemetry,
-  type WireOpenTelemetryOptions,
-  wireOpenTelemetry,
-} from './wire-opentelemetry';

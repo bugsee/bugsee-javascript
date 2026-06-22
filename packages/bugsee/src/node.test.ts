@@ -170,6 +170,41 @@ describe('bugsee node umbrella launch', () => {
     expect(transactionsOf(perfPosts).some((t) => t.name === 'app.start')).toBe(true);
   });
 
+  it('does NOT wire umbrella propagation on Node (the launch owns it; no ambient perf-sourced leak)', async () => {
+    // The fetch leaf wraps globalThis.fetch once the network source subscribes; stub BEFORE launch so the
+    // wrap wraps the stub. okResp is the minimal Response shape the leaf reads.
+    const okResp = { status: 200, statusText: 'OK', redirected: false, headers: { forEach() {} } };
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    const client = track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          captureNetwork: true,
+          propagateTrace: true,
+          tracePropagationTargets: ['target.test'],
+          appStartTimeMs: 1000,
+        }),
+      ),
+    );
+    // An ACTIVE (unfinished) perf transaction occupies the single-slot getActiveSpan. If the umbrella had
+    // wrongly wired the perf-sourced decorator on Node, THIS ambient trace would leak onto the outgoing
+    // request — wrong under server concurrency. Node propagation must be per-request-context-sourced (the
+    // @bugsee/node launch's own decorator), which finds no active context here → injects nothing.
+    client.ext('performance').startTransaction({ name: 'ambient', operation: 'custom' });
+    await (globalThis as { fetch: (i: unknown, init?: unknown) => Promise<unknown> }).fetch(
+      'https://target.test/api',
+      { method: 'GET' },
+    );
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeUndefined();
+  });
+
   it('a repeat launch returns the same client (singleton) and does not re-wire', () => {
     const carrier = {};
     const first = track(launch('tok', base({ carrier, appStartTimeMs: 1000 })));
