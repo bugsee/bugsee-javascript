@@ -132,6 +132,7 @@ describe('wrapFetchHandler', () => {
     const handler = wrapFetchHandler(
       async () => {
         headers.set('Server-Timing', 'app;dur=5'); // the app's own timing, set before we decorate
+        headers.set('traceresponse', 'stale'); // a pre-existing singleton value our set must REPLACE
         return { status: 200, headers };
       },
       { getClient: () => client, traceResponse: { traceresponse: true, serverTiming: true } },
@@ -142,7 +143,7 @@ describe('wrapFetchHandler', () => {
       'app;dur=5',
       'traceparent;desc="00-trace-1-span-1-01"',
     ]);
-    // traceresponse is a singleton header → set.
+    // traceresponse is a singleton header → SET (replaces), never appended: exactly one value, ours.
     expect(store.traceresponse).toEqual(['00-trace-1-span-1-01']);
   });
 
