@@ -1,5 +1,6 @@
 import type { SpanStatus, TransactionWire } from '@bugsee/performance';
 import {
+  OTLP_SPAN_FLAG_SAMPLED,
   type OtlpAnyValue,
   type OtlpExportTraceServiceRequest,
   type OtlpKeyValue,
@@ -102,6 +103,9 @@ export function deriveRootSpanId(traceId: string): string {
 export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   const rootSpanId = deriveRootSpanId(txn.traceId);
   const childIds = new Set(txn.spans.map((s) => s.spanId));
+  // Profile v1 §8: the OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
+  // Every span of a transaction shares that one decision (§8.8 has a single root-level sampled flag).
+  const flags = txn.sampled ? OTLP_SPAN_FLAG_SAMPLED : 0;
 
   const rootAttributes: Record<string, unknown> = {
     ...txn.attributes,
@@ -126,6 +130,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
     endTimeUnixNano: toUnixNanoString(txn.endTimestampMs ?? txn.startTimestampMs),
     attributes: toKeyValues(rootAttributes),
     status: toStatus(txn.status),
+    flags,
   };
 
   const children: OtlpSpan[] = txn.spans.map((s) => ({
@@ -144,6 +149,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
       'bugsee.span.status': s.status,
     }),
     status: toStatus(s.status),
+    flags,
   }));
 
   return [root, ...children];

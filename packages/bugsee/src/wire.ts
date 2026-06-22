@@ -117,6 +117,10 @@ export function wireUmbrella(
     baseUrl: internals.baseUrl,
     getEnvironment: internals.getEnvironment,
   });
+  // Profile v1 §5: the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
+  // follows telemetry.sdk.language (§4): `webjs` on the browser, `nodejs` on the node-family runtimes
+  // (node/bun/deno all run the node umbrella entry, pageload:false). The provider here is `performance`.
+  const scopeName = `com.bugsee.${platform.pageload ? 'webjs' : 'nodejs'}/performance`;
   // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
   // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
   const otlpSend =
@@ -124,6 +128,7 @@ export function wireUmbrella(
       ? createOtlpTraceExporter({
           transport: internals.transport,
           url: options.otelExportUrl,
+          scope: { name: scopeName },
           ...(options.otelExportHeaders !== undefined
             ? { headers: options.otelExportHeaders }
             : {}),

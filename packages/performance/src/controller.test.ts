@@ -59,6 +59,20 @@ describe('createPerformanceController', () => {
     expect(txn.isSampled()).toBe(false); // …but the upstream UNSAMPLED decision wins
   });
 
+  it('a traceId-only continuation (no sampled) falls back to the LOCAL sampler — not a hardcoded true', () => {
+    const store = createTransactionStore();
+    // The local sampler says DROP; the continuation supplies a trace id but no sampling decision, so the
+    // local sampler must decide (controller.ts `continuation?.sampled ?? sampler()`).
+    const api = createPerformanceController({ clock: fixedClock, store, sampler: () => false });
+    const txn = api.startTransaction({
+      name: 'GET /x',
+      operation: 'http.server',
+      continuation: { traceId: '0123456789abcdef0123456789abcdef' }, // traceId only, no `sampled`
+    });
+    expect(txn.getTraceId()).toBe('0123456789abcdef0123456789abcdef'); // trace id still adopted
+    expect(txn.isSampled()).toBe(false); // the LOCAL sampler decided, not a hardcoded true
+  });
+
   it('starts a fresh random trace id when there is no continuation', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({ clock: fixedClock, store });

@@ -193,6 +193,7 @@ describe('transactionToOtlpSpans', () => {
         { key: 'bugsee.span.status', value: { stringValue: 'ERROR' } },
       ],
       status: { code: OtlpStatusCode.ERROR, message: 'ERROR' },
+      flags: 1, // the trace's sampled bit (§8), mirrored onto every span
     });
   });
 
@@ -234,6 +235,16 @@ describe('transactionToOtlpSpans', () => {
   it('reflects sampled:false as bugsee.sampled=false', () => {
     const root = transactionToOtlpSpans(txn({ sampled: false }))[0];
     expect(root?.attributes).toContainEqual({ key: 'bugsee.sampled', value: { boolValue: false } });
+  });
+
+  it('mirrors the sampled bit into the OTLP span trace flags on EVERY span (Profile v1 §8)', () => {
+    const spans = transactionToOtlpSpans(txn()); // sampled: true
+    expect(spans.map((s) => s.flags)).toEqual([1, 1, 1]); // root + 2 children all carry the W3C sampled bit
+  });
+
+  it('mirrors an UNSAMPLED transaction as trace flags 0 on every span (§8)', () => {
+    const spans = transactionToOtlpSpans(txn({ sampled: false }));
+    expect(spans.map((s) => s.flags)).toEqual([0, 0, 0]);
   });
 
   it('adds bugsee.snapshot only when isSnapshot is true; omits app version/build when absent', () => {

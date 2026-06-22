@@ -1322,17 +1322,83 @@ describe('launchCore', () => {
 });
 
 describe('launch — trace propagation (X3)', () => {
-  it('default-on wires propagation (decorator added); propagateTrace:false is the kill-switch', () => {
+  // Drive the REAL wrapped global fetch from inside an active per-request context and assert the launch-wired
+  // decorator actually INJECTS (or, with the kill-switch, does not). This validates the wiring line
+  // `network.interceptor.addRequestDecorator(propagationDecorator)` end-to-end — a no-op there leaves no
+  // header injected, which these tests catch (the previous launch-only isLaunched() assertion did not).
+  const TRACE = {
+    traceId: '0af7651916cd43dd8448eb211c80319c',
+    spanId: 'b7ad6b7169203331',
+    sampled: true,
+  };
+  const fetchSpy = (capture: (init: { headers?: Record<string, string> }) => void) =>
+    vi.stubGlobal('fetch', async (_u: unknown, init: { headers?: Record<string, string> } = {}) => {
+      capture(init);
+      return { status: 200, statusText: 'OK', redirected: false, headers: { forEach() {} } };
+    });
+
+  it('default-on: the wired decorator injects traceparent + the bugsee= session from the active context', async () => {
     const { scheduler } = fakeScheduler();
-    // Default: the propagation decorator is wired onto the network interceptor (the on-by-default branch).
-    const on = launchTracked('tok', baseOptions({ scheduler, captureNetwork: true }));
-    expect(on.isLaunched()).toBe(true);
-    // Kill-switch: propagateTrace:false → no decorator built/wired; launch still fine.
-    const off = launchTracked(
-      'tok',
-      baseOptions({ scheduler, captureNetwork: true, propagateTrace: false }),
-    );
-    expect(off.isLaunched()).toBe(true);
+    let init: { headers?: Record<string, string> } | undefined;
+    fetchSpy((i) => {
+      init = i;
+    });
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          captureNetwork: true,
+          capturedDataStore: 'memory',
+          tracePropagationTargets: ['target.test'], // node has no same-origin → allowlist the downstream
+        }),
+      );
+      const store = client.getService(RequestContextStoreToken);
+      await store.run({ contextId: 'c1', attributes: {}, trace: TRACE }, async () => {
+        await (globalThis as { fetch: (u: string, o?: unknown) => Promise<unknown> }).fetch(
+          'https://target.test/x',
+          { method: 'GET' },
+        );
+      });
+      expect(init?.headers?.traceparent).toBe(`00-${TRACE.traceId}-${TRACE.spanId}-01`);
+      expect(init?.headers?.tracestate).toMatch(/bugsee=r1:s[0-9a-f]/); // the session-correlation id rides along
+    } finally {
+      await client?.stop(); // unwrap the global fetch before unstubbing (order matters)
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('propagateTrace:false is the kill-switch — NO decorator wired, no traceparent even in a traced context', async () => {
+    const { scheduler } = fakeScheduler();
+    let init: { headers?: Record<string, string> } | undefined;
+    fetchSpy((i) => {
+      init = i;
+    });
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          captureNetwork: true,
+          capturedDataStore: 'memory',
+          propagateTrace: false,
+          tracePropagationTargets: ['target.test'],
+        }),
+      );
+      const store = client.getService(RequestContextStoreToken);
+      await store.run({ contextId: 'c1', attributes: {}, trace: TRACE }, async () => {
+        await (globalThis as { fetch: (u: string, o?: unknown) => Promise<unknown> }).fetch(
+          'https://target.test/x',
+          { method: 'GET' },
+        );
+      });
+      expect(init?.headers?.traceparent).toBeUndefined(); // the kill-switch removed the decorator entirely
+    } finally {
+      await client?.stop();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

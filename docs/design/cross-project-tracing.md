@@ -135,6 +135,10 @@ controls now; STAGE the §17 upload cutover** (it needs the Bugsee OTLP ingest e
   (§6), kind **SERVER** for `http.server` + a `bugsee.span.kind` override (§6), the profile-mandated resource
   constants `telemetry.sdk.name="bugsee"` + `bugsee.profile.version="1"` (§4); the scope name
   `com.bugsee.<sdk>/<provider>` (§5) is set by the wiring. Pure encoding, no backend dep.
+  - **Holistic-review closure (2026-06-22):** the §8 OTLP `trace_flags` sampled bit is now mirrored onto
+    every produced span (`OTLP_SPAN_FLAG_SAMPLED`; was carried only as the `bugsee.sampled` attribute), and
+    the §5 scope name is now ACTUALLY set by the umbrella wiring — `com.bugsee.webjs/performance` (browser) /
+    `com.bugsee.nodejs/performance` (node) — rather than falling back to the `@bugsee/opentelemetry` default.
 - **X0 is DUAL-PURPOSE:** the minted session id feeds BOTH the `bugsee=s<id>` tracestate (X1) AND the OTLP
   `bugsee.session.id` resource attribute (§10/§12) — one source, two consumers, conformant from the start.
 - **§17 internal OTLP upload (DEFERRED, backend-gated):** make the OTLP encoder feed Bugsee's own ingest

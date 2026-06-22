@@ -51,7 +51,12 @@ export interface OtlpSpan {
   endTimeUnixNano: string;
   attributes?: OtlpKeyValue[];
   status?: OtlpStatus;
+  /** W3C trace flags (low 8 bits): bit 0 = sampled. Profile v1 §8: the sampled bit MUST mirror `bugsee.sampled`. */
+  flags?: number;
 }
+
+/** OTLP `SpanFlags`: the W3C `sampled` trace-flag bit (the low byte holds the W3C trace flags). */
+export const OTLP_SPAN_FLAG_SAMPLED = 1;
 
 /** OTLP `InstrumentationScope`. */
 export interface OtlpScope {

@@ -337,6 +337,8 @@ describe('bugsee umbrella launch', () => {
       value: { stringValue: 'web' },
     });
     expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
+    // Profile v1 §5: the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
+    expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
   it('produce-tee: an OTLP failure surfaces to onError, but Bugsee still receives the batch', async () => {

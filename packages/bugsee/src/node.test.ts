@@ -205,6 +205,36 @@ describe('bugsee node umbrella launch', () => {
     ).toBeUndefined();
   });
 
+  it('produce-tee on Node sets the §5 scope name com.bugsee.nodejs/performance', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const otlpBodies: string[] = [];
+    const transport = vi.fn<HttpTransport>(async (url: string, opts: HttpRequestOptions = {}) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+      }
+      if (url.endsWith('/v1/traces')) {
+        otlpBodies.push(opts.body as string);
+      }
+      return { status: 200, headers: {}, body: new Uint8Array() } satisfies HttpResponse;
+    });
+    track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          performanceFlushIntervalMs: 7777,
+          appStartTimeMs: 1000,
+          otelExportUrl: 'https://collector.test/v1/traces',
+        }),
+      ),
+    );
+    await fire(7777); // flush → the app.start transaction tees to /v1/traces
+    const body = JSON.parse(otlpBodies[0] ?? '{}');
+    expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.nodejs/performance');
+  });
+
   it('a repeat launch returns the same client (singleton) and does not re-wire', () => {
     const carrier = {};
     const first = track(launch('tok', base({ carrier, appStartTimeMs: 1000 })));

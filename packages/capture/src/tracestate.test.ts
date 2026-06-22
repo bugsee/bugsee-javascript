@@ -121,6 +121,14 @@ describe('setTracestateEntry', () => {
     expect(out.length).toBeLessThan(15); // oldest dropped to fit the byte cap
     expect(out.length).toBeGreaterThan(1); // but not over-pruned
   });
+
+  it('keeps OUR own front entry intact even when it ALONE exceeds 512 bytes (the >1 guard never empties to [])', () => {
+    // A pathological single bugsee= value larger than the whole 512-byte budget: the byte-cap loop must STOP
+    // at length 1 (the `next.length > 1` guard) rather than drop our own front entry, leaving [].
+    const huge = `r1:s${'a'.repeat(600)}`;
+    const out = setTracestateEntry([], 'bugsee', huge);
+    expect(out).toEqual([{ key: 'bugsee', value: huge }]); // exactly our one entry — NOT emptied
+  });
 });
 
 describe('encodeBugseeState / decodeBugseeState', () => {
