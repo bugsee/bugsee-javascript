@@ -114,6 +114,57 @@ describe('wrapFetchHandler', () => {
     expect(setHeaders).toEqual({});
   });
 
+  it("APPENDS Server-Timing (does not clobber the app's own entry); traceresponse is set", async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    // A real Response.headers is a multi-valued list for Server-Timing. Model set (replace) + append (add).
+    const store: Record<string, string[]> = {};
+    const headers = {
+      set: (n: string, v: string) => {
+        store[n] = [v];
+      },
+      append: (n: string, v: string) => {
+        const list = store[n] ?? [];
+        list.push(v);
+        store[n] = list;
+      },
+    };
+    const handler = wrapFetchHandler(
+      async () => {
+        headers.set('Server-Timing', 'app;dur=5'); // the app's own timing, set before we decorate
+        return { status: 200, headers };
+      },
+      { getClient: () => client, traceResponse: { traceresponse: true, serverTiming: true } },
+    );
+    await handler(makeReq('GET', '/x'));
+    // The app's Server-Timing survives — ours is APPENDED, not replaced (binding: must not alter app behavior).
+    expect(store['Server-Timing']).toEqual([
+      'app;dur=5',
+      'traceparent;desc="00-trace-1-span-1-01"',
+    ]);
+    // traceresponse is a singleton header → set.
+    expect(store.traceresponse).toEqual(['00-trace-1-span-1-01']);
+  });
+
+  it('a throwing headers.set never breaks the response (guarded best-effort)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const handler = wrapFetchHandler(
+      async () => ({
+        status: 200,
+        headers: {
+          set: () => {
+            throw new Error('hostile headers.set');
+          },
+        },
+      }),
+      { getClient: () => client, traceResponse: { traceresponse: true } },
+    );
+    const res = await handler(makeReq('GET', '/x'));
+    expect(res).toMatchObject({ status: 200 }); // the app's Response is returned despite the throw
+    expect(txn.finish).toHaveBeenCalledWith('OK'); // and the txn still finished
+  });
+
   it('a Response without a usable headers object never breaks the response (best-effort)', async () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });

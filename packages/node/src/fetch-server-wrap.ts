@@ -20,15 +20,18 @@ export interface FetchRequestLike {
   headers: { get(name: string): string | null };
 }
 /** The minimal structural `Response` the wrap reads (its status) + the mutable `headers` it may decorate
- * with the BE→FE return headers. A real `Response`'s `headers` is a mutable `Headers` (guard "response"). */
+ * with the BE→FE return headers. A real `Response`'s `headers` is a mutable `Headers` (guard "response")
+ * exposing both `set` (replace) and `append` (add to the list). */
 export interface FetchResponseLike {
   status: number;
-  headers?: { set(name: string, value: string): void };
+  headers?: { set(name: string, value: string): void; append?(name: string, value: string): void };
 }
 
 /** Decorate the returned Response with the span's configured return headers (Profile v1 §12). Guarded: a
- * Response with no/immutable headers, or a hostile `set`, must never break the response — the headers are
- * best-effort RUM correlation. Set just before the runtime sends the Response, so streaming is unaffected. */
+ * Response with no/immutable headers, or a hostile `set`/`append`, must never break the response — the
+ * headers are best-effort RUM correlation. Set just before the runtime sends the Response, so streaming is
+ * unaffected. `Server-Timing` is a multi-valued list header, so we APPEND it (coexisting with any entry the
+ * app already set — binding: interceptors must not alter app behavior); `traceresponse` is a singleton → set. */
 const applyReturnHeaders = (span: ServerRequestSpan, res: FetchResponseLike | undefined): void => {
   try {
     const target = res?.headers;
@@ -36,7 +39,11 @@ const applyReturnHeaders = (span: ServerRequestSpan, res: FetchResponseLike | un
       return;
     }
     for (const [name, value] of Object.entries(span.responseHeaders())) {
-      target.set(name, value);
+      if (name === 'Server-Timing' && typeof target.append === 'function') {
+        target.append(name, value);
+      } else {
+        target.set(name, value);
+      }
     }
   } catch {
     // best-effort: never break the response over a correlation header

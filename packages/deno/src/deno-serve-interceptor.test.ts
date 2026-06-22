@@ -121,6 +121,27 @@ describe('createDenoServeInterceptor', () => {
     });
   });
 
+  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+    const { client } = fakeClient(createNodeRequestContextStore());
+    const { host, calls } = fakeDenoHost();
+    const ic = createDenoServeInterceptor({ target: host, getClient: () => client });
+    ic.install();
+    const set: Record<string, string> = {};
+    const userHandler: Handler = async () => ({
+      status: 200,
+      headers: {
+        set: (n: string, v: string) => {
+          set[n] = v;
+        },
+      },
+    });
+    host.Deno.serve(userHandler);
+    const wrapped = handlerOf(calls[0] as { args: unknown[] });
+    await wrapped(makeReq('GET', '/x'));
+    ic.uninstall();
+    expect(set).toEqual({});
+  });
+
   it('passes through serve() with no handler — options-only AND no-args — untouched', () => {
     const { host, serve } = fakeDenoHost();
     const ic = createDenoServeInterceptor({ target: host });

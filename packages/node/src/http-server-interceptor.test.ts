@@ -222,6 +222,31 @@ describe('createHttpServerInterceptor', () => {
     expect(res.headers).toEqual({}); // never call setHeader after flush
   });
 
+  it('a throwing setHeader never breaks the request — emit does not throw, the handler still dispatches', () => {
+    const { client } = launchedClient();
+    const target = makeTarget();
+    const ic = createHttpServerInterceptor({
+      target: asTarget(target),
+      getClient: () => client,
+      traceResponse: { traceresponse: true },
+    });
+    ic.install();
+    const server = new target.http.Server();
+    let dispatched = false;
+    server.requestHandler = () => {
+      dispatched = true;
+    };
+    const res = makeRes();
+    res.setHeader = () => {
+      throw new Error('hostile setHeader');
+    };
+    expect(() =>
+      server.emit('request', { method: 'GET', url: '/x', headers: {} }, res),
+    ).not.toThrow();
+    ic.uninstall();
+    expect(dispatched).toBe(true); // the guard swallowed the throw and the app handler still ran
+  });
+
   it('passes a non-request event straight through (no context, no transaction)', () => {
     const { startTransaction, client } = launchedClient();
     const target = makeTarget();

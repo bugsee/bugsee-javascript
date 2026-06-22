@@ -104,6 +104,29 @@ describe('createBunServeInterceptor', () => {
     });
   });
 
+  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+    const { client } = fakeClient(createNodeRequestContextStore());
+    const { host, served } = fakeBunHost();
+    const ic = createBunServeInterceptor({ target: host, getClient: () => client });
+    ic.install();
+    const set: Record<string, string> = {};
+    host.Bun.serve({
+      port: 0,
+      fetch: async (_req: FetchRequestLike) => ({
+        status: 200,
+        headers: {
+          set: (n: string, v: string) => {
+            set[n] = v;
+          },
+        },
+      }),
+    } as never);
+    const wrappedFetch = served[0]?.fetch as (req: FetchRequestLike) => Promise<unknown>;
+    await wrappedFetch(makeReq('GET', '/x'));
+    ic.uninstall();
+    expect(set).toEqual({});
+  });
+
   it('self-skips when Bun is absent (install + uninstall are no-ops)', () => {
     const ic = createBunServeInterceptor({ target: {} }); // no Bun
     expect(() => {
