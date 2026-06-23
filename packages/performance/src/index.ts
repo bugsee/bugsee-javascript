@@ -24,6 +24,12 @@ export {
   type NetworkSource,
 } from './http-spans';
 export {
+  createIdleTransaction,
+  type IdleTimer,
+  type IdleTransactionHandle,
+  type IdleTransactionOptions,
+} from './idle-transaction';
+export {
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
   type PerformanceUploadMode,
