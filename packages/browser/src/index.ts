@@ -20,6 +20,12 @@ export {
   type TargetDescriptor,
 } from './input-source';
 export {
+  createBrowserInteractionSource,
+  type InteractionDetail,
+  type InteractionEnv,
+  type InteractionSource,
+} from './interaction-source';
+export {
   type Bugsee,
   type BugseeLaunchOptions,
   type LaunchInternals,

@@ -21,6 +21,36 @@ function fakeWindow() {
   };
 }
 
+// Stub a global PerformanceObserver and let the test push Event Timing `event` entries to every observer
+// that subscribed to that type (the interaction source runs its callback synchronously; the web-vitals
+// observers defer via queueMicrotask, so only the interaction source's transaction is observed inline).
+function stubPerformanceObserver() {
+  const eventCallbacks: Array<(list: { getEntries: () => unknown[] }) => void> = [];
+  class PO {
+    readonly #cb: (list: { getEntries: () => unknown[] }) => void;
+    constructor(cb: (list: { getEntries: () => unknown[] }) => void) {
+      this.#cb = cb;
+    }
+    observe(o: { type: string }): void {
+      if (o.type === 'event') eventCallbacks.push(this.#cb);
+    }
+    disconnect(): void {}
+    takeRecords(): unknown[] {
+      return [];
+    }
+  }
+  (PO as unknown as { supportedEntryTypes: string[] }).supportedEntryTypes = [
+    'event',
+    'first-input',
+  ];
+  vi.stubGlobal('PerformanceObserver', PO);
+  return {
+    pushEvent: (entry: unknown): void => {
+      for (const cb of eventCallbacks) cb({ getEntries: () => [entry] });
+    },
+  };
+}
+
 const probe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 (Test) Browser/9.0',
   locale: () => 'en-US',
@@ -178,6 +208,37 @@ describe('bugsee umbrella launch', () => {
     expect(active.getOperation()).toBe('navigation');
     expect(active.getName()).toBe('/users/42');
     expect(active.getAttributes()['nav.source']).toBe('url');
+  });
+
+  it('opens a `ui.interaction` transaction on a real Event Timing entry (F4 interaction wiring)', () => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = track(launch('tok', base({ carrier: {} })));
+    // The active span is the pageload — which must NOT block interactions (D12).
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+    pushEvent({
+      name: 'click',
+      duration: 90,
+      interactionId: 5,
+      target: { tagName: 'BUTTON', id: 'go' },
+    });
+    const active = client.ext('performance').getActiveSpan() as Transaction;
+    expect(active.getOperation()).toBe('ui.interaction'); // the interaction took the active slot
+    expect(active.getName()).toBe('click button#go');
+    expect(active.getAttributes()['ui.interaction_type']).toBe('click');
+  });
+
+  it('does NOT wire interactions when traceInteractions is false', () => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = track(launch('tok', base({ carrier: {}, traceInteractions: false })));
+    pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
+    // No interaction source was created → the active span stays the pageload transaction.
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
   });
 
   it('does NOT wire navigation when traceNavigations is false', () => {

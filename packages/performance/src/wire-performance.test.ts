@@ -3,6 +3,7 @@ import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
+import type { InteractionDetailLike, InteractionSource } from './interactions';
 import type { NavigationDetailLike, NavigationSource } from './navigations';
 import { serializeTransaction, type Transaction, type TransactionWire } from './span';
 import type { WebVitalsEnv } from './web-vitals/env';
@@ -45,6 +46,21 @@ function fakeNavSource() {
     onAny: () => () => {},
   } as unknown as NavigationSource;
   const emit = (d: NavigationDetailLike) => {
+    for (const l of listeners) l(d);
+  };
+  return { source, emit };
+}
+
+function fakeInteractionSource() {
+  const listeners = new Set<(d: InteractionDetailLike) => void>();
+  const source = {
+    on: (_n: string, fn: (d: InteractionDetailLike) => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    onAny: () => () => {},
+  } as unknown as InteractionSource;
+  const emit = (d: InteractionDetailLike) => {
     for (const l of listeners) l(d);
   };
   return { source, emit };
@@ -196,6 +212,42 @@ describe('wirePerformance', () => {
       vi.advanceTimersByTime(200); // 1100ms total > the 1000ms idle, but reset at 900 → not yet idle
       expect(perf()?.getActiveSpan()).toBe(active); // still active — undefined here if networkSource weren't forwarded
       wired?.stop(); // tears down the navigation wiring (offNav) without error
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens a `ui.interaction` transaction from the interaction source, idle-managed (F4)', () => {
+    vi.useFakeTimers();
+    try {
+      const { client, perf } = fakeClient();
+      const interactions = fakeInteractionSource();
+      const net = fakeNetworkSource();
+      // pageload:false so the active span IS the interaction transaction (no overlapping pageload).
+      const wired = wirePerformance(
+        base({
+          client,
+          interactionSource: interactions.source,
+          networkSource: net.source,
+          pageload: false,
+        }),
+      );
+      interactions.emit({
+        interactionType: 'click',
+        target: 'button#go',
+        duration: 90,
+        interactionId: 3,
+      });
+      const active = perf()?.getActiveSpan() as Transaction;
+      expect(active.getOperation()).toBe('ui.interaction');
+      expect(active.getName()).toBe('click button#go');
+      expect(active.getAttributes()['ui.interaction_type']).toBe('click');
+      // The networkSource is forwarded: in-flight activity keeps the interaction alive past its idle timeout.
+      vi.advanceTimersByTime(900);
+      net.emit('before', netEvent({ id: 'r1', timestamp: 0, method: 'GET', url: 'https://x/a' }));
+      vi.advanceTimersByTime(200); // 1100ms total > 1000ms idle, but reset at 900 → not yet idle
+      expect(perf()?.getActiveSpan()).toBe(active); // still active — undefined here if not forwarded
+      wired?.stop(); // tears down the interaction wiring (offInteractions) without error
     } finally {
       vi.useRealTimers();
     }

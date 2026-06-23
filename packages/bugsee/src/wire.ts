@@ -1,5 +1,6 @@
 import {
   type Bugsee,
+  createBrowserInteractionSource,
   createBrowserNavigationSource,
   type LaunchInternals,
   readMetaTraceContinuation,
@@ -52,6 +53,10 @@ export interface UmbrellaExtensionOptions {
   /** Open a `navigation` transaction per SPA route change (History/Navigation-API detection). Browser only;
    *  default `true`. Requires performance on. */
   traceNavigations?: boolean;
+  /** Open a `ui.interaction` transaction per qualifying user interaction (Event Timing — the INP unit).
+   *  Browser only; default `true`. Requires performance on. Only interactions slower than the threshold
+   *  (40ms) qualify, and one already owned by a navigation is skipped (no double-count). */
+  traceInteractions?: boolean;
 
   /**
    * Enable W3C `traceparent` + the `bugsee=` session tracestate propagation on outgoing requests (the
@@ -155,6 +160,14 @@ export function wireUmbrella(
       ? createBrowserNavigationSource()
       : undefined;
 
+  // Interaction transactions (F4) — browser only (`platform.pageload`), opt-out via `traceInteractions:
+  // false`. The Event Timing source self-skips where the API is unsupported; wirePerformance subscribes
+  // (activating it) and tears it down on stop.
+  const interactionSource =
+    platform.pageload && (options.traceInteractions ?? true)
+      ? createBrowserInteractionSource()
+      : undefined;
+
   // Pageload trace continuation (D4): on the browser, continue a server-injected `<meta name="traceparent">`
   // so the SSR request and the client pageload are one trace (a fresh root if absent/invalid).
   const pageloadContinuation = platform.pageload ? readMetaTraceContinuation() : undefined;
@@ -170,6 +183,7 @@ export function wireUmbrella(
     pageload: platform.pageload,
     networkSource: internals.network.interceptor,
     ...(navigationSource !== undefined ? { navigationSource } : {}),
+    ...(interactionSource !== undefined ? { interactionSource } : {}),
     ...(pageloadContinuation !== undefined ? { pageloadContinuation } : {}),
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),

@@ -30,6 +30,12 @@ export {
   type IdleTransactionOptions,
 } from './idle-transaction';
 export {
+  type CollectInteractionsDeps,
+  collectInteractions,
+  type InteractionDetailLike,
+  type InteractionSource,
+} from './interactions';
+export {
   type CollectNavigationsDeps,
   collectNavigations,
   type NavigationDetailLike,

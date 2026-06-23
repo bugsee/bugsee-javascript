@@ -38,16 +38,20 @@ export function observe(
   }
 }
 
-/** Invoke `callback` each time the page becomes hidden (visibility→hidden or pagehide). */
-export function onHidden(env: WebVitalsEnv, callback: () => void): void {
-  env.document?.addEventListener(
-    'visibilitychange',
-    () => {
-      if (env.document?.visibilityState === 'hidden') callback();
-    },
-    { capture: true },
-  );
-  env.window?.addEventListener('pagehide', () => callback(), { capture: true });
+/** Invoke `callback` each time the page becomes hidden (visibility→hidden or pagehide). Returns a cleanup
+ *  that removes both listeners — so a collector with a teardown contract (navigations/interactions) does
+ *  not leak a visibility listener across launch/stop. (Minimal fakes without `removeEventListener` no-op.) */
+export function onHidden(env: WebVitalsEnv, callback: () => void): () => void {
+  const onVisibilityChange = (): void => {
+    if (env.document?.visibilityState === 'hidden') callback();
+  };
+  const onPageHide = (): void => callback();
+  env.document?.addEventListener('visibilitychange', onVisibilityChange, { capture: true });
+  env.window?.addEventListener('pagehide', onPageHide, { capture: true });
+  return () => {
+    env.document?.removeEventListener?.('visibilitychange', onVisibilityChange, { capture: true });
+    env.window?.removeEventListener?.('pagehide', onPageHide, { capture: true });
+  };
 }
 
 /** Invoke `callback(restoreTimeStamp)` when the page is restored from the back/forward cache. */

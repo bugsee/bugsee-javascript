@@ -1,6 +1,7 @@
 import type { BugseeClient, Scheduler } from '@bugsee/core';
 import { createPerformanceExtension } from './extension';
 import { collectHttpSpans, type NetworkSource } from './http-spans';
+import { collectInteractions, type InteractionSource } from './interactions';
 import { collectNavigations, type NavigationSource } from './navigations';
 import { collectPageLoadVitals } from './page-load';
 import { createPerformanceUploader } from './performance-uploader';
@@ -37,6 +38,10 @@ export interface WirePerformanceOptions {
   /** The browser navigation source (F1c) — drives `navigation` transactions per SPA route change. Omitted →
    *  none (e.g. Node, or navigation tracing off). Its activity-keepalive also reuses `networkSource`. */
   navigationSource?: NavigationSource;
+  /** The browser interaction source (F4) — drives `ui.interaction` transactions per qualifying interaction
+   *  (Event Timing). Omitted → none (e.g. Node, or interaction tracing off). Reuses `networkSource` for the
+   *  async-tail keepalive; skips when a navigation already owns the active slot (no double-count). */
+  interactionSource?: InteractionSource;
   /** Web-vitals env override (tests). Default the real globals. */
   env?: WebVitalsEnv;
   onError?: (error: unknown) => void;
@@ -91,6 +96,18 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     });
   }
 
+  // Interaction transactions (F4): each qualifying interaction (Event Timing) opens a `ui.interaction`
+  // transaction (idle-finished), skipped while a navigation owns the active slot (no double-count).
+  let offInteractions: (() => void) | undefined;
+  if (options.interactionSource !== undefined) {
+    offInteractions = collectInteractions({
+      source: options.interactionSource,
+      api,
+      ...(options.networkSource !== undefined ? { networkSource: options.networkSource } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+    });
+  }
+
   const uploader = createPerformanceUploader({
     store: extension.store,
     send: options.send,
@@ -102,6 +119,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
 
   return {
     stop() {
+      offInteractions?.();
       offNav?.();
       offHttp?.();
       uploader.stop();

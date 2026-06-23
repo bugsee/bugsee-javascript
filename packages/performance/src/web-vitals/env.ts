@@ -34,6 +34,9 @@ export interface DocumentLike {
     listener: () => void,
     options?: { capture?: boolean; once?: boolean },
   ): void;
+  /** Optional — present on the real document; lets a teardown remove a listener it added (no leak across
+   *  launch/stop). Absent on minimal fakes → the cleanup no-ops via optional chaining. */
+  removeEventListener?(type: string, listener: () => void, options?: { capture?: boolean }): void;
 }
 
 export interface DomEventLike {
@@ -48,6 +51,12 @@ export interface EventTargetLike {
     type: string,
     listener: (event: DomEventLike) => void,
     options?: { capture?: boolean; once?: boolean },
+  ): void;
+  /** Optional — see {@link DocumentLike.removeEventListener}. */
+  removeEventListener?(
+    type: string,
+    listener: (event: DomEventLike) => void,
+    options?: { capture?: boolean },
   ): void;
 }
 

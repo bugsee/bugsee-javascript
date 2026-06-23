@@ -54,6 +54,9 @@ function fakeTarget() {
     addEventListener(type: string, listener: (event: unknown) => void) {
       (listeners.get(type) ?? listeners.set(type, new Set()).get(type))?.add(listener);
     },
+    removeEventListener(type: string, listener: (event: unknown) => void) {
+      listeners.get(type)?.delete(listener);
+    },
     emit: (type: string, event?: unknown) => {
       for (const l of listeners.get(type) ?? []) l(event);
     },
@@ -157,6 +160,41 @@ describe('onHidden', () => {
 
   it('does not throw when document/window are absent', () => {
     expect(() => onHidden({}, () => {})).not.toThrow();
+  });
+
+  it('returns a cleanup that removes both listeners (no leak across launch/stop)', () => {
+    const doc = fakeTarget();
+    const win = fakeTarget();
+    const state = { visibility: 'hidden' };
+    const env: WebVitalsEnv = {
+      document: {
+        addEventListener: doc.addEventListener,
+        removeEventListener: doc.removeEventListener,
+        get visibilityState() {
+          return state.visibility;
+        },
+      } as never,
+      window: win as never,
+    };
+    let fired = 0;
+    const cleanup = onHidden(env, () => fired++);
+    expect(doc.has('visibilitychange')).toBe(true);
+    expect(win.has('pagehide')).toBe(true);
+    cleanup();
+    expect(doc.has('visibilitychange')).toBe(false); // visibility listener removed
+    expect(win.has('pagehide')).toBe(false); // pagehide listener removed
+    doc.emit('visibilitychange'); // would fire (state is hidden) if the listener were still attached
+    win.emit('pagehide');
+    expect(fired).toBe(0); // neither fired → both genuinely removed
+  });
+
+  it('cleanup does not throw when removeEventListener is absent on the env (minimal fakes)', () => {
+    const doc = fakeTarget();
+    const cleanup = onHidden(
+      { document: { addEventListener: doc.addEventListener, visibilityState: 'visible' } as never },
+      () => {},
+    );
+    expect(() => cleanup()).not.toThrow(); // optional-chained removeEventListener no-ops
   });
 });
 

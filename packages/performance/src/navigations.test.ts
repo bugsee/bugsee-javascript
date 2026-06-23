@@ -54,25 +54,29 @@ function fakeApi() {
   return { api, started };
 }
 
-// A fake WebVitalsEnv whose document visibility can be flipped + fired (for onHidden background-cancel).
+// A fake WebVitalsEnv whose document visibility can be flipped + fired (for onHidden background-cancel),
+// tracking add/removeEventListener so teardown's listener removal is observable.
 function fakeEnv() {
-  const docListeners = new Map<string, () => void>();
+  const docListeners = new Map<string, Set<() => void>>();
   let visibilityState = 'visible';
   const env = {
     document: {
-      addEventListener: (t: string, l: () => void) => docListeners.set(t, l),
+      addEventListener: (t: string, l: () => void) =>
+        (docListeners.get(t) ?? docListeners.set(t, new Set()).get(t))?.add(l),
+      removeEventListener: (t: string, l: () => void) => docListeners.get(t)?.delete(l),
       get visibilityState() {
         return visibilityState;
       },
     },
-    window: { addEventListener: () => {} },
+    window: { addEventListener: () => {}, removeEventListener: () => {} },
   } as unknown as WebVitalsEnv;
   return {
     env,
     fireHidden: () => {
       visibilityState = 'hidden';
-      docListeners.get('visibilitychange')?.();
+      for (const l of docListeners.get('visibilitychange') ?? []) l();
     },
+    hiddenListenerCount: () => docListeners.get('visibilitychange')?.size ?? 0,
   };
 }
 
@@ -148,21 +152,24 @@ describe('collectNavigations', () => {
     expect(started[0]?.finish).toHaveBeenCalledWith('CANCELLED');
   });
 
-  it('teardown cancels the in-flight navigation and ignores later events', () => {
+  it('teardown cancels the in-flight navigation, removes the hidden listener, and ignores later events', () => {
     const source = navSource();
     const network = netSource();
     const { api, started } = fakeApi();
     const t = fakeTimer();
+    const env = fakeEnv();
     const stop = collectNavigations({
       source,
       api,
       networkSource: network,
-      env: fakeEnv().env,
+      env: env.env,
       timer: t.timer,
     });
     source.emit('navigate', detail({ to: '/x' }));
+    expect(env.hiddenListenerCount()).toBe(1); // onHidden registered a visibility listener
     stop();
     expect(started[0]?.finish).toHaveBeenCalledWith('CANCELLED'); // in-flight nav cancelled on teardown
+    expect(env.hiddenListenerCount()).toBe(0); // teardown removed it (no leak across launch/stop)
     // after teardown, further events are ignored (no new transaction, no extra finish)
     source.emit('navigate', detail({ to: '/y' }));
     network.emit('before', { id: 'r', timestamp: 0 } as unknown as NetworkEvent);

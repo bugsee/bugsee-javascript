@@ -73,12 +73,14 @@ export function collectNavigations(deps: CollectNavigationsDeps): () => void {
     for (const stage of NETWORK_STAGES) offs.push(deps.networkSource.on(stage, keepAlive));
   }
 
-  // The tab going hidden cancels the in-flight navigation transaction (it didn't complete in the foreground).
-  onHidden(deps.env ?? realWebVitalsEnv(), () => current?.cancel());
+  // The tab going hidden cancels the in-flight navigation transaction (it didn't complete in the
+  // foreground). Its cleanup joins `offs`, so teardown removes the visibility listener (no leak across
+  // launch/stop).
+  offs.push(onHidden(deps.env ?? realWebVitalsEnv(), () => current?.cancel()));
 
   return () => {
-    for (const off of offs) off(); // unsubscribe source + network (no more navigations/keepAlives)
+    for (const off of offs) off(); // unsubscribe source + network + the hidden listener
     current?.cancel(); // cancel any in-flight navigation on teardown
-    current = undefined; // the leaked onHidden callback now no-ops
+    current = undefined;
   };
 }

@@ -259,7 +259,13 @@ framework first (table per adapter, as the backend did).
   a `wirePerformance` e2e test. NO competitor reads this. **DEFERRED: the PASSIVE `PerformanceObserver`
   (`PerformanceResourceTiming.serverTiming`) path** — for resources the SDK did NOT issue (cross-origin,
   TAO-gated); the active path covers the common SDK-owned case. Follow-up F3b.
-- **F4** Interaction transactions (Event Timing) + the active-context binding (O1) (D6 INP attribution).
+- **F4 DONE** (2026-06-23) Interaction transactions (Event Timing) + the active-context binding (O1).
+  Built: a browser `interaction-source` (Event Timing `PerformanceObserver`, dedupe by monotonic
+  `interactionId`, PII-safe target via `describeTarget`) → `collectInteractions` opens a `ui.interaction`
+  idle transaction (network-keepalive async tail), skipped while a `navigation` owns the active slot (no
+  double-count; the lingering pageload does NOT block — D11/D12). `traceInteractions` default-on, browser
+  only. **Per-interaction CLS/INP web-vital ATTRIBUTION (D6) is DEFERRED** to a later slice (per D12 —
+  per-navigation/interaction vitals are out of F4; F4 stamps only the Event-Timing latency attribute).
 - **F5** The naming seam (D5) + the manual `setRouteName()/startNavigation()` API.
 - **F6** `@bugsee/react` — ErrorBoundary + react-router naming (Phase 2).
 - **F7+** fan-out: vue / svelte / angular / nextjs (Phase 3).
