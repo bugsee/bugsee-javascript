@@ -27,6 +27,13 @@ export {
   launch,
   launchCore,
 } from './launch';
+export {
+  createBrowserNavigationSource,
+  type NavigationDetail,
+  type NavigationEnv,
+  type NavigationSource,
+  type NavigationType,
+} from './navigation-source';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
