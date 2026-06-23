@@ -85,7 +85,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('F3: case-insensitive header lookup (e.g. `Traceresponse`)', () => {
+  it('F3: case-insensitive header NAME + value (uppercase-hex normalized); ignores unrelated headers', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -96,11 +96,14 @@ describe('collectHttpSpans', () => {
         id: 'r1',
         timestamp: 50,
         custom: {
-          headers: { Traceresponse: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+          headers: {
+            'content-type': 'application/json', // an unrelated header is skipped
+            Traceresponse: '00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01', // uppercase hex
+          },
         },
       }),
     );
-    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
+    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331'); // lowercased
   });
 
   it('F3: falls back to `Server-Timing` (traceparent;desc=...) when there is no traceresponse', () => {
@@ -124,32 +127,32 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('F3: no stamp for an invalid traceresponse, a zero span id, or no return header', () => {
+  it('F3: no stamp for invalid / ff-version / zero trace / zero span / no return header', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
-    emit('before', netEvent({ id: 'a', timestamp: 1, method: 'GET', url: 'u' }));
-    emit(
-      'complete',
-      netEvent({ id: 'a', timestamp: 2, custom: { headers: { traceresponse: 'not-valid' } } }),
-    );
-    emit('before', netEvent({ id: 'b', timestamp: 1, method: 'GET', url: 'u' }));
-    emit(
-      'complete',
-      netEvent({
-        id: 'b',
-        timestamp: 2,
-        custom: {
-          headers: { traceresponse: '00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01' },
-        },
-      }),
-    );
-    emit('before', netEvent({ id: 'c', timestamp: 1, method: 'GET', url: 'u' }));
-    emit('complete', netEvent({ id: 'c', timestamp: 2 })); // no custom.headers
+    const cases: Array<string | undefined> = [
+      'not-valid', // malformed
+      'ff-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01', // forbidden `ff` version
+      '00-00000000000000000000000000000000-b7ad6b7169203331-01', // all-zero trace id
+      '00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01', // all-zero span id
+      undefined, // no return header
+    ];
+    cases.forEach((tr, i) => {
+      emit('before', netEvent({ id: `c${i}`, timestamp: 1, method: 'GET', url: 'u' }));
+      emit(
+        'complete',
+        netEvent({
+          id: `c${i}`,
+          timestamp: 2,
+          ...(tr !== undefined ? { custom: { headers: { traceresponse: tr } } } : {}),
+        }),
+      );
+    });
     for (const call of calls) {
       expect(call.opts.attributes?.['bugsee.server_span_id']).toBeUndefined();
     }
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(cases.length);
   });
 
   it('finishes on error/abort too, and omits a 0 status (cross-origin opaque)', () => {

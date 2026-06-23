@@ -19,15 +19,27 @@ export interface HttpSpanCollectorDeps {
 
 const END_STAGES = ['complete', 'error', 'abort'] as const;
 
+const VERSION_RE = /^[0-9a-f]{2}$/;
 const TRACE_ID_RE = /^[0-9a-f]{32}$/;
 const SPAN_ID_RE = /^[0-9a-f]{16}$/;
-const ZERO_SPAN_ID = '0000000000000000';
+const ZERO_TRACE_ID = '0'.repeat(32);
+const ZERO_SPAN_ID = '0'.repeat(16);
 
-/** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`. */
+/** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`.
+ *  Validated exactly like @bugsee/capture's `parseTraceparent` (lowercase-normalized, reject the `ff`
+ *  forbidden version + the all-zero trace/span ids) so a third-party backend's value is handled correctly,
+ *  not just the (lowercase, conformant) Bugsee X4 backend. Reimplemented inline — performance has no capture dep. */
 function spanIdFromTraceContext(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
-  const [, traceId = '', spanId = ''] = value.trim().split('-');
-  if (!TRACE_ID_RE.test(traceId) || !SPAN_ID_RE.test(spanId) || spanId === ZERO_SPAN_ID) {
+  const [version = '', traceId = '', spanId = ''] = value.trim().toLowerCase().split('-');
+  if (
+    !VERSION_RE.test(version) ||
+    version === 'ff' || // the forbidden version
+    !TRACE_ID_RE.test(traceId) ||
+    traceId === ZERO_TRACE_ID ||
+    !SPAN_ID_RE.test(spanId) ||
+    spanId === ZERO_SPAN_ID
+  ) {
     return undefined;
   }
   return spanId;
