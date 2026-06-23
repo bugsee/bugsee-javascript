@@ -1,4 +1,4 @@
-import type { Bugsee, LaunchInternals } from '@bugsee/browser';
+import { type Bugsee, createBrowserNavigationSource, type LaunchInternals } from '@bugsee/browser';
 import { createTraceparentDecorator } from '@bugsee/capture';
 import { ClockToken, resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
 import {
@@ -44,6 +44,9 @@ export interface UmbrellaExtensionOptions {
   performanceFlushIntervalMs?: number;
   /** The pageload transaction name. Default the current path (`location.pathname`) or `pageload`. */
   pageName?: string;
+  /** Open a `navigation` transaction per SPA route change (History/Navigation-API detection). Browser only;
+   *  default `true`. Requires performance on. */
+  traceNavigations?: boolean;
 
   /**
    * Enable W3C `traceparent` + the `bugsee=` session tracestate propagation on outgoing requests (the
@@ -139,6 +142,14 @@ export function wireUmbrella(
       : undefined;
   const send = otlpSend !== undefined ? teeSend(bugseeSend, otlpSend) : bugseeSend;
 
+  // SPA navigation transactions (F1c) — browser only (`platform.pageload`; Node has no History/SPA
+  // navigation), opt-out via `traceNavigations: false`. The detector self-skips if the browser globals are
+  // absent; wirePerformance subscribes to it (which activates it) and tears it down on stop.
+  const navigationSource =
+    platform.pageload && (options.traceNavigations ?? true)
+      ? createBrowserNavigationSource()
+      : undefined;
+
   const wired = wirePerformance({
     client,
     pageName: options.pageName ?? defaultPageName(),
@@ -149,6 +160,7 @@ export function wireUmbrella(
     flushIntervalMs: perf.options.get(PerformanceOption.FlushIntervalMs, 30000),
     pageload: platform.pageload,
     networkSource: internals.network.interceptor,
+    ...(navigationSource !== undefined ? { navigationSource } : {}),
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),
     ...(internals.onError !== undefined ? { onError: internals.onError } : {}),

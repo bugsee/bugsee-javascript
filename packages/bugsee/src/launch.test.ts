@@ -144,6 +144,40 @@ describe('bugsee umbrella launch', () => {
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
+  it('opens a `navigation` transaction on a real history.pushState (F1 navigation wiring)', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    const location = { pathname: '/home' };
+    vi.stubGlobal('location', location);
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = track(launch('tok', base({ carrier: {} })));
+    // The launch wired + activated the navigation source, which patched history.pushState.
+    location.pathname = '/users/42'; // the browser updated the URL …
+    (globalThis as { history: { pushState: (...a: unknown[]) => void } }).history.pushState(
+      {},
+      '',
+      '/users/42',
+    ); // … then the app navigated
+    expect(pushState).toHaveBeenCalled(); // the app's nav is not blocked
+    const active = client.ext('performance').getActiveSpan() as Transaction;
+    expect(active.getOperation()).toBe('navigation');
+    expect(active.getName()).toBe('/users/42');
+    expect(active.getAttributes()['nav.source']).toBe('url');
+  });
+
+  it('does NOT wire navigation when traceNavigations is false', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    vi.stubGlobal('location', { pathname: '/home' });
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = track(launch('tok', base({ carrier: {}, traceNavigations: false })));
+    expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState); // NOT patched
+    // the active span stays the pageload transaction (no navigation wiring)
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+  });
+
   it('wires the send: a finished pageload transaction POSTs to /v2/performance/transactions with the session Bearer', async () => {
     const carrier = {};
     const { scheduler, fire } = fakeScheduler();
