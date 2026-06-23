@@ -110,11 +110,13 @@ describe('collectNavigations', () => {
     expect(started).toHaveLength(2);
   });
 
-  it('finishes a navigation OK on idle, and keeps it alive on network activity', () => {
+  it('keeps a navigation alive on EACH network stage (resets the idle timer), then finishes OK on idle', () => {
     const source = navSource();
     const network = netSource();
     const { api, started } = fakeApi();
     const t = fakeTimer();
+    const clearCalls = () =>
+      (t.timer.clearTimeout as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
     collectNavigations({
       source,
       api,
@@ -124,10 +126,14 @@ describe('collectNavigations', () => {
       idleTimeoutMs: 1000,
     });
     source.emit('navigate', detail({ to: '/slow' }));
-    // a request starts → the idle timer is reset (kept alive)
-    network.emit('before', { id: 'r1', timestamp: 0 } as unknown as NetworkEvent);
-    expect(t.timer.clearTimeout).toHaveBeenCalled(); // keepAlive cleared the prior idle timer
-    t.fire(1000); // the (reset) idle timer elapses
+    // A request START *and* its END (complete/error/abort) each reset the idle timer (so the txn spans the
+    // navigation's full work). Each wired stage must clear+reschedule the idle timer exactly once.
+    for (const stage of ['before', 'complete', 'error', 'abort'] as const) {
+      const before = clearCalls();
+      network.emit(stage, { id: 'r', timestamp: 0 } as unknown as NetworkEvent);
+      expect(clearCalls()).toBe(before + 1); // this stage reset the idle timer (if it weren't wired, no reset)
+    }
+    t.fire(1000); // the (last-reset) idle timer elapses
     expect(started[0]?.finish).toHaveBeenCalledWith('OK');
   });
 

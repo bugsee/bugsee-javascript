@@ -1,6 +1,7 @@
 # Frontend adapters — design (Draft v1, 2026-06-23)
 
-Status: **DESIGN / brainstorming.** No code yet. Supersedes the brief "Frontend hooks" stub in
+Status: **IN PROGRESS.** F0 (backend CORS) + F1 (navigation foundation) BUILT + reviewed-to-convergence on
+`master`; F2–F7+ pending. Supersedes the brief "Frontend hooks" stub in
 `docs/design/cross-project-tracing.md` (§"Frontend hooks"). Builds on the completed cross-project tracing
 backend (X0–X5/Y1/X3b/X4) and the existing `@bugsee/performance` (web-vitals + pageload) + `@bugsee/browser`.
 
@@ -123,10 +124,11 @@ are cheap parity wins.
 | D4 | **SSR→client pageload trace continuation via an injected `<meta name="traceparent">` (+ `bugsee=`) the client reads on load** (instead of a new root trace). The backend adapters inject it into SSR HTML. | Universal pattern (OTel document-load, Sentry `getTraceMetaTags`). Backend has no readable inbound traceparent on a top-level document navigation. |
 | D5 | **Naming = two-phase (raw URL on navigation-start → parameterized route on resolve, with a `source: 'url'\|'route'` provenance attr) + a manual `setRouteName()/startView()` escape hatch.** | Sentry Angular pattern; universal escape hatch (DD/NR). |
 | D6 | **Web-vitals attribution: LCP/FCP on the initial pageload transaction only; CLS/INP on every transaction incl. navigations.** | Datadog-explicit; Chrome Soft-Navigations stance. |
-| D7 | **Idle-transaction lifecycle**: finish a nav/interaction transaction after an idle gap with no open child (default ~1s), a hard cap (~30s), per-child timeout, and background-cancel on tab hide. | Sentry idleTimeout/finalTimeout/childSpanTimeout + markBackgroundSpan. |
+| D7 | **Idle-transaction lifecycle**: finish a nav/interaction transaction after an idle gap with no open child (default ~1s), a hard cap (~30s), per-child timeout, and background-cancel on tab hide. **F1: idle + final + background-cancel BUILT; `childSpanTimeout` (Sentry's per-child 15s cap) DEFERRED** — the idle-keepalive + the final cap cover the runaway case. Also: "child activity" == NETWORK activity for now (the keepalive resets on fetch/xhr start+end); DOM/interaction keepalive is F4. | Sentry idleTimeout/finalTimeout/childSpanTimeout + markBackgroundSpan. |
 | D8 | **React first**, then fan out. Adapter = framework error seam (`ErrorBoundary`/`withErrorBoundary`, componentStack via `error.cause`) + router→naming seam (react-router v6/v7). | User choice; backend precedent (express-first). |
 | D9 | **OTel-interoperable, not OTel-shaped.** Keep transactions→spans; defer the `browser.*` events re-modelling. Add `browser.*` resource attrs as a cheap parity win. | We are OTel-compatible (Y1/X2); full event re-modelling is out of scope. |
-| D10 | **Navigation lives in `@bugsee/browser` as an EXTENSIBLE pub/sub SOURCE.** Framework adapters both REFINE built-in (browser-global) navigations AND EMIT their own for URL-less framework navigations (virtual/tab/modal routes). | User direction; the thin-kernel pub/sub model (sources are listenable; adapters are additional sources/refiners) — same shape as the backend server-instrument. |
+| D10 | **Navigation lives in `@bugsee/browser` as an EXTENSIBLE pub/sub SOURCE.** Framework adapters both REFINE built-in (browser-global) navigations AND EMIT their own for URL-less framework navigations (virtual/tab/modal routes). **F1 delivers the EMIT half** (`startNavigation()`); the **REFINE half** (renaming the in-flight nav's route on the active transaction) is **F5** (the naming seam, D5) — `collectNavigations` keeps the active handle private until then. | User direction; the thin-kernel pub/sub model (sources are listenable; adapters are additional sources/refiners) — same shape as the backend server-instrument. |
+| D12 | **Pageload + navigation transactions COEXIST (F1).** The pageload owns the initial load + web-vitals and finishes on tab-hide (web-vitals-coupled, NOT idle); navigations own route changes (idle-finished). The single active slot (D11) follows the MOST RECENT — `http.client` spans attach to whatever is active. The first navigation does NOT finish the pageload (it lingers to capture page-session vitals through hidden). | Our pageload is web-vitals-coupled, unlike Sentry (which finishes the pageload on the first route change). Per-navigation vitals (D6) + a possible pageload-handoff are a later slice. |
 | D11 | **Browser active-context = the performance ext's single-slot `getActiveSpan` (correlation-by-tagging to the current activity), NOT AsyncLocalStorage.** In-flight fetch/xhr attach to the one open pageload/navigation/interaction transaction; the async tail of an interaction is captured by a bounded **activity window** (count in-flight requests / DOM activity, close on idle). zone.js-style async-propagation is a deferred opt-in. | RESEARCH (facts): the browser is single-threaded / run-to-completion with no request concurrency (MDN), so a single "current activity" pointer suffices — exactly what **Sentry-browser** (attach-to-root-span; "async context in browser still not implemented") and **OTel's default `StackContextManager`** ("doesn't fully support async") do. Datadog uses a current-view-by-time + click activity-window. Only New Relic pays for full API-wrapping (its own zone.js-equivalent). Sentry registers AsyncLocalStorage only on Node, nothing on browser — mirrors our server-ALS / browser-tagging split. |
 
 ---
@@ -138,7 +140,7 @@ adapters refine + name), so the FE reuses the proven seam shape:
 
 ```
 @bugsee/browser (platform: browser-global hooks)        @bugsee/performance (APM, umbrella-wired)
- ├─ navigation-instrument   ── perf.startTransaction ──▶  ├─ navigation / interaction transactions
+ ├─ navigation-source       ── perf.startTransaction ──▶  ├─ navigation / interaction transactions
  │   History patch + popstate + hashchange                │   (operation: navigation | ui.interaction)
  │   ↑ upgrade: Navigation API                            ├─ idle-transaction lifecycle (D7)
  ├─ interaction-instrument  ── perf.startTransaction ──▶  ├─ web-vitals attribution (D6) [exists, extend]
@@ -155,7 +157,7 @@ adapters refine + name), so the FE reuses the proven seam shape:
 ```
 
 Key components (all new unless noted):
-1. **`navigation-instrument` (`@bugsee/browser`) — an EXTENSIBLE navigation SOURCE** (D10). It is a listenable
+1. **`navigation-source` (`@bugsee/browser`, `createBrowserNavigationSource`) — an EXTENSIBLE navigation SOURCE** (D10) [BUILT, F1]. It is a listenable
    pub/sub source (extends the core multi-key emitter / interceptor base, like every other source — the
    thin-kernel pub/sub model). It has two halves:
    - **Built-in browser-global detectors** (History `pushState`/`replaceState` patch + `popstate` + `hashchange`,
@@ -234,8 +236,12 @@ framework first (table per adapter, as the backend did).
 
 - **F0** [DONE 2026-06-23] Backend X4 CORS extension (§5) — `timingAllowOrigin` + `exposeTraceresponse` on the
   `traceResponse` option; unblocks cross-origin FE reads.
-- **F1** Navigation detection (`@bugsee/browser` History-patch + Navigation-API upgrade) → navigation
-  transactions, idle lifecycle (D2, D7).
+- **F1** [DONE 2026-06-23] Navigation detection (`@bugsee/browser` History-patch + Navigation-API upgrade) →
+  navigation transactions, idle lifecycle (D2, D7, D10-emit, D11, D12). Built as F1a (idle-transaction,
+  `@bugsee/performance`) + F1b (the extensible navigation source, `@bugsee/browser`) + F1c (`collectNavigations`
+  + `wirePerformance` wiring) + the umbrella connection (`traceNavigations`, browser-only). Reviewed-to-
+  convergence (3-agent: 0 SEV1; closed 3 SEV2 test-strength gaps + doc deferrals for D7 `childSpanTimeout` /
+  D10 refine→F5). The keepalive is network-only (DOM/interaction is F4); the refine/naming seam is F5.
 - **F2** Pageload `<meta>` continuation (D4) + the `browser.*` resource attrs (D9).
 - **F3** Return-header reader (D3) — Server-Timing (passive observer) + traceresponse (owned Response) →
   network-span refinement + backend-span child link.

@@ -174,6 +174,14 @@ describe('wirePerformance', () => {
       expect(active.getOperation()).toBe('navigation');
       expect(active.getName()).toBe('/users/42');
       expect(active.getAttributes()['nav.source']).toBe('url');
+      expect(active.getAttributes()['nav.type']).toBe('push');
+      // The networkSource is forwarded into collectNavigations: in-flight activity keeps the navigation alive
+      // PAST its idle timeout (defaults 1000ms). Advance near the timeout, fire a request, advance past the
+      // ORIGINAL deadline — the nav must still be active (the keepAlive reset it).
+      vi.advanceTimersByTime(900);
+      net.emit('before', netEvent({ id: 'r1', timestamp: 0, method: 'GET', url: 'https://x/a' }));
+      vi.advanceTimersByTime(200); // 1100ms total > the 1000ms idle, but reset at 900 → not yet idle
+      expect(perf()?.getActiveSpan()).toBe(active); // still active — undefined here if networkSource weren't forwarded
       wired?.stop(); // tears down the navigation wiring (offNav) without error
     } finally {
       vi.useRealTimers();

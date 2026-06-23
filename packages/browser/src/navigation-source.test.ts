@@ -108,11 +108,16 @@ describe('createBrowserNavigationSource', () => {
     });
     // a relative/unparseable url is used as-is; a missing/unknown type defaults to 'push'.
     navHandler?.({ destination: { url: '/orders/42' } });
+    // the `push` + `traverse` types map through as-is (the other navTypeFor arms).
+    navHandler?.({ navigationType: 'push', destination: { url: '/home' } });
+    navHandler?.({ navigationType: 'traverse', destination: { url: '/back' } });
     // a navigate event with NO destination url (e.g. a reload) → nothing to emit; the `reload` type maps as-is.
     navHandler?.({ navigationType: 'reload' });
     expect(events).toEqual([
       { to: '/dashboard', navigationType: 'replace', source: 'url' },
       { to: '/orders/42', navigationType: 'push', source: 'url' },
+      { to: '/home', navigationType: 'push', source: 'url' },
+      { to: '/back', navigationType: 'traverse', source: 'url' },
     ]);
     off(); // dropping the last subscriber deactivates → the navigate listener is removed
     expect(navigation.removeEventListener).toHaveBeenCalledWith('navigate', expect.any(Function));
