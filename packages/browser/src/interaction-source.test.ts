@@ -169,10 +169,15 @@ describe('createBrowserInteractionSource', () => {
     expect(() => wire({ PerformanceObserver: undefined })).not.toThrow();
   });
 
-  it('swallows an observe() that throws (no observer left, no throw to the app)', () => {
+  it('swallows an observe() that throws; a later deactivate does not disconnect the failed observer', () => {
     const { Ctor, instances } = fakeObserver({ throwOnObserve: true });
-    expect(() => wire({ PerformanceObserver: Ctor })).not.toThrow();
-    instances[0]?.disconnect(); // sanity: an instance was constructed but its observe threw
+    let off: (() => void) | undefined;
+    expect(() => {
+      off = wire({ PerformanceObserver: Ctor }).off;
+    }).not.toThrow();
+    expect(instances).toHaveLength(1); // an instance was constructed, but its observe threw
+    off?.(); // deactivate — #observer was cleared in the catch, so disconnect() must NOT be called
+    expect(instances[0]?.disconnected).toBe(false); // pins `this.#observer = undefined` in the catch
   });
 
   it('disconnects the observer when the last subscriber unsubscribes (deactivate)', () => {
