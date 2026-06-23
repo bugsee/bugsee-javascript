@@ -19,6 +19,49 @@ export interface HttpSpanCollectorDeps {
 
 const END_STAGES = ['complete', 'error', 'abort'] as const;
 
+const TRACE_ID_RE = /^[0-9a-f]{32}$/;
+const SPAN_ID_RE = /^[0-9a-f]{16}$/;
+const ZERO_SPAN_ID = '0000000000000000';
+
+/** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`. */
+function spanIdFromTraceContext(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const [, traceId = '', spanId = ''] = value.trim().split('-');
+  if (!TRACE_ID_RE.test(traceId) || !SPAN_ID_RE.test(spanId) || spanId === ZERO_SPAN_ID) {
+    return undefined;
+  }
+  return spanId;
+}
+
+/** Pull the trace context out of a `Server-Timing` value: a `traceparent;desc="00-…"` metric entry. */
+function serverTimingTraceContext(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return /(?:^|,)\s*traceparent\s*;\s*desc="([^"]+)"/.exec(value)?.[1];
+}
+
+/**
+ * F3 — the BE→FE RETURN-HEADER reader (the cross-project differentiator). The backend (X4) returns its
+ * `http.server` span via `traceresponse` and/or `Server-Timing: traceparent;desc="…"` (cross-origin-readable
+ * once F0's TAO/ACEH are set). For an SDK-owned request the response headers are already captured on the
+ * `complete` event (`custom.headers`); read the backend span id from them so the FE `http.client` span records
+ * which server span handled it — completing the FE↔BE link on the frontend side. Case-insensitive; prefers
+ * `traceresponse`, falls back to `Server-Timing`. No competitor reads this.
+ */
+function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): string | undefined {
+  if (headers === undefined) return undefined;
+  let traceResponse: string | undefined;
+  let serverTiming: string | undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (lower === 'traceresponse') traceResponse = value;
+    else if (lower === 'server-timing') serverTiming = value;
+  }
+  return (
+    spanIdFromTraceContext(traceResponse) ??
+    spanIdFromTraceContext(serverTimingTraceContext(serverTiming))
+  );
+}
+
 // Per-collector ceiling on http.client spans, symmetric with the resource/long-task caps in page-load
 // (bounds the §8.8 wire when a single transaction is long-lived, e.g. the SPA continuous-transaction
 // mode — a classic pageload finishes on hide and never approaches this).
@@ -41,6 +84,9 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     if (active === undefined) return; // no transaction in flight → not part of a trace
     if (recorded >= MAX_HTTP_SPANS) return; // cap reached → drop the overflow
     recorded++;
+    // F3: read the backend's http.server span from the response's return headers (X4) and stamp it on the
+    // FE client span — the FE↔BE link completed on the frontend side.
+    const backendSpanId = backendSpanIdFromHeaders(e.custom?.headers);
     active.recordChildSpan('http.client', {
       startTimestampMs: start.startTimestampMs,
       endTimestampMs: e.timestamp,
@@ -49,6 +95,7 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
         'http.method': start.method,
         'http.mechanism': e.mechanism,
         ...(e.status ? { 'http.status_code': e.status } : {}), // 0 = cross-origin opaque → omit
+        ...(backendSpanId !== undefined ? { 'bugsee.server_span_id': backendSpanId } : {}),
       },
     });
   };

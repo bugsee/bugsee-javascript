@@ -250,8 +250,15 @@ framework first (table per adapter, as the backend did).
   → pageload joins the SSR trace). **DEFERRED: the `browser.*` resource attrs (D9)** — a cheap OTel-parity add
   (browser.brands/platform/mobile/language from navigator.userAgentData), OTLP-tee-only + orthogonal; small
   follow-up.
-- **F3** Return-header reader (D3) — Server-Timing (passive observer) + traceresponse (owned Response) →
-  network-span refinement + backend-span child link.
+- **F3** [DONE 2026-06-23 — active path] Return-header READER (D3, the cross-project differentiator F0
+  unblocked). In `@bugsee/performance/http-spans.ts`: on a completed request, read the backend `http.server`
+  span id from the response's `traceresponse` (preferred) / `Server-Timing: traceparent;desc="…"` (fallback)
+  header — already captured in the NetworkEvent's `custom.headers` for SDK-owned requests — and stamp it on
+  the FE `http.client` span as `bugsee.server_span_id` (the FE↔BE link recorded on the frontend side). Parsed
+  inline (performance has no capture dep); case-insensitive; rejects invalid/zero ids. Mutation-verified +
+  a `wirePerformance` e2e test. NO competitor reads this. **DEFERRED: the PASSIVE `PerformanceObserver`
+  (`PerformanceResourceTiming.serverTiming`) path** — for resources the SDK did NOT issue (cross-origin,
+  TAO-gated); the active path covers the common SDK-owned case. Follow-up F3b.
 - **F4** Interaction transactions (Event Timing) + the active-context binding (O1) (D6 INP attribution).
 - **F5** The naming seam (D5) + the manual `setRouteName()/startNavigation()` API.
 - **F6** `@bugsee/react` — ErrorBoundary + react-router naming (Phase 2).

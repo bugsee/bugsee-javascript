@@ -66,6 +66,92 @@ describe('collectHttpSpans', () => {
     ]);
   });
 
+  it('F3: stamps the backend http.server span id read from the response `traceresponse` header', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'https://api/x' }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'r1',
+        timestamp: 50,
+        status: 200,
+        custom: {
+          headers: { traceresponse: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+        },
+      }),
+    );
+    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
+  });
+
+  it('F3: case-insensitive header lookup (e.g. `Traceresponse`)', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'u' }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'r1',
+        timestamp: 50,
+        custom: {
+          headers: { Traceresponse: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+        },
+      }),
+    );
+    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
+  });
+
+  it('F3: falls back to `Server-Timing` (traceparent;desc=...) when there is no traceresponse', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'u' }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'r1',
+        timestamp: 50,
+        custom: {
+          headers: {
+            'server-timing':
+              'app;dur=5, traceparent;desc="00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"',
+          },
+        },
+      }),
+    );
+    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
+  });
+
+  it('F3: no stamp for an invalid traceresponse, a zero span id, or no return header', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'a', timestamp: 1, method: 'GET', url: 'u' }));
+    emit(
+      'complete',
+      netEvent({ id: 'a', timestamp: 2, custom: { headers: { traceresponse: 'not-valid' } } }),
+    );
+    emit('before', netEvent({ id: 'b', timestamp: 1, method: 'GET', url: 'u' }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'b',
+        timestamp: 2,
+        custom: {
+          headers: { traceresponse: '00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01' },
+        },
+      }),
+    );
+    emit('before', netEvent({ id: 'c', timestamp: 1, method: 'GET', url: 'u' }));
+    emit('complete', netEvent({ id: 'c', timestamp: 2 })); // no custom.headers
+    for (const call of calls) {
+      expect(call.opts.attributes?.['bugsee.server_span_id']).toBeUndefined();
+    }
+    expect(calls).toHaveLength(3);
+  });
+
   it('finishes on error/abort too, and omits a 0 status (cross-origin opaque)', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();

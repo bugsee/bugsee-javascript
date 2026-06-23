@@ -149,14 +149,27 @@ describe('wirePerformance', () => {
     expect((perf()?.getActiveSpan() as Transaction).isSampled()).toBe(false);
   });
 
-  it('wires http spans onto the active pageload transaction when a network source is provided', () => {
+  it('wires http spans onto the active transaction + reads the backend span from traceresponse (F3)', () => {
     const { client, perf } = fakeClient();
     const { source, emit } = fakeNetworkSource();
     wirePerformance(base({ client, networkSource: source }));
     emit('before', netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'https://x/a' }));
-    emit('complete', netEvent({ id: 'r1', timestamp: 50, status: 200 }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'r1',
+        timestamp: 50,
+        status: 200,
+        custom: {
+          headers: { traceresponse: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' },
+        },
+      } as Partial<NetworkEvent>),
+    );
     const wire = serializeTransaction(perf()?.getActiveSpan() as Transaction);
-    expect(wire.spans.some((s) => s.operation === 'http.client')).toBe(true);
+    const httpSpan = wire.spans.find((s) => s.operation === 'http.client');
+    expect(httpSpan).toBeDefined();
+    // F3: the FE client span records WHICH backend http.server span handled it (read off the return header).
+    expect(httpSpan?.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
   it('opens a `navigation` transaction from the navigation source, stamped + idle-managed (F1c)', () => {
