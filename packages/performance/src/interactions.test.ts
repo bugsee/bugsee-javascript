@@ -53,6 +53,8 @@ function fakeApi() {
       return t;
     }) as unknown as PerformanceApi['startTransaction'],
     getActiveSpan: () => active,
+    setActiveTransactionName: () => {}, // unused by the interaction collector (the seam is F5/controller)
+    setRouteName: () => {},
   };
   return { api, started, setActive: (s: Span | undefined) => (active = s) };
 }

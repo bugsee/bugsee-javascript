@@ -253,6 +253,27 @@ describe('wirePerformance', () => {
     }
   });
 
+  it('two-phase naming (F5/D5): a navigation starts raw-URL, then setRouteName refines the active txn', () => {
+    vi.useFakeTimers();
+    try {
+      const { client, perf } = fakeClient();
+      const nav = fakeNavSource();
+      const wired = wirePerformance(
+        base({ client, navigationSource: nav.source, pageload: false }),
+      );
+      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' }); // phase 1: raw URL
+      expect((perf()?.getActiveSpan() as Transaction).getName()).toBe('/users/42');
+      perf()?.setRouteName('/users/:id'); // phase 2: a router adapter resolves the route
+      const active = perf()?.getActiveSpan() as Transaction;
+      expect(active.getName()).toBe('/users/:id'); // the in-flight navigation was refined in place
+      expect(active.getAttributes()['bugsee.name_source']).toBe('route');
+      expect(active.getAttributes()['nav.source']).toBe('url'); // detection provenance is untouched
+      wired?.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('continues a server-injected trace on the pageload from pageloadContinuation (F2/D4)', () => {
     const { client, perf } = fakeClient();
     wirePerformance(

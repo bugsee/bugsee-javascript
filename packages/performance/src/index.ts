@@ -9,9 +9,11 @@
 
 export {
   createPerformanceController,
+  NAME_SOURCE_ATTRIBUTE,
   type PerformanceApi,
   type PerformanceControllerDeps,
   type StartTransactionOptions,
+  type TransactionNameSource,
 } from './controller';
 export {
   createPerformanceExtension,

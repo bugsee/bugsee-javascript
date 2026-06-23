@@ -266,7 +266,13 @@ framework first (table per adapter, as the backend did).
   double-count; the lingering pageload does NOT block — D11/D12). `traceInteractions` default-on, browser
   only. **Per-interaction CLS/INP web-vital ATTRIBUTION (D6) is DEFERRED** to a later slice (per D12 —
   per-navigation/interaction vitals are out of F4; F4 stamps only the Event-Timing latency attribute).
-- **F5** The naming seam (D5) + the manual `setRouteName()/startNavigation()` API.
+- **F5 DONE** (2026-06-24) The naming seam (D5) + the D10 REFINE half. `PerformanceApi` gained
+  `setActiveTransactionName(name, { source })` + the `setRouteName(name)` sugar (ext('performance'), so it
+  is the public manual escape hatch AND what a router adapter calls). Renames the ACTIVE transaction in
+  place + stamps `bugsee.name_source` ('url'|'route'|'custom'); no-op when nothing is active. The two-phase:
+  a navigation starts raw-URL (phase 1, F1c — `nav.source` detection untouched), an adapter refines it to
+  the resolved route on routing-resolve (phase 2). The D10 EMIT half (`startNavigation`) already exists on
+  the nav source (F1); its public surfacing is co-designed with the first real consumer in **F6**.
 - **F6** `@bugsee/react` — ErrorBoundary + react-router naming (Phase 2).
 - **F7+** fan-out: vue / svelte / angular / nextjs (Phase 3).
 

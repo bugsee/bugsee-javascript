@@ -29,6 +29,15 @@ export interface StartTransactionOptions {
   continuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
 }
 
+/** Provenance of a transaction's current NAME (frontend-adapters D5, the two-phase naming seam). `url` =
+ *  the raw browser path (phase 1, on navigation start); `route` = a resolved/parameterized route
+ *  (`/users/:id`, phase 2 — a framework adapter refined it once routing ran); `custom` = an app-supplied
+ *  name. Stamped on the transaction as `bugsee.name_source`. */
+export type TransactionNameSource = 'url' | 'route' | 'custom';
+
+/** The attribute key the naming seam stamps to record {@link TransactionNameSource}. */
+export const NAME_SOURCE_ATTRIBUTE = 'bugsee.name_source';
+
 /** The public ext('performance') surface. */
 export interface PerformanceApi {
   /** Begin a transaction (the root of a trace). */
@@ -39,6 +48,17 @@ export interface PerformanceApi {
    * async-context nesting is a later slice.
    */
   getActiveSpan(): Span | undefined;
+  /**
+   * Rename the ACTIVE transaction (the in-flight pageload / navigation / interaction) and stamp the naming
+   * provenance (`bugsee.name_source`). The frontend-adapters naming seam (D5) + the D10 REFINE half: a
+   * framework adapter (or the app) refines the raw-URL navigation name to the resolved route once routing
+   * has run — the second phase of two-phase naming. A NO-OP when no transaction is active (nothing to
+   * name). Default `source` is `custom`.
+   */
+  setActiveTransactionName(name: string, opts?: { source?: TransactionNameSource }): void;
+  /** Sugar for {@link setActiveTransactionName}(name, { source: 'route' }) — the manual route-naming
+   *  escape hatch (D5); what a router adapter calls on navigation resolve. */
+  setRouteName(name: string): void;
 }
 
 export interface PerformanceControllerDeps {
@@ -94,6 +114,16 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
     },
     getActiveSpan() {
       return active;
+    },
+    setActiveTransactionName(name, opts) {
+      if (active === undefined) return; // nothing in flight to name
+      active.setName(name);
+      active.setAttribute(NAME_SOURCE_ATTRIBUTE, opts?.source ?? 'custom');
+    },
+    setRouteName(name) {
+      if (active === undefined) return;
+      active.setName(name);
+      active.setAttribute(NAME_SOURCE_ATTRIBUTE, 'route');
     },
   };
 }

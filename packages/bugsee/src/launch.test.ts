@@ -241,6 +241,16 @@ describe('bugsee umbrella launch', () => {
     );
   });
 
+  it('exposes the public naming seam: ext(performance).setRouteName refines the active transaction (F5/D5)', () => {
+    const client = track(launch('tok', base({ carrier: {}, pageName: '/raw' })));
+    const perf = client.ext('performance');
+    expect((perf.getActiveSpan() as Transaction).getName()).toBe('/raw'); // the active pageload
+    perf.setRouteName('/checkout/:step'); // the manual escape hatch (what a router adapter calls)
+    const active = perf.getActiveSpan() as Transaction;
+    expect(active.getName()).toBe('/checkout/:step');
+    expect(active.getAttributes()['bugsee.name_source']).toBe('route');
+  });
+
   it('does NOT wire navigation when traceNavigations is false', () => {
     const pushState = vi.fn();
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });

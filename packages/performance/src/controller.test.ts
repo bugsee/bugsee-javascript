@@ -161,4 +161,54 @@ describe('createPerformanceController', () => {
     api.startTransaction({ name: 'T', operation: 'op' }).finish();
     expect(store.size()).toBe(1);
   });
+
+  it('setActiveTransactionName refines the active transaction name + stamps the provenance (D5)', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const txn = api.startTransaction({ name: '/users/42', operation: 'navigation' }); // phase 1: raw URL
+    api.setActiveTransactionName('/users/:id', { source: 'route' }); // phase 2: resolved route
+    expect(txn.getName()).toBe('/users/:id');
+    expect(txn.getAttributes()['bugsee.name_source']).toBe('route');
+  });
+
+  it('setActiveTransactionName defaults the provenance to custom when no source is given', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const txn = api.startTransaction({ name: 'x', operation: 'pageload' });
+    api.setActiveTransactionName('Dashboard');
+    expect(txn.getName()).toBe('Dashboard');
+    expect(txn.getAttributes()['bugsee.name_source']).toBe('custom');
+  });
+
+  it('setRouteName is sugar for setActiveTransactionName(name, { source: route })', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const txn = api.startTransaction({ name: '/raw', operation: 'navigation' });
+    api.setRouteName('/orders/:id');
+    expect(txn.getName()).toBe('/orders/:id');
+    expect(txn.getAttributes()['bugsee.name_source']).toBe('route');
+  });
+
+  it('the naming seam is a no-op when no transaction is active (nothing to name)', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    expect(api.getActiveSpan()).toBeUndefined();
+    expect(() => api.setActiveTransactionName('x', { source: 'route' })).not.toThrow();
+    expect(() => api.setRouteName('y')).not.toThrow();
+    // after the active transaction finishes, the seam no longer touches it
+    const txn = api.startTransaction({ name: 'orig', operation: 'navigation' });
+    txn.finish();
+    api.setRouteName('/late'); // active was cleared on finish → must NOT rename the finished txn
+    expect(txn.getName()).toBe('orig');
+  });
+
+  it('the seam renames only the ACTIVE (latest) transaction, not a superseded one', () => {
+    const store = createTransactionStore();
+    const api = createPerformanceController({ clock: fixedClock, store });
+    const first = api.startTransaction({ name: 'first', operation: 'navigation' });
+    const second = api.startTransaction({ name: 'second', operation: 'navigation' });
+    api.setRouteName('/resolved');
+    expect(second.getName()).toBe('/resolved'); // the active one is refined
+    expect(first.getName()).toBe('first'); // the superseded one is untouched
+  });
 });

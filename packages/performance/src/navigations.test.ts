@@ -50,6 +50,8 @@ function fakeApi() {
       return t;
     }),
     getActiveSpan: (): Span | undefined => undefined,
+    setActiveTransactionName: () => {}, // unused by the navigation collector (the seam is F5/controller)
+    setRouteName: () => {},
   };
   return { api, started };
 }
