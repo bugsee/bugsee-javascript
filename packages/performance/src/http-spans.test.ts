@@ -127,6 +127,29 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
+  it('F3: reads `Server-Timing` when traceparent is the SOLE entry (the real X4 backend format)', () => {
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'u' }));
+    emit(
+      'complete',
+      netEvent({
+        id: 'r1',
+        timestamp: 50,
+        // No leading `app;dur=5,` — server-instrument emits traceparent as the SOLE entry, which only the
+        // regex's `^` alternative matches (the realistic backend case).
+        custom: {
+          headers: {
+            'server-timing':
+              'traceparent;desc="00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"',
+          },
+        },
+      }),
+    );
+    expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
+  });
+
   it('F3: no stamp for invalid / ff-version / zero trace / zero span / no return header', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
@@ -186,7 +209,7 @@ describe('collectHttpSpans', () => {
     expect(calls).toEqual([]);
   });
 
-  it('caps the http.client spans per collector and drops the overflow (symmetric with resource/long-task caps)', () => {
+  it('caps the http.client spans for ONE transaction and drops the overflow (symmetric with resource/long-task caps)', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -194,8 +217,35 @@ describe('collectHttpSpans', () => {
       emit('before', netEvent({ id: `r${i}`, timestamp: i, method: 'GET', url: `https://x/${i}` }));
       emit('complete', netEvent({ id: `r${i}`, timestamp: i + 1, status: 200 }));
     }
-    expect(calls).toHaveLength(100); // MAX_HTTP_SPANS — beyond it, completed requests are dropped
+    expect(calls).toHaveLength(100); // MAX_HTTP_SPANS for this transaction — beyond it, dropped
     expect(calls[99]?.opts.description).toBe('GET https://x/99'); // the first 100 are kept, in order
+  });
+
+  it('the cap is PER-TRANSACTION: a new active transaction gets a FRESH budget (no session-wide starvation)', () => {
+    const { source, emit } = fakeNetworkSource();
+    const calls: { op: string; opts: RecordChildSpanOptions }[] = [];
+    const mkSpan = () => ({
+      recordChildSpan: (op: string, opts: RecordChildSpanOptions) => calls.push({ op, opts }),
+    });
+    const txnA = mkSpan();
+    const txnB = mkSpan();
+    let active = txnA;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+    // Transaction A records past its cap (the pageload of a busy SPA).
+    for (let i = 0; i < 120; i++) {
+      emit(
+        'before',
+        netEvent({ id: `a${i}`, timestamp: i, method: 'GET', url: `https://x/a${i}` }),
+      );
+      emit('complete', netEvent({ id: `a${i}`, timestamp: i + 1, status: 200 }));
+    }
+    expect(calls).toHaveLength(100); // A capped at MAX_HTTP_SPANS
+    // A later navigation becomes active → it must record from a FRESH budget, NOT be starved by A's count
+    // (under the old session-global counter this request would have been dropped).
+    active = txnB;
+    emit('before', netEvent({ id: 'b1', timestamp: 200, method: 'GET', url: 'https://x/b1' }));
+    emit('complete', netEvent({ id: 'b1', timestamp: 201, status: 200 }));
+    expect(calls).toHaveLength(101); // B recorded its first span
   });
 
   it('counts only RECORDED spans toward the cap — drops (no active span) do not consume the budget', () => {

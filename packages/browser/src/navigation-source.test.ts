@@ -44,6 +44,16 @@ describe('createBrowserNavigationSource', () => {
     expect(history.pushState).toBe(origPush); // restored
   });
 
+  it('removes the popstate + hashchange listeners on deactivation (no leak across launch/stop)', () => {
+    const { env, target } = fakeEnv();
+    const { off } = collect(createBrowserNavigationSource(env));
+    expect(target.addEventListener).toHaveBeenCalledWith('popstate', expect.any(Function));
+    expect(target.addEventListener).toHaveBeenCalledWith('hashchange', expect.any(Function));
+    off(); // dropping the last subscriber deactivates
+    expect(target.removeEventListener).toHaveBeenCalledWith('popstate', expect.any(Function));
+    expect(target.removeEventListener).toHaveBeenCalledWith('hashchange', expect.any(Function));
+  });
+
   it('emits a `push` navigation when the app calls the patched pushState — original called FIRST', () => {
     const { env, history, origPush, location } = fakeEnv();
     const source = createBrowserNavigationSource(env);

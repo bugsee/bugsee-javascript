@@ -101,8 +101,9 @@ describe('collectNavigations', () => {
       name: '/users/42',
       operation: 'navigation',
     });
-    expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.source', 'url');
+    expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.source', 'url'); // detection axis
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.type', 'push');
+    expect(started[0]?.setAttribute).toHaveBeenCalledWith('bugsee.name_source', 'url'); // phase-1 naming (D5)
   });
 
   it('finishes the PREVIOUS navigation when a new one starts (a view is superseded)', () => {

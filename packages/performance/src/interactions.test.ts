@@ -191,6 +191,28 @@ describe('collectInteractions', () => {
     expect(started[0]?.finish).toHaveBeenCalledWith('OK');
   });
 
+  it('does NOT keep an ORPHANED interaction alive on network activity once a navigation owns the slot', () => {
+    const source = intSource();
+    const network = netSource();
+    const { api, setActive } = fakeApi();
+    const t = fakeTimer();
+    const clearCalls = () =>
+      (t.timer.clearTimeout as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    collectInteractions({
+      source,
+      api,
+      networkSource: network,
+      env: fakeEnv().env,
+      timer: t.timer,
+      idleTimeoutMs: 1000,
+    });
+    source.emit('interact', detail({ interactionId: 1 })); // the interaction owns the active slot
+    setActive(fakeTxn('navigation')); // a navigation steals it → the interaction is now orphaned
+    const before = clearCalls();
+    network.emit('before', { id: 'r', timestamp: 0 } as unknown as NetworkEvent);
+    expect(clearCalls()).toBe(before); // NO idle-timer reset — the orphan is not propped up by foreign traffic
+  });
+
   it('cancels the in-flight interaction when the tab is hidden', () => {
     const source = intSource();
     const { api, started } = fakeApi();

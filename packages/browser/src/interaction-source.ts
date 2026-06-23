@@ -57,10 +57,16 @@ export interface InteractionEnv {
 const DEFAULT_DURATION_THRESHOLD = 40;
 const DEFAULT_MASK = '[data-bugsee-hidden]';
 
-/** A PII-safe label for the interaction target: the one-level selector, else the (masked) tag, else none. */
+/** A PII-safe label for the interaction target: the one-level selector, else the (masked) tag, else none.
+ *  Observe-only: `describeTarget` reaches `Element.closest(maskSelector)`, which THROWS on an
+ *  app-supplied invalid CSS selector — swallow it so the observer callback never surfaces an error. */
 const targetLabel = (node: unknown, mask: string): string | undefined => {
-  const desc = describeTarget(node, mask);
-  return desc.selector ?? desc.tag; // masked → tag only (no selector); non-element → both undefined
+  try {
+    const desc = describeTarget(node, mask);
+    return desc.selector ?? desc.tag; // masked → tag only (no selector); non-element → both undefined
+  } catch {
+    return undefined; // a hostile getter / invalid maskSelector must never disrupt observation
+  }
 };
 
 class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDetail }> {

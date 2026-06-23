@@ -150,6 +150,28 @@ describe('createBrowserInteractionSource', () => {
     expect(seen[0]?.target).toBe('button'); // masked via the CUSTOM selector → tag only (no '#pay')
   });
 
+  it('still emits (target omitted, no throw) when the target read throws (invalid maskSelector)', () => {
+    const { Ctor, instances } = fakeObserver();
+    const { seen } = wire({ PerformanceObserver: Ctor, maskSelector: ':::not-a-selector' });
+    expect(() =>
+      instances[0]?.push([
+        {
+          name: 'click',
+          duration: 60,
+          interactionId: 60,
+          // describeTarget calls el.closest(maskSelector) → throws SyntaxError on an invalid selector.
+          target: {
+            tagName: 'BUTTON',
+            closest: () => {
+              throw new SyntaxError('bad selector');
+            },
+          },
+        },
+      ]),
+    ).not.toThrow(); // observe-only: the throw is swallowed at the target read
+    expect(seen[0]).toEqual({ interactionType: 'click', duration: 60, interactionId: 60 }); // emitted, no target
+  });
+
   it('omits target for a non-element target', () => {
     const { Ctor, instances } = fakeObserver();
     const { seen } = wire({ PerformanceObserver: Ctor });

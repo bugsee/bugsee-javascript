@@ -91,9 +91,15 @@ export function collectInteractions(deps: CollectInteractionsDeps): () => void {
     }),
   );
 
-  // In-flight network activity keeps the active interaction transaction alive (reset its idle timer).
+  // In-flight network activity keeps the active interaction transaction alive (reset its idle timer) —
+  // but ONLY while the interaction still OWNS the active slot. Once a navigation steals it (an interaction
+  // never supersedes a navigation), the orphaned interaction must idle-finish on its own schedule, not be
+  // propped up by the navigation's network activity (which would inflate the interaction's duration).
   if (deps.networkSource !== undefined) {
-    const keepAlive = (): void => current?.keepAlive();
+    const keepAlive = (): void => {
+      if (current !== undefined && deps.api.getActiveSpan() === current.transaction)
+        current.keepAlive();
+    };
     for (const stage of NETWORK_STAGES) offs.push(deps.networkSource.on(stage, keepAlive));
   }
 

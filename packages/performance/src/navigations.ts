@@ -1,5 +1,5 @@
 import type { EventSubscribable } from '@bugsee/core';
-import type { PerformanceApi } from './controller';
+import { NAME_SOURCE_ATTRIBUTE, type PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
 import {
   createIdleTransaction,
@@ -56,8 +56,12 @@ export function collectNavigations(deps: CollectNavigationsDeps): () => void {
     deps.source.on('navigate', (detail) => {
       current?.finishNow(); // the previous navigation/view is superseded → finish it
       const transaction = deps.api.startTransaction({ name: detail.to, operation: 'navigation' });
-      transaction.setAttribute('nav.source', detail.source); // provenance: url / route / custom (Sentry parity)
+      // Two distinct axes: `nav.source`/`nav.type` are the immutable DETECTION metadata (how the navigation
+      // was detected); `bugsee.name_source` is the phase-1 NAMING provenance (D5) that the F5 naming seam
+      // later mutates to 'route' on resolve — so the two-phase url→route story lives on one key.
+      transaction.setAttribute('nav.source', detail.source); // detection (url / route / custom — Sentry parity)
       transaction.setAttribute('nav.type', detail.navigationType);
+      transaction.setAttribute(NAME_SOURCE_ATTRIBUTE, detail.source); // phase-1 naming provenance (D5)
       current = createIdleTransaction({
         transaction,
         ...(deps.timer !== undefined ? { timer: deps.timer } : {}),

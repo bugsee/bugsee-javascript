@@ -105,6 +105,11 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
               deps.store.add(wire); // the continuous /v2 (+ OTLP tee) buffer
               deps.onFinished?.(wire); // also route it to the capture ring (bundle performance.json)
             }
+            // Single-slot (D11): when the active root finishes, the slot CLEARS — it is NOT reverted to a
+            // still-open pageload (there is no span stack). Consequence: a fetch between activity
+            // transactions (after a navigation/interaction idle-finishes, before the next one) attaches to
+            // nothing and is dropped, even though the pageload lingers. Accepted tradeoff of the single-slot
+            // model; a span stack / pageload-fallback is a later slice (see frontend-adapters D11/D12).
             if (active === finished) active = undefined;
           },
         },

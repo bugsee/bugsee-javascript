@@ -109,6 +109,14 @@ describe('createIdleTransaction', () => {
     expect(t.pending()).toBe(0); // both timers cleared
   });
 
+  it('finishNow forwards an explicit status (not coerced to OK)', () => {
+    const txn = fakeTxn();
+    const t = fakeTimer();
+    const handle = createIdleTransaction({ transaction: txn, timer: t.timer });
+    handle.finishNow('CANCELLED');
+    expect(txn.finish).toHaveBeenCalledWith('CANCELLED'); // the passed status wins over the OK default
+  });
+
   it('cancel finishes CANCELLED (page hidden) and clears both timers', () => {
     const txn = fakeTxn();
     const t = fakeTimer();

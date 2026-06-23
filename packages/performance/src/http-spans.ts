@@ -26,9 +26,12 @@ const ZERO_TRACE_ID = '0'.repeat(32);
 const ZERO_SPAN_ID = '0'.repeat(16);
 
 /** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`.
- *  Validated exactly like @bugsee/capture's `parseTraceparent` (lowercase-normalized, reject the `ff`
- *  forbidden version + the all-zero trace/span ids) so a third-party backend's value is handled correctly,
- *  not just the (lowercase, conformant) Bugsee X4 backend. Reimplemented inline — performance has no capture dep. */
+ *  Validated like @bugsee/capture's `parseTraceparent` (lowercase-normalized, reject the `ff` forbidden
+ *  version + the all-zero trace/span ids) so a third-party backend's value is handled correctly, not just
+ *  the (lowercase, conformant) Bugsee X4 backend. Reimplemented inline — performance has no capture dep.
+ *  Deliberately does NOT require the `flags` segment (we only need the span id) — slightly MORE lenient
+ *  than `parseTraceparent`, which rejects a missing/non-hex flags field; that tolerance is desirable when
+ *  reading a return header we did not author. */
 function spanIdFromTraceContext(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const [version = '', traceId = '', spanId = ''] = value.trim().toLowerCase().split('-');
@@ -53,11 +56,14 @@ function serverTimingTraceContext(value: string | undefined): string | undefined
 
 /**
  * F3 — the BE→FE RETURN-HEADER reader (the cross-project differentiator). The backend (X4) returns its
- * `http.server` span via `traceresponse` and/or `Server-Timing: traceparent;desc="…"` (cross-origin-readable
- * once F0's TAO/ACEH are set). For an SDK-owned request the response headers are already captured on the
- * `complete` event (`custom.headers`); read the backend span id from them so the FE `http.client` span records
- * which server span handled it — completing the FE↔BE link on the frontend side. Case-insensitive; prefers
- * `traceresponse`, falls back to `Server-Timing`. No competitor reads this.
+ * `http.server` span via `traceresponse` and/or `Server-Timing: traceparent;desc="…"`. For an SDK-owned
+ * request the response headers are already captured on the `complete` event (`custom.headers`); read the
+ * backend span id from them so the FE `http.client` span records which server span handled it — completing
+ * the FE↔BE link on the frontend side. The header-NAME match is case-insensitive; prefers `traceresponse`,
+ * falls back to `Server-Timing`. Cross-origin this active (header-read) path works for `traceresponse` once
+ * F0's ACEH exposes it; `Server-Timing` off `response.headers` is same-origin-only (cross-origin its value
+ * is readable only via `PerformanceResourceTiming.serverTiming` + TAO — the deferred passive F3b path). No
+ * competitor reads this.
  */
 function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): string | undefined {
   if (headers === undefined) return undefined;
@@ -74,14 +80,19 @@ function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): 
   );
 }
 
-// Per-collector ceiling on http.client spans, symmetric with the resource/long-task caps in page-load
-// (bounds the §8.8 wire when a single transaction is long-lived, e.g. the SPA continuous-transaction
-// mode — a classic pageload finishes on hide and never approaches this).
+// PER-TRANSACTION ceiling on http.client spans (symmetric with the resource/long-task caps in page-load,
+// which also reset per transaction): bounds the §8.8 wire of any one long-lived transaction (e.g. the SPA
+// continuous-transaction mode). The collector is created ONCE per session and serves EVERY transaction
+// (the pageload + each navigation + each interaction), so the budget must be keyed on the active
+// transaction — a single session-wide counter would starve http spans on every transaction after the
+// first ~100 requests of the whole session.
 const MAX_HTTP_SPANS = 100;
 
 export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
   const pending = new Map<string, { startTimestampMs: number; method: string; url: string }>();
-  let recorded = 0;
+  // Per-active-transaction recorded count (each transaction gets its own MAX_HTTP_SPANS budget). A
+  // WeakMap so finished transactions are GC'd, never leaking entries over a long SPA session.
+  const recordedByTxn = new WeakMap<Span, number>();
   const offs: Array<() => void> = [
     deps.source.on('before', (e) => {
       pending.set(e.id, { startTimestampMs: e.timestamp, method: e.method, url: e.url });
@@ -94,8 +105,9 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     pending.delete(e.id);
     const active = deps.getActiveSpan();
     if (active === undefined) return; // no transaction in flight → not part of a trace
-    if (recorded >= MAX_HTTP_SPANS) return; // cap reached → drop the overflow
-    recorded++;
+    const recorded = recordedByTxn.get(active) ?? 0;
+    if (recorded >= MAX_HTTP_SPANS) return; // this transaction's cap reached → drop the overflow
+    recordedByTxn.set(active, recorded + 1);
     // F3: read the backend's http.server span from the response's return headers (X4) and stamp it on the
     // FE client span — the FE↔BE link completed on the frontend side.
     const backendSpanId = backendSpanIdFromHeaders(e.custom?.headers);
@@ -115,5 +127,6 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
 
   return () => {
     for (const off of offs) off();
+    pending.clear(); // drop any still-in-flight starts (a hung request never delivers an END stage)
   };
 }
