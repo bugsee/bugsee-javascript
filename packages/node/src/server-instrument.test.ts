@@ -737,6 +737,55 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     });
   });
 
+  // --- F0: cross-origin exposure (so a cross-origin FE can READ the return headers) ---
+  it('timingAllowOrigin + serverTiming → Timing-Allow-Origin alongside Server-Timing', () => {
+    expect(ownerSpan({ serverTiming: true, timingAllowOrigin: '*' }).responseHeaders()).toEqual({
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+      'Timing-Allow-Origin': '*',
+    });
+  });
+
+  it('timingAllowOrigin as an origin LIST is joined with ", "', () => {
+    const headers = ownerSpan({
+      serverTiming: true,
+      timingAllowOrigin: ['https://a.test', 'https://b.test'],
+    }).responseHeaders();
+    expect(headers['Timing-Allow-Origin']).toBe('https://a.test, https://b.test');
+  });
+
+  it('timingAllowOrigin is IGNORED when serverTiming is off (only expose what we emit)', () => {
+    expect(ownerSpan({ timingAllowOrigin: '*' }).responseHeaders()).toEqual({});
+  });
+
+  it('exposeTraceresponse + traceresponse → Access-Control-Expose-Headers: traceresponse', () => {
+    expect(ownerSpan({ traceresponse: true, exposeTraceresponse: true }).responseHeaders()).toEqual(
+      {
+        traceresponse: '00-trace-1-span-1-01',
+        'Access-Control-Expose-Headers': 'traceresponse',
+      },
+    );
+  });
+
+  it('exposeTraceresponse is IGNORED when traceresponse is off', () => {
+    expect(ownerSpan({ exposeTraceresponse: true }).responseHeaders()).toEqual({});
+  });
+
+  it('full cross-origin: both trace headers + both CORS-exposure headers', () => {
+    expect(
+      ownerSpan({
+        serverTiming: true,
+        traceresponse: true,
+        timingAllowOrigin: '*',
+        exposeTraceresponse: true,
+      }).responseHeaders(),
+    ).toEqual({
+      traceresponse: '00-trace-1-span-1-01',
+      'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
+      'Timing-Allow-Origin': '*',
+      'Access-Control-Expose-Headers': 'traceresponse',
+    });
+  });
+
   it('emits NOTHING when there is no transaction (no performance extension)', () => {
     const client = fakeClient({}); // no perf → no transaction
     const span = startServerSpan(info({ url: '/o/7' }), {

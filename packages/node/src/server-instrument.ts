@@ -40,6 +40,17 @@ export interface TraceResponseConfig {
   serverTiming?: boolean;
   /** Emit the W3C trace-context-L2 draft `traceresponse` header so the FE adopts the BE's exact span id. */
   traceresponse?: boolean;
+  /**
+   * (F0, cross-origin) The `Timing-Allow-Origin` value to emit alongside `Server-Timing`, so a cross-origin
+   * browser can READ it via `PerformanceResourceTiming.serverTiming` (without TAO the entry is opaque). A
+   * string (e.g. `'*'`) or an origin list (joined with `, `). Only emitted when `serverTiming` is on.
+   */
+  timingAllowOrigin?: string | readonly string[];
+  /**
+   * (F0, cross-origin) Add `traceresponse` to `Access-Control-Expose-Headers`, so a cross-origin browser can
+   * READ it off the fetch `Response`. Only emitted when `traceresponse` is on.
+   */
+  exposeTraceresponse?: boolean;
 }
 
 export interface ServerInstrumentOptions {
@@ -144,9 +155,21 @@ function buildTraceResponseHeaders(
   const traceContext = `00-${trace.traceId}-${trace.spanId}-${trace.sampled ? '01' : '00'}`;
   if (config.traceresponse === true) {
     headers.traceresponse = traceContext;
+    // F0: expose `traceresponse` to a cross-origin FE (it reads it off the fetch Response).
+    if (config.exposeTraceresponse === true) {
+      headers['Access-Control-Expose-Headers'] = 'traceresponse';
+    }
   }
   if (config.serverTiming === true) {
     headers['Server-Timing'] = `traceparent;desc="${traceContext}"`;
+    // F0: expose Server-Timing to a cross-origin FE (it reads it via PerformanceResourceTiming.serverTiming;
+    // without `Timing-Allow-Origin` the entry is opaque). Only meaningful alongside the Server-Timing header.
+    if (config.timingAllowOrigin !== undefined) {
+      headers['Timing-Allow-Origin'] =
+        typeof config.timingAllowOrigin === 'string'
+          ? config.timingAllowOrigin
+          : config.timingAllowOrigin.join(', ');
+    }
   }
   return headers;
 }

@@ -147,6 +147,41 @@ describe('wrapFetchHandler', () => {
     expect(store.traceresponse).toEqual(['00-trace-1-span-1-01']);
   });
 
+  it('F0: APPENDS the CORS-exposure list headers (Timing-Allow-Origin / Access-Control-Expose-Headers)', async () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const store: Record<string, string[]> = {};
+    const headers = {
+      set: (n: string, v: string) => {
+        store[n] = [v];
+      },
+      append: (n: string, v: string) => {
+        const list = store[n] ?? [];
+        list.push(v);
+        store[n] = list;
+      },
+    };
+    const handler = wrapFetchHandler(
+      async () => {
+        // the app already exposes one of its own headers — ours must coexist, not clobber.
+        headers.set('Access-Control-Expose-Headers', 'x-app-header');
+        return { status: 200, headers };
+      },
+      {
+        getClient: () => client,
+        traceResponse: {
+          serverTiming: true,
+          traceresponse: true,
+          timingAllowOrigin: '*',
+          exposeTraceresponse: true,
+        },
+      },
+    );
+    await handler(makeReq('GET', '/x'));
+    expect(store['Timing-Allow-Origin']).toEqual(['*']); // appended (list header)
+    expect(store['Access-Control-Expose-Headers']).toEqual(['x-app-header', 'traceresponse']); // coexists
+  });
+
   it('a throwing headers.set never breaks the response (guarded best-effort)', async () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });

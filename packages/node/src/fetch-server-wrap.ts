@@ -27,11 +27,20 @@ export interface FetchResponseLike {
   headers?: { set(name: string, value: string): void; append?(name: string, value: string): void };
 }
 
+/** The multi-valued list response headers we APPEND (coexisting with any entry the app already set —
+ * binding: interceptors must not alter app behavior) rather than `set` (replace). `traceresponse` is a
+ * singleton → set. `Server-Timing` + the F0 CORS-exposure headers (`Timing-Allow-Origin`,
+ * `Access-Control-Expose-Headers`) are comma-lists. */
+const LIST_RESPONSE_HEADERS = new Set([
+  'Server-Timing',
+  'Timing-Allow-Origin',
+  'Access-Control-Expose-Headers',
+]);
+
 /** Decorate the returned Response with the span's configured return headers (Profile v1 §12). Guarded: a
  * Response with no/immutable headers, or a hostile `set`/`append`, must never break the response — the
  * headers are best-effort RUM correlation. Set just before the runtime sends the Response, so streaming is
- * unaffected. `Server-Timing` is a multi-valued list header, so we APPEND it (coexisting with any entry the
- * app already set — binding: interceptors must not alter app behavior); `traceresponse` is a singleton → set. */
+ * unaffected. List headers are appended (coexist with the app's); singletons are set. */
 const applyReturnHeaders = (span: ServerRequestSpan, res: FetchResponseLike | undefined): void => {
   try {
     const target = res?.headers;
@@ -39,7 +48,7 @@ const applyReturnHeaders = (span: ServerRequestSpan, res: FetchResponseLike | un
       return;
     }
     for (const [name, value] of Object.entries(span.responseHeaders())) {
-      if (name === 'Server-Timing' && typeof target.append === 'function') {
+      if (LIST_RESPONSE_HEADERS.has(name) && typeof target.append === 'function') {
         target.append(name, value);
       } else {
         target.set(name, value);
