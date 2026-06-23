@@ -1,4 +1,9 @@
-import { type Bugsee, createBrowserNavigationSource, type LaunchInternals } from '@bugsee/browser';
+import {
+  type Bugsee,
+  createBrowserNavigationSource,
+  type LaunchInternals,
+  readMetaTraceContinuation,
+} from '@bugsee/browser';
 import { createTraceparentDecorator } from '@bugsee/capture';
 import { ClockToken, resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
 import {
@@ -150,6 +155,10 @@ export function wireUmbrella(
       ? createBrowserNavigationSource()
       : undefined;
 
+  // Pageload trace continuation (D4): on the browser, continue a server-injected `<meta name="traceparent">`
+  // so the SSR request and the client pageload are one trace (a fresh root if absent/invalid).
+  const pageloadContinuation = platform.pageload ? readMetaTraceContinuation() : undefined;
+
   const wired = wirePerformance({
     client,
     pageName: options.pageName ?? defaultPageName(),
@@ -161,6 +170,7 @@ export function wireUmbrella(
     pageload: platform.pageload,
     networkSource: internals.network.interceptor,
     ...(navigationSource !== undefined ? { navigationSource } : {}),
+    ...(pageloadContinuation !== undefined ? { pageloadContinuation } : {}),
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),
     ...(internals.onError !== undefined ? { onError: internals.onError } : {}),

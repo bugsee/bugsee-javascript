@@ -144,6 +144,21 @@ describe('bugsee umbrella launch', () => {
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
+  it('continues the pageload trace from a server-injected <meta name="traceparent"> (F2/D4)', () => {
+    vi.stubGlobal('document', {
+      querySelector: (s: string) =>
+        s === 'meta[name="traceparent"]'
+          ? { getAttribute: () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' }
+          : null,
+      addEventListener: () => {}, // the web-vitals visibility watcher attaches here
+      removeEventListener: () => {},
+      visibilityState: 'visible',
+    });
+    const client = track(launch('tok', base({ carrier: {} })));
+    const active = client.ext('performance').getActiveSpan() as Transaction;
+    expect(active.getTraceId()).toBe('0af7651916cd43dd8448eb211c80319c'); // pageload joined the SSR trace
+  });
+
   it('opens a `navigation` transaction on a real history.pushState (F1 navigation wiring)', () => {
     const pushState = vi.fn();
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });

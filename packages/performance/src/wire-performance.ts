@@ -28,6 +28,8 @@ export interface WirePerformanceOptions {
   /** Collect the browser pageload transaction + web-vitals. Default true; Node sets false (no pageload
    *  lifecycle — it records its own startup transaction instead). */
   pageload?: boolean;
+  /** Continue a server-injected trace on the pageload (the `<meta name="traceparent">` continuation, D4). */
+  pageloadContinuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
   appVersion?: string;
   appBuild?: string;
   /** The network interceptor source for http spans (omitted → no http spans). */
@@ -62,7 +64,12 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
   // The browser pageload transaction + web-vitals (default). Node opts out (`pageload: false`) — it has
   // no pageload/hidden lifecycle and records a startup transaction of its own instead.
   if (options.pageload !== false) {
-    collectPageLoadVitals(options.env ?? realWebVitalsEnv(), api, { name: options.pageName });
+    collectPageLoadVitals(options.env ?? realWebVitalsEnv(), api, {
+      name: options.pageName,
+      ...(options.pageloadContinuation !== undefined
+        ? { continuation: options.pageloadContinuation }
+        : {}),
+    });
   }
 
   let offHttp: (() => void) | undefined;

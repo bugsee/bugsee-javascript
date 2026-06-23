@@ -188,6 +188,23 @@ describe('wirePerformance', () => {
     }
   });
 
+  it('continues a server-injected trace on the pageload from pageloadContinuation (F2/D4)', () => {
+    const { client, perf } = fakeClient();
+    wirePerformance(
+      base({
+        client,
+        pageloadContinuation: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          parentSpanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
+      }),
+    );
+    const active = perf()?.getActiveSpan() as Transaction;
+    expect(active.getTraceId()).toBe('0af7651916cd43dd8448eb211c80319c'); // adopted the server trace id
+    expect(serializeTransaction(active).parentSpanId).toBe('b7ad6b7169203331'); // pageload is a child of the server span
+  });
+
   it('threads appVersion/appBuild onto the pageload transaction wire', () => {
     const { client, perf } = fakeClient();
     wirePerformance(base({ client, appVersion: '1.2.3', appBuild: '456' }));

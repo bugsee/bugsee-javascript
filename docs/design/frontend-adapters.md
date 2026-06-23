@@ -242,7 +242,14 @@ framework first (table per adapter, as the backend did).
   + `wirePerformance` wiring) + the umbrella connection (`traceNavigations`, browser-only). Reviewed-to-
   convergence (3-agent: 0 SEV1; closed 3 SEV2 test-strength gaps + doc deferrals for D7 `childSpanTimeout` /
   D10 refine→F5). The keepalive is network-only (DOM/interaction is F4); the refine/naming seam is F5.
-- **F2** Pageload `<meta>` continuation (D4) + the `browser.*` resource attrs (D9).
+- **F2** [DONE 2026-06-23 — continuation half] Pageload `<meta name="traceparent">` continuation (D4):
+  `readMetaTraceContinuation` (`@bugsee/browser`, reads `<meta name=traceparent>` → parses via capture's
+  `parseTraceparent` → a child continuation; fully guarded) threaded through `wirePerformance`
+  `pageloadContinuation` → `collectPageLoadVitals` (the pageload adopts the server trace id + becomes a child
+  of the server span). Umbrella reads it browser-only. Mutation-verified + umbrella integration test (`<meta>`
+  → pageload joins the SSR trace). **DEFERRED: the `browser.*` resource attrs (D9)** — a cheap OTel-parity add
+  (browser.brands/platform/mobile/language from navigator.userAgentData), OTLP-tee-only + orthogonal; small
+  follow-up.
 - **F3** Return-header reader (D3) — Server-Timing (passive observer) + traceresponse (owned Response) →
   network-span refinement + backend-span child link.
 - **F4** Interaction transactions (Event Timing) + the active-context binding (O1) (D6 INP attribution).

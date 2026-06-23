@@ -28,6 +28,11 @@ export {
   launchCore,
 } from './launch';
 export {
+  type MetaTraceContinuation,
+  type MetaTraceEnv,
+  readMetaTraceContinuation,
+} from './meta-trace';
+export {
   createBrowserNavigationSource,
   type NavigationDetail,
   type NavigationEnv,
