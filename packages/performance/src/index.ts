@@ -30,6 +30,12 @@ export {
   type IdleTransactionOptions,
 } from './idle-transaction';
 export {
+  type CollectNavigationsDeps,
+  collectNavigations,
+  type NavigationDetailLike,
+  type NavigationSource,
+} from './navigations';
+export {
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
   type PerformanceUploadMode,

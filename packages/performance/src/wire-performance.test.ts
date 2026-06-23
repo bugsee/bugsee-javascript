@@ -3,6 +3,7 @@ import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
+import type { NavigationDetailLike, NavigationSource } from './navigations';
 import { serializeTransaction, type Transaction, type TransactionWire } from './span';
 import type { WebVitalsEnv } from './web-vitals/env';
 import { type WirePerformanceOptions, wirePerformance } from './wire-performance';
@@ -30,6 +31,21 @@ function fakeNetworkSource() {
   } as unknown as NetworkSource;
   const emit = (name: string, e: NetworkEvent) => {
     for (const l of listeners.get(name) ?? []) l(e);
+  };
+  return { source, emit };
+}
+
+function fakeNavSource() {
+  const listeners = new Set<(d: NavigationDetailLike) => void>();
+  const source = {
+    on: (_n: string, fn: (d: NavigationDetailLike) => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    onAny: () => () => {},
+  } as unknown as NavigationSource;
+  const emit = (d: NavigationDetailLike) => {
+    for (const l of listeners) l(d);
   };
   return { source, emit };
 }
@@ -141,6 +157,27 @@ describe('wirePerformance', () => {
     emit('complete', netEvent({ id: 'r1', timestamp: 50, status: 200 }));
     const wire = serializeTransaction(perf()?.getActiveSpan() as Transaction);
     expect(wire.spans.some((s) => s.operation === 'http.client')).toBe(true);
+  });
+
+  it('opens a `navigation` transaction from the navigation source, stamped + idle-managed (F1c)', () => {
+    vi.useFakeTimers();
+    try {
+      const { client, perf } = fakeClient();
+      const nav = fakeNavSource();
+      const net = fakeNetworkSource();
+      // pageload:false so the active span IS the navigation transaction (no overlapping pageload).
+      const wired = wirePerformance(
+        base({ client, navigationSource: nav.source, networkSource: net.source, pageload: false }),
+      );
+      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' });
+      const active = perf()?.getActiveSpan() as Transaction;
+      expect(active.getOperation()).toBe('navigation');
+      expect(active.getName()).toBe('/users/42');
+      expect(active.getAttributes()['nav.source']).toBe('url');
+      wired?.stop(); // tears down the navigation wiring (offNav) without error
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('threads appVersion/appBuild onto the pageload transaction wire', () => {

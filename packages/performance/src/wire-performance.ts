@@ -1,6 +1,7 @@
 import type { BugseeClient, Scheduler } from '@bugsee/core';
 import { createPerformanceExtension } from './extension';
 import { collectHttpSpans, type NetworkSource } from './http-spans';
+import { collectNavigations, type NavigationSource } from './navigations';
 import { collectPageLoadVitals } from './page-load';
 import { createPerformanceUploader } from './performance-uploader';
 import { createRateSampler } from './sampling';
@@ -31,6 +32,9 @@ export interface WirePerformanceOptions {
   appBuild?: string;
   /** The network interceptor source for http spans (omitted → no http spans). */
   networkSource?: NetworkSource;
+  /** The browser navigation source (F1c) — drives `navigation` transactions per SPA route change. Omitted →
+   *  none (e.g. Node, or navigation tracing off). Its activity-keepalive also reuses `networkSource`. */
+  navigationSource?: NavigationSource;
   /** Web-vitals env override (tests). Default the real globals. */
   env?: WebVitalsEnv;
   onError?: (error: unknown) => void;
@@ -69,6 +73,17 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     });
   }
 
+  // SPA navigation transactions (F1c): each route change opens a `navigation` transaction (idle-finished).
+  let offNav: (() => void) | undefined;
+  if (options.navigationSource !== undefined) {
+    offNav = collectNavigations({
+      source: options.navigationSource,
+      api,
+      ...(options.networkSource !== undefined ? { networkSource: options.networkSource } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+    });
+  }
+
   const uploader = createPerformanceUploader({
     store: extension.store,
     send: options.send,
@@ -80,6 +95,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
 
   return {
     stop() {
+      offNav?.();
       offHttp?.();
       uploader.stop();
       extension.stop();
