@@ -15,6 +15,12 @@ export {
   type VueErrorOptions,
 } from './error';
 export {
+  type BugseeVueRenderMixin,
+  createBugseeVueRenderMixin,
+  type VueRenderInstanceLike,
+  type VueRenderMixinOptions,
+} from './render-mixin';
+export {
   instrumentVueRouter,
   type RouteNamingOptions,
   routePatternFromVueRoute,
