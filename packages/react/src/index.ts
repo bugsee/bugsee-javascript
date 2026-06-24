@@ -11,3 +11,10 @@ export {
   type ReportReactErrorOptions,
   reportReactError,
 } from './report';
+export {
+  instrumentRouterMatches,
+  type RouteMatchLike,
+  type RouteNamingOptions,
+  routePatternFromMatches,
+  setRouteName,
+} from './router';
