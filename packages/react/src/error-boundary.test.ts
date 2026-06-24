@@ -1,11 +1,5 @@
 import type { Bugsee } from '@bugsee/browser';
-import {
-  type ComponentType,
-  createElement,
-  type ErrorInfo,
-  type ReactElement,
-  type ReactNode,
-} from 'react';
+import type { ComponentType, ErrorInfo, ReactElement, ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BugseeErrorBoundary,
