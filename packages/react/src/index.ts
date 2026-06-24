@@ -25,7 +25,9 @@ export {
   reportReactError,
 } from './report';
 export {
+  instrumentReactRouter,
   instrumentRouterMatches,
+  type ReactDataRouterLike,
   type RouteMatchLike,
   type RouteNamingOptions,
   routePatternFromMatches,

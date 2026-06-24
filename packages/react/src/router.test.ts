@@ -1,7 +1,9 @@
 import type { Bugsee } from '@bugsee/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  instrumentReactRouter,
   instrumentRouterMatches,
+  type ReactDataRouterLike,
   type RouteMatchLike,
   routePatternFromMatches,
   setRouteName,
@@ -96,5 +98,69 @@ describe('instrumentRouterMatches', () => {
     const { client, setRouteName: spy } = fakeClient();
     instrumentRouterMatches([], { getClient: () => client });
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// A structural react-router DATA router fake: a mutable `state.matches` + a `subscribe` that records the
+// listener and returns an unsubscribe spy. No react-router / renderer.
+function fakeDataRouter(initial: readonly RouteMatchLike[] | undefined) {
+  const listeners: Array<(state: { matches?: readonly RouteMatchLike[] }) => void> = [];
+  const unsubscribe = vi.fn();
+  const router: ReactDataRouterLike = {
+    state: { matches: initial },
+    subscribe: vi.fn((listener) => {
+      listeners.push(listener);
+      return unsubscribe;
+    }),
+  };
+  // drive a navigation: update state.matches + notify every listener (mirrors react-router's data router).
+  const navigate = (matches: readonly RouteMatchLike[] | undefined) => {
+    router.state = { matches };
+    for (const l of listeners) l(router.state);
+  };
+  return { router, navigate, unsubscribe };
+}
+
+describe('instrumentReactRouter', () => {
+  it('names the CURRENT route immediately on instrument (from router.state.matches)', () => {
+    const { client, setRouteName: spy } = fakeClient();
+    const { router } = fakeDataRouter([match('users'), match(':id')]);
+    instrumentReactRouter(router, { getClient: () => client });
+    expect(spy).toHaveBeenCalledWith('/users/:id');
+    expect(router.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-names the active transaction on each subsequent navigation (self-subscribing)', () => {
+    const { client, setRouteName: spy } = fakeClient();
+    const { router, navigate } = fakeDataRouter([match('/')]);
+    instrumentReactRouter(router, { getClient: () => client });
+    spy.mockClear();
+    navigate([match('teams'), match(':teamId')]);
+    expect(spy).toHaveBeenCalledWith('/teams/:teamId');
+    navigate([match('settings')]);
+    expect(spy).toHaveBeenCalledWith('/settings');
+  });
+
+  it('does not name when a navigation has no usable pattern', () => {
+    const { client, setRouteName: spy } = fakeClient();
+    const { router, navigate } = fakeDataRouter([match('home')]);
+    instrumentReactRouter(router, { getClient: () => client });
+    spy.mockClear();
+    navigate([match(undefined)]); // only a pathless/layout route
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('does not name the initial route when the current state has no usable pattern', () => {
+    const { client, setRouteName: spy } = fakeClient();
+    const { router } = fakeDataRouter(undefined); // no matches yet
+    instrumentReactRouter(router, { getClient: () => client });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns the router unsubscribe function for teardown', () => {
+    const { client } = fakeClient();
+    const { router, unsubscribe } = fakeDataRouter([match('x')]);
+    const teardown = instrumentReactRouter(router, { getClient: () => client });
+    expect(teardown).toBe(unsubscribe);
   });
 });

@@ -48,3 +48,29 @@ export function instrumentRouterMatches(
   if (pattern === undefined) return;
   setRouteName(pattern, options);
 }
+
+/** The minimal react-router DATA router shape we touch — structurally matches a `createBrowserRouter(...)` /
+ *  `createHashRouter(...)` / `createMemoryRouter(...)` result: the current `state` (whose `matches` each carry
+ *  the matched `route.path`) + a `subscribe(listener) => unsubscribe` for state changes. No react-router
+ *  import → version-agnostic across react-router v6.4+ / v7. */
+export interface ReactDataRouterLike {
+  state: { matches?: readonly RouteMatchLike[] };
+  subscribe: (listener: (state: { matches?: readonly RouteMatchLike[] }) => void) => () => void;
+}
+
+/** Auto-instrument a react-router DATA router (`createBrowserRouter` & friends): name the CURRENT route now,
+ *  then refine the active navigation transaction to the matched route PATTERN on every navigation — the
+ *  data-router parallel to Vue's `instrumentVueRouter` (wire once, self-subscribing; no per-navigation call,
+ *  no hook/renderer). The app passes its router instance IN, so the SDK never imports react-router. Returns
+ *  the router's unsubscribe function for teardown. A no-op per navigation when there is no usable pattern. */
+export function instrumentReactRouter(
+  router: ReactDataRouterLike,
+  options: RouteNamingOptions = {},
+): () => void {
+  const apply = (state: { matches?: readonly RouteMatchLike[] }): void => {
+    const pattern = routePatternFromMatches(state.matches);
+    if (pattern !== undefined) setRouteName(pattern, options);
+  };
+  apply(router.state); // name the current/initial route immediately (refines the active pageload transaction)
+  return router.subscribe(apply);
+}
