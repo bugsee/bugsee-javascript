@@ -38,7 +38,25 @@ describe('reportVueError', () => {
     expect(logException.mock.calls[0]?.[1]?.labels).toContain('vue.component:UserCard');
   });
 
-  it('derives the component name from an SFC instance ($.type.__name) when $options.name is absent', () => {
+  it('derives the component name from $.type.name (resolved component) when $options.name is absent', () => {
+    const { client, logException } = fakeClient();
+    reportVueError(new Error('x'), {
+      instance: instance({ $: { type: { name: 'Profile' } } }),
+      getClient: () => client,
+    });
+    expect(logException.mock.calls[0]?.[1]?.labels).toContain('vue.component:Profile');
+  });
+
+  it('derives the component name from a functional component $.type.displayName', () => {
+    const { client, logException } = fakeClient();
+    reportVueError(new Error('x'), {
+      instance: instance({ $: { type: { displayName: 'Avatar' } } }),
+      getClient: () => client,
+    });
+    expect(logException.mock.calls[0]?.[1]?.labels).toContain('vue.component:Avatar');
+  });
+
+  it('derives the component name from an SFC instance ($.type.__name) when nothing explicit is set', () => {
     const { client, logException } = fakeClient();
     reportVueError(new Error('x'), {
       instance: instance({ $: { type: { __name: 'Dashboard' } } }),

@@ -34,15 +34,17 @@ export interface ReportVueErrorOptions extends VueErrorOptions {
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
-/** Best-effort component name from a Vue instance: options-API `$options.name`, else the SFC
- *  `$.type.name`/`$.type.__name`. Returns undefined for a non-object / nameless instance. */
+/** Best-effort component name from a Vue instance — mirrors Vue's own `getComponentName` precedence
+ *  (explicit `name`, then a functional component's `displayName`, then the `<script setup>`-inferred
+ *  `__name`): options-API `$options.name`, else `$.type.name`/`$.type.displayName`/`$.type.__name`.
+ *  Returns undefined for a non-object / nameless instance (e.g. an anonymous functional component). */
 function componentName(instance: unknown): string | undefined {
   if (instance === null || typeof instance !== 'object') return undefined;
   const i = instance as {
     $options?: { name?: unknown };
-    $?: { type?: { name?: unknown; __name?: unknown } };
+    $?: { type?: { name?: unknown; displayName?: unknown; __name?: unknown } };
   };
-  const name = i.$options?.name ?? i.$?.type?.name ?? i.$?.type?.__name;
+  const name = i.$options?.name ?? i.$?.type?.name ?? i.$?.type?.displayName ?? i.$?.type?.__name;
   return typeof name === 'string' && name !== '' ? name : undefined;
 }
 

@@ -3,8 +3,9 @@ import { getCarrierClient } from '@bugsee/core';
 import type { PerformanceApi } from '@bugsee/performance';
 
 // The @bugsee/vue ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On a
-// navigation, vue-router knows the matched route PATTERN (`/users/:id` — vue-router normalizes nested
-// children to absolute paths, so the DEEPEST matched record carries the full pattern); refine the active
+// navigation, vue-router knows the matched route PATTERN (`/users/:id` — the matcher rewrites a
+// relatively-configured child to its absolute path at addRoute time, and an absolute-configured child is
+// already full, so the DEEPEST matched record's `path` is the full pattern either way); refine the active
 // navigation transaction (opened raw-URL by the F1 navigation source) to that pattern via
 // `ext('performance').setRouteName`. A STRUCTURAL PEER over the vue-router route/router shapes (no
 // `vue-router` import) → version-agnostic + unit-testable. A no-op when the SDK / performance ext is absent.
@@ -36,7 +37,8 @@ const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
 };
 
 /** The parameterized pattern for a vue-router navigation: the deepest matched record's `path` (the full
- *  pattern). Returns undefined when there is no matched record or no usable path. */
+ *  pattern — the matcher assembles `matched` child-last + rewrites relative children to absolute). Returns
+ *  undefined when there is no matched record or no usable path. */
 export function routePatternFromVueRoute(route: VueRouteLike): string | undefined {
   const matched = route.matched;
   const deepest =
