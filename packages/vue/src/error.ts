@@ -1,4 +1,5 @@
 import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
+import { vueComponentName } from './component-name';
 
 // The @bugsee/vue ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Vue 3). Hooks Vue's
 // global `app.config.errorHandler(err, instance, info)` and reports the error to the launched Bugsee client.
@@ -27,25 +28,11 @@ export interface ReportVueErrorOptions extends VueErrorOptions {
   instance?: unknown;
 }
 
-/** Best-effort component name from a Vue instance — mirrors Vue's own `getComponentName` precedence
- *  (explicit `name`, then a functional component's `displayName`, then the `<script setup>`-inferred
- *  `__name`): options-API `$options.name`, else `$.type.name`/`$.type.displayName`/`$.type.__name`.
- *  Returns undefined for a non-object / nameless instance (e.g. an anonymous functional component). */
-function componentName(instance: unknown): string | undefined {
-  if (instance === null || typeof instance !== 'object') return undefined;
-  const i = instance as {
-    $options?: { name?: unknown };
-    $?: { type?: { name?: unknown; displayName?: unknown; __name?: unknown } };
-  };
-  const name = i.$options?.name ?? i.$?.type?.name ?? i.$?.type?.displayName ?? i.$?.type?.__name;
-  return typeof name === 'string' && name !== '' ? name : undefined;
-}
-
 /** Report a Vue error to the launched Bugsee client, labeled with the component name + Vue info. A no-op
  *  when no SDK is launched. */
 export function reportVueError(error: unknown, options: ReportVueErrorOptions = {}): void {
   const labels: string[] = [];
-  const name = componentName(options.instance);
+  const name = vueComponentName(options.instance);
   if (name !== undefined) labels.push(`vue.component:${name}`);
   if (options.info !== undefined && options.info !== '') labels.push(`vue.info:${options.info}`);
   reportError(error, { ...options, ...(labels.length > 0 ? { labels } : {}) });

@@ -2,6 +2,11 @@
 // See docs/design/frontend-adapters.md §7. Vue is a structural peer — no `vue`/`vue-router` import.
 // v1: error + routing only (component-render depth is the shared depth pass).
 export {
+  type BugseeVueComponentMixin,
+  createBugseeVueComponentMixin,
+  type VueComponentInstanceLike,
+} from './component-annotate';
+export {
   installBugseeErrorHandler,
   type ReportVueErrorOptions,
   reportVueError,
