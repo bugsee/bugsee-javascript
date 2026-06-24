@@ -13,6 +13,9 @@ module.exports = {
 };
 ```
 
-A component is a PascalCase function/class; component elements (`<Widget/>`) are skipped (the attribute would
-become a prop, not a DOM attribute). JSX in a nested callback (e.g. a `.map`) is attributed to the enclosing
-component. Vue/Svelte Vite plugins are a follow-up. See `docs/design/frontend-adapters.md` §7 (the depth pass).
+A component is a PascalCase function/class — a declaration (`function Foo(){}`), a const-assigned expression
+(`const Foo = () => …`), or one wrapped in a single call (`const Foo = memo(...)` / `forwardRef(...)`).
+Component elements (`<Widget/>`) are skipped (the attribute would become a prop, not a DOM attribute); JSX in
+a nested callback (e.g. a `.map`) is attributed to the enclosing component. Known limits: a doubly-wrapped
+component (`memo(forwardRef(...))`) and anonymous default exports are not named. Vue/Svelte Vite plugins are a
+follow-up. See `docs/design/frontend-adapters.md` §7 (the depth pass).

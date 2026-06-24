@@ -20,19 +20,31 @@ type FnOrClassPath = NodePath<
   | BabelTypes.ClassExpression
 >;
 
-/** The component name a function/class path defines, or undefined when it is not a (PascalCase) component. */
-function componentNameOf(t: typeof BabelTypes, path: FnOrClassPath): string | undefined {
+/** The name of the const a fn/class EXPRESSION is assigned to — directly (`const Foo = () => …`) or through a
+ *  single wrapping call (`const Foo = memo(() => …)` / `forwardRef((p, ref) => …)`) — else undefined. */
+function assignedVariableName(t: typeof BabelTypes, path: FnOrClassPath): string | undefined {
   const node = path.node;
-  // A named declaration: `function Foo(){}` / `class Foo {}`.
   if (
-    (t.isFunctionDeclaration(node) || t.isClassDeclaration(node) || t.isClassExpression(node)) &&
-    node.id
+    !t.isArrowFunctionExpression(node) &&
+    !t.isFunctionExpression(node) &&
+    !t.isClassExpression(node)
   ) {
-    return isComponentName(node.id.name) ? node.id.name : undefined;
+    return undefined; // a declaration, not an expression — handled by its own id below
   }
-  // An expression assigned to a variable: `const Foo = () => …` / `const Foo = class {}`.
-  if (t.isVariableDeclarator(path.parent) && t.isIdentifier(path.parent.id)) {
-    return isComponentName(path.parent.id.name) ? path.parent.id.name : undefined;
+  // Unwrap one wrapping call (memo / forwardRef / observer / …): `const Foo = memo(fn)`.
+  const parent = t.isCallExpression(path.parent) ? path.parentPath?.parent : path.parent;
+  return t.isVariableDeclarator(parent) && t.isIdentifier(parent.id) ? parent.id.name : undefined;
+}
+
+/** The component name a function/class path defines, or undefined when it is not a (PascalCase) component.
+ *  The assigned-const name wins (so `const Foo = class Bar {}` and `const Foo = memo(fn)` both → `Foo`); a
+ *  bare declaration falls back to its own id (`function Foo(){}` / `class Foo {}`). */
+function componentNameOf(t: typeof BabelTypes, path: FnOrClassPath): string | undefined {
+  const variable = assignedVariableName(t, path);
+  if (variable !== undefined) return isComponentName(variable) ? variable : undefined;
+  const node = path.node;
+  if ((t.isFunctionDeclaration(node) || t.isClassDeclaration(node)) && node.id) {
+    return isComponentName(node.id.name) ? node.id.name : undefined;
   }
   return undefined;
 }
