@@ -37,4 +37,13 @@ instrumentRouterMatches(matchRoutes(routes, location));
 
 `routePatternFromMatches(matches)` builds the pattern; `setRouteName(name)` is the generic primitive.
 
+## Preact
+
+Preact is supported through this adapter via `preact/compat` (the standard React-compat aliasing) — no
+separate package. Under compat, `preact/compat`'s `Component` provides React-compatible error boundaries
+(`getDerivedStateFromError` / `componentDidCatch`), so `BugseeErrorBoundary` / `withBugseeErrorBoundary` work
+unchanged, and the router helpers are structural (they consume a `matchRoutes()`-shaped value from
+react-router or preact-iso). Alias `react`/`react-dom` → `preact/compat` in your bundler (as a Preact app
+already does) and use `@bugsee/react` as-is.
+
 Built test-first per `docs/implementation-standards.md`; see `docs/design/frontend-adapters.md` §6 (D8).
