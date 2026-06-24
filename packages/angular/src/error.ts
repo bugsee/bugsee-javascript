@@ -1,5 +1,4 @@
-import type { Bugsee } from '@bugsee/browser';
-import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
+import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
 
 // The @bugsee/angular ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Angular). Angular
 // reports uncaught errors through its injectable `ErrorHandler` (`handleError(error)`); the app replaces it
@@ -10,16 +9,10 @@ import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
 // unit-testable. A no-op when no SDK is launched.
 
 /** Capture mechanism for an Angular error report (the `logException` mechanism vocabulary). */
-export type AngularErrorMechanism = NonNullable<LogExceptionOptions['mechanism']>;
+export type AngularErrorMechanism = AdapterMechanism;
 
-export interface AngularErrorOptions {
-  /** Resolve the client. Default: the process-singleton carrier client. Injectable for tests. */
-  getClient?: () => Bugsee | undefined;
-  /** Capture mechanism. Default `uncaught`. */
-  mechanism?: AngularErrorMechanism;
-}
-
-const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
+/** Options for the Angular error seam (client resolver + mechanism). */
+export type AngularErrorOptions = Omit<ReportErrorOptions, 'labels'>;
 
 /** Unwrap Angular's error wrapper to the real thrown error: `error.ngOriginalError` when present, else the
  *  error itself (also for a non-object thrown value). NOTE: `ngOriginalError` is the wrapper field Angular
@@ -37,9 +30,7 @@ function originalError(error: unknown): unknown {
 /** Report an Angular error to the launched Bugsee client (unwrapping `ngOriginalError`). A no-op when no SDK
  *  is launched. */
 export function reportAngularError(error: unknown, options: AngularErrorOptions = {}): void {
-  const client = (options.getClient ?? defaultGetClient)();
-  if (client === undefined) return;
-  void client.logException(originalError(error), { mechanism: options.mechanism ?? 'uncaught' });
+  reportError(originalError(error), options); // unwrap Angular's wrapper, then report
 }
 
 export interface AngularErrorHandlerOptions extends AngularErrorOptions {

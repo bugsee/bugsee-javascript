@@ -25,8 +25,7 @@
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
-    "@bugsee/core": "workspace:*",
-    "@bugsee/performance": "workspace:*"
+    "@bugsee/web-adapter": "workspace:*"
   },
   "peerDependencies": {
     "@solidjs/router": ">=0.10",

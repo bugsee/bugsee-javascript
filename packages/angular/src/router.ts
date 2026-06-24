@@ -1,16 +1,16 @@
-import type { Bugsee } from '@bugsee/browser';
-import { getCarrierClient } from '@bugsee/core';
-import type { PerformanceApi } from '@bugsee/performance';
+import { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 // The @bugsee/angular ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam).
 // Angular's activated-route snapshot tree carries the matched route config; walk it to build the
 // parameterized pattern (`/users/:id` — Angular's colon syntax, same as the backend adapters) and refine
-// the active navigation transaction (opened raw-URL by the F1 navigation source) via
-// `ext('performance').setRouteName`. A STRUCTURAL PEER over the snapshot/router shapes (no `@angular/router`
-// import) → version-agnostic + unit-testable. The user owns the `NavigationEnd` filter (they have the
-// import), keeping this robust + decoupled — wire once after the router is ready:
+// the active navigation transaction (opened raw-URL by the F1 navigation source) via the shared
+// `setRouteName` seam. A STRUCTURAL PEER over the snapshot/router shapes (no `@angular/router` import) →
+// version-agnostic + unit-testable. The user owns the `NavigationEnd` filter (they have the import),
+// keeping this robust + decoupled — wire once after the router is ready:
 //   router.events.pipe(filter(e => e instanceof NavigationEnd)).subscribe(() => setRouteNameFromRouter(router));
-// A no-op when the SDK / performance ext is absent.
+
+// Re-export the shared route-naming seam + options (API stability — these are the generic primitives).
+export { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 /** The minimal `ActivatedRouteSnapshot` shape we walk — `routeConfig.path` + `firstChild`. */
 export interface RouteSnapshotLike {
@@ -22,21 +22,6 @@ export interface RouteSnapshotLike {
 export interface AngularRouterLike {
   routerState: { snapshot: { root: RouteSnapshotLike } };
 }
-
-export interface RouteNamingOptions {
-  /** Resolve the client. Default: the process-singleton carrier client. Injectable for tests. */
-  getClient?: () => Bugsee | undefined;
-}
-
-const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
-
-const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
-  try {
-    return client.ext('performance');
-  } catch {
-    return undefined; // the performance extension is not registered (performanceMonitoring off)
-  }
-};
 
 const MAX_ROUTE_DEPTH = 64; // a safety bound against a malformed/cyclic snapshot tree
 
@@ -56,14 +41,6 @@ export function routePatternFromSnapshot(
     node = node.firstChild;
   }
   return segments.length > 0 ? `/${segments.join('/')}` : undefined;
-}
-
-/** Refine the active navigation transaction's name via the performance naming seam (F5/D5). A no-op when
- *  the SDK or the performance extension is not available. */
-export function setRouteName(name: string, options: RouteNamingOptions = {}): void {
-  const client = (options.getClient ?? defaultGetClient)();
-  if (client === undefined) return;
-  tryGetPerf(client)?.setRouteName(name);
 }
 
 /** Refine the active transaction to the router's CURRENT activated route pattern (D5 phase-2). Call on each

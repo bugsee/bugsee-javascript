@@ -65,12 +65,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
-      '@bugsee/core':
+      '@bugsee/web-adapter':
         specifier: workspace:*
-        version: link:../core
-      '@bugsee/performance':
-        specifier: workspace:*
-        version: link:../performance
+        version: link:../web-adapter
 
   packages/astro:
     dependencies:
@@ -569,12 +566,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
-      '@bugsee/core':
+      '@bugsee/web-adapter':
         specifier: workspace:*
-        version: link:../core
-      '@bugsee/performance':
-        specifier: workspace:*
-        version: link:../performance
+        version: link:../web-adapter
     devDependencies:
       '@types/react':
         specifier: ^18.3.0
@@ -621,12 +615,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
-      '@bugsee/core':
+      '@bugsee/web-adapter':
         specifier: workspace:*
-        version: link:../core
-      '@bugsee/performance':
-        specifier: workspace:*
-        version: link:../performance
+        version: link:../web-adapter
       '@solidjs/router':
         specifier: '>=0.10'
         version: 0.16.1(solid-js@1.9.13)
@@ -639,12 +630,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
-      '@bugsee/core':
+      '@bugsee/web-adapter':
         specifier: workspace:*
-        version: link:../core
-      '@bugsee/performance':
-        specifier: workspace:*
-        version: link:../performance
+        version: link:../web-adapter
       '@sveltejs/kit':
         specifier: '>=2'
         version: 2.67.0(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.1.2(svelte@5.56.3(@typescript-eslint/types@8.59.4))(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(tsx@4.22.4)))(svelte@5.56.3(@typescript-eslint/types@8.59.4))(typescript@6.0.3)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(tsx@4.22.4))
@@ -685,15 +673,24 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/web-adapter':
+        specifier: workspace:*
+        version: link:../web-adapter
+      vue:
+        specifier: '>=3'
+        version: 3.5.38(typescript@6.0.3)
+
+  packages/web-adapter:
+    dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
-      vue:
-        specifier: '>=3'
-        version: 3.5.38(typescript@6.0.3)
 
   packages/webpack-plugin: {}
 

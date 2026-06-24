@@ -1,5 +1,4 @@
-import type { Bugsee } from '@bugsee/browser';
-import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
+import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
 
 // The @bugsee/solid ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Solid). Solid catches
 // render/reactive errors via the built-in `<ErrorBoundary>` component and the `onError(handler)` /
@@ -14,22 +13,14 @@ import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
 // just the error (no component context), so the report is the error itself.
 
 /** Capture mechanism for a Solid error report (the `logException` mechanism vocabulary). */
-export type SolidErrorMechanism = NonNullable<LogExceptionOptions['mechanism']>;
+export type SolidErrorMechanism = AdapterMechanism;
 
-export interface SolidErrorOptions {
-  /** Resolve the client. Default: the process-singleton carrier client. Injectable for tests. */
-  getClient?: () => Bugsee | undefined;
-  /** Capture mechanism. Default `uncaught`. */
-  mechanism?: SolidErrorMechanism;
-}
-
-const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
+/** Options for {@link reportSolidError} (client resolver + mechanism). */
+export type SolidErrorOptions = Omit<ReportErrorOptions, 'labels'>;
 
 /** Report a Solid error to the launched Bugsee client. A no-op when no SDK is launched. */
 export function reportSolidError(error: unknown, options: SolidErrorOptions = {}): void {
-  const client = (options.getClient ?? defaultGetClient)();
-  if (client === undefined) return;
-  void client.logException(error, { mechanism: options.mechanism ?? 'uncaught' });
+  reportError(error, options); // Solid's seams give just the error (no component context)
 }
 
 /** Build an error handler `(error) => void` to wire into Solid's `onError` / `catchError` / an

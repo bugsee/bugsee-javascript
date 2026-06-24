@@ -1,9 +1,9 @@
 {
-  "name": "@bugsee/vue",
+  "name": "@bugsee/web-adapter",
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Vue adapter: errorHandler + vue-router naming",
+  "description": "Shared utilities for the web framework adapters (client resolution, error reporting, route naming)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -25,15 +25,8 @@
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
-    "@bugsee/web-adapter": "workspace:*"
-  },
-  "peerDependencies": {
-    "vue": ">=3"
-  },
-  "peerDependenciesMeta": {
-    "vue": {
-      "optional": true
-    }
+    "@bugsee/core": "workspace:*",
+    "@bugsee/performance": "workspace:*"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

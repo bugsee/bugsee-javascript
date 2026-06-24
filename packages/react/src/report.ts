@@ -1,5 +1,9 @@
-import type { Bugsee } from '@bugsee/browser';
-import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
+import {
+  type AdapterMechanism,
+  type ReportErrorOptions,
+  reportError,
+  resolveClient,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/react REPORTING core (frontend-adapters D8) — runtime-portable, no React import, so it is
 // unit-tested injection-first and reused by the ErrorBoundary, a React-19 global handler, or a direct app
@@ -8,15 +12,11 @@ import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
 // (the launched SDK); a no-op when none is launched.
 
 /** Capture mechanism for a React error report (the `logException` mechanism vocabulary). */
-export type ReactErrorMechanism = NonNullable<LogExceptionOptions['mechanism']>;
+export type ReactErrorMechanism = AdapterMechanism;
 
-export interface ReportReactErrorOptions {
+export interface ReportReactErrorOptions extends Omit<ReportErrorOptions, 'labels'> {
   /** The React component stack (`errorInfo.componentStack`) — linked to the error via `error.cause`. */
   componentStack?: string;
-  /** Resolve the client. Default: the process-singleton carrier client. Injectable for tests. */
-  getClient?: () => Bugsee | undefined;
-  /** Capture mechanism. Default `uncaught` — a render error the boundary caught as the last line of defense. */
-  mechanism?: ReactErrorMechanism;
 }
 
 /**
@@ -35,8 +35,6 @@ export function linkComponentStack(error: unknown, componentStack: string | unde
   error.cause = frame;
 }
 
-const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
-
 /**
  * Report a React error (from the ErrorBoundary or a direct app call) to the launched Bugsee client, with the
  * component stack linked. The ORIGINAL error object is passed to `logException` (preserving the core's
@@ -44,8 +42,8 @@ const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
  * handler that also routes here is a possible later addition — see D8; not built yet.)
  */
 export function reportReactError(error: unknown, options: ReportReactErrorOptions = {}): void {
-  const client = (options.getClient ?? defaultGetClient)();
-  if (client === undefined) return; // no launched SDK → nothing to report to
-  linkComponentStack(error, options.componentStack);
-  void client.logException(error, { mechanism: options.mechanism ?? 'uncaught' });
+  const client = resolveClient(options.getClient);
+  if (client === undefined) return; // no launched SDK → nothing to report to (and don't touch the error)
+  linkComponentStack(error, options.componentStack); // mutates error.cause (non-destructive); see above
+  reportError(error, { ...options, getClient: () => client });
 }
