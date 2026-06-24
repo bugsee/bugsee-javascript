@@ -224,6 +224,19 @@ mutator/review discipline.
 
 ## 7. Fan-out (Phase 3)
 
+**STRATEGY [decided 2026-06-24]: thin breadth sweep, THEN a shared depth pass.** First replicate the F6-thin
+adapter (error seam + router naming, structural-peer, injection-first) across `@bugsee/vue` → `@bugsee/svelte`
+→ `@bugsee/angular` — fast cross-framework coverage that catches per-framework error/router surprises early
+(as the backend sweep did). Each ships labeled **"v1: error + routing only"** with the depth backlog tracked
+(NOT silently "complete"). THEN one **shared depth pass** adds the cross-cutting, framework-specific depth that
+the foundation cannot supply — built ONCE and shared across adapters: a component-name **annotation build
+plugin** (babel/SWC — names survive minification + drive interaction attribution), a **Profiler/render-spans**
+integration, **auto-router** wiring, and framework-global/-19 error handlers. `@bugsee/nextjs` is NOT in the
+thin sweep — it is a deeper, highest-value slice (client/server/edge + SSR `<meta>` injection, closes FE↔BE in
+one app), sequenced after/with the depth pass. Also deferred: extracting the generic adapter plumbing
+(carrier-client resolution, `reportError`, `setRouteName`, route-pattern extraction — currently per-adapter)
+into a shared module during the depth pass.
+
 Replicate the adapter pattern over the foundation: `@bugsee/vue` (`app.config.errorHandler` + vue-router),
 `@bugsee/svelte`(+kit) (`handleError` + Vite plugin), `@bugsee/angular` (`ErrorHandler` + `TraceService` over
 `Router.events`), `@bugsee/nextjs` (client/server/edge + the SSR `<meta>` injection — the highest-value, most
