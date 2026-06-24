@@ -6,6 +6,19 @@ export {
   withBugseeErrorBoundary,
 } from './error-boundary';
 export {
+  createBugseeErrorHandlers,
+  type ReactErrorInfo,
+  type ReactRootErrorHandlers,
+} from './handlers';
+export {
+  BugseeProfiler,
+  type BugseeProfilerProps,
+  type ReactRenderProfile,
+  type RecordRenderOptions,
+  recordReactRenderSpan,
+  withBugseeProfiler,
+} from './profiler';
+export {
   linkComponentStack,
   type ReactErrorMechanism,
   type ReportReactErrorOptions,

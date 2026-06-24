@@ -41,6 +41,15 @@ const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
   }
 };
 
+/** The launched client's performance extension (`ext('performance')`) — for adapters that record spans on
+ *  the active transaction (e.g. the React Profiler). Undefined when the SDK / performance ext is absent. */
+export function getPerformanceApi(
+  getClient?: () => Bugsee | undefined,
+): PerformanceApi | undefined {
+  const client = resolveClient(getClient);
+  return client === undefined ? undefined : tryGetPerf(client);
+}
+
 /** Report an (already framework-preprocessed) error to the launched client. A no-op when no SDK is launched. */
 export function reportError(error: unknown, options: ReportErrorOptions = {}): void {
   const client = resolveClient(options.getClient);

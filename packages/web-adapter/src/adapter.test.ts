@@ -1,6 +1,6 @@
 import type { Bugsee } from '@bugsee/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reportError, resolveClient, setRouteName } from './adapter';
+import { getPerformanceApi, reportError, resolveClient, setRouteName } from './adapter';
 
 function fakeClient() {
   const logException = vi.fn(
@@ -73,6 +73,29 @@ describe('reportError', () => {
 
   it('is a no-op when no client is resolvable', () => {
     expect(() => reportError(new Error('x'), { getClient: () => undefined })).not.toThrow();
+  });
+});
+
+describe('getPerformanceApi', () => {
+  it('returns the client`s performance extension', () => {
+    const perfApi = { getActiveSpan: () => undefined };
+    const client = {
+      ext: (name: string) => {
+        if (name === 'performance') return perfApi;
+        throw new Error('nope');
+      },
+    } as unknown as Bugsee;
+    expect(getPerformanceApi(() => client)).toBe(perfApi);
+  });
+
+  it('returns undefined when no client / the ext is not registered', () => {
+    expect(getPerformanceApi(() => undefined)).toBeUndefined();
+    const noPerf = {
+      ext: () => {
+        throw new Error('not registered');
+      },
+    } as unknown as Bugsee;
+    expect(getPerformanceApi(() => noPerf)).toBeUndefined();
   });
 });
 
