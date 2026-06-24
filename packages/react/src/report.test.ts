@@ -46,6 +46,14 @@ describe('reportReactError', () => {
     expect(() => reportReactError(new Error('x'), { getClient: () => undefined })).not.toThrow();
   });
 
+  it('does NOT mutate the error (no cause linked) when there is no client to report to', () => {
+    const err = new Error('x');
+    // The component-stack link must run only when we actually report — never touch the app's error if the
+    // SDK is not launched (resolveClient runs BEFORE linkComponentStack).
+    reportReactError(err, { getClient: () => undefined, componentStack: COMPONENT_STACK });
+    expect(err.cause).toBeUndefined();
+  });
+
   it('falls back to the carrier client when no getClient is injected', () => {
     const { client, logException } = fakeClient();
     (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { '0.0.0': { client } }; // seed the carrier slot
