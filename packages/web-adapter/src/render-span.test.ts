@@ -56,7 +56,24 @@ describe('recordRenderSpan', () => {
     expect(RENDER_PHASE_ATTRIBUTE in attrsOf(recordChildSpan)).toBe(false);
   });
 
-  it('merges extra framework-specific attributes after the canonical ones', () => {
+  it('keeps the canonical duration/phase AUTHORITATIVE over a colliding extra attribute', () => {
+    const { client, recordChildSpan } = fakeActive();
+    recordRenderSpan(
+      {
+        name: 'X',
+        startTimestampMs: 0,
+        endTimestampMs: 5,
+        phase: 'mount',
+        // a framework extra that COLLIDES with the canonical keys must not win
+        attributes: { 'ui.render_duration_ms': 999, 'ui.render_phase': 'WRONG' },
+      },
+      { getClient: () => client },
+    );
+    expect(attrsOf(recordChildSpan)['ui.render_duration_ms']).toBe(5); // canonical extent, not 999
+    expect(attrsOf(recordChildSpan)['ui.render_phase']).toBe('mount'); // canonical phase, not WRONG
+  });
+
+  it('merges extra framework-specific (non-colliding) attributes after the canonical ones', () => {
     const { client, recordChildSpan } = fakeActive();
     recordRenderSpan(
       {

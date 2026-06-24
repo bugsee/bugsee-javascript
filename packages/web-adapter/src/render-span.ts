@@ -39,9 +39,11 @@ export function recordRenderSpan(span: RenderSpanInput, options: AdapterClientOp
     endTimestampMs: span.endTimestampMs,
     description: span.name,
     attributes: {
+      // Extras first → the dedicated `durationMs`/`phase` fields stay AUTHORITATIVE (a framework's extra
+      // attribute can't accidentally clobber the canonical duration/phase).
+      ...span.attributes,
       [RENDER_DURATION_ATTRIBUTE]: duration,
       ...(span.phase !== undefined ? { [RENDER_PHASE_ATTRIBUTE]: span.phase } : {}),
-      ...span.attributes,
     },
   });
 }

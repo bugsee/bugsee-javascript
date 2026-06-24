@@ -157,4 +157,22 @@ describe('createBugseeVueRenderMixin', () => {
     m.beforeMount.call(hostile); // begin() only stamps the clock — it never reads $options
     expect(() => m.mounted.call(hostile)).not.toThrow(); // end() reads the name → throws → swallowed
   });
+
+  it('deletes the start BEFORE the name-read, so a stale start cannot leak into a later after-hook', () => {
+    const { client, recordChildSpan } = fakeActive();
+    const m = createBugseeVueRenderMixin({ getClient: () => client, now: clock(1, 2, 3) });
+    let reads = 0;
+    const flaky = {
+      get $options(): { name?: unknown } {
+        reads += 1;
+        if (reads === 1) throw new Error('hostile once'); // throws on the mount read, recovers after
+        return { name: 'Recovered' };
+      },
+    } as VueRenderInstanceLike;
+    m.beforeMount.call(flaky);
+    expect(() => m.mounted.call(flaky)).not.toThrow(); // name-read throws → swallowed; the start must be gone
+    m.updated.call(flaky); // no beforeUpdate → with the start deleted, this is a no-op
+    // a lingering stale start would have produced a (wrong, too-early) span here.
+    expect(recordChildSpan).not.toHaveBeenCalled();
+  });
 });

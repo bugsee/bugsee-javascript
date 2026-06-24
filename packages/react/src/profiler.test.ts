@@ -39,7 +39,8 @@ describe('recordReactRenderSpan', () => {
     expect(opts.description).toBe('Dashboard');
     expect(opts.attributes).toMatchObject({
       'ui.render_phase': 'update',
-      'ui.render_duration_ms': 12.5,
+      'ui.render_duration_ms': 12.5, // React's actualDuration (the explicit durationMs)
+      'ui.render_base_duration_ms': 30, // the React-specific extra routed through the shared recorder
     });
   });
 
