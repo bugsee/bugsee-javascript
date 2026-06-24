@@ -61,4 +61,10 @@ describe('injectRenderSpan', () => {
     const result = injectRenderSpan({ content: '', filename: '/routes/dashboard/+page.svelte' });
     expect(result?.code).toContain('__bugsee_startRenderSpan("dashboard")');
   });
+
+  it('escapes a name with special characters via JSON.stringify (a valid string literal)', () => {
+    // an exotic filename with a quote must emit a properly-escaped literal, not a broken `"My"Quote"`.
+    const result = injectRenderSpan({ content: '', filename: 'My"Quote.svelte' });
+    expect(result?.code).toContain('__bugsee_startRenderSpan("My\\"Quote")');
+  });
 });
