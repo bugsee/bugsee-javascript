@@ -172,6 +172,36 @@ describe('createBrowserInteractionSource', () => {
     expect(seen[0]).toEqual({ interactionType: 'click', duration: 60, interactionId: 60 }); // emitted, no target
   });
 
+  it('resolves the nearest annotated component name (data-bugsee-component, D2)', () => {
+    const { Ctor, instances } = fakeObserver();
+    const { seen } = wire({ PerformanceObserver: Ctor });
+    instances[0]?.push([
+      {
+        name: 'click',
+        duration: 70,
+        interactionId: 70,
+        target: {
+          tagName: 'BUTTON',
+          id: 'go',
+          // the annotated component boundary (the build plugin would have stamped this)
+          closest: (s: string) =>
+            s === '[data-bugsee-component]' ? { getAttribute: () => 'Toolbar' } : null,
+        },
+      },
+    ]);
+    expect(seen[0]?.component).toBe('Toolbar');
+    expect(seen[0]?.target).toBe('button#go'); // (still also the PII-safe selector)
+  });
+
+  it('omits component when the target has no annotated ancestor', () => {
+    const { Ctor, instances } = fakeObserver();
+    const { seen } = wire({ PerformanceObserver: Ctor });
+    instances[0]?.push([
+      { name: 'click', duration: 50, interactionId: 71, target: { tagName: 'DIV' } }, // no closest → none
+    ]);
+    expect(seen[0] && 'component' in seen[0]).toBe(false);
+  });
+
   it('omits target for a non-element target', () => {
     const { Ctor, instances } = fakeObserver();
     const { seen } = wire({ PerformanceObserver: Ctor });

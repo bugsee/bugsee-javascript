@@ -88,6 +88,7 @@ const netSource = () => createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>
 const detail = (over: Partial<InteractionDetailLike> = {}): InteractionDetailLike => ({
   interactionType: over.interactionType ?? 'click',
   ...(over.target !== undefined ? { target: over.target } : {}),
+  ...(over.component !== undefined ? { component: over.component } : {}),
   duration: over.duration ?? 50,
   interactionId: over.interactionId ?? 1,
 });
@@ -114,6 +115,18 @@ describe('collectInteractions', () => {
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.interaction_type', 'click');
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.interaction_target', 'button#submit');
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.interaction_duration_ms', 120);
+  });
+
+  it('stamps `ui.component` from the resolved component name (D2), and omits it when absent', () => {
+    const source = intSource();
+    const { api, started } = fakeApi();
+    const t = fakeTimer();
+    collectInteractions({ source, api, env: fakeEnv().env, timer: t.timer });
+    source.emit('interact', detail({ component: 'Toolbar', interactionId: 1 }));
+    expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.component', 'Toolbar');
+    // a second interaction with no component → no ui.component stamped
+    source.emit('interact', detail({ interactionId: 2 }));
+    expect(started[1]?.setAttribute).not.toHaveBeenCalledWith('ui.component', expect.anything());
   });
 
   it('names by the interaction type alone (and stamps no target) when there is no target', () => {

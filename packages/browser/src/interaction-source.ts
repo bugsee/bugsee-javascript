@@ -1,4 +1,5 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { componentNameFromElement } from './component-name';
 import { describeTarget } from './input-source';
 
 // The browser INTERACTION SOURCE (frontend-adapters F4 / D6) — an extensible, listenable source of
@@ -17,6 +18,9 @@ export interface InteractionDetail {
   /** A PII-safe selector label for the target (`describeTarget` — e.g. 'button#submit'); omitted when
    *  the target is gone/not an element. A masked target collapses to its tag only. */
   target?: string;
+  /** The nearest annotated component name for the target (`data-bugsee-component`, D2); omitted when the
+   *  app is not annotated (no build plugin) or the target has no annotated ancestor. */
+  component?: string;
   /** The interaction latency (ms) — the Event Timing entry duration (the INP contribution). */
   duration: number;
   /** The Event Timing `interactionId` (groups one interaction's events; used to dedupe). */
@@ -95,9 +99,11 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
       if (id <= this.#maxSeenId) continue; // a non-interaction (id 0) or an already-seen interaction
       this.#maxSeenId = id;
       const target = targetLabel(entry.target, this.#mask);
+      const component = componentNameFromElement(entry.target); // D2: nearest data-bugsee-component
       this.emit('interact', {
         interactionType: entry.name,
         ...(target !== undefined ? { target } : {}),
+        ...(component !== undefined ? { component } : {}),
         duration: entry.duration,
         interactionId: id,
       });

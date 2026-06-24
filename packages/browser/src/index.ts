@@ -1,6 +1,8 @@
 // @bugsee/browser
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
+
+export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
   createWindowErrorProvider,

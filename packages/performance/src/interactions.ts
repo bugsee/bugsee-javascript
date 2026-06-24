@@ -35,6 +35,9 @@ export interface InteractionDetailLike {
   interactionType: string;
   /** A PII-safe target label ('button#submit') → completes the transaction name; omitted when unavailable. */
   target?: string;
+  /** The nearest annotated component name (`data-bugsee-component`, D2) → stamped as `ui.component`; omitted
+   *  when the app is not annotated. */
+  component?: string;
   /** The interaction latency (ms) — stamped as an attribute (the INP contribution). */
   duration: number;
   /** The Event Timing interactionId (carried for correlation; not used by the wiring). */
@@ -81,6 +84,8 @@ export function collectInteractions(deps: CollectInteractionsDeps): () => void {
       transaction.setAttribute('ui.interaction_type', detail.interactionType);
       if (detail.target !== undefined)
         transaction.setAttribute('ui.interaction_target', detail.target);
+      if (detail.component !== undefined)
+        transaction.setAttribute('ui.component', detail.component); // D2 component attribution
       transaction.setAttribute('ui.interaction_duration_ms', detail.duration);
       current = createIdleTransaction({
         transaction,

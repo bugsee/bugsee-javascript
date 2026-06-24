@@ -1,5 +1,6 @@
 import type { UserEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { componentNameFromElement } from './component-name';
 
 // Browser INPUT SOURCE for @bugsee/capture's userEventsProvider (the DOM analog of the node lifecycle
 // source). A listenable InterceptorBase: on activate it attaches capture-phase, passive listeners for the
@@ -26,7 +27,10 @@ export interface TargetDescriptor {
   text?: string;
   /** A one-level CSS-ish selector hint (tag#id.class). */
   selector?: string;
-  /** True when the element was fully masked (password / mask-selector subtree); no other fields. */
+  /** The nearest annotated framework component name (`data-bugsee-component`, D2) — not PII (the component
+   *  name, never a value), so it is reported even for a masked target. */
+  component?: string;
+  /** True when the element was fully masked (password / mask-selector subtree); no value-bearing fields. */
   masked?: boolean;
 }
 
@@ -80,12 +84,14 @@ export function describeTarget(node: unknown, maskSelector: string): TargetDescr
   const el = (node ?? undefined) as ElementLike | undefined;
   const tag = typeof el?.tagName === 'string' ? el.tagName.toLowerCase() : undefined;
   if (el === undefined || tag === undefined) return {};
+  const component = componentNameFromElement(node); // D2: nearest data-bugsee-component (not PII)
   const type = typeof el.type === 'string' ? el.type : undefined;
   const masked =
     (typeof el.closest === 'function' && el.closest(maskSelector) != null) ||
     (tag === 'input' && type === 'password');
-  if (masked) return { tag, masked: true };
+  if (masked) return { tag, masked: true, ...(component !== undefined ? { component } : {}) };
   const desc: TargetDescriptor = { tag };
+  if (component !== undefined) desc.component = component;
   const id = typeof el.id === 'string' && el.id ? el.id : undefined;
   if (id) desc.id = id;
   const cls = attr(el, 'class');

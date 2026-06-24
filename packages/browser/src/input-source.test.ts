@@ -6,7 +6,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// A fake element. `attrs` backs getAttribute; `masked` makes closest('[data-bugsee-hidden]') hit.
+// A fake element. `attrs` backs getAttribute; `masked` makes closest('[data-bugsee-hidden]') hit;
+// `component` makes closest('[data-bugsee-component]') resolve to an annotated ancestor.
 function el(props: {
   tag: string;
   id?: string;
@@ -15,6 +16,7 @@ function el(props: {
   text?: string;
   contentEditable?: boolean;
   masked?: boolean;
+  component?: string;
 }) {
   const attrs = props.attrs ?? {};
   return {
@@ -24,8 +26,13 @@ function el(props: {
     textContent: props.text,
     isContentEditable: props.contentEditable === true,
     getAttribute: (name: string) => attrs[name] ?? null,
-    closest: (selector: string) =>
-      selector === '[data-bugsee-hidden]' && props.masked ? { marker: true } : null,
+    closest: (selector: string) => {
+      if (selector === '[data-bugsee-hidden]') return props.masked ? { marker: true } : null;
+      if (selector === '[data-bugsee-component]' && props.component !== undefined) {
+        return { getAttribute: () => props.component };
+      }
+      return null;
+    },
   };
 }
 
@@ -89,6 +96,21 @@ describe('describeTarget', () => {
       tag: 'input',
       masked: true,
     });
+  });
+
+  it('attaches the nearest annotated component name (data-bugsee-component, D2)', () => {
+    expect(describeTarget(el({ tag: 'button', id: 'go', component: 'Toolbar' }), MASK)).toEqual({
+      tag: 'button',
+      id: 'go',
+      selector: 'button#go',
+      component: 'Toolbar',
+    });
+  });
+
+  it('reports the component name even for a MASKED target (the name is not PII)', () => {
+    expect(
+      describeTarget(el({ tag: 'input', type: 'password', component: 'LoginForm' }), MASK),
+    ).toEqual({ tag: 'input', masked: true, component: 'LoginForm' });
   });
 
   it('treats role=button as labelish', () => {
