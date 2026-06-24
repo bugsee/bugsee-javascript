@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Angular adapter",
+  "description": "Angular adapter: ErrorHandler + Router naming",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -18,9 +18,43 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/browser": "workspace:*"
+    "@bugsee/browser": "workspace:*",
+    "@bugsee/core": "workspace:*",
+    "@bugsee/performance": "workspace:*"
+  },
+  "peerDependencies": {
+    "@angular/core": ">=16",
+    "@angular/router": ">=16"
+  },
+  "peerDependenciesMeta": {
+    "@angular/core": {
+      "optional": true
+    },
+    "@angular/router": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    }
   }
 }

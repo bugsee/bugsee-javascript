@@ -1,5 +1,19 @@
-// @bugsee/angular
-// Angular adapter
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/angular — Angular adapter (tier 4). Error seam (ErrorHandler) + Router naming.
+// See docs/design/frontend-adapters.md §7. Structural peer — no @angular/core / @angular/router import.
+// v1: error + routing only (component/change-detection depth is the shared depth pass).
+export {
+  type AngularErrorHandlerOptions,
+  type AngularErrorMechanism,
+  type AngularErrorOptions,
+  BugseeErrorHandler,
+  createAngularErrorHandler,
+  reportAngularError,
+} from './error';
+export {
+  type AngularRouterLike,
+  type RouteNamingOptions,
+  type RouteSnapshotLike,
+  routePatternFromSnapshot,
+  setRouteName,
+  setRouteNameFromRouter,
+} from './router';
