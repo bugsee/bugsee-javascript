@@ -10,6 +10,11 @@ export {
   reportAngularError,
 } from './error';
 export {
+  type AngularRenderTrackerOptions,
+  type BugseeRenderTracker,
+  createBugseeRenderTracker,
+} from './render-tracker';
+export {
   type AngularRouterLike,
   type RouteNamingOptions,
   type RouteSnapshotLike,
