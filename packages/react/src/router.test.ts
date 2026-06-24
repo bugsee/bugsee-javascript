@@ -39,6 +39,12 @@ describe('routePatternFromMatches', () => {
     );
   });
 
+  it('drops an all-slash segment so a root LAYOUT route + child does not double-slash', () => {
+    // react-router commonly nests routes under a root layout whose path is '/'; that segment trims to ''
+    // and must not contribute, else the join would yield '//users'.
+    expect(routePatternFromMatches([match('/'), match('users')])).toBe('/users');
+  });
+
   it('returns "/" for the root route', () => {
     expect(routePatternFromMatches([match('/')])).toBe('/');
   });

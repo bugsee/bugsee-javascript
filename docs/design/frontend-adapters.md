@@ -273,7 +273,18 @@ framework first (table per adapter, as the backend did).
   a navigation starts raw-URL (phase 1, F1c — `nav.source` detection untouched), an adapter refines it to
   the resolved route on routing-resolve (phase 2). The D10 EMIT half (`startNavigation`) already exists on
   the nav source (F1); its public surfacing is co-designed with the first real consumer in **F6**.
-- **F6** `@bugsee/react` — ErrorBoundary + react-router naming (Phase 2).
+- **F6 DONE** (2026-06-24) `@bugsee/react` — the first tier-4 adapter (proves the pattern). (1) CORE ENABLER:
+  `logException` links the `error.cause` chain into the report description (LinkedErrors; bounded + cycle-safe).
+  (2) ERROR SEAM: `BugseeErrorBoundary` + `withBugseeErrorBoundary` + the React-free `reportReactError`/
+  `linkComponentStack` core (component stack linked via `error.cause`; original error passed → dedup preserved;
+  default mechanism `uncaught`). (3) ROUTER NAMING: `routePatternFromMatches`/`setRouteName`/
+  `instrumentRouterMatches` — a STRUCTURAL PEER over react-router's `matchRoutes()` shape (no react-router
+  import), refining the active navigation to the route pattern via the F5/D5 seam. React is peer(>=18)+devDep,
+  imported ONLY in the boundary; tested injection-first (no react-dom renderer). Packaging (tsup + dual-module
+  publishConfig) added. **DEFERRED: a real-React + real-react-router e2e** (the boundary catch → uploaded-bundle
+  assertion + `matchRoutes()` naming) — the injection-first unit tests are comprehensive, but a real-framework
+  probe (like the backend adapters had) needs a DOM renderer (jsdom), which diverges from the env:node
+  discipline; tracked as a follow-up.
 - **F7+** fan-out: vue / svelte / angular / nextjs (Phase 3).
 
 (F0–F5 = the foundation milestone; F6 proves the adapter pattern; F7+ fan out.)
