@@ -1,4 +1,4 @@
-import { type AdapterClientOptions, getPerformanceApi } from '@bugsee/web-adapter';
+import { type AdapterClientOptions, recordRenderSpan } from '@bugsee/web-adapter';
 import {
   type ComponentType,
   createElement,
@@ -13,8 +13,6 @@ import {
 // recording core (`recordReactRenderSpan`) is React-FREE + injection-tested; the component is a thin shell.
 // A no-op when the SDK / performance ext / an active transaction is absent.
 
-const ATTR_PHASE = 'ui.render_phase';
-const ATTR_DURATION = 'ui.render_duration_ms';
 const ATTR_BASE_DURATION = 'ui.render_base_duration_ms';
 
 /** React's `<Profiler onRender>` payload (the timing of one commit). `startTime`/`commitTime` are
@@ -42,19 +40,21 @@ export function recordReactRenderSpan(
   profile: ReactRenderProfile,
   options: RecordRenderOptions = {},
 ): void {
-  const active = getPerformanceApi(options.getClient)?.getActiveSpan();
-  if (active === undefined) return;
   const timeOrigin = options.timeOrigin ?? realTimeOrigin();
-  active.recordChildSpan('ui.render', {
-    startTimestampMs: timeOrigin + profile.startTime,
-    endTimestampMs: timeOrigin + profile.commitTime,
-    description: profile.id,
-    attributes: {
-      [ATTR_PHASE]: profile.phase,
-      [ATTR_DURATION]: profile.actualDuration,
-      [ATTR_BASE_DURATION]: profile.baseDuration,
+  // React reports `actualDuration` (the render-phase work) as the duration — distinct from the span extent
+  // (startTime→commitTime, which includes the commit gap) — so pass it explicitly. `baseDuration` is React-
+  // specific extra. The shared recorder handles the active-transaction lookup + the `ui.render` op/attrs.
+  recordRenderSpan(
+    {
+      name: profile.id,
+      startTimestampMs: timeOrigin + profile.startTime,
+      endTimestampMs: timeOrigin + profile.commitTime,
+      phase: profile.phase,
+      durationMs: profile.actualDuration,
+      attributes: { [ATTR_BASE_DURATION]: profile.baseDuration },
     },
-  });
+    { getClient: options.getClient },
+  );
 }
 
 export interface BugseeProfilerProps extends RecordRenderOptions {

@@ -12,3 +12,10 @@ export {
   resolveClient,
   setRouteName,
 } from './adapter';
+export {
+  RENDER_DURATION_ATTRIBUTE,
+  RENDER_PHASE_ATTRIBUTE,
+  RENDER_SPAN_OP,
+  type RenderSpanInput,
+  recordRenderSpan,
+} from './render-span';
