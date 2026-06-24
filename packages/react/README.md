@@ -39,11 +39,13 @@ instrumentRouterMatches(matchRoutes(routes, location));
 
 ## Preact
 
-Preact is supported through this adapter via `preact/compat` (the standard React-compat aliasing) — no
+Preact (≥10) is supported through this adapter via `preact/compat` (the standard React-compat aliasing) — no
 separate package. Under compat, `preact/compat`'s `Component` provides React-compatible error boundaries
-(`getDerivedStateFromError` / `componentDidCatch`), so `BugseeErrorBoundary` / `withBugseeErrorBoundary` work
-unchanged, and the router helpers are structural (they consume a `matchRoutes()`-shaped value from
-react-router or preact-iso). Alias `react`/`react-dom` → `preact/compat` in your bundler (as a Preact app
-already does) and use `@bugsee/react` as-is.
+(`getDerivedStateFromError` / `componentDidCatch`), so `BugseeErrorBoundary` / `withBugseeErrorBoundary` catch
+descendant render errors unchanged, and the router helpers are structural (they consume a `matchRoutes()`-shaped
+value from react-router or preact-iso). Alias `react`/`react-dom` → `preact/compat` in your bundler (as a Preact
+app already does) and use `@bugsee/react` as-is. Caveat: Preact's `componentDidCatch` does not populate
+`errorInfo.componentStack`, so under Preact the report carries the error but no React component-stack tree (the
+boundary handles this gracefully — it simply omits it).
 
 Built test-first per `docs/implementation-standards.md`; see `docs/design/frontend-adapters.md` §6 (D8).

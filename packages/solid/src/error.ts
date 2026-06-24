@@ -5,10 +5,13 @@ import { getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
 // render/reactive errors via the built-in `<ErrorBoundary>` component and the `onError(handler)` /
 // `catchError(fn, handler)` primitives — all of which hand a plain `error` to a USER callback. So (unlike
 // React) we don't ship a boundary component; we provide the reporter the user wires into Solid's own seam:
-//   import { onError } from 'solid-js'; onError(solidErrorHandler());
 //   <ErrorBoundary fallback={(e) => (solidErrorHandler()(e), <Fallback/>)}>…</ErrorBoundary>
+//   import { catchError } from 'solid-js'; catchError(() => <App/>, solidErrorHandler());
+//   // (onError(solidErrorHandler()) also works but is deprecated since solid-js 1.7 in favour of catchError)
 // A STRUCTURAL approach (no `solid-js` import) → version-agnostic + unit-testable. A no-op when no SDK is
-// launched. Solid's seams give just the error (no component context), so the report is the error itself.
+// launched. These seams catch SYNCHRONOUS render/reactive errors in their owner scope (like React boundaries)
+// — async/event-handler/rejection errors are covered by the SDK's global handlers, not here. The seams give
+// just the error (no component context), so the report is the error itself.
 
 /** Capture mechanism for a Solid error report (the `logException` mechanism vocabulary). */
 export type SolidErrorMechanism = NonNullable<LogExceptionOptions['mechanism']>;

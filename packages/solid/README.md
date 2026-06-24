@@ -5,24 +5,26 @@ Plugs Solid's error + routing into the `@bugsee/browser` foundation. v1: error +
 
 ## Error reporting
 
-Solid catches errors via the built-in `<ErrorBoundary>` and the `onError` / `catchError` primitives, all of
-which hand a plain error to a callback — so wire Bugsee's reporter into Solid's own seam:
+Solid catches errors via the built-in `<ErrorBoundary>` and the `catchError` primitive (and the deprecated
+`onError`), all of which hand a plain error to a callback — so wire Bugsee's reporter into Solid's own seam:
 
 ```tsx
-import { onError } from 'solid-js';
+import { catchError } from 'solid-js';
 import { solidErrorHandler } from '@bugsee/solid';
 
-// at the app root:
-onError(solidErrorHandler());
-
-// or in an ErrorBoundary fallback:
+// in an ErrorBoundary fallback:
 <ErrorBoundary fallback={(err, reset) => { solidErrorHandler()(err); return <Crashed onReset={reset} />; }}>
   <App />
 </ErrorBoundary>;
+
+// or with catchError:
+catchError(() => <App />, solidErrorHandler());
+// (onError(solidErrorHandler()) also works, but onError is deprecated since solid-js 1.7 in favour of catchError)
 ```
 
 `reportSolidError(error)` is the underlying call. Reports go to the launched Bugsee client (the process
-carrier by default).
+carrier by default). These seams catch synchronous render/reactive errors; async/event-handler errors are
+covered by the SDK's global error capture.
 
 ## Router naming (@solidjs/router)
 
