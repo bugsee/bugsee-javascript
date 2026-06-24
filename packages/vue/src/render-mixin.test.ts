@@ -130,6 +130,26 @@ describe('createBugseeVueRenderMixin', () => {
     expect(opts.endTimestampMs).toBeGreaterThanOrEqual(opts.startTimestampMs);
   });
 
+  it('composes the default clock as performance.timeOrigin + performance.now() (epoch ms)', () => {
+    const { client, recordChildSpan } = fakeActive();
+    let n = 0;
+    vi.stubGlobal('performance', { timeOrigin: 1000, now: () => [5, 8][n++] });
+    try {
+      const m = createBugseeVueRenderMixin({ getClient: () => client });
+      const i = inst({ $options: { name: 'Clock' } });
+      m.beforeMount.call(i); // 1000 + 5
+      m.mounted.call(i); // 1000 + 8
+      const opts = recordChildSpan.mock.calls[0]?.[1] as {
+        startTimestampMs: number;
+        endTimestampMs: number;
+      };
+      expect(opts.startTimestampMs).toBe(1005); // pins the timeOrigin term
+      expect(opts.endTimestampMs).toBe(1008); // pins the now() term
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('falls back to 0 timestamps when the performance clock is unavailable', () => {
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', {}); // no now / no timeOrigin
