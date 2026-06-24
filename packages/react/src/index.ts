@@ -1,5 +1,13 @@
-// @bugsee/react
-// React adapter: ErrorBoundary, hooks
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/react — React adapter (tier 4). Error seam (BugseeErrorBoundary + HOC) + the reporting core.
+// See docs/design/frontend-adapters.md §6 (D8). React is a structural peer — imported only in the boundary.
+export {
+  BugseeErrorBoundary,
+  type BugseeErrorBoundaryProps,
+  withBugseeErrorBoundary,
+} from './error-boundary';
+export {
+  linkComponentStack,
+  type ReactErrorMechanism,
+  type ReportReactErrorOptions,
+  reportReactError,
+} from './report';

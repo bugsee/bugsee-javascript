@@ -810,6 +810,70 @@ describe('createClient — logException', () => {
     expect(request.report.description).toMatch(/Error: boom/);
   });
 
+  it('links the error `cause` chain into the description (LinkedErrors — e.g. a React component stack)', async () => {
+    const { client, report } = withTrigger();
+    const componentStack = new Error('React component stack:\n    in Widget\n    in App');
+    const err = new Error('render failed');
+    err.cause = componentStack; // a framework adapter links supplementary context via cause
+    await client.logException(err);
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.report.description).toMatch(/Error: render failed/); // the error's own stack
+    expect(request.report.description).toContain('Caused by: '); // the cause is linked
+    expect(request.report.description).toContain('in Widget'); // the component stack travels with the report
+  });
+
+  it('falls back to the cause message when the cause has no stack, and stops at a non-Error cause', async () => {
+    const { client, report } = withTrigger();
+    const noStack = new Error('inner');
+    noStack.stack = undefined; // a cause without a stack → use its message
+    noStack.cause = 'a plain string cause'; // a non-Error cause ENDS the chain (not appended)
+    const err = new Error('outer');
+    err.stack = undefined; // the head also lacks a stack → the description is the cause chain alone
+    err.cause = noStack;
+    await client.logException(err);
+    const desc = (report.mock.calls[0]?.[0] as ReportingRequest).report.description as string;
+    expect(desc).toBe('Caused by: inner'); // head has no stack → just the linked cause (message used)
+    expect(desc).not.toContain('a plain string cause'); // the non-Error cause is not chained
+  });
+
+  it('bounds the cause chain depth and survives a cyclic cause (no infinite loop)', async () => {
+    const { client, report } = withTrigger();
+    const a = new Error('a');
+    const b = new Error('b');
+    a.cause = b;
+    b.cause = a; // cycle
+    await client.logException(a);
+    const desc = (report.mock.calls[0]?.[0] as ReportingRequest).report.description as string;
+    // The seen-set breaks the cycle: `b` is linked once, then `a` (already seen) stops the walk.
+    expect(desc.match(/Caused by: /g)?.length).toBe(1);
+  });
+
+  it('caps the linked cause chain at MAX_CAUSE_DEPTH (5)', async () => {
+    const { client, report } = withTrigger();
+    // A 7-deep distinct chain: head + 7 causes; only the first 5 causes are linked.
+    let tip = new Error('c7');
+    for (let i = 6; i >= 1; i--) {
+      const next = new Error(`c${i}`);
+      next.cause = tip;
+      tip = next;
+    }
+    const head = new Error('head');
+    head.cause = tip;
+    await client.logException(head);
+    const desc = (report.mock.calls[0]?.[0] as ReportingRequest).report.description as string;
+    expect(desc.match(/Caused by: /g)?.length).toBe(5); // capped
+  });
+
+  it('omits the description for an Error with no stack and no cause', async () => {
+    const { client, report } = withTrigger();
+    const err = new Error('stackless');
+    err.stack = undefined;
+    await client.logException(err);
+    const request = report.mock.calls[0]?.[0] as ReportingRequest;
+    expect(request.report.summary).toBe('stackless'); // summary still set from the message
+    expect(request.report.description).toBeUndefined(); // but no description (no stack, no cause)
+  });
+
   it('dedups a re-captured instance (reports once)', async () => {
     const { client, report } = withTrigger();
     const err = new Error('x');

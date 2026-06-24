@@ -108,6 +108,27 @@ const sleep = (ms: number): Promise<void> =>
     (handle as { unref?: () => void }).unref?.();
   });
 
+// The report description for an error: its stack, plus the `cause` chain (standard JS error chaining /
+// Sentry-style LinkedErrors) — so wrapped context, e.g. the React component stack a framework adapter
+// links via `error.cause`, travels with the report. Bounded depth + a seen-set guard against cycles; a
+// non-Error cause ends the chain. Preserves the prior behaviour: a non-Error value, and an Error with no
+// stack and no cause, both yield `undefined` (no description).
+const MAX_CAUSE_DEPTH = 5;
+function describeError(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const base = error.stack;
+  const causes: string[] = [];
+  const seen = new Set<unknown>([error]);
+  let current: unknown = (error as { cause?: unknown }).cause;
+  while (current instanceof Error && !seen.has(current) && causes.length < MAX_CAUSE_DEPTH) {
+    seen.add(current);
+    causes.push(`Caused by: ${current.stack ?? current.message}`);
+    current = (current as { cause?: unknown }).cause;
+  }
+  if (base === undefined && causes.length === 0) return undefined;
+  return [base ?? '', ...causes].filter(Boolean).join('\n');
+}
+
 /** Options for logException (a focused core subset of Android ExceptionOptions). */
 export interface LogExceptionOptions {
   /** Capture mechanism for the wire source (default 'programmatic'). */
@@ -554,11 +575,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         return Promise.resolve({ ok: false });
       }
       const message = error instanceof Error ? error.message : String(error);
-      const stack = error instanceof Error ? error.stack : undefined;
+      const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,
-        ...(stack !== undefined ? { description: stack } : {}),
+        ...(description !== undefined ? { description } : {}),
         ...(exceptionOptions?.severity !== undefined
           ? { severity: exceptionOptions.severity }
           : {}),

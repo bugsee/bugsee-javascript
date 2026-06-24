@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "React adapter: ErrorBoundary, hooks",
+  "description": "React adapter: ErrorBoundary + router naming",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -18,9 +18,21 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/browser": "workspace:*"
+    "@bugsee/browser": "workspace:*",
+    "@bugsee/core": "workspace:*",
+    "@bugsee/performance": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1"
   }
 }
