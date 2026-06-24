@@ -5,7 +5,9 @@ import type { PerformanceApi } from '@bugsee/performance';
 // The @bugsee/svelte ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On
 // a navigation, SvelteKit's navigation target carries the route id (`/users/[id]` — SvelteKit's own
 // parameterized route syntax, already low-cardinality); refine the active navigation transaction (opened
-// raw-URL by the F1 navigation source) to that id via `ext('performance').setRouteName`. A STRUCTURAL PEER
+// raw-URL by the F1 navigation source) to that id via `ext('performance').setRouteName`. We DELIBERATELY
+// keep SvelteKit's native bracket syntax (not normalized to the colon style the backend adapters use) — each
+// adapter reports its framework's own route format; normalizing would be lossy and opinionated. A STRUCTURAL PEER
 // over SvelteKit's `afterNavigate` argument shape (no `$app/navigation` import) → version-agnostic +
 // unit-testable. A no-op when the SDK / performance ext is absent. The user wires it once:
 // `afterNavigate(instrumentSvelteKitNavigation())`.
