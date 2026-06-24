@@ -34,6 +34,26 @@ const collect = (source: ReturnType<typeof createBrowserNavigationSource>) => {
   return { events, off };
 };
 
+// A fake Navigation API: a mutable `currentEntry` (the source reads `currentEntry.url` post-commit) + a
+// captured `currententrychange` listener. `change(url, type)` simulates a committed same-document navigation
+// (set the new currentEntry URL, then fire the event); `fire(type)` fires without touching currentEntry.
+function fakeNavigation() {
+  let handler: ((e: unknown) => void) | undefined;
+  const navigation = {
+    currentEntry: { url: undefined } as { url?: string } | null,
+    addEventListener: vi.fn((_t: string, l: (e: unknown) => void) => {
+      handler = l;
+    }),
+    removeEventListener: vi.fn(),
+  };
+  const change = (url: string | undefined, navigationType: string | null | undefined) => {
+    navigation.currentEntry = { url };
+    handler?.({ navigationType });
+  };
+  const fire = (navigationType: string | null | undefined) => handler?.({ navigationType });
+  return { navigation, change, fire };
+}
+
 describe('createBrowserNavigationSource', () => {
   it('patches history.pushState on activation and restores it on deactivation', () => {
     const { env, history, origPush } = fakeEnv();
@@ -97,40 +117,60 @@ describe('createBrowserNavigationSource', () => {
     ]);
   });
 
-  it('uses the Navigation API when present (NOT History); maps types/paths; unsubscribes on deactivate', () => {
-    let navHandler: ((e: unknown) => void) | undefined;
-    const navigation = {
-      addEventListener: vi.fn((_t: string, l: (e: unknown) => void) => {
-        navHandler = l;
-      }),
-      removeEventListener: vi.fn(),
-    };
+  it('uses the Navigation API (currententrychange) when present (NOT History); maps types/paths; unsubscribes', () => {
+    const { navigation, change } = fakeNavigation();
     const { env, history, origPush } = fakeEnv({ navigation: navigation as never });
     const source = createBrowserNavigationSource(env);
     const events: NavigationDetail[] = [];
     const off = source.on('navigate', (d) => events.push(d));
     expect(history.pushState).toBe(origPush); // History NOT patched (the Navigation API covers it)
-    expect(navigation.addEventListener).toHaveBeenCalledWith('navigate', expect.any(Function));
-    // a full URL → path only; a known type passes through.
-    navHandler?.({
-      navigationType: 'replace',
-      destination: { url: 'https://app.test/dashboard?q=1' },
-    });
-    // a relative/unparseable url is used as-is; a missing/unknown type defaults to 'push'.
-    navHandler?.({ destination: { url: '/orders/42' } });
-    // the `push` + `traverse` types map through as-is (the other navTypeFor arms).
-    navHandler?.({ navigationType: 'push', destination: { url: '/home' } });
-    navHandler?.({ navigationType: 'traverse', destination: { url: '/back' } });
-    // a navigate event with NO destination url (e.g. a reload) → nothing to emit; the `reload` type maps as-is.
-    navHandler?.({ navigationType: 'reload' });
+    expect(navigation.addEventListener).toHaveBeenCalledWith(
+      'currententrychange',
+      expect.any(Function),
+    );
+    // currentEntry holds the already-committed URL; a full URL → path only; a known type passes through.
+    change('https://app.test/dashboard?q=1', 'replace');
+    change('/orders/42', 'weird-unknown-type'); // an unknown type defaults to 'push'
+    change('/home', 'push'); // the `push`, `traverse`, `reload` arms map through as-is
+    change('/back', 'traverse');
+    change('/r', 'reload');
     expect(events).toEqual([
       { to: '/dashboard', navigationType: 'replace', source: 'url' },
       { to: '/orders/42', navigationType: 'push', source: 'url' },
       { to: '/home', navigationType: 'push', source: 'url' },
       { to: '/back', navigationType: 'traverse', source: 'url' },
+      { to: '/r', navigationType: 'reload', source: 'url' },
     ]);
-    off(); // dropping the last subscriber deactivates → the navigate listener is removed
-    expect(navigation.removeEventListener).toHaveBeenCalledWith('navigate', expect.any(Function));
+    off(); // dropping the last subscriber deactivates → the listener is removed
+    expect(navigation.removeEventListener).toHaveBeenCalledWith(
+      'currententrychange',
+      expect.any(Function),
+    );
+    // it must remove the SAME bound handler it added (a fresh closure would leak the listener forever).
+    expect(navigation.removeEventListener.mock.calls[0]?.[1]).toBe(
+      navigation.addEventListener.mock.calls[0]?.[1],
+    );
+  });
+
+  it('skips a state-only entry change (navigationType null = updateCurrentEntry) or one with no type', () => {
+    const { navigation, change } = fakeNavigation();
+    const { env } = fakeEnv({ navigation: navigation as never });
+    const { events } = collect(createBrowserNavigationSource(env));
+    change('/state-only', null); // updateCurrentEntry() — a state edit, not a navigation
+    change('/no-type', undefined); // an event with no navigationType
+    expect(events).toEqual([]);
+    change('/real', 'push'); // a genuine navigation still emits
+    expect(events).toEqual([{ to: '/real', navigationType: 'push', source: 'url' }]);
+  });
+
+  it('emits nothing when the current entry has no URL or is absent', () => {
+    const { navigation, change, fire } = fakeNavigation();
+    const { env } = fakeEnv({ navigation: navigation as never });
+    const { events } = collect(createBrowserNavigationSource(env));
+    change(undefined, 'push'); // currentEntry.url undefined → nothing to emit
+    navigation.currentEntry = null; // currentEntry absent entirely
+    fire('push');
+    expect(events).toEqual([]);
   });
 
   it('self-skips when the globals are absent (SSR/worker): activating throws nothing, emits nothing', () => {
@@ -161,9 +201,12 @@ describe('createBrowserNavigationSource', () => {
     expect(origPush).toHaveBeenCalled(); // the app's navigation completed
   });
 
-  it('a throwing navigate-event getter never breaks the Navigation API listener (observe-only)', () => {
+  it('a throwing currentEntry getter never breaks the Navigation API listener (observe-only)', () => {
     let navHandler: ((e: unknown) => void) | undefined;
     const navigation = {
+      get currentEntry(): { url?: string } {
+        throw new Error('hostile currentEntry');
+      },
       addEventListener: vi.fn((_t: string, l: (e: unknown) => void) => {
         navHandler = l;
       }),
@@ -171,13 +214,8 @@ describe('createBrowserNavigationSource', () => {
     };
     const { env } = fakeEnv({ navigation: navigation as never });
     const { events } = collect(createBrowserNavigationSource(env));
-    const hostile = {
-      navigationType: 'push',
-      get destination(): { url: string } {
-        throw new Error('hostile destination');
-      },
-    };
-    expect(() => navHandler?.(hostile)).not.toThrow();
+    // The currentEntry read (a hostile getter) throws inside the handler — it must be swallowed, not thrown.
+    expect(() => navHandler?.({ navigationType: 'push' })).not.toThrow();
     expect(events).toEqual([]); // nothing emitted, nothing thrown
   });
 });

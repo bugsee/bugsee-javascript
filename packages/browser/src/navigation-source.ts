@@ -1,14 +1,18 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 
 // The browser NAVIGATION SOURCE (frontend-adapters design D2/D10) — an EXTENSIBLE, listenable source of
-// SPA navigations. Built-in detection (a route change the browser itself performs): patch
-// `history.pushState`/`replaceState` (call the original FIRST, then emit — never block the app's nav),
-// listen `popstate` (back/forward) + `hashchange`; OR, when the Navigation API is present, use its single
-// `navigate` event instead (it covers all of the above). EXTENSIBLE: a framework adapter both subscribes
+// SPA navigations. Built-in detection (a route change the browser itself performs): PREFER the new
+// Navigation API (`window.navigation`) when present, listening to its `currententrychange` event — it fires
+// post-commit for EVERY same-document navigation (`pushState`/`replaceState`, fragment, back/forward, AND a
+// cross-document navigation the app converted to client-side routing via `navigateEvent.intercept()`), and
+// never for a genuine cross-document full load (that document unloads), so we read the already-updated
+// `navigation.currentEntry.url`. FALLBACK (older engines / Safari before it shipped): patch
+// `history.pushState`/`replaceState` (call the original FIRST, then emit — never block the app's nav) +
+// listen `popstate` (back/forward) + `hashchange`. EXTENSIBLE: a framework adapter both subscribes
 // (`on('navigate', …)`) and emits its OWN navigations via `startNavigation()` — for framework route
 // changes that never switch the browser URL/origin/path (virtual/tab/modal/wizard routes, RSC transitions).
 // Self-skips when the globals are absent (SSR / worker). Observe-only: a throwing listener / location /
-// navigate-event can never disrupt the application (the original History method already ran).
+// navigation-entry getter can never disrupt the application (the original History method already ran).
 
 /** How a navigation was triggered. `programmatic` = an adapter-emitted (URL-less) navigation. */
 export type NavigationType = 'push' | 'replace' | 'traverse' | 'hash' | 'reload' | 'programmatic';
@@ -36,14 +40,23 @@ interface NavTarget {
 interface LocationLike {
   readonly pathname: string;
 }
-interface NavigateEventLike {
-  readonly navigationType?: string;
-  readonly destination?: { readonly url?: string };
+/** The `currententrychange` event — its `navigationType` ('push'|'replace'|'reload'|'traverse') reflects how
+ *  the current entry changed; `null` means a state-only `updateCurrentEntry()` (not a navigation → skip). */
+interface CurrentEntryChangeEventLike {
+  readonly navigationType?: string | null;
 }
-/** The Navigation API (feature-detected); its `navigate` event covers History + popstate + hashchange. */
+/** The Navigation API (feature-detected). Its `currententrychange` event covers every same-document
+ *  navigation post-commit; the destination URL is read from `currentEntry.url` (already updated when it fires). */
 interface NavigationApiLike {
-  addEventListener(type: 'navigate', listener: (event: NavigateEventLike) => void): void;
-  removeEventListener(type: 'navigate', listener: (event: NavigateEventLike) => void): void;
+  addEventListener(
+    type: 'currententrychange',
+    listener: (event: CurrentEntryChangeEventLike) => void,
+  ): void;
+  removeEventListener(
+    type: 'currententrychange',
+    listener: (event: CurrentEntryChangeEventLike) => void,
+  ): void;
+  readonly currentEntry?: { readonly url?: string | null } | null;
 }
 
 /** Injected browser globals (defaults read the real ones; absent → the source self-skips). */
@@ -93,10 +106,17 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
 
   readonly #onPopstate = (): void => this.#emitFromLocation('traverse');
   readonly #onHashchange = (): void => this.#emitFromLocation('hash');
-  readonly #onNavigate = (event: NavigateEventLike): void => {
+  readonly #onCurrentEntryChange = (event: CurrentEntryChangeEventLike): void => {
     try {
-      // The destination read can throw (a hostile getter) — it must never break the app's navigation.
-      this.#emit(pathOf(event?.destination?.url), navTypeFor(event?.navigationType), 'url');
+      // A `null` navigationType is a state-only `updateCurrentEntry()` — not a navigation; skip it. The
+      // `currentEntry.url` getter can throw (a hostile/exotic global) — the try makes that observe-only.
+      const navType = event?.navigationType;
+      if (navType === undefined || navType === null) return;
+      this.#emit(
+        pathOf(this.#navigation?.currentEntry?.url ?? undefined),
+        navTypeFor(navType),
+        'url',
+      );
     } catch {
       // observe-only
     }
@@ -137,9 +157,9 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
   }
 
   protected onActivate(): void {
-    // Prefer the Navigation API (one event covers History + popstate + hashchange) when present.
+    // Prefer the Navigation API: one `currententrychange` listener covers every same-document navigation.
     if (this.#navigation !== undefined) {
-      this.#navigation.addEventListener('navigate', this.#onNavigate);
+      this.#navigation.addEventListener('currententrychange', this.#onCurrentEntryChange);
       return;
     }
     if (this.#history !== undefined) {
@@ -165,7 +185,7 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
 
   protected override onDeactivate(): void {
     if (this.#navigation !== undefined) {
-      this.#navigation.removeEventListener('navigate', this.#onNavigate);
+      this.#navigation.removeEventListener('currententrychange', this.#onCurrentEntryChange);
     }
     if (
       this.#history !== undefined &&
