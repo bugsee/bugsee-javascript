@@ -22,7 +22,10 @@ export interface AngularErrorOptions {
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 
 /** Unwrap Angular's error wrapper to the real thrown error: `error.ngOriginalError` when present, else the
- *  error itself (also for a non-object thrown value). */
+ *  error itself (also for a non-object thrown value). NOTE: `ngOriginalError` is the wrapper field Angular
+ *  ≤18 set (its own ErrorHandler unwrapped it); Angular 19+ removed the wrapper and forwards the raw error
+ *  straight to `handleError`, so this read is simply a best-effort no-op there (returns the error unchanged).
+ *  Either way the right error is reported. */
 function originalError(error: unknown): unknown {
   if (error !== null && typeof error === 'object' && 'ngOriginalError' in error) {
     const wrapped = (error as { ngOriginalError?: unknown }).ngOriginalError;

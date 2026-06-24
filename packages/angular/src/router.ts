@@ -41,7 +41,10 @@ const tryGetPerf = (client: Bugsee): PerformanceApi | undefined => {
 const MAX_ROUTE_DEPTH = 64; // a safety bound against a malformed/cyclic snapshot tree
 
 /** Build the parameterized pattern from an activated-route snapshot tree: join each level's non-empty
- *  `routeConfig.path` down the `firstChild` chain (`/users/:id`). Returns undefined when no usable path. */
+ *  `routeConfig.path` down the `firstChild` chain (`/users/:id`). Returns undefined when no usable path.
+ *  Follows `firstChild` (the primary outlet in the common case); a route activated in a NAMED secondary
+ *  outlet lives under `children`/`outlet` instead and is not reflected here — a known v1 limitation
+ *  (named outlets are rare; full multi-outlet naming is a later refinement). */
 export function routePatternFromSnapshot(
   root: RouteSnapshotLike | null | undefined,
 ): string | undefined {

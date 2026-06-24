@@ -51,10 +51,13 @@ describe('routePatternFromSnapshot', () => {
     expect(routePatternFromSnapshot(undefined)).toBeUndefined();
   });
 
-  it('is bounded against a pathological self-referential tree (no infinite loop)', () => {
+  it('TRUNCATES a pathological self-referential tree to the depth bound (terminates, bounded result)', () => {
     const cyclic: RouteSnapshotLike = { routeConfig: { path: 'a' } };
     cyclic.firstChild = cyclic; // pathological
-    expect(() => routePatternFromSnapshot(cyclic)).not.toThrow();
+    const result = routePatternFromSnapshot(cyclic);
+    // The walk terminates at MAX_ROUTE_DEPTH (64) and yields exactly that many segments — not an infinite
+    // loop, and a bounded string. (A weaker `not.toThrow()` would miss a bound-magnitude regression.)
+    expect(result?.split('/').filter(Boolean).length).toBe(64);
   });
 });
 
