@@ -1,6 +1,7 @@
 import { parse } from 'svelte/compiler';
 import { annotateMarkup } from './annotate';
 import { componentNameFromFilename } from './component-name';
+import { injectRenderSpan, type SvelteScriptInput } from './render-span-inject';
 
 // @bugsee/svelte-plugin-component-annotate — a Svelte PREPROCESSOR (the Svelte emit side of the shared D2/D3
 // component-attribution mechanism). It stamps each `.svelte` component's host elements with
@@ -15,15 +16,25 @@ export interface SvelteMarkupInput {
   filename?: string;
 }
 
-/** A minimal Svelte `PreprocessorGroup` (just the `markup` hook). */
+/** A minimal Svelte `PreprocessorGroup` (the `markup` hook + an optional `script` hook for render spans). */
 export interface ComponentAnnotatePreprocessor {
   markup(input: SvelteMarkupInput): { code: string } | undefined;
+  script?(input: SvelteScriptInput): { code: string } | undefined;
 }
 
-/** Build the preprocessor. A no-op (returns undefined → original source kept) for non-.svelte files, files
- *  with no host elements, or unparseable markup. */
-export function componentAnnotatePreprocessor(): ComponentAnnotatePreprocessor {
-  return {
+export interface ComponentAnnotateOptions {
+  /** ALSO inject onMount-based render-span timing (the Svelte init-span). Opt-in (default false); requires
+   *  `@bugsee/svelte` at runtime, whose `startSvelteRenderSpan` the injected code calls. */
+  renderSpans?: boolean;
+}
+
+/** Build the preprocessor. The `markup` hook stamps host elements with `data-bugsee-component` (a no-op for
+ *  non-.svelte files, files with no host elements, or unparseable markup). With `{ renderSpans: true }` it
+ *  also adds a `script` hook that injects an onMount render-span call into each component's instance script. */
+export function componentAnnotatePreprocessor(
+  options: ComponentAnnotateOptions = {},
+): ComponentAnnotatePreprocessor {
+  const group: ComponentAnnotatePreprocessor = {
     markup({ content, filename }: SvelteMarkupInput): { code: string } | undefined {
       const name = componentNameFromFilename(filename);
       if (name === undefined) return undefined;
@@ -31,7 +42,12 @@ export function componentAnnotatePreprocessor(): ComponentAnnotatePreprocessor {
       return code === undefined ? undefined : { code };
     },
   };
+  if (options.renderSpans) {
+    group.script = (input: SvelteScriptInput) => injectRenderSpan(input);
+  }
+  return group;
 }
 
 export { annotateMarkup } from './annotate';
 export { componentNameFromFilename } from './component-name';
+export { injectRenderSpan, type SvelteScriptInput } from './render-span-inject';

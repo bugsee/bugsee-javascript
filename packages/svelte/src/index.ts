@@ -10,6 +10,7 @@ export {
   type SvelteErrorMechanism,
   type SvelteErrorOptions,
 } from './error';
+export { type SvelteRenderSpanOptions, startSvelteRenderSpan } from './render-span';
 export {
   type AfterNavigateLike,
   instrumentSvelteKitNavigation,

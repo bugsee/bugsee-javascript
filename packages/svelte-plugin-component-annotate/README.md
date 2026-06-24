@@ -17,6 +17,14 @@ export default {
 };
 ```
 
+**Render spans (opt-in).** With `componentAnnotatePreprocessor({ renderSpans: true })` the preprocessor also
+adds a `script` hook that injects an `onMount`-based init render-span into each component — it records a
+`ui.render` 'mount' span (component init → mounted) on the active transaction via `@bugsee/svelte`'s
+`startSvelteRenderSpan` (which the injected code calls, so `@bugsee/svelte` must be installed). Init-only by
+design: `onMount` works on Svelte 4 **and** Svelte 5 (incl. runes mode), whereas update tracking
+(`beforeUpdate`/`afterUpdate`) is deprecated and disallowed under runes. Module scripts
+(`<script context="module">` / `<script module>`) and already-injected files are skipped.
+
 The component name is the file basename (`UserCard.svelte` → `UserCard`); for files with no meaningful
 basename — `index.svelte` and SvelteKit route files (`+page` / `+layout` / `+error`) — the enclosing
 directory name is used (`routes/dashboard/+page.svelte` → `dashboard`). Every host (lowercase-tag) element is

@@ -40,4 +40,19 @@ describe('componentAnnotatePreprocessor (real svelte/compiler)', () => {
       pre.markup({ content: '<script>const a = 1;</script>', filename: 'Empty.svelte' }),
     ).toBeUndefined();
   });
+
+  it('adds NO script hook by default (render spans are opt-in)', () => {
+    expect(pre.script).toBeUndefined();
+  });
+
+  it('with { renderSpans: true } injects an onMount render-span call via the script hook', () => {
+    const withSpans = componentAnnotatePreprocessor({ renderSpans: true });
+    expect(typeof withSpans.script).toBe('function');
+    const result = withSpans.script?.({ content: 'let x = 1;', filename: '/src/Counter.svelte' });
+    expect(result?.code).toContain('__bugsee_startRenderSpan("Counter")');
+    // the markup hook still annotates as before
+    expect(
+      withSpans.markup({ content: '<div></div>', filename: '/src/Counter.svelte' })?.code,
+    ).toContain('data-bugsee-component="Counter"');
+  });
 });
