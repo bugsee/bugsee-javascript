@@ -677,12 +677,27 @@ importers:
 
   packages/vercel-edge:
     dependencies:
+      '@bugsee/browser-utils':
+        specifier: workspace:*
+        version: link:../browser-utils
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
       '@bugsee/integration-shims':
         specifier: workspace:*
         version: link:../integration-shims
+      '@bugsee/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
 
   packages/vite-plugin: {}
 
