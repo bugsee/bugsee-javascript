@@ -1,9 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { withBugseeFetch } from './fetch-handler';
 import { type Bugsee, EdgeContextStoreToken } from './launch';
 import { createEdgeRequestContextStore } from './request-context-store';
-
-afterEach(() => vi.unstubAllGlobals());
 
 // A fake launched edge client: a real edge context store (single-slot), spied logException + flush.
 function fakeClient(over: { withStore?: boolean } = {}) {
@@ -107,12 +105,6 @@ describe('withBugseeFetch', () => {
   });
 
   it('captures a thrown error WHILE the request context is still active (report stays correlated)', async () => {
-    // Real ALS (production edge has it global: Vercel built-in / Cloudflare nodejs_compat); node doesn't expose
-    // it globally, so without this the store would use the single-slot fallback which can't span the await. The
-    // dynamic import keeps the edge src's node-free tsconfig (no @types/node); the test itself runs in node.
-    // @ts-expect-error node:async_hooks is intentionally untyped here (the edge package declares no node types).
-    const { AsyncLocalStorage } = await import('node:async_hooks');
-    vi.stubGlobal('AsyncLocalStorage', AsyncLocalStorage);
     const { client, store, logException } = fakeClient();
     let ctxAttrsAtLog: Record<string, unknown> | undefined;
     let ctxIdAtLog: string | undefined;
@@ -122,13 +114,16 @@ describe('withBugseeFetch', () => {
       ctxAttrsAtLog = store.getCurrent()?.attributes;
       return Promise.resolve({ ok: true });
     });
-    const wrapped = withBugseeFetch(client, async (..._a: unknown[]) => {
+    // throw SYNCHRONOUSLY so the capture is provably inside run()'s frame — deterministic (no real-ALS cross-
+    // await timing, no global stub). The restructure (capture INSIDE store.run) is what keeps the context active
+    // at logException time; an outer catch would run after run() unwound, where getCurrent() is undefined.
+    const wrapped = withBugseeFetch(client, (..._a: unknown[]) => {
       throw new Error('boom');
     });
     await expect(
       wrapped(new Request('https://x.test/pay/9', { method: 'PUT' }), {}, { waitUntil: vi.fn() }),
     ).rejects.toThrow('boom');
-    // if the capture fired in an outer catch (after run() unwound) these would be undefined → report uncorrelated
+    // an outer-catch structure would see undefined here → report uncorrelated (no contextId, no route attrs)
     expect(typeof ctxIdAtLog).toBe('string');
     expect(ctxAttrsAtLog?.['http.method']).toBe('PUT');
     expect(ctxAttrsAtLog?.['http.url']).toBe('/pay/9');
