@@ -12,6 +12,9 @@ export {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
   EdgeContextStoreToken,
+  // `launch` is the public composition root (consistent with @bugsee/node / @bugsee/browser); `launchEdge` is
+  // the same function under its descriptive name (the shared edge composition @bugsee/cloudflare also builds on).
+  launchEdge as launch,
   launchEdge,
 } from './launch';
 export {
