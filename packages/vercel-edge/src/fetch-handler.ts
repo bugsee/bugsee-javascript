@@ -64,17 +64,23 @@ export function withBugseeFetch<Args extends unknown[]>(
       contextId: randomId(),
       attributes: requestAttributes(request),
     };
-    const run =
-      store !== undefined
-        ? (fn: () => Response | Promise<Response>) => store.run(context, fn)
-        : (fn: () => Response | Promise<Response>) => fn();
+    // Capture + rethrow INSIDE the request context. client.logException snapshots the active context
+    // SYNCHRONOUSLY (core submitReport), so it MUST fire while `context` is still open — otherwise the
+    // incident report loses its contextId + http.method/http.url. An outer catch would run AFTER store.run()
+    // has unwound (getCurrent() === undefined there); only a fn STARTED inside run() sees the store in its own
+    // post-await catch. So the whole try/catch runs inside run, not just the handler call.
+    const invoke = async (): Promise<Response> => {
+      try {
+        return await handler(request, ...args);
+      } catch (error) {
+        // Fire-and-forget: the report is registered as pending, which the finally's flush then awaits. Rethrow
+        // so the platform / the user's own error handling still runs.
+        void client.logException(error, { mechanism: 'uncaught' });
+        throw error;
+      }
+    };
     try {
-      return await run(() => handler(request, ...args));
-    } catch (error) {
-      // Capture the handler error (fire-and-forget: the report is registered as pending, which the finally's
-      // flush then awaits). Rethrow so the platform / the user's own error handling still runs.
-      void client.logException(error, { mechanism: 'uncaught' });
-      throw error;
+      return store !== undefined ? await store.run(context, invoke) : await invoke();
     } finally {
       // Keep the isolate alive until any incident upload from this request completes (a no-op on a clean one).
       waitUntil(client.flush());
