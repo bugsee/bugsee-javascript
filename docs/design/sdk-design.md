@@ -86,7 +86,7 @@ Principle (user review 2026-05-25): **Sentry weaves APM/tracing through its core
 2. **Wire-format compatibility with the existing Bugsee backend** (with the corrections in §0 and §8) **[M §Wire Protocol]**.
 3. **Two capture modes**:
    - **Bundle mode** (default): mobile-style; buffer everything, assemble a `.bundle.zip` on a trigger, upload via the 3-step flow.
-   - **Streaming mode** (mandatory on edge runtimes): each `logException` produces a minimal single-event bundle uploaded immediately; works inside a Cloudflare Workers / Vercel Edge request's lifetime.
+   - **Streaming mode** (mandatory on edge runtimes): each `logException` produces a minimal single-event bundle uploaded immediately; works inside a Cloudflare Workers / Vercel Edge request's lifetime. **NB — the name is misleading: this is still INCIDENT-DRIVEN, not continuous upload and not a streaming transport.** It is a discrete bundle POST of a zip to the SAME `/upload` endpoint (a "streaming bundle" = a small bundle), one per incident, uploaded via `ctx.waitUntil` because the isolate is ephemeral. An edge invocation with **no** incident uploads **nothing** (the in-memory buffer is discarded when the isolate ends → zero network/server cost). The only per-request-upload path is edge **APM** (opt-in + sampled; deferred). No new backend infrastructure.
 4. **Tree-shakable, lazy by default.** Errors-only browser bundle ≤15 KB gzipped; replay add-on ≤90 KB gzipped.
 5. **First-class TypeScript** with strict mode, branded identifier types (`AppToken`, `IssueId`, `RecordingId`), and api-extractor-flattened public types.
 6. **Privacy-safe defaults.** Replay fail-closed; error-message scrubbing on; denylist superset of mobile; SDK doesn't capture its own traffic.
