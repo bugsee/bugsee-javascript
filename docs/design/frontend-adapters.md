@@ -230,7 +230,9 @@ adapter (error seam + router naming, structural-peer, injection-first) across `@
 (as the backend sweep did). Each ships labeled **"v1: error + routing only"** with the depth backlog tracked
 (NOT silently "complete"). THEN one **shared depth pass** adds the cross-cutting, framework-specific depth that
 the foundation cannot supply — built ONCE and shared across adapters: a component-name **annotation build
-plugin** (babel/SWC — names survive minification + drive interaction attribution), a **Profiler/render-spans**
+plugin** (babel/SWC — names survive minification + drive interaction attribution; ALSO the foundation for
+**report-time component-tree capture** — the framework component hierarchy overlaid on the DOM/view tree, see
+`docs/design/component-tree-capture.md`), a **Profiler/render-spans**
 integration, **auto-router** wiring, and framework-global/-19 error handlers. `@bugsee/nextjs` is NOT in the
 thin sweep — it is a deeper, highest-value slice (client/server/edge + SSR `<meta>` injection, closes FE↔BE in
 one app), sequenced after/with the depth pass. Also deferred: extracting the generic adapter plumbing
@@ -319,4 +321,8 @@ framework first (table per adapter, as the backend did).
   on/off defaults TBD at F1/F3/F4 (web-vitals/pageload are on via the umbrella today).
 - **O4. OTel events (deferred):** whether/when to ALSO emit `browser.web_vital`/`browser.navigation` OTLP
   events for OTel-native consumers, or keep transaction-only.
-- **O5. Replay (out of scope) integration seam** — leave a clean hook but build nothing.
+- **O5. Replay (out of scope) integration seam** — leave a clean hook but build nothing. NOTE: the report-time
+  DOM/view-tree snapshot is the consumer for **component-tree capture** — the `data-bugsee-component` annotation
+  (depth pass) lets us emit the framework component-ownership tree alongside the DOM tree, framework-agnostic +
+  production-safe (internals-walking is prod-viable only for React; Vue/Angular/Svelte strip it). Full
+  feasibility + decision log: `docs/design/component-tree-capture.md`.
