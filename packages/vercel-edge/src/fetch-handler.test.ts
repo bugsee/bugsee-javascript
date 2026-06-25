@@ -61,6 +61,24 @@ describe('withBugseeFetch', () => {
     expect(attrs?.['http.url']).toBe('/orders/7'); // PATH only — the ?token=secret query is dropped (PII-safe)
   });
 
+  it('requestAttributes is defensive: omits an absent method/url, keeps a malformed URL raw', async () => {
+    const { client, store } = fakeClient();
+    const read = async (req: unknown): Promise<Record<string, unknown> | undefined> => {
+      let attrs: Record<string, unknown> | undefined;
+      await withBugseeFetch(client, async (..._a: unknown[]) => {
+        attrs = store.getCurrent()?.attributes; // read synchronously at handler start (single-slot is fine)
+        return new Response('ok');
+      })(req as Request, {}, { waitUntil: vi.fn() });
+      return attrs;
+    };
+    const empty = await read({}); // neither method nor url → both omitted
+    expect('http.method' in (empty ?? {})).toBe(false);
+    expect('http.url' in (empty ?? {})).toBe(false);
+    const malformed = await read({ url: '/relative/path' }); // new URL throws → kept raw; no method
+    expect(malformed?.['http.url']).toBe('/relative/path');
+    expect('http.method' in (malformed ?? {})).toBe(false);
+  });
+
   it('returns the handler Response on the no-store SUCCESS path (degraded, no context)', async () => {
     const { client } = fakeClient({ withStore: false });
     const waitUntil = vi.fn();
