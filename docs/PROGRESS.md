@@ -792,11 +792,19 @@ conditions). Shape:
   `require('@bugsee/node')` and `import('@bugsee/node')` resolve through the built dist chain (incl. the
   external `fflate`) and `launch()` returns a working client; the umbrella resolves
   node→`index.node.{cjs,js}`, browser→`index.cjs`. Gates green (typecheck 57/57, tests 2013/2013, no cycles).
-- **Stub-only packages skipped** (electron, webworker, replay\*, edge/workers, framework frontend adapters):
-  they gain the identical dual config when implemented.
+- **Stub-only packages skipped** (electron, webworker, replay\*, `cloudflare`, framework frontend adapters):
+  they gain the identical dual config when implemented. (`@bugsee/vercel-edge` now HAS it — DONE, below.)
+
+### Vercel Edge runtime (`@bugsee/vercel-edge`) — COMPLETE (2026-06-25, on `master`) → `docs/design/edge-runtime.md`
+A runnable **Vercel Edge** (`edge-light`) SDK — and the shared edge composition `@bugsee/cloudflare` (C1) will build on. Edge is a V8-isolate, Web-APIs-only runtime (`fetch`/`Request`/`Response`/`crypto.subtle`; NO `node:*`/DOM/`fs`), so the launch strips node's durable queue / crash-recovery / IndexedDB / window·process detection and assembles the runtime-portable kernel over the WinterCG `fetchTransport` + an in-memory capture store. Slices E1–E6:
+- **INCIDENT-DRIVEN capture** (the resolved per-invocation-upload concern): a clean request uploads NOTHING (the in-memory buffer is discarded when the isolate ends); only `logException` / a thrown handler / an `unhandledrejection` triggers an upload — a normal bundle to the same `/upload` endpoint. No new backend, no per-invocation streaming.
+- **Surviving the isolate freeze (E5):** `withBugseeFetch(client, handler)` runs each request in its own `run()`-scoped context, captures + **RETHROWS** a thrown error, and flushes the eager upload inside `ctx.waitUntil(client.flush())`. `resolveWaitUntil` acquires `waitUntil` from the `@vercel/request-context` global symbol on Vercel (gated on `typeof EdgeRuntime === 'string'` — Vercel has NO `ctx` param) or the explicit `ctx` arg on Cloudflare. The incident context is stamped with `http.method` + the request PATH (`http.url`; query DROPPED — report attrs skip the redaction pipeline) so the report names the failing route.
+- **Run()-ONLY ALS (E2):** a portable `RequestContext` store that probes `globalThis.AsyncLocalStorage` (built-in on Vercel; Cloudflare needs the `nodejs_compat`/`nodejs_als` flag) and degrades to a single-slot store + one-time warn — NEVER throws at import; uses ONLY `run()`/`getStore` (no `enterWith`, absent on the WinterCG subset). E3 resolved by analysis (no IsolatedPromiseBuffer — incident-driven enqueue-eagerly + flush-within-`waitUntil` + `fetchTransport`'s response-body drain suffice).
+- **unhandledrejection safety net (E5b):** a DetectionProvider over `addEventListener('unhandledrejection')` (V8-parsed stack), gated by `detectCrashes`, self-skips a non-edge target.
+Public `launch()` (= `launchEdge`). Built test-first + mutator-looped, then a **3-round multi-agent convergent review**: the impl was correct throughout (the concurrency/re-entrancy model verified SOUND — one client / many concurrent requests, `flush()` never truncates the shared store, correlation-by-tagging matches node; redaction confirmed ACTIVE on the edge path); rounds fixed test-strength gaps + added the route-stamping. 53 tests, 100% line/fn/stmt + ≥90% branch, node-free dist. **Deferred:** `@bugsee/cloudflare` (C1) + its handler types `scheduled`/`queue`/`email`/`tail`/Durable-Objects/RPC (C2 — Vercel Edge is fetch-only, so these are CF-only), source-map upload tooling (X1), edge-APM (per-request transactions; the Workers monotonic-clock clamp makes in-isolate timing unreliable).
 
 ### After browser
-- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `vercel-edge`, `webworker`).
+- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~, ~~`@bugsee/vercel-edge`~~ (DONE, above), `@bugsee/electron`, edge/workers (`cloudflare`, `webworker`).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node,
   see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
   single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
