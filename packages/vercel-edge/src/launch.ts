@@ -29,6 +29,7 @@ import {
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption, type PlatformType } from '@bugsee/protocol';
+import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
   createEdgeRequestContextStore,
@@ -81,6 +82,8 @@ export interface BugseeEdgeLaunchOptions {
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
+  /** Detect global `unhandledrejection` (floating-promise rejections). Default true. */
+  detectCrashes?: boolean;
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
@@ -106,6 +109,8 @@ export interface BugseeEdgeLaunchOptions {
   captureStore?: CaptureStore;
   /** Diagnostic logger for the context-store "AsyncLocalStorage unavailable" warning. */
   logger?: EdgeContextStoreLogger;
+  /** Global event target for `unhandledrejection` detection; injectable for tests. Default `globalThis`. */
+  globalTarget?: EdgeGlobalEvents;
   /** Carrier host for the per-isolate singleton; injectable for tests. Default `globalThis`. */
   carrier?: object;
 }
@@ -207,6 +212,12 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+
+  // Detection: the `unhandledrejection` safety net (gated by `detectCrashes` via its controllingOption). It
+  // self-skips where the global target has no addEventListener (a non-edge runtime).
+  client.addDetectionProvider(
+    createEdgeUnhandledRejectionProvider(options.globalTarget ?? (globalThis as EdgeGlobalEvents)),
+  );
 
   client.launch();
 

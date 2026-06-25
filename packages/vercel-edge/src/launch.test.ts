@@ -35,6 +35,28 @@ const inertScheduler: Scheduler = {
   clearInterval: () => {},
 };
 
+// A fake global event target for unhandledrejection detection.
+function fakeTarget() {
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const target = {
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      const set = listeners.get(type) ?? new Set();
+      set.add(listener);
+      listeners.set(type, set);
+    },
+    removeEventListener(type: string, listener: (event: unknown) => void) {
+      listeners.get(type)?.delete(listener);
+    },
+  };
+  return {
+    target,
+    emit: (type: string, event: unknown) => {
+      for (const l of listeners.get(type) ?? []) l(event);
+    },
+    count: (type: string) => listeners.get(type)?.size ?? 0,
+  };
+}
+
 const clients: ReturnType<typeof launchEdge>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
@@ -181,6 +203,29 @@ describe('launchEdge', () => {
     contributeServiceManifest(() => ran(), carrier);
     launchTracked('tok', baseOptions({ carrier }));
     expect(ran).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects a global unhandledrejection (via globalTarget) and uploads a report', async () => {
+    const transport = uploadTransport();
+    const t = fakeTarget();
+    const client = launchTracked('tok', baseOptions({ transport, globalTarget: t.target }));
+    expect(t.count('unhandledrejection')).toBe(1); // the detection provider registered (detectCrashes on)
+    t.emit('unhandledrejection', { reason: new Error('floating-edge') });
+    await client.flush();
+    expect(JSON.stringify(issueJson(transport))).toContain('floating-edge');
+  });
+
+  it('does not wire unhandledrejection detection when detectCrashes is false', async () => {
+    const transport = uploadTransport();
+    const t = fakeTarget();
+    launchTracked('tok', baseOptions({ transport, globalTarget: t.target, detectCrashes: false }));
+    expect(t.count('unhandledrejection')).toBe(0); // the controllingOption gate kept the provider inert
+    t.emit('unhandledrejection', { reason: new Error('ignored') });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(transport).not.toHaveBeenCalledWith(
+      expect.stringContaining('/v2/issues'),
+      expect.anything(),
+    );
   });
 
   it('is a per-isolate singleton — a repeat launch is ignored (and onError-warned)', () => {

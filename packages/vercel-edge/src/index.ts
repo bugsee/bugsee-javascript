@@ -2,6 +2,10 @@
 // storage, incident-driven upload via ctx.waitUntil, globalThis.AsyncLocalStorage probe. Tier 2. See
 // docs/design/sdk-design.md §3.x/§7.7/§12.5. Edge capture is INCIDENT-DRIVEN — a no-incident invocation
 // uploads nothing (the in-memory buffer is discarded when the isolate ends).
+export {
+  createEdgeUnhandledRejectionProvider,
+  type EdgeGlobalEvents,
+} from './detection';
 export { buildEdgeEnvironment, type EdgeEnvironmentInput } from './environment';
 export { type EdgeFetchHandler, withBugseeFetch } from './fetch-handler';
 export {
