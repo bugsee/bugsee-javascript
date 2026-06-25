@@ -156,6 +156,23 @@ describe('launchEdge', () => {
     expect(seen).toBe('req-1');
   });
 
+  it('wires the edge context store as the core ContextProvider (captures inside run() carry context_id)', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked('tok', baseOptions({ transport }));
+    const store = client.getService(EdgeContextStoreToken);
+    // a console log recorded INSIDE a per-request context must be stamped with that context's id in the bundle —
+    // proves the store is passed as createClient({contextProvider}), not merely registered under the token.
+    store?.run({ contextId: 'req-stamp' }, () => console.log('inside-the-context'));
+    await client.logException(new Error('x'));
+    await client.flush();
+    const put = findPut(transport);
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    const logsFile = Object.keys(files).find((n) => n.includes('log'));
+    const logs = strFromU8(files[logsFile as string] as Uint8Array);
+    expect(logs).toContain('inside-the-context');
+    expect(logs).toContain('req-stamp'); // the active context's id was stamped onto the entry
+  });
+
   it('threads app + runtime identity options into the environment', async () => {
     const transport = uploadTransport();
     const client = launchTracked(

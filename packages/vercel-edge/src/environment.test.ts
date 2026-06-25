@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildEdgeEnvironment } from './environment';
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('buildEdgeEnvironment', () => {
   it('builds a minimal envelope with the edge platform type + sdk + app (no hardware)', () => {
@@ -65,9 +67,12 @@ describe('buildEdgeEnvironment', () => {
     expect(env.sdk.options).toEqual({ 'com:bugsee:option:MaxDataSize': 10 });
   });
 
-  it('falls back to the real timezone offset + locale when not injected', () => {
+  it('falls back to the real timezone offset (NEGATED to positive-east) + locale when not injected', () => {
+    // JS getTimezoneOffset is positive-WEST (UTC+2 → -120); the wire utc_offset is positive-EAST → the impl
+    // must negate. Stub a known offset and assert the sign flip (not merely "a number").
+    vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(-120); // UTC+2
     const env = buildEdgeEnvironment({ sdkVersion: '1', platformType: 'edge-light' });
-    expect(typeof env.platform.utc_offset).toBe('number');
+    expect(env.platform.utc_offset).toBe(120);
     expect(typeof env.platform.locale).toBe('string');
   });
 });

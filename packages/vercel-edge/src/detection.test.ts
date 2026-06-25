@@ -65,22 +65,30 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     expect(requests[0]?.report.summary).toBe('TypeError');
   });
 
-  it('omits the description when the Error has no stack', () => {
+  it('omits the description (key absent, not just undefined) when the Error has no stack', () => {
     const t = fakeTarget();
     const requests = start(createEdgeUnhandledRejectionProvider(t.target));
     const err = new Error('nostack');
     delete (err as { stack?: string }).stack;
     t.emit('unhandledrejection', { reason: err });
     expect(requests[0]?.report.summary).toBe('nostack');
-    expect(requests[0]?.report.description).toBeUndefined();
+    expect('description' in (requests[0]?.report ?? {})).toBe(false); // omitted, not present-as-undefined
   });
 
-  it('reports a non-Error rejection via String(value), no description', () => {
+  it('reports a non-Error rejection via String(value), description key absent', () => {
     const t = fakeTarget();
     const requests = start(createEdgeUnhandledRejectionProvider(t.target));
     t.emit('unhandledrejection', { reason: 'boom-string' });
     expect(requests[0]?.report.summary).toBe('boom-string');
-    expect(requests[0]?.report.description).toBeUndefined();
+    expect('description' in (requests[0]?.report ?? {})).toBe(false);
+  });
+
+  it('tolerates a null / undefined event (no `.reason` access throw) — reports String(undefined)', () => {
+    const t = fakeTarget();
+    const requests = start(createEdgeUnhandledRejectionProvider(t.target));
+    expect(() => t.emit('unhandledrejection', undefined)).not.toThrow();
+    expect(() => t.emit('unhandledrejection', null)).not.toThrow();
+    expect(requests[0]?.report.summary).toBe('undefined'); // reason = undefined → String(undefined)
   });
 
   it('self-skips where the target has no addEventListener (non-edge runtime) — no throw', () => {

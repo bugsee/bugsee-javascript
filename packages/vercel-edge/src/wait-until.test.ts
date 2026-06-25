@@ -25,12 +25,18 @@ describe('resolveWaitUntil', () => {
     expect(seen).toEqual([p]);
   });
 
-  it('reads the Vercel Edge request-context global symbol when there is no ctx (EdgeRuntime present)', () => {
+  it('reads the Vercel Edge request-context global symbol when there is no ctx (EdgeRuntime present) — bound to it', () => {
     vi.stubGlobal('EdgeRuntime', 'edge-runtime');
     const seen: Promise<unknown>[] = [];
-    (globalThis as Record<symbol, unknown>)[VERCEL_SYMBOL] = {
-      get: () => ({ waitUntil: (p: Promise<unknown>) => seen.push(p) }),
+    const requestContext = {
+      tag: 'vercel',
+      waitUntil(this: { tag: string }, p: Promise<unknown>) {
+        // `this` must be the request-context (bound) — an unbound return would lose it
+        expect(this.tag).toBe('vercel');
+        seen.push(p);
+      },
     };
+    (globalThis as Record<symbol, unknown>)[VERCEL_SYMBOL] = { get: () => requestContext };
     const wu = resolveWaitUntil();
     const p = Promise.resolve(1);
     wu(p);
