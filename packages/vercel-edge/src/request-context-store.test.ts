@@ -50,6 +50,18 @@ describe('createEdgeRequestContextStore', () => {
     expect(c.attributes).toEqual({ a: 1, b: 2 });
   });
 
+  it("the impl's single-slot fallback restores its slot when run()'s fn THROWS (no permanent poisoning)", () => {
+    vi.stubGlobal('AsyncLocalStorage', undefined); // force the impl's createSingleSlotStore (the real fallback)
+    const store = createEdgeRequestContextStore({ logger: { warnOnce: vi.fn() } });
+    expect(() =>
+      store.run(ctx({ contextId: 'boom' }), () => {
+        throw new Error('handler failed');
+      }),
+    ).toThrow('handler failed');
+    // the slot MUST be restored to undefined — a later request in this isolate must not observe the dead context
+    expect(store.getCurrent()).toBeUndefined();
+  });
+
   it("the impl's single-slot fallback save/restores across NESTED runs (and clears after)", () => {
     vi.stubGlobal('AsyncLocalStorage', undefined); // force the impl's createSingleSlotStore (the real path)
     const store = createEdgeRequestContextStore({ logger: { warnOnce: vi.fn() } });
