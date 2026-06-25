@@ -47,11 +47,19 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 2. **Per-invocation isolated transport buffer** (`IsolatedPromiseBuffer`). One isolate serves many concurrent
    requests; an eager `fetch` started in request A but resolved in B throws *"Cannot perform I/O on behalf of a
    different request"*. Sentry's buffer stores **task producers `() => PromiseLike`** (not live promises),
-   `add()` defers, and the `fetch`es only fire at `drain()` (flush) — bounded to 30 payloads/invocation; drain
-   swallows individual failures + races a timeout. (`vercel-edge/src/transports/index.ts`.) **For our
-   incident-driven model** (assemble→enqueue→`flush()` all within ONE request, drained inside `waitUntil`) the
-   cross-request hazard is largely sidestepped, BUT we must guarantee no upload `fetch` resolves outside the
-   `waitUntil` scope and no I/O object is shared across requests → adopt the lazy-producer buffer to be safe.
+   `add()` defers, and the `fetch`es only fire at `drain()` (flush) — bounded to 30 payloads/invocation.
+   (`vercel-edge/src/transports/index.ts`.) **VERDICT (E3, verified 2026-06-25): NOT NEEDED for our
+   incident-driven model.** The IsolatedPromiseBuffer solves a hazard specific to Sentry's TRANSPORT, which
+   *batches events across request boundaries* (it accumulates events and may flush in a later invocation, so a
+   deferred producer is required). Our model has no cross-request event buffer: `logException`→assemble→
+   `uploadPipeline.enqueue` happens **inside one request**, `enqueue` starts the upload **eagerly** (the fetch
+   is constructed in that request's context — `core/upload-pipeline.ts:185` `inFlight.add(operation)`), and
+   `flush()` awaits the in-flight uploads (`:196` `Promise.allSettled([...inFlight])`) which the handler wrapper
+   hands to `waitUntil`. So every upload `fetch` is created AND resolved within its own request's `waitUntil`
+   window; concurrent requests each enqueue their OWN independent `fetch` (no shared I/O object → no "on behalf
+   of a different request"). `fetchTransport` already **drains the response body** (`arrayBuffer()`,
+   `browser-utils/fetch-transport.ts:40`) and uses `globalThis.fetch` + `AbortController` → edge-ready as-is.
+   The only edge-critical piece is **acquiring `waitUntil` (E5)** so the eager fetch isn't dropped on freeze.
 3. **Portable ALS.** Read `globalThis.AsyncLocalStorage` (NEVER `import 'node:async_hooks'` in shared edge code);
    `new globalThis.AsyncLocalStorage()`; degrade to a no-op single-slot store + one-time `debug.warn`; **never
    throw at import** (Sentry's vendored `async-local-storage-context-manager.ts` does exactly this). Vercel Edge
@@ -88,7 +96,7 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 | D1 | **Reuse the existing bundle pipeline** + memory storage; no separate "streaming-mode" core rewrite. Incident-driven: `logException`→assemble→enqueue→`client.flush()` inside `waitUntil`. | Edge incident-driven = bundle-mode mechanics with memory + `waitUntil`. `client.flush()` already drains pending uploads + assembling reports. |
 | D2 | **Vercel Edge FIRST**, then Cloudflare. | Vercel Edge = simplest (global ALS built-in, fetch-only) AND it's what Next.js Edge resolves (`edge-light`). |
 | D3 | **`waitUntil` acquired per-platform**: Vercel = `globalThis[Symbol.for('@vercel/request-context')].get().waitUntil` (gated on `EdgeRuntime` string); Cloudflare = the `ctx` param (`fetch(req,env,ctx)`) / `Symbol.for('__cloudflare-context__')`. A unified resolver tries both. | The #1 thing a naive SDK gets wrong (Vercel has no `ctx`). |
-| D4 | **Lazy-producer transport buffer** (`IsolatedPromiseBuffer`-style) + response-body drain. | Avoid cross-invocation I/O ("on behalf of a different request") + Cloudflare body-drain requirement. |
+| D4 | **Reuse `fetchTransport` as-is** (it already drains the response body via `arrayBuffer()` + uses `globalThis.fetch`/`AbortController`). NO `IsolatedPromiseBuffer`. | Verified (E3): our incident-driven pipeline enqueues eagerly + `flush()` awaits in-flight within one request's `waitUntil` → no cross-request deferred task / shared I/O. The IsolatedPromiseBuffer solves Sentry's cross-request batching transport, which we don't have. Building it = YAGNI. |
 | D5 | **Portable ALS: `run()`-only**, `globalThis.AsyncLocalStorage` probe, no-op single-slot fallback + one-time warn, never throw at import, NO `enterWith`. | `enterWith` absent on the WinterCG/Workers subset; node:async_hooks would break the edge bundle. |
 | D6 | **Per-isolate singleton client** (launched once at module load via the user's setup), NOT per-request re-init. Per-request context via ALS; per-request `waitUntil` acquired in the handler wrapper. | Simpler than Sentry's per-request client; our ALS + per-request waitUntil acquisition covers isolation + flush. |
 | D7 | **Add an `unhandledrejection` listener** where available (Cloudflare). | Catches floating-promise rejections the handler try/catch misses; cheap safety net Sentry skips. |
@@ -105,8 +113,9 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 - [x] **E1. Edge environment builder** — `buildEdgeEnvironment` (master `54df653`).
 - [ ] **E2. Portable ALS context store** — `run()`-only, `globalThis.AsyncLocalStorage` probe, no-op fallback +
   one-time warn, never throw, NO `enterWith`. Extracted so node + edge share the builder. (was task #153)
-- [ ] **E3. Edge transport** — WinterCG `fetch` + **lazy-producer buffer** (drain-at-flush, bounded) + **response-
-  body drain**. (refines D4)
+- [x] **E3. Edge transport** — RESOLVED BY ANALYSIS (no new code): reuse `fetchTransport` (drains the body via
+  `arrayBuffer()`, uses `globalThis.fetch`); the IsolatedPromiseBuffer is unnecessary for the incident-driven
+  model (verified: eager `enqueue` + `flush()` awaits in-flight within one request's `waitUntil`). See D4.
 - [ ] **E4. Edge launch composition** — `createClient` + edge transport + memory capture store + console/network
   capture + integration-shims no-op providers + `unhandledrejection` detection; expose `flush()`. (was #151)
 - [ ] **E5. `waitUntil` resolver + fetch-handler wrapper** — unified `waitUntil` acquisition (Vercel symbol /
