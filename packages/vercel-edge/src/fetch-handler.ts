@@ -1,4 +1,4 @@
-import type { RequestContext } from '@bugsee/core';
+import type { AttributeValue, RequestContext } from '@bugsee/core';
 import { randomId } from '@bugsee/util';
 import { type Bugsee, EdgeContextStoreToken } from './launch';
 import type { EdgeRequestContextStore } from './request-context-store';
@@ -28,6 +28,28 @@ function resolveStore(client: Bugsee): EdgeRequestContextStore | undefined {
   }
 }
 
+// Stamp WHICH request is running onto its context (merged into any incident report produced within it), so an
+// edge crash report tells you the failing route — the one capture the wrapper already has in hand. Keys mirror
+// node's server-instrument (`http.method`/`http.url`). The query string is DROPPED: report attributes don't
+// pass through the redaction pipeline, so a secret in `?token=…` must not leak. Best-effort — a relative /
+// malformed URL keeps its raw value rather than being dropped.
+function requestAttributes(request: Request): Record<string, AttributeValue> {
+  const attributes: Record<string, AttributeValue> = {};
+  if (typeof request?.method === 'string') {
+    attributes['http.method'] = request.method;
+  }
+  if (typeof request?.url === 'string') {
+    let target = request.url;
+    try {
+      target = new URL(request.url).pathname;
+    } catch {
+      // a relative / malformed URL → keep the raw value
+    }
+    attributes['http.url'] = target;
+  }
+  return attributes;
+}
+
 /** Wrap an edge `fetch` handler with Bugsee per-request context + error capture + a `waitUntil` flush. */
 export function withBugseeFetch<Args extends unknown[]>(
   client: Bugsee,
@@ -38,7 +60,10 @@ export function withBugseeFetch<Args extends unknown[]>(
     // Cloudflare's ExecutionContext is the 3rd handler arg (args[1]); on Vercel Edge there is none → the
     // resolver reads the global request-context symbol instead.
     const waitUntil = resolveWaitUntil(args[1] as EdgeExecutionContext | undefined);
-    const context: RequestContext = { contextId: randomId() };
+    const context: RequestContext = {
+      contextId: randomId(),
+      attributes: requestAttributes(request),
+    };
     const run =
       store !== undefined
         ? (fn: () => Response | Promise<Response>) => store.run(context, fn)

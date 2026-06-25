@@ -1,3 +1,4 @@
+import * as core from '@bugsee/core';
 import {
   contributeServiceManifest,
   createSystemClock,
@@ -251,6 +252,25 @@ describe('launchEdge', () => {
       expect.stringContaining('/v2/issues'),
       expect.anything(),
     );
+  });
+
+  it('threads a non-default maxRecordingTime + maxDataSize into the capture store (s→ms, MB→bytes)', () => {
+    // Spy on createMemoryCaptureStore (call through) to assert the resolved options reach it with the right unit
+    // math — otherwise a `*1000` / `*1024*1024` slip, or ignoring the resolved value, would ship undetected.
+    const spy = vi.spyOn(core, 'createMemoryCaptureStore');
+    const client = launchEdge('tok', {
+      transport: uploadTransport(),
+      captureNetwork: false,
+      scheduler: inertScheduler,
+      maxRecordingTime: 30, // non-default seconds
+      maxDataSize: 5, // non-default MB
+    });
+    clients.push(client);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]?.[0]).toMatchObject({
+      maxRecordingTimeMs: 30_000, // 30 s → ms
+      maxDataSizeBytes: 5 * 1024 * 1024, // 5 MB → bytes
+    });
   });
 
   it('is a per-isolate singleton — a repeat launch is ignored (and onError-warned)', () => {

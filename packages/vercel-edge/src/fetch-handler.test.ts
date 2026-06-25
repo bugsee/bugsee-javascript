@@ -42,6 +42,35 @@ describe('withBugseeFetch', () => {
     expect(waitUntil.mock.calls[0]?.[0]).toBeInstanceOf(Promise); // flush() promise handed to waitUntil
   });
 
+  it('stamps the request method + path onto the per-request context (http.method/http.url, query dropped)', async () => {
+    const { client, store } = fakeClient();
+    const waitUntil = vi.fn();
+    let attrs: Record<string, unknown> | undefined;
+    const wrapped = withBugseeFetch(client, async (_req: Request, ..._rest: unknown[]) => {
+      attrs = store.getCurrent()?.attributes; // the active context carries which request is running
+      return new Response('ok');
+    });
+    await wrapped(
+      new Request('https://x.test/orders/7?token=secret', { method: 'POST' }),
+      {},
+      { waitUntil },
+    );
+    expect(attrs?.['http.method']).toBe('POST');
+    expect(attrs?.['http.url']).toBe('/orders/7'); // PATH only — the ?token=secret query is dropped (PII-safe)
+  });
+
+  it('returns the handler Response on the no-store SUCCESS path (degraded, no context)', async () => {
+    const { client } = fakeClient({ withStore: false });
+    const waitUntil = vi.fn();
+    const wrapped = withBugseeFetch(
+      client,
+      async (..._a: unknown[]) => new Response('degraded-ok', { status: 201 }),
+    );
+    const res = await wrapped(new Request('https://x.test/'), {}, { waitUntil });
+    expect(res.status).toBe(201);
+    expect(await res.text()).toBe('degraded-ok'); // the handler's own Response passes through untouched
+  });
+
   it('captures a thrown handler error (uncaught) + RETHROWS it + still flushes via waitUntil', async () => {
     const { client, logException, flush } = fakeClient();
     const waitUntil = vi.fn();
