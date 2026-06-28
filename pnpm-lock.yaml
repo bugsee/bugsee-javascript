@@ -191,12 +191,9 @@ importers:
 
   packages/cloudflare:
     dependencies:
-      '@bugsee/core':
+      '@bugsee/vercel-edge':
         specifier: workspace:*
-        version: link:../core
-      '@bugsee/integration-shims':
-        specifier: workspace:*
-        version: link:../integration-shims
+        version: link:../vercel-edge
 
   packages/core:
     dependencies:
