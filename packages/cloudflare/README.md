@@ -32,10 +32,35 @@ Each non-fetch trigger is stamped with OpenTelemetry `faas.*` attributes (`faas.
 `messaging.*`) plus a `cloudflare.handler` marker, so an incident report names which trigger fired. Email
 addresses and message bodies are never captured.
 
+`withBugsee` also accepts a **`WorkerEntrypoint` class** (not just a handler object) and instruments its
+`fetch`/`scheduled`/`queue`/`email`/`tail` methods; pass `{ instrumentRpcMethods: true }` (or a name list) to
+also wrap its arbitrary RPC methods.
+
 **`request.cf` enrichment.** For `fetch`, the incident context is additionally stamped with Cloudflare's free
 geo/network metadata — `cf.colo`/`cf.country`/`cf.city`/`cf.timezone`/`cf.asn`/`tls.version` (not
-latitude/longitude). Durable-Object / `WorkerEntrypoint` (RPC) methods can be wrapped manually with the exported
-`runInEdgeContext` + `cloudflareRequestAttributes`.
+latitude/longitude).
+
+## Durable Objects
+
+A Durable Object is a class bound separately (not the module's handler) and gets its `ctx`/`env` in the
+constructor — so it uses a dedicated helper. **Wrap the export**, not just the class:
+
+```ts
+import { instrumentDurableObject } from '@bugsee/cloudflare';
+
+class CounterBase extends DurableObject<Env> {
+  async fetch(request: Request) {/* ... */}
+  async alarm() {/* ... */}
+  async increment() {/* RPC */}
+}
+
+export const Counter = instrumentDurableObject((env) => env.BUGSEE_APP_TOKEN, CounterBase, {
+  instrumentRpcMethods: true, // optional — also wrap arbitrary RPC methods (default off)
+});
+```
+
+The DO's `fetch` (with http + `request.cf` attrs) and `alarm` run in a Bugsee context, capture + rethrow, and
+flush via the DO's `ctx.waitUntil`. Private (`#`) fields keep working (the wrapper preserves `this`).
 
 ## Just `fetch`
 

@@ -126,12 +126,15 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 - [x] **C1. Composition** — DONE (master `8ced7ac`). `export *` the vercel-edge core + a `launch` that defaults
   `platformType: 'workers'`; `ctx`-param `waitUntil` + `nodejs_compat` ALS handled generically; README documents
   the compat flag + degrade.
-- [x] **C2. Handler-type coverage** — DONE (master `e6e51f4`). `withBugsee(config, handler)` wraps the handler-
-  OBJECT types `fetch` + `scheduled`/`queue`/`email`/`tail` (each its own context + faas.* attributes + flush via
-  `ctx.waitUntil`), on the shared `runInEdgeContext` core (C2a, `2ef680b`). Lazy env-secret launch (config is a
-  `(env)=>token` callback — `env` isn't at module scope). **DEFERRED:** Durable-Object / `WorkerEntrypoint` (RPC)
-  **CLASS** auto-wrapping (handler-object types are the common case; even Sentry ships DO/RPC as separate
-  functions — users wrap DO/RPC methods manually via the exported `runInEdgeContext` + `cloudflareRequestAttributes`).
+- [x] **C2. Handler-type coverage** — DONE. (a) Handler-OBJECT types (master `e6e51f4`): `withBugsee(config,
+  handler)` wraps `fetch` + `scheduled`/`queue`/`email`/`tail` (each its own context + faas.* attributes + flush
+  via `ctx.waitUntil`), on the shared `runInEdgeContext` core (C2a, `2ef680b`). Lazy env-secret launch (config is
+  a `(env)=>token` callback — `env` isn't at module scope). (b) **CLASS types (C2d, master `a249653`):**
+  `instrumentDurableObject(config, DOClass, {instrumentRpcMethods?})` for Durable Objects (lifecycle fetch/alarm +
+  opt-in RPC), and `withBugsee` ALSO accepts a `WorkerEntrypoint` class (folded in, like Sentry's `withSentry`).
+  Class ctx/env come from the CONSTRUCTOR → a shared class-mixin core (subclass + own-property shadowing, NOT a
+  Proxy, so private `#` fields survive; ctx = arg 0, env = arg 1). Arbitrary RPC method bodies are opt-in (default
+  off, matching Sentry's `instrumentPrototypeMethods`; Sentry hasn't finished plain-Worker RPC either).
   **N/A:** the `fetch` OPTIONS/HEAD "skip" is an APM-span concern — the incident-driven model creates no span, so
   a no-incident OPTIONS/HEAD uploads nothing already (revisit if/when edge APM lands, D11).
 - [x] **C3. `request.cf` enrichment** — DONE (master `e6e51f4`). `cfAttributes` stamps a curated low-PII subset
