@@ -1,12 +1,18 @@
-import { type Bugsee, type BugseeEdgeLaunchOptions, runInEdgeContext } from '@bugsee/vercel-edge';
-import type { ExportedHandler } from './cloudflare-types';
+import { runInEdgeContext } from '@bugsee/vercel-edge';
+import type {
+  ExportedHandler,
+  MessageBatch,
+  ScheduledController,
+  TraceItem,
+} from './cloudflare-types';
 import {
   emailAttributes,
   queueAttributes,
   scheduledAttributes,
   tailAttributes,
 } from './handler-attributes';
-import { launch } from './launch';
+import { instrumentEdgeClass } from './instrument-class';
+import { type BugseeWorkerConfig, createLazyLauncher } from './launch-config';
 import { cloudflareRequestAttributes } from './request-cf';
 
 // The unified Cloudflare Workers instrumentation wrapper (docs/design/edge-runtime.md C2). Cloudflare module
@@ -15,45 +21,60 @@ import { cloudflareRequestAttributes } from './request-cf';
 // queue / email / tail entirely. `withBugsee` wraps every PRESENT method so it runs in its own Bugsee context
 // (stamped with the trigger's faas.* attributes), captures + rethrows errors, and flushes via that handler's
 // `ctx.waitUntil` — all on the shared `runInEdgeContext` core. Absent methods are left untouched.
+//
+// It ALSO accepts a WorkerEntrypoint CLASS (matching @sentry/cloudflare's `withSentry`): an entrypoint's ctx/env
+// come from the constructor (not per-method), so a class is instrumented via the class-mixin core. Durable
+// Objects use the separate `instrumentDurableObject` (they're bound separately, not the module's handler).
 
-/** Launch config for a Cloudflare Worker. Because `env` (and thus the app token, a Worker SECRET) is NOT
- *  available at module scope on Cloudflare, pass a CALLBACK that receives `env` — or, if your token is a plain
- *  constant, a static token string or an options object. */
-export type BugseeWorkerConfig =
-  | string
-  | (BugseeEdgeLaunchOptions & { appToken: string })
-  | ((env: unknown) => string | (BugseeEdgeLaunchOptions & { appToken: string }));
-
-function resolveConfig(
-  config: BugseeWorkerConfig,
-  env: unknown,
-): { appToken: string; options: BugseeEdgeLaunchOptions } {
-  const value = typeof config === 'function' ? config(env) : config;
-  if (typeof value === 'string') {
-    return { appToken: value, options: {} };
-  }
-  const { appToken, ...options } = value;
-  return { appToken, options };
+/** Options for instrumenting a WorkerEntrypoint class. */
+export interface WorkerEntrypointInstrumentOptions {
+  /** Also instrument arbitrary RPC methods on the entrypoint (default `false`): `true` = all, or a name list. */
+  instrumentRpcMethods?: boolean | string[];
 }
 
-/** Instrument a Cloudflare Workers exported handler. Wraps each present method (fetch / scheduled / queue /
- *  email / tail) with per-request Bugsee context + error capture + a `ctx.waitUntil` flush. The client is
- *  launched LAZILY on the first invocation (a per-isolate singleton) from `config` + the runtime `env`, so the
- *  app token can be a Worker secret. Returns a new handler object — the original is not mutated. */
+// biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint needs `any[]` constructor args (see
+// instrument-class.ts) so the returned subclass can `super(...args)` over the user's WorkerEntrypoint base.
+type WorkerEntrypointClass = new (...args: any[]) => object;
+
 export function withBugsee<Env, H extends ExportedHandler<Env>>(
   config: BugseeWorkerConfig,
   handler: H,
-): H {
-  let client: Bugsee | undefined;
-  const ensureClient = (env: unknown): Bugsee => {
-    if (client === undefined) {
-      const { appToken, options } = resolveConfig(config, env);
-      client = launch(appToken, options);
-    }
-    return client;
-  };
+): H;
+export function withBugsee<C extends WorkerEntrypointClass>(
+  config: BugseeWorkerConfig,
+  entrypoint: C,
+  options?: WorkerEntrypointInstrumentOptions,
+): C;
+export function withBugsee(
+  config: BugseeWorkerConfig,
+  handlerOrEntrypoint: ExportedHandler | WorkerEntrypointClass,
+  options: WorkerEntrypointInstrumentOptions = {},
+): unknown {
+  const ensureClient = createLazyLauncher(config);
 
-  const wrapped: ExportedHandler<Env> = { ...handler };
+  // A WorkerEntrypoint is a CLASS (typeof 'function') — its ctx/env come from the constructor; a module handler
+  // is a plain OBJECT. Instrument the class via the shared class-mixin core (the same fetch/scheduled/queue/
+  // email/tail attribute builders), with opt-in arbitrary RPC methods.
+  if (typeof handlerOrEntrypoint === 'function') {
+    return instrumentEdgeClass(
+      ensureClient,
+      handlerOrEntrypoint,
+      [
+        { name: 'fetch', attributes: (args) => cloudflareRequestAttributes(args[0] as Request) },
+        {
+          name: 'scheduled',
+          attributes: (args) => scheduledAttributes(args[0] as ScheduledController),
+        },
+        { name: 'queue', attributes: (args) => queueAttributes(args[0] as MessageBatch) },
+        { name: 'email', attributes: () => emailAttributes() },
+        { name: 'tail', attributes: (args) => tailAttributes(args[0] as ReadonlyArray<TraceItem>) },
+      ],
+      options.instrumentRpcMethods ?? false,
+    );
+  }
+
+  const handler = handlerOrEntrypoint;
+  const wrapped: ExportedHandler = { ...handler };
 
   const fetchFn = handler.fetch;
   if (fetchFn !== undefined) {
@@ -94,5 +115,5 @@ export function withBugsee<Env, H extends ExportedHandler<Env>>(
         tailFn(events, env, ctx),
       );
   }
-  return wrapped as H;
+  return wrapped;
 }

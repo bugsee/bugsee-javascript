@@ -17,9 +17,15 @@ export type {
   ScheduledController,
   TraceItem,
 } from './cloudflare-types';
+// Class-based handlers (C2d): Durable Objects via instrumentDurableObject; WorkerEntrypoint via withBugsee.
+export {
+  type DurableObjectInstrumentOptions,
+  instrumentDurableObject,
+} from './instrument-durable-object';
 // ... then shadow the re-exported (edge-light) `launch` with Cloudflare's, which defaults platformType to
 // 'workers' (an explicit named export wins over `export *` for the same name).
 export { launch } from './launch';
+export type { BugseeWorkerConfig } from './launch-config';
 // request.cf geo/network enrichment (C3) — applied to fetch by `withBugsee`; exposed for manual DO-fetch use.
 export { cfAttributes, cloudflareRequestAttributes } from './request-cf';
-export { type BugseeWorkerConfig, withBugsee } from './with-bugsee';
+export { type WorkerEntrypointInstrumentOptions, withBugsee } from './with-bugsee';

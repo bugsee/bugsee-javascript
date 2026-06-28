@@ -4,7 +4,12 @@ import {
   EdgeContextStoreToken,
 } from '@bugsee/vercel-edge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExecutionContext, ExportedHandler, ScheduledController } from './cloudflare-types';
+import type {
+  ExecutionContext,
+  ExportedHandler,
+  MessageBatch,
+  ScheduledController,
+} from './cloudflare-types';
 import * as cfLaunch from './launch';
 import { withBugsee } from './with-bugsee';
 
@@ -172,6 +177,90 @@ describe('withBugsee', () => {
       endpoint: 'https://collector.test',
       captureNetwork: false,
     });
+  });
+
+  it('instruments a WorkerEntrypoint CLASS: wraps fetch (http+cf) via the constructor ctx', async () => {
+    const { client, store, flush } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    let attrs: Record<string, unknown> | undefined;
+    class MyEntrypoint {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        attrs = store.getCurrent()?.attributes;
+        return new Response('entry-ok');
+      }
+    }
+    const Instrumented = withBugsee('tok', MyEntrypoint);
+    const request = new Request('https://x.test/rpc');
+    Object.defineProperty(request, 'cf', { value: { country: 'GB' }, configurable: true });
+    const ctx = ctxStub();
+    const res = await new Instrumented(ctx, {}).fetch(request);
+    expect(await res.text()).toBe('entry-ok');
+    expect(attrs).toMatchObject({ 'http.url': '/rpc', 'cf.country': 'GB' });
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('instruments all WorkerEntrypoint handler methods (scheduled/queue/email/tail) with their faas attrs', async () => {
+    const { client, store } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    const seen: Record<string, Record<string, unknown> | undefined> = {};
+    class MyEntrypoint {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async scheduled(_c: ScheduledController): Promise<void> {
+        seen.scheduled = store.getCurrent()?.attributes;
+      }
+      async queue(_b: MessageBatch): Promise<void> {
+        seen.queue = store.getCurrent()?.attributes;
+      }
+      async email(_m: { from: string; to: string }): Promise<void> {
+        seen.email = store.getCurrent()?.attributes;
+      }
+      async tail(_e: ReadonlyArray<unknown>): Promise<void> {
+        seen.tail = store.getCurrent()?.attributes;
+      }
+    }
+    const Instrumented = withBugsee('tok', MyEntrypoint);
+    const entry = new Instrumented(ctxStub(), {});
+    await entry.scheduled({ cron: '* * * * *', scheduledTime: 1 });
+    await entry.queue({ queue: 'q', messages: [{}] });
+    await entry.email({ from: 'a@b.co', to: 'c@d.eo' });
+    await entry.tail([{}, {}]);
+    expect(seen.scheduled).toMatchObject({ 'faas.trigger': 'timer', 'faas.cron': '* * * * *' });
+    expect(seen.queue).toMatchObject({
+      'faas.trigger': 'pubsub',
+      'messaging.batch.message_count': 1,
+    });
+    expect(seen.email).toEqual({ 'faas.trigger': 'other', 'cloudflare.handler': 'email' });
+    expect(seen.tail).toMatchObject({
+      'cloudflare.handler': 'tail',
+      'cloudflare.tail.event_count': 2,
+    });
+  });
+
+  it('instruments a WorkerEntrypoint RPC method when opted in (rpc.method attr)', async () => {
+    const { client, store } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    let attrs: Record<string, unknown> | undefined;
+    class MyEntrypoint {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async add(a: number, b: number): Promise<number> {
+        attrs = store.getCurrent()?.attributes;
+        return a + b;
+      }
+    }
+    const Instrumented = withBugsee('tok', MyEntrypoint, { instrumentRpcMethods: true });
+    expect(await new Instrumented(ctxStub(), {}).add(2, 3)).toBe(5); // non-Response RPC return preserved
+    expect(attrs).toEqual({ 'cloudflare.handler': 'rpc', 'rpc.method': 'add' });
   });
 
   it('leaves absent handler methods absent and does not mutate the original handler', () => {
