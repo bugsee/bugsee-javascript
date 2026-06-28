@@ -2,6 +2,9 @@
 // storage, incident-driven upload via ctx.waitUntil, globalThis.AsyncLocalStorage probe. Tier 2. See
 // docs/design/sdk-design.md §3.x/§7.7/§12.5. Edge capture is INCIDENT-DRIVEN — a no-incident invocation
 // uploads nothing (the in-memory buffer is discarded when the isolate ends).
+// Re-export the core attribute type that the edge public surface uses (EdgeInvocationOptions.attributes), so
+// downstream edge packages (@bugsee/cloudflare) need not depend on @bugsee/core directly.
+export type { AttributeValue } from '@bugsee/core';
 export {
   createEdgeUnhandledRejectionProvider,
   type EdgeGlobalEvents,
