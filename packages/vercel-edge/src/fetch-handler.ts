@@ -1,16 +1,14 @@
-import type { AttributeValue, RequestContext } from '@bugsee/core';
-import { randomId } from '@bugsee/util';
-import { type Bugsee, EdgeContextStoreToken } from './launch';
-import type { EdgeRequestContextStore } from './request-context-store';
-import { type EdgeExecutionContext, resolveWaitUntil } from './wait-until';
+import type { AttributeValue } from '@bugsee/core';
+import { runInEdgeContext } from './edge-context';
+import type { Bugsee } from './launch';
+import type { EdgeExecutionContext } from './wait-until';
 
-// The edge fetch-handler wrapper (docs/design/edge-runtime.md E5). Wrap your Worker/Edge `fetch` handler so:
-//   1. each request runs in its own Bugsee context (the contextId/trace stamp captures for correlation),
-//   2. a thrown error is captured (`logException`) AND rethrown (the platform still produces its error
-//      response / the user's own handling runs),
-//   3. the incident upload completes inside the request's `ctx.waitUntil(client.flush())` — WITHOUT which the
-//      eager upload fetch is dropped the instant the isolate freezes on Response.
-// Incident-driven: a clean request uploads nothing (flush is a no-op). Use with a launched edge client:
+// The edge fetch-handler wrapper (docs/design/edge-runtime.md E5) — the fetch-specific face of the generic
+// edge-invocation core (`runInEdgeContext`, edge-context.ts). Wrap your Worker/Edge `fetch` handler so each
+// request runs in its own Bugsee context (stamped with which route is running), a thrown error is captured AND
+// rethrown, and the incident upload completes inside `ctx.waitUntil(client.flush())` (without which the eager
+// upload fetch is dropped the instant the isolate freezes on Response). Incident-driven: a clean request uploads
+// nothing. Use with a launched edge client:
 //   export default { fetch: withBugseeFetch(bugsee, async (request) => new Response('ok')) };
 
 /** An edge `fetch` handler. Vercel Edge passes just `request`; Cloudflare passes `(request, env, ctx)`
@@ -20,20 +18,12 @@ export type EdgeFetchHandler<Args extends unknown[] = unknown[]> = (
   ...args: Args
 ) => Response | Promise<Response>;
 
-function resolveStore(client: Bugsee): EdgeRequestContextStore | undefined {
-  try {
-    return client.getService(EdgeContextStoreToken);
-  } catch {
-    return undefined; // not a launched edge client — degrade to no per-request context (capture still works)
-  }
-}
-
 // Stamp WHICH request is running onto its context (merged into any incident report produced within it), so an
 // edge crash report tells you the failing route — the one capture the wrapper already has in hand. Keys mirror
 // node's server-instrument (`http.method`/`http.url`). The query string is DROPPED: report attributes don't
 // pass through the redaction pipeline, so a secret in `?token=…` must not leak. Best-effort — a relative /
 // malformed URL keeps its raw value rather than being dropped.
-function requestAttributes(request: Request): Record<string, AttributeValue> {
+export function requestAttributes(request: Request): Record<string, AttributeValue> {
   const attributes: Record<string, AttributeValue> = {};
   if (typeof request?.method === 'string') {
     attributes['http.method'] = request.method;
@@ -55,35 +45,12 @@ export function withBugseeFetch<Args extends unknown[]>(
   client: Bugsee,
   handler: EdgeFetchHandler<Args>,
 ): (request: Request, ...args: Args) => Promise<Response> {
-  const store = resolveStore(client);
-  return async (request: Request, ...args: Args): Promise<Response> => {
-    // Cloudflare's ExecutionContext is the 3rd handler arg (args[1]); on Vercel Edge there is none → the
-    // resolver reads the global request-context symbol instead.
-    const waitUntil = resolveWaitUntil(args[1] as EdgeExecutionContext | undefined);
-    const context: RequestContext = {
-      contextId: randomId(),
-      attributes: requestAttributes(request),
-    };
-    // Capture + rethrow INSIDE the request context. client.logException snapshots the active context
-    // SYNCHRONOUSLY (core submitReport), so it MUST fire while `context` is still open — otherwise the
-    // incident report loses its contextId + http.method/http.url. An outer catch would run AFTER store.run()
-    // has unwound (getCurrent() === undefined there); only a fn STARTED inside run() sees the store in its own
-    // post-await catch. So the whole try/catch runs inside run, not just the handler call.
-    const invoke = async (): Promise<Response> => {
-      try {
-        return await handler(request, ...args);
-      } catch (error) {
-        // Fire-and-forget: the report is registered as pending, which the finally's flush then awaits. Rethrow
-        // so the platform / the user's own error handling still runs.
-        void client.logException(error, { mechanism: 'uncaught' });
-        throw error;
-      }
-    };
-    try {
-      return store !== undefined ? await store.run(context, invoke) : await invoke();
-    } finally {
-      // Keep the isolate alive until any incident upload from this request completes (a no-op on a clean one).
-      waitUntil(client.flush());
-    }
-  };
+  // Cloudflare's ExecutionContext is the 3rd handler arg (args[1]); on Vercel Edge there is none → the resolver
+  // reads the global request-context symbol instead.
+  return (request: Request, ...args: Args): Promise<Response> =>
+    runInEdgeContext(
+      client,
+      { attributes: requestAttributes(request), ctx: args[1] as EdgeExecutionContext | undefined },
+      () => handler(request, ...args),
+    );
 }

@@ -6,8 +6,15 @@ export {
   createEdgeUnhandledRejectionProvider,
   type EdgeGlobalEvents,
 } from './detection';
+export {
+  type EdgeInvocationOptions,
+  resolveEdgeStore,
+  // The generic edge-invocation core: open a per-invocation context, capture+rethrow inside it, flush via
+  // waitUntil. `@bugsee/cloudflare` builds its non-fetch (scheduled/queue/email/…) wrappers on this.
+  runInEdgeContext,
+} from './edge-context';
 export { buildEdgeEnvironment, type EdgeEnvironmentInput } from './environment';
-export { type EdgeFetchHandler, withBugseeFetch } from './fetch-handler';
+export { type EdgeFetchHandler, requestAttributes, withBugseeFetch } from './fetch-handler';
 export {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
