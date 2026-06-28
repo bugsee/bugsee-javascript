@@ -83,6 +83,32 @@ describe('runInEdgeContext', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
+  it('AWAITS client.flush() in-request when awaitFlush is set (instead of deferring to waitUntil)', async () => {
+    const { client, flush } = fakeClient();
+    const waitUntil = vi.fn();
+    let releaseFlush: (value: boolean) => void = () => {};
+    flush.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        releaseFlush = resolve;
+      }),
+    );
+    let settled = false;
+    const call = runInEdgeContext(
+      client,
+      { ctx: { waitUntil }, awaitFlush: true },
+      () => 'ok',
+    ).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false); // the invocation has NOT resolved — it is awaiting the flush
+    expect(waitUntil).not.toHaveBeenCalled(); // and did NOT defer to waitUntil (which is inert on a DO)
+    releaseFlush(true);
+    await call;
+    expect(settled).toBe(true); // resolves only once the flush completes
+  });
+
   it('degrades to no context when the client has no edge store (still captures + rethrows + flushes)', async () => {
     const { client, logException, flush } = fakeClient({ withStore: false });
     await expect(

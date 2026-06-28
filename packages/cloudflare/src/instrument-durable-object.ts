@@ -10,6 +10,9 @@ import { cloudflareRequestAttributes } from './request-cf';
 // a Bugsee context + flush via the constructor's `ctx`; arbitrary RPC methods are opt-in (default off, matching
 // Sentry's `instrumentPrototypeMethods`).
 
+const handlerAttributes = (handler: string): Record<string, AttributeValue> => ({
+  'cloudflare.handler': handler,
+});
 const alarmAttributes = (): Record<string, AttributeValue> => ({
   'faas.trigger': 'timer',
   'cloudflare.handler': 'durable_object.alarm',
@@ -41,7 +44,21 @@ export function instrumentDurableObject<C extends DurableObjectClass>(
     [
       { name: 'fetch', attributes: (args) => cloudflareRequestAttributes(args[0] as Request) },
       { name: 'alarm', attributes: alarmAttributes },
+      // WebSocket Hibernation handlers — the hot path for real-time DOs; capture errors there by default.
+      {
+        name: 'webSocketMessage',
+        attributes: () => handlerAttributes('durable_object.websocket_message'),
+      },
+      {
+        name: 'webSocketClose',
+        attributes: () => handlerAttributes('durable_object.websocket_close'),
+      },
+      {
+        name: 'webSocketError',
+        attributes: () => handlerAttributes('durable_object.websocket_error'),
+      },
     ],
     options.instrumentRpcMethods ?? false,
+    true, // a DO's ctx.waitUntil is a no-op → await the flush in-request (see edge-context.ts awaitFlush)
   );
 }

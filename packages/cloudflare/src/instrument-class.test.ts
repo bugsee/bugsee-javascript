@@ -115,6 +115,97 @@ describe('instrumentEdgeClass', () => {
     expect(logException).not.toHaveBeenCalled(); // boom was NOT wrapped → no capture
   });
 
+  it('does NOT wrap getters/setters under rpc=true (and never reads the getter at construction)', () => {
+    const { client } = fakeClient();
+    const getterRead = vi.fn();
+    class WithGetter {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+      get computed(): number {
+        getterRead();
+        return 7;
+      }
+    }
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      WithGetter,
+      [{ name: 'fetch', attributes: () => ({}) }],
+      true,
+    );
+    const instance = new Instrumented(ctxStub(), {});
+    expect(getterRead).not.toHaveBeenCalled(); // not enumerated as RPC → not read during construction
+    expect(instance.computed).toBe(7); // still a working getter (unwrapped)
+    expect(getterRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps an INHERITED lifecycle method but enumerates ONLY own methods for rpc', () => {
+    const { client } = fakeClient();
+    class Base {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('base');
+      } // inherited lifecycle
+      async inheritedRpc(): Promise<string> {
+        return 'base-rpc';
+      }
+    }
+    class Sub extends Base {
+      async ownRpc(): Promise<string> {
+        return 'sub-rpc';
+      }
+    }
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      Sub,
+      [{ name: 'fetch', attributes: () => ({}) }],
+      true,
+    );
+    const instance = new Instrumented(ctxStub(), {});
+    expect(Object.hasOwn(instance, 'fetch')).toBe(true); // inherited lifecycle IS wrapped (this[name] up the chain)
+    expect(Object.hasOwn(instance, 'ownRpc')).toBe(true); // own RPC method enumerated + wrapped
+    expect(Object.hasOwn(instance, 'inheritedRpc')).toBe(false); // inherited RPC NOT enumerated (own-prototype only)
+  });
+
+  it('does not wrap the reserved RPC names (dup / connect) under rpc=true', () => {
+    const { client } = fakeClient();
+    class WithReserved {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+      async connect(): Promise<string> {
+        return 'c';
+      }
+      async dup(): Promise<string> {
+        return 'd';
+      }
+      async real(): Promise<string> {
+        return 'r';
+      }
+    }
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      WithReserved,
+      [{ name: 'fetch', attributes: () => ({}) }],
+      true,
+    );
+    const instance = new Instrumented(ctxStub(), {});
+    expect(Object.hasOwn(instance, 'real')).toBe(true); // a real RPC method is wrapped
+    expect(Object.hasOwn(instance, 'connect')).toBe(false); // reserved (WorkerEntrypoint) → not wrapped
+    expect(Object.hasOwn(instance, 'dup')).toBe(false); // reserved (all RPC) → not wrapped
+  });
+
   it('captures + RETHROWS a thrown wrapped method (mechanism uncaught)', async () => {
     const { client, logException } = fakeClient();
     const Instrumented = instrumentEdgeClass(

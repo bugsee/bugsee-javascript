@@ -45,8 +45,71 @@ describe('instrumentDurableObject', () => {
     const res = await new Instrumented(ctx, {}).fetch(request);
     expect(await res.text()).toBe('do-ok');
     expect(attrs).toMatchObject({ 'http.url': '/items/3', 'cf.colo': 'SJC' });
-    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
     expect(flush).toHaveBeenCalledTimes(1);
+    expect(ctx.waitUntil).not.toHaveBeenCalled(); // a DO AWAITS the flush — DurableObjectState.waitUntil is inert
+  });
+
+  it('AWAITS the flush inside the DO request (DurableObjectState.waitUntil is a no-op → no orphaned upload)', async () => {
+    const { client, flush } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    let releaseFlush: (value: boolean) => void = () => {};
+    flush.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        releaseFlush = resolve;
+      }),
+    );
+    class MyDO {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Instrumented = instrumentDurableObject('tok', MyDO);
+    let settled = false;
+    const call = new Instrumented(ctxStub(), {}).fetch(new Request('https://x.test/')).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false); // the DO method has NOT resolved — it is awaiting the flush (keeps the DO alive)
+    releaseFlush(true);
+    await call;
+    expect(settled).toBe(true); // resolves only once the flush completes
+  });
+
+  it('instruments the WebSocket Hibernation handlers (message / close / error)', async () => {
+    const { client, store } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    const seen: Record<string, Record<string, unknown> | undefined> = {};
+    class MyDO {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+      async webSocketMessage(_ws: unknown, _message: unknown): Promise<void> {
+        seen.message = store.getCurrent()?.attributes;
+      }
+      async webSocketClose(_ws: unknown): Promise<void> {
+        seen.close = store.getCurrent()?.attributes;
+      }
+      async webSocketError(_ws: unknown, _error: unknown): Promise<void> {
+        seen.error = store.getCurrent()?.attributes;
+      }
+    }
+    const Instrumented = instrumentDurableObject('tok', MyDO);
+    const instance = new Instrumented(ctxStub(), {});
+    await instance.webSocketMessage({}, 'hi');
+    await instance.webSocketClose({});
+    await instance.webSocketError({}, new Error('ws'));
+    expect(seen.message).toEqual({ 'cloudflare.handler': 'durable_object.websocket_message' });
+    expect(seen.close).toEqual({ 'cloudflare.handler': 'durable_object.websocket_close' });
+    expect(seen.error).toEqual({ 'cloudflare.handler': 'durable_object.websocket_error' });
   });
 
   it('instruments DO alarm with the alarm attributes', async () => {

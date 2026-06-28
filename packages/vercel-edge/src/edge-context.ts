@@ -27,6 +27,12 @@ export interface EdgeInvocationOptions {
   /** The platform ExecutionContext (Cloudflare passes it to the handler) used to acquire `waitUntil`; absent on
    *  Vercel Edge (the resolver reads the global request-context symbol there instead). */
   ctx?: EdgeExecutionContext;
+  /** AWAIT the flush inside the invocation instead of deferring it to `waitUntil`. Required for Durable Objects:
+   *  `DurableObjectState.waitUntil` is a documented NO-OP (it only exists for API compatibility), so the only
+   *  thing that keeps a DO alive long enough for the incident upload is the request handler's promise staying
+   *  pending — the flush must be awaited before the method returns. (Module Workers / WorkerEntrypoint have a
+   *  real, effective `ctx.waitUntil`, so they leave this `false` and defer the flush — no added response latency.) */
+  awaitFlush?: boolean;
 }
 
 /** Run `fn` as a Bugsee-instrumented edge invocation: in a fresh per-invocation context (stamped with
@@ -60,6 +66,10 @@ export async function runInEdgeContext<T>(
     return store !== undefined ? await store.run(context, capture) : await capture();
   } finally {
     // Keep the isolate alive until any incident upload from this invocation completes (a no-op on a clean one).
-    waitUntil(client.flush());
+    if (options.awaitFlush === true) {
+      await client.flush(); // Durable Object: ctx.waitUntil is inert → hold the request open by awaiting
+    } else {
+      waitUntil(client.flush());
+    }
   }
 }

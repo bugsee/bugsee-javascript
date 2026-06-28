@@ -30,11 +30,15 @@ export const rpcMethodAttributes =
   (name: string): MethodAttributes =>
   () => ({ 'cloudflare.handler': 'rpc', 'rpc.method': name });
 
-/** The arbitrary (RPC) method names on a class prototype: own functions, minus the constructor + the methods
- *  already instrumented as lifecycle. */
+// Names on a class prototype that are NEVER user RPC methods: the constructor + Cloudflare's RESERVED RPC names
+// (`dup` on every RPC type, `connect` on WorkerEntrypoint) which are not RPC-callable.
+const NON_RPC_NAMES = new Set(['constructor', 'dup', 'connect']);
+
+/** The arbitrary (RPC) method names on a class prototype: own functions, minus the constructor / reserved names
+ *  + the methods already instrumented as lifecycle. */
 function rpcMethodNames(prototype: object, alreadyInstrumented: Set<string>): string[] {
   return Object.getOwnPropertyNames(prototype).filter((name) => {
-    if (name === 'constructor' || alreadyInstrumented.has(name)) {
+    if (NON_RPC_NAMES.has(name) || alreadyInstrumented.has(name)) {
       return false;
     }
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
@@ -49,12 +53,15 @@ type AnyClass = new (...args: any[]) => object;
 /** Instrument a Cloudflare class (Durable Object / WorkerEntrypoint). Returns a subclass that, on construction,
  *  lazily launches the client from `env` (constructor arg 1) and shadows each `methods` entry — plus, when `rpc`
  *  is set, each arbitrary RPC method (`true` = all, or a name list) — with a wrapper that runs the original in a
- *  Bugsee context (its attributes), captures + rethrows, and flushes via the constructor's `ctx` (arg 0). */
+ *  Bugsee context (its attributes), captures + rethrows, and flushes via the constructor's `ctx` (arg 0).
+ *  `awaitFlush` is passed through to the flush strategy — `true` for Durable Objects (their `ctx.waitUntil` is a
+ *  no-op, so the flush must be awaited in-request), `false` for WorkerEntrypoint (real, effective `waitUntil`). */
 export function instrumentEdgeClass<C extends AnyClass>(
   ensureClient: (env: unknown) => Bugsee,
   TargetClass: C,
   methods: InstrumentedMethod[],
   rpc: boolean | string[] = false,
+  awaitFlush = false,
 ): C {
   const specs: InstrumentedMethod[] = [...methods];
   if (rpc !== false) {
@@ -82,7 +89,7 @@ export function instrumentEdgeClass<C extends AnyClass>(
         }
         const method = original as (...methodArgs: unknown[]) => unknown;
         (this as Record<string, unknown>)[name] = (...methodArgs: unknown[]): unknown =>
-          runInEdgeContext(client, { attributes: attributes(methodArgs), ctx }, () =>
+          runInEdgeContext(client, { attributes: attributes(methodArgs), ctx, awaitFlush }, () =>
             method.apply(this, methodArgs),
           );
       }
