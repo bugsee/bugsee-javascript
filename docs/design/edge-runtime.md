@@ -123,11 +123,20 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 - [ ] **E6. `@bugsee/vercel-edge` wiring** — runtime identity (`isVercelEdge`), exports, README, e2e smoke.
 
 **Cloudflare (`@bugsee/cloudflare`, second):**
-- [ ] **C1. Composition** — reuse the shared edge core; `ctx`-param `waitUntil`; `nodejs_compat` ALS; document
+- [x] **C1. Composition** — DONE (master `8ced7ac`). `export *` the vercel-edge core + a `launch` that defaults
+  `platformType: 'workers'`; `ctx`-param `waitUntil` + `nodejs_compat` ALS handled generically; README documents
   the compat flag + degrade.
-- [ ] **C2. Handler-type coverage** — `fetch` (skip OPTIONS/HEAD) + `scheduled` + `queue` + `email` + `tail` +
-  Durable Objects + `WorkerEntrypoint`/RPC; each its own context + flush; a `withBugsee(handler)` wrapper.
-- [ ] **C3. `request.cf` enrichment** + cloud-context.
+- [x] **C2. Handler-type coverage** — DONE (master `e6e51f4`). `withBugsee(config, handler)` wraps the handler-
+  OBJECT types `fetch` + `scheduled`/`queue`/`email`/`tail` (each its own context + faas.* attributes + flush via
+  `ctx.waitUntil`), on the shared `runInEdgeContext` core (C2a, `2ef680b`). Lazy env-secret launch (config is a
+  `(env)=>token` callback — `env` isn't at module scope). **DEFERRED:** Durable-Object / `WorkerEntrypoint` (RPC)
+  **CLASS** auto-wrapping (handler-object types are the common case; even Sentry ships DO/RPC as separate
+  functions — users wrap DO/RPC methods manually via the exported `runInEdgeContext` + `cloudflareRequestAttributes`).
+  **N/A:** the `fetch` OPTIONS/HEAD "skip" is an APM-span concern — the incident-driven model creates no span, so
+  a no-incident OPTIONS/HEAD uploads nothing already (revisit if/when edge APM lands, D11).
+- [x] **C3. `request.cf` enrichment** — DONE (master `e6e51f4`). `cfAttributes` stamps a curated low-PII subset
+  onto fetch incidents (`cf.colo`/`country`/`city`/`timezone`/`asn`/`as_organization` + `http.protocol`/
+  `tls.version`; NOT lat/long).
 
 **Cross-cutting (tracked; sequenced after the edge runtime):**
 - [ ] **X1. Source-map upload tooling** (`@bugsee/vite-plugin` / `@bugsee/webpack-plugin`) — build-time upload +
