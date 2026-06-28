@@ -7,7 +7,8 @@ import type { MessageBatch, ScheduledController, TraceItem } from './cloudflare-
 // PII-safe: no email addresses, no message bodies/payloads. Defensive — a malformed trigger arg degrades to the
 // marker rather than throwing (these run on real Cloudflare objects, but never trust the shape blindly).
 
-/** Cron (`scheduled`) → `faas.trigger: timer` + the cron expression + the scheduled epoch-ms. */
+/** Cron (`scheduled`) → `faas.trigger: timer` + the cron expression + the canonical `faas.time` (the scheduled
+ *  invocation time, ISO-8601 — OTel FaaS). A non-representable scheduledTime is dropped, never thrown. */
 export function scheduledAttributes(
   controller: ScheduledController,
 ): Record<string, AttributeValue> {
@@ -19,7 +20,10 @@ export function scheduledAttributes(
     attributes['faas.cron'] = controller.cron;
   }
   if (typeof controller?.scheduledTime === 'number') {
-    attributes['faas.scheduled_time_ms'] = controller.scheduledTime;
+    const time = new Date(controller.scheduledTime);
+    if (!Number.isNaN(time.getTime())) {
+      attributes['faas.time'] = time.toISOString(); // guard: an out-of-range epoch-ms → Invalid Date, omit
+    }
   }
   return attributes;
 }

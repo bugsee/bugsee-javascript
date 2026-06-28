@@ -71,8 +71,8 @@ describe('withBugsee', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  it('wraps queue: stamps the batch size + queue name', async () => {
-    const { client, store } = fakeClient();
+  it('wraps queue: stamps the batch size + queue name + flushes via ctx.waitUntil', async () => {
+    const { client, store, flush } = fakeClient();
     vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
     let attrs: Record<string, unknown> | undefined;
     const handler = withBugsee('tok', {
@@ -80,16 +80,19 @@ describe('withBugsee', () => {
         attrs = store.getCurrent()?.attributes;
       },
     });
-    await handler.queue?.({ queue: 'jobs', messages: [{}, {}] }, {}, ctxStub());
+    const ctx = ctxStub();
+    await handler.queue?.({ queue: 'jobs', messages: [{}, {}] }, {}, ctx);
     expect(attrs).toMatchObject({
       'faas.trigger': 'pubsub',
       'messaging.destination.name': 'jobs',
       'messaging.batch.message_count': 2,
     });
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1); // upload survives the freeze on the non-fetch path too
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  it('wraps email: stamps the email marker and NO addresses (PII-safe)', async () => {
-    const { client, store } = fakeClient();
+  it('wraps email: stamps the email marker (NO addresses, PII-safe) + flushes via ctx.waitUntil', async () => {
+    const { client, store, flush } = fakeClient();
     vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
     let attrs: Record<string, unknown> | undefined;
     const handler = withBugsee('tok', {
@@ -97,12 +100,15 @@ describe('withBugsee', () => {
         attrs = store.getCurrent()?.attributes;
       },
     });
-    await handler.email?.({ from: 'a@b.co', to: 'd@e.fo' }, {}, ctxStub());
+    const ctx = ctxStub();
+    await handler.email?.({ from: 'a@b.co', to: 'd@e.fo' }, {}, ctx);
     expect(attrs).toEqual({ 'faas.trigger': 'other', 'cloudflare.handler': 'email' });
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  it('wraps tail: stamps the forwarded-event count', async () => {
-    const { client, store } = fakeClient();
+  it('wraps tail: stamps the forwarded-event count + flushes via ctx.waitUntil', async () => {
+    const { client, store, flush } = fakeClient();
     vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
     let attrs: Record<string, unknown> | undefined;
     const handler = withBugsee('tok', {
@@ -110,8 +116,11 @@ describe('withBugsee', () => {
         attrs = store.getCurrent()?.attributes;
       },
     });
-    await handler.tail?.([{}, {}, {}], {}, ctxStub());
+    const ctx = ctxStub();
+    await handler.tail?.([{}, {}, {}], {}, ctx);
     expect(attrs).toMatchObject({ 'cloudflare.handler': 'tail', 'cloudflare.tail.event_count': 3 });
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it('captures + RETHROWS a thrown handler error (mechanism uncaught)', async () => {
@@ -172,6 +181,8 @@ describe('withBugsee', () => {
     const wrapped = withBugsee('tok', original);
     expect(wrapped.scheduled).toBeUndefined(); // not added
     expect(wrapped.queue).toBeUndefined();
+    expect(wrapped.email).toBeUndefined();
+    expect(wrapped.tail).toBeUndefined();
     expect(wrapped).not.toBe(original); // a new object
     expect(wrapped.fetch).not.toBe(original.fetch); // fetch was wrapped, original untouched
   });

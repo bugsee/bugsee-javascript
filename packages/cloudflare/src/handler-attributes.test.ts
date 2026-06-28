@@ -7,12 +7,12 @@ import {
 } from './handler-attributes';
 
 describe('scheduledAttributes', () => {
-  it('stamps faas timer + the cron expression + the scheduled epoch-ms', () => {
+  it('stamps faas timer + the cron expression + the canonical faas.time (ISO)', () => {
     expect(scheduledAttributes({ cron: '0 * * * *', scheduledTime: 1_700_000_000_000 })).toEqual({
       'faas.trigger': 'timer',
       'cloudflare.handler': 'scheduled',
       'faas.cron': '0 * * * *',
-      'faas.scheduled_time_ms': 1_700_000_000_000,
+      'faas.time': '2023-11-14T22:13:20.000Z',
     });
   });
 
@@ -20,6 +20,14 @@ describe('scheduledAttributes', () => {
     expect(scheduledAttributes({} as never)).toEqual({
       'faas.trigger': 'timer',
       'cloudflare.handler': 'scheduled',
+    });
+  });
+
+  it('omits faas.time when the scheduledTime is out of range (Invalid Date — never throws)', () => {
+    expect(scheduledAttributes({ cron: '* * * * *', scheduledTime: 1e21 })).toEqual({
+      'faas.trigger': 'timer',
+      'cloudflare.handler': 'scheduled',
+      'faas.cron': '* * * * *',
     });
   });
 });
