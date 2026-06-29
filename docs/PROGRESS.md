@@ -800,13 +800,16 @@ multi-dialect stack parser is REUSED, not duplicated; webworker depends on `@bug
 vercel-edge) + a DOM-stripped env (`buildWorkerEnvironment`: browser envelope minus screen — a worker has
 `navigator` but no `screen`/`window`; `platform.type` `web-worker`/`service-worker`). Capture: console→log +
 network (fetch/ws; xhr active in a dedicated worker, self-skips in a SW). **DEDICATED/SHARED Web Workers are
-v1-complete** (long-lived → memory + fire-and-forget flush suffice). **Service Worker is PARTIAL** — in-event
-capture works, but a SW is killed when idle, so two SW-specific needs are follow-ups (confirmed by review vs
-MDN): (1) IndexedDB persistence (the RAM rolling buffer is empty after a restart — the design prescribes IDB
-for SW, §3.4) and (2) an `event.waitUntil`-bound flush (fire-and-forget upload can be dropped on kill — the
-same hazard the edge SDK solves with `ctx.waitUntil`). 23 tests, 100% coverage; 5-mutation loop + 2-agent
-review (code clean; the SW gap is honestly scoped + documented, not silently shipped). README written; design
-matrix §3.2 corrected (Web Worker xhr ✓). **Follow-up:** SW persistence + waitUntil-flush wrapper.
+v1-complete** (long-lived → memory + fire-and-forget flush suffice). **Service Worker SUPPORTED** (the review
+flagged a SW is killed when idle → memory + fire-and-forget under-serves it; addressed): (1) `withBugseeEvent`
+(event.ts) hands the SDK flush to `event.waitUntil`, keeping the SW alive until the upload completes (the SW
+analog of edge's `ctx.waitUntil`), and (2) a durable IndexedDB bundle queue (`persist`, default ON for
+'service-worker') persists each incident bundle + `recover()` re-uploads any a prior activation left behind on
+the next launch — reusing browser-utils + core (same pattern as `@bugsee/browser`). So an assembled crash
+bundle survives termination. 32 tests, 100% coverage; mutation loops (env/launch/event/persist) + 2-agent
+review. README + design matrix §3.2 (Web Worker xhr ✓) updated. **Remaining follow-up (smaller):** persist the
+ROLLING capture buffer across activations (IDB chunk capture store + marker recovery — only the rarer
+cross-activation case; an in-activation incident already reports with that activation's capture).
 
 - **Stub-only packages skipped** (electron, replay\*, framework frontend adapters):
   they gain the identical dual config when implemented. (`@bugsee/vercel-edge` + `@bugsee/cloudflare` now HAVE it — DONE, below.)
