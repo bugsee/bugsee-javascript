@@ -64,6 +64,21 @@ describe('createWebLockLiveness — available', () => {
   it('reports available = true', () => {
     expect(createWebLockLiveness(fakeLocks().manager).available).toBe(true);
   });
+
+  it('routes a holdSelf lock-request rejection to warn (never floats an unhandledrejection)', async () => {
+    const warn = vi.fn();
+    // A manager whose holdSelf (non-ifAvailable) request REJECTS (e.g. an invalid lock name).
+    const rejecting: LockManagerLike = {
+      request: (_name, options) =>
+        options.ifAvailable
+          ? Promise.resolve(undefined)
+          : Promise.reject(new Error('bad lock name')),
+    };
+    const liveness = createWebLockLiveness(rejecting, warn);
+    expect(() => liveness.holdSelf('inst-A')).not.toThrow(); // synchronous call never throws
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1)); // the rejection is swallowed → warn
+    expect(warn.mock.calls[0]?.[0]).toContain('liveness lock'); // a descriptive message, not the raw reject
+  });
 });
 
 describe('createWebLockLiveness — unavailable (degrade)', () => {

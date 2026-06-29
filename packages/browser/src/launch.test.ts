@@ -6,6 +6,8 @@ import {
   createIdbChunkBackend,
   createIdbKeyedStore,
   createPersistentBundleStore,
+  createWebLockLiveness,
+  instanceLockName,
   type LockManagerLike,
 } from '@bugsee/browser-utils';
 import {
@@ -141,22 +143,32 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
 
 const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
 
-// An in-memory Web Locks fake (jsdom/node has no navigator.locks): a never-held name is "dead" (acquirable).
+// An in-memory Web Locks fake (jsdom/node has no navigator.locks). Two sets, faithful to real `ifAvailable`
+// semantics: `heldForever` = a LIVE instance's holdSelf lock; `inUse` = momentarily held during a
+// recoverIfDead callback. A name in neither is "dead" (acquirable); `null` is yielded for a held/busy lock.
 function fakeWebLocks(): LockManagerLike {
-  const held = new Set<string>();
+  const heldForever = new Set<string>();
+  const inUse = new Set<string>();
   return {
     request(name, options, callback) {
       if (options.ifAvailable) {
-        if (held.has(name)) return Promise.resolve(callback(null));
-        held.add(name);
-        return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+        if (heldForever.has(name) || inUse.has(name)) return Promise.resolve(callback(null));
+        inUse.add(name);
+        return Promise.resolve(callback({ name })).finally(() => inUse.delete(name));
       }
-      held.add(name);
+      heldForever.add(name);
       void callback({ name });
       return new Promise<never>(() => {});
     },
   };
 }
+
+// The summary on the FIRST /v2/issues request body (request.json) — i.e. which bundle was delivered.
+const issueSummary = (transport: ReturnType<typeof uploadTransport>): string | undefined => {
+  const call = transport.mock.calls.find(([url]) => url.endsWith('/v2/issues'));
+  if (call === undefined) return undefined;
+  return (JSON.parse(String((call[1] as HttpRequestOptions).body)) as { summary?: string }).summary;
+};
 
 const drain = async (store: ReturnType<typeof createMemoryCaptureStore>, type: FileType) =>
   (await createCaptureExporter(store).drain()).get(type);
@@ -681,6 +693,31 @@ describe('launch', () => {
     await vi.waitFor(async () =>
       expect((await shared.loadAll()).some(([k]) => k === 'priorinst/left-1')).toBe(false),
     ); // re-uploaded → removed from the dead sibling's prefix
+    expect(issueSummary(transport)).toBe('prior crash'); // the SEEDED dead-sibling bundle was delivered
+  });
+
+  it('SKIPS a LIVE sibling (lock held) while recovering a DEAD one — end to end', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib')); // a still-open tab
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await shared.put('deadsib/b1', pendingBundle('dead tab crash'));
+    await shared.put('livesib/b2', pendingBundle('live tab, in flight'));
+
+    const transport = uploadTransport();
+    launchTracked(
+      'tok',
+      baseOptions({ transport, persist: true, captureStore: memStore(), indexedDB: idb, locks }),
+    );
+
+    await vi.waitFor(async () =>
+      expect((await shared.loadAll()).some(([k]) => k === 'deadsib/b1')).toBe(false),
+    ); // dead sibling recovered
+    expect(issueSummary(transport)).toBe('dead tab crash'); // ONLY the dead one delivered
+    expect((await shared.loadAll()).some(([k]) => k === 'livesib/b2')).toBe(true); // live sibling untouched
   });
 
   it('persist:true wraps the capture store in an IndexedDB-backed persistent store', async () => {

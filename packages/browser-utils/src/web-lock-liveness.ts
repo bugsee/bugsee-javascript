@@ -51,7 +51,13 @@ export function createWebLockLiveness(
     available: true,
     holdSelf(name) {
       // Hold for the realm's lifetime: a never-resolving callback keeps the lock until the realm is destroyed.
-      void locks.request(name, { mode: 'exclusive' }, () => new Promise<never>(() => {}));
+      // A rejected request (e.g. an invalid lock name, or a sandboxed context) must NOT surface as an
+      // unhandledrejection — Bugsee would self-report its own internal lock failure as an app error. Swallow
+      // it to `warn` and degrade (this instance simply won't be lock-protected; siblings may double-recover
+      // its bundles, which the server dedupes by signature).
+      void locks
+        .request(name, { mode: 'exclusive' }, () => new Promise<never>(() => {}))
+        .catch((error) => warn(`failed to hold the instance liveness lock: ${String(error)}`));
     },
     recoverIfDead(name, fn) {
       return locks.request(name, { mode: 'exclusive', ifAvailable: true }, async (lock) => {

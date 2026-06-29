@@ -811,6 +811,37 @@ review. README + design matrix §3.2 (Web Worker xhr ✓) updated. **Remaining f
 ROLLING capture buffer across activations (IDB chunk capture store + marker recovery — only the rarer
 cross-activation case; an in-activation incident already reports with that activation's capture).
 
+### Browser/worker multi-instance IDB coexistence — BUNDLE QUEUE DONE (2026-06-29, on `master`) → `docs/design/browser-multi-instance-coexistence.md`
+The browser-tier counterpart of the node multi-instance disk coexistence. IndexedDB is **origin-scoped**, so N
+tabs + the page's web/service workers all share it; before this, `@bugsee/browser` AND `@bugsee/webworker` both
+defaulted the durable bundle queue to one db (`'bugsee'`) with un-namespaced keys → siblings **cross-recovered**
+each other's bundles (and different app tokens could upload to the **wrong project**). Fixed for the **durable
+bundle queue** (slices 1–4, BD7 scope) — all in `@bugsee/browser-utils`, wired into both launches:
+- **Per-instance namespacing** — each launch writes its bundles under its own `"<instanceId>/"` key prefix in a
+  per-APP-TOKEN db `bugsee-<tokenHash>` (FNV-1a sync hash; the wrong-project guard). A reload = a fresh
+  instanceId, so the prior session is just a **dead sibling**.
+- **Web Locks liveness** (`createWebLockLiveness` over `navigator.locks`) — each instance holds an exclusive lock
+  for its realm's lifetime (auto-released on tab close / crash / worker terminate → no staleness window, no
+  PID-reuse, STRICTLY better than node's heartbeat). The lock doubles as the recovery **claim + serializer**:
+  recover a dead sibling INSIDE its held lock so a concurrent peer skips. `holdSelf` rejections are caught→`warn`
+  (never a self-reported `unhandledrejection`). Degrades (no cross-recovery + one-time warn) where absent.
+- **`createCoexistentBundleQueue`** (the launch-facing helper) + `recoverDeadInstances` (coordinator) +
+  `recoverSiblingBundleQueue` (AWAITABLE dead-sibling re-upload via the BASE pipeline — no re-persist; removes on
+  confirmed delivery; purges unparseable leftovers). After launch the launches call `recoverDeadSiblings(...)`;
+  an explicit `bundleStore` override bypasses coexistence entirely. New injectable `locks`/`indexedDB` seams.
+- browser-utils/browser/webworker all **100% coverage**; per-entity mutator loops; **4-agent convergent review**
+  (core-logic / launch-wiring / test-strength / design) → its SEV findings fixed test-first (the `holdSelf`
+  rejection→warn hardening; a live-sibling-skipped end-to-end test on both launches; a wrong-project isolation
+  test; delivered-bundle content assertions).
+
+> **⚠️ Residual hazard until slice 5 (SEV1, PRE-EXISTING — not introduced here).** Slice 4 fixed the bundle queue
+> only. The browser's `persist:true` **capture-chunk + report-marker** recovery (`recoverReports` over the shared
+> `bugsee-capture`/`bugsee-markers` DBs) is **still shared**: with `persist:true` + multiple live tabs, a tab can
+> recover another live tab's incident markers AND **sweep another live tab's preserved capture generation**
+> (silent capture loss). `persist` is OFF by default in the browser, and slice 4 is strictly safer than before —
+> but **slice 5 (capture/marker coexistence) must land before `persist:true` is recommended for multi-tab apps.**
+> The webworker has no capture-recovery path yet (#165) → unaffected.
+
 - **Stub-only packages skipped** (electron, replay\*, framework frontend adapters):
   they gain the identical dual config when implemented. (`@bugsee/vercel-edge` + `@bugsee/cloudflare` now HAVE it — DONE, below.)
 

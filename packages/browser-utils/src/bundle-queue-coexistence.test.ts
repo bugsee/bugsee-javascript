@@ -154,6 +154,29 @@ describe('createCoexistentBundleQueue — persisting', () => {
     expect(keys).toContain('livesib/b2'); // alive → left for its own instance
   });
 
+  it("NEVER recovers a different app token's bundles (separate per-token database)", async () => {
+    const idb = new IDBFactory();
+    // Seed a bundle in app A's coexistence database (a different token → a different database).
+    const appA = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('app-A'),
+      indexedDB: idb,
+    });
+    await appA.put('sib/secret', serializeBundle(aBundle("app A's incident")));
+
+    // App B's queue, sharing the same origin IDBFactory, must not see app A's database at all.
+    const pipeline = okPipeline();
+    const queue = createCoexistentBundleQueue({
+      appToken: 'app-B',
+      persist: true,
+      indexedDB: idb,
+      locks: fakeLocks().manager,
+    });
+    await queue.recoverDeadSiblings(pipeline);
+
+    expect(pipeline.enqueue).not.toHaveBeenCalled(); // wrong-project guard: B never delivers A's bundle
+    expect((await appA.loadAll()).map(([k]) => k)).toContain('sib/secret'); // A's bundle left untouched
+  });
+
   it('falls back to globalThis.indexedDB when none is injected', async () => {
     // No `indexedDB` option → the store opens the ambient IDB (fake-indexeddb/auto). A distinct token
     // keeps this test in its own database, away from the injected-factory tests above.

@@ -3,6 +3,8 @@ import type { WindowEvents } from '@bugsee/browser';
 import {
   coexistenceDatabaseName,
   createIdbBlobStore,
+  createWebLockLiveness,
+  instanceLockName,
   type LockManagerLike,
 } from '@bugsee/browser-utils';
 import {
@@ -87,17 +89,20 @@ const inertScheduler: Scheduler = {
   clearInterval: () => {},
 };
 
-// An in-memory Web Locks fake (node has no navigator.locks): a never-held name is "dead" (acquirable).
+// An in-memory Web Locks fake (node has no navigator.locks). Two sets, faithful to real `ifAvailable`
+// semantics: `heldForever` = a LIVE instance's holdSelf lock; `inUse` = momentarily held during a
+// recoverIfDead callback. A name in neither is "dead" (acquirable). `null` is yielded for a held/busy lock.
 function fakeWebLocks(): LockManagerLike {
-  const held = new Set<string>();
+  const heldForever = new Set<string>();
+  const inUse = new Set<string>();
   return {
     request(name, options, callback) {
       if (options.ifAvailable) {
-        if (held.has(name)) return Promise.resolve(callback(null));
-        held.add(name);
-        return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+        if (heldForever.has(name) || inUse.has(name)) return Promise.resolve(callback(null));
+        inUse.add(name);
+        return Promise.resolve(callback({ name })).finally(() => inUse.delete(name));
       }
-      held.add(name);
+      heldForever.add(name);
       void callback({ name });
       return new Promise<never>(() => {});
     },
@@ -402,6 +407,39 @@ describe('launch (webworker)', () => {
     await vi.waitFor(async () =>
       expect((await shared.loadAll()).some(([k]) => k === 'deadsib/b1')).toBe(false),
     ); // dead sibling's bundle re-uploaded → removed
+    expect(issueJson(transport).summary).toBe('a prior tab crash'); // the SEEDED bundle was delivered
+  });
+
+  it('SKIPS a LIVE sibling (lock held) while recovering a DEAD one — end to end', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    // A live sibling holds its lock (a tab that is still open); a dead one never did.
+    createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib'));
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await shared.put('deadsib/b1', pendingBundle('dead tab crash'));
+    await shared.put('livesib/b2', pendingBundle('live tab, in flight'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        captureStore: memStore(),
+        indexedDB: idb,
+        locks,
+        onError: vi.fn(),
+      }),
+    );
+
+    await vi.waitFor(async () =>
+      expect((await shared.loadAll()).some(([k]) => k === 'deadsib/b1')).toBe(false),
+    ); // dead sibling recovered
+    expect(issueJson(transport).summary).toBe('dead tab crash'); // ONLY the dead one was delivered
+    expect((await shared.loadAll()).some(([k]) => k === 'livesib/b2')).toBe(true); // live sibling untouched
   });
 
   it('is a per-worker singleton — a repeat launch is ignored (and onError-warned)', () => {
