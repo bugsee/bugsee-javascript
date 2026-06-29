@@ -10,13 +10,17 @@
   },
   "dependencies": {
     "@bugsee/bun": "workspace:*",
+    "@bugsee/cloudflare": "workspace:*",
     "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*",
-    "@bugsee/util": "workspace:*"
+    "@bugsee/util": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.27.0",
     "tsx": "^4.19.0"
   }
 }
