@@ -24,3 +24,9 @@ export {
   createPersistentReportMarkerStore,
   type PersistentReportMarkerStore,
 } from './idb-report-marker-store';
+export {
+  createWebLockLiveness,
+  type LockManagerLike,
+  WEB_LOCKS_UNAVAILABLE_WARNING,
+  type WebLockLiveness,
+} from './web-lock-liveness';
