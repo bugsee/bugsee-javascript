@@ -144,8 +144,13 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 **Cross-cutting (tracked; sequenced after the edge runtime):**
 - [ ] **X1. Source-map upload tooling** (`@bugsee/vite-plugin` / `@bugsee/webpack-plugin`) — build-time upload +
   `fs`-free runtime stack parser; all platforms, acute for edge.
-- [ ] **X2. Edge bundle-size check** (Workers 3MB/10MB).
-- [ ] **X3. Edge runtime smoke harnesses** (`dev-packages/{vercel-edge,cloudflare}-tests/`).
+- [x] **X2. Edge bundle-size check** (Workers 3MB/10MB) — DONE (master). esbuild-bundle each edge package
+  (node:* external), assert zero static node:* imports + gzip under a 150 KB regression budget (actuals
+  ~21 KB). In `@bugsee/instrumentation-tests` (`test/edge.e2e.ts`).
+- [x] **X3. Edge runtime smoke harnesses** — DONE (master). Lives in `@bugsee/instrumentation-tests` (not a
+  new `dev-packages/` dir — the as-built e2e home): evaluate the bundled SDK in `@edge-runtime/vm` (a real
+  WinterCG isolate) + fire an incident from withBugseeFetch / withBugsee / a Durable Object against the mock
+  collector. (A workerd/miniflare-accurate Cloudflare harness is a possible later upgrade.)
 
 Then **`@bugsee/nextjs`** (its Edge runtime now unblocked).
 
