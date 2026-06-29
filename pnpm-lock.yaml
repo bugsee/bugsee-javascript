@@ -738,12 +738,25 @@ importers:
 
   packages/webworker:
     dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@bugsee/browser-utils':
+        specifier: workspace:*
+        version: link:../browser-utils
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/integration-shims':
+      '@bugsee/protocol':
         specifier: workspace:*
-        version: link:../integration-shims
+        version: link:../protocol
+    devDependencies:
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
 
 packages:
 
