@@ -25,6 +25,18 @@ export {
   type PersistentReportMarkerStore,
 } from './idb-report-marker-store';
 export {
+  coexistenceDatabaseName,
+  createPrefixedBlobStore,
+  hashToken,
+  instanceLockName,
+  makeInstanceId,
+  splitInstanceKey,
+} from './instance-coexistence';
+export {
+  type RecoverDeadInstancesOptions,
+  recoverDeadInstances,
+} from './recover-dead-instances';
+export {
   createWebLockLiveness,
   type LockManagerLike,
   WEB_LOCKS_UNAVAILABLE_WARNING,
