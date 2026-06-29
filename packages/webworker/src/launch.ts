@@ -3,7 +3,11 @@ import {
   createWindowErrorProvider,
   type WindowEvents,
 } from '@bugsee/browser';
-import { fetchTransport } from '@bugsee/browser-utils';
+import {
+  createIdbBlobStore,
+  createPersistentBundleStore,
+  fetchTransport,
+} from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
   createLogCaptureProvider,
@@ -11,12 +15,15 @@ import {
 } from '@bugsee/capture';
 import {
   type BugseeClient,
+  type BundleStore,
+  BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDurableUploadPipeline,
   createMemoryCaptureStore,
   createServiceContainer,
   createUploadPipeline,
@@ -49,12 +56,13 @@ import {
 // satisfies it). NO DOM capture (input/viewtree), NO performance.memory traces, NO pagehide events, NO
 // AsyncLocalStorage / per-request context (workers are stack-based).
 //
-// v1 targets long-lived DEDICATED/SHARED Web Workers — memory-only + fire-and-forget flush is complete there
-// (the worker lives for the page's lifetime). SERVICE WORKER support is PARTIAL: in-event capture works, but a
-// SW is terminated when idle, so two SW-specific needs are follow-ups — (1) IndexedDB persistence (the rolling
-// buffer is RAM-only → empty after a restart; the design prescribes IDB for SW) and (2) an `event.waitUntil`-
-// bound flush (the upload is fire-and-forget → can be dropped if the SW is killed first, the same hazard the
-// edge SDK solves with ctx.waitUntil). The returned client IS the public surface.
+// A long-lived DEDICATED/SHARED Web Worker runs memory-only + fire-and-forget flush (complete — it lives for
+// the page's lifetime). A SERVICE WORKER is terminated when idle, so it gets two extra pieces: (1) a durable
+// IndexedDB BUNDLE queue (`persist`, default ON for 'service-worker') so an assembled incident bundle survives
+// a kill mid-upload + re-uploads next activation, and (2) the `withBugseeEvent` wrapper (event.ts) which hands
+// the flush to `event.waitUntil` so the upload completes before the worker is killed (the SW analog of edge's
+// ctx.waitUntil). Remaining follow-up: persisting the ROLLING capture buffer across activations (an IDB chunk
+// capture store + marker recovery — only the rarer cross-activation case). The returned client IS the surface.
 
 const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
@@ -93,11 +101,22 @@ export interface BugseeWorkerLaunchOptions {
   maxRecordingTime?: number;
   /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
   maxDataSize?: number;
+  /**
+   * Persist the capture + bundle queue to IndexedDB so an incident survives the worker being TERMINATED mid-
+   * upload (or before its bundle is assembled) and is re-uploaded on the next activation — essential for a
+   * Service Worker (killed when idle), unneeded for a long-lived Web Worker. Default ON for `service-worker`,
+   * OFF for `web-worker`. An explicit `captureStore`/`bundleStore` overrides the respective store.
+   */
+  persist?: boolean;
+  /** Re-upload any bundle/incident a prior activation left behind, on the next launch. Default true. */
+  recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
 
   /** environment.platform.type. Default 'web-worker' (pass 'service-worker' from a Service Worker). */
   platformType?: WorkerPlatformType;
+  /** Durable bundle store override (crash recovery across restarts). Default: IndexedDB when `persist`. */
+  bundleStore?: BundleStore;
 
   // Injectable seams (advanced / tests) — defaults target the real worker runtime.
   /** HTTP primitive. Default the browser fetch transport. */
@@ -153,7 +172,29 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const transport = services.getProvider(TransportToken).getImmediate();
   const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
   const uploader = createBundleUploader(transport);
-  const uploadPipeline = createUploadPipeline({ api, uploader });
+  const baseUploadPipeline = createUploadPipeline({ api, uploader });
+
+  // Persistence defaults ON for a Service Worker (terminated when idle) and OFF for a long-lived Web Worker.
+  const persist = options.persist ?? options.platformType === 'service-worker';
+
+  // Durable bundle queue: persist each bundle before upload + re-upload any an activation left behind. An
+  // explicit bundleStore wins; else `persist` builds an IndexedDB-backed store (its in-memory mirror hydrates
+  // asynchronously — recover() is deferred to whenReady below).
+  const bundleStore =
+    options.bundleStore ??
+    (persist ? createPersistentBundleStore(createIdbBlobStore(), options.onError) : undefined);
+  if (bundleStore !== undefined) {
+    services.addService(defineService(BundleStoreToken, () => bundleStore));
+  }
+  const durable =
+    (options.recover ?? true) && bundleStore !== undefined
+      ? createDurableUploadPipeline({
+          store: bundleStore,
+          pipeline: baseUploadPipeline,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
+  const uploadPipeline = durable ?? baseUploadPipeline;
 
   const probe = options.systemProbe ?? realWorkerProbe;
   const getEnvironment = () =>
@@ -171,6 +212,10 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  // Capture store: override > in-memory. (The rolling buffer stays in RAM; the in-activation capture is what a
+  // SW incident reports. Persisting the rolling buffer across restarts — the IDB chunk store + marker recovery,
+  // for the rarer cross-activation case — is a follow-up; the durable BUNDLE queue above already makes an
+  // assembled incident bundle survive a termination.)
   const captureStore =
     options.captureStore ??
     createMemoryCaptureStore({
@@ -217,6 +262,15 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   }
 
   client.launch();
+
+  // Recovery on the next activation: re-upload any bundle a prior activation assembled + persisted but didn't
+  // deliver (e.g. the worker was killed mid-upload). Waits for the IndexedDB mirror to hydrate so list() sees
+  // the leftovers; a synchronous (injected) store recovers at once.
+  if (durable !== undefined) {
+    void ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
+      durable.recover(),
+    );
+  }
 
   // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;

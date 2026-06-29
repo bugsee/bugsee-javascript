@@ -1,15 +1,62 @@
+import 'fake-indexeddb/auto'; // polyfills indexedDB/IDBKeyRange for the persist (Service Worker) path
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  type BundleStore,
+  BundleStoreToken,
   contributeServiceManifest,
+  createMemoryCaptureStore,
   createSystemClock,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   type Scheduler,
+  serializeBundle,
 } from '@bugsee/core';
+import { Severity } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWorkerLaunchOptions, launch } from './launch';
+
+// A fresh IndexedDB per test so the persist path is isolated.
+beforeEach(() => vi.stubGlobal('indexedDB', new IDBFactory()));
+
+const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+
+// A memory BundleStore (the durable queue's backing store) that records put/remove for assertions.
+function bundleMemStore() {
+  const map = new Map<string, Uint8Array>();
+  const puts: string[] = [];
+  const store: BundleStore = {
+    put: (id, bytes) => {
+      puts.push(id);
+      map.set(id, bytes);
+    },
+    list: () => [...map.keys()],
+    read: (id) => map.get(id),
+    remove: (id) => {
+      map.delete(id);
+    },
+  };
+  return { store, map, puts };
+}
+
+const pendingBundle = (summary: string): Uint8Array =>
+  serializeBundle({
+    request: {
+      type: 'crash',
+      summary,
+      severity: Severity.Blocker,
+      source: { mechanism: 'uncaught' },
+      created_on: '2026-06-29T00:00:00Z',
+      environment: {
+        platform: { type: 'web-worker', version: '1' },
+        sdk: { version: '0', type: 'javascript' },
+      },
+    },
+    body: new Uint8Array([0x50, 0x4b, 1]),
+    fileName: 'recovered.zip',
+  });
 
 const jsonBody = (o: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(o));
 
@@ -262,6 +309,47 @@ describe('launch (webworker)', () => {
     contributeServiceManifest(() => ran(), carrier);
     track('tok', baseOptions({ carrier }));
     expect(ran).toHaveBeenCalledTimes(1);
+  });
+
+  it('a service-worker defaults persist ON → registers a durable BundleStore', () => {
+    const client = track('tok', baseOptions({ platformType: 'service-worker' }));
+    expect(client.getService(BundleStoreToken)).toBeDefined(); // IndexedDB durable queue wired
+  });
+
+  it('a web-worker defaults persist OFF → no durable BundleStore', () => {
+    const client = track('tok', baseOptions()); // default web-worker
+    expect(() => client.getService(BundleStoreToken)).toThrow(); // not registered (memory-only)
+  });
+
+  it('persists then removes a bundle through the durable queue on a successful upload', async () => {
+    const { store, puts, map } = bundleMemStore();
+    const client = track(
+      'tok',
+      baseOptions({ transport: uploadTransport(), bundleStore: store, captureStore: memStore() }),
+    );
+    await client.logException(new Error('boom'));
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThan(0)); // persisted BEFORE upload
+    await vi.waitFor(() => expect(map.size).toBe(0)); // removed after a successful upload
+  });
+
+  it('recovers (re-uploads) a bundle a prior activation left in the durable store', async () => {
+    const { store, map } = bundleMemStore();
+    map.set('leftover-1', pendingBundle('a prior SW crash')); // seed a leftover (the worker died mid-upload)
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({ transport, bundleStore: store, captureStore: memStore(), onError: vi.fn() }),
+    );
+    await vi.waitFor(() => expect(map.has('leftover-1')).toBe(false)); // recovered → uploaded → removed
+    expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true);
+  });
+
+  it('does not recover when recover is false (the leftover stays)', async () => {
+    const { store, map } = bundleMemStore();
+    map.set('leftover-2', pendingBundle('a prior SW crash'));
+    track('tok', baseOptions({ bundleStore: store, captureStore: memStore(), recover: false }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(map.has('leftover-2')).toBe(true); // never recovered
   });
 
   it('is a per-worker singleton — a repeat launch is ignored (and onError-warned)', () => {

@@ -21,18 +21,32 @@ cpu/memory in `hardware`.
 `performance.memory` traces — all browser/DOM-only. There is no `AsyncLocalStorage` / per-request context in a
 worker (stack-based).
 
-## Service Workers — partial (v1)
+## Service Workers
 
-`platformType: 'service-worker'` reports the right identity and **in-event capture works** (an error thrown
-while handling a `fetch`/`push`/etc. event is captured and reported within that activation). But a Service
-Worker is **terminated when idle and restarted per-event with no persisted state**, so v1 has two known gaps,
-tracked as follow-ups:
+Pass `platformType: 'service-worker'`. A Service Worker is **terminated when idle and restarted per-event**, so
+it gets two extra pieces (both unneeded for a long-lived Web Worker):
 
-- **No cross-termination persistence** — the in-memory rolling buffer is empty after a restart (the design
-  prescribes IndexedDB for Service Workers). Inject a persistent `captureStore` if you need this today.
-- **No `event.waitUntil`-bound flush** — an incident's upload is fire-and-forget; if the worker is killed
-  before it completes, it can be dropped (the same isolate-freeze hazard the edge SDK solves with
-  `ctx.waitUntil`). A Service-Worker event wrapper is a follow-up.
+```ts
+import { launch, withBugseeEvent } from '@bugsee/webworker';
 
-A long-lived **dedicated/shared Web Worker** has neither limitation (it lives for the page's lifetime), so it is
-fully supported memory-only. Tier 2.
+const bugsee = launch('<BUGSEE_APP_TOKEN>', { platformType: 'service-worker' });
+
+self.addEventListener('fetch', withBugseeEvent(bugsee, (event) => {
+  event.respondWith(handle(event.request));
+}));
+```
+
+- **`withBugseeEvent`** hands the SDK flush to `event.waitUntil`, keeping the worker alive until an incident's
+  upload completes — the SW analog of the edge SDK's `ctx.waitUntil` (without it a fire-and-forget upload can be
+  dropped when the worker is killed).
+- **Persistence is ON by default** for `service-worker`: a durable **IndexedDB bundle queue** persists each
+  incident bundle before upload and re-uploads any a prior activation left behind (e.g. killed mid-upload) on
+  the next launch — so an assembled crash bundle is never lost to termination. (`persist: false` opts out;
+  `persist: true` turns it on for a Web Worker.)
+
+**Remaining follow-up:** persisting the *rolling* capture buffer across activations (an IndexedDB chunk capture
+store + marker recovery) — only relevant for the rarer cross-activation case; an in-activation incident already
+reports with that activation's capture.
+
+A long-lived **dedicated/shared Web Worker** needs neither (it lives for the page's lifetime) and runs
+memory-only by default. Tier 2.
