@@ -1,6 +1,11 @@
 import 'fake-indexeddb/auto'; // polyfills indexedDB/IDBKeyRange for the persist (Service Worker) path
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  coexistenceDatabaseName,
+  createIdbBlobStore,
+  type LockManagerLike,
+} from '@bugsee/browser-utils';
+import {
   type BundleStore,
   BundleStoreToken,
   contributeServiceManifest,
@@ -81,6 +86,23 @@ const inertScheduler: Scheduler = {
   setInterval: () => 0 as unknown as ReturnType<Scheduler['setInterval']>,
   clearInterval: () => {},
 };
+
+// An in-memory Web Locks fake (node has no navigator.locks): a never-held name is "dead" (acquirable).
+function fakeWebLocks(): LockManagerLike {
+  const held = new Set<string>();
+  return {
+    request(name, options, callback) {
+      if (options.ifAvailable) {
+        if (held.has(name)) return Promise.resolve(callback(null));
+        held.add(name);
+        return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+      }
+      held.add(name);
+      void callback({ name });
+      return new Promise<never>(() => {});
+    },
+  };
+}
 
 // A fake worker scope: records error/unhandledrejection listeners + dispatches synthetic events.
 function fakeScope() {
@@ -350,6 +372,36 @@ describe('launch (webworker)', () => {
     track('tok', baseOptions({ bundleStore: store, captureStore: memStore(), recover: false }));
     await new Promise((r) => setTimeout(r, 5));
     expect(map.has('leftover-2')).toBe(true); // never recovered
+  });
+
+  it("recovers a DEAD sibling instance's leftover bundle from the shared origin store", async () => {
+    const idb = new IDBFactory();
+    // Seed a dead sibling's bundle under its own instance prefix in the per-token coexistence database.
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await shared.put('deadsib/b1', pendingBundle('a prior tab crash'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker', // persist ON (no bundleStore override → real coexistence layer)
+        captureStore: memStore(),
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true),
+    );
+    await vi.waitFor(async () =>
+      expect((await shared.loadAll()).some(([k]) => k === 'deadsib/b1')).toBe(false),
+    ); // dead sibling's bundle re-uploaded → removed
   });
 
   it('is a per-worker singleton — a repeat launch is ignored (and onError-warned)', () => {

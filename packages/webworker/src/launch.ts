@@ -4,9 +4,9 @@ import {
   type WindowEvents,
 } from '@bugsee/browser';
 import {
-  createIdbBlobStore,
-  createPersistentBundleStore,
+  createCoexistentBundleQueue,
   fetchTransport,
+  type LockManagerLike,
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
@@ -133,6 +133,10 @@ export interface BugseeWorkerLaunchOptions {
   systemProbe?: WorkerProbe;
   /** Carrier host for the process-global singletons; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /** Web Locks manager for multi-instance liveness. Default `navigator.locks` (degrades when absent). */
+  locks?: LockManagerLike;
+  /** IDBFactory for the durable queue; injectable for tests. Default `globalThis.indexedDB`. */
+  indexedDB?: IDBFactory;
 }
 
 /** The launched worker client — the public worker SDK surface. */
@@ -177,12 +181,20 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // Persistence defaults ON for a Service Worker (terminated when idle) and OFF for a long-lived Web Worker.
   const persist = options.persist ?? options.platformType === 'service-worker';
 
-  // Durable bundle queue: persist each bundle before upload + re-upload any an activation left behind. An
-  // explicit bundleStore wins; else `persist` builds an IndexedDB-backed store (its in-memory mirror hydrates
-  // asynchronously — recover() is deferred to whenReady below).
-  const bundleStore =
-    options.bundleStore ??
-    (persist ? createPersistentBundleStore(createIdbBlobStore(), options.onError) : undefined);
+  // Durable bundle queue, multi-instance-safe: several tabs/workers share the origin's IndexedDB, so each
+  // launch writes under its own per-instance prefix in a per-APP-TOKEN database and recovers only DEAD
+  // siblings' leftovers (under a Web Lock). An explicit bundleStore bypasses coexistence (the caller owns
+  // durability); else `persist` builds the per-instance IndexedDB store (mirror hydrates async — recover()
+  // is deferred to whenReady below).
+  const queue = createCoexistentBundleQueue({
+    appToken,
+    persist,
+    ...(options.bundleStore !== undefined ? { override: options.bundleStore } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    ...(options.locks !== undefined ? { locks: options.locks } : {}),
+    ...(options.indexedDB !== undefined ? { indexedDB: options.indexedDB } : {}),
+  });
+  const bundleStore = queue.bundleStore;
   if (bundleStore !== undefined) {
     services.addService(defineService(BundleStoreToken, () => bundleStore));
   }
@@ -271,6 +283,10 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
       durable.recover(),
     );
   }
+  // Then recover any DEAD sibling instance's leftover bundles (a crashed tab/worker on the same origin),
+  // re-uploading directly (no re-persist into our queue). A no-op without coexistence (override / no persist /
+  // no Web Locks). Reads the shared store directly, so it needs no mirror hydration.
+  void queue.recoverDeadSiblings(baseUploadPipeline);
 
   // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;

@@ -1,10 +1,12 @@
 import 'fake-indexeddb/auto'; // polyfills IDBKeyRange et al.; per-test `vi.stubGlobal('indexedDB', …)` still isolates
 import {
   type AsyncBlobStore,
+  coexistenceDatabaseName,
   createIdbBlobStore,
   createIdbChunkBackend,
   createIdbKeyedStore,
   createPersistentBundleStore,
+  type LockManagerLike,
 } from '@bugsee/browser-utils';
 import {
   type BundleStore,
@@ -138,6 +140,23 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
 });
 
 const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+
+// An in-memory Web Locks fake (jsdom/node has no navigator.locks): a never-held name is "dead" (acquirable).
+function fakeWebLocks(): LockManagerLike {
+  const held = new Set<string>();
+  return {
+    request(name, options, callback) {
+      if (options.ifAvailable) {
+        if (held.has(name)) return Promise.resolve(callback(null));
+        held.add(name);
+        return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+      }
+      held.add(name);
+      void callback({ name });
+      return new Promise<never>(() => {});
+    },
+  };
+}
 
 const drain = async (store: ReturnType<typeof createMemoryCaptureStore>, type: FileType) =>
   (await createCaptureExporter(store).drain()).get(type);
@@ -636,14 +655,32 @@ describe('launch', () => {
     );
   });
 
-  it('persist:true builds an IndexedDB bundle store and recovers a leftover across a reload', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
-    await createIdbBlobStore().put('left-1', pendingBundle('prior crash')); // a prior run's leftover
+  it('persist:true builds an IndexedDB bundle store and recovers a prior run (dead sibling) leftover', async () => {
+    const idb = new IDBFactory();
+    // A prior run = a DEAD sibling instance: its bundle sits under its own instance prefix in the
+    // per-token coexistence database `bugsee-<hash>`. The reloaded tab (a new instance) recovers it.
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await shared.put('priorinst/left-1', pendingBundle('prior crash'));
     const transport = uploadTransport();
-    launchTracked('tok', baseOptions({ transport, persist: true, captureStore: memStore() }));
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        captureStore: memStore(),
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
     await vi.waitFor(() =>
       expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true),
     );
+    await vi.waitFor(async () =>
+      expect((await shared.loadAll()).some(([k]) => k === 'priorinst/left-1')).toBe(false),
+    ); // re-uploaded → removed from the dead sibling's prefix
   });
 
   it('persist:true wraps the capture store in an IndexedDB-backed persistent store', async () => {

@@ -2,6 +2,11 @@
 // Browser runtime primitives shared by the browser / web-worker / service-worker tiers:
 // the fetch HttpTransport + IndexedDB-backed durable stores (DOM instrumentation — pending).
 // Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
+export {
+  type CoexistentBundleQueue,
+  type CoexistentBundleQueueOptions,
+  createCoexistentBundleQueue,
+} from './bundle-queue-coexistence';
 export { createFetchTransport, type FetchLike, fetchTransport } from './fetch-transport';
 export {
   type AsyncBlobStore,
