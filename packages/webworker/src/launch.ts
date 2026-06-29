@@ -43,12 +43,18 @@ import {
 // @bugsee/webworker launch() — the worker composition root (design §3.2/§3.3): a DOM-LESS browser-family SDK
 // for Web Workers + Service Workers. It assembles the runtime-agnostic kernel (createClient) with the browser
 // fetch transport + an in-memory capture store + the worker environment, then wires the capture/detection a
-// worker actually supports: console→log + network (fetch/ws; xhr/sse self-skip where absent), and global
-// `error`/`unhandledrejection` detection on `self` (REUSING @bugsee/browser's providers — they take any
-// addEventListener target, and the worker global satisfies it). NO DOM capture (input/viewtree), NO
-// performance.memory traces, NO pagehide events, NO AsyncLocalStorage / per-request context (workers are
-// stack-based). Memory-only v1 — IndexedDB persistence + capture recovery (acute for a killable Service
-// Worker) are a follow-up. The returned client IS the public surface.
+// worker actually supports: console→log + network (fetch/ws; xhr active in a dedicated worker / self-skips in a
+// Service Worker; sse self-skips where absent), and global `error`/`unhandledrejection` detection on `self`
+// (REUSING @bugsee/browser's providers — they take any addEventListener target, and the worker global
+// satisfies it). NO DOM capture (input/viewtree), NO performance.memory traces, NO pagehide events, NO
+// AsyncLocalStorage / per-request context (workers are stack-based).
+//
+// v1 targets long-lived DEDICATED/SHARED Web Workers — memory-only + fire-and-forget flush is complete there
+// (the worker lives for the page's lifetime). SERVICE WORKER support is PARTIAL: in-event capture works, but a
+// SW is terminated when idle, so two SW-specific needs are follow-ups — (1) IndexedDB persistence (the rolling
+// buffer is RAM-only → empty after a restart; the design prescribes IDB for SW) and (2) an `event.waitUntil`-
+// bound flush (the upload is fire-and-forget → can be dropped if the SW is killed first, the same hazard the
+// edge SDK solves with ctx.waitUntil). The returned client IS the public surface.
 
 const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';

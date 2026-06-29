@@ -145,7 +145,7 @@ This is the public-facing capability matrix, named per the v3 model (§16): **in
 | `globalErrorInterceptor` | ✓ | ✓ | ✓ | ✓ | ✓ (per-handler) | ✓ (per-handler) | ✓ (`self.onerror`) | ✓ (`self.onerror`) | ✓ (`process`) | ✓ (`window`) |
 | `consoleInterceptor` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `fetchInterceptor` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `xhrInterceptor` | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ (XHR removed) | ✗ | ✓ |
+| `xhrInterceptor` | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ (present) | ✗ (XHR removed) | ✗ | ✓ |
 | `webSocketInterceptor` | ✓ | ✓ | ✓ | ✓ | ✓ outbound | ✓ outbound | ✓ | ✓ | ✓ | ✓ |
 | `breadcrumbsProvider` (clicks/keys/history) | ✓ | shim | shim | shim | shim | shim | shim | shim | shim | ✓ |
 | `replay` (via `replay` option) | ✓ | shim | shim | shim | shim | shim | shim | shim | shim | ✓ |

@@ -792,7 +792,23 @@ conditions). Shape:
   `require('@bugsee/node')` and `import('@bugsee/node')` resolve through the built dist chain (incl. the
   external `fflate`) and `launch()` returns a working client; the umbrella resolves
   node→`index.node.{cjs,js}`, browser→`index.cjs`. Gates green (typecheck 57/57, tests 2013/2013, no cycles).
-- **Stub-only packages skipped** (electron, webworker, replay\*, framework frontend adapters):
+### `@bugsee/webworker` — Web Workers DONE; Service Worker PARTIAL (2026-06-29, on `master`)
+A DOM-less browser-family worker SDK. Composition = the clean edge launch (memory-only, no durable queue, no
+context provider) with the browser's two detection providers swapped in (`createWindowErrorProvider` /
+`createUnhandledRejectionProvider` on the worker `self` — they take any addEventListener target, so the
+multi-dialect stack parser is REUSED, not duplicated; webworker depends on `@bugsee/browser` like cloudflare→
+vercel-edge) + a DOM-stripped env (`buildWorkerEnvironment`: browser envelope minus screen — a worker has
+`navigator` but no `screen`/`window`; `platform.type` `web-worker`/`service-worker`). Capture: console→log +
+network (fetch/ws; xhr active in a dedicated worker, self-skips in a SW). **DEDICATED/SHARED Web Workers are
+v1-complete** (long-lived → memory + fire-and-forget flush suffice). **Service Worker is PARTIAL** — in-event
+capture works, but a SW is killed when idle, so two SW-specific needs are follow-ups (confirmed by review vs
+MDN): (1) IndexedDB persistence (the RAM rolling buffer is empty after a restart — the design prescribes IDB
+for SW, §3.4) and (2) an `event.waitUntil`-bound flush (fire-and-forget upload can be dropped on kill — the
+same hazard the edge SDK solves with `ctx.waitUntil`). 23 tests, 100% coverage; 5-mutation loop + 2-agent
+review (code clean; the SW gap is honestly scoped + documented, not silently shipped). README written; design
+matrix §3.2 corrected (Web Worker xhr ✓). **Follow-up:** SW persistence + waitUntil-flush wrapper.
+
+- **Stub-only packages skipped** (electron, replay\*, framework frontend adapters):
   they gain the identical dual config when implemented. (`@bugsee/vercel-edge` + `@bugsee/cloudflare` now HAVE it — DONE, below.)
 
 ### Vercel Edge runtime (`@bugsee/vercel-edge`) — COMPLETE (2026-06-25, on `master`) → `docs/design/edge-runtime.md`
@@ -810,7 +826,7 @@ Public `launch()` (= `launchEdge`). Built test-first + mutator-looped, then a **
 **C2d — DO / WorkerEntrypoint CLASS instrumentation COMPLETE (2026-06-28, on `master` `a249653`).** Cloudflare's class-based handlers (Durable Objects + WorkerEntrypoint) receive their `ctx`/`env` in the CONSTRUCTOR (not per-method), so they can't use the handler-object `withBugsee`. Following `@sentry/cloudflare`'s split: **`instrumentDurableObject(config, DOClass, {instrumentRpcMethods?})`** wraps a DO's lifecycle (fetch with http+cf attrs, alarm) + opt-in arbitrary RPC methods (default off, like Sentry's `instrumentPrototypeMethods`); **`withBugsee` ALSO accepts a `WorkerEntrypoint` class** (an overload, folded in like Sentry's `withSentry`) instrumenting its fetch/scheduled/queue/email/tail + opt-in RPC. Shared class-mixin core (`instrument-class.ts`): a subclass that captures the constructor's ctx (arg 0, has `waitUntil`) + env (arg 1), lazily launches the client (cached per-isolate, via the shared `launch-config.ts`), and shadows each target method with a per-instance wrapper running it in a Bugsee context + capture + flush. Uses subclass + own-property shadowing (NOT a Proxy) so the class's **private `#` fields keep working** (methods run with `this` = the real instance); non-Response RPC return values are preserved. **DO flush gotcha (review SEV1, fixed):** `DurableObjectState.waitUntil` EXISTS but is a documented NO-OP ("no effect in Durable Objects") — so the DO incident flush MUST be **awaited in-request** (`runInEdgeContext` `awaitFlush:true`; the request handler's pending promise is the only thing that keeps a DO alive), unlike WorkerEntrypoint/module Workers whose `ExecutionContext.waitUntil` is effective. DO also auto-instruments the WebSocket Hibernation handlers (`webSocketMessage`/`Close`/`Error`). 48 tests (cloudflare) + 63 (vercel-edge), 100% coverage, node-free; mutation-looped + 2 review rounds → converged. (Research correction: Sentry ships `instrumentDurableObjectWithSentry` in the SAME `@sentry/cloudflare` package — a separate function, not a separate package — and folds WorkerEntrypoint into `withSentry`; arbitrary plain-Worker RPC bodies, issue #16898, remain unfinished there too.)
 
 ### After browser
-- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~, ~~`@bugsee/vercel-edge`~~, ~~`@bugsee/cloudflare`~~ (C1 DONE, above), `@bugsee/electron`, `webworker`.
+- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~, ~~`@bugsee/vercel-edge`~~, ~~`@bugsee/cloudflare`~~ (C1 DONE, above), ~~`@bugsee/webworker`~~ (Web Workers DONE; SW partial, above), `@bugsee/electron`.
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node,
   see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
   single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
