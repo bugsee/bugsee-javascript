@@ -35,6 +35,7 @@ export {
 export {
   type RecoverDeadInstancesOptions,
   recoverDeadInstances,
+  recoverSiblingBundleQueue,
 } from './recover-dead-instances';
 export {
   createWebLockLiveness,
