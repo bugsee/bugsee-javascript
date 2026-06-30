@@ -77,6 +77,8 @@ export interface ControlConfig {
 
 /** native→JS: the handshake reply + ongoing control commands. */
 export interface ControlMessage {
+  /** Protocol version — REQUIRED (its presence tags the message as Bugsee's on a shared inbound channel). */
+  readonly b: number;
   readonly k: 'control';
   /** The protocol version native accepted (≤ the SDK's). */
   readonly accept?: number;
@@ -137,8 +139,9 @@ export function encode(message: HelloMessage | EntryMessage | BatchMessage | Bye
   return JSON.stringify(message);
 }
 
-/** Defensively parse a native→JS `control` message; returns `undefined` for non-JSON, a non-object, or a
- *  message whose `k` is not `control` (so a foreign message on a shared channel is ignored). */
+/** Defensively parse a native→JS `control` message; returns `undefined` for non-JSON, a non-object, a message
+ *  whose `k` is not `control`, OR one missing the `b` protocol-version tag — so a foreign message on a shared
+ *  inbound channel (e.g. the WebMessageChannel) is ignored, not just one with the wrong `k`. */
 export function parseControl(raw: string): ControlMessage | undefined {
   let parsed: unknown;
   try {
@@ -149,7 +152,8 @@ export function parseControl(raw: string): ControlMessage | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  if ((parsed as { k?: unknown }).k !== 'control') {
+  const m = parsed as { k?: unknown; b?: unknown };
+  if (m.k !== 'control' || typeof m.b !== 'number') {
     return undefined;
   }
   return parsed as ControlMessage;

@@ -22,7 +22,7 @@ import { randomId } from '@bugsee/util';
 import { createHostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
-import { encode, helloMessage } from './protocol';
+import { byeMessage, encode, helloMessage } from './protocol';
 
 // @bugsee/webview launch() — the WebView composition root (docs/design/webview-bridge.md §5/§10). A WebView is a
 // browser environment whose OUTPUT SINK is the native host, not the network: this reuses @bugsee/browser-family
@@ -51,12 +51,6 @@ export interface BugseeWebViewLaunchOptions {
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
 
-  /**
-   * Allow the WebView to emit report TRIGGERS (an uncaught error / `logException` opening a native bug). D5:
-   * default OFF — native is the authority on opening bugs; web data just enriches whatever report native opens.
-   * Capture (incl. error entries) always streams up regardless. Native may also push this via the handshake.
-   */
-  reportTrigger?: boolean;
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -137,8 +131,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   client.addCaptureProvider(network.provider);
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript. It
-  // receives the handshake reply (native session + the reportTrigger gate) + (slice 3) commands.
-  const control = createBridgeControl({ reportTrigger: options.reportTrigger ?? false });
+  // receives the handshake reply (native session) + (slice 3) commands. The D5 reportTrigger gate lands in
+  // slice 2 alongside the detection providers it gates (it has no effect without them).
+  const control = createBridgeControl();
   global.__bugsee_bridge = Object.freeze({ control: control.control });
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
@@ -155,6 +150,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       global.__bugsee_bridge = undefined;
       return stopCore(timeout);

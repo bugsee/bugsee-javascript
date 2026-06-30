@@ -98,27 +98,23 @@ describe('encode', () => {
 });
 
 describe('parseControl', () => {
-  it('parses a native→JS control message (accept + session + config + command)', () => {
-    const raw = JSON.stringify({
+  it('parses a versioned native→JS control message (accept + session + config + command)', () => {
+    const msg: ControlMessage = {
+      b: PROTOCOL_VERSION,
       k: 'control',
       accept: 1,
       session: 'native-9',
       config: { enabledTypes: ['log'], reportTrigger: true },
       command: 'flush',
-    } satisfies ControlMessage);
-    expect(parseControl(raw)).toEqual({
-      k: 'control',
-      accept: 1,
-      session: 'native-9',
-      config: { enabledTypes: ['log'], reportTrigger: true },
-      command: 'flush',
-    });
+    };
+    expect(parseControl(JSON.stringify(msg))).toEqual(msg);
   });
 
-  it('returns undefined for non-JSON, a non-object, or a non-control kind', () => {
+  it('returns undefined for non-JSON, a non-object, a non-control kind, or a missing version tag', () => {
     expect(parseControl('not json {')).toBeUndefined();
     expect(parseControl('42')).toBeUndefined(); // valid JSON, not an object
     expect(parseControl('null')).toBeUndefined();
-    expect(parseControl(JSON.stringify({ k: 'entry' }))).toBeUndefined(); // wrong kind
+    expect(parseControl(JSON.stringify({ b: 1, k: 'entry' }))).toBeUndefined(); // wrong kind
+    expect(parseControl(JSON.stringify({ k: 'control', session: 'x' }))).toBeUndefined(); // no `b` tag
   });
 });

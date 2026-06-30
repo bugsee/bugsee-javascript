@@ -24,7 +24,6 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/browser": "workspace:*",
     "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",

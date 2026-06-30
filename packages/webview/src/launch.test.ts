@@ -7,9 +7,9 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWebViewLaunchOptions, launch } from './launch';
-import type { BatchMessage, EntryMessage, HelloMessage } from './protocol';
+import type { BatchMessage, ByeMessage, EntryMessage, HelloMessage } from './protocol';
 
-type AnyMsg = HelloMessage | EntryMessage | BatchMessage;
+type AnyMsg = HelloMessage | EntryMessage | BatchMessage | ByeMessage;
 
 // A fake WebView global: the native `@JavascriptInterface` post sink + the slot the launch sets `__bugsee_bridge`.
 function fakeGlobal() {
@@ -30,7 +30,8 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
-  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  // The default-global test sets globalThis.__bugsee_bridge; fully remove it so no own-property leaks.
+  delete (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge;
 });
 
 const track = (token: string, options: BugseeWebViewLaunchOptions) => {
@@ -81,7 +82,9 @@ describe('launch (webview)', () => {
     track('tok', baseOptions({ global: fake.global }));
     expect(typeof fake.global.__bugsee_bridge?.control).toBe('function');
     expect(() =>
-      fake.global.__bugsee_bridge?.control(JSON.stringify({ k: 'control', session: 'native-1' })),
+      fake.global.__bugsee_bridge?.control(
+        JSON.stringify({ b: 1, k: 'control', session: 'native-1' }),
+      ),
     ).not.toThrow();
     expect(() => fake.global.__bugsee_bridge?.control('garbage {')).not.toThrow();
   });
@@ -103,7 +106,7 @@ describe('launch (webview)', () => {
     expect(ran).toHaveBeenCalledTimes(1);
   });
 
-  it('honors an injected captureStore override, clock, and reportTrigger (no bridge store built)', () => {
+  it('honors an injected captureStore override + clock (no bridge store; bridge still gets the hello)', () => {
     const fake = fakeGlobal();
     const added: StoredEntry[] = [];
     const captureStore: CaptureStore = {
@@ -117,7 +120,7 @@ describe('launch (webview)', () => {
       clear: () => {},
     };
     const clock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
-    track('tok', baseOptions({ global: fake.global, captureStore, clock, reportTrigger: true }));
+    track('tok', baseOptions({ global: fake.global, captureStore, clock }));
     console.log('to-override');
     expect(added.some((e) => e.type === 'log' && e.serialized.includes('to-override'))).toBe(true);
     // The override receives entries; the bridge still gets the hello handshake.
@@ -132,11 +135,12 @@ describe('launch (webview)', () => {
     expect(typeof (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge).toBe('object');
   });
 
-  it('stop() clears the carrier + removes __bugsee_bridge so a later launch starts fresh', async () => {
+  it('stop() posts a bye, clears the carrier + removes __bugsee_bridge so a later launch starts fresh', async () => {
     const fake = fakeGlobal();
     const carrier = {};
     const client = launch('tok', baseOptions({ global: fake.global, carrier }));
     await client.stop();
+    expect(fake.msgs().some((m) => m.k === 'bye')).toBe(true); // teardown signalled to native
     expect(fake.global.__bugsee_bridge).toBeUndefined(); // control global removed
     const again = track('tok', baseOptions({ global: fake.global, carrier }));
     expect(again).not.toBe(client); // a fresh client (carrier slot was cleared)

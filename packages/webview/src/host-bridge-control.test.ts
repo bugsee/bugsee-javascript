@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createBridgeControl } from './host-bridge-control';
-import type { ControlMessage } from './protocol';
+import { type ControlMessage, PROTOCOL_VERSION } from './protocol';
 
-const reply = (m: Omit<ControlMessage, 'k'>): string => JSON.stringify({ k: 'control', ...m });
+const reply = (m: Omit<ControlMessage, 'k' | 'b'>): string =>
+  JSON.stringify({ b: PROTOCOL_VERSION, k: 'control', ...m });
 
 describe('createBridgeControl', () => {
   it('defaults reportTrigger to false (D5) with no native session yet', () => {

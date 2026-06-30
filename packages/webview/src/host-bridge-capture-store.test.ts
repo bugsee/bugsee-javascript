@@ -1,5 +1,5 @@
 import type { StoredEntry } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import type { EntryMessage } from './protocol';
@@ -15,6 +15,8 @@ const rec = (type: StoredEntry['type'], serialized: string, timestamp = 1000): S
   timestamp,
   serialized,
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('createHostBridgeCaptureStore', () => {
   it('streams each added record as an entry envelope (type/seq/ts/payload), seq monotonic', () => {
@@ -48,13 +50,14 @@ describe('createHostBridgeCaptureStore', () => {
     expect(msgs().every((x) => x.o === 777)).toBe(true);
   });
 
-  it('defaults mono/timeOrigin to the ambient performance clock', () => {
+  it('defaults mono to performance.now() and timeOrigin to performance.timeOrigin (not swapped)', () => {
+    vi.spyOn(performance, 'now').mockReturnValue(4242);
     const { bridge, msgs } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge }); // no now/timeOrigin injected
     store.add(rec('log', 'a'));
     const m = msgs()[0] as EntryMessage;
-    expect(typeof m.mono).toBe('number'); // performance.now()
-    expect(typeof m.o).toBe('number'); // performance.timeOrigin
+    expect(m.mono).toBe(4242); // from performance.now() — a now/timeOrigin swap would fail this
+    expect(m.o).toBe(performance.timeOrigin); // from performance.timeOrigin
   });
 
   it('snapshot() is an empty, releasable view (native owns the ring — no local export)', async () => {

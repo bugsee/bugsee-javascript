@@ -99,8 +99,16 @@ detection, user-input, viewtree, `@bugsee/performance`) and **replaces the stora
   "o": 1719000000000,         // performance.timeOrigin (also sent in hello)
   "tr": { "t": "<traceId>", "s": "<spanId>" },  // optional trace join (FE↔native↔backend)
   "red": false,      // redaction provenance: did a JS filter pass run? (D3)
-  "p": { /* serialized CaptureDataEntry for this type */ } }
+  "p": { /* the entry payload for this type */ } }
 ```
+
+**`p` shape decision (as-built reconciliation).** The FINAL wire form of `p` is a **structured per-`FileType`
+object** native reads directly (like the legacy structured `data`, no double-parse). The per-type payload
+shaping is **slice 2**. In the **slice-1** skeleton, the streaming store passes `p` as the entry's **opaque
+serialized string** (`StoredEntry.serialized`) — a transitional simplification, NOT the contract the native
+receiver codes against (native is written in slice 8, after slice 2 finalizes the structured payloads). The
+native→JS `control` message ALSO carries `b` (the version tag) so a foreign message on a shared inbound channel
+(WebMessageChannel) is rejected, not just one with the wrong `k`.
 
 ### 6.2 Kinds
 
@@ -239,3 +247,14 @@ background → `pause`; foreground → `resume`; native session rotation → `se
 - **Originating-session re-propagation** + WebView↔native trace stitching polish.
 - **Obscuring fidelity** parity audit vs legacy (edge cases: nested scroll, transforms, fixed elements).
 - **Bundle-size budget number** (TBD once slice 1 lands).
+- **Frame attribution (D9 subframes) — OPEN, decide before slice 8 freezes the native receiver.** A WebView can
+  host cross-origin subframes; each injected SDK posts `hello`/entries to the SAME `BugseeBridge.post`. The v1
+  envelope carries no frame/origin id, so native cannot attribute an entry to a frame (the legacy bridge bubbles
+  cross-frame via a `VIEWS_BUBBLE` postMessage). If per-subframe attribution is in v1 scope, a `frame`/origin
+  field must be added to the envelope (or `hello`); if deferred, document single-top-frame support.
+- **Machine-checkable envelope schema — sequenced to slice 7 (the e2e conformance harness), NOT slice 0.** The
+  envelope is specified in `packages/webview/src/protocol.ts` (TS types). A JSON schema + the executable
+  conformance harness land in slice 7 — once slices 2–3 finalize the per-type `p` payloads + the control
+  commands — so they are stable before the native (Java) receiver is written in slice 8. (This supersedes the §5
+  slice-0 "envelope JSON schema" item: the *types* exist now; the *cross-language artifact* lands with the
+  harness it is validated by.)
