@@ -267,7 +267,15 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    on the returned client after launch is honored. `host-bridge-capture-store` (`redactedFor(type)`) +
    `webview-report-pipeline` (`redacted()`) stamp the flag; native still re-applies its canonical filters (the
    union). 100% cov, mutator-looped.
-6. **Injectable IIFE build** — single-string output (native resource), size-budgeted; + npm/ESM entry.
+6. **Injectable IIFE build — DONE.** `src/iife.ts` is the injectable entry (re-exports `launch` + `VERSION`);
+   the package's `tsup` config emits TWO targets — the dual ESM+CJS npm/ESM entry (externalized deps) AND a
+   SELF-CONTAINED minified **IIFE single-string** (`dist/bugsee-webview.iife.js`) that bundles every `@bugsee/*`
+   dep and defines the `BugseeWebView` global (the native bootstrap calls `BugseeWebView.launch`); only `node:*`
+   builtins stay external (guarded dynamic imports, dead in a WebView). Current size **~60 KB raw / ~22 KB gzip**.
+   A guard in the e2e harness (`instrumentation-tests/test/webview-bundle.e2e.ts`) bundles the entry with esbuild
+   and asserts it is self-contained (no `@bugsee/*` specifier), node-free (no static `node:` import), within a
+   size budget (64 KB gzip / 200 KB raw), and LOADABLE (evaluates in a fresh isolate → exposes
+   `BugseeWebView.launch`). The full boot + protocol round-trips against a mock native receiver are slice 7.
 7. **E2E conformance harness** — a mock native receiver speaking the protocol; boot real `@bugsee/webview` in
    jsdom/headless and assert the exact handshake/entry/control round-trips. **This harness IS the reference spec
    handed to the Android team.**

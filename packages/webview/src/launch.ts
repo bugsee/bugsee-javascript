@@ -54,7 +54,8 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 // drive native's legacy-coexistence decision, D10) and exposes `__bugsee_bridge.control` for native→JS control.
 // WebView-originated report TRIGGERING is gated behind `reportTrigger` (D5, default off) — wired in slice 2.
 
-const SDK_VERSION = '0.0.0';
+/** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
+export const SDK_VERSION = '0.0.0';
 
 // The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). The `obscuring`
 // capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)

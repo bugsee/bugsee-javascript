@@ -44,11 +44,14 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
   return measure(result.outputFiles[0]?.text ?? '');
 }
 
-/** Bundle an entry FILE (e.g. the VM smoke scenario). `iife` produces a script that runs on evaluate (so it can
- *  be run via @edge-runtime/vm's `evaluate`, which executes a script — not an ES module). */
+/** Bundle an entry FILE (e.g. the VM smoke scenario, or the @bugsee/webview injectable IIFE). `iife` produces a
+ *  script that runs on evaluate (so it can be run via @edge-runtime/vm's `evaluate`, which executes a script —
+ *  not an ES module). Pass `globalName` to publish the entry's exports as a global (the webview injectable build
+ *  exposes `BugseeWebView`); both edge + webview bundles target the browser platform with `node:*` external. */
 export async function bundleEdgeEntry(
   entryFile: string,
   format: 'esm' | 'iife' = 'esm',
+  globalName?: string,
 ): Promise<EdgeBundle> {
   const result = await build({
     entryPoints: [entryFile],
@@ -60,6 +63,7 @@ export async function bundleEdgeEntry(
     external: ['node:*'],
     legalComments: 'none',
     write: false,
+    ...(globalName !== undefined ? { globalName } : {}),
   });
   return measure(result.outputFiles[0]?.text ?? '');
 }
