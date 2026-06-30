@@ -245,13 +245,19 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    error/crash, performance, events.*, viewtree, traces.*); `batch`; seq/time/trace stamping; the `red` flag.
 3. **Control channel** — `__bugsee_bridge.control` handling config/pause/resume/flush/snapshot(sync rects)/
    setSession/stop. **(Commands DONE: `pause`/`resume` drop+resume the capture stream — incidents still report;
-   `flush` awaits the client's pending work; `stop` ejects everything. DEFERRED: `snapshot` (the secure-area
-   rects) → slice 4, where the obscuring source produces them + the sync `evaluateJavascript` return is wired;
-   `batch`/batching → a perf follow-up — entries currently post immediately, which keeps the timeline live and
-   avoids a flush-latency window. `flush` will additionally drain the capture batch once batching lands.)**
-4. **Obscuring / secure-area source (D10)** — port the legacy `data-bugsee-secure` / `.bugsee-hide` rect tracking
-   (MutationObserver + focus/blur/click/scroll/orientation) as a capture source emitting secure-area entries; add
-   `obscuring` to `hello.caps`.
+   `flush` awaits the client's pending work; `stop` ejects everything; `snapshot` re-pushes the secure-area rects
+   (slice 4). DEFERRED: `batch`/batching → a perf follow-up — entries currently post immediately, which keeps the
+   timeline live and avoids a flush-latency window. `flush` will additionally drain the capture batch once
+   batching lands.)**
+4. **Obscuring / secure-area source (D10) — DONE.** Ported the legacy secure-input (`input[type=password]` /
+   `autocomplete*="cc-"` → `text`) + `.bugsee-hide` (`hidden`) rect tracking as a **read-only** source
+   (`obscuring-source.ts` — MutationObserver + window scroll/resize/orientation + document focus/blur; the legacy
+   auto-added a `.bugsee-hide` class, which we DON'T — interceptors must not alter app behavior) + an
+   `obscuring-channel.ts` that streams a `secure` envelope on change and answers native's synchronous pull
+   `__bugsee_bridge.snapshot()` (serialized rects) + the `snapshot` control command (async re-push). Adds
+   `obscuring` to `hello.caps` ONLY when a DOM is present + not opted out (`captureObscuring`, default true) — so
+   native drops its legacy masking only when the advanced SDK actually masks. `secure` wire message + builder
+   added to the protocol. 100% cov, mutator-looped.
 5. **Redaction wiring (D3)** — optional JS `FilterStore` from webview launch options + the `red` provenance flag.
 6. **Injectable IIFE build** — single-string output (native resource), size-budgeted; + npm/ESM entry.
 7. **E2E conformance harness** — a mock native receiver speaking the protocol; boot real `@bugsee/webview` in
@@ -268,12 +274,24 @@ background → `pause`; foreground → `resume`; native session rotation → `se
 - **`profile` / `replay` / `screenshot`** streaming (native owns frames for now).
 - **Originating-session re-propagation** + WebView↔native trace stitching polish.
 - **Obscuring fidelity** parity audit vs legacy (edge cases: nested scroll, transforms, fixed elements).
+  - **Coordinate convention — DECIDED (slice 4):** `secure` rects are **document-absolute** — the obscuring
+    source adds the floored page scroll (`Math.floor(scrollX/scrollY)`) to each `getBoundingClientRect()`,
+    exactly as legacy does, so the existing native masker (which subtracts `scrollX/scrollY`) maps them
+    correctly. The slice-8 native receiver MUST treat incoming rects as document-absolute (not viewport).
+  - **`.bugsee-show` opt-out — PORTED (slice 4):** the auto-detect secure-input selector excludes
+    `.bugsee-show` so an app can keep a password/cc field visible, matching legacy.
 - **Bundle-size budget number** (TBD once slice 1 lands).
 - **Frame attribution (D9 subframes) — OPEN, decide before slice 8 freezes the native receiver.** A WebView can
   host cross-origin subframes; each injected SDK posts `hello`/entries to the SAME `BugseeBridge.post`. The v1
   envelope carries no frame/origin id, so native cannot attribute an entry to a frame (the legacy bridge bubbles
   cross-frame via a `VIEWS_BUBBLE` postMessage). If per-subframe attribution is in v1 scope, a `frame`/origin
   field must be added to the envelope (or `hello`); if deferred, document single-top-frame support.
+  - **Obscuring is TOP-FRAME ONLY (slice 4, interim-safe):** only the top frame tracks + declares the
+    `obscuring` capability (`window.top === window.self`); a sub-frame keeps legacy masking. This avoids the
+    privacy hazard of a sub-frame declaring `obscuring` (→ native suppresses legacy) while it can only mask its
+    OWN viewport-relative rects. **BLOCKING before native suppresses legacy on `obscuring`:** sub-frame secure
+    rects must be COMPOSED up to the top frame (legacy `VIEWS_BUBBLE` postMessage + iframe-offset re-mapping) —
+    until then a page with sensitive content inside a sub-frame is masked by legacy, not advanced.
 - **Machine-checkable envelope schema — sequenced to slice 7 (the e2e conformance harness), NOT slice 0.** The
   envelope is specified in `packages/webview/src/protocol.ts` (TS types). A JSON schema + the executable
   conformance harness land in slice 7 — once slices 2–3 finalize the per-type `p` payloads + the control

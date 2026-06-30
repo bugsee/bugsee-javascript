@@ -11,7 +11,14 @@ import type { FileType } from '@bugsee/protocol';
 export const PROTOCOL_VERSION = 1;
 
 /** Message kinds on the wire. */
-export type BridgeMessageKind = 'hello' | 'entry' | 'batch' | 'report' | 'control' | 'bye';
+export type BridgeMessageKind =
+  | 'hello'
+  | 'entry'
+  | 'batch'
+  | 'report'
+  | 'secure'
+  | 'control'
+  | 'bye';
 
 /** A distributed-trace join (FE↔native↔backend): `t` = traceId, `s` = spanId. */
 export interface TraceRef {
@@ -51,6 +58,30 @@ export interface EntryMessage {
   /** Optional distributed-trace join. */
   readonly tr?: TraceRef;
   /** The entry's serialized payload. */
+  readonly p: string;
+}
+
+/** One secure area native must MASK in its rendered frame (D10) — a sensitive input / `.bugsee-hide` element's
+ *  viewport rect. JS cannot redact native-rendered pixels, so it only streams the rects; native masks them. */
+export interface SecureArea {
+  /** `text` = a secure input field; `hidden` = an explicitly `.bugsee-hide`-marked element. */
+  readonly type: 'text' | 'hidden';
+  readonly top: number;
+  readonly left: number;
+  readonly bottom: number;
+  readonly right: number;
+}
+
+/** JS→native: the current set of secure-area rects to mask (D10 obscuring). Native applies the LATEST (by `s`).
+ *  Also returned synchronously by `__bugsee_bridge.snapshot()` at native frame-capture time. */
+export interface SecureMessage {
+  readonly b: number;
+  readonly k: 'secure';
+  readonly s: number;
+  readonly ts: number;
+  readonly mono: number;
+  readonly o: number;
+  /** The serialized {@link SecureArea}`[]`. */
   readonly p: string;
 }
 
@@ -166,6 +197,25 @@ export function reportMessage(opts: {
   };
 }
 
+/** Build a `secure` message from the serialized secure-area rects + its time/seq context. */
+export function secureMessage(opts: {
+  seq: number;
+  timestamp: number;
+  mono: number;
+  timeOrigin: number;
+  payload: string;
+}): SecureMessage {
+  return {
+    b: PROTOCOL_VERSION,
+    k: 'secure',
+    s: opts.seq,
+    ts: opts.timestamp,
+    mono: opts.mono,
+    o: opts.timeOrigin,
+    p: opts.payload,
+  };
+}
+
 /** Coalesce entries into a single `batch` message. */
 export function batchMessage(entries: readonly EntryMessage[]): BatchMessage {
   return { b: PROTOCOL_VERSION, k: 'batch', e: entries };
@@ -178,7 +228,7 @@ export function byeMessage(): ByeMessage {
 
 /** Serialize a message to its wire string. */
 export function encode(
-  message: HelloMessage | EntryMessage | ReportMessage | BatchMessage | ByeMessage,
+  message: HelloMessage | EntryMessage | ReportMessage | SecureMessage | BatchMessage | ByeMessage,
 ): string {
   return JSON.stringify(message);
 }

@@ -14,19 +14,61 @@ import type {
   EntryMessage,
   HelloMessage,
   ReportMessage,
+  SecureMessage,
 } from './protocol';
 
-type AnyMsg = HelloMessage | EntryMessage | ReportMessage | BatchMessage | ByeMessage;
+type AnyMsg =
+  | HelloMessage
+  | EntryMessage
+  | ReportMessage
+  | SecureMessage
+  | BatchMessage
+  | ByeMessage;
+
+interface BridgeGlobalApi {
+  control(raw: string): void;
+  snapshot(): string;
+}
 
 // A fake WebView global: the native `@JavascriptInterface` post sink + the slot the launch sets `__bugsee_bridge`.
 function fakeGlobal() {
   const posted: string[] = [];
   const global: {
     BugseeBridge: { post(raw: string): void };
-    __bugsee_bridge?: { control(raw: string): void };
+    __bugsee_bridge?: BridgeGlobalApi;
   } = { BugseeBridge: { post: (r) => posted.push(r) } };
   return { global, msgs: (): AnyMsg[] => posted.map((r) => JSON.parse(r) as AnyMsg) };
 }
+
+// A fake DOM document for obscuring: querySelectorAll by selector + an event registry + a body. Satisfies both
+// the input-source event target AND the obscuring source (querySelectorAll/body/focus-blur).
+function fakeDomDocument(
+  bySelector: Record<string, Array<{ getBoundingClientRect(): object }>> = {},
+) {
+  const listeners = new Map<string, Set<(event: Event) => void>>();
+  const document = {
+    querySelectorAll: (sel: string) => bySelector[sel] ?? [],
+    addEventListener(type: string, listener: (event: Event) => void) {
+      (listeners.get(type) ?? listeners.set(type, new Set()).get(type))?.add(listener);
+    },
+    removeEventListener(type: string, listener: (event: Event) => void) {
+      listeners.get(type)?.delete(listener);
+    },
+    body: {},
+  };
+  return {
+    document,
+    emit: (type: string, event?: unknown) => {
+      for (const l of [...(listeners.get(type) ?? [])]) l(event as Event);
+    },
+  };
+}
+
+const secureEl = (top: number) => ({
+  getBoundingClientRect: () => ({ top, left: top + 1, bottom: top + 2, right: top + 3 }),
+});
+const SECURE_INPUT =
+  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
 
 const inertScheduler: Scheduler = {
   setInterval: () => 0 as unknown as ReturnType<Scheduler['setInterval']>,
@@ -286,11 +328,190 @@ describe('launch (webview)', () => {
     expect(fake.msgs().some((m) => m.k === 'bye')).toBe(true);
   });
 
-  it('ignores a not-yet-handled control command (snapshot) without effect', () => {
+  it('ignores an unknown control command (forward-compatible) without effect', () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global }));
-    expect(() => sendControl(fake.global, { command: 'snapshot' })).not.toThrow(); // slice-4 seam
-    expect(client.isLaunched()).toBe(true); // not stopped, no side effect
+    const before = fake.msgs().length;
+    expect(() => sendControl(fake.global, { command: 'a-future-command' })).not.toThrow();
+    expect(fake.msgs().length).toBe(before); // no message produced
+    expect(client.isLaunched()).toBe(true); // not stopped/paused/flushed
+  });
+
+  it('the snapshot command is a harmless no-op when obscuring is off (no DOM)', () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global })); // no document → no obscuring channel
+    expect(() => sendControl(fake.global, { command: 'snapshot' })).not.toThrow();
+    expect(fake.msgs().some((m) => m.k === 'secure')).toBe(false); // nothing to snapshot
+    expect(client.isLaunched()).toBe(true);
+  });
+
+  describe('obscuring (D10)', () => {
+    it('declares the `obscuring` capability in the hello when a DOM is present', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      const hello = fake.msgs()[0] as HelloMessage;
+      expect(hello.caps).toContain('obscuring'); // tells native to drop its legacy masking script
+    });
+
+    it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
+      const fake = fakeGlobal();
+      track('tok', baseOptions({ global: fake.global })); // no document
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
+    });
+
+    it('does NOT declare `obscuring` when opted out via captureObscuring:false', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          captureObscuring: false,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
+      expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // pull returns empty when off
+    });
+
+    it('does NOT declare `obscuring` in a SUB-frame (window.top !== window.self) — native keeps legacy', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
+      const win = fakeEventTarget();
+      // A sub-frame: top is some OTHER window, not self → obscuring must not run/declare here.
+      Object.assign(win.target, { self: win.target, top: { other: true } });
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win.target as unknown as WindowEvents,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
+      expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // no obscuring channel in a sub-frame
+      dom.emit('focus');
+      expect(fake.msgs().some((m) => m.k === 'secure')).toBe(false); // not tracking in a sub-frame
+    });
+
+    it('DOES declare `obscuring` in the top frame even when window.top === window.self', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const win = fakeEventTarget();
+      Object.assign(win.target, { self: win.target, top: win.target }); // top === self → top frame
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win.target as unknown as WindowEvents,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+    });
+
+    it('treats a window whose top points to itself (no self) as the top frame', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const win = fakeEventTarget();
+      Object.assign(win.target, { top: win.target }); // top set, NO self → falls back to comparing top to window
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win.target as unknown as WindowEvents,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+    });
+
+    it('stamps secure messages with the SHARED per-session seq (interleaves with the entry stream)', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      console.log('seq-before-secure'); // advances the shared counter first
+      dom.emit('focus'); // a secure post — must take the NEXT shared seq, not reset to 0
+      const log = fake
+        .msgs()
+        .filter((m): m is EntryMessage => m.k === 'entry' && m.t === 'log')
+        .find((e) => e.p.includes('seq-before-secure'));
+      const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
+      expect(log).toBeDefined();
+      expect(secure).toBeDefined();
+      // A SHARED counter ⇒ the secure seq is strictly greater than the prior log entry's; a private obscuring
+      // counter would reset to 0 and collide with / precede the capture stream.
+      expect(secure?.s).toBeGreaterThan(log?.s as number);
+    });
+
+    it('streams a secure message with the current rects when the DOM changes (focus)', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(10)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      dom.emit('focus'); // a tracked change recomputes + posts
+      const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
+      expect(secure?.p).toBe(
+        JSON.stringify([{ type: 'text', top: 10, left: 11, bottom: 12, right: 13 }]),
+      );
+    });
+
+    it('answers __bugsee_bridge.snapshot() synchronously with the serialized rects (native pull)', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      expect(fake.global.__bugsee_bridge?.snapshot()).toBe(
+        JSON.stringify([{ type: 'text', top: 2, left: 3, bottom: 4, right: 5 }]),
+      );
+    });
+
+    it('the snapshot control command posts the current rects (async refresh path)', () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      const before = fake.msgs().filter((m) => m.k === 'secure').length;
+      sendControl(fake.global, { command: 'snapshot' });
+      const secure = fake.msgs().filter((m): m is SecureMessage => m.k === 'secure');
+      expect(secure.length).toBe(before + 1);
+      expect(secure.at(-1)?.p).toBe(
+        JSON.stringify([{ type: 'text', top: 1, left: 2, bottom: 3, right: 4 }]),
+      );
+    });
+
+    it('stop() detaches the obscuring source — a later DOM change posts nothing', async () => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(0)] });
+      const carrier = {};
+      const client = launch(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          carrier,
+        }),
+      );
+      dom.emit('focus');
+      const afterStart = fake.msgs().filter((m) => m.k === 'secure').length;
+      expect(afterStart).toBeGreaterThan(0);
+      await client.stop();
+      dom.emit('focus'); // listeners detached → no new secure post
+      expect(fake.msgs().filter((m) => m.k === 'secure').length).toBe(afterStart);
+    });
   });
 
   it('exposes __bugsee_bridge.control on the global for native→JS control (defensive)', () => {

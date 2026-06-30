@@ -34,6 +34,8 @@ import { randomId } from '@bugsee/util';
 import { createHostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
+import { createObscuringChannel, type ObscuringChannel } from './obscuring-channel';
+import type { SecureDocument, SecureWindow } from './obscuring-source';
 import { byeMessage, encode, helloMessage } from './protocol';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
@@ -47,9 +49,10 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 
 const SDK_VERSION = '0.0.0';
 
-// The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). Slice 2 adds the
-// system-traces / system-events / user-input providers + the error/crash report path to slice 1's console→log +
-// network. The DOM viewtree + obscuring (D10 `obscuring`) + performance streams land in later slices.
+// The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). The `obscuring`
+// capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)
+// so native knows whether the advanced SDK masks sensitive pixels itself; if absent native keeps its legacy
+// masking script (D10). The DOM viewtree + performance streams land in later slices.
 const CAPABILITIES = [
   'log',
   'network',
@@ -71,6 +74,12 @@ export interface BugseeWebViewLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /**
+   * Stream the viewport rects of sensitive elements (password / payment inputs + `.bugsee-hide`) so native masks
+   * them in its captured frames (D10 obscuring). Default true. When on, the SDK declares the `obscuring`
+   * capability so native drops its legacy masking script; turn off (or run without a DOM) to keep legacy masking.
+   */
+  captureObscuring?: boolean;
 
   /**
    * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug. D5:
@@ -138,9 +147,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const seq = (): number => seqN++;
   // Control state flipped by native commands (§7): `paused` drops the capture stream while backgrounded; flush
   // + stop delegate to `publicClient`, assigned at the end of launch — the onCommand closure reads it only when
-  // native actually sends a command (always after launch returns). `snapshot` (secure-area rects) is slice 4.
+  // native actually sends a command (always after launch returns). `snapshot` re-pushes the current secure-area
+  // rects via the obscuring channel (assigned below; native usually PULLS them synchronously via
+  // `__bugsee_bridge.snapshot()`, but the command path lets it request an async refresh).
   let paused = false;
   let publicClient: Bugsee;
+  let obscuring: ObscuringChannel | undefined;
   const control = createBridgeControl({
     reportTrigger: options.reportTrigger ?? false,
     onCommand: (command) => {
@@ -154,8 +166,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
         void publicClient.flush();
       } else if (command === 'stop') {
         void publicClient.stop();
+      } else if (command === 'snapshot') {
+        obscuring?.emit();
       }
-      // 'snapshot' → slice 4 (the obscuring source's secure-area rects); other/unknown → ignored.
+      // unknown → ignored.
     },
   });
   const captureStore =
@@ -232,17 +246,39 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     client.addDetectionProvider(createUnhandledRejectionProvider(win));
   }
 
-  // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript. It
-  // receives the handshake reply (native session) + (slice 3) commands.
-  global.__bugsee_bridge = Object.freeze({ control: control.control });
+  // Obscuring (D10): when there is a DOM and it isn't opted out, stream the secure-area rects so native masks
+  // sensitive pixels in its frames — and declare the `obscuring` capability so native drops its legacy masking
+  // script. Without a DOM (or opted out) we neither track nor declare it, so native keeps legacy masking.
+  // TOP-FRAME ONLY (legacy parity): a sub-frame's rects are viewport-relative to the SUB-frame and the native
+  // mask is composed over the whole page, so only the top frame may track + declare obscuring — a sub-frame
+  // declaring it would make native suppress legacy while masking the wrong/partial area. (Sub-frame rect
+  // composition/bubbling is the open D9 frame-attribution item — until built, a sub-frame keeps legacy masking.)
+  const w = win as { top?: unknown; self?: unknown } | undefined;
+  const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
+  if ((options.captureObscuring ?? true) && domDocument !== undefined && isTopFrame) {
+    obscuring = createObscuringChannel({
+      bridge,
+      document: domDocument as unknown as SecureDocument,
+      ...(win !== undefined ? { window: win as unknown as SecureWindow } : {}),
+      seq,
+    });
+  }
+  const caps = obscuring !== undefined ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
+
+  // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
+  // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
+  // time via `__bugsee_bridge.snapshot()` (serialized rects; `[]` when obscuring is off).
+  global.__bugsee_bridge = Object.freeze({
+    control: control.control,
+    snapshot: (): string => obscuring?.snapshot() ?? '[]',
+  });
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // lets native decide legacy coexistence (D10).
-  bridge.post(
-    encode(helloMessage({ sdk: sdkVersion, caps: [...CAPABILITIES], session: randomId() })),
-  );
+  bridge.post(encode(helloMessage({ sdk: sdkVersion, caps, session: randomId() })));
 
   client.launch();
+  obscuring?.start(); // begin secure-area change tracking once the SDK is live
 
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
@@ -250,6 +286,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   publicClient = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       global.__bugsee_bridge = undefined;

@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   parseControl,
   reportMessage,
+  secureMessage,
 } from './protocol';
 
 describe('helloMessage', () => {
@@ -107,6 +108,27 @@ describe('reportMessage', () => {
       trace: { t: 'tr-1', s: 'sp-1' },
     });
     expect(m.tr).toEqual({ t: 'tr-1', s: 'sp-1' });
+  });
+});
+
+describe('secureMessage', () => {
+  it('builds a versioned secure-areas message (k:secure) carrying the serialized rects', () => {
+    const m = secureMessage({
+      seq: 4,
+      timestamp: 500,
+      mono: 2,
+      timeOrigin: 100,
+      payload: '[{"type":"text","top":1,"left":2,"bottom":3,"right":4}]',
+    });
+    expect(m).toEqual({
+      b: PROTOCOL_VERSION,
+      k: 'secure',
+      s: 4,
+      ts: 500,
+      mono: 2,
+      o: 100,
+      p: '[{"type":"text","top":1,"left":2,"bottom":3,"right":4}]',
+    });
   });
 });
 

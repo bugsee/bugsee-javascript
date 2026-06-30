@@ -3,7 +3,9 @@
 // HostBridgeCaptureStore that streams each entry across the WebView boundary to the hosting native Bugsee SDK
 // (native is the ring buffer + the bundler). `launch(appToken, options)` returns the started client; it opens a
 // `hello` handshake, streams console→log + network capture across the bridge, and exposes `__bugsee_bridge`
-// for native→JS control. Full-parity capture + the control commands + obscuring land in later slices.
+// for native→JS control (incl. a synchronous secure-area `snapshot()` pull). Obscuring (D10 — secure-area pixel
+// masking rects) is built in so the advanced SDK fully replaces the legacy masking script. Redaction provenance
+// (D3) + the IIFE build + the e2e conformance harness land in later slices.
 export {
   createHostBridge,
   DEFAULT_MAX_BUFFER,
@@ -19,6 +21,19 @@ export {
   createBridgeControl,
 } from './host-bridge-control';
 export { type Bugsee, type BugseeWebViewLaunchOptions, launch } from './launch';
+export {
+  createObscuringChannel,
+  type ObscuringChannel,
+  type ObscuringChannelOptions,
+} from './obscuring-channel';
+export {
+  collectSecureAreas,
+  createObscuringSource,
+  type MutationObserverCtor,
+  type ObscuringSource,
+  type SecureDocument,
+  type SecureWindow,
+} from './obscuring-source';
 export {
   type BatchMessage,
   type BridgeMessageKind,
@@ -36,6 +51,9 @@ export {
   parseControl,
   type ReportMessage,
   reportMessage,
+  type SecureArea,
+  type SecureMessage,
+  secureMessage,
   type TraceRef,
 } from './protocol';
 export {
