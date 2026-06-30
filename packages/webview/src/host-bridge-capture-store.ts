@@ -20,6 +20,8 @@ export interface HostBridgeCaptureStoreOptions {
   timeOrigin?: number;
   /** Monotonic-sequence source (shared with the report path so seq is per-session global). Default internal. */
   seq?: () => number;
+  /** Whether capture forwarding is paused (native pause/resume — backgrounded WebView). Default never. */
+  paused?: () => boolean;
 }
 
 /** An empty snapshot — the WebView SDK never assembles a local bundle (D2); native does. */
@@ -44,9 +46,15 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
   const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
   let internal = 0;
   const nextSeq = opts.seq ?? ((): number => internal++);
+  const paused = opts.paused ?? ((): boolean => false);
 
   return {
     add(record: StoredEntry): void {
+      // While paused (the WebView is backgrounded/offscreen) drop the capture stream — no bridge crossings.
+      // Incidents are NOT affected (the report path is separate), so a crash while backgrounded still reports.
+      if (paused()) {
+        return;
+      }
       bridge.post(
         encode(
           entryMessage({

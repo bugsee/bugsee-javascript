@@ -244,7 +244,11 @@ background → `pause`; foreground → `resume`; native session rotation → `se
 2. **Full-parity entry serialization** — each captured `FileType` → its envelope `entry` payload (log, network,
    error/crash, performance, events.*, viewtree, traces.*); `batch`; seq/time/trace stamping; the `red` flag.
 3. **Control channel** — `__bugsee_bridge.control` handling config/pause/resume/flush/snapshot(sync rects)/
-   setSession/stop.
+   setSession/stop. **(Commands DONE: `pause`/`resume` drop+resume the capture stream — incidents still report;
+   `flush` awaits the client's pending work; `stop` ejects everything. DEFERRED: `snapshot` (the secure-area
+   rects) → slice 4, where the obscuring source produces them + the sync `evaluateJavascript` return is wired;
+   `batch`/batching → a perf follow-up — entries currently post immediately, which keeps the timeline live and
+   avoids a flush-latency window. `flush` will additionally drain the capture batch once batching lands.)**
 4. **Obscuring / secure-area source (D10)** — port the legacy `data-bugsee-secure` / `.bugsee-hide` rect tracking
    (MutationObserver + focus/blur/click/scroll/orientation) as a capture source emitting secure-area entries; add
    `obscuring` to `hello.caps`.

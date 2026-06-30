@@ -136,9 +136,30 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
   let seqN = 0;
   const seq = (): number => seqN++;
-  // The native→JS control state (the handshake reply + the D5 reportTrigger gate, default off).
-  const control = createBridgeControl({ reportTrigger: options.reportTrigger ?? false });
-  const captureStore = options.captureStore ?? createHostBridgeCaptureStore({ bridge, seq });
+  // Control state flipped by native commands (§7): `paused` drops the capture stream while backgrounded; flush
+  // + stop delegate to `publicClient`, assigned at the end of launch — the onCommand closure reads it only when
+  // native actually sends a command (always after launch returns). `snapshot` (secure-area rects) is slice 4.
+  let paused = false;
+  let publicClient: Bugsee;
+  const control = createBridgeControl({
+    reportTrigger: options.reportTrigger ?? false,
+    onCommand: (command) => {
+      if (command === 'pause') {
+        paused = true;
+      } else if (command === 'resume') {
+        paused = false;
+      } else if (command === 'flush') {
+        // native calls flush before capturing a frame / opening a report so the timeline is current; it awaits
+        // the client's pending work (and will additionally drain the capture batch once batching lands).
+        void publicClient.flush();
+      } else if (command === 'stop') {
+        void publicClient.stop();
+      }
+      // 'snapshot' → slice 4 (the obscuring source's secure-area rects); other/unknown → ignored.
+    },
+  });
+  const captureStore =
+    options.captureStore ?? createHostBridgeCaptureStore({ bridge, seq, paused: () => paused });
   // The report path replaces bundle-assembly+upload (D2): every detected incident / logException streams up as
   // a `crash` entry (always, D5), plus a report TRIGGER gated on `reportTrigger` (read dynamically).
   const triggerPipeline = createWebViewReportPipeline({
@@ -226,7 +247,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
   const stopCore = client.stop;
-  const publicClient: Bugsee = {
+  publicClient = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream

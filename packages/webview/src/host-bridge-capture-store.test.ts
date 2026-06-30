@@ -81,6 +81,18 @@ describe('createHostBridgeCaptureStore', () => {
     expect(() => snap.release()).not.toThrow();
   });
 
+  it('drops entries while paused (control pause/resume) and resumes streaming', () => {
+    const { bridge, msgs } = recordingBridge();
+    let paused = false;
+    const store = createHostBridgeCaptureStore({ bridge, paused: () => paused });
+    store.add(rec('log', 'before'));
+    paused = true;
+    store.add(rec('log', 'while-paused')); // dropped — no bridge crossing while backgrounded
+    paused = false;
+    store.add(rec('log', 'after'));
+    expect(msgs().map((m) => m.p)).toEqual(['before', 'after']); // the paused entry never crossed
+  });
+
   it('tick() and clear() are no-ops (native owns the rolling window) and never post', () => {
     const { bridge, msgs } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge });

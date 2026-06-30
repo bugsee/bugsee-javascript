@@ -57,6 +57,12 @@ function fakeEventTarget() {
 const entriesOfType = (msgs: AnyMsg[], t: EntryMessage['t']): EntryMessage[] =>
   msgs.filter((m): m is EntryMessage => m.k === 'entry' && m.t === t);
 
+// Send a native→JS control message through the exposed `__bugsee_bridge.control`.
+const sendControl = (
+  g: { __bugsee_bridge?: { control(raw: string): void } },
+  msg: Record<string, unknown>,
+) => g.__bugsee_bridge?.control(JSON.stringify({ b: 1, k: 'control', ...msg }));
+
 const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
@@ -246,6 +252,45 @@ describe('launch (webview)', () => {
     );
     await client.logException(new Error('second'));
     expect(fake.msgs().filter((m) => m.k === 'report')).toHaveLength(1); // only the second opened a bug
+  });
+
+  it('pause/resume control commands drop then resume the capture stream', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    sendControl(fake.global, { command: 'pause' });
+    console.log('while-paused-wv');
+    expect(entriesOfType(fake.msgs(), 'log').some((e) => e.p.includes('while-paused-wv'))).toBe(
+      false,
+    ); // dropped while paused
+    sendControl(fake.global, { command: 'resume' });
+    console.log('after-resume-wv');
+    expect(entriesOfType(fake.msgs(), 'log').some((e) => e.p.includes('after-resume-wv'))).toBe(
+      true,
+    ); // streaming again
+  });
+
+  it('the flush control command awaits the client flush', () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    const spy = vi.spyOn(client, 'flush');
+    sendControl(fake.global, { command: 'flush' });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the stop control command stops the client and posts a bye', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    sendControl(fake.global, { command: 'stop' });
+    await Promise.resolve(); // let the fire-and-forget stop settle
+    expect(client.isLaunched()).toBe(false);
+    expect(fake.msgs().some((m) => m.k === 'bye')).toBe(true);
+  });
+
+  it('ignores a not-yet-handled control command (snapshot) without effect', () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    expect(() => sendControl(fake.global, { command: 'snapshot' })).not.toThrow(); // slice-4 seam
+    expect(client.isLaunched()).toBe(true); // not stopped, no side effect
   });
 
   it('exposes __bugsee_bridge.control on the global for native→JS control (defensive)', () => {
