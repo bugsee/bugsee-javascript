@@ -16,15 +16,21 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  type BreadcrumbFilter,
   type BugseeClient,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   createClient,
   createServiceContainer,
+  type FilterStore,
+  FiltersToken,
   getCarrierClient,
   getOrCreateInterceptor,
   getServiceManifests,
+  type LogEventFilter,
+  type NetworkEventFilter,
+  type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
@@ -37,6 +43,7 @@ import { createBridgeControl } from './host-bridge-control';
 import { createObscuringChannel, type ObscuringChannel } from './obscuring-channel';
 import type { SecureDocument, SecureWindow } from './obscuring-source';
 import { byeMessage, encode, helloMessage } from './protocol';
+import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
 // @bugsee/webview launch() — the WebView composition root (docs/design/webview-bridge.md §5/§10). A WebView is a
@@ -88,6 +95,19 @@ export interface BugseeWebViewLaunchOptions {
    * the handshake config.
    */
   reportTrigger?: boolean;
+
+  // Redaction filters (D3) — optional JS-side scrubbing. By default the FilterStore is empty, content streams
+  // un-redacted (`red:false`) and native applies its canonical filters; setting any of these runs it in JS
+  // before crossing (the crossing is stamped `red:true`) AND native re-applies, so the union is enforced.
+  /** Per-network-event filter: mutate the event, or return null to DROP it. */
+  networkFilter?: NetworkEventFilter;
+  /** Per-log-event filter: mutate, or return null to DROP. */
+  logFilter?: LogEventFilter;
+  /** Per-breadcrumb filter: mutate, or return null to DROP. */
+  breadcrumbFilter?: BreadcrumbFilter;
+  /** Report handler: `before` mutates/returns a new report or null to VETO it. */
+  reportHandler?: ReportHandler;
+
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -106,7 +126,12 @@ export interface BugseeWebViewLaunchOptions {
   scheduler?: Scheduler;
   /** Capture store override (advanced / tests). Default the streaming host-bridge store. */
   captureStore?: CaptureStore;
-  /** Carrier host for the per-WebView singleton + shared interceptors; injectable for tests. Default global. */
+  /**
+   * Carrier host for the per-WebView singleton + shared interceptors; injectable for tests. Default the global
+   * carrier. TEST-ONLY: the core capture providers resolve redaction filters from the GLOBAL carrier, so a
+   * non-global carrier is only consistent for the default. (Native re-redacts unconditionally regardless, so a
+   * mismatched `red` provenance flag is never a privacy hazard — see redaction-provenance.ts.)
+   */
   carrier?: object;
 }
 
@@ -172,14 +197,28 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       // unknown → ignored.
     },
   });
+  // D3 redaction provenance: read the live `filters` service (registered by createClient into `services` below,
+  // mutated by the JS-side filter options + the returned client's set* methods) to stamp each crossing's `red`
+  // flag — per entry type for the stream, per report handler for incidents. Lazy: the store/pipeline are built
+  // before the service is registered, and a filter may be set after launch.
+  const provenance = createRedactionProvenance((): FilterStore | null =>
+    services.getProvider(FiltersToken).getImmediate({ optional: true }),
+  );
   const captureStore =
-    options.captureStore ?? createHostBridgeCaptureStore({ bridge, seq, paused: () => paused });
+    options.captureStore ??
+    createHostBridgeCaptureStore({
+      bridge,
+      seq,
+      paused: () => paused,
+      redactedFor: provenance.forEntry,
+    });
   // The report path replaces bundle-assembly+upload (D2): every detected incident / logException streams up as
   // a `crash` entry (always, D5), plus a report TRIGGER gated on `reportTrigger` (read dynamically).
   const triggerPipeline = createWebViewReportPipeline({
     bridge,
     reportTriggerEnabled: () => control.config.reportTrigger,
     seq,
+    redacted: provenance.forReport,
   });
 
   const client = createClient({
@@ -193,6 +232,21 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+
+  // Install any JS-side redaction filters (D3) into the `filters` service via the facade. The capture providers
+  // + the report path then run them before crossing; the provenance above stamps `red` accordingly.
+  if (options.networkFilter !== undefined) {
+    client.setNetworkEventFilter(options.networkFilter);
+  }
+  if (options.logFilter !== undefined) {
+    client.setLogEventFilter(options.logFilter);
+  }
+  if (options.breadcrumbFilter !== undefined) {
+    client.setBreadcrumbFilter(options.breadcrumbFilter);
+  }
+  if (options.reportHandler !== undefined) {
+    client.setReportHandler(options.reportHandler);
+  }
 
   for (const manifest of getServiceManifests(carrier)) {
     manifest(client);

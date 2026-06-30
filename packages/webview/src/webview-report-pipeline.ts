@@ -23,6 +23,8 @@ export interface WebViewReportPipelineOptions {
   now?: () => number;
   /** `performance.timeOrigin`. Default the ambient `performance`. */
   timeOrigin?: number;
+  /** D3 redaction provenance: did a JS-side report handler (`before`) run before this crossed? Default no. */
+  redacted?: () => boolean;
 }
 
 export interface WebViewReportPipeline {
@@ -38,6 +40,7 @@ export function createWebViewReportPipeline(
   const wallNow = opts.wallNow ?? ((): number => Date.now());
   const now = opts.now ?? ((): number => performance.now());
   const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
+  const redacted = opts.redacted ?? ((): boolean => false);
 
   return {
     report(request: ReportingRequest): Promise<UploadResult> {
@@ -47,7 +50,8 @@ export function createWebViewReportPipeline(
         mono: now(),
         timeOrigin,
         payload: JSON.stringify({ source: request.source, report: request.report }),
-        redacted: false, // D3/slice-5: real redaction provenance wires in later.
+        // D3 provenance: did a JS-side report handler run before this crossed? (native still re-applies).
+        redacted: redacted(),
       };
       // Capture is never gated (D5): the incident ALWAYS streams up as a timeline crash entry.
       bridge.post(encode(entryMessage({ ...frame, seq: seq() })));

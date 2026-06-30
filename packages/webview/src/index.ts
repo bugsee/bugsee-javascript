@@ -57,6 +57,10 @@ export {
   type TraceRef,
 } from './protocol';
 export {
+  createRedactionProvenance,
+  type RedactionProvenance,
+} from './redaction-provenance';
+export {
   createWebViewReportPipeline,
   type WebViewReportPipeline,
   type WebViewReportPipelineOptions,

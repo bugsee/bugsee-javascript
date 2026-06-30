@@ -69,6 +69,23 @@ describe('createWebViewReportPipeline', () => {
     expect(msgs().filter((x) => x.k === 'report')).toHaveLength(1); // only the second triggered a bug
   });
 
+  it('stamps `red` on BOTH the crash entry and the report trigger from redacted() (D3)', async () => {
+    const { bridge, msgs } = recordingBridge();
+    const pipe = createWebViewReportPipeline({ ...opts(bridge, true), redacted: () => true });
+    await pipe.report(aRequest('boom'));
+    const m = msgs();
+    expect(m.find((x): x is EntryMessage => x.k === 'entry')?.red).toBe(true); // a report handler ran
+    expect(m.find((x): x is ReportMessage => x.k === 'report')?.red).toBe(true);
+  });
+
+  it('defaults `red` to false when no redacted() is injected (native redacts the report)', async () => {
+    const { bridge, msgs } = recordingBridge();
+    const pipe = createWebViewReportPipeline(opts(bridge, true));
+    await pipe.report(aRequest('boom'));
+    expect(msgs().find((x): x is EntryMessage => x.k === 'entry')?.red).toBe(false);
+    expect(msgs().find((x): x is ReportMessage => x.k === 'report')?.red).toBe(false);
+  });
+
   it('defaults wall←Date.now, mono←performance.now, o←performance.timeOrigin (not swapped)', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(7777);
     vi.spyOn(performance, 'now').mockReturnValue(33);

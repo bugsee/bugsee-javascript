@@ -258,7 +258,15 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    `obscuring` to `hello.caps` ONLY when a DOM is present + not opted out (`captureObscuring`, default true) — so
    native drops its legacy masking only when the advanced SDK actually masks. `secure` wire message + builder
    added to the protocol. 100% cov, mutator-looped.
-5. **Redaction wiring (D3)** — optional JS `FilterStore` from webview launch options + the `red` provenance flag.
+5. **Redaction wiring (D3) — DONE.** Webview launch options `networkFilter`/`logFilter`/`breadcrumbFilter`/
+   `reportHandler` install into the core `filters` service (via the facade `set*`), so the capture providers +
+   the report path run them before crossing. A `redaction-provenance.ts` helper maps each crossing to its `red`
+   flag PER ENTRY TYPE (a `log` entry is `red` iff a log filter is set, `network` iff a network filter, etc.;
+   system traces/events are always `red:false` — only native redacts them) and PER REPORT (`red` iff a report
+   handler with a `before` pass is set). The provenance reads the `filters` service LIVE (lazy), so a filter set
+   on the returned client after launch is honored. `host-bridge-capture-store` (`redactedFor(type)`) +
+   `webview-report-pipeline` (`redacted()`) stamp the flag; native still re-applies its canonical filters (the
+   union). 100% cov, mutator-looped.
 6. **Injectable IIFE build** — single-string output (native resource), size-budgeted; + npm/ESM entry.
 7. **E2E conformance harness** — a mock native receiver speaking the protocol; boot real `@bugsee/webview` in
    jsdom/headless and assert the exact handshake/entry/control round-trips. **This harness IS the reference spec

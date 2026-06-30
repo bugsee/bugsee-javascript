@@ -22,6 +22,8 @@ export interface HostBridgeCaptureStoreOptions {
   seq?: () => number;
   /** Whether capture forwarding is paused (native pause/resume — backgrounded WebView). Default never. */
   paused?: () => boolean;
+  /** D3 redaction provenance: did a JS-side filter run on an entry of this type? Stamped as `red`. Default no. */
+  redactedFor?: (type: FileType) => boolean;
 }
 
 /** An empty snapshot — the WebView SDK never assembles a local bundle (D2); native does. */
@@ -47,6 +49,7 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
   let internal = 0;
   const nextSeq = opts.seq ?? ((): number => internal++);
   const paused = opts.paused ?? ((): boolean => false);
+  const redactedFor = opts.redactedFor ?? ((): boolean => false);
 
   return {
     add(record: StoredEntry): void {
@@ -64,8 +67,8 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
             mono: now(),
             timeOrigin,
             payload: record.serialized,
-            // D3/slice-5: real redaction provenance wires in later; un-redacted by default (native redacts).
-            redacted: false,
+            // D3 provenance: did a JS-side filter for this entry type already run? (native still re-applies).
+            redacted: redactedFor(record.type),
           }),
         ),
       );

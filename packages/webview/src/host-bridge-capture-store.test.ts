@@ -40,6 +40,27 @@ describe('createHostBridgeCaptureStore', () => {
     expect(m[1]).toMatchObject({ k: 'entry', t: 'log', s: 1, ts: 2000, p: 'hello' }); // seq incremented
   });
 
+  it('stamps the `red` provenance flag per entry from redactedFor(type) (D3)', () => {
+    const { bridge, msgs } = recordingBridge();
+    // A network filter is configured but not a log filter → only network entries cross as redacted.
+    const store = createHostBridgeCaptureStore({
+      bridge,
+      redactedFor: (type) => type === 'network',
+    });
+    store.add(rec('network', '{"u":"x"}'));
+    store.add(rec('log', 'hello'));
+    const m = msgs();
+    expect(m[0]).toMatchObject({ t: 'network', red: true }); // a JS network filter ran
+    expect(m[1]).toMatchObject({ t: 'log', red: false }); // no JS log filter → native redacts
+  });
+
+  it('defaults `red` to false when no redactedFor is injected (native redacts)', () => {
+    const { bridge, msgs } = recordingBridge();
+    const store = createHostBridgeCaptureStore({ bridge });
+    store.add(rec('network', 'x'));
+    expect(msgs()[0]?.red).toBe(false);
+  });
+
   it('draws seq from an injected counter (shared with the report path) when provided', () => {
     const { bridge, msgs } = recordingBridge();
     let n = 100;

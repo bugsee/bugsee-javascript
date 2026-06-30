@@ -583,4 +583,84 @@ describe('launch (webview)', () => {
     expect(again).not.toBe(client); // a fresh client (carrier slot was cleared)
     expect(again.isLaunched()).toBe(true);
   });
+
+  describe('redaction (D3)', () => {
+    it('streams log entries un-redacted (red:false) when no JS filter is set — native redacts', () => {
+      const fake = fakeGlobal();
+      track('tok', baseOptions({ global: fake.global }));
+      console.log('redact-none');
+      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('redact-none'));
+      expect(log?.red).toBe(false);
+    });
+
+    it('RUNS the log filter (scrubs content) AND stamps red:true (run⟺red, D3)', () => {
+      const fake = fakeGlobal();
+      // A MUTATING filter via client.log() (the closure path, carrier-independent) — proves the filter actually
+      // ran (content scrubbed) AND the crossing is stamped red, not merely that a filter was configured.
+      const client = track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          logFilter: (e) => ({ ...e, message: 'LOG-REDACTED' }),
+        }),
+      );
+      client.log('log-secret');
+      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('LOG-REDACTED'));
+      expect(log).toBeDefined();
+      expect(log?.p).not.toContain('log-secret'); // the original content was scrubbed before crossing
+      expect(log?.red).toBe(true); // ...and the crossing carries the JS-redacted provenance
+    });
+
+    it('does NOT cross-contaminate types — a networkFilter leaves log entries red:false', () => {
+      const fake = fakeGlobal();
+      track('tok', baseOptions({ global: fake.global, networkFilter: (e) => e }));
+      console.log('redact-net-only');
+      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('redact-net-only'));
+      expect(log?.red).toBe(false); // a network filter does not redact logs
+    });
+
+    it('stamps red:true on the crash entry + report when a reportHandler is installed', async () => {
+      const fake = fakeGlobal();
+      const client = track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          reportTrigger: true,
+          reportHandler: { before: (r) => r },
+        }),
+      );
+      await client.logException(new Error('redact-crash'));
+      const crash = entriesOfType(fake.msgs(), 'crash').find((e) => e.p.includes('redact-crash'));
+      const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
+      expect(crash?.red).toBe(true); // the report handler's before pass ran
+      expect(report?.red).toBe(true);
+    });
+
+    it('RUNS the breadcrumb filter (scrubs content) AND stamps red:true (run⟺red)', () => {
+      const fake = fakeGlobal();
+      const client = track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          breadcrumbFilter: (b) => ({ ...b, message: 'CRUMB-REDACTED' }),
+        }),
+      );
+      client.addBreadcrumb({ message: 'crumb-secret', category: 'test' });
+      const crumb = entriesOfType(fake.msgs(), 'breadcrumbs')[0];
+      expect(crumb?.p).toContain('CRUMB-REDACTED'); // the filter actually scrubbed the content
+      expect(crumb?.p).not.toContain('crumb-secret');
+      expect(crumb?.red).toBe(true); // ...and the crossing is stamped JS-redacted
+    });
+
+    it('reads filters LIVE — a filter set on the returned client after launch takes effect', () => {
+      const fake = fakeGlobal();
+      const client = track('tok', baseOptions({ global: fake.global }));
+      client.log('redact-before-set'); // no filter yet → un-redacted
+      client.setLogEventFilter((e) => e); // set AFTER launch (lazy provenance must observe it)
+      client.log('redact-after-set');
+      const logs = entriesOfType(fake.msgs(), 'log');
+      expect(logs.find((e) => e.p.includes('redact-before-set'))?.red).toBe(false);
+      expect(logs.find((e) => e.p.includes('redact-after-set'))?.red).toBe(true);
+    });
+  });
 });
