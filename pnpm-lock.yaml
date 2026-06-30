@@ -736,6 +736,24 @@ importers:
 
   packages/webpack-plugin: {}
 
+  packages/webview:
+    dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
+
   packages/webworker:
     dependencies:
       '@bugsee/browser':
