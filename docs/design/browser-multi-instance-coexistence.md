@@ -1,9 +1,9 @@
 # Browser/worker multi-instance IndexedDB coexistence + recovery — design
 
-**Status:** Slices 1–4 BUILT + reviewed-to-convergence + on master (2026-06-29) — the durable BUNDLE queue is
-now fully multi-instance-safe on browser + webworker. Slice 5 (capture-chunk + marker coexistence) NOT yet
-built; until it lands, `persist:true` + multiple tabs leaves a **pre-existing** capture/marker hazard — see the
-boxed warning at the end of §1. The browser/worker-tier counterpart of the BUILT node
+**Status:** Slices 1–5 BUILT + reviewed-to-convergence + on master (2026-06-30) — the durable BUNDLE queue
+**and** the capture-chunk + report-marker stores are now fully multi-instance-safe on browser (webworker is
+bundle-only — it has no capture-recovery path yet, #165). The SEV1 capture/marker hazard the slice-4 review
+flagged is **CLOSED** (slice 5; see §1). The browser/worker-tier counterpart of the BUILT node
 `multi-instance-disk-coexistence.md` (which it mirrors decision-for-decision). Surfaced by a review of
 `@bugsee/webworker`: a page (`@bugsee/browser`) and its same-origin workers (`@bugsee/webworker`) — and even
 N tabs of one URL — share the origin's IndexedDB and currently open the **same** default database `'bugsee'`,
@@ -33,20 +33,16 @@ opportunistically by any surviving or later instance.
 **Non-goal (this milestone):** in-memory session sharing (a worker forwarding reports to the page client for
 ONE session) — a separate follow-up. Here each instance is its own session; only its *IDB data* coexists.
 
-> **⚠️ Residual hazard until slice 5 — capture/marker recovery is NOT yet per-instance (SEV1, pre-existing).**
-> Slice 4 fixed the bundle queue only (BD7). The browser's `persist:true` capture-recovery path (`recoverReports`
-> over the shared `bugsee-capture` + `bugsee-markers` DBs — `packages/browser/src/launch.ts`) is **untouched and
-> still shared**. With `persist:true` AND two or more live tabs of one origin, a freshly-launched tab can:
-> (a) reassemble + re-upload **another live tab's** detected incident (then delete its marker), and worse
-> (b) **sweep/delete another live tab's preserved capture generation** (the `cleanOtherGenerations:false` +
-> final-sweep logic in `capture-recovery.ts` operates across the shared DB), destroying the live rolling buffer
-> that backs that tab's next incident — silent capture-data loss. This is **pre-existing** (it predates this
-> milestone — confirmed against git history; `recoverReports`/the two DBs/the sweep all existed before slice 4)
-> and is **NOT introduced by slice 4** — slice 4 is strictly safer than the prior state. But because slice 4
-> makes the same `persist:true` flag more attractive, **slice 5 must land before `persist:true` is recommended
-> for multi-tab browser apps.** Mitigations until then: `persist` defaults OFF in the browser (opt-in), and
-> server-side `request.signatures` dedup blunts the double-upload (but NOT the marker deletion or the capture
-> sweep). The webworker has no capture-recovery path yet (#165), so it is unaffected by (a)/(b).
+> **✅ SEV1 capture/marker hazard — CLOSED by slice 5 (2026-06-30).** Before slice 5 the browser's `persist:true`
+> capture-recovery (`recoverReports` over the **shared** `bugsee-capture`/`bugsee-markers` DBs) let a freshly-
+> launched tab (a) reassemble + re-deliver **another live tab's** detected incident (deleting its marker) and
+> worse (b) **sweep/delete another live tab's preserved capture generation** — silent capture-data loss. Slice 5
+> folds the capture-chunk + marker stores onto the per-instance model (BD8–BD10): per-token DBs, per-instance
+> `"<instanceId>/"` prefix, and the SAME per-instance Web Lock gates ALL recovery. A LIVE sibling holds its lock,
+> so a launching tab's `recoverDeadSiblings` skips it entirely — it never reads, recovers, or sweeps a live tab's
+> markers/capture. Verified (3-agent review, both fresh-round agents CONVERGED): the live-store's own
+> `cleanOtherGenerations` pass is confined to self's prefixed view, and the dead-sibling sweep runs only inside
+> `recoverIfDead` over the dead sibling's prefixed view. `recoverReports` (core) is unchanged — node unaffected.
 
 ## 2. The node mapping (this is a retarget, not a new design)
 
@@ -126,13 +122,15 @@ A peer that crashes mid-recovery releases the lock → the prefix is re-claimabl
    token db + per-instance bundle store + holdSelf + recoverDeadSiblings. Existing suites stay green; new tests
    assert two same-origin launches don't cross-recover a LIVE peer but DO recover a dead one, and a different app
    token is never touched. (`66c453e`.)
-5. **Capture-chunk + marker coexistence** (browser; webworker #165) — NOT YET BUILT. The same instanceId prefix on
-   the `bugsee-capture`/`bugsee-markers` DBs + the coordinator recovering a dead instance's chunks+markers too.
-   **This is what closes the §1 residual hazard** (a live tab sweeping another live tab's capture generation). Needs
-   its own design pass: the capture store is keyed by `generation` (a timestamp), which interacts with instance
-   isolation (the cross-tab generation-collision + the cross-tab final-sweep), so it is NOT a mechanical copy of the
-   bundle-queue prefix — hence deferred rather than crammed into slice 4.
-6. **Docs + memory** — PROGRESS.md, CLAUDE.md note, memory. (PROGRESS.md + memory updated for slices 1–4.)
+5. ✅ **Capture-chunk + marker coexistence** (browser; webworker #165) — BUILT (`beed7a4` + review `a5d84f8`).
+   `createCoexistentBundleQueue` generalized to `createCoexistence` (bundles + per-instance capture/marker VIEWS +
+   ONE unified dead-sibling coordinator); per-token DBs `bugsee-capture-<hash>`/`bugsee-markers-<hash>`; new
+   `createPrefixedKeyedStore` + `AsyncKeyedStore.keys()` (keys-only discovery, BD10). The browser launch now does
+   ALL recovery as dead-sibling recovery (self-recoverReports + preserve-prior-generations removed); core
+   `recoverReports` UNCHANGED, called over the dead sibling's prefixed views with `currentGeneration: -1`. **Closes
+   the §1 SEV1.** The generation-collision worry BD8 resolved structurally: the random instanceId prefix makes
+   cross-tab key collisions impossible, so `generation` stays wall-time (no uniqueness change needed).
+6. **Docs + memory** — PROGRESS.md, CLAUDE.md note, memory. (PROGRESS.md + memory updated for slices 1–5.)
 
 ## 6. Risks / caveats
 - **No `navigator.locks`** (very old browser / disabled) → BD6 degrade (no cross-recovery; own queue still
