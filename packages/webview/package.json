@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "bridge-protocol.schema.json"
   ],
   "sideEffects": false,
   "scripts": {

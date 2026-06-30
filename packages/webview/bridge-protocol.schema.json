@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bugsee.com/schemas/webview-bridge-protocol/v1.json",
+  "title": "Bugsee WebView Bridge Protocol v1",
+  "description": "The versioned JSON envelope crossing the WebView boundary (docs/design/webview-bridge.md §6). JS->native kinds: hello | entry | batch | report | secure | bye. native->JS kind: control. Every message carries `b` (protocol version). `p` is a per-kind serialized JSON STRING (native does one JSON.parse keyed by `k`, then parses `p`). Receivers MUST ignore unknown fields/kinds (forward-compatible); this schema validates that the SDK EMITS well-formed messages (hence additionalProperties:false on the emitter side).",
+  "definitions": {
+    "traceRef": {
+      "type": "object",
+      "description": "A distributed-trace join: t=traceId, s=spanId.",
+      "properties": { "t": { "type": "string" }, "s": { "type": "string" } },
+      "required": ["t", "s"],
+      "additionalProperties": false
+    },
+    "fileType": {
+      "type": "string",
+      "description": "The capture stream a record belongs to (native routes by it).",
+      "enum": [
+        "attachment",
+        "replay",
+        "screenshot",
+        "traces.system",
+        "traces.user",
+        "events.system",
+        "events.user",
+        "viewtree",
+        "log",
+        "log.internal",
+        "network",
+        "breadcrumbs",
+        "performance",
+        "profile",
+        "crash"
+      ]
+    },
+    "hello": {
+      "type": "object",
+      "description": "JS->native: the opening handshake declaring the SDK version, capabilities, and session.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "hello" },
+        "sdk": { "type": "string" },
+        "caps": { "type": "array", "items": { "type": "string" } },
+        "session": { "type": "string", "minLength": 1 }
+      },
+      "required": ["b", "k", "sdk", "caps", "session"],
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "description": "JS->native: one streamed capture entry. `p` is the entry's serialized payload.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "entry" },
+        "t": { "$ref": "#/definitions/fileType" },
+        "s": { "type": "integer", "minimum": 0 },
+        "ts": { "type": "number" },
+        "mono": { "type": "number" },
+        "o": { "type": "number" },
+        "red": { "type": "boolean" },
+        "tr": { "$ref": "#/definitions/traceRef" },
+        "p": { "type": "string" }
+      },
+      "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
+      "additionalProperties": false
+    },
+    "report": {
+      "type": "object",
+      "description": "JS->native: a WebView-originated report TRIGGER (D5, gated). `p` is the serialized report metadata.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "report" },
+        "t": { "$ref": "#/definitions/fileType" },
+        "s": { "type": "integer", "minimum": 0 },
+        "ts": { "type": "number" },
+        "mono": { "type": "number" },
+        "o": { "type": "number" },
+        "red": { "type": "boolean" },
+        "tr": { "$ref": "#/definitions/traceRef" },
+        "p": { "type": "string" }
+      },
+      "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
+      "additionalProperties": false
+    },
+    "secure": {
+      "type": "object",
+      "description": "JS->native: the current secure-area rects to MASK (D10). `p` is the serialized SecureArea[].",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "secure" },
+        "s": { "type": "integer", "minimum": 0 },
+        "ts": { "type": "number" },
+        "mono": { "type": "number" },
+        "o": { "type": "number" },
+        "p": { "type": "string" }
+      },
+      "required": ["b", "k", "s", "ts", "mono", "o", "p"],
+      "additionalProperties": false
+    },
+    "batch": {
+      "type": "object",
+      "description": "JS->native: many entries coalesced into one crossing.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "batch" },
+        "e": { "type": "array", "items": { "$ref": "#/definitions/entry" } }
+      },
+      "required": ["b", "k", "e"],
+      "additionalProperties": false
+    },
+    "bye": {
+      "type": "object",
+      "description": "JS->native: teardown signal (pagehide / stop) so native can finalize.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "bye" }
+      },
+      "required": ["b", "k"],
+      "additionalProperties": false
+    },
+    "control": {
+      "type": "object",
+      "description": "native->JS: the handshake reply + ongoing control commands.",
+      "properties": {
+        "b": { "type": "integer", "minimum": 1 },
+        "k": { "const": "control" },
+        "accept": { "type": "integer" },
+        "session": { "type": "string" },
+        "config": {
+          "type": "object",
+          "properties": {
+            "enabledTypes": { "type": "array", "items": { "$ref": "#/definitions/fileType" } },
+            "reportTrigger": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "command": { "enum": ["pause", "resume", "flush", "stop", "snapshot"] }
+      },
+      "required": ["b", "k"],
+      "additionalProperties": false
+    },
+    "secureArea": {
+      "type": "object",
+      "description": "One masked rect inside a `secure` message's `p` payload (DOCUMENT-absolute coordinates).",
+      "properties": {
+        "type": { "enum": ["text", "hidden"] },
+        "top": { "type": "number" },
+        "left": { "type": "number" },
+        "bottom": { "type": "number" },
+        "right": { "type": "number" }
+      },
+      "required": ["type", "top", "left", "bottom", "right"],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/hello" },
+    { "$ref": "#/definitions/entry" },
+    { "$ref": "#/definitions/report" },
+    { "$ref": "#/definitions/secure" },
+    { "$ref": "#/definitions/batch" },
+    { "$ref": "#/definitions/bye" },
+    { "$ref": "#/definitions/control" }
+  ]
+}

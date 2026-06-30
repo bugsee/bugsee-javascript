@@ -15,12 +15,16 @@
     "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*",
     "@bugsee/util": "workspace:*",
-    "@bugsee/vercel-edge": "workspace:*"
+    "@bugsee/vercel-edge": "workspace:*",
+    "@bugsee/webview": "workspace:*"
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.0.0",
+    "ajv": "^8.17.1",
     "esbuild": "^0.27.0",
+    "jsdom": "^25.0.1",
     "tsx": "^4.19.0"
   }
 }

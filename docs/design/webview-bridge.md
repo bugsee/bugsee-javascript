@@ -276,9 +276,16 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    and asserts it is self-contained (no `@bugsee/*` specifier), node-free (no static `node:` import), within a
    size budget (64 KB gzip / 200 KB raw), and LOADABLE (evaluates in a fresh isolate → exposes
    `BugseeWebView.launch`). The full boot + protocol round-trips against a mock native receiver are slice 7.
-7. **E2E conformance harness** — a mock native receiver speaking the protocol; boot real `@bugsee/webview` in
-   jsdom/headless and assert the exact handshake/entry/control round-trips. **This harness IS the reference spec
-   handed to the Android team.**
+7. **E2E conformance harness — DONE.** `instrumentation-tests/test/webview-conformance.e2e.ts` (jsdom) boots the
+   REAL `@bugsee/webview` SDK against a MOCK NATIVE RECEIVER + a real DOM and drives a full session — handshake
+   → control reply (session + `reportTrigger` toggle) → each capture FileType (log / traces.system / events.* )
+   → incident (crash entry always + gated report) → obscuring (`secure` message + the sync `snapshot()` pull) →
+   pause/resume → `bye` on stop — asserting BOTH the exact semantic round-trips AND that **every** message
+   validates against the machine-checkable JSON Schema **`bridge-protocol.schema.json`** (shipped in the package,
+   `oneOf` over hello/entry/report/secure/batch/bye/control, `additionalProperties:false`). A meta-test proves
+   the validator discriminates (rejects a bad FileType / extra field / unknown kind), and the harness is
+   mutation-verified (a malformed emitter message fails it). **The schema + this scenario ARE the reference spec
+   handed to the Android team** (the protocol TS types, the schema, and the harness are kept in lockstep).
 8. **Android native receiver** (in the `android/` repo, coordinated) — a new v1 receiver alongside legacy
    `BugseeJsListener`, switched by the handshake; new consumers for performance/traces/events/errors; the gated
    `report` handling; per-frame D8/D9 injection gating; D10 capability-driven legacy suppression. We supply the
@@ -308,9 +315,9 @@ background → `pause`; foreground → `resume`; native session rotation → `se
     OWN viewport-relative rects. **BLOCKING before native suppresses legacy on `obscuring`:** sub-frame secure
     rects must be COMPOSED up to the top frame (legacy `VIEWS_BUBBLE` postMessage + iframe-offset re-mapping) —
     until then a page with sensitive content inside a sub-frame is masked by legacy, not advanced.
-- **Machine-checkable envelope schema — sequenced to slice 7 (the e2e conformance harness), NOT slice 0.** The
-  envelope is specified in `packages/webview/src/protocol.ts` (TS types). A JSON schema + the executable
-  conformance harness land in slice 7 — once slices 2–3 finalize the per-type `p` payloads + the control
-  commands — so they are stable before the native (Java) receiver is written in slice 8. (This supersedes the §5
-  slice-0 "envelope JSON schema" item: the *types* exist now; the *cross-language artifact* lands with the
-  harness it is validated by.)
+- **Machine-checkable envelope schema — DONE (slice 7).** The envelope's TS types live in
+  `packages/webview/src/protocol.ts`; the cross-language artifact is `packages/webview/bridge-protocol.schema.json`
+  (JSON Schema draft-07, shipped in the package), validated end-to-end by `webview-conformance.e2e.ts`. The
+  per-`p`-payload INNER shapes (the serialized JSON inside each entry's `p`, keyed by FileType) remain
+  TS-specified for now — a follow-up may add per-FileType payload sub-schemas if the native team wants them
+  machine-checked too.

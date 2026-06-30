@@ -3,9 +3,13 @@ import type { FileType } from '@bugsee/protocol';
 // The versioned wire protocol crossing the WebView boundary (docs/design/webview-bridge.md §6). A single,
 // transport-agnostic JSON envelope rides whichever channel is available (Android @JavascriptInterface /
 // WebMessageChannel; later iOS/Cordova). Every message carries `b` (the protocol version) — its presence also
-// tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | bye (+ report, gated,
-// slice-2). native→JS: control (parsed here; applied by the control channel). Unknown fields/kinds are ignored
-// by the receiver (forward-compatible). This module is PURE — builders + encode + a defensive control parse.
+// tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | report | secure | bye.
+// native→JS: control (parsed here; applied by the control channel). Unknown fields/kinds are ignored by the
+// receiver (forward-compatible). This module is PURE — builders + encode + a defensive control parse.
+//
+// These TS types are the CANONICAL emitter shapes; their machine-checkable mirror — the cross-language artifact
+// handed to the native receiver team — is `bridge-protocol.schema.json` (this package), validated end-to-end by
+// the conformance harness (instrumentation-tests/test/webview-conformance.e2e.ts). Keep the three in lockstep.
 
 /** The current bridge protocol version. */
 export const PROTOCOL_VERSION = 1;
