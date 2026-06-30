@@ -725,7 +725,7 @@ describe('launch', () => {
 
   it('persist:true wraps the capture store in an IndexedDB-backed persistent store', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    // No captureStore override → launch builds the persistent capture store (db 'bugsee-capture').
+    // No captureStore override → launch builds the persistent capture store (db 'bugsee-capture-<hash>').
     const client = launchTracked('tok', baseOptions({ persist: true }));
     expect(client.isLaunched()).toBe(true);
     await new Promise((r) => setTimeout(r, 0)); // let async hydration settle

@@ -373,4 +373,64 @@ describe('createCoexistence — capture + marker recovery', () => {
     });
     expect(reports).not.toHaveBeenCalled(); // B's per-token marker db never sees A's marker
   });
+
+  it('isolates ONE dead sibling recovery failure to onError — the others still recover', async () => {
+    const idb = new IDBFactory();
+    const onError = vi.fn();
+    await seedMarker(idb, 'bad', 'mk1'); // this sibling's recovery will throw
+    await seedMarker(idb, 'good', 'mk2'); // this one must still recover
+
+    const recovered: string[] = [];
+    const recoverReportsForViews = vi.fn(async (_cap: AsyncKeyedStore, markers: AsyncBlobStore) => {
+      const keys = (await markers.loadAll()).map(([k]) => k);
+      if (keys.includes('mk1')) {
+        throw new Error('boom on bad sibling'); // one sibling's recovery rejects
+      }
+      recovered.push(keys.join(','));
+    });
+
+    const coex = createCoexistence({
+      appToken: TOK,
+      persist: false,
+      captureRecovery: true,
+      indexedDB: idb,
+      locks: fakeLocks().manager,
+      onError,
+    });
+    await expect(
+      coex.recoverDeadSiblings({ uploadPipeline: okPipeline(), recoverReportsForViews }),
+    ).resolves.toBeUndefined(); // never throws into launch
+    expect(recoverReportsForViews).toHaveBeenCalledTimes(2); // both attempted
+    expect(recovered).toEqual(['mk2']); // the good sibling recovered despite the bad one failing
+    expect(onError).toHaveBeenCalledTimes(1); // the bad one's rejection isolated to onError
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('boom on bad sibling');
+  });
+
+  it('isolates a single discovery-source failure: ids from the working sources still recover', async () => {
+    const idb = new IDBFactory();
+    const onError = vi.fn();
+    await seedMarker(idb, 'msib', 'mk1'); // a dead sibling visible ONLY in the (working) marker db
+    // A factory that fails to open ONLY the capture database; the marker/bundle dbs open normally.
+    const failCaptureOpen: IDBFactory = {
+      open: (name: string, version?: number) =>
+        name === captureDatabaseName(TOK) ? openFailsFactory().open(name) : idb.open(name, version),
+    } as unknown as IDBFactory;
+
+    const reports = vi.fn(() => Promise.resolve());
+    const coex = createCoexistence({
+      appToken: TOK,
+      persist: false,
+      captureRecovery: true,
+      indexedDB: failCaptureOpen,
+      locks: fakeLocks().manager,
+      onError,
+    });
+    await coex.recoverDeadSiblings({
+      uploadPipeline: okPipeline(),
+      recoverReportsForViews: reports,
+    });
+
+    expect(onError).toHaveBeenCalled(); // the capture-store keys() discovery failure routed to onError
+    expect(reports).toHaveBeenCalledTimes(1); // 'msib' (from the working marker db) still recovered
+  });
 });
