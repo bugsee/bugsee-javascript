@@ -1,8 +1,9 @@
 // @bugsee/webview — the advanced JS SDK for embedded native WebViews (Android-first).
 // docs/design/webview-bridge.md. It reuses @bugsee/browser capture but swaps the CaptureStore for a
 // HostBridgeCaptureStore that streams each entry across the WebView boundary to the hosting native Bugsee SDK
-// (native is the ring buffer + the bundler). This entry point currently exports the data-streaming core
-// (versioned protocol + the Android host-bridge channel + the streaming capture store); launch() lands next.
+// (native is the ring buffer + the bundler). `launch(appToken, options)` returns the started client; it opens a
+// `hello` handshake, streams console→log + network capture across the bridge, and exposes `__bugsee_bridge`
+// for native→JS control. Full-parity capture + the control commands + obscuring land in later slices.
 export {
   createHostBridge,
   DEFAULT_MAX_BUFFER,
@@ -12,6 +13,12 @@ export {
   createHostBridgeCaptureStore,
   type HostBridgeCaptureStoreOptions,
 } from './host-bridge-capture-store';
+export {
+  type BridgeControl,
+  type BridgeControlConfig,
+  createBridgeControl,
+} from './host-bridge-control';
+export { type Bugsee, type BugseeWebViewLaunchOptions, launch } from './launch';
 export {
   type BatchMessage,
   type BridgeMessageKind,
