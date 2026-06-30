@@ -102,13 +102,15 @@ detection, user-input, viewtree, `@bugsee/performance`) and **replaces the stora
   "p": { /* the entry payload for this type */ } }
 ```
 
-**`p` shape decision (as-built reconciliation).** The FINAL wire form of `p` is a **structured per-`FileType`
-object** native reads directly (like the legacy structured `data`, no double-parse). The per-type payload
-shaping is **slice 2**. In the **slice-1** skeleton, the streaming store passes `p` as the entry's **opaque
-serialized string** (`StoredEntry.serialized`) — a transitional simplification, NOT the contract the native
-receiver codes against (native is written in slice 8, after slice 2 finalizes the structured payloads). The
-native→JS `control` message ALSO carries `b` (the version tag) so a foreign message on a shared inbound channel
-(WebMessageChannel) is rejected, not just one with the wrong `k`.
+**`p` shape decision (DECIDED — `p` is the entry's serialized JSON STRING; native parses it per `t`).** Each
+`CaptureDataEntry` already self-serializes to its canonical per-type JSON form (`entry.serialize()`), and the
+store receives that as `StoredEntry.serialized`. `p` carries that string verbatim. **Rationale:** the alternative
+(parse it back to a structured object so the wire `p` is an object) forces an EXTRA `JSON.parse` per entry on
+the **embedded app's JS thread** — a real cost for high-volume logs/network — to save native (the resource-rich
+host, which already routes + parses per `t`) one parse. So `p:string` is LESS total work and keeps the embedded
+thread light; native does one `JSON.parse(p)` per entry, keyed by `t`. (This supersedes the earlier
+"structured-final" framing.) The native→JS `control` message ALSO carries `b` (the version tag) so a foreign
+message on a shared inbound channel (WebMessageChannel) is rejected, not just one with the wrong `k`.
 
 ### 6.2 Kinds
 

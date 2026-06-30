@@ -1,3 +1,4 @@
+import type { WindowEvents } from '@bugsee/browser';
 import {
   type CaptureStore,
   type Clock,
@@ -25,6 +26,30 @@ const inertScheduler: Scheduler = {
   setInterval: () => 0 as unknown as ReturnType<Scheduler['setInterval']>,
   clearInterval: () => {},
 };
+
+// A fake window/document event target: records listeners + dispatches synthetic events (mirrors the browser tier).
+function fakeEventTarget() {
+  const listeners = new Map<string, Set<(event: Event) => void>>();
+  const target = {
+    addEventListener(type: string, listener: (event: Event) => void) {
+      const set = listeners.get(type) ?? new Set();
+      set.add(listener);
+      listeners.set(type, set);
+    },
+    removeEventListener(type: string, listener: (event: Event) => void) {
+      listeners.get(type)?.delete(listener);
+    },
+  };
+  return {
+    target,
+    emit: (type: string, event: unknown) => {
+      for (const l of [...(listeners.get(type) ?? [])]) l(event as Event);
+    },
+  };
+}
+
+const entriesOfType = (msgs: AnyMsg[], t: EntryMessage['t']): EntryMessage[] =>
+  msgs.filter((m): m is EntryMessage => m.k === 'entry' && m.t === t);
 
 const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
@@ -75,6 +100,59 @@ describe('launch (webview)', () => {
     const log = entries.find((e) => e.t === 'log' && e.p.includes('webview-marker-7'));
     expect(log).toBeDefined();
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
+  });
+
+  it('streams the process_started system event when a window is present', () => {
+    const fake = fakeGlobal();
+    const win = fakeEventTarget();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    const events = entriesOfType(fake.msgs(), 'events.system');
+    expect(events.some((e) => e.p.includes('process_started'))).toBe(true);
+  });
+
+  it('streams a document interaction (click) as an events.user entry', () => {
+    const fake = fakeGlobal();
+    const doc = fakeEventTarget();
+    track('tok', baseOptions({ global: fake.global, document: doc.target as unknown as Document }));
+    doc.emit('click', {
+      target: {
+        tagName: 'BUTTON',
+        getAttribute: () => null,
+        closest: () => null,
+        textContent: 'Buy',
+      },
+      clientX: 3,
+      clientY: 4,
+      button: 0,
+    });
+    const events = entriesOfType(fake.msgs(), 'events.user');
+    expect(events.some((e) => e.p.includes('click'))).toBe(true);
+  });
+
+  it('streams a sampled system metric as a traces.system entry on a scheduler tick', () => {
+    const fake = fakeGlobal();
+    const tickCbs: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb) => {
+        tickCbs.push(cb as () => void);
+        return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+      },
+      clearInterval: () => {},
+    };
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        scheduler,
+        systemMetricsSampler: () => [{ name: 'wv_metric', value: 7 }],
+      }),
+    );
+    for (const cb of tickCbs) cb(); // a tick samples the metrics
+    const traces = entriesOfType(fake.msgs(), 'traces.system');
+    expect(traces.some((e) => e.p.includes('wv_metric'))).toBe(true);
   });
 
   it('exposes __bugsee_bridge.control on the global for native→JS control (defensive)', () => {

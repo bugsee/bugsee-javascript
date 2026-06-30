@@ -738,6 +738,9 @@ importers:
 
   packages/webview:
     dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture

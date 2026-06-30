@@ -1,7 +1,17 @@
 import {
+  createBrowserInputSource,
+  createBrowserSystemEventsSource,
+  createBrowserSystemTracesSampler,
+  type WindowEvents,
+} from '@bugsee/browser';
+import {
   createConsoleInterceptor,
   createLogCaptureProvider,
+  createSystemEventsProvider,
+  createSystemTracesProvider,
+  createUserEventsProvider,
   installNetworkCapture,
+  type TraceSample,
 } from '@bugsee/capture';
 import {
   type BugseeClient,
@@ -34,9 +44,10 @@ import { byeMessage, encode, helloMessage } from './protocol';
 
 const SDK_VERSION = '0.0.0';
 
-// The capture FileTypes this SDK currently emits — declared in the hello so native can negotiate (D10). Slice 1
-// = console→log + network; grows with the full-parity providers (slice 2) + the obscuring source (slice 4).
-const CAPABILITIES = ['log', 'network'] as const;
+// The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). Slice 2 adds the
+// system-traces / system-events / user-input providers to slice 1's console→log + network. The DOM viewtree +
+// obscuring (D10 `obscuring`) + the error/crash + performance streams land in later slices.
+const CAPABILITIES = ['log', 'network', 'traces.system', 'events.system', 'events.user'] as const;
 
 export interface BugseeWebViewLaunchOptions {
   /** SDK version reported in the handshake. Default the package version. */
@@ -57,6 +68,12 @@ export interface BugseeWebViewLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real WebView runtime.
   /** The WebView global hosting the native bridge + the `__bugsee_bridge` control entry. Default `globalThis`. */
   global?: object;
+  /** Window event target for system events (pagehide…). Default the global `window`. */
+  window?: WindowEvents;
+  /** DOM document for user-input capture (clicks/keys/…). Default `window.document`. */
+  document?: Document;
+  /** System-traces sampler (performance.memory…). Default the browser sampler. */
+  systemMetricsSampler?: () => readonly TraceSample[];
   /** Time source. Default the system clock. */
   clock?: Clock;
   /** Scheduler for the capture-store tick. Default global timers. */
@@ -116,9 +133,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     manifest(client);
   }
 
-  // Capture providers (slice 1 set): console→log + network. Each carrier-shared interceptor self-skips when its
-  // controllingOption is off. Full parity (DOM/viewtree, performance, events, traces) + the obscuring source land
-  // in slices 2/4.
+  // Capture providers: console→log; network umbrella (fetch/xhr/ws/sse); system traces (performance.memory);
+  // system events (process_started + pagehide); user input (clicks/keys → events.user). Each carrier-shared
+  // interceptor self-skips when its controllingOption is off. (The DOM viewtree + obscuring + error/crash +
+  // performance streams land in later slices.)
+  const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
+  const domDocument = options.document ?? (globalThis as { document?: Document }).document;
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
     () => createConsoleInterceptor(),
@@ -129,6 +149,24 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  client.addCaptureProvider(
+    createSystemTracesProvider({
+      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+    }),
+  );
+  if (win !== undefined) {
+    client.addCaptureProvider(
+      createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+    );
+  }
+  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.
+  const inputSource = getOrCreateInterceptor(
+    'webview-input',
+    () => createBrowserInputSource({ target: domDocument }),
+    carrier,
+  );
+  client.addCaptureProvider(createUserEventsProvider(inputSource));
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript. It
   // receives the handshake reply (native session) + (slice 3) commands. The D5 reportTrigger gate lands in
