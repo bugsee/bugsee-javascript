@@ -6,18 +6,21 @@ const el = (top: number) => ({
   getBoundingClientRect: () => ({ top, left: top + 1, bottom: top + 2, right: top + 3 }),
 });
 
-// A fake DOM document: querySelectorAll by selector + an event-listener registry (so we can `fire` events).
+// A fake DOM document/window: querySelectorAll by selector + an event-listener registry (so we can `fire`
+// events). Listeners take an optional event arg (the composer's `message` handler does) so it satisfies the
+// ComposerDocument/ComposerWindow seams. No iframes here — the channel's own + child composition is covered by
+// obscuring-composer.test.ts; these tests pin the channel's native serialization (seq/time/secure post).
 function fakeDoc(bySelector: Record<string, ReturnType<typeof el>[]>) {
-  const listeners = new Map<string, Set<() => void>>();
+  const listeners = new Map<string, Set<(e?: unknown) => void>>();
   return {
     querySelectorAll: (sel: string) => bySelector[sel] ?? [],
-    addEventListener: (type: string, l: () => void) => {
+    addEventListener: (type: string, l: (e?: unknown) => void) => {
       (listeners.get(type) ?? listeners.set(type, new Set()).get(type))?.add(l);
     },
-    removeEventListener: (type: string, l: () => void) => listeners.get(type)?.delete(l),
+    removeEventListener: (type: string, l: (e?: unknown) => void) => listeners.get(type)?.delete(l),
     body: {},
-    fire: (type: string) => {
-      for (const l of [...(listeners.get(type) ?? [])]) l();
+    fire: (type: string, e?: unknown) => {
+      for (const l of [...(listeners.get(type) ?? [])]) l(e);
     },
   };
 }

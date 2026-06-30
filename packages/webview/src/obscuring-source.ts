@@ -16,8 +16,11 @@ const SECURE_INPUT_SELECTOR =
   'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
 /** Elements an app/integrator explicitly marks to mask. */
 const HIDE_SELECTOR = '.bugsee-hide';
-/** The events that can move/add/remove a secure area. */
-const WINDOW_EVENTS = ['scroll', 'resize', 'orientationchange'] as const;
+// The events that can move/add/remove a secure area. `load` (window) matters for COMPOSITION: when the frame
+// tree finishes loading, a recompute re-bubbles a static sub-frame's rects up — so a deep static child that
+// bubbled on its own start() before its parent's `message` listener was attached is not lost (legacy parity:
+// the legacy `hidden-view` re-ran on `load`/`DOMContentLoaded` for exactly this).
+const WINDOW_EVENTS = ['scroll', 'resize', 'orientationchange', 'load'] as const;
 const DOCUMENT_EVENTS = ['focus', 'blur'] as const;
 
 interface RectEl {
@@ -31,14 +34,10 @@ export interface SecureDocument {
   /** The mutation-observation root (defaults to the document itself when absent). */
   body?: unknown;
 }
-/** The minimal window surface (scroll/resize/orientation + the scroll offset that maps viewport→document rects). */
+/** The minimal window surface (a change-event target for scroll/resize/orientation). */
 export interface SecureWindow {
   addEventListener(type: string, listener: () => void, options?: unknown): void;
   removeEventListener(type: string, listener: () => void, options?: unknown): void;
-  /** Horizontal scroll offset (added to viewport rects so native receives document-absolute coordinates). */
-  readonly scrollX?: number;
-  /** Vertical scroll offset. */
-  readonly scrollY?: number;
 }
 interface MutationObserverLike {
   observe(target: unknown, options?: unknown): void;
@@ -46,14 +45,11 @@ interface MutationObserverLike {
 }
 export type MutationObserverCtor = new (callback: () => void) => MutationObserverLike;
 
-/** Read the current secure areas from the document. Rects are mapped from viewport-relative
- *  (`getBoundingClientRect`) to DOCUMENT-ABSOLUTE by adding the page `scroll` offset (legacy parity — native's
- *  masker subtracts scroll, so it expects document coordinates); pass `{x:0,y:0}` (the default) for an unscrolled
- *  or window-less context. */
-export function collectSecureAreas(
-  document: SecureDocument,
-  scroll: { readonly x: number; readonly y: number } = { x: 0, y: 0 },
-): SecureArea[] {
+/** Read the current secure areas from the document, each a VIEWPORT-relative rect (`getBoundingClientRect`). The
+ *  obscuring COMPOSER applies the offsets that turn these into document-absolute coordinates — the top-frame
+ *  scroll, and (for rects bubbled up from a sub-frame) the iframe's position — so the source itself stays a pure
+ *  per-frame collector. */
+export function collectSecureAreas(document: SecureDocument): SecureArea[] {
   const seen = new Set<RectEl>();
   const areas: SecureArea[] = [];
   const add = (element: RectEl, type: SecureArea['type']): void => {
@@ -62,13 +58,7 @@ export function collectSecureAreas(
     }
     seen.add(element);
     const r = element.getBoundingClientRect();
-    areas.push({
-      type,
-      top: r.top + scroll.y,
-      left: r.left + scroll.x,
-      bottom: r.bottom + scroll.y,
-      right: r.right + scroll.x,
-    });
+    areas.push({ type, top: r.top, left: r.left, bottom: r.bottom, right: r.right });
   };
   for (const element of Array.from(document.querySelectorAll(SECURE_INPUT_SELECTOR))) {
     add(element, 'text');
@@ -97,13 +87,7 @@ export function createObscuringSource(opts: {
   mutationObserver?: MutationObserverCtor;
 }): ObscuringSource {
   const { document, window, onChange } = opts;
-  // The current page scroll offset (floored, legacy parity) — maps viewport rects to document-absolute. 0 when
-  // there is no window (an unscrolled/window-less context — the document origin is the viewport origin).
-  const scrollOf = (): { x: number; y: number } => ({
-    x: Math.floor(window?.scrollX ?? 0),
-    y: Math.floor(window?.scrollY ?? 0),
-  });
-  const areas = (): SecureArea[] => collectSecureAreas(document, scrollOf());
+  const areas = (): SecureArea[] => collectSecureAreas(document);
   const recompute = (): void => onChange(areas());
   const detach: Array<() => void> = [];
   let started = false;

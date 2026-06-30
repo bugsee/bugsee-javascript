@@ -27,6 +27,12 @@ export {
   type ObscuringChannelOptions,
 } from './obscuring-channel';
 export {
+  type ComposerDocument,
+  type ComposerWindow,
+  createObscuringComposer,
+  type ObscuringComposer,
+} from './obscuring-composer';
+export {
   collectSecureAreas,
   createObscuringSource,
   type MutationObserverCtor,

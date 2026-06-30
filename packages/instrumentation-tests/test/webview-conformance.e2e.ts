@@ -184,6 +184,35 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
+  it('composes a SUB-frame bubble into the top frame secure message (D9 sub-frame composition)', () => {
+    const { rx } = track(boot());
+    // A real sub-frame in the page; the top SDK is the receiving (top) frame.
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const childWindow = iframe.contentWindow;
+    expect(childWindow).toBeTruthy();
+    // The sub-frame's SDK bubbles its (viewport) secure rects up; the top composer re-maps by the iframe offset
+    // (zero under jsdom's no-layout getBoundingClientRect) + page scroll and folds them into the whole-page mask.
+    window.dispatchEvent(
+      new window.MessageEvent('message', {
+        data: {
+          __bugsee_secure_bubble: 1,
+          areas: [{ type: 'hidden', top: 11, left: 22, bottom: 33, right: 44 }],
+        },
+        source: childWindow,
+      }),
+    );
+    const secure = rx.byKind('secure').at(-1);
+    expect(secure).toBeDefined();
+    const areas = JSON.parse(String(secure?.p)) as Array<{
+      type: string;
+      top: number;
+      left: number;
+    }>;
+    expect(areas).toContainEqual({ type: 'hidden', top: 11, left: 22, bottom: 33, right: 44 });
+    rx.assertAllConform(); // the composed secure message still validates against the protocol schema
+  });
+
   it('honors pause/resume control commands (drops then resumes the capture stream)', () => {
     const { rx } = track(boot());
     rx.sendControl({ command: 'pause' });

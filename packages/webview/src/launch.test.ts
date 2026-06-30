@@ -75,10 +75,14 @@ const inertScheduler: Scheduler = {
   clearInterval: () => {},
 };
 
-// A fake window/document event target: records listeners + dispatches synthetic events (mirrors the browser tier).
+// A fake window/document event target: records listeners + dispatches synthetic events (mirrors the browser
+// tier). Also a valid (empty) obscuring document — `querySelectorAll` returns nothing (no secure elements, no
+// iframes) + a `body`, since the obscuring composer reads the document for its initial own-areas on start.
 function fakeEventTarget() {
   const listeners = new Map<string, Set<(event: Event) => void>>();
   const target = {
+    querySelectorAll: () => [] as unknown[],
+    body: {},
     addEventListener(type: string, listener: (event: Event) => void) {
       const set = listeners.get(type) ?? new Set();
       set.add(listener);
@@ -378,13 +382,18 @@ describe('launch (webview)', () => {
       expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // pull returns empty when off
     });
 
-    it('does NOT declare `obscuring` in a SUB-frame (window.top !== window.self) — native keeps legacy', () => {
+    it('a SUB-frame does NOT declare `obscuring`/post to native, but BUBBLES its rects to the parent (D9)', () => {
       const fake = fakeGlobal();
       const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
       const win = fakeEventTarget();
-      // A sub-frame: top is some OTHER window, not self → obscuring must not run/declare here.
-      Object.assign(win.target, { self: win.target, top: { other: true } });
-      track(
+      const parentPost = vi.fn();
+      // A sub-frame: top is some OTHER window (not self) + a parent to bubble to.
+      Object.assign(win.target, {
+        self: win.target,
+        top: { other: true },
+        parent: { postMessage: parentPost },
+      });
+      const client = launch(
         'tok',
         baseOptions({
           global: fake.global,
@@ -392,10 +401,22 @@ describe('launch (webview)', () => {
           window: win.target as unknown as WindowEvents,
         }),
       );
-      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
-      expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // no obscuring channel in a sub-frame
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring'); // only the top frame declares it
+      expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // no native obscuring pull from a sub-frame
+      expect(fake.msgs().some((m) => m.k === 'secure')).toBe(false); // a sub-frame never posts `secure` to native
+      // ...instead it bubbles its VIEWPORT rects up to its parent (composed there into the whole-page mask).
+      expect(parentPost).toHaveBeenCalledWith(
+        {
+          __bugsee_secure_bubble: 1,
+          areas: [{ type: 'text', top: 1, left: 2, bottom: 3, right: 4 }],
+        },
+        '*',
+      );
+      // stop() must detach the child composer — a later change does NOT bubble (no leaked listener).
+      void client.stop();
+      parentPost.mockClear();
       dom.emit('focus');
-      expect(fake.msgs().some((m) => m.k === 'secure')).toBe(false); // not tracking in a sub-frame
+      expect(parentPost).not.toHaveBeenCalled();
     });
 
     it('DOES declare `obscuring` in the top frame even when window.top === window.self', () => {

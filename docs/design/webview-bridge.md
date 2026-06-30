@@ -297,24 +297,31 @@ background → `pause`; foreground → `resume`; native session rotation → `se
 - **`profile` / `replay` / `screenshot`** streaming (native owns frames for now).
 - **Originating-session re-propagation** + WebView↔native trace stitching polish.
 - **Obscuring fidelity** parity audit vs legacy (edge cases: nested scroll, transforms, fixed elements).
-  - **Coordinate convention — DECIDED (slice 4):** `secure` rects are **document-absolute** — the obscuring
-    source adds the floored page scroll (`Math.floor(scrollX/scrollY)`) to each `getBoundingClientRect()`,
-    exactly as legacy does, so the existing native masker (which subtracts `scrollX/scrollY`) maps them
-    correctly. The slice-8 native receiver MUST treat incoming rects as document-absolute (not viewport).
+  - **Coordinate convention — DECIDED (slice 4, refined by D9 composition):** `secure` rects are
+    **document-absolute**. The obscuring SOURCE now produces pure VIEWPORT rects; the obscuring COMPOSER applies
+    the offsets — the top frame's floored page scroll (`Math.floor(scrollX/scrollY)`), plus, for rects bubbled up
+    from a sub-frame, that sub-frame's `<iframe>` offset (read fresh each compose). Legacy does the same, so the
+    existing native masker (which subtracts `scrollX/scrollY`) maps them correctly. The slice-8 native receiver
+    MUST treat incoming rects as document-absolute (not viewport).
   - **`.bugsee-show` opt-out — PORTED (slice 4):** the auto-detect secure-input selector excludes
     `.bugsee-show` so an app can keep a password/cc field visible, matching legacy.
 - **Bundle-size budget number** (TBD once slice 1 lands).
-- **Frame attribution (D9 subframes) — OPEN, decide before slice 8 freezes the native receiver.** A WebView can
-  host cross-origin subframes; each injected SDK posts `hello`/entries to the SAME `BugseeBridge.post`. The v1
-  envelope carries no frame/origin id, so native cannot attribute an entry to a frame (the legacy bridge bubbles
-  cross-frame via a `VIEWS_BUBBLE` postMessage). If per-subframe attribution is in v1 scope, a `frame`/origin
-  field must be added to the envelope (or `hello`); if deferred, document single-top-frame support.
-  - **Obscuring is TOP-FRAME ONLY (slice 4, interim-safe):** only the top frame tracks + declares the
-    `obscuring` capability (`window.top === window.self`); a sub-frame keeps legacy masking. This avoids the
-    privacy hazard of a sub-frame declaring `obscuring` (→ native suppresses legacy) while it can only mask its
-    OWN viewport-relative rects. **BLOCKING before native suppresses legacy on `obscuring`:** sub-frame secure
-    rects must be COMPOSED up to the top frame (legacy `VIEWS_BUBBLE` postMessage + iframe-offset re-mapping) —
-    until then a page with sensitive content inside a sub-frame is masked by legacy, not advanced.
+- **Sub-frame secure-rect composition (D9 obscuring) — DONE.** Obscuring now runs in EVERY injected frame (the
+  legacy `VIEWS_BUBBLE` port — `obscuring-composer.ts`): a sub-frame `postMessage`s its composed VIEWPORT rects up
+  to `window.parent` (a JS↔JS bubble, distinct from the JS↔native bridge; `targetOrigin:'*'` is safe — rects are
+  non-PII; accepted ONLY from a verified child `<iframe>.contentWindow`), each frame re-maps a child's rects by
+  that iframe's offset (read FRESH each compose, so an intermediate scroll never goes stale; a removed iframe is
+  GC'd), and ONLY the TOP frame adds the page scroll → document-absolute → posts `secure` + declares the
+  `obscuring` capability. So the top frame reports the whole-page UNION and the advanced SDK fully replaces legacy
+  masking. Composition only ADDS rects → a malicious bubble can only OVER-mask, never leak. **Native owns the
+  final "is coverage complete → fully drop legacy" call** (it knows its D9 injection set; with the default-all
+  allowlist, coverage is complete). Tested by `obscuring-composer.test.ts` + a real-iframe scenario in the
+  conformance harness.
+- **Entry/origin attribution for NON-obscuring sub-frame capture (logs/network) — OPEN, decide before slice 8.**
+  Distinct from obscuring (now composed): a sub-frame's logs/network entries still post to the SAME
+  `BugseeBridge.post` with no `frame`/origin id, so native can't attribute a LOG to a frame. If per-sub-frame
+  entry attribution is in v1 scope, a `frame`/origin field must be added to the envelope (or `hello`); else
+  document that sub-frame entries are merged into the WebView's single timeline.
 - **Machine-checkable envelope schema — DONE (slice 7).** The envelope's TS types live in
   `packages/webview/src/protocol.ts`; the cross-language artifact is `packages/webview/bridge-protocol.schema.json`
   (JSON Schema draft-07, shipped in the package), validated end-to-end by `webview-conformance.e2e.ts`. The

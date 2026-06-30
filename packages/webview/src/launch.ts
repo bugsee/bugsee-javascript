@@ -41,7 +41,12 @@ import { createHostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
 import { createObscuringChannel, type ObscuringChannel } from './obscuring-channel';
-import type { SecureDocument, SecureWindow } from './obscuring-source';
+import {
+  type ComposerDocument,
+  type ComposerWindow,
+  createObscuringComposer,
+  type ObscuringComposer,
+} from './obscuring-composer';
 import { byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
@@ -178,7 +183,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // `__bugsee_bridge.snapshot()`, but the command path lets it request an async refresh).
   let paused = false;
   let publicClient: Bugsee;
-  let obscuring: ObscuringChannel | undefined;
+  let obscuring: ObscuringChannel | undefined; // TOP frame: the native I/O channel
+  let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
   const control = createBridgeControl({
     reportTrigger: options.reportTrigger ?? false,
     onCommand: (command) => {
@@ -301,23 +307,31 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     client.addDetectionProvider(createUnhandledRejectionProvider(win));
   }
 
-  // Obscuring (D10): when there is a DOM and it isn't opted out, stream the secure-area rects so native masks
-  // sensitive pixels in its frames — and declare the `obscuring` capability so native drops its legacy masking
-  // script. Without a DOM (or opted out) we neither track nor declare it, so native keeps legacy masking.
-  // TOP-FRAME ONLY (legacy parity): a sub-frame's rects are viewport-relative to the SUB-frame and the native
-  // mask is composed over the whole page, so only the top frame may track + declare obscuring — a sub-frame
-  // declaring it would make native suppress legacy while masking the wrong/partial area. (Sub-frame rect
-  // composition/bubbling is the open D9 frame-attribution item — until built, a sub-frame keeps legacy masking.)
+  // Obscuring (D10/D9): when there is a DOM and it isn't opted out, track the secure-area rects so native masks
+  // sensitive pixels. Obscuring runs in EVERY injected frame, but the frame's role differs (sub-frame rect
+  // COMPOSITION — the legacy VIEWS_BUBBLE port):
+  //   - the TOP frame owns the native I/O (the channel): it composes its own rects + the rects bubbled up from
+  //     sub-frames into DOCUMENT-ABSOLUTE coordinates, posts the union as `secure`, and declares the `obscuring`
+  //     capability so native drops its legacy masking (D10);
+  //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — it does
+  //     NOT post to native and does NOT declare the cap (only the top frame's union reaches native).
+  // (Native owns the final "is coverage complete → fully drop legacy" decision: it knows its D9 injection set.)
   const w = win as { top?: unknown; self?: unknown } | undefined;
   const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
-  if ((options.captureObscuring ?? true) && domDocument !== undefined && isTopFrame) {
-    obscuring = createObscuringChannel({
-      bridge,
-      document: domDocument as unknown as SecureDocument,
-      ...(win !== undefined ? { window: win as unknown as SecureWindow } : {}),
-      seq,
-    });
+  const obscuringDoc = domDocument as unknown as ComposerDocument;
+  const obscuringWin = win !== undefined ? { window: win as unknown as ComposerWindow } : {};
+  if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+    if (isTopFrame) {
+      obscuring = createObscuringChannel({ bridge, document: obscuringDoc, ...obscuringWin, seq });
+    } else {
+      childComposer = createObscuringComposer({
+        document: obscuringDoc,
+        ...obscuringWin,
+        isTopFrame: false,
+      });
+    }
   }
+  // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native).
   const caps = obscuring !== undefined ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
@@ -333,7 +347,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   bridge.post(encode(helloMessage({ sdk: sdkVersion, caps, session: randomId() })));
 
   client.launch();
-  obscuring?.start(); // begin secure-area change tracking once the SDK is live
+  // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
+  obscuring?.start();
+  childComposer?.start();
 
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
@@ -342,6 +358,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       obscuring?.stop(); // detach the secure-area observers/listeners
+      childComposer?.stop();
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       global.__bugsee_bridge = undefined;

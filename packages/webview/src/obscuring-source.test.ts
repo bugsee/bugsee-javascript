@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { collectSecureAreas, createObscuringSource } from './obscuring-source';
+import type { SecureArea } from './protocol';
 
 // A fake element with a rect.
 const el = (top: number) => ({
@@ -33,13 +34,6 @@ describe('collectSecureAreas', () => {
     expect(collectSecureAreas(doc)).toEqual([
       { type: 'text', top: 10, left: 11, bottom: 12, right: 13 },
       { type: 'hidden', top: 20, left: 21, bottom: 22, right: 23 },
-    ]);
-  });
-
-  it('maps viewport rects to DOCUMENT-ABSOLUTE by adding the page scroll offset (legacy parity)', () => {
-    const doc = fakeDoc({ [SECURE_INPUT]: [el(10)] });
-    expect(collectSecureAreas(doc, { x: 100, y: 200 })).toEqual([
-      { type: 'text', top: 210, left: 111, bottom: 212, right: 113 },
     ]);
   });
 
@@ -91,7 +85,7 @@ describe('createObscuringSource', () => {
     ]);
   });
 
-  it('recomputes on window scroll/resize/orientation + document focus/blur, and stop() detaches', () => {
+  it('recomputes on window scroll/resize/orientation/load + document focus/blur, and stop() detaches', () => {
     const doc = fakeDoc({ [HIDE]: [el(0)] });
     const win = fakeDoc({});
     const onChange = vi.fn();
@@ -109,41 +103,32 @@ describe('createObscuringSource', () => {
     src.start();
     win.fire('scroll');
     win.fire('orientationchange');
+    win.fire('load'); // a frame-tree load re-triggers compose (so a static sub-frame re-bubbles — D9)
     doc.fire('focus');
-    expect(onChange).toHaveBeenCalledTimes(3);
+    expect(onChange).toHaveBeenCalledTimes(4);
     src.stop();
     expect(disconnectSpy).toHaveBeenCalledTimes(1); // observer disconnected
     onChange.mockClear();
     win.fire('scroll'); // detached → no more callbacks
+    win.fire('load');
     doc.fire('focus');
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('applies the live window scroll offset (floored) to the rects it emits', () => {
-    const doc = fakeDoc({ [HIDE]: [el(0)] });
-    const win = Object.assign(fakeDoc({}), { scrollX: 50.9, scrollY: 60.1 });
-    const src = createObscuringSource({ document: doc, window: win, onChange: () => {} });
-    // 50.9/60.1 floored → +50/+60 added to the viewport rect {top:0,left:1,bottom:2,right:3}.
-    expect(src.snapshot()).toEqual([{ type: 'hidden', top: 60, left: 51, bottom: 62, right: 53 }]);
-  });
-
-  it('reads the scroll offset LIVE on each emit (a scroll after start() updates the rects)', () => {
-    const doc = fakeDoc({ [HIDE]: [el(0)] });
-    const win = Object.assign(fakeDoc({}), { scrollX: 0, scrollY: 0 });
-    let last: { top: number; left: number } | undefined;
+  it('emits VIEWPORT rects (no scroll added — the composer applies offsets)', () => {
+    const doc = fakeDoc({ [HIDE]: [el(7)] });
+    let last: SecureArea[] | undefined;
     const src = createObscuringSource({
       document: doc,
-      window: win,
-      onChange: (areas) => {
-        last = areas[0];
+      window: fakeDoc({}),
+      onChange: (a) => {
+        last = a;
       },
     });
+    expect(src.snapshot()).toEqual([{ type: 'hidden', top: 7, left: 8, bottom: 9, right: 10 }]);
     src.start();
-    win.scrollX = 5; // the page scrolls AFTER start...
-    win.scrollY = 9;
-    win.fire('scroll');
-    // ...so the emitted rect reflects the NEW offset (a capture-once-at-construction read would emit 0,0).
-    expect(last).toMatchObject({ top: 9, left: 6 }); // {top:0,left:1} + {y:9,x:5}
+    doc.fire('focus');
+    expect(last).toEqual([{ type: 'hidden', top: 7, left: 8, bottom: 9, right: 10 }]);
     src.stop();
   });
 
