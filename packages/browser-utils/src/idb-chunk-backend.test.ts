@@ -61,6 +61,7 @@ describe('createIdbChunkBackend — backend contract', () => {
     const failing: AsyncKeyedStore = {
       put: () => Promise.reject(new Error('boom')),
       readPrefix: () => Promise.resolve([]),
+      keys: () => Promise.resolve([]),
       deletePrefix: () => Promise.resolve(),
     };
     const b = createIdbChunkBackend(failing, { generation: 5 }); // no onError → default no-op
@@ -265,6 +266,7 @@ describe('createIdbChunkBackend — backend contract', () => {
     const failing: AsyncKeyedStore = {
       put: () => Promise.reject(new Error('boom')),
       readPrefix: () => Promise.resolve([]),
+      keys: () => Promise.resolve([]),
       deletePrefix: () => Promise.resolve(),
     };
     const b = createIdbChunkBackend(failing, { generation: 5, onError: (e) => errors.push(e) });

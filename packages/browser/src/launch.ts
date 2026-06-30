@@ -1,9 +1,7 @@
 import {
-  createCoexistentBundleQueue,
-  createIdbBlobStore,
+  createCoexistence,
   createIdbChunkBackend,
   createIdbChunkCaptureStore,
-  createIdbKeyedStore,
   createPersistentReportMarkerStore,
   fetchTransport,
   type LockManagerLike,
@@ -255,21 +253,24 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
 
-  // Durable bundle queue, multi-instance-safe: several tabs (+ the page's workers) share the origin's
-  // IndexedDB, so each launch writes its bundles under its own per-instance prefix in a per-APP-TOKEN
-  // database and recovers only DEAD siblings' leftovers (under a Web Lock) — never one held by a live tab.
-  // An explicit bundleStore bypasses coexistence; else `persist` builds the per-instance IndexedDB store
-  // (its in-memory mirror hydrates asynchronously — recover() is deferred to whenReady below). With
-  // neither, nothing durable. (The capture-chunk + marker recovery dbs are NOT yet per-instance — slice 5.)
-  const queue = createCoexistentBundleQueue({
+  // Multi-instance-safe coexistence root: several tabs (+ the page's workers) share the origin's IndexedDB,
+  // so each launch namespaces ALL its durable data — the bundle queue AND (when `persist`) the capture-chunk
+  // + report-marker stores — under its own per-instance prefix in per-APP-TOKEN databases, holds ONE Web Lock
+  // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
+  // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
+  // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
+  const durableCapture = options.persist === true && options.captureStore === undefined;
+  const recoverEnabled = (options.recover ?? true) && durableCapture;
+  const coexistence = createCoexistence({
     appToken,
     persist: options.persist === true,
-    ...(options.bundleStore !== undefined ? { override: options.bundleStore } : {}),
+    captureRecovery: durableCapture,
+    ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
     ...(options.locks !== undefined ? { locks: options.locks } : {}),
     ...(options.indexedDB !== undefined ? { indexedDB: options.indexedDB } : {}),
   });
-  const bundleStore = queue.bundleStore;
+  const bundleStore = coexistence.bundleStore;
   if (bundleStore !== undefined) {
     services.addService(defineService(BundleStoreToken, () => bundleStore));
   }
@@ -298,11 +299,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       probe,
     );
 
-  // Capture store: explicit override > (persist → IndexedDB-backed durable chunk store) > in-memory.
+  // Capture store: explicit override > (persist → per-instance IndexedDB durable chunk store) > in-memory.
   // Bounds: maxRecordingTime (s → ms window) + maxDataSize (MB → byte cap). The persistent store is the
-  // chunk store over an IndexedDB chunk backend (durable-as-captured: each entry is written through as
-  // captured, only chunk metadata lives in RAM) in its own database ('bugsee-capture', distinct from the
-  // bundle queue), so a post-reload/crash report can recover the prior generation's chunks.
+  // chunk store over the coexistence capture VIEW (per-instance prefix in db 'bugsee-capture-<hash>'),
+  // durable-as-captured: each entry written through as captured, only chunk metadata in RAM. `generation`
+  // can stay wall-time — collisions across tabs are impossible (each tab has a distinct instance prefix), and
+  // self's namespace is fresh, so `cleanOtherGenerations` is left at its harmless default (nothing to clean).
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
   const storeBounds = {
@@ -310,24 +312,15 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
-  // Capture recovery (the detected-incident gap): one generation shared by the live store, the marker
-  // hook, and the recovery read-back. Enabled only for the IndexedDB store (persist, no captureStore
-  // override) with recover on; preserve prior generations when recovering (the recovery pass sweeps
-  // them), else clean-on-init. The capture keyed store is reused by the recovery read backend.
   const clock = options.clock ?? createSystemClock();
   const captureGeneration = clock.wallNow();
-  const recoverEnabled =
-    (options.recover ?? true) && options.persist === true && options.captureStore === undefined;
-  const captureKeyed =
-    options.persist === true && options.captureStore === undefined
-      ? createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' })
+  // The report-marker store records detected-incident metadata at incident time (R1) over the coexistence
+  // marker VIEW; built only when recovery is on. The capture VIEW backs the durable chunk store.
+  const captureKeyed = coexistence.captureView;
+  const reportMarkers =
+    recoverEnabled && coexistence.markerView !== undefined
+      ? createPersistentReportMarkerStore(coexistence.markerView, options.onError)
       : undefined;
-  const reportMarkers = recoverEnabled
-    ? createPersistentReportMarkerStore(
-        createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }),
-        options.onError,
-      )
-    : undefined;
   if (reportMarkers !== undefined) {
     services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers));
   }
@@ -337,7 +330,6 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       ? createIdbChunkCaptureStore(captureKeyed, {
           ...storeBounds,
           generation: captureGeneration,
-          cleanOtherGenerations: !recoverEnabled,
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         })
       : createMemoryCaptureStore(storeBounds));
@@ -410,37 +402,44 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
 
   client.launch();
 
-  // Recovery on the next launch, in order: (1) re-upload bundles a prior reload/crash already assembled +
-  // persisted (durable queue); then (2) rebuild + deliver detected incidents whose bundle never got
-  // assembled, from the preserved capture chunks. Each waits for its async IndexedDB mirror to hydrate
-  // (so list() sees the leftovers); (2) runs AFTER (1) so a freshly rebuilt bundle the queue is
-  // mid-uploading is not also re-enqueued by recover(). An injected (sync) bundle store recovers at once.
-  const bundleRecovered =
-    durable !== undefined
-      ? ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
-          durable.recover(),
-        )
-      : Promise.resolve();
-  if (reportMarkers !== undefined && captureKeyed !== undefined) {
-    void Promise.all([bundleRecovered, reportMarkers.whenReady]).then(() =>
-      recoverReports({
-        backend: createIdbChunkBackend(captureKeyed, {
-          generation: captureGeneration,
-          cleanOtherGenerations: false,
-          ...(options.onError !== undefined ? { onError: options.onError } : {}),
-        }),
-        currentGeneration: captureGeneration,
-        markers: reportMarkers,
-        context: () => ({ appToken, environment: getEnvironment(), clock }),
-        uploadPipeline,
-        ...(options.onError !== undefined ? { onError: options.onError } : {}),
-      }),
+  // Recovery on the next launch. Self's own namespaces are empty (a fresh instanceId per launch), so the
+  // prior crashed session is just a DEAD SIBLING — ALL recovery is dead-sibling recovery (BD9), gated by each
+  // sibling's Web Lock so a LIVE tab's data is never read, recovered, or swept (this is what closes the
+  // multi-tab capture-sweep hazard). (1) self's durable bundle recover() — a no-op over its fresh prefix for
+  // the persist path, but real work for an injected bundleStore override (which bypasses coexistence).
+  if (durable !== undefined) {
+    void ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
+      durable.recover(),
     );
   }
-  // (3) Recover any DEAD sibling tab/worker's leftover bundles from the shared origin store, re-uploading
-  // directly (no re-persist into our own queue). A no-op without coexistence (override / no persist / no
-  // Web Locks); reads the shared store directly, so it needs no mirror hydration.
-  void queue.recoverDeadSiblings(baseUploadPipeline);
+  // (2) Per DEAD sibling, under its lock: re-upload its leftover bundles AND — when recovery is enabled —
+  // rebuild + deliver its detected incidents from its preserved capture chunks (core `recoverReports` over
+  // the sibling's prefixed views, `currentGeneration: -1` ⇒ every one of its generations is eligible). The
+  // recovered report uploads via the BASE pipeline (its marker + chunks ARE the durability — kept + retried
+  // on failure). The coordinator reads the shared stores directly (no mirror hydration needed).
+  void coexistence.recoverDeadSiblings({
+    uploadPipeline: baseUploadPipeline,
+    ...(recoverEnabled
+      ? {
+          recoverReportsForViews: async (deadCaptureView, deadMarkerView) => {
+            const markers = createPersistentReportMarkerStore(deadMarkerView, options.onError);
+            await markers.whenReady;
+            await recoverReports({
+              backend: createIdbChunkBackend(deadCaptureView, {
+                generation: -1,
+                cleanOtherGenerations: false,
+                ...(options.onError !== undefined ? { onError: options.onError } : {}),
+              }),
+              currentGeneration: -1,
+              markers,
+              context: () => ({ appToken, environment: getEnvironment(), clock }),
+              uploadPipeline: baseUploadPipeline,
+              ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            });
+          },
+        }
+      : {}),
+  });
 
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh. (No
   // process.exit handler to remove — the browser has none; the core client cleans up its providers.)

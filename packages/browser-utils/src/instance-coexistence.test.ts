@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { AsyncBlobStore } from './idb';
+import type { AsyncBlobStore, AsyncKeyedStore } from './idb';
 import {
   coexistenceDatabaseName,
   createPrefixedBlobStore,
+  createPrefixedKeyedStore,
   hashToken,
   instanceLockName,
   makeInstanceId,
@@ -74,5 +75,49 @@ describe('createPrefixedBlobStore', () => {
     await a.remove('one');
     expect([...shared.map.keys()]).toEqual(['B/two']); // removing A's id only touched A's prefix
     expect(await a.loadAll()).toEqual([]);
+  });
+});
+
+function memKeyed() {
+  const map = new Map<string, Uint8Array>();
+  const matches = (prefix: string) =>
+    [...map.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .sort(([a], [b]) => (a < b ? -1 : 1));
+  const store: AsyncKeyedStore = {
+    put: (key, bytes) => {
+      map.set(key, bytes);
+      return Promise.resolve();
+    },
+    readPrefix: (prefix) => Promise.resolve(matches(prefix).map(([k, v]) => [k, v])),
+    keys: (prefix) => Promise.resolve(matches(prefix).map(([k]) => k)),
+    deletePrefix: (prefix) => {
+      for (const [key] of matches(prefix)) {
+        map.delete(key);
+      }
+      return Promise.resolve();
+    },
+  };
+  return { store, map };
+}
+
+describe('createPrefixedKeyedStore', () => {
+  it('prefixes put/readPrefix/keys/deletePrefix and strips on read (instance A never sees B)', async () => {
+    const shared = memKeyed();
+    const a = createPrefixedKeyedStore(shared.store, 'A');
+    const b = createPrefixedKeyedStore(shared.store, 'B');
+
+    await a.put('d/5/0', new Uint8Array([1]));
+    await a.put('m/5/0', new Uint8Array([2]));
+    await b.put('d/5/0', new Uint8Array([9])); // same inner key, different instance
+
+    expect([...shared.map.keys()].sort()).toEqual(['A/d/5/0', 'A/m/5/0', 'B/d/5/0']); // physically prefixed
+
+    expect(await a.readPrefix('d/')).toEqual([['d/5/0', new Uint8Array([1])]]); // A's own, un-prefixed
+    expect(await a.keys('')).toEqual(['A/d/5/0', 'A/m/5/0'].map((k) => k.slice(2))); // ['d/5/0','m/5/0']
+    expect(await b.readPrefix('d/')).toEqual([['d/5/0', new Uint8Array([9])]]); // B's, isolated
+
+    await a.deletePrefix('d/');
+    expect([...shared.map.keys()].sort()).toEqual(['A/m/5/0', 'B/d/5/0']); // only A's d/ range removed
   });
 });

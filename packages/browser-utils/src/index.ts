@@ -3,10 +3,11 @@
 // the fetch HttpTransport + IndexedDB-backed durable stores (DOM instrumentation — pending).
 // Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
 export {
-  type CoexistentBundleQueue,
-  type CoexistentBundleQueueOptions,
-  createCoexistentBundleQueue,
-} from './bundle-queue-coexistence';
+  type Coexistence,
+  type CoexistenceOptions,
+  createCoexistence,
+  type RecoverDeadSiblingsOptions,
+} from './coexistence';
 export { createFetchTransport, type FetchLike, fetchTransport } from './fetch-transport';
 export {
   type AsyncBlobStore,
@@ -30,11 +31,14 @@ export {
   type PersistentReportMarkerStore,
 } from './idb-report-marker-store';
 export {
+  captureDatabaseName,
   coexistenceDatabaseName,
   createPrefixedBlobStore,
+  createPrefixedKeyedStore,
   hashToken,
   instanceLockName,
   makeInstanceId,
+  markerDatabaseName,
   splitInstanceKey,
 } from './instance-coexistence';
 export {

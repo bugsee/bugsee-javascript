@@ -125,6 +125,15 @@ describe('createIdbKeyedStore', () => {
     expect(await second.readPrefix('m/')).toEqual([['m/5/0', bytes(7)]]);
   });
 
+  it('keys lists only the keys under the prefix, ascending, without reading values', async () => {
+    const store = createIdbKeyedStore({ indexedDB: new IDBFactory() });
+    await store.put('A/d/5/02', bytes(2));
+    await store.put('A/d/5/00', bytes(0));
+    await store.put('B/d/5/00', bytes(9)); // a different instance prefix, excluded
+    expect(await store.keys('A/')).toEqual(['A/d/5/00', 'A/d/5/02']); // ascending, A only
+    expect(await store.keys('Z/')).toEqual([]); // no match → empty
+  });
+
   it('reuses the same open database across operations (opens once)', async () => {
     const idb = new IDBFactory();
     const openSpy = vi.spyOn(idb, 'open');
@@ -156,6 +165,7 @@ describe('createIdbKeyedStore', () => {
     await expect(store.put('a', bytes(1))).rejects.toThrow('req fail');
     await expect(store.deletePrefix('a')).rejects.toThrow('req fail');
     await expect(store.readPrefix('a')).rejects.toThrow('tx fail');
+    await expect(store.keys('a')).rejects.toThrow('req fail'); // getAllKeys request error
   });
 
   it('falls back to a generic error when the readPrefix transaction carries no error object', async () => {

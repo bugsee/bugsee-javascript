@@ -1,14 +1,17 @@
 import 'fake-indexeddb/auto'; // polyfills IDBKeyRange et al.; per-test `vi.stubGlobal('indexedDB', …)` still isolates
 import {
   type AsyncBlobStore,
+  captureDatabaseName,
   coexistenceDatabaseName,
   createIdbBlobStore,
   createIdbChunkBackend,
   createIdbKeyedStore,
   createPersistentBundleStore,
+  createPrefixedKeyedStore,
   createWebLockLiveness,
   instanceLockName,
   type LockManagerLike,
+  markerDatabaseName,
 } from '@bugsee/browser-utils';
 import {
   type BundleStore,
@@ -735,8 +738,9 @@ describe('launch', () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 
-  it('persist:true actually persists a captured part to the bugsee-capture database', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
+  it('persist:true persists a captured part under a per-instance prefix in the per-token capture db', async () => {
+    const idb = new IDBFactory();
+    vi.stubGlobal('indexedDB', idb);
     const tickCbs: Array<() => void> = [];
     const scheduler = {
       setInterval: (cb: () => void) => {
@@ -745,17 +749,19 @@ describe('launch', () => {
       },
       clearInterval: () => {},
     };
-    launchTracked('tok', baseOptions({ persist: true, scheduler })); // no captureStore override
+    launchTracked('tok', baseOptions({ persist: true, scheduler, indexedDB: idb })); // no captureStore override
     console.log('persist-me');
     await new Promise((r) => setTimeout(r, 0)); // let the log reach the store (persisted as captured)
     for (const cb of tickCbs) cb(); // a tick closes the part (rewrites its durable meta)
     await vi.waitFor(async () => {
-      // The durable chunk store writes data + meta records to the 'capture' store as entries are captured.
-      const records = await createIdbBlobStore({
-        databaseName: 'bugsee-capture',
+      // The durable chunk store writes data + meta to db `bugsee-capture-<hash>`, each key instance-prefixed.
+      const keys = await createIdbKeyedStore({
+        databaseName: captureDatabaseName('tok'),
         storeName: 'capture',
-      }).loadAll();
-      expect(records.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
+        indexedDB: idb,
+      }).keys('');
+      expect(keys.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
+      expect(keys.every((k) => /^[0-9a-f]{32}\//.test(k))).toBe(true); // every key under an <instanceId>/ prefix
     });
   });
 });
@@ -794,22 +800,52 @@ const logRecord = (data: unknown): StoredEntry => ({
   timestamp: 1,
   serialized: JSON.stringify({ timestamp: 1, data }),
 });
-// The generations present in the bugsee-capture meta keyspace (`m/<gen13>/<chunk12>`).
-const captureGenerations = async (): Promise<Set<number>> => {
-  const metas = await createIdbKeyedStore({
-    databaseName: 'bugsee-capture',
-    storeName: 'capture',
-  }).readPrefix('m/');
-  return new Set(metas.map(([key]) => Number(key.slice(2, key.indexOf('/', 2)))));
-};
-const persistedMarkers = (): Promise<Array<[string, Uint8Array]>> =>
-  createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }).loadAll();
 
-// Seed a prior generation's closed chunk + (optionally) a pending marker into the (stubbed) IndexedDB.
-async function seedPrior(gen: number, data: unknown, withMarker: boolean): Promise<void> {
+const captureStoreFor = (idb: IDBFactory) =>
+  createIdbKeyedStore({
+    databaseName: captureDatabaseName('tok'),
+    storeName: 'capture',
+    indexedDB: idb,
+  });
+const markerStoreFor = (idb: IDBFactory) =>
+  createIdbBlobStore({
+    databaseName: markerDatabaseName('tok'),
+    storeName: 'markers',
+    indexedDB: idb,
+  });
+
+// The capture generations present under ONE sibling instance's prefix (`<id>/m/<gen13>/<chunk12>`).
+const siblingGenerations = async (idb: IDBFactory, instanceId: string): Promise<Set<number>> => {
+  const metas = await captureStoreFor(idb).readPrefix(`${instanceId}/m/`);
+  return new Set(
+    metas.map(([key]) => {
+      const inner = key.slice(instanceId.length + 1); // `m/<gen>/<chunk>`
+      return Number(inner.slice(2, inner.indexOf('/', 2)));
+    }),
+  );
+};
+// The marker keys persisted under ONE sibling instance's prefix.
+const siblingMarkers = (idb: IDBFactory, instanceId: string): Promise<string[]> =>
+  markerStoreFor(idb)
+    .loadAll()
+    .then((es) => es.map(([k]) => k).filter((k) => k.startsWith(`${instanceId}/`)));
+
+// Seed a SIBLING instance's prior crash (a closed capture chunk + optionally a pending marker) under its
+// own `"<instanceId>/"` prefix in the per-token capture/marker databases — exactly how that instance's own
+// launch would have written it. A dead sibling has no held lock; a live one holds it (seed that separately).
+async function seedSibling(
+  idb: IDBFactory,
+  instanceId: string,
+  gen: number,
+  data: unknown,
+  withMarker: boolean,
+): Promise<void> {
   const backend = createIdbChunkBackend(
-    createIdbKeyedStore({ databaseName: 'bugsee-capture', storeName: 'capture' }),
-    { generation: gen, cleanOtherGenerations: false },
+    createPrefixedKeyedStore(captureStoreFor(idb), instanceId),
+    {
+      generation: gen,
+      cleanOtherGenerations: false,
+    },
   );
   backend.openPart({ generation: gen, number: 0 }, gen);
   backend.appendEntry({ generation: gen, number: 0 }, logRecord(data));
@@ -818,52 +854,100 @@ async function seedPrior(gen: number, data: unknown, withMarker: boolean): Promi
   if (withMarker) {
     const marker = {
       generation: gen,
-      request: createReportingRequest({ source: { type: 'crash' }, id: 'inc-1' }),
+      request: createReportingRequest({ source: { type: 'crash' }, id: `inc-${instanceId}` }),
       attributes: {},
       userIdentifier: null,
     };
-    await createIdbBlobStore({ databaseName: 'bugsee-markers', storeName: 'markers' }).put(
-      'inc-1',
+    await markerStoreFor(idb).put(
+      `${instanceId}/inc-${instanceId}`,
       new TextEncoder().encode(JSON.stringify(marker)),
     );
   }
 }
 
-describe('launch — capture recovery', () => {
-  it('rebuilds + uploads a prior incident, sweeps its generation + marker, keeps the live generation', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
-    await seedPrior(500, { m: 'pre-crash' }, true); // prior gen 500 (≠ launch gen 1000)
+describe('launch — capture recovery (multi-instance)', () => {
+  it('recovers a DEAD sibling incident (rebuild+upload, sweep) and NEVER touches a LIVE sibling', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib')); // a still-open tab
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // a crashed tab's pending incident
+    await seedSibling(idb, 'livesib', 700, { m: 'live-buffer' }, true); // a LIVE tab's incident + capture
     const { fn: transport, puts } = recordingTransport();
 
     launchTracked(
       'tok',
-      baseOptions({ transport, persist: true, clock: recoveryClock, scheduler: noopScheduler }),
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        onError: vi.fn(), // exercise the onError-threaded dead-sibling recovery path
+      }),
     );
 
-    // The recovered bundle is uploaded (the only thing that triggers a signed PUT here).
+    // The DEAD sibling's incident is rebuilt from its preserved capture chunks and uploaded.
     await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
     const files = unzipSync(puts[0] as Uint8Array);
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'pre-crash' }]);
     expect(strFromU8(files.apptoken as Uint8Array)).toBe('tok');
 
-    // The incident marker is cleared, gen 500 swept, and the live gen 1000 survives.
-    await vi.waitFor(async () => expect(await persistedMarkers()).toEqual([]));
-    await vi.waitFor(async () => {
-      const gens = await captureGenerations();
-      expect(gens.has(500)).toBe(false); // recovered + swept
-      expect(gens.has(1000)).toBe(true); // the live generation is never swept
-    });
+    // The dead sibling's marker + capture generation are swept...
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+    await vi.waitFor(async () =>
+      expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
+    );
+    // ...and the LIVE sibling's marker + capture are completely untouched (the SEV1 fix).
+    expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
+    expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
+    expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
   });
 
-  it('sweeps a no-incident prior generation without uploading anything', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
-    await seedPrior(500, { m: 'orphan' }, false); // chunks, but NO marker
+  it('recovers a DEAD sibling even when its generation equals the live launch generation', async () => {
+    // Per-instance namespacing means two tabs can share a wall-clock generation (1000) without colliding;
+    // the dead sibling's recovery must use a `currentGeneration: -1` sentinel so its gen is NOT excluded.
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 1000, { m: 'same-gen-crash' }, true); // gen == recoveryClock wallNow
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked('tok', baseOptions({ transport, persist: true, clock: recoveryClock }));
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
 
-    await vi.waitFor(async () => expect((await captureGenerations()).has(500)).toBe(false));
-    expect(puts).toEqual([]); // no incident → no report
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1)); // recovered despite gen == 1000
+    expect(
+      JSON.parse(strFromU8(unzipSync(puts[0] as Uint8Array)['logs.json'] as Uint8Array)),
+    ).toEqual([{ m: 'same-gen-crash' }]);
+  });
+
+  it('sweeps a DEAD sibling with capture but NO incident, without uploading anything', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'orphan' }, false); // chunks, but NO marker
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(async () =>
+      expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
+    );
+    expect(puts).toEqual([]); // no incident → no report (capture only swept to reclaim space)
   });
 
   it('writes a recovery marker for a live incident through the launch wiring', async () => {
@@ -877,38 +961,6 @@ describe('launch — capture recovery', () => {
     const marker = putSpy.mock.calls[0]?.[0];
     expect(marker?.generation).toBe(1000); // this launch's capture generation
     expect(marker?.request.report.summary).toBe('live boom');
-  });
-
-  it('defers capture recovery until the durable bundle-queue recover() has run (no double-upload race)', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
-    await seedPrior(500, { m: 'x' }, true); // a marker to recover
-    const { fn: transport, puts } = recordingTransport();
-    // A bundle store whose hydration (and thus durable.recover()) stays PENDING until released.
-    let releaseBundle: () => void = () => {};
-    const bundleStore: BundleStore & { whenReady: Promise<void> } = {
-      whenReady: new Promise<void>((resolve) => {
-        releaseBundle = resolve;
-      }),
-      put: () => {},
-      list: () => [],
-      read: () => undefined,
-      remove: () => {},
-    };
-    launchTracked(
-      'tok',
-      baseOptions({
-        transport,
-        persist: true,
-        clock: recoveryClock,
-        scheduler: noopScheduler,
-        bundleStore,
-      }),
-    );
-
-    await new Promise((r) => setTimeout(r, 20)); // the marker mirror hydrates within this window
-    expect(puts).toEqual([]); // capture recovery is gated on the (pending) bundle-queue recover()
-    releaseBundle(); // bundle store hydrates → durable.recover() runs → capture recovery may proceed
-    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1)); // now the rebuilt bundle uploads
   });
 
   it('registers the marker store as a service in persist (recovery) mode', () => {
@@ -928,17 +980,27 @@ describe('launch — capture recovery', () => {
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
-  it('does not recover when recover:false (no marker store, no upload)', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory());
-    await seedPrior(500, { m: 'x' }, true);
+  it('does not recover capture/markers when recover:false (no marker store, no upload, sibling kept)', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'x' }, true); // a dead sibling's pending incident
     const { fn: transport, puts } = recordingTransport();
     const client = launchTracked(
       'tok',
-      baseOptions({ transport, persist: true, recover: false, clock: recoveryClock }),
+      baseOptions({
+        transport,
+        persist: true,
+        recover: false,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
     );
-    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(puts).toEqual([]);
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // recovery off → no marker recording
+    // Wait long enough that an (erroneously) wired recovery WOULD have uploaded + swept by now.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(puts).toEqual([]); // nothing recovered/uploaded
+    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']); // marker left intact
+    expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(true); // capture NOT swept (recover off)
   });
 });
 

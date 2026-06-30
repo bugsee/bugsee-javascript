@@ -96,6 +96,9 @@ export interface AsyncKeyedStore {
   put(key: string, bytes: Uint8Array): Promise<void>;
   /** Read every [key, bytes] whose key starts with `prefix`, ascending by key. */
   readPrefix(prefix: string): Promise<Array<[string, Uint8Array]>>;
+  /** List every KEY starting with `prefix`, ascending — values NOT read (cheap `getAllKeys`, for
+   *  enumerating instance prefixes during multi-instance discovery without loading the data). */
+  keys(prefix: string): Promise<string[]>;
   /** Delete every key starting with `prefix`; a no-op if none match. */
   deletePrefix(prefix: string): Promise<void>;
 }
@@ -155,6 +158,19 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
             };
             transaction.onerror = () =>
               reject(transaction.error ?? new Error('indexedDB readPrefix failed'));
+          }),
+      ),
+
+    keys: (prefix) =>
+      open().then(
+        (db) =>
+          new Promise<string[]>((resolve, reject) => {
+            const request = db
+              .transaction(storeName, 'readonly')
+              .objectStore(storeName)
+              .getAllKeys(prefixRange(prefix));
+            request.onsuccess = () => resolve(request.result.map((key) => String(key)));
+            request.onerror = () => reject(reqError(request));
           }),
       ),
 

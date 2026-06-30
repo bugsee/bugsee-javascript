@@ -3,11 +3,7 @@ import {
   createWindowErrorProvider,
   type WindowEvents,
 } from '@bugsee/browser';
-import {
-  createCoexistentBundleQueue,
-  fetchTransport,
-  type LockManagerLike,
-} from '@bugsee/browser-utils';
+import { createCoexistence, fetchTransport, type LockManagerLike } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
   createLogCaptureProvider,
@@ -186,15 +182,16 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // siblings' leftovers (under a Web Lock). An explicit bundleStore bypasses coexistence (the caller owns
   // durability); else `persist` builds the per-instance IndexedDB store (mirror hydrates async — recover()
   // is deferred to whenReady below).
-  const queue = createCoexistentBundleQueue({
+  const coexistence = createCoexistence({
     appToken,
     persist,
-    ...(options.bundleStore !== undefined ? { override: options.bundleStore } : {}),
+    // The webworker has no capture-recovery path yet (#165) → bundle queue only, no captureRecovery.
+    ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
     ...(options.locks !== undefined ? { locks: options.locks } : {}),
     ...(options.indexedDB !== undefined ? { indexedDB: options.indexedDB } : {}),
   });
-  const bundleStore = queue.bundleStore;
+  const bundleStore = coexistence.bundleStore;
   if (bundleStore !== undefined) {
     services.addService(defineService(BundleStoreToken, () => bundleStore));
   }
@@ -286,7 +283,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // Then recover any DEAD sibling instance's leftover bundles (a crashed tab/worker on the same origin),
   // re-uploading directly (no re-persist into our queue). A no-op without coexistence (override / no persist /
   // no Web Locks). Reads the shared store directly, so it needs no mirror hydration.
-  void queue.recoverDeadSiblings(baseUploadPipeline);
+  void coexistence.recoverDeadSiblings({ uploadPipeline: baseUploadPipeline });
 
   // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
