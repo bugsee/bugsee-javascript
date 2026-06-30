@@ -9,6 +9,7 @@ import {
   helloMessage,
   PROTOCOL_VERSION,
   parseControl,
+  reportMessage,
 } from './protocol';
 
 describe('helloMessage', () => {
@@ -66,6 +67,46 @@ describe('entryMessage', () => {
     });
     expect(m.tr).toEqual({ t: 'trace-1', s: 'span-1' });
     expect(m.red).toBe(true);
+  });
+});
+
+describe('reportMessage', () => {
+  it('builds a versioned report trigger (k:report) carrying the serialized report metadata', () => {
+    const m = reportMessage({
+      type: 'crash',
+      seq: 9,
+      timestamp: 2000,
+      mono: 3,
+      timeOrigin: 1000,
+      payload: '{"summary":"boom"}',
+      redacted: false,
+    });
+    expect(m).toEqual({
+      b: PROTOCOL_VERSION,
+      k: 'report',
+      t: 'crash',
+      s: 9,
+      ts: 2000,
+      mono: 3,
+      o: 1000,
+      red: false,
+      p: '{"summary":"boom"}',
+    });
+    expect('tr' in m).toBe(false);
+  });
+
+  it('includes the trace join only when provided', () => {
+    const m = reportMessage({
+      type: 'crash',
+      seq: 1,
+      timestamp: 1,
+      mono: 1,
+      timeOrigin: 0,
+      payload: 'p',
+      redacted: true,
+      trace: { t: 'tr-1', s: 'sp-1' },
+    });
+    expect(m.tr).toEqual({ t: 'tr-1', s: 'sp-1' });
   });
 });
 

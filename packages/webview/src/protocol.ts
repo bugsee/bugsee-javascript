@@ -54,6 +54,23 @@ export interface EntryMessage {
   readonly p: string;
 }
 
+/** JS→native: a WebView-originated report TRIGGER (D5 — gated by `reportTrigger`). Native opens a bug from the
+ *  serialized `ReportingRequest` metadata in `p`. Same time/seq frame as an entry, with `k:'report'`. */
+export interface ReportMessage {
+  readonly b: number;
+  readonly k: 'report';
+  /** The incident file type (`crash`). */
+  readonly t: FileType;
+  readonly s: number;
+  readonly ts: number;
+  readonly mono: number;
+  readonly o: number;
+  readonly red: boolean;
+  readonly tr?: TraceRef;
+  /** The serialized report metadata (the `ReportingRequest`). */
+  readonly p: string;
+}
+
 /** JS→native: many entries coalesced into one crossing (logs/network can be high-volume). */
 export interface BatchMessage {
   readonly b: number;
@@ -124,6 +141,31 @@ export function entryMessage(opts: {
   };
 }
 
+/** Build a `report` trigger message (D5-gated) from serialized report metadata + its time/seq context. */
+export function reportMessage(opts: {
+  type: FileType;
+  seq: number;
+  timestamp: number;
+  mono: number;
+  timeOrigin: number;
+  payload: string;
+  redacted: boolean;
+  trace?: TraceRef;
+}): ReportMessage {
+  return {
+    b: PROTOCOL_VERSION,
+    k: 'report',
+    t: opts.type,
+    s: opts.seq,
+    ts: opts.timestamp,
+    mono: opts.mono,
+    o: opts.timeOrigin,
+    red: opts.redacted,
+    ...(opts.trace !== undefined ? { tr: opts.trace } : {}),
+    p: opts.payload,
+  };
+}
+
 /** Coalesce entries into a single `batch` message. */
 export function batchMessage(entries: readonly EntryMessage[]): BatchMessage {
   return { b: PROTOCOL_VERSION, k: 'batch', e: entries };
@@ -135,7 +177,9 @@ export function byeMessage(): ByeMessage {
 }
 
 /** Serialize a message to its wire string. */
-export function encode(message: HelloMessage | EntryMessage | BatchMessage | ByeMessage): string {
+export function encode(
+  message: HelloMessage | EntryMessage | ReportMessage | BatchMessage | ByeMessage,
+): string {
   return JSON.stringify(message);
 }
 

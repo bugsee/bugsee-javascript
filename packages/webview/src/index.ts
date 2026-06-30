@@ -34,5 +34,12 @@ export {
   helloMessage,
   PROTOCOL_VERSION,
   parseControl,
+  type ReportMessage,
+  reportMessage,
   type TraceRef,
 } from './protocol';
+export {
+  createWebViewReportPipeline,
+  type WebViewReportPipeline,
+  type WebViewReportPipelineOptions,
+} from './webview-report-pipeline';

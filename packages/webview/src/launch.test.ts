@@ -8,9 +8,15 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWebViewLaunchOptions, launch } from './launch';
-import type { BatchMessage, ByeMessage, EntryMessage, HelloMessage } from './protocol';
+import type {
+  BatchMessage,
+  ByeMessage,
+  EntryMessage,
+  HelloMessage,
+  ReportMessage,
+} from './protocol';
 
-type AnyMsg = HelloMessage | EntryMessage | BatchMessage | ByeMessage;
+type AnyMsg = HelloMessage | EntryMessage | ReportMessage | BatchMessage | ByeMessage;
 
 // A fake WebView global: the native `@JavascriptInterface` post sink + the slot the launch sets `__bugsee_bridge`.
 function fakeGlobal() {
@@ -153,6 +159,40 @@ describe('launch (webview)', () => {
     for (const cb of tickCbs) cb(); // a tick samples the metrics
     const traces = entriesOfType(fake.msgs(), 'traces.system');
     expect(traces.some((e) => e.p.includes('wv_metric'))).toBe(true);
+  });
+
+  it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off (D5)', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    await client.logException(new Error('boom-wv'));
+    const crashes = entriesOfType(fake.msgs(), 'crash');
+    expect(crashes.some((e) => e.p.includes('boom-wv'))).toBe(true); // incident in the timeline
+    expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no native bug opened (gate off)
+  });
+
+  it('ALSO emits a report trigger for a logException when reportTrigger is on', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
+    await client.logException(new Error('kaboom-wv'));
+    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0); // still streams the entry
+    expect(fake.msgs().some((m) => m.k === 'report')).toBe(true); // native opens a bug
+  });
+
+  it('wires window error detection — a window error streams a crash entry', () => {
+    const fake = fakeGlobal();
+    const win = fakeEventTarget();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    win.emit('error', {
+      message: 'detected-wv',
+      error: new Error('detected-wv'),
+      filename: 'a.js',
+      lineno: 1,
+      colno: 2,
+    });
+    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0); // detection → report path streamed
   });
 
   it('exposes __bugsee_bridge.control on the global for native→JS control (defensive)', () => {

@@ -2,6 +2,8 @@ import {
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTracesSampler,
+  createUnhandledRejectionProvider,
+  createWindowErrorProvider,
   type WindowEvents,
 } from '@bugsee/browser';
 import {
@@ -33,6 +35,7 @@ import { createHostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
 import { byeMessage, encode, helloMessage } from './protocol';
+import { createWebViewReportPipeline } from './webview-report-pipeline';
 
 // @bugsee/webview launch() — the WebView composition root (docs/design/webview-bridge.md §5/§10). A WebView is a
 // browser environment whose OUTPUT SINK is the native host, not the network: this reuses @bugsee/browser-family
@@ -45,9 +48,16 @@ import { byeMessage, encode, helloMessage } from './protocol';
 const SDK_VERSION = '0.0.0';
 
 // The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). Slice 2 adds the
-// system-traces / system-events / user-input providers to slice 1's console→log + network. The DOM viewtree +
-// obscuring (D10 `obscuring`) + the error/crash + performance streams land in later slices.
-const CAPABILITIES = ['log', 'network', 'traces.system', 'events.system', 'events.user'] as const;
+// system-traces / system-events / user-input providers + the error/crash report path to slice 1's console→log +
+// network. The DOM viewtree + obscuring (D10 `obscuring`) + performance streams land in later slices.
+const CAPABILITIES = [
+  'log',
+  'network',
+  'traces.system',
+  'events.system',
+  'events.user',
+  'crash',
+] as const;
 
 export interface BugseeWebViewLaunchOptions {
   /** SDK version reported in the handshake. Default the package version. */
@@ -62,6 +72,13 @@ export interface BugseeWebViewLaunchOptions {
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
 
+  /**
+   * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug. D5:
+   * default OFF. Native is the authority on opening bugs; the incident ALWAYS streams up as a `crash` timeline
+   * entry regardless, so the web error enriches whatever report native opens. Native may also toggle this via
+   * the handshake config.
+   */
+  reportTrigger?: boolean;
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -116,13 +133,26 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     global,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
-  const captureStore = options.captureStore ?? createHostBridgeCaptureStore({ bridge });
+  // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
+  let seqN = 0;
+  const seq = (): number => seqN++;
+  // The native→JS control state (the handshake reply + the D5 reportTrigger gate, default off).
+  const control = createBridgeControl({ reportTrigger: options.reportTrigger ?? false });
+  const captureStore = options.captureStore ?? createHostBridgeCaptureStore({ bridge, seq });
+  // The report path replaces bundle-assembly+upload (D2): every detected incident / logException streams up as
+  // a `crash` entry (always, D5), plus a report TRIGGER gated on `reportTrigger` (read dynamically).
+  const triggerPipeline = createWebViewReportPipeline({
+    bridge,
+    reportTriggerEnabled: () => control.config.reportTrigger,
+    seq,
+  });
 
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
     services,
     captureStore,
+    triggerPipeline,
     appToken,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
@@ -168,10 +198,16 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   );
   client.addCaptureProvider(createUserEventsProvider(inputSource));
 
+  // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path
+  // (triggerPipeline above) ALWAYS streams the incident as a `crash` entry; whether it ALSO opens a native bug
+  // is gated by `reportTrigger` (D5, default off). Skipped if there is no window.
+  if (win !== undefined) {
+    client.addDetectionProvider(createWindowErrorProvider(win));
+    client.addDetectionProvider(createUnhandledRejectionProvider(win));
+  }
+
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript. It
-  // receives the handshake reply (native session) + (slice 3) commands. The D5 reportTrigger gate lands in
-  // slice 2 alongside the detection providers it gates (it has no effect without them).
-  const control = createBridgeControl();
+  // receives the handshake reply (native session) + (slice 3) commands.
   global.__bugsee_bridge = Object.freeze({ control: control.control });
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what

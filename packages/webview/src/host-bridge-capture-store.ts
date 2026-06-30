@@ -18,6 +18,8 @@ export interface HostBridgeCaptureStoreOptions {
   now?: () => number;
   /** `performance.timeOrigin` for native time-base mapping. Default the ambient `performance`. */
   timeOrigin?: number;
+  /** Monotonic-sequence source (shared with the report path so seq is per-session global). Default internal. */
+  seq?: () => number;
 }
 
 /** An empty snapshot — the WebView SDK never assembles a local bundle (D2); native does. */
@@ -40,7 +42,8 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
   const { bridge } = opts;
   const now = opts.now ?? ((): number => performance.now());
   const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
-  let seq = 0;
+  let internal = 0;
+  const nextSeq = opts.seq ?? ((): number => internal++);
 
   return {
     add(record: StoredEntry): void {
@@ -48,7 +51,7 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
         encode(
           entryMessage({
             type: record.type,
-            seq: seq++,
+            seq: nextSeq(),
             timestamp: record.timestamp,
             mono: now(),
             timeOrigin,

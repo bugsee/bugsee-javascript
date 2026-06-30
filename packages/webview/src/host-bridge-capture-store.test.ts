@@ -40,6 +40,15 @@ describe('createHostBridgeCaptureStore', () => {
     expect(m[1]).toMatchObject({ k: 'entry', t: 'log', s: 1, ts: 2000, p: 'hello' }); // seq incremented
   });
 
+  it('draws seq from an injected counter (shared with the report path) when provided', () => {
+    const { bridge, msgs } = recordingBridge();
+    let n = 100;
+    const store = createHostBridgeCaptureStore({ bridge, seq: () => n++ });
+    store.add(rec('log', 'a'));
+    store.add(rec('log', 'b'));
+    expect(msgs().map((m) => m.s)).toEqual([100, 101]); // the injected counter, not an internal 0,1
+  });
+
   it('stamps mono/timeOrigin from the injected sources', () => {
     const { bridge, msgs } = recordingBridge();
     let t = 10;
