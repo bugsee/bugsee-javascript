@@ -99,7 +99,7 @@ detection, user-input, viewtree, `@bugsee/performance`) and **replaces the stora
   "o": 1719000000000,         // performance.timeOrigin (also sent in hello)
   "tr": { "t": "<traceId>", "s": "<spanId>" },  // optional trace join (FE↔native↔backend)
   "red": false,      // redaction provenance: did a JS filter pass run? (D3)
-  "p": { /* the entry payload for this type */ } }
+  "p": "{...}" }     // the entry's serialized JSON STRING (native does ONE JSON.parse(p), keyed by `t`) — see below
 ```
 
 **`p` shape decision (DECIDED — `p` is the entry's serialized JSON STRING; native parses it per `t`).** Each
@@ -120,9 +120,25 @@ message on a shared inbound channel (WebMessageChannel) is rejected, not just on
   ongoing control (§7).
 - **`entry`** — one streamed `CaptureDataEntry`, routed by `t` (§6.4).
 - **`batch`** — `{k:"batch","e":[<entry>,…]}` coalescing many entries into one crossing (logs/network can be
-  high-volume; one bridge hop beats N).
-- **`report`** (gated by D5) — carries the `ReportingRequest` metadata so native opens a bug/crash.
+  high-volume; one bridge hop beats N). **`batch` carries `entry` messages ONLY** — never `report`s (reports are
+  rare + gated, so they cross individually).
+- **`report`** (gated by D5) — carries the serialized `ReportingRequest` in `p` so native opens a bug/crash.
 - **`bye`** — JS signals teardown (pagehide/stop) so native can finalize.
+
+**Incident model native MUST implement (entry ↔ report correlation — decide before the slice-8 receiver).**
+A detected incident / `logException` produces, in the SAME session, a `t:"crash"` **`entry`** (ALWAYS — the
+timeline breadcrumb) and — only when `reportTrigger` is on — a **`report`** (the open-a-bug trigger). They carry
+the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE incident, not two:**
+- Correlate them by **`p.report.id`** (the `ReportingRequest` id), NOT by `s` — the entry and the report get
+  DISTINCT seqs (each wire message gets its own ordering slot), and NOT by timestamp (fragile).
+- Native MUST NOT double-count: the `crash` entry is the breadcrumb; the matching `report` is the trigger.
+- **The exception STACK is a pre-formatted human STRING in `p.report.description`** (via the SDK's
+  `formatStack`), with the message in `p.report.summary`, type in `p.report.type` (`crash`/`error`), severity in
+  `p.report.severity`. It is NOT a structured frame array and there is NO dedicated `stack` field. If native's
+  exceptions model needs structured frames, that is a payload-shape change to settle NOW (it is expensive after
+  the receiver ships).
+- `report` resolution is `{ok:true}` = "posted to the bridge" (handed off — native owns the bundle), NOT a
+  native acknowledgement; v1 has no ack channel.
 
 ### 6.3 Handshake / capability negotiation (the gap the legacy protocol has)
 

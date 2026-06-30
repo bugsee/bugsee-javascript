@@ -187,7 +187,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   );
   if (win !== undefined) {
     client.addCaptureProvider(
-      createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+      createSystemEventsProvider(
+        createBrowserSystemEventsSource({
+          window: win,
+          ...(domDocument !== undefined ? { document: domDocument } : {}),
+        }),
+      ),
     );
   }
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.

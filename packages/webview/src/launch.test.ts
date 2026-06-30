@@ -93,7 +93,9 @@ describe('launch (webview)', () => {
     const hello = fake.msgs()[0] as HelloMessage;
     expect(hello.k).toBe('hello');
     expect(hello.sdk).toBe('0.0.0');
-    expect(hello.caps).toEqual(expect.arrayContaining(['log', 'network']));
+    expect([...hello.caps].sort()).toEqual(
+      ['crash', 'events.system', 'events.user', 'log', 'network', 'traces.system'].sort(),
+    ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this
     expect(typeof hello.session).toBe('string');
     expect(hello.session.length).toBeGreaterThan(0);
   });
@@ -122,7 +124,15 @@ describe('launch (webview)', () => {
   it('streams a document interaction (click) as an events.user entry', () => {
     const fake = fakeGlobal();
     const doc = fakeEventTarget();
-    track('tok', baseOptions({ global: fake.global, document: doc.target as unknown as Document }));
+    const win = fakeEventTarget(); // also a window → the system-events source gets the injected document seam
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: win.target as unknown as WindowEvents,
+        document: doc.target as unknown as Document,
+      }),
+    );
     doc.emit('click', {
       target: {
         tagName: 'BUTTON',
@@ -170,15 +180,32 @@ describe('launch (webview)', () => {
     expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no native bug opened (gate off)
   });
 
-  it('ALSO emits a report trigger for a logException when reportTrigger is on', async () => {
+  it('ALSO emits a report trigger (crash, carrying the incident) for a logException when on', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
     await client.logException(new Error('kaboom-wv'));
-    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0); // still streams the entry
-    expect(fake.msgs().some((m) => m.k === 'report')).toBe(true); // native opens a bug
+    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('kaboom-wv'))).toBe(true);
+    const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
+    expect(report?.t).toBe('crash');
+    expect(report?.p).toContain('kaboom-wv'); // the report carries the incident, not an empty trigger
   });
 
-  it('wires window error detection — a window error streams a crash entry', () => {
+  it('uses ONE shared per-session seq across the capture stream AND the report path', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
+    console.log('seq-log');
+    await client.logException(new Error('seq-err')); // → a crash entry + a report
+    const stream = fake
+      .msgs()
+      .filter((m): m is EntryMessage | ReportMessage => m.k === 'entry' || m.k === 'report');
+    const seqs = stream.map((m) => m.s);
+    expect(seqs.length).toBeGreaterThanOrEqual(3); // log entry + crash entry + report
+    // A SHARED counter ⇒ strictly increasing across both paths; a separate report counter would RESET and
+    // collide with the capture stream (crash seq == log seq).
+    expect(seqs.every((s, i) => i === 0 || s > (seqs[i - 1] as number))).toBe(true);
+  });
+
+  it('wires window error detection — a window error streams a crash entry carrying the error', () => {
     const fake = fakeGlobal();
     const win = fakeEventTarget();
     track(
@@ -192,7 +219,33 @@ describe('launch (webview)', () => {
       lineno: 1,
       colno: 2,
     });
-    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0); // detection → report path streamed
+    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('detected-wv'))).toBe(true);
+  });
+
+  it('wires unhandledrejection detection — a rejection streams a crash entry', () => {
+    const fake = fakeGlobal();
+    const win = fakeEventTarget();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    win.emit('unhandledrejection', {
+      reason: new Error('rejected-wv'),
+      promise: Promise.resolve(),
+    });
+    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('rejected-wv'))).toBe(true);
+  });
+
+  it('honors a native reportTrigger toggle via __bugsee_bridge.control (off→on), end to end', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global })); // gate defaults OFF
+    await client.logException(new Error('first'));
+    expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no bug while off
+    fake.global.__bugsee_bridge?.control(
+      JSON.stringify({ b: 1, k: 'control', config: { reportTrigger: true } }),
+    );
+    await client.logException(new Error('second'));
+    expect(fake.msgs().filter((m) => m.k === 'report')).toHaveLength(1); // only the second opened a bug
   });
 
   it('exposes __bugsee_bridge.control on the global for native→JS control (defensive)', () => {

@@ -69,8 +69,9 @@ describe('createWebViewReportPipeline', () => {
     expect(msgs().filter((x) => x.k === 'report')).toHaveLength(1); // only the second triggered a bug
   });
 
-  it('defaults wall/mono/timeOrigin to Date.now / performance', async () => {
+  it('defaults wall←Date.now, mono←performance.now, o←performance.timeOrigin (not swapped)', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(7777);
+    vi.spyOn(performance, 'now').mockReturnValue(33);
     const { bridge, msgs } = recordingBridge();
     const pipe = createWebViewReportPipeline({
       bridge,
@@ -80,7 +81,8 @@ describe('createWebViewReportPipeline', () => {
     await pipe.report(aRequest('x'));
     const entry = msgs().find((m): m is EntryMessage => m.k === 'entry');
     expect(entry?.ts).toBe(7777); // Date.now()
-    expect(typeof entry?.mono).toBe('number'); // performance.now()
+    expect(entry?.mono).toBe(33); // performance.now() — a wall/mono or now/timeOrigin swap fails this
+    expect(entry?.o).toBe(performance.timeOrigin); // performance.timeOrigin
     vi.restoreAllMocks();
   });
 });
