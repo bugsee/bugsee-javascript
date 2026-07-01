@@ -157,7 +157,9 @@ describe('launch (webview)', () => {
     track('tok', baseOptions({ global: fake.global }));
     console.log('webview-marker-7');
     const entries = fake.msgs().filter((m): m is EntryMessage => m.k === 'entry');
-    const log = entries.find((e) => e.t === 'log' && e.p.includes('webview-marker-7'));
+    const log = entries.find(
+      (e) => e.t === 'log' && JSON.stringify(e.p).includes('webview-marker-7'),
+    );
     expect(log).toBeDefined();
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
   });
@@ -170,7 +172,7 @@ describe('launch (webview)', () => {
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
     const events = entriesOfType(fake.msgs(), 'events.system');
-    expect(events.some((e) => e.p.includes('process_started'))).toBe(true);
+    expect(events.some((e) => JSON.stringify(e.p).includes('process_started'))).toBe(true);
   });
 
   it('streams a document interaction (click) as an events.user entry', () => {
@@ -197,7 +199,7 @@ describe('launch (webview)', () => {
       button: 0,
     });
     const events = entriesOfType(fake.msgs(), 'events.user');
-    expect(events.some((e) => e.p.includes('click'))).toBe(true);
+    expect(events.some((e) => JSON.stringify(e.p).includes('click'))).toBe(true);
   });
 
   it('streams a sampled system metric as a traces.system entry on a scheduler tick', () => {
@@ -220,7 +222,7 @@ describe('launch (webview)', () => {
     );
     for (const cb of tickCbs) cb(); // a tick samples the metrics
     const traces = entriesOfType(fake.msgs(), 'traces.system');
-    expect(traces.some((e) => e.p.includes('wv_metric'))).toBe(true);
+    expect(traces.some((e) => JSON.stringify(e.p).includes('wv_metric'))).toBe(true);
   });
 
   it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off (D5)', async () => {
@@ -228,7 +230,7 @@ describe('launch (webview)', () => {
     const client = track('tok', baseOptions({ global: fake.global }));
     await client.logException(new Error('boom-wv'));
     const crashes = entriesOfType(fake.msgs(), 'crash');
-    expect(crashes.some((e) => e.p.includes('boom-wv'))).toBe(true); // incident in the timeline
+    expect(crashes.some((e) => JSON.stringify(e.p).includes('boom-wv'))).toBe(true); // incident in the timeline
     expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no native bug opened (gate off)
   });
 
@@ -236,10 +238,12 @@ describe('launch (webview)', () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
     await client.logException(new Error('kaboom-wv'));
-    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('kaboom-wv'))).toBe(true);
+    expect(
+      entriesOfType(fake.msgs(), 'crash').some((e) => JSON.stringify(e.p).includes('kaboom-wv')),
+    ).toBe(true);
     const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
     expect(report?.t).toBe('crash');
-    expect(report?.p).toContain('kaboom-wv'); // the report carries the incident, not an empty trigger
+    expect(JSON.stringify(report?.p)).toContain('kaboom-wv'); // the report carries the incident, not an empty trigger
   });
 
   it('uses ONE shared per-session seq across the capture stream AND the report path', async () => {
@@ -271,7 +275,9 @@ describe('launch (webview)', () => {
       lineno: 1,
       colno: 2,
     });
-    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('detected-wv'))).toBe(true);
+    expect(
+      entriesOfType(fake.msgs(), 'crash').some((e) => JSON.stringify(e.p).includes('detected-wv')),
+    ).toBe(true);
   });
 
   it('wires unhandledrejection detection — a rejection streams a crash entry', () => {
@@ -285,7 +291,9 @@ describe('launch (webview)', () => {
       reason: new Error('rejected-wv'),
       promise: Promise.resolve(),
     });
-    expect(entriesOfType(fake.msgs(), 'crash').some((e) => e.p.includes('rejected-wv'))).toBe(true);
+    expect(
+      entriesOfType(fake.msgs(), 'crash').some((e) => JSON.stringify(e.p).includes('rejected-wv')),
+    ).toBe(true);
   });
 
   it('honors a native reportTrigger toggle via __bugsee_bridge.control (off→on), end to end', async () => {
@@ -305,14 +313,18 @@ describe('launch (webview)', () => {
     track('tok', baseOptions({ global: fake.global }));
     sendControl(fake.global, { command: 'pause' });
     console.log('while-paused-wv');
-    expect(entriesOfType(fake.msgs(), 'log').some((e) => e.p.includes('while-paused-wv'))).toBe(
-      false,
-    ); // dropped while paused
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) =>
+        JSON.stringify(e.p).includes('while-paused-wv'),
+      ),
+    ).toBe(false); // dropped while paused
     sendControl(fake.global, { command: 'resume' });
     console.log('after-resume-wv');
-    expect(entriesOfType(fake.msgs(), 'log').some((e) => e.p.includes('after-resume-wv'))).toBe(
-      true,
-    ); // streaming again
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) =>
+        JSON.stringify(e.p).includes('after-resume-wv'),
+      ),
+    ).toBe(true); // streaming again
   });
 
   it('the flush control command awaits the client flush', () => {
@@ -463,7 +475,7 @@ describe('launch (webview)', () => {
       const log = fake
         .msgs()
         .filter((m): m is EntryMessage => m.k === 'entry' && m.t === 'log')
-        .find((e) => e.p.includes('seq-before-secure'));
+        .find((e) => JSON.stringify(e.p).includes('seq-before-secure'));
       const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
       expect(log).toBeDefined();
       expect(secure).toBeDefined();
@@ -481,9 +493,7 @@ describe('launch (webview)', () => {
       );
       dom.emit('focus'); // a tracked change recomputes + posts
       const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
-      expect(secure?.p).toBe(
-        JSON.stringify([{ type: 'text', top: 10, left: 11, bottom: 12, right: 13 }]),
-      );
+      expect(secure?.p).toEqual([{ type: 'text', top: 10, left: 11, bottom: 12, right: 13 }]);
     });
 
     it('answers __bugsee_bridge.snapshot() synchronously with the serialized rects (native pull)', () => {
@@ -509,9 +519,7 @@ describe('launch (webview)', () => {
       sendControl(fake.global, { command: 'snapshot' });
       const secure = fake.msgs().filter((m): m is SecureMessage => m.k === 'secure');
       expect(secure.length).toBe(before + 1);
-      expect(secure.at(-1)?.p).toBe(
-        JSON.stringify([{ type: 'text', top: 1, left: 2, bottom: 3, right: 4 }]),
-      );
+      expect(secure.at(-1)?.p).toEqual([{ type: 'text', top: 1, left: 2, bottom: 3, right: 4 }]);
     });
 
     it('stop() detaches the obscuring source — a later DOM change posts nothing', async () => {
@@ -610,7 +618,9 @@ describe('launch (webview)', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global }));
       console.log('redact-none');
-      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('redact-none'));
+      const log = entriesOfType(fake.msgs(), 'log').find((e) =>
+        JSON.stringify(e.p).includes('redact-none'),
+      );
       expect(log?.red).toBe(false);
     });
 
@@ -626,9 +636,11 @@ describe('launch (webview)', () => {
         }),
       );
       client.log('log-secret');
-      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('LOG-REDACTED'));
+      const log = entriesOfType(fake.msgs(), 'log').find((e) =>
+        JSON.stringify(e.p).includes('LOG-REDACTED'),
+      );
       expect(log).toBeDefined();
-      expect(log?.p).not.toContain('log-secret'); // the original content was scrubbed before crossing
+      expect(JSON.stringify(log?.p)).not.toContain('log-secret'); // the original content was scrubbed before crossing
       expect(log?.red).toBe(true); // ...and the crossing carries the JS-redacted provenance
     });
 
@@ -636,7 +648,9 @@ describe('launch (webview)', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global, networkFilter: (e) => e }));
       console.log('redact-net-only');
-      const log = entriesOfType(fake.msgs(), 'log').find((e) => e.p.includes('redact-net-only'));
+      const log = entriesOfType(fake.msgs(), 'log').find((e) =>
+        JSON.stringify(e.p).includes('redact-net-only'),
+      );
       expect(log?.red).toBe(false); // a network filter does not redact logs
     });
 
@@ -651,7 +665,9 @@ describe('launch (webview)', () => {
         }),
       );
       await client.logException(new Error('redact-crash'));
-      const crash = entriesOfType(fake.msgs(), 'crash').find((e) => e.p.includes('redact-crash'));
+      const crash = entriesOfType(fake.msgs(), 'crash').find((e) =>
+        JSON.stringify(e.p).includes('redact-crash'),
+      );
       const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
       expect(crash?.red).toBe(true); // the report handler's before pass ran
       expect(report?.red).toBe(true);
@@ -668,8 +684,8 @@ describe('launch (webview)', () => {
       );
       client.addBreadcrumb({ message: 'crumb-secret', category: 'test' });
       const crumb = entriesOfType(fake.msgs(), 'breadcrumbs')[0];
-      expect(crumb?.p).toContain('CRUMB-REDACTED'); // the filter actually scrubbed the content
-      expect(crumb?.p).not.toContain('crumb-secret');
+      expect(JSON.stringify(crumb?.p)).toContain('CRUMB-REDACTED'); // the filter actually scrubbed the content
+      expect(JSON.stringify(crumb?.p)).not.toContain('crumb-secret');
       expect(crumb?.red).toBe(true); // ...and the crossing is stamped JS-redacted
     });
 
@@ -680,8 +696,8 @@ describe('launch (webview)', () => {
       client.setLogEventFilter((e) => e); // set AFTER launch (lazy provenance must observe it)
       client.log('redact-after-set');
       const logs = entriesOfType(fake.msgs(), 'log');
-      expect(logs.find((e) => e.p.includes('redact-before-set'))?.red).toBe(false);
-      expect(logs.find((e) => e.p.includes('redact-after-set'))?.red).toBe(true);
+      expect(logs.find((e) => JSON.stringify(e.p).includes('redact-before-set'))?.red).toBe(false);
+      expect(logs.find((e) => JSON.stringify(e.p).includes('redact-after-set'))?.red).toBe(true);
     });
   });
 });

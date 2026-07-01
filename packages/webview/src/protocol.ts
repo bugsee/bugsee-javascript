@@ -61,7 +61,9 @@ export interface EntryMessage {
   readonly red: boolean;
   /** Optional distributed-trace join. */
   readonly tr?: TraceRef;
-  /** The entry's serialized payload. */
+  /** The entry's ALREADY-serialized payload JSON (the store's `StoredEntry.serialized`). `encode` splices this
+   *  in VERBATIM as the wire `p`, so on the wire `p` is an INLINE object (native parses it once), not a
+   *  re-encoded string. */
   readonly p: string;
 }
 
@@ -230,11 +232,38 @@ export function byeMessage(): ByeMessage {
   return { b: PROTOCOL_VERSION, k: 'bye' };
 }
 
-/** Serialize a message to its wire string. */
+/**
+ * Serialize a message to its wire string. Entry/report/secure carry an opaque, ALREADY-serialized payload (`p`
+ * = the store's `StoredEntry.serialized`); we splice those bytes in VERBATIM as the raw `p` value rather than
+ * `JSON.stringify`-ing them into a quoted string. So the payload is serialized exactly ONCE (by the aggregator)
+ * and appears INLINE on the wire (an object/array), letting native parse the whole message once — no nested
+ * second parse (docs/design/webview-bridge.md §6.1). `batch` splices each element the same way; `hello`/`bye`
+ * have no opaque payload, so plain `JSON.stringify`.
+ */
 export function encode(
   message: HelloMessage | EntryMessage | ReportMessage | SecureMessage | BatchMessage | ByeMessage,
 ): string {
-  return JSON.stringify(message);
+  switch (message.k) {
+    case 'entry':
+    case 'report':
+    case 'secure':
+      return spliceRawPayload(message);
+    case 'batch':
+      return `{"b":${message.b},"k":"batch","e":[${message.e.map(spliceRawPayload).join(',')}]}`;
+    default:
+      return JSON.stringify(message);
+  }
+}
+
+/**
+ * Encode an envelope whose `p` is the already-serialized payload JSON, splicing `p` in verbatim (unescaped) as
+ * an inline value. Only the small primitive envelope goes through `JSON.stringify` (escape-safe, cannot throw on
+ * the payload); the pre-validated payload bytes are appended raw.
+ */
+function spliceRawPayload(message: EntryMessage | ReportMessage | SecureMessage): string {
+  const { p, ...envelope } = message;
+  const head = JSON.stringify(envelope);
+  return `${head.slice(0, -1)},"p":${p}}`;
 }
 
 /** Defensively parse a native→JS `control` message; returns `undefined` for non-JSON, a non-object, a message

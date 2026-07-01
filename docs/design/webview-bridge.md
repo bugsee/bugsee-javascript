@@ -99,18 +99,25 @@ detection, user-input, viewtree, `@bugsee/performance`) and **replaces the stora
   "o": 1719000000000,         // performance.timeOrigin (also sent in hello)
   "tr": { "t": "<traceId>", "s": "<spanId>" },  // optional trace join (FE↔native↔backend)
   "red": false,      // redaction provenance: did a JS filter pass run? (D3)
-  "p": "{...}" }     // the entry's serialized JSON STRING (native does ONE JSON.parse(p), keyed by `t`) — see below
+  "p": { ... } }     // the entry's payload INLINE as a JSON value (serialize ONCE on JS, ONE parse on native) — see below
 ```
 
-**`p` shape decision (DECIDED — `p` is the entry's serialized JSON STRING; native parses it per `t`).** Each
-`CaptureDataEntry` already self-serializes to its canonical per-type JSON form (`entry.serialize()`), and the
-store receives that as `StoredEntry.serialized`. `p` carries that string verbatim. **Rationale:** the alternative
-(parse it back to a structured object so the wire `p` is an object) forces an EXTRA `JSON.parse` per entry on
-the **embedded app's JS thread** — a real cost for high-volume logs/network — to save native (the resource-rich
-host, which already routes + parses per `t`) one parse. So `p:string` is LESS total work and keeps the embedded
-thread light; native does one `JSON.parse(p)` per entry, keyed by `t`. (This supersedes the earlier
-"structured-final" framing.) The native→JS `control` message ALSO carries `b` (the version tag) so a foreign
-message on a shared inbound channel (WebMessageChannel) is rejected, not just one with the wrong `k`.
+**`p` shape decision (DECIDED — `p` is the entry's payload INLINE as a JSON value; serialize once, parse once).**
+Each `CaptureDataEntry` already self-serializes to its canonical per-type JSON form (`entry.serialize()`), and the
+store receives that as `StoredEntry.serialized`. The envelope embeds that payload **as a nested JSON value** — an
+object for `log`/`network`/`report`, an array for `secure` — **not** as a quoted string. **Mechanism (no extra
+work on either side):** the JS host neither re-serializes nor re-parses; it `JSON.stringify`s only the small
+primitive envelope and **splices the already-serialized payload bytes in verbatim** as the raw `p` value
+(`head.slice(0,-1) + ',"p":' + serialized + '}'`). So JS serializes exactly **once** (the aggregator's
+`serialize()`), never walks/escapes the payload, and cannot throw on the hot path; native then does exactly
+**one** `JSON.parse` of the whole message and reads the payload directly as `p` (a nested object/array) — no
+second parse. **This corrects the earlier `p:string` decision, whose rationale wrongly assumed the object form
+required re-parsing the payload on the JS thread. Splicing avoids that, so inline `p` is strictly LESS total work
+(one serialize + one parse) than the doubly-encoded string (one serialize + an escaping pass on JS, then TWO
+parses on native).** Batch (`e[]`) splices each element's `p` the same way; `control` (native→JS) already carries
+its `config` inline, so it is single-serialize already. The native→JS `control` message ALSO carries `b` (the
+version tag) so a foreign message on a shared inbound channel (WebMessageChannel) is rejected, not just one with
+the wrong `k`.
 
 ### 6.2 Kinds
 

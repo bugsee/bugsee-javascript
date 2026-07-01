@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://bugsee.com/schemas/webview-bridge-protocol/v1.json",
   "title": "Bugsee WebView Bridge Protocol v1",
-  "description": "The versioned JSON envelope crossing the WebView boundary (docs/design/webview-bridge.md §6). JS->native kinds: hello | entry | batch | report | secure | bye. native->JS kind: control. Every message carries `b` (protocol version). `p` is a per-kind serialized JSON STRING (native does one JSON.parse keyed by `k`, then parses `p`). Receivers MUST ignore unknown fields/kinds (forward-compatible); this schema validates that the SDK EMITS well-formed messages (hence additionalProperties:false on the emitter side).",
+  "description": "The versioned JSON envelope crossing the WebView boundary (docs/design/webview-bridge.md §6). JS->native kinds: hello | entry | batch | report | secure | bye. native->JS kind: control. Every message carries `b` (protocol version). `p` is the per-kind payload INLINE as a JSON value (an object for entry/report, an array for secure) — the JS host splices the already-serialized payload in verbatim (serialize once), so native does exactly ONE JSON.parse of the whole message (no nested/second parse). Receivers MUST ignore unknown fields/kinds (forward-compatible); this schema validates that the SDK EMITS well-formed messages (hence additionalProperties:false on the emitter side).",
   "definitions": {
     "traceRef": {
       "type": "object",
@@ -47,7 +47,7 @@
     },
     "entry": {
       "type": "object",
-      "description": "JS->native: one streamed capture entry. `p` is the entry's serialized payload.",
+      "description": "JS->native: one streamed capture entry. `p` is the entry's payload INLINE (a {timestamp,data} object), keyed by `t`.",
       "properties": {
         "b": { "type": "integer", "minimum": 1 },
         "k": { "const": "entry" },
@@ -58,14 +58,14 @@
         "o": { "type": "number" },
         "red": { "type": "boolean" },
         "tr": { "$ref": "#/definitions/traceRef" },
-        "p": { "type": "string" }
+        "p": { "type": "object" }
       },
       "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
       "additionalProperties": false
     },
     "report": {
       "type": "object",
-      "description": "JS->native: a WebView-originated report TRIGGER (D5, gated). `p` is the serialized report metadata.",
+      "description": "JS->native: a WebView-originated report TRIGGER (D5, gated). `p` is the report metadata INLINE (a {source,report} object).",
       "properties": {
         "b": { "type": "integer", "minimum": 1 },
         "k": { "const": "report" },
@@ -76,14 +76,14 @@
         "o": { "type": "number" },
         "red": { "type": "boolean" },
         "tr": { "$ref": "#/definitions/traceRef" },
-        "p": { "type": "string" }
+        "p": { "type": "object" }
       },
       "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
       "additionalProperties": false
     },
     "secure": {
       "type": "object",
-      "description": "JS->native: the current secure-area rects to MASK (D10). `p` is the serialized SecureArea[].",
+      "description": "JS->native: the current secure-area rects to MASK (D10). `p` is the SecureArea[] INLINE (an array).",
       "properties": {
         "b": { "type": "integer", "minimum": 1 },
         "k": { "const": "secure" },
@@ -91,7 +91,7 @@
         "ts": { "type": "number" },
         "mono": { "type": "number" },
         "o": { "type": "number" },
-        "p": { "type": "string" }
+        "p": { "type": "array", "items": { "type": "object" } }
       },
       "required": ["b", "k", "s", "ts", "mono", "o", "p"],
       "additionalProperties": false

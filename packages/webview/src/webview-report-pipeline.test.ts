@@ -33,7 +33,7 @@ describe('createWebViewReportPipeline', () => {
 
     const entry = msgs().find((m): m is EntryMessage => m.k === 'entry');
     expect(entry?.t).toBe('crash');
-    expect(entry?.p).toContain('boom'); // the serialized report metadata
+    expect(JSON.stringify(entry?.p)).toContain('boom'); // the serialized report metadata
     expect(entry).toMatchObject({ ts: 5000, mono: 3, o: 1000 });
     expect(result).toEqual({ ok: true });
   });
@@ -53,7 +53,7 @@ describe('createWebViewReportPipeline', () => {
     expect(m.some((x) => x.k === 'entry' && x.t === 'crash')).toBe(true); // still streams the entry
     const report = m.find((x): x is ReportMessage => x.k === 'report');
     expect(report?.t).toBe('crash');
-    expect(report?.p).toContain('kaboom');
+    expect(JSON.stringify(report?.p)).toContain('kaboom');
   });
 
   it('reads the gate dynamically per report (native may toggle reportTrigger mid-session)', async () => {

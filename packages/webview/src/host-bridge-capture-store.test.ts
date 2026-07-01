@@ -23,7 +23,7 @@ describe('createHostBridgeCaptureStore', () => {
     const { bridge, msgs } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge, now: () => 5, timeOrigin: 900 });
     store.add(rec('network', '{"u":"x"}', 1000));
-    store.add(rec('log', 'hello', 2000));
+    store.add(rec('log', '"hello"', 2000));
 
     const m = msgs();
     expect(m).toHaveLength(2);
@@ -35,7 +35,7 @@ describe('createHostBridgeCaptureStore', () => {
       mono: 5,
       o: 900,
       red: false,
-      p: '{"u":"x"}',
+      p: { u: 'x' },
     });
     expect(m[1]).toMatchObject({ k: 'entry', t: 'log', s: 1, ts: 2000, p: 'hello' }); // seq incremented
   });
@@ -48,7 +48,7 @@ describe('createHostBridgeCaptureStore', () => {
       redactedFor: (type) => type === 'network',
     });
     store.add(rec('network', '{"u":"x"}'));
-    store.add(rec('log', 'hello'));
+    store.add(rec('log', '"hello"'));
     const m = msgs();
     expect(m[0]).toMatchObject({ t: 'network', red: true }); // a JS network filter ran
     expect(m[1]).toMatchObject({ t: 'log', red: false }); // no JS log filter → native redacts
@@ -57,7 +57,7 @@ describe('createHostBridgeCaptureStore', () => {
   it('defaults `red` to false when no redactedFor is injected (native redacts)', () => {
     const { bridge, msgs } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge });
-    store.add(rec('network', 'x'));
+    store.add(rec('network', '"x"'));
     expect(msgs()[0]?.red).toBe(false);
   });
 
@@ -65,8 +65,8 @@ describe('createHostBridgeCaptureStore', () => {
     const { bridge, msgs } = recordingBridge();
     let n = 100;
     const store = createHostBridgeCaptureStore({ bridge, seq: () => n++ });
-    store.add(rec('log', 'a'));
-    store.add(rec('log', 'b'));
+    store.add(rec('log', '"a"'));
+    store.add(rec('log', '"b"'));
     expect(msgs().map((m) => m.s)).toEqual([100, 101]); // the injected counter, not an internal 0,1
   });
 
@@ -74,8 +74,8 @@ describe('createHostBridgeCaptureStore', () => {
     const { bridge, msgs } = recordingBridge();
     let t = 10;
     const store = createHostBridgeCaptureStore({ bridge, now: () => t++, timeOrigin: 777 });
-    store.add(rec('log', 'a'));
-    store.add(rec('log', 'b'));
+    store.add(rec('log', '"a"'));
+    store.add(rec('log', '"b"'));
     expect(msgs().map((x) => x.mono)).toEqual([10, 11]); // now() read per entry
     expect(msgs().every((x) => x.o === 777)).toBe(true);
   });
@@ -84,7 +84,7 @@ describe('createHostBridgeCaptureStore', () => {
     vi.spyOn(performance, 'now').mockReturnValue(4242);
     const { bridge, msgs } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge }); // no now/timeOrigin injected
-    store.add(rec('log', 'a'));
+    store.add(rec('log', '"a"'));
     const m = msgs()[0] as EntryMessage;
     expect(m.mono).toBe(4242); // from performance.now() — a now/timeOrigin swap would fail this
     expect(m.o).toBe(performance.timeOrigin); // from performance.timeOrigin
@@ -93,7 +93,7 @@ describe('createHostBridgeCaptureStore', () => {
   it('snapshot() is an empty, releasable view (native owns the ring — no local export)', async () => {
     const { bridge } = recordingBridge();
     const store = createHostBridgeCaptureStore({ bridge });
-    store.add(rec('log', 'a'));
+    store.add(rec('log', '"a"'));
     const snap = store.snapshot();
     const streamed: StoredEntry[] = [];
     for await (const e of snap.stream()) streamed.push(e);
@@ -106,11 +106,11 @@ describe('createHostBridgeCaptureStore', () => {
     const { bridge, msgs } = recordingBridge();
     let paused = false;
     const store = createHostBridgeCaptureStore({ bridge, paused: () => paused });
-    store.add(rec('log', 'before'));
+    store.add(rec('log', '"before"'));
     paused = true;
-    store.add(rec('log', 'while-paused')); // dropped — no bridge crossing while backgrounded
+    store.add(rec('log', '"while-paused"')); // dropped — no bridge crossing while backgrounded
     paused = false;
-    store.add(rec('log', 'after'));
+    store.add(rec('log', '"after"'));
     expect(msgs().map((m) => m.p)).toEqual(['before', 'after']); // the paused entry never crossed
   });
 

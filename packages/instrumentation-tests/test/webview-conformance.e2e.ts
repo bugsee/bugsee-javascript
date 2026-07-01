@@ -145,25 +145,27 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     document.body.appendChild(button);
     button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 
-    expect(rx.entries('log').some((e) => String(e.p).includes('conformance-log-marker'))).toBe(
+    expect(
+      rx.entries('log').some((e) => JSON.stringify(e.p).includes('conformance-log-marker')),
+    ).toBe(true);
+    expect(rx.entries('traces.system').some((e) => JSON.stringify(e.p).includes('wv_mem'))).toBe(
       true,
     );
-    expect(rx.entries('traces.system').some((e) => String(e.p).includes('wv_mem'))).toBe(true);
-    expect(rx.entries('events.system').some((e) => String(e.p).includes('process_started'))).toBe(
-      true,
-    );
-    expect(rx.entries('events.user').some((e) => String(e.p).includes('click'))).toBe(true);
+    expect(
+      rx.entries('events.system').some((e) => JSON.stringify(e.p).includes('process_started')),
+    ).toBe(true);
+    expect(rx.entries('events.user').some((e) => JSON.stringify(e.p).includes('click'))).toBe(true);
     rx.assertAllConform();
   });
 
   it('streams an incident as a crash entry (always) + a report trigger when gated on (D5)', async () => {
     const { client, rx } = track(boot({ reportTrigger: true }));
     await client.logException(new Error('conformance-boom'));
-    const crash = rx.entries('crash').find((e) => String(e.p).includes('conformance-boom'));
+    const crash = rx.entries('crash').find((e) => JSON.stringify(e.p).includes('conformance-boom'));
     expect(crash).toBeDefined();
     const report = rx.byKind('report')[0];
     expect(report?.t).toBe('crash');
-    expect(String(report?.p)).toContain('conformance-boom');
+    expect(JSON.stringify(report?.p)).toContain('conformance-boom');
     rx.assertAllConform();
   });
 
@@ -176,7 +178,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
 
     const secure = rx.byKind('secure')[0];
     expect(secure).toBeDefined();
-    const areas = JSON.parse(String(secure?.p)) as Array<{ type: string }>;
+    const areas = secure?.p as unknown as Array<{ type: string }>;
     expect(areas.some((a) => a.type === 'text')).toBe(true); // the password input is a secure 'text' area
     // The synchronous native pull returns the serialized rects too.
     const pulled = JSON.parse(rx.host.__bugsee_bridge?.snapshot() ?? '[]') as unknown[];
@@ -204,7 +206,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     );
     const secure = rx.byKind('secure').at(-1);
     expect(secure).toBeDefined();
-    const areas = JSON.parse(String(secure?.p)) as Array<{
+    const areas = secure?.p as unknown as Array<{
       type: string;
       top: number;
       left: number;
@@ -217,10 +219,10 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     const { rx } = track(boot());
     rx.sendControl({ command: 'pause' });
     console.log('while-paused');
-    expect(rx.entries('log').some((e) => String(e.p).includes('while-paused'))).toBe(false);
+    expect(rx.entries('log').some((e) => JSON.stringify(e.p).includes('while-paused'))).toBe(false);
     rx.sendControl({ command: 'resume' });
     console.log('after-resume');
-    expect(rx.entries('log').some((e) => String(e.p).includes('after-resume'))).toBe(true);
+    expect(rx.entries('log').some((e) => JSON.stringify(e.p).includes('after-resume'))).toBe(true);
     rx.assertAllConform();
   });
 

@@ -62,7 +62,7 @@ describe('createObscuringChannel', () => {
       ts: 5000,
       mono: 1.5,
       o: 200,
-      p: JSON.stringify([{ type: 'hidden', top: 10, left: 11, bottom: 12, right: 13 }]),
+      p: [{ type: 'hidden', top: 10, left: 11, bottom: 12, right: 13 }], // inline array on the wire
     });
   });
 
@@ -80,7 +80,7 @@ describe('createObscuringChannel', () => {
     expect(bridge.posted).toHaveLength(1);
     const m = JSON.parse(bridge.posted[0] as string) as SecureMessage;
     expect(m.k).toBe('secure');
-    expect(m.p).toBe(JSON.stringify([{ type: 'hidden', top: 0, left: 1, bottom: 2, right: 3 }]));
+    expect(m.p).toEqual([{ type: 'hidden', top: 0, left: 1, bottom: 2, right: 3 }]);
   });
 
   it('stop() detaches — no further posts after stop', () => {
