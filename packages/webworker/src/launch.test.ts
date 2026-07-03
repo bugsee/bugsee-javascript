@@ -1,22 +1,30 @@
 import 'fake-indexeddb/auto'; // polyfills indexedDB/IDBKeyRange for the persist (Service Worker) path
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  captureDatabaseName,
   coexistenceDatabaseName,
   createIdbBlobStore,
+  createIdbChunkBackend,
+  createIdbKeyedStore,
+  createPrefixedKeyedStore,
   createWebLockLiveness,
   instanceLockName,
   type LockManagerLike,
+  markerDatabaseName,
 } from '@bugsee/browser-utils';
 import {
   type BundleStore,
   BundleStoreToken,
   contributeServiceManifest,
   createMemoryCaptureStore,
+  createReportingRequest,
   createSystemClock,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
   type Scheduler,
+  type StoredEntry,
   serializeBundle,
 } from '@bugsee/core';
 import { Severity } from '@bugsee/protocol';
@@ -167,6 +175,222 @@ const issueJson = (transport: ReturnType<typeof uploadTransport>) => {
     };
   };
 };
+
+// --- capture recovery (#165): seed a sibling instance's prior crash into the shared IDB -------------------
+const recoveryClock = { wallNow: () => 1000, monotonicNow: () => 0 }; // launch generation 1000
+
+const captureStoreFor = (idb: IDBFactory) =>
+  createIdbKeyedStore({
+    databaseName: captureDatabaseName('tok'),
+    storeName: 'capture',
+    indexedDB: idb,
+  });
+const markerStoreFor = (idb: IDBFactory) =>
+  createIdbBlobStore({
+    databaseName: markerDatabaseName('tok'),
+    storeName: 'markers',
+    indexedDB: idb,
+  });
+
+const logRecord = (data: unknown): StoredEntry => ({
+  type: 'log',
+  timestamp: 1,
+  serialized: JSON.stringify({ timestamp: 1, data }),
+});
+
+const siblingGenerations = async (idb: IDBFactory, instanceId: string): Promise<Set<number>> => {
+  const metas = await captureStoreFor(idb).readPrefix(`${instanceId}/m/`);
+  return new Set(
+    metas.map(([key]) => {
+      const inner = key.slice(instanceId.length + 1); // `m/<gen>/<chunk>`
+      return Number(inner.slice(2, inner.indexOf('/', 2)));
+    }),
+  );
+};
+const siblingMarkers = (idb: IDBFactory, instanceId: string): Promise<string[]> =>
+  markerStoreFor(idb)
+    .loadAll()
+    .then((es) => es.map(([k]) => k).filter((k) => k.startsWith(`${instanceId}/`)));
+
+// Seed a SIBLING instance's prior crash (a closed capture chunk + optionally a pending marker) under its own
+// `"<instanceId>/"` prefix — exactly how that instance's own launch would have written it.
+async function seedSibling(
+  idb: IDBFactory,
+  instanceId: string,
+  gen: number,
+  data: unknown,
+  withMarker: boolean,
+): Promise<void> {
+  const backend = createIdbChunkBackend(
+    createPrefixedKeyedStore(captureStoreFor(idb), instanceId),
+    {
+      generation: gen,
+      cleanOtherGenerations: false,
+    },
+  );
+  backend.openPart({ generation: gen, number: 0 }, gen);
+  backend.appendEntry({ generation: gen, number: 0 }, logRecord(data));
+  backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+  await backend.listGenerations(); // drain the async write queue
+  if (withMarker) {
+    const marker = {
+      generation: gen,
+      request: createReportingRequest({ source: { type: 'crash' }, id: `inc-${instanceId}` }),
+      attributes: {},
+      userIdentifier: null,
+    };
+    await markerStoreFor(idb).put(
+      `${instanceId}/inc-${instanceId}`,
+      new TextEncoder().encode(JSON.stringify(marker)),
+    );
+  }
+}
+
+describe('launch — capture recovery (#165: persist the rolling buffer)', () => {
+  it('persist ON (service-worker) registers the report-marker store', () => {
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', clock: recoveryClock }),
+    );
+    expect(client.getService(ReportMarkerStoreToken)).toBeDefined();
+  });
+
+  it('a web-worker (persist OFF) registers no marker store', () => {
+    const client = track('tok', baseOptions()); // default web-worker
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+  });
+
+  it('a captureStore override disables durable capture (no marker store)', () => {
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', captureStore: memStore() }),
+    );
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+  });
+
+  it('recover:false persists the buffer + bundle queue but records no markers', () => {
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', recover: false, clock: recoveryClock }),
+    );
+    expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // no marker store...
+    expect(client.getService(BundleStoreToken)).toBeDefined(); // ...but the durable bundle store still wired
+  });
+
+  it('persists the rolling capture buffer under a per-instance prefix in the per-token capture db', async () => {
+    const idb = new IDBFactory();
+    const tick: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb: () => void) => {
+        tick.push(cb);
+        return 'h';
+      },
+      clearInterval: () => {},
+    };
+    track(
+      'tok',
+      baseOptions({
+        platformType: 'service-worker',
+        scheduler,
+        indexedDB: idb,
+        clock: recoveryClock,
+        transport: uploadTransport(),
+      }),
+    );
+    console.log('persist-me'); // a captured log → written to the durable chunk store as captured
+    await new Promise((r) => setTimeout(r, 0));
+    for (const cb of tick) cb(); // a tick closes the part (rewrites its durable meta)
+    await vi.waitFor(async () => {
+      const keys = await captureStoreFor(idb).keys('');
+      expect(keys.length).toBeGreaterThan(0); // a plain memory store would persist nothing here
+      expect(keys.every((k) => /^[0-9a-f]{32}\//.test(k))).toBe(true); // every key under an <instanceId>/ prefix
+    });
+  });
+
+  it('writes a recovery marker for a live incident through the launch wiring', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', clock: recoveryClock }),
+    );
+    const putSpy = vi.spyOn(client.getService(ReportMarkerStoreToken), 'put');
+    await client.logException(new Error('live boom'));
+    expect(putSpy).toHaveBeenCalledTimes(1);
+    expect(putSpy.mock.calls[0]?.[0]?.generation).toBe(1000); // this launch's capture generation
+    expect(putSpy.mock.calls[0]?.[0]?.request.report.summary).toBe('live boom');
+  });
+
+  it('recovers a DEAD sibling incident (rebuild + upload from its preserved chunks) + sweeps its marker', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // a crashed activation's pending incident
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'pre-crash' }]);
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // marker swept
+  });
+
+  it('recovers a DEAD sibling incident but NEVER touches a LIVE one (SEV1)', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib')); // a still-open tab holds its lock
+    await seedSibling(idb, 'deadsib', 500, { m: 'dead-crash' }, true);
+    await seedSibling(idb, 'livesib', 700, { m: 'live-buffer' }, true);
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks,
+        onError: vi.fn(),
+      }),
+    );
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    // ONLY the dead sibling is rebuilt + delivered; its marker is swept.
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 'dead-crash' }]);
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+    // The LIVE sibling's marker + capture generation are completely untouched (the multi-tab sweep guarantee).
+    expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
+    expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
+    expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(1);
+  });
+
+  it('sweeps a DEAD sibling with capture but NO incident, uploading nothing', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'orphan' }, false); // chunks, but NO marker
+    const transport = uploadTransport();
+    // No onError here → also covers the recovery path's onError-absent branch.
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+    await vi.waitFor(async () =>
+      expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
+    ); // capture generation swept
+    expect(findPut(transport)).toBeUndefined(); // no incident → nothing uploaded
+  });
+});
 
 describe('launch (webworker)', () => {
   it('uploads a bundle on logException through the full worker path (session→issue→PUT)', async () => {

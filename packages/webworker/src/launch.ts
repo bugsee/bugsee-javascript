@@ -3,7 +3,14 @@ import {
   createWindowErrorProvider,
   type WindowEvents,
 } from '@bugsee/browser';
-import { createCoexistence, fetchTransport, type LockManagerLike } from '@bugsee/browser-utils';
+import {
+  createCoexistence,
+  createIdbChunkBackend,
+  createIdbChunkCaptureStore,
+  createPersistentReportMarkerStore,
+  fetchTransport,
+  type LockManagerLike,
+} from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
   createLogCaptureProvider,
@@ -22,6 +29,7 @@ import {
   createDurableUploadPipeline,
   createMemoryCaptureStore,
   createServiceContainer,
+  createSystemClock,
   createUploadPipeline,
   defineService,
   getCarrierClient,
@@ -30,6 +38,8 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  ReportMarkerStoreToken,
+  recoverReports,
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
@@ -176,16 +186,22 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   // Persistence defaults ON for a Service Worker (terminated when idle) and OFF for a long-lived Web Worker.
   const persist = options.persist ?? options.platformType === 'service-worker';
+  // Persist the ROLLING capture buffer too (durable IDB chunk store + marker recovery) when persisting and no
+  // capture-store override — so a Service Worker killed BEFORE its incident bundle is assembled still delivers
+  // the report, rebuilt from its preserved capture chunks, on the next activation. `recoverEnabled` additionally
+  // records incident markers + runs recovery (#165).
+  const durableCapture = persist && options.captureStore === undefined;
+  const recoverEnabled = (options.recover ?? true) && durableCapture;
 
-  // Durable bundle queue, multi-instance-safe: several tabs/workers share the origin's IndexedDB, so each
-  // launch writes under its own per-instance prefix in a per-APP-TOKEN database and recovers only DEAD
-  // siblings' leftovers (under a Web Lock). An explicit bundleStore bypasses coexistence (the caller owns
-  // durability); else `persist` builds the per-instance IndexedDB store (mirror hydrates async — recover()
-  // is deferred to whenReady below).
+  // Durable bundle queue + (when `durableCapture`) capture-chunk/marker stores, multi-instance-safe: several
+  // tabs/workers share the origin's IndexedDB, so each launch writes under its own per-instance prefix in a
+  // per-APP-TOKEN database and recovers only DEAD siblings' leftovers (under a Web Lock). An explicit bundleStore
+  // bypasses bundle coexistence (the caller owns durability); else `persist` builds the per-instance IndexedDB
+  // store (mirror hydrates async — recover() is deferred to whenReady below).
   const coexistence = createCoexistence({
     appToken,
     persist,
-    // The webworker has no capture-recovery path yet (#165) → bundle queue only, no captureRecovery.
+    captureRecovery: durableCapture,
     ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
     ...(options.locks !== undefined ? { locks: options.locks } : {}),
@@ -221,17 +237,34 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
-  // Capture store: override > in-memory. (The rolling buffer stays in RAM; the in-activation capture is what a
-  // SW incident reports. Persisting the rolling buffer across restarts — the IDB chunk store + marker recovery,
-  // for the rarer cross-activation case — is a follow-up; the durable BUNDLE queue above already makes an
-  // assembled incident bundle survive a termination.)
+  const storeBounds = {
+    maxRecordingTimeMs: maxRecordingTime * 1000,
+    maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  };
+  const clock = options.clock ?? createSystemClock();
+  const captureGeneration = clock.wallNow();
+  // Capture store: explicit override > (durableCapture → per-instance IndexedDB chunk store, durable-as-captured
+  // over the coexistence capture VIEW so the ROLLING buffer survives a termination) > in-memory. The report-
+  // marker store records detected-incident metadata at incident time over the coexistence marker VIEW (only when
+  // recovery is on), so a killed activation's incident is rebuilt from its preserved chunks on the next launch.
+  const captureKeyed = coexistence.captureView;
+  const reportMarkers =
+    recoverEnabled && coexistence.markerView !== undefined
+      ? createPersistentReportMarkerStore(coexistence.markerView, options.onError)
+      : undefined;
+  if (reportMarkers !== undefined) {
+    services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers));
+  }
   const captureStore =
     options.captureStore ??
-    createMemoryCaptureStore({
-      maxRecordingTimeMs: maxRecordingTime * 1000,
-      maxDataSizeBytes: maxDataSize * 1024 * 1024,
-      ...(options.clock !== undefined ? { clock: options.clock } : {}),
-    });
+    (captureKeyed !== undefined
+      ? createIdbChunkCaptureStore(captureKeyed, {
+          ...storeBounds,
+          generation: captureGeneration,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : createMemoryCaptureStore(storeBounds));
 
   const client = createClient({
     isEnabled: resolved.isEnabled,
@@ -241,6 +274,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     appToken,
     getEnvironment,
     captureStore,
+    ...(reportMarkers !== undefined
+      ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
+      : {}),
     // No contextProvider — a worker is stack-based (no ALS) and has no per-request model.
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
@@ -280,10 +316,34 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
       durable.recover(),
     );
   }
-  // Then recover any DEAD sibling instance's leftover bundles (a crashed tab/worker on the same origin),
-  // re-uploading directly (no re-persist into our queue). A no-op without coexistence (override / no persist /
-  // no Web Locks). Reads the shared store directly, so it needs no mirror hydration.
-  void coexistence.recoverDeadSiblings({ uploadPipeline: baseUploadPipeline });
+  // Then recover any DEAD sibling instance (a crashed/terminated activation or a crashed tab on the same
+  // origin), each under its own Web Lock so a LIVE sibling's data is never touched: re-upload its leftover
+  // bundles directly AND — when recovery is on — rebuild + deliver its detected incidents from its preserved
+  // capture chunks (core `recoverReports` over the sibling's prefixed views; `currentGeneration: -1` ⇒ every
+  // generation is eligible). A no-op without coexistence. Reads the shared stores directly (no mirror hydration).
+  void coexistence.recoverDeadSiblings({
+    uploadPipeline: baseUploadPipeline,
+    ...(recoverEnabled
+      ? {
+          recoverReportsForViews: async (deadCaptureView, deadMarkerView) => {
+            const markers = createPersistentReportMarkerStore(deadMarkerView, options.onError);
+            await markers.whenReady;
+            await recoverReports({
+              backend: createIdbChunkBackend(deadCaptureView, {
+                generation: -1,
+                cleanOtherGenerations: false,
+                ...(options.onError !== undefined ? { onError: options.onError } : {}),
+              }),
+              currentGeneration: -1,
+              markers,
+              context: () => ({ appToken, environment: getEnvironment(), clock }),
+              uploadPipeline: baseUploadPipeline,
+              ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            });
+          },
+        }
+      : {}),
+  });
 
   // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
