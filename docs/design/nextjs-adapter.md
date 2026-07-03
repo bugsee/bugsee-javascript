@@ -72,17 +72,35 @@ middleware.ts: withBugseeMiddleware(mw)   →  edge; middleware errors (NOT cove
 6. **Safe, framework-aware tunnel** (opt-in): scoped to the project (CVE-2023-46729 lesson), auto-excluded from
    middleware matchers, respects `basePath`, forwards `X-Forwarded-For`.
 
-## 5. Open design decisions (need confirmation before building)
+## 5. Design decisions (CONFIRMED 2026-07-03)
 - **D1 — Router scope.** App Router first-class; Pages Router gets *baseline* server coverage for free
-  (`onRequestError` + `register` cover it; `routerKind` distinguishes), deep Pages client wrapping deferred. ✅ recommended.
-- **D2 — Source-map dependency.** The config wrapper's map upload is task **#158** (X1, currently a stub). Build a
-  minimal post-build upload within nextjs first, or land #158 first as the shared substrate? (Lean: land the
-  bundler-agnostic #158 tooling first, then compose.)
-- **D3 — Tunnel route.** Ship it opt-in (default off) with the safety hardening above, or defer to a follow-up?
-- **D4 — OTel coexistence default.** Default-attach `@bugsee/opentelemetry` as a SpanProcessor consuming Next's
-  spans (adds an optional peer dep), or make it opt-in?
-- **D5 — Setup ergonomics.** How aggressively to collapse the file surface — a `bugsee-cli init nextjs` wizard +
-  re-export shims, vs documented manual files.
+  (`onRequestError` + `register` cover it; `routerKind` distinguishes), deep Pages client wrapping deferred.
+- **D2 — First slice = the RUNTIME ADAPTER; source-map upload deferred to #158.** The runtime hooks
+  (register/onRequestError/instrumentation-client/middleware) need no source maps, so build them first and land
+  full-session capture across all three runtimes; the config-wrapper's map UPLOAD composes #158 (bundler-agnostic
+  post-build CLI + turbopack loader) when it lands. Symbolication follows.
+- **D3 — Tunnel route: SHIP opt-in (default off) + HARDENED** — scoped forwarding to the Bugsee project (no
+  CVE-2023-46729 SSRF), auto-exclude from middleware matchers, respect `basePath`, forward `X-Forwarded-For`.
+- **D4 — OTel coexistence: DEFAULT-ATTACH** `@bugsee/opentelemetry` as a SpanProcessor consuming Next's native
+  spans (the zero-config tracing differentiator; beats Sentry's manual opt-in). `@bugsee/opentelemetry` is a
+  (composed) dependency; server tracing works out of the box.
+- **D5 — Setup ergonomics.** Collapse the file surface below Sentry's 4 — a `withBugsee(next.config)` wrapper +
+  minimal instrumentation shims (re-exports), a wizard as a follow-up.
+
+## 6. Build slices (each: test-first → mutator loop → multi-agent review → commit)
+- **N1** — package scaffold + **server (node) composition**: `registerServer(opts)` = `@bugsee/node` launch()
+  + default-attach `@bugsee/opentelemetry` SpanProcessor (consume Next's spans). NEXT_RUNTIME-safe (node-only).
+- **N2** — **edge composition**: `registerEdge(opts)` over the vercel-edge family (web-APIs-only, bundle-lean).
+- **N3** — the **`register()` dispatcher** (branch `NEXT_RUNTIME` → `await import('./server'|'./edge')`) +
+  **`onRequestError` bridge** (server throw → active-context report + route attribution).
+- **N4** — **client entry** (`instrumentation-client` helper → `@bugsee/browser` launch() + `@bugsee/react`
+  boundaries + `onRouterTransitionStart` soft-nav breadcrumbs).
+- **N5** — **`withBugseeMiddleware(mw)`** (edge; middleware errors NOT covered by `onRequestError`).
+- **N6** — **`withBugsee(nextConfig, opts)`** config wrapper: `experimental.instrumentationHook` on 13/14 +
+  the hardened opt-in tunnel (rewrite/route) + a source-map hook that composes #158 when present.
+- **N7** — **trace channel**: `getBugseeTraceData()` for `generateMetadata()` (client→server `<meta>` trace
+  continuation) + header propagation via cross-project tracing.
+- **(later)** `withBugseeServerAction(name, fn)` for the server-action OTel-span gap; the wizard; Pages-deep client.
 
 ## Decision Log (research → design)
 - Adopt the **official Next.js seams verbatim** (register / onRequestError / instrumentation-client / config
