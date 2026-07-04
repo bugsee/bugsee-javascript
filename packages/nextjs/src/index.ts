@@ -5,8 +5,8 @@
 // `./server` subpath (reached via `await import` from the `register()` dispatcher). See
 // docs/design/nextjs-adapter.md §3.
 //
-// Tier 4. Built so far: N1a/N1b-1 (server composition, ./server) + N3 (register dispatcher +
-// onRequestError bridge).
+// Tier 4. Built so far: N1a/N1b-1 (./server) + N2 (./edge) + N4 (./client) + N3 (register dispatcher +
+// onRequestError bridge) + N7 (getBugseeTraceData trace channel) — the portable surface is here.
 export {
   createOnRequestError,
   type NextOnRequestError,
@@ -15,4 +15,5 @@ export {
   type OnRequestErrorOptions,
   onRequestError,
 } from './on-request-error';
-export { register } from './register';
+export { type NextjsRegisterOptions, register } from './register';
+export { type GetBugseeTraceDataOptions, getBugseeTraceData } from './trace-data';
