@@ -15,6 +15,10 @@
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
+    },
+    "./client": {
+      "types": "./src/client.ts",
+      "import": "./src/client.ts"
     }
   },
   "files": [
@@ -29,10 +33,21 @@
   },
   "dependencies": {
     "@bugsee/core": "workspace:*",
+    "@bugsee/react": "workspace:*",
     "bugsee": "workspace:*"
   },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@bugsee/node": "workspace:*"
+    "@bugsee/node": "workspace:*",
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
@@ -57,6 +72,16 @@
         "require": {
           "types": "./dist/server.d.cts",
           "default": "./dist/server.cjs"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        },
+        "require": {
+          "types": "./dist/client.d.cts",
+          "default": "./dist/client.cjs"
         }
       }
     }
