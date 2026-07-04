@@ -84,6 +84,24 @@ middleware.ts: withBugseeMiddleware(mw)   →  edge; middleware errors (NOT cove
 - **D4 — OTel coexistence: DEFAULT-ATTACH** `@bugsee/opentelemetry` as a SpanProcessor consuming Next's native
   spans (the zero-config tracing differentiator; beats Sentry's manual opt-in). `@bugsee/opentelemetry` is a
   (composed) dependency; server tracing works out of the box.
+  - **D4.1 — MECHANISM (resolved at N1b start, competitor-grounded).** The OTel-JS global tracer-provider slot
+    is **single-owner / first-wins** (`setGlobalTracerProvider` returns `false` on a second call) and
+    `getTracerProvider()` returns a `ProxyTracerProvider` with **no `addSpanProcessor`** — so "coexistence"
+    never means a second provider. Two paths: **(a) coexist** — expose the wired Bugsee `SpanProcessor` so a
+    user running `@vercel/otel` passes it into `registerOTel({ spanProcessors: [processor] })` (Highlight's
+    proven pattern; **N1b-1, shipped** via `onSpanProcessor`); **(b) zero-config** — when NO provider is
+    registered, self-register our own `NodeTracerProvider` with the processor (Next then emits, we consume;
+    **N1b-2**). Improve on **Sentry** (which owns the provider by default with a **hard** OTel dep and **no**
+    auto-detection → silent double-provider footgun) by keeping the OTel SDK an **optional peer** (lazy-imported
+    only for path b, matching `@bugsee/opentelemetry`'s install-lean philosophy) and **detecting an existing
+    provider first** (skip self-register → never clobber a pre-existing `@vercel/otel`). Residual hazard: a user
+    who calls `registerOTel` AFTER us is clobbered by first-wins → mitigate with an **opt-out** (Sentry-style)
+    + docs ("use `registerOTel({ spanProcessors: [processor] })`, or register Bugsee last"). Vendor split
+    confirmed by research: full APM agents (Datadog/New Relic) own the provider; OTLP/backend vendors
+    (Highlight/Honeycomb/Grafana) attach a processor to the user's provider.
+  - **Build split:** **N1b-1** = performance wiring + `otelConsume` + expose the SpanProcessor (dep-free;
+    matches Highlight) — **DONE**. **N1b-2** = zero-config self-registration (optional-peer `@opentelemetry/
+    sdk-trace-node`, lazy import, detect-existing + first-wins guard, opt-out).
 - **D5 — Setup ergonomics.** Collapse the file surface below Sentry's 4 — a `withBugsee(next.config)` wrapper +
   minimal instrumentation shims (re-exports), a wizard as a follow-up.
 
