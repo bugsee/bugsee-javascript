@@ -19,6 +19,10 @@
     "./client": {
       "types": "./src/client.ts",
       "import": "./src/client.ts"
+    },
+    "./edge": {
+      "types": "./src/edge.ts",
+      "import": "./src/edge.ts"
     }
   },
   "files": [
@@ -34,6 +38,7 @@
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/react": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*",
     "bugsee": "workspace:*"
   },
   "peerDependencies": {
@@ -82,6 +87,16 @@
         "require": {
           "types": "./dist/client.d.cts",
           "default": "./dist/client.cjs"
+        }
+      },
+      "./edge": {
+        "import": {
+          "types": "./dist/edge.d.ts",
+          "default": "./dist/edge.js"
+        },
+        "require": {
+          "types": "./dist/edge.d.cts",
+          "default": "./dist/edge.cjs"
         }
       }
     }
