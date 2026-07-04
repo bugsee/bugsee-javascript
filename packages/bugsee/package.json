@@ -21,6 +21,10 @@
         "types": "./src/index.ts",
         "import": "./src/index.ts"
       }
+    },
+    "./node": {
+      "types": "./src/index.node.ts",
+      "import": "./src/index.node.ts"
     }
   },
   "files": [
@@ -68,6 +72,16 @@
             "types": "./dist/index.d.cts",
             "default": "./dist/index.cjs"
           }
+        }
+      },
+      "./node": {
+        "import": {
+          "types": "./dist/index.node.d.ts",
+          "default": "./dist/index.node.js"
+        },
+        "require": {
+          "types": "./dist/index.node.d.cts",
+          "default": "./dist/index.node.cjs"
         }
       }
     }

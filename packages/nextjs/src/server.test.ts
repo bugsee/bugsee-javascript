@@ -1,28 +1,22 @@
-import {
-  createMemoryCaptureStore,
-  type HttpRequestOptions,
-  type HttpResponse,
-  type HttpTransport,
-} from '@bugsee/core';
-import type { NodeRuntime } from '@bugsee/node';
+import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import type { NodeRuntime, SystemProbe } from '@bugsee/node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { registerServer } from './server';
+import {
+  type Bugsee,
+  type BugseeSpanProcessor,
+  type NextjsServerOptions,
+  registerServer,
+} from './server';
 
-// --- harness -----------------------------------------------------------------------------------
+// --- harness (mirrors the umbrella node.test: fake process/probe/clock/scheduler + recording transport) ---
 
-/** JSON body as bytes (mirrors the node launch-test harness). */
-function jsonBody(value: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(value));
-}
+const jsonBody = (obj: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(obj));
 
-/** A fake NodeRuntime (process lifecycle) — records nothing but a working on/off/exit surface. */
-function fakeProcess() {
-  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+function fakeProcess(): NodeRuntime {
+  const listeners = new Map<string, Array<(...a: unknown[]) => void>>();
   const proc: NodeRuntime = {
     on(event, listener) {
-      const list = listeners.get(event) ?? [];
-      list.push(listener);
-      listeners.set(event, list);
+      (listeners.get(event) ?? listeners.set(event, []).get(event))?.push(listener);
       return proc;
     },
     off(event, listener) {
@@ -32,12 +26,26 @@ function fakeProcess() {
       );
       return proc;
     },
-    exit: vi.fn(),
+    exit: () => {},
   };
   return proc;
 }
 
-/** A transport that satisfies the session→issue→S3 upload handshake and records every request. */
+const probe: SystemProbe = {
+  platformType: () => 'node',
+  runtimeVersion: () => '20.1.2',
+  osType: () => 'Linux',
+  osRelease: () => '6.0',
+  machine: () => 'x86_64',
+  cpuCount: () => 8,
+  totalMemory: () => 16_000,
+  utcOffsetMinutes: () => 0,
+  locale: () => 'en-US',
+};
+
+const fixedClock: Clock = { wallNow: () => 5000, monotonicNow: () => 0 };
+
+/** Records every request; satisfies the session→issue→S3 handshake and the perf-transactions POST. */
 function recordingTransport() {
   const calls: Array<{ url: string; options: HttpRequestOptions }> = [];
   const fn = vi.fn<HttpTransport>(async (url: string, options: HttpRequestOptions = {}) => {
@@ -57,22 +65,45 @@ function recordingTransport() {
   return { fn, calls };
 }
 
-const started: Array<{ stop: (timeout?: number) => Promise<boolean> }> = [];
+/** A controllable interval scheduler — `fire(ms)` runs the registered interval once (flush the uploader). */
+function fakeScheduler() {
+  const intervals: Array<{ ms: number; cb: () => void }> = [];
+  const scheduler = {
+    setInterval: (cb: () => void, ms: number) => {
+      intervals.push({ ms, cb });
+      return 'h';
+    },
+    clearInterval: () => {},
+  };
+  const fire = async (ms: number) => {
+    intervals.find((i) => i.ms === ms)?.cb();
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  return { scheduler, fire };
+}
+
+/** The transactions the perf uploader POSTed (from /v2/performance/transactions bodies). */
+const perfTransactions = (calls: Array<{ url: string; options: HttpRequestOptions }>) =>
+  calls
+    .filter((c) => c.url.endsWith('/v2/performance/transactions'))
+    .flatMap((c) => JSON.parse(String(c.options.body)).transactions as Array<{ name: string }>);
+
+const started: Bugsee[] = [];
 afterEach(async () => {
-  for (const c of started.splice(0)) {
-    await c.stop();
-  }
+  await Promise.all(started.splice(0).map((c) => c.stop()));
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-/** Launch through registerServer with the injected fakes + memory capture (no disk in unit tests).
- * A fresh `carrier: {}` per call makes each test's launch hermetic (isolation does not rely on the
- * afterEach `stop()` clearing the shared process-global carrier — a failed teardown can't leak a
- * client into the next test). Pass a shared `carrier` via `extra` to exercise the singleton. */
-function register(appToken: string, transport: HttpTransport, extra: Record<string, unknown> = {}) {
+/** Launch through registerServer with the hermetic node fakes. A fresh `carrier: {}` per call isolates
+ *  each test from the process-global singleton (isolation does not rely on the afterEach `stop()`). */
+function register(appToken: string, extra: Partial<NextjsServerOptions> = {}): Bugsee {
   const client = registerServer(appToken, {
-    transport,
     process: fakeProcess(),
-    captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+    systemProbe: probe,
+    systemMetricsSampler: () => [{ name: 'process_memory_rss', value: 42 }],
+    captureNetwork: false,
+    capturedDataStore: 'memory',
+    clock: fixedClock,
     recover: false,
     carrier: {},
     ...extra,
@@ -81,40 +112,38 @@ function register(appToken: string, transport: HttpTransport, extra: Record<stri
   return client;
 }
 
-// --- tests -------------------------------------------------------------------------------------
+// --- N1a: the server composition contract ------------------------------------------------------
 
 describe('registerServer', () => {
   it('returns a started Bugsee client with the report surface', () => {
     const { fn } = recordingTransport();
-    const client = register('tok', fn);
+    const client = register('tok', { transport: fn });
     expect(typeof client.logException).toBe('function');
     expect(typeof client.flush).toBe('function');
     expect(typeof client.stop).toBe('function');
+    expect(() => client.ext('performance')).not.toThrow(); // performance on by default (batteries-included)
   });
 
   it('forwards the appToken to the wire (x-app-token header + session app_token)', async () => {
     const { fn, calls } = recordingTransport();
-    const client = register('my-app-token', fn);
+    const client = register('my-app-token', { transport: fn });
     await client.logException(new Error('boom'));
     await client.flush();
 
-    // The session handshake carries the app token both as a header and in the body.
     const session = calls.find((c) => c.url.endsWith('/v2/sessions'));
     expect(session).toBeDefined();
     expect(session?.options.headers?.['x-app-token']).toBe('my-app-token');
     const raw = session?.options.body;
     const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array);
-    const body = JSON.parse(text);
-    expect(body.app_token).toBe('my-app-token');
+    expect(JSON.parse(text).app_token).toBe('my-app-token');
   });
 
   it('forwards launch options (endpoint) to the node composition', async () => {
     const { fn, calls } = recordingTransport();
-    const client = register('tok', fn, { endpoint: 'https://custom.test' });
+    const client = register('tok', { transport: fn, endpoint: 'https://custom.test' });
     await client.logException(new Error('boom'));
     await client.flush();
 
-    // Every Bugsee-API request must target the forwarded endpoint (proves options pass-through).
     const apiCalls = calls.filter((c) => c.url.includes('/v2/'));
     expect(apiCalls.length).toBeGreaterThan(0);
     for (const c of apiCalls) {
@@ -124,33 +153,109 @@ describe('registerServer', () => {
 
   it('uploads an issue for a reported exception (the composition actually captures)', async () => {
     const { fn, calls } = recordingTransport();
-    const client = register('tok', fn);
+    const client = register('tok', { transport: fn });
     await client.logException(new Error('boom'));
     await client.flush();
     expect(calls.some((c) => c.url.endsWith('/v2/issues'))).toBe(true);
   });
 
   it('is a per-process singleton — a repeat call returns the existing client (dev HMR)', () => {
-    // Next re-runs register() on dev HMR; the composition must not build a second client. A SHARED
-    // carrier stands in for the process-global that a real repeat register() would share.
     const { fn } = recordingTransport();
     const carrier = {};
     const onError = vi.fn();
-    const first = register('tok', fn, { carrier, onError });
+    const first = register('tok', { transport: fn, carrier, onError });
     const second = registerServer('tok', {
-      transport: fn,
       process: fakeProcess(),
-      captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+      systemProbe: probe,
+      captureNetwork: false,
+      capturedDataStore: 'memory',
+      clock: fixedClock,
       recover: false,
+      transport: fn,
       carrier,
       onError,
     });
 
     expect(second).toBe(first); // same instance — no second client built
-    // The ignored repeat is surfaced via onError (not silently dropped).
     const warned = onError.mock.calls.some(
       ([e]) => e instanceof Error && /more than once/.test(e.message),
     );
     expect(warned).toBe(true);
+  });
+
+  // --- N1b-1: the OTel consume bridge (default-attach, exposed for coexistence) -----------------
+
+  it('records + uploads the app.start startup transaction (performance on by default)', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const { fn, calls } = recordingTransport();
+    register('tok', {
+      transport: fn,
+      scheduler,
+      performanceFlushIntervalMs: 7777,
+      appStartTimeMs: 1000,
+    });
+    await fire(7777); // flush the perf uploader
+    expect(perfTransactions(calls).map((t) => t.name)).toContain('app.start');
+  });
+
+  it('exposes the Bugsee OTel SpanProcessor via onSpanProcessor exactly once (consume default-attached)', () => {
+    const { fn } = recordingTransport();
+    const onSpanProcessor = vi.fn<(p: BugseeSpanProcessor) => void>();
+    register('tok', { transport: fn, onSpanProcessor });
+    expect(onSpanProcessor).toHaveBeenCalledTimes(1); // one processor, handed over once
+    const sp = onSpanProcessor.mock.calls[0]?.[0];
+    for (const method of ['onStart', 'onEnd', 'forceFlush', 'shutdown'] as const) {
+      expect(typeof sp?.[method]).toBe('function');
+    }
+  });
+
+  it('honours an explicit otelConsume: false (no consume, processor never handed over)', () => {
+    const { fn } = recordingTransport();
+    const onSpanProcessor = vi.fn<(p: BugseeSpanProcessor) => void>();
+    register('tok', { transport: fn, otelConsume: false, onSpanProcessor });
+    // The default-attach default must remain OVERRIDABLE — the spread order must not clobber the caller.
+    expect(onSpanProcessor).not.toHaveBeenCalled();
+  });
+
+  it('consumes an OTel span into a native transaction that uploads', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const { fn, calls } = recordingTransport();
+    let sp: BugseeSpanProcessor | undefined;
+    register('tok', {
+      transport: fn,
+      scheduler,
+      performanceFlushIntervalMs: 7777,
+      appStartTimeMs: 1000,
+      onSpanProcessor: (p) => {
+        sp = p;
+      },
+    });
+    // Simulate Next.js ending a server root span (what @vercel/otel would emit).
+    sp?.onEnd({
+      spanContext: () => ({
+        traceId: '0123456789abcdef0123456789abcdef',
+        spanId: 'aaaaaaaaaaaaaaaa',
+      }),
+      name: 'GET /api/users',
+      startTime: [1, 0],
+      endTime: [2, 0],
+      status: { code: 1 },
+    });
+    await fire(7777);
+    expect(perfTransactions(calls).map((t) => t.name)).toContain('GET /api/users');
+  });
+
+  it('launches without an onSpanProcessor callback (consume still enabled, no throw)', async () => {
+    const { scheduler, fire } = fakeScheduler();
+    const { fn, calls } = recordingTransport();
+    register('tok', {
+      transport: fn,
+      scheduler,
+      performanceFlushIntervalMs: 7777,
+      appStartTimeMs: 1000,
+    });
+    await fire(7777);
+    // No onSpanProcessor: the composition still wires perf + consume (app.start proves perf is live).
+    expect(perfTransactions(calls).map((t) => t.name)).toContain('app.start');
   });
 });

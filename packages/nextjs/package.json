@@ -28,10 +28,11 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/node": "workspace:*"
+    "bugsee": "workspace:*"
   },
   "devDependencies": {
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "@bugsee/node": "workspace:*"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

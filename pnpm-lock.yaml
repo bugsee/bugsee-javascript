@@ -496,13 +496,16 @@ importers:
 
   packages/nextjs:
     dependencies:
-      '@bugsee/node':
+      bugsee:
         specifier: workspace:*
-        version: link:../node
+        version: link:../bugsee
     devDependencies:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
 
   packages/node:
     dependencies:
