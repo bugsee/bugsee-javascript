@@ -66,9 +66,9 @@ portable). This also lets us retrofit `@bugsee/nextjs` onto the shared kit (no b
    the Nuxt/Remix node server init does **not** need Sentry's fragile `--import` preload; a normal server
    plugin / entry import suffices (verify: patch installs before the first request).
 
-## 5. Design decisions (PROPOSED — for confirmation)
+## 5. Design decisions (D1 + D7 CONFIRMED 2026-07-05; D2–D6 proposed defaults)
 - **D1 — Extract a shared meta-framework kit** (P4 server-error bridge + P5 trace helper); retrofit nextjs onto
-  it. Avoids 5× duplication of the moat logic. *(recommend yes)*
+  it. Avoids 5× duplication of the moat logic. **✅ CONFIRMED — extract + retrofit** (slice **K0**, first).
 - **D2 — Runtime-adapter first; defer source-maps (P6) to #158** — identical to nextjs D2. The runtime seams
   (client/server/error/trace/edge) need no source maps; build them first, land full-session capture, wire P6
   when #158 ships.
@@ -83,11 +83,8 @@ portable). This also lets us retrofit `@bugsee/nextjs` onto the shared kit (no b
   support. Context opens in the `handle` hook (`store.run` around `resolve`) — one seam covers every adapter.
 - **D6 — Nuxt ships as a Nuxt Module**; server via a Nitro server plugin (no `--import` preload — emit-patch);
   runtime chosen at build from the Nitro preset (node vs edge/cloudflare), not per-request.
-- **D7 — Build order** (proposed): **SvelteKit → Remix(RR7) → Nuxt → Astro.** Rationale: SvelteKit + Remix have
-  the cleanest single `handleError` server hook (near-verbatim P4) and reuse `@bugsee/svelte`/`@bugsee/react`;
-  Nuxt adds the Nitro/module machinery; Astro is the most divergent (no error hook → middleware-wrap; islands;
-  integration). Alternative order by ecosystem size (React→Vue→Svelte→Astro) = **Remix → Nuxt → SvelteKit →
-  Astro**. *(user to pick D7.)*
+- **D7 — Build order: ✅ CONFIRMED ECOSYSTEM-FIRST → `K0 → Remix(RR7) → Nuxt → SvelteKit → Astro`.** Extract
+  the shared kit (K0) first, then the biggest ecosystems (React's Remix, Vue's Nuxt) before Svelte/Astro.
 
 ## 6. Build slices (per framework — each: test-first → mutator → review → commit, like nextjs)
 Shared **K0** (if D1=yes): extract `reportServerError` + trace helper into the shared kit; retrofit nextjs.
