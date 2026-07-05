@@ -1,0 +1,126 @@
+# Meta-framework adapters — design (Nuxt / Remix / SvelteKit / Astro)
+
+**Status:** DESIGN (2026-07-05). Informed by four sourced research reports (one per framework, each mapping
+the framework's instrumentation seams + Sentry's reference adapter to Bugsee's existing platforms). Not yet
+built. Sibling of the shipped `docs/design/nextjs-adapter.md` — read that first; this doc is deliberately the
+"same shape, different seam names" follow-on.
+
+## 1. The finding: all four are the @bugsee/nextjs adapter with different seam names
+
+@bugsee/nextjs proved out a **thin meta-adapter** over the existing platforms (`@bugsee/browser` + a UI
+adapter, `@bugsee/node`, `@bugsee/vercel-edge`) wired through a fixed set of reusable primitives. Every one
+of Nuxt/Remix/SvelteKit/Astro needs the **same** primitives; only the framework's **seam names** and its
+**delivery mechanism** (module / Vite plugin / integration / entry files) differ. No new platform work is
+required — this is composition + per-framework glue.
+
+### The 6 reusable primitives (already built for Next.js)
+| # | Primitive | Provided by | Next.js form |
+| --- | --- | --- | --- |
+| P1 | **Client init** — earliest browser launch + UI error/nav seam | `@bugsee/browser` + `@bugsee/{react,vue,svelte,solid}` | `instrumentation-client` → `registerClient` |
+| P2 | **Server init** — start the node (or edge) SDK | `@bugsee/node` `launch()` / `@bugsee/vercel-edge` `launchEdge()` | `register()` dispatcher |
+| P3 | **Per-request context** — ALS scope + `http.server` txn | `@bugsee/node` (node:http emit-patch + ALS) / `runInEdgeContext` | automatic |
+| P4 | **Server-error bridge** (the `onRequestError` analog) — stitch a server throw to the session | `getCarrierClient()` + `client.event(attribution)` + `logException` (portable) | `onRequestError` |
+| P5 | **Trace `<meta>` channel** — inject W3C `traceparent` into SSR HTML so the client pageload joins the server trace | `getBugseeTraceData()` (portable — reads `RequestContext.trace`) | `getBugseeTraceData()` |
+| P6 | **Build integration + source-map upload** | a Vite/Rollup plugin — **task #158** | `withBugsee(nextConfig)` |
+
+## 2. Per-framework seam map (the whole design in one table)
+
+| Primitive | **Nuxt** (Vue + Nitro) | **Remix / RR7** (React) | **SvelteKit** (Svelte) | **Astro** (islands) |
+| --- | --- | --- | --- | --- |
+| UI adapter | `@bugsee/vue` | `@bugsee/react` | `@bugsee/svelte` | **agnostic** — user adds `@bugsee/{react,vue,svelte,solid}` |
+| P1 client init | `plugins/*.client.ts` (Nuxt plugin, auto-injected by the module) + `vueApp.config.errorHandler`/`vue:error` | `app/entry.client.tsx`; **RR7** `<HydratedRouter onError={bugseeOnError}>`; **v2** `withBugsee(App)` + `ErrorBoundary` | `src/hooks.client.ts` + `handleError: HandleClientError` | `injectScript('page', …)` (browser launch only) |
+| P2 server init | **Nitro server plugin** `server/plugins/*` (auto via `addServerPlugin`) | preload `instrument.server.mjs` (`--import`) or custom-server top import | `src/instrumentation.server.ts` (≥2.31, exp flag) **or** top of `hooks.server.ts` | `injectScript('page-ssr', …)` |
+| P3 request context | `node:http` emit-patch under `node-server` preset (Bugsee's own ALS) | `node:http` emit-patch under `remix-serve`/Express | `handle` hook wraps `resolve()` → open ALS `store.run()` (works on **every** adapter) | `defineMiddleware` wraps `next()` → ALS/edge context |
+| P4 server-error bridge | `nitroApp.hooks.hook('error', …)` (filter H3Error 404/422) | **`export function handleError(err,{request})`** (skip aborted + thrown `Response`) | **`export const handleError: HandleServerError`** (not called for `error()` helper) | **no hook** — try/catch around `next()` in middleware, rethrow |
+| P5 trace `<meta>` | Nitro `render:html` → `html.head.push('<meta traceparent>')` | **RR7** `getMetaTagTransformer` stream; **v2** `Server-Timing` header (least intrusive) or root-loader+`meta()` | `handle` `transformPageChunk` → splice after `<head>` | middleware rewrites the HTML response (splice after `<head>`) |
+| P6 build + maps | **Nuxt Module** (`defineNuxtModule`) + `addVitePlugin` + #158 | Vite plugin + #158 (+ optional route-manifest plugin) | **Vite plugin** `bugseeSvelteKit()` (must precede `sveltekit()`) + #158 | **Integration** `bugsee()` (`astro:config:setup`) + `updateConfig(vite)` + #158 |
+| Edge | Nitro `vercel-edge`/`cloudflare` preset → `@bugsee/vercel-edge`/`@bugsee/cloudflare` in the server plugin | `@react-router/cloudflare` → `@bugsee/vercel-edge`/`@bugsee/cloudflare` | per-route `config.runtime:'edge'` → `@bugsee/vercel-edge` **(Sentry unsupported here — our differentiator)** | Vercel edge adapter (`edgeMiddleware`) → `@bugsee/vercel-edge` |
+| Runtime dispatch | **build-time preset** (no per-request `NEXT_RUNTIME`) | Web-Fetch handler; per-adapter | per-route `config` / per-adapter | per-adapter (Vercel node+edge) |
+| Delivery surface | one **Nuxt Module** in `modules[]` | entry-file exports + a Vite plugin | one **Vite plugin** + `hooks.{client,server}` helpers | one **Integration** in `integrations[]` |
+
+## 3. Shared "meta-framework kit" (the key architectural decision)
+
+P4 (server-error bridge) and P5 (trace-data) are **runtime-portable and framework-agnostic** — they use only
+`getCarrierClient()` + `client.event/logException` and `RequestContext.trace`. Today they live as internal
+files in `@bugsee/nextjs` (`on-request-error.ts`, `trace-data.ts`). With **five** meta-adapters
+(nextjs + these four) they should be **extracted once** and reused, not copied 5×:
+
+- `reportServerError(getClient, error, { mechanism, attributes })` — the generic P4 bridge (each adapter maps
+  its framework's error-context → `attributes`).
+- `getTraceparent(getClient)` / `traceMetaTag(getClient)` — the generic P5 helper (already portable — it *is*
+  `getBugseeTraceData`'s body).
+
+Precedent exists for shared adapter cores: the **backend** adapters share the server-instrument core in
+`@bugsee/node`; the **frontend** adapters share `@bugsee/web-adapter`. Recommendation (**D1**): extract these
+two primitives into a small shared module and have all five meta-adapters consume it. Location decided at
+build (candidates: a new `@bugsee/adapter-kit`, or fold P4/P5 into `@bugsee/node`/`@bugsee/core` since they're
+portable). This also lets us retrofit `@bugsee/nextjs` onto the shared kit (no behaviour change).
+
+## 4. Differentiation (same moat as Next.js, extended)
+1. **Full-session capture stitched to the server throw, across runtimes** — the white space; no competitor
+   ships "the client session that led to *this* SSR failure" as one artifact for these frameworks either.
+2. **Edge where Sentry doesn't go** — notably **SvelteKit on Vercel Edge** (Sentry explicitly unsupported)
+   and Nuxt edge presets; we already have `@bugsee/vercel-edge`/`@bugsee/cloudflare`.
+3. **Zero-config trace join** — the `<meta traceparent>` channel + FE→BE propagation already built.
+4. **Fewer moving parts than Sentry** — Bugsee's `node:http` **emit-patch** (not `import-in-the-middle`) means
+   the Nuxt/Remix node server init does **not** need Sentry's fragile `--import` preload; a normal server
+   plugin / entry import suffices (verify: patch installs before the first request).
+
+## 5. Design decisions (PROPOSED — for confirmation)
+- **D1 — Extract a shared meta-framework kit** (P4 server-error bridge + P5 trace helper); retrofit nextjs onto
+  it. Avoids 5× duplication of the moat logic. *(recommend yes)*
+- **D2 — Runtime-adapter first; defer source-maps (P6) to #158** — identical to nextjs D2. The runtime seams
+  (client/server/error/trace/edge) need no source maps; build them first, land full-session capture, wire P6
+  when #158 ships.
+- **D3 — Remix = React-Router-v7 (framework mode) first**, Remix v2 as a thin back-compat variant. RR7 is the
+  go-forward target with the cleaner surface (`onError` prop, `getMetaTagTransformer`, native instrumentation
+  API); v2 differs in client-error wiring + trace channel only.
+- **D4 — Astro ships the browser launch only, island-framework-agnostic** — `injectScript('page')` boots
+  `@bugsee/browser`; the user adds the matching `@bugsee/<framework>` island adapter (mirrors Astro's renderer
+  model + our structural-peer convention). Don't couple `@bugsee/astro` to one UI adapter.
+- **D5 — SvelteKit supports edge** (`config.runtime:'edge'` → `@bugsee/vercel-edge`) — a concrete win over
+  Sentry. Init default = top-of-`hooks.server.ts` (version-portable), with optional `instrumentation.server.ts`
+  support. Context opens in the `handle` hook (`store.run` around `resolve`) — one seam covers every adapter.
+- **D6 — Nuxt ships as a Nuxt Module**; server via a Nitro server plugin (no `--import` preload — emit-patch);
+  runtime chosen at build from the Nitro preset (node vs edge/cloudflare), not per-request.
+- **D7 — Build order** (proposed): **SvelteKit → Remix(RR7) → Nuxt → Astro.** Rationale: SvelteKit + Remix have
+  the cleanest single `handleError` server hook (near-verbatim P4) and reuse `@bugsee/svelte`/`@bugsee/react`;
+  Nuxt adds the Nitro/module machinery; Astro is the most divergent (no error hook → middleware-wrap; islands;
+  integration). Alternative order by ecosystem size (React→Vue→Svelte→Astro) = **Remix → Nuxt → SvelteKit →
+  Astro**. *(user to pick D7.)*
+
+## 6. Build slices (per framework — each: test-first → mutator → review → commit, like nextjs)
+Shared **K0** (if D1=yes): extract `reportServerError` + trace helper into the shared kit; retrofit nextjs.
+
+- **SvelteKit** — S1 client (`hooks.client.ts` helpers + `@bugsee/svelte`) · S2 `bugseeHandle()` (ALS context +
+  first-owner-wins) + `handleErrorWithBugsee` (P4) · S3 trace via `transformPageChunk` · S4 init placement
+  (`instrumentation.server.ts` + hooks-top) · S5 edge (`config.runtime:'edge'`) · S6 Vite plugin + #158.
+- **Remix/RR7** — R1 server error bridge + preload init (RR7 `handleError`) · R2 client entry + `bugseeOnError`
+  (RR7) · R3 trace (`getMetaTagTransformer`) · R4 server txn + route names (native instrumentation API) · R5
+  Remix-v2 back-compat entry set · R6 build/source-maps (#158).
+- **Nuxt** — U1 module skeleton (`defineNuxtModule`) · U2 client plugin (`@bugsee/browser`+`@bugsee/vue`) · U3
+  Nitro server plugin (`launch()`; verify patch-before-first-request) · U4 `nitroApp.hooks('error')` bridge · U5
+  trace via `render:html` · U6 edge/cloudflare preset branch · U7 source-maps (#158).
+- **Astro** — A1 integration skeleton + client `injectScript('page')` · A2 server `injectScript('page-ssr')` +
+  node/edge branch · A3 middleware (context + try/catch error capture, `order:'pre'`) · A4 trace via response
+  rewrite · A5 source-maps (#158) · A6 real-Astro e2e.
+
+## 7. Open verification items (flagged by research — resolve at each build)
+- **Nuxt/Remix/SvelteKit(node):** confirm Bugsee's `node:http` emit-patch attaches to the framework's server
+  instance and installs **before the first request** (else fall back to a Sentry-style preload for that case).
+- **SvelteKit:** whether to lean on native `getRequestEvent()` ALS vs Bugsee's own context (avoid
+  double-instrumentation); `handleError` doesn't fire for the `error()` helper (expected) — pair with a
+  `handle` try/catch for `handle`-level throws.
+- **Remix v2 vs RR7:** two entry-file variants; RR7 SDK surface is **beta** (pin ≥7.15 for the instrumentation
+  API); confirm RR7 `handleError` fires for middleware errors.
+- **Astro:** prerendered-page-first can leave server-islands uninstrumented until an SSR route warms init
+  (mirror Sentry's caveat); Astro-native ALS isolation is unverified — own the context. Defer Cloudflare-Astro
+  worker-wrap (upstream in flux).
+- **All:** P6 (source-map upload) is blocked on **#158**; every adapter's build slice depends on it.
+
+## 8. Sources
+Four research reports (Nuxt/Nitro + @sentry/nuxt; Remix v2 + React Router v7 + @sentry/remix/@sentry/react-router;
+SvelteKit + @sentry/sveltekit; Astro + @sentry/astro), each citing primary docs + Sentry source. Full URL lists
+in-session (agent transcripts). Key primaries: Nitro deploy/plugins/hooks docs; Remix/RR7 `entry.{client,server}`
++ `handleError` docs + Sentry source; SvelteKit hooks/observability/adapters docs + `@sentry/sveltekit` source;
+Astro Integration/Middleware/on-demand-rendering docs + `@sentry/astro` source.
