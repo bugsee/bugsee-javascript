@@ -10,16 +10,23 @@
 // OTel default-attach (design D4): `otelConsume` is turned ON so Next's native OTel spans, once they
 // reach a TracerProvider, are assembled into native Bugsee transactions. The wired SpanProcessor is
 // surfaced via `onSpanProcessor` so a user already running `@vercel/otel` can feed Next's spans into
-// Bugsee with `registerOTel({ spanProcessors: [processor] })` (the Highlight coexistence pattern).
-// Zero-config self-registration of a provider when none exists lands in N1b-2.
+// Bugsee with `registerOTel({ spanProcessors: [processor] })` (the Highlight coexistence pattern). AND
+// (N1b-2) when NO OTel provider is registered, we zero-config self-register one carrying that processor
+// (fire-and-forget, first-wins) so Next emits its spans with no user OTel setup — see ./otel-provider.
 import {
   type Bugsee,
   type BugseeNodeLaunchOptions,
   type BugseeSpanProcessor,
   launch,
 } from 'bugsee/node';
+import { attachBugseeOtelProvider } from './otel-provider';
 
 export type { Bugsee, BugseeSpanProcessor } from 'bugsee/node';
+export {
+  type AttachOtelProviderOptions,
+  attachBugseeOtelProvider,
+  type OtelProviderOutcome,
+} from './otel-provider';
 
 /**
  * Options for the Next.js server (Node) composition. Extends the batteries-included node umbrella
@@ -29,10 +36,17 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
   /**
    * Receives the Bugsee OpenTelemetry `SpanProcessor` (the consume bridge). Register it on your
    * `TracerProvider`, or pass it to `@vercel/otel`'s `registerOTel({ spanProcessors: [processor] })`,
-   * to feed Next.js's native spans into Bugsee. Called synchronously during launch. (Zero-config
-   * self-registration when no provider exists lands in N1b-2.)
+   * to feed Next.js's native spans into Bugsee. Called synchronously during launch.
    */
   onSpanProcessor?: (processor: BugseeSpanProcessor) => void;
+  /**
+   * Zero-config OTel (N1b-2): when NO OpenTelemetry provider is registered, Bugsee stands up its own
+   * (carrying the consume-bridge processor) so Next.js emits + Bugsee consumes its spans with no user
+   * OTel setup. First-wins — it never clobbers a pre-existing `@vercel/otel`. Requires the optional peers
+   * `@opentelemetry/api` + `@opentelemetry/sdk-trace-base` (skipped if absent). Set `false` to opt out
+   * (e.g. you manage OTel yourself). Default `true`.
+   */
+  setupOtelProvider?: boolean;
 }
 
 /**
@@ -42,14 +56,19 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
  * (a per-process singleton — a repeat call under dev HMR returns the existing client).
  */
 export function registerServer(appToken: string, options: NextjsServerOptions = {}): Bugsee {
-  const { onSpanProcessor, ...launchOptions } = options;
+  const { onSpanProcessor, setupOtelProvider, ...launchOptions } = options;
   return launch(appToken, {
     // Default-attach the OTel consume bridge (D4); a caller may still override `otelConsume: false`.
     otelConsume: true,
     ...launchOptions,
-    // Always own the span-processor seam so we can surface it (and, in N1b-2, self-register a provider).
+    // Own the span-processor seam: surface it (coexistence) AND zero-config self-register a provider when
+    // the OTel slot is free (N1b-2). The attach is fire-and-forget + fully defensive (never throws/rejects).
     onOtelSpanProcessor: (processor) => {
       onSpanProcessor?.(processor);
+      void attachBugseeOtelProvider(processor, {
+        ...(setupOtelProvider !== undefined ? { setupOtelProvider } : {}),
+        ...(launchOptions.onError !== undefined ? { onError: launchOptions.onError } : {}),
+      });
     },
   });
 }

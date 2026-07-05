@@ -1,6 +1,17 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import type { NodeRuntime, SystemProbe } from '@bugsee/node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Mock the zero-config OTel provider self-registration so real launches here never stand up a real global
+// TracerProvider (which would pollute cross-test global state). Its own logic is tested in
+// otel-provider.test.ts; here we only assert registerServer WIRES it. attach stays a no-op spy.
+const { attachBugseeOtelProvider } = vi.hoisted(() => ({
+  attachBugseeOtelProvider: vi.fn<
+    (processor: unknown, options?: { setupOtelProvider?: boolean }) => Promise<'registered'>
+  >(async () => 'registered' as const),
+}));
+vi.mock('./otel-provider', () => ({ attachBugseeOtelProvider }));
+
 import {
   type Bugsee,
   type BugseeSpanProcessor,
@@ -92,6 +103,7 @@ const started: Bugsee[] = [];
 afterEach(async () => {
   await Promise.all(started.splice(0).map((c) => c.stop()));
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  attachBugseeOtelProvider.mockClear();
 });
 
 /** Launch through registerServer with the hermetic node fakes. A fresh `carrier: {}` per call isolates
@@ -257,5 +269,31 @@ describe('registerServer', () => {
     await fire(7777);
     // No onSpanProcessor: the composition still wires perf + consume (app.start proves perf is live).
     expect(perfTransactions(calls).map((t) => t.name)).toContain('app.start');
+  });
+
+  // --- N1b-2: zero-config OTel provider self-registration is wired ------------------------------
+
+  it('fires the zero-config OTel provider self-registration with the wired processor', () => {
+    const { fn } = recordingTransport();
+    register('tok', { transport: fn });
+    expect(attachBugseeOtelProvider).toHaveBeenCalledTimes(1);
+    const processor = attachBugseeOtelProvider.mock.calls[0]?.[0] as BugseeSpanProcessor;
+    expect(typeof processor.onEnd).toBe('function'); // the REAL wired consume-bridge processor
+  });
+
+  it('forwards setupOtelProvider (opt-out) + onError to the self-registration', () => {
+    const { fn } = recordingTransport();
+    const onError = () => {};
+    register('tok', { transport: fn, setupOtelProvider: false, onError });
+    expect(attachBugseeOtelProvider).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ setupOtelProvider: false, onError }),
+    );
+  });
+
+  it('does not self-register when consume is off (no processor to hand over)', () => {
+    const { fn } = recordingTransport();
+    register('tok', { transport: fn, otelConsume: false });
+    expect(attachBugseeOtelProvider).not.toHaveBeenCalled();
   });
 });
