@@ -8,5 +8,5 @@ import { baseConfig } from '../../tsup.config.base';
 // composition, reached via the register() dispatcher's edge branch).
 export default defineConfig({
   ...baseConfig,
-  entry: ['src/index.ts', 'src/server.ts', 'src/client.ts', 'src/edge.ts'],
+  entry: ['src/index.ts', 'src/server.ts', 'src/client.ts', 'src/edge.ts', 'src/middleware.ts'],
 });

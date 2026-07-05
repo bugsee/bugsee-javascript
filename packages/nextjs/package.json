@@ -23,6 +23,10 @@
     "./edge": {
       "types": "./src/edge.ts",
       "import": "./src/edge.ts"
+    },
+    "./middleware": {
+      "types": "./src/middleware.ts",
+      "import": "./src/middleware.ts"
     }
   },
   "files": [
@@ -97,6 +101,16 @@
         "require": {
           "types": "./dist/edge.d.cts",
           "default": "./dist/edge.cjs"
+        }
+      },
+      "./middleware": {
+        "import": {
+          "types": "./dist/middleware.d.ts",
+          "default": "./dist/middleware.js"
+        },
+        "require": {
+          "types": "./dist/middleware.d.cts",
+          "default": "./dist/middleware.cjs"
         }
       }
     }
