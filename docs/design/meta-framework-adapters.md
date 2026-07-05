@@ -87,7 +87,10 @@ portable). This also lets us retrofit `@bugsee/nextjs` onto the shared kit (no b
   the shared kit (K0) first, then the biggest ecosystems (React's Remix, Vue's Nuxt) before Svelte/Astro.
 
 ## 6. Build slices (per framework — each: test-first → mutator → review → commit, like nextjs)
-Shared **K0** (if D1=yes): extract `reportServerError` + trace helper into the shared kit; retrofit nextjs.
+Shared **K0 — ✅ DONE:** extracted into the new portable package **`@bugsee/adapter-kit`**
+(`reportServerError` (P4) + `getTraceparent`/`traceMetaEntries` (P5), deps: `@bugsee/core` only); retrofitted
+`@bugsee/nextjs` onto it (behavior-identical, 57 tests unchanged, `.` entry still node-free). The four
+adapters below consume the kit.
 
 - **SvelteKit** — S1 client (`hooks.client.ts` helpers + `@bugsee/svelte`) · S2 `bugseeHandle()` (ALS context +
   first-owner-wins) + `handleErrorWithBugsee` (P4) · S3 trace via `transformPageChunk` · S4 init placement

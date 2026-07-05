@@ -7,18 +7,12 @@
 // propagation the platform launches already wire, this closes the loop: the client session and the server
 // throw the N3 `onRequestError` bridge reports share a single trace.
 //
-// RUNTIME-PORTABLE: runs in `generateMetadata()` on the node OR edge server runtime, so it reads the trace
-// through the portable core `ContextProvider` (`RequestContext.trace`) — never the node-only context store
-// or the DOM-touching performance extension. Fully defensive — never throws out of `generateMetadata`.
-import { type BugseeClient, ContextProviderToken, getCarrierClient } from '@bugsee/core';
+// RUNTIME-PORTABLE: runs in `generateMetadata()` on the node OR edge server runtime. The trace read +
+// traceparent formatting is the shared `@bugsee/adapter-kit` `traceMetaEntries` (P5) — Next just re-exports
+// it under the framework-idiomatic name. Fully defensive — never throws out of `generateMetadata`.
+import { type TraceDataOptions, traceMetaEntries } from '@bugsee/adapter-kit';
 
-/** W3C trace-context version (`traceparent` = `<version>-<traceId>-<spanId>-<flags>`). */
-const W3C_VERSION = '00';
-
-export interface GetBugseeTraceDataOptions {
-  /** Resolve the Bugsee client. Default: the process/isolate carrier singleton. */
-  getClient?: () => BugseeClient | undefined;
-}
+export type GetBugseeTraceDataOptions = TraceDataOptions;
 
 /**
  * Read the active server-request trace as Next.js `Metadata.other` entries — spread the result into
@@ -36,18 +30,5 @@ export interface GetBugseeTraceDataOptions {
 export function getBugseeTraceData(
   options: GetBugseeTraceDataOptions = {},
 ): Record<string, string> {
-  try {
-    const client = (options.getClient ?? (() => getCarrierClient<BugseeClient>()))();
-    if (client === undefined) return {};
-    const provider = client
-      .getServiceProvider(ContextProviderToken)
-      .getImmediate({ optional: true });
-    const trace = provider?.getCurrent()?.trace;
-    if (trace === undefined) return {};
-    const flags = trace.sampled ? '01' : '00';
-    return { traceparent: `${W3C_VERSION}-${trace.traceId}-${trace.spanId}-${flags}` };
-  } catch {
-    // Never break generateMetadata — a missing context/provider just yields no continuation.
-    return {};
-  }
+  return traceMetaEntries(options);
 }

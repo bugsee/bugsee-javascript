@@ -12,7 +12,11 @@
 //
 // NOTE: `onRequestError` does NOT catch middleware errors (Next bug #83404) — those get their own path
 // (`withBugseeMiddleware`, N5).
-import { type BugseeClient, getCarrierClient } from '@bugsee/core';
+//
+// The report itself (event + logException + defensiveness) is the shared `@bugsee/adapter-kit`
+// `reportServerError` (P4) — Next only maps its error context to the capture event.
+import { reportServerError } from '@bugsee/adapter-kit';
+import type { BugseeClient } from '@bugsee/core';
 
 /** The `request` argument Next passes to `onRequestError` (the subset we read; structural, no `next` dep). */
 export interface NextRequestErrorRequest {
@@ -49,25 +53,24 @@ export interface OnRequestErrorOptions {
  * of Next's hook and no-ops when Bugsee is not launched.
  */
 export function createOnRequestError(options: OnRequestErrorOptions = {}): NextOnRequestError {
-  const getClient = options.getClient ?? (() => getCarrierClient<BugseeClient>());
   return (error, request, context) => {
-    try {
-      const client = getClient();
-      if (client === undefined) return;
-      // Route attribution as a captured event — portable (rides the incident bundle on any runtime) and
-      // correlated to the active session/request via the same context `logException` merges.
-      client.event('next.request-error', {
-        routerKind: context.routerKind,
-        routePath: context.routePath,
-        routeType: context.routeType,
-        ...(context.renderSource !== undefined ? { renderSource: context.renderSource } : {}),
-        method: request.method,
-        path: request.path,
-      });
-      void client.logException(error, { mechanism: 'http-error' });
-    } catch {
-      // Never replace / disrupt Next's own error handling.
-    }
+    // Route attribution rides a captured event (portable, correlated to the active session via the
+    // context `logException` merges); the kit does the defensive report + carrier default.
+    reportServerError(error, {
+      ...(options.getClient !== undefined ? { getClient: options.getClient } : {}),
+      event: {
+        name: 'next.request-error',
+        params: {
+          routerKind: context.routerKind,
+          routePath: context.routePath,
+          routeType: context.routeType,
+          ...(context.renderSource !== undefined ? { renderSource: context.renderSource } : {}),
+          method: request.method,
+          path: request.path,
+        },
+      },
+      mechanism: 'http-error',
+    });
   };
 }
 
