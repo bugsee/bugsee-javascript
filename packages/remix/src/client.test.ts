@@ -15,7 +15,7 @@ vi.mock('@bugsee/react', async (importOriginal) => {
 });
 
 import * as clientEntry from './client';
-import { bugseeOnError, registerClient } from './client';
+import { bugseeOnError, captureRemixErrorBoundaryError, registerClient } from './client';
 
 describe('registerClient', () => {
   afterEach(() => {
@@ -65,6 +65,40 @@ describe('bugseeOnError (RR7 <HydratedRouter onError>)', () => {
     const err = new Error('boom');
     bugseeOnError(err, { componentStack: null });
     expect(reportReactError).toHaveBeenCalledWith(err, {}); // null must NOT leak as a bogus stack
+  });
+});
+
+describe('captureRemixErrorBoundaryError (Remix v2 root ErrorBoundary)', () => {
+  afterEach(() => reportReactError.mockReset());
+
+  it('reports a real Error (a render crash) thrown to the boundary', () => {
+    const err = new Error('render crash');
+    captureRemixErrorBoundaryError(err);
+    expect(reportReactError).toHaveBeenCalledWith(err, {});
+  });
+
+  it('SKIPS a route-error-response (404/redirect — expected control flow, not a crash)', () => {
+    // v2 `useRouteError()` yields a { status, statusText, data } route-error-response for 404s/redirects.
+    captureRemixErrorBoundaryError({ status: 404, statusText: 'Not Found', data: 'x' });
+    expect(reportReactError).not.toHaveBeenCalled();
+  });
+
+  it('reports a non-Error thrown value (still a crash, not a route-error-response)', () => {
+    captureRemixErrorBoundaryError('a thrown string');
+    expect(reportReactError).toHaveBeenCalledWith('a thrown string', {});
+  });
+
+  it('reports an object lacking a numeric `status` (not the route-error-response shape)', () => {
+    const err = { statusText: 'x', data: 'y' }; // missing `status` → a real thrown object, report it
+    captureRemixErrorBoundaryError(err);
+    expect(reportReactError).toHaveBeenCalledWith(err, {});
+  });
+
+  it('forwards a custom getClient', () => {
+    const err = new Error('x');
+    const getClient = () => undefined;
+    captureRemixErrorBoundaryError(err, { getClient });
+    expect(reportReactError).toHaveBeenCalledWith(err, { getClient });
   });
 });
 

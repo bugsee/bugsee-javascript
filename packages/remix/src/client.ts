@@ -4,6 +4,8 @@
 // batteries-included browser umbrella + @bugsee/react) → behind the `@bugsee/remix/client` subpath, never
 // the portable `.` or node `./server` entry. Captures the SESSION the server `handleError` bridge (R1)
 // stitches to a failing request.
+
+import type { BugseeClient } from '@bugsee/core';
 import { type ReactErrorInfo, reportReactError } from '@bugsee/react';
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
 
@@ -39,4 +41,30 @@ export function bugseeOnError(error: unknown, errorInfo?: ReactErrorInfo): void 
   // React's `errorInfo.componentStack` is `string | null` — narrow to a real stack before forwarding.
   const componentStack = errorInfo?.componentStack;
   reportReactError(error, typeof componentStack === 'string' ? { componentStack } : {});
+}
+
+/** A Remix/RR `useRouteError()` route-error-response (thrown `Response`/`data()` → `{ status, statusText,
+ *  data }`) — expected control flow (404/redirect), NOT a crash. Structural (no `react-router` dep). */
+function isRouteErrorResponse(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'status' in error &&
+    'statusText' in error &&
+    'data' in error
+  );
+}
+
+/**
+ * Remix v2 (no `onError` prop) — call from your root `ErrorBoundary` with `useRouteError()`:
+ * `export function ErrorBoundary() { captureRemixErrorBoundaryError(useRouteError()); return <RootError/>; }`.
+ * SKIPS route-error-responses (404/redirect/data — expected control flow) and reports every actual thrown
+ * error (mirrors @sentry/remix). (RR7 uses `bugseeOnError` via `<HydratedRouter onError>` instead.)
+ */
+export function captureRemixErrorBoundaryError(
+  error: unknown,
+  options: { getClient?: () => BugseeClient | undefined } = {},
+): void {
+  if (isRouteErrorResponse(error)) return;
+  reportReactError(error, options.getClient !== undefined ? { getClient: options.getClient } : {});
 }

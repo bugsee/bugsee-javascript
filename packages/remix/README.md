@@ -3,8 +3,9 @@
 Remix / React Router v7 meta-adapter. See `docs/design/meta-framework-adapters.md`.
 
 **Status:** in progress. Built: **R1** (server `handleError` bridge + `@bugsee/remix/server` node composition) + **R2**
-(`@bugsee/remix/client`) + **R3** (trace `<meta>` channel: `getBugseeTraceMetaTags` + `getBugseeMetaTagTransformer`).
-Remaining: R4 server txn / route names, R5 Remix-v2 back-compat, R6 source-maps (#158).
+(`@bugsee/remix/client`) + **R3** (trace `<meta>` channel) + **R5** (Remix-v2 back-compat: `captureRemixErrorBoundaryError` for the v2
+root ErrorBoundary — v2's server handleError / init / trace already work via R1–R3). Remaining: R4 server txn
+/ route names (RR7 native instrumentation API, beta), R6 source-maps (#158).
 
 ```ts
 // entry.server.tsx
