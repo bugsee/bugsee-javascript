@@ -643,9 +643,16 @@ importers:
 
   packages/remix:
     dependencies:
-      '@bugsee/browser':
+      '@bugsee/adapter-kit':
         specifier: workspace:*
-        version: link:../browser
+        version: link:../adapter-kit
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
+      bugsee:
+        specifier: workspace:*
+        version: link:../bugsee
+    devDependencies:
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
