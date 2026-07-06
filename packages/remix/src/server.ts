@@ -10,6 +10,10 @@ import { type Bugsee, type BugseeNodeLaunchOptions, launch } from 'bugsee/node';
 
 export type { Bugsee } from 'bugsee/node';
 
+// R3 (node half): the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
+// on the node-only entry, alongside launch.
+export { getBugseeMetaTagTransformer } from './meta-tag-transformer';
+
 /** Options for the Remix server (Node) composition — the batteries-included node umbrella options. */
 export interface RemixServerOptions extends BugseeNodeLaunchOptions {}
 
