@@ -574,12 +574,15 @@ importers:
 
   packages/nuxt:
     dependencies:
-      '@bugsee/browser':
+      '@bugsee/adapter-kit':
         specifier: workspace:*
-        version: link:../browser
-      '@bugsee/node':
+        version: link:../adapter-kit
+      '@bugsee/core':
         specifier: workspace:*
-        version: link:../node
+        version: link:../core
+      bugsee:
+        specifier: workspace:*
+        version: link:../bugsee
 
   packages/opentelemetry:
     dependencies:
