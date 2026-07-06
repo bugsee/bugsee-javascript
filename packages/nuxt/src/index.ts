@@ -1,7 +1,14 @@
-// @bugsee/nuxt — the package `.` entry, which will be the Nuxt Module (`defineNuxtModule`, U1) that wires
-// the client plugin (@bugsee/vue) + the Nitro server plugin (@bugsee/nuxt/server `installBugseeNitro`).
+// @bugsee/nuxt — the package `.` entry IS the Nuxt Module (so `modules: ['@bugsee/nuxt']` resolves to it).
+// The module (U1) wires the browser client plugin (@bugsee/vue via `./client`) + the Nitro server plugin
+// (@bugsee/node via `./server`) — see docs/design/meta-framework-adapters.md.
 //
-// Tier 4. Built so far: the Nitro server-error bridge core (`@bugsee/nuxt/server`). The Nuxt Module (U1),
-// client plugin (U2), and `render:html` trace injection (U5) are forthcoming — see
-// docs/design/meta-framework-adapters.md.
-export {};
+// Build-time only: this entry pulls in `@nuxt/kit`, never the `bugsee`/`bugsee/node` runtimes (those load
+// through the generated client template / the shipped `./runtime/nitro-plugin`). U5 (`render:html` trace
+// injection) is forthcoming.
+export {
+  clientPluginContent,
+  default,
+  type ModuleOptions,
+  type NuxtLike,
+  setupBugseeModule,
+} from './module';

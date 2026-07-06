@@ -5,4 +5,7 @@ packages:
 # esbuild (via tsup/vitest) needs its postinstall to fetch its native binary.
 allowBuilds:
   '@nestjs/core': false
+  # @parcel/watcher (transitive via @nuxt/kit, a @bugsee/nuxt devDep) is only for dev file-watching —
+  # not needed for build-time module code or tests, so skip its native-binary build.
+  '@parcel/watcher': false
   esbuild: true

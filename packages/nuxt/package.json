@@ -73,5 +73,25 @@
         }
       }
     }
+  },
+  "peerDependencies": {
+    "@nuxt/kit": ">=3.0.0",
+    "nitropack": ">=2.0.0",
+    "nuxt": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nuxt/kit": {
+      "optional": true
+    },
+    "nitropack": {
+      "optional": true
+    },
+    "nuxt": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@nuxt/kit": "^3.21.8",
+    "nitropack": "^2.13.4"
   }
 }
