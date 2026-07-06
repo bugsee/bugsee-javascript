@@ -1,0 +1,42 @@
+// @bugsee/remix — client (browser runtime) composition.
+//
+// Reached from `app/entry.client.tsx` (the browser hydration entry). Browser-only (composes the
+// batteries-included browser umbrella + @bugsee/react) → behind the `@bugsee/remix/client` subpath, never
+// the portable `.` or node `./server` entry. Captures the SESSION the server `handleError` bridge (R1)
+// stitches to a failing request.
+import { type ReactErrorInfo, reportReactError } from '@bugsee/react';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
+
+// Re-export the @bugsee/react surface (error boundary / Profiler / router helpers) so a Remix app gets
+// everything from `@bugsee/remix/client`. `react` is an OPTIONAL peer (server-only users don't need it).
+export * from '@bugsee/react';
+export type { Bugsee } from 'bugsee';
+
+/** Options for the Remix client composition — the batteries-included browser umbrella options. */
+export interface RemixClientOptions extends BugseeLaunchOptionsWithPerformance {}
+
+/**
+ * Start Bugsee for the Remix / React Router **client** (browser) runtime. Call at the top of
+ * `entry.client.tsx`. Returns the started per-tab client.
+ *
+ * ```tsx
+ * // entry.client.tsx
+ * import { registerClient, bugseeOnError } from '@bugsee/remix/client';
+ * registerClient(import.meta.env.VITE_BUGSEE_TOKEN);
+ * hydrateRoot(document, <HydratedRouter onError={bugseeOnError} />);
+ * ```
+ */
+export function registerClient(appToken: string, options: RemixClientOptions = {}): Bugsee {
+  return launch(appToken, options);
+}
+
+/**
+ * The React Router v7 `<HydratedRouter onError>` (and data-router `onError`) handler — report a client
+ * React error to Bugsee with its component stack. Defensive + no-ops when Bugsee is not launched (via
+ * `reportReactError`).
+ */
+export function bugseeOnError(error: unknown, errorInfo?: ReactErrorInfo): void {
+  // React's `errorInfo.componentStack` is `string | null` — narrow to a real stack before forwarding.
+  const componentStack = errorInfo?.componentStack;
+  reportReactError(error, typeof componentStack === 'string' ? { componentStack } : {});
+}

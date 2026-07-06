@@ -649,6 +649,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/react':
+        specifier: workspace:*
+        version: link:../react
       bugsee:
         specifier: workspace:*
         version: link:../bugsee
@@ -656,6 +659,12 @@ importers:
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
 
   packages/replay:
     dependencies:
