@@ -580,6 +580,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/vue':
+        specifier: workspace:*
+        version: link:../vue
       bugsee:
         specifier: workspace:*
         version: link:../bugsee
