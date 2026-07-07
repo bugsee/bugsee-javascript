@@ -88,6 +88,25 @@ const BROWSER_OPTION_DEFINITIONS = [
   { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
 ];
 
+/** Session-replay options (a structural subset of `@bugsee/replay`'s options — no runtime dep here; replay
+ *  is lazy-loaded). All masking defaults are fail-closed. */
+export interface ReplayLaunchOptions {
+  /** Mask every text node. Default true. */
+  maskAllText?: boolean;
+  /** Mask every input value. Default true. */
+  maskAllInputs?: boolean;
+  /** Block all media/iframes. Default true. */
+  blockAllMedia?: boolean;
+  /** Additional CSS selector whose text to mask. */
+  maskTextSelector?: string;
+  /** Additional CSS selector to block. */
+  blockSelector?: string;
+  /** Additional CSS selector whose input events to ignore. */
+  ignoreSelector?: string;
+  /** Full-snapshot cadence (ms) — bounds the retained window. Default 60000. */
+  checkoutEveryNms?: number;
+}
+
 export interface BugseeLaunchOptions {
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
   endpoint?: string;
@@ -120,6 +139,12 @@ export interface BugseeLaunchOptions {
   captureViewHierarchy?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /**
+   * Session replay (rrweb). `true` or an options object enables it; `@bugsee/replay` is lazy-`import()`ed
+   * only then, so the errors-only bundle is unaffected (design D2/D8). Masking is FAIL-CLOSED (mask all
+   * text/inputs, block all media). Default off.
+   */
+  replay?: boolean | ReplayLaunchOptions;
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
@@ -344,6 +369,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     ? [createViewtreeSnapshotSource({ document: domDocument })]
     : undefined;
 
+  // Session replay (lazy). When enabled, a shared fileEncoders map is threaded into the client's report
+  // assembly (RP5a) — @bugsee/replay writes its `replay.bin` encoder into it after the lazy import resolves.
+  const replayEnabled = options.replay !== undefined && options.replay !== false;
+  const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
+    replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
@@ -352,6 +383,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appToken,
     getEnvironment,
     captureStore,
+    ...(fileEncoders !== undefined ? { fileEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
@@ -395,6 +427,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     carrier,
   );
   client.addCaptureProvider(createUserEventsProvider(inputSource));
+
+  // Session replay: lazy-`import()` @bugsee/replay ONLY when enabled (a separate chunk → errors bundle
+  // stays ≤15KB), then install the recorder + register the replay.bin encoder into the shared map. The
+  // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
+  if (replayEnabled && fileEncoders !== undefined) {
+    const replayOptions = typeof options.replay === 'object' ? options.replay : {};
+    void import('@bugsee/replay')
+      .then((m) => {
+        m.registerReplay(client, fileEncoders, replayOptions);
+      })
+      .catch((error) => options.onError?.(error));
+  }
 
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));

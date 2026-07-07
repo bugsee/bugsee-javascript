@@ -46,6 +46,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserProbe, BrowserProbeToken } from './environment';
 import { type BugseeLaunchOptions, launch, launchCore } from './launch';
 
+// Mock the lazy-loaded @bugsee/replay so replay tests don't spin up real rrweb; assert it's wired only when on.
+const { registerReplay } = vi.hoisted(() => ({ registerReplay: vi.fn() }));
+vi.mock('@bugsee/replay', () => ({ registerReplay }));
+
 // A test-only contributed service token (an "extension").
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 
@@ -123,6 +127,7 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
+  registerReplay.mockClear(); // vi.fn call history isn't cleared by restoreAllMocks
   vi.unstubAllGlobals();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
@@ -1059,5 +1064,41 @@ describe('launchCore', () => {
     clients.push(client);
     // A second entry via launchCore resolves the same singleton client.
     expect(launchCore('tok', baseOptions({ carrier })).client).toBe(client);
+  });
+});
+
+describe('launch — session replay (lazy)', () => {
+  it('lazy-loads @bugsee/replay + registers it when replay is enabled, forwarding the options', async () => {
+    launchTracked('tok', baseOptions({ replay: { maskAllText: false, checkoutEveryNms: 5000 } }));
+    // The dynamic import resolves on a microtask.
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    const call = registerReplay.mock.calls[0] as unknown[];
+    expect(typeof (call[0] as { addCaptureProvider?: unknown }).addCaptureProvider).toBe(
+      'function',
+    );
+    expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
+    expect(call[2]).toEqual({ maskAllText: false, checkoutEveryNms: 5000 }); // options forwarded
+  });
+
+  it('enables replay with default options when replay is `true`', async () => {
+    launchTracked('tok', baseOptions({ replay: true }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({}); // no options object → {}
+  });
+
+  it('does NOT load @bugsee/replay when replay is off (default) — errors bundle unaffected', async () => {
+    launchTracked('tok', baseOptions());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(registerReplay).not.toHaveBeenCalled();
+  });
+
+  it('routes a replay load/registration failure to onError (never breaks launch)', async () => {
+    registerReplay.mockImplementationOnce(() => {
+      throw new Error('replay boom');
+    });
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ replay: true, onError }));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });
 });
