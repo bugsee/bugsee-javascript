@@ -769,7 +769,13 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      bugsee:
+        specifier: workspace:*
+        version: link:../bugsee
     devDependencies:
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
       '@sveltejs/kit':
         specifier: ^2.0.0
         version: 2.67.0(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.1.2(svelte@5.56.3(@typescript-eslint/types@8.59.4))(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0)))(svelte@5.56.3(@typescript-eslint/types@8.59.4))(typescript@6.0.3)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))

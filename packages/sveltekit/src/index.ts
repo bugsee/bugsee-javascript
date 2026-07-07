@@ -4,6 +4,14 @@
 // context + trace-meta injection), and server/client/edge init entries (added behind their subpaths). This
 // `.` entry holds the runtime-portable pieces so `hooks.server.ts` can import them on any deploy target.
 export {
+  type CreateHandleOptions,
+  createHandle,
+  handle,
+  type SvelteKitHandle,
+  type SvelteKitHandleInput,
+  type SvelteKitResolveOptions,
+} from './handle';
+export {
   type CreateHandleServerErrorOptions,
   createHandleServerError,
   handleError,

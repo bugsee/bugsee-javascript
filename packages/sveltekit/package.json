@@ -11,6 +11,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
     }
   },
   "files": [
@@ -25,9 +29,11 @@
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "bugsee": "workspace:*"
   },
   "devDependencies": {
+    "@bugsee/node": "workspace:*",
     "@sveltejs/kit": "^2.0.0"
   }
 }

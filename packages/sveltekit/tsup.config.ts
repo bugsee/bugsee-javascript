@@ -1,9 +1,9 @@
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
 
-// @bugsee/sveltekit: the portable `.` entry (handleError + handle + trace) — server/client/edge entries are
-// added as their slices land.
+// @bugsee/sveltekit: the portable `.` entry (handleError + handle + trace) + `server` (node launch).
+// client/edge entries are added as their slices land.
 export default defineConfig({
   ...baseConfig,
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/server.ts'],
 });
