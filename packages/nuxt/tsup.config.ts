@@ -11,5 +11,11 @@ import { baseConfig } from '../../tsup.config.base';
 export default defineConfig({
   ...baseConfig,
   entry: ['src/index.ts', 'src/server.ts', 'src/client.ts', 'src/runtime/nitro-plugin.ts'],
-  external: ['@nuxt/kit', 'nitropack', 'nitropack/runtime', '@bugsee/nuxt/server', '@bugsee/nuxt/client'],
+  external: [
+    '@nuxt/kit',
+    'nitropack',
+    'nitropack/runtime',
+    '@bugsee/nuxt/server',
+    '@bugsee/nuxt/client',
+  ],
 });
