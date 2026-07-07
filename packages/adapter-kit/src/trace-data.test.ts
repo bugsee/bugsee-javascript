@@ -1,6 +1,6 @@
 import { type ContextProvider, type RequestContext, setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getTraceparent, traceMetaEntries } from './trace-data';
+import { getTraceparent, traceMetaEntries, traceMetaTag } from './trace-data';
 
 const TRACE_ID = '0af7651916cd43dd8448eb211c80319c';
 const SPAN_ID = 'b7ad6b7169203331';
@@ -63,5 +63,36 @@ describe('traceMetaEntries', () => {
 
   it('returns {} when no trace is active', () => {
     expect(traceMetaEntries({ getClient: () => clientWith(ctxProvider(undefined)) })).toEqual({});
+  });
+});
+
+describe('traceMetaTag', () => {
+  afterEach(() => setCarrierClient(undefined));
+
+  it('renders a <meta name="traceparent"> tag for the active trace (sampled → 01)', () => {
+    const client = clientWith(ctxProvider({ traceId: TRACE_ID, spanId: SPAN_ID, sampled: true }));
+    expect(traceMetaTag({ getClient: () => client })).toBe(
+      `<meta name="traceparent" content="00-${TRACE_ID}-${SPAN_ID}-01">`,
+    );
+  });
+
+  it('encodes the sampling decision (unsampled → 00)', () => {
+    const client = clientWith(ctxProvider({ traceId: TRACE_ID, spanId: SPAN_ID, sampled: false }));
+    expect(traceMetaTag({ getClient: () => client })).toBe(
+      `<meta name="traceparent" content="00-${TRACE_ID}-${SPAN_ID}-00">`,
+    );
+  });
+
+  it('renders an empty string when no trace is active (nothing injected)', () => {
+    expect(traceMetaTag({ getClient: () => clientWith(ctxProvider(undefined)) })).toBe('');
+    expect(traceMetaTag({ getClient: () => undefined })).toBe('');
+  });
+
+  it('defaults to the carrier client', () => {
+    expect(traceMetaTag()).toBe('');
+    setCarrierClient(
+      clientWith(ctxProvider({ traceId: TRACE_ID, spanId: SPAN_ID, sampled: true })),
+    );
+    expect(traceMetaTag()).toBe(`<meta name="traceparent" content="00-${TRACE_ID}-${SPAN_ID}-01">`);
   });
 });

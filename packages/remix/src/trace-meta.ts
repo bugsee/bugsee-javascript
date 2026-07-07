@@ -5,13 +5,12 @@
 // SSR server request and the initial client pageload become ONE trace (BE→FE continuation). The node
 // stream `getBugseeMetaTagTransformer` (`@bugsee/remix/server`) injects this before `</head>`.
 //
-// PORTABLE (node + edge): the trace read + traceparent formatting is the shared `@bugsee/adapter-kit`
-// `getTraceparent`. The `traceparent` value is a fixed `version-hex-hex-hex` shape (no HTML-special chars),
-// so no attribute escaping is needed.
-import { getTraceparent, type TraceDataOptions } from '@bugsee/adapter-kit';
+// PORTABLE (node + edge): both the trace read and the `<meta>` rendering are the shared
+// `@bugsee/adapter-kit` `traceMetaTag` (P5). This is a thin, Remix-named re-export of it.
+import { type TraceDataOptions, traceMetaTag } from '@bugsee/adapter-kit';
 
-/** The `<meta name="traceparent">` tag for the active server trace, or `''` when no trace is active. */
+/** The `<meta name="traceparent">` tag for the active server trace, or `''` when no trace is active.
+ *  Thin re-export of the shared `@bugsee/adapter-kit` `traceMetaTag`. */
 export function getBugseeTraceMetaTags(options: TraceDataOptions = {}): string {
-  const traceparent = getTraceparent(options);
-  return traceparent === undefined ? '' : `<meta name="traceparent" content="${traceparent}">`;
+  return traceMetaTag(options);
 }

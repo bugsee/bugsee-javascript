@@ -3,4 +3,9 @@
 // shared kit) — P4 (server-error bridge) + P5 (trace-data). Depends only on @bugsee/core; no runtime-
 // specific imports, so it is safe in node, edge, and browser graphs alike.
 export { type ReportServerErrorOptions, reportServerError } from './report-server-error';
-export { getTraceparent, type TraceDataOptions, traceMetaEntries } from './trace-data';
+export {
+  getTraceparent,
+  type TraceDataOptions,
+  traceMetaEntries,
+  traceMetaTag,
+} from './trace-data';

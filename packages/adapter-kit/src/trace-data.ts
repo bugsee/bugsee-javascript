@@ -38,3 +38,13 @@ export function traceMetaEntries(options: TraceDataOptions = {}): Record<string,
   const traceparent = getTraceparent(options);
   return traceparent === undefined ? {} : { traceparent };
 }
+
+/** The active trace as a `<meta name="traceparent">` tag string (or `''` when no trace is active) — inject
+ *  into the SSR `<head>` so the client pageload adopts the server trace (BE→FE continuation). `traceparent`
+ *  is a fixed `version-hex-hex-hex` shape (no HTML-special chars), so no attribute escaping is needed. The
+ *  shared home for every adapter's `<meta>` injection (Nuxt `render:html`, Remix stream, SvelteKit
+ *  `transformPageChunk`, Astro middleware). */
+export function traceMetaTag(options: TraceDataOptions = {}): string {
+  const traceparent = getTraceparent(options);
+  return traceparent === undefined ? '' : `<meta name="traceparent" content="${traceparent}">`;
+}
