@@ -145,6 +145,29 @@ adapters below consume the kit.
   node/edge branch · A3 middleware (context + try/catch error capture, `order:'pre'`) · A4 trace via response
   rewrite · A5 source-maps (#158) · A6 real-Astro e2e.
 
+  **AS-BUILT STATUS (2026-07-07) — @bugsee/astro COMPLETE (node + edge), real-boot validated. ALL 4
+  META-FRAMEWORKS DONE.** Commits `67ef8f8`/`6b2aea1`/`5f29fb1`/`b925f91`/`3564b91`/`4903eb7`/`efd5d75`.
+  Island-agnostic (browser-launch only; user adds their UI adapter). `.` = the `bugsee()` Integration
+  (build-time) · `./middleware` (portable — `createBugseeMiddleware`: wraps `next()` try/catch → report +
+  rethrow, since Astro has NO onRequestError; trace = HTML response-rewrite before `</head>`) · `./server`
+  (node) · `./client` (browser) · `./edge` (`createEdgeMiddleware` wraps `next()` in `runInEdgeContext` — full
+  run()-context). **KEY FIX (review-caught major):** the server SDK launches from the MIDDLEWARE (a generated
+  virtual module wired via `addMiddleware`), NOT `injectScript('page-ssr')` — Astro only prepends page-ssr to
+  `.astro` PAGE modules, so an endpoint-first cold request would drop its report. Validated by an
+  **endpoint-first** real-Astro `@astrojs/node` boot e2e (`@bugsee/astro-e2e`: probes `/api/health`, hits
+  `/api/boom` before any page → the report still uploads) + the page trace `<meta>`. 2-round review CONVERGED.
+  Remaining: A5 source-maps (#158) · edge boot e2e (adapter-vercel/cloudflare).
+
+## 🎉 The 4 SSR meta-framework adapters are COMPLETE (2026-07-07)
+
+Remix + Nuxt + SvelteKit + Astro — all shipped over the shared `@bugsee/adapter-kit`, each **real-boot
+validated** (a fixture app built + booted against a mock collector: a thrown server route uploads a bundle
+with the `http-error` mechanism + the real message, and the SSR HTML carries the injected
+`<meta name="traceparent">`) and **multi-agent reviewed to convergence**. Node everywhere; edge on
+Nuxt/SvelteKit/Astro (Sentry-unsupported differentiator). The two shared follow-ups are external/deferred:
+**source-maps** (blocked on #158 — every adapter's P6) and the **edge boot e2e** for SvelteKit/Astro (needs
+adapter-vercel/cloudflare + an edge VM; the edge modules are unit + bundle-isolation verified).
+
 ## 7. Open verification items (flagged by research — resolve at each build)
 - **Nuxt/Remix/SvelteKit(node):** confirm Bugsee's `node:http` emit-patch attaches to the framework's server
   instance and installs **before the first request** (else fall back to a Sentry-style preload for that case).
