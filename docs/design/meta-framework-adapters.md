@@ -95,6 +95,21 @@ adapters below consume the kit.
 - **SvelteKit** — S1 client (`hooks.client.ts` helpers + `@bugsee/svelte`) · S2 `bugseeHandle()` (ALS context +
   first-owner-wins) + `handleErrorWithBugsee` (P4) · S3 trace via `transformPageChunk` · S4 init placement
   (`instrumentation.server.ts` + hooks-top) · S5 edge (`config.runtime:'edge'`) · S6 Vite plugin + #158.
+
+  **AS-BUILT STATUS (2026-07-07) — @bugsee/sveltekit COMPLETE (node + edge), real-boot validated.** SK1–SK4
+  shipped (`880edd7`/`0771d67`/`2937a1f`/`53aec9e`/`d940009`/`e305926`). Function-exports (like Remix): `.`
+  portable (`handleErrorWithBugsee`+`handle`/trace) · `./server` (`registerServer`=bugsee/node) · `./client`
+  (`registerClient`+`export * from @bugsee/svelte`) · `./edge` (`registerServerEdge`+`createEdgeHandle`).
+  **EDGE is the differentiator:** SvelteKit's `handle` WRAPS `resolve()`, so `createEdgeHandle` wraps it in
+  `runInEdgeContext` → a FULL run()-scoped per-request context on edge (Sentry unsupported; better than Nuxt
+  edge, which can't wrap). Validated by a real-SvelteKit adapter-node **boot e2e** (`@bugsee/sveltekit-e2e`:
+  thrown endpoint → uploaded bundle w/ `http-error` + message; SSR HTML carries the injected `<meta
+  traceparent>`). Multi-agent reviewed to convergence: 1 MAJOR fixed (missing publishConfig.exports); edge
+  flush/report ordering verified (resolve() doesn't throw on load/render error → `handleError` reports INSIDE
+  the edge ctx → `runInEdgeContext` finally flushes it; no double-report). **REMAINING:** edge BOOT e2e (needs
+  adapter-vercel/cloudflare + edge VM — follow-up; edge module is unit + bundle-isolation verified) · S6
+  source-maps (#158). Known-minor: hook types return `unknown` (idiomatic un-annotated usage works, matches
+  @bugsee/svelte).
 - **Remix/RR7** — R1 server error bridge + preload init (RR7 `handleError`) · R2 client entry + `bugseeOnError`
   (RR7) · R3 trace (`getMetaTagTransformer`) · R4 server txn + route names (native instrumentation API) · R5
   Remix-v2 back-compat entry set · R6 build/source-maps (#158).
