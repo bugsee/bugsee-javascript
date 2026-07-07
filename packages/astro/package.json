@@ -39,6 +39,63 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
+  "publishConfig": {
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      },
+      "./middleware": {
+        "import": {
+          "types": "./dist/middleware.d.ts",
+          "default": "./dist/middleware.js"
+        },
+        "require": {
+          "types": "./dist/middleware.d.cts",
+          "default": "./dist/middleware.cjs"
+        }
+      },
+      "./server": {
+        "import": {
+          "types": "./dist/server.d.ts",
+          "default": "./dist/server.js"
+        },
+        "require": {
+          "types": "./dist/server.d.cts",
+          "default": "./dist/server.cjs"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        },
+        "require": {
+          "types": "./dist/client.d.cts",
+          "default": "./dist/client.cjs"
+        }
+      },
+      "./edge": {
+        "import": {
+          "types": "./dist/edge.d.ts",
+          "default": "./dist/edge.js"
+        },
+        "require": {
+          "types": "./dist/edge.d.cts",
+          "default": "./dist/edge.cjs"
+        }
+      }
+    }
+  },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
     "@bugsee/core": "workspace:*",
