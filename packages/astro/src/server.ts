@@ -1,9 +1,10 @@
 // @bugsee/astro — server (Node runtime) composition.
 //
 // Node-only (imports the batteries-included node umbrella) → behind the `@bugsee/astro/server` subpath,
-// never the portable `.`/`./middleware` entries. The Integration injects `injectScript('page-ssr', "import
-// { registerServer } … registerServer(…)")`; the node incoming-server auto-instrumentation (a `node:http`
-// emit-patch) then opens a per-request context that the middleware stitches its report + trace `<meta>` to.
+// never the portable `.`/`./middleware` entries. The Integration's generated server-middleware module calls
+// `registerServer(…)` at module-eval (so it launches for the first request of ANY route); the node
+// incoming-server auto-instrumentation (a `node:http` emit-patch) then opens a per-request context that the
+// middleware stitches its report + trace `<meta>` to.
 import { type Bugsee, type BugseeNodeLaunchOptions, launch } from 'bugsee/node';
 
 export type { Bugsee } from 'bugsee/node';

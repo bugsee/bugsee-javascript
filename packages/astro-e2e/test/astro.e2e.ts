@@ -1,8 +1,8 @@
 // Real-Astro boot e2e for @bugsee/astro.
 //
-// The Integration inlines the server config into the injected page-ssr script AT BUILD TIME, so the build
-// runs AFTER the mock collector starts (BUGSEE_ENDPOINT is baked in). Then boots the @astrojs/node standalone
-// server in a REAL separate node process and asserts the actual wire output:
+// The Integration inlines the server config into the generated server-middleware module AT BUILD TIME, so the
+// build runs AFTER the mock collector starts (BUGSEE_ENDPOINT is baked in). Then boots the @astrojs/node
+// standalone server in a REAL separate node process and asserts the actual wire output:
 //   • hitting the throwing route (/api/boom) → the middleware's try/catch reports it (Astro has no
 //     onRequestError) → a bundle with the error uploads to the collector;
 //   • the SSR HTML of the index page carries the injected `<meta name="traceparent">` (the middleware's

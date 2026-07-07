@@ -2,9 +2,9 @@ import node from '@astrojs/node';
 import { bugsee } from '@bugsee/astro';
 import { defineConfig } from 'astro/config';
 
-// SSR fixture on the node adapter. The Integration inlines the server config into the injected page-ssr
-// script AT BUILD TIME, so the collector endpoint (only known at test time) is read from the env HERE and
-// baked in — the e2e sets BUGSEE_ENDPOINT before building. Lean, deterministic capture.
+// SSR fixture on the node adapter. The Integration inlines the server config into the generated
+// server-middleware module AT BUILD TIME, so the collector endpoint (only known at test time) is read from
+// the env HERE and baked in — the e2e sets BUGSEE_ENDPOINT before building. Lean, deterministic capture.
 export default defineConfig({
   output: 'server',
   adapter: node({ mode: 'standalone' }),
