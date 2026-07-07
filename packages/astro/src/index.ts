@@ -1,12 +1,15 @@
-// @bugsee/astro — the package `.` entry, which will be the Astro Integration (`bugsee()`, AS3) that wires a
-// browser launch (`injectScript('page')`) + the request middleware (error capture + trace) + server/edge
-// init. Until AS3, the middleware surface is re-exported here for convenience (also at `@bugsee/astro/
-// middleware`, the Astro `addMiddleware` entrypoint).
+// @bugsee/astro — the package `.` entry IS the Astro Integration: `integrations: [bugsee({ appToken })]` in
+// `astro.config.mjs`. At `astro:config:setup` it injects the browser launch (`injectScript('page')`) + the
+// server launch (`injectScript('page-ssr')`) + the request middleware (`addMiddleware`, error capture +
+// trace). BUILD-TIME only (imports `astro` types + generates strings — no eager bugsee/node/browser).
+//
+// The middleware itself lives at `@bugsee/astro/middleware` (the Astro `addMiddleware` entrypoint); the
+// runtime launches at `@bugsee/astro/{client,server,edge}`.
 export {
-  type AstroMiddleware,
-  type AstroMiddlewareContext,
-  type AstroMiddlewareNext,
-  type CreateBugseeMiddlewareOptions,
-  createBugseeMiddleware,
-  onRequest,
-} from './middleware';
+  type BugseeAstroOptions,
+  bugsee,
+  bugsee as default,
+  clientInitScript,
+  edgeServerInitScript,
+  serverInitScript,
+} from './integration';

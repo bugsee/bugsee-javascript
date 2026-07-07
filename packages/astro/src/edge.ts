@@ -72,3 +72,7 @@ export function createEdgeMiddleware(options: CreateEdgeMiddlewareOptions = {}):
     );
   };
 }
+
+/** The ready-made edge middleware bound to the carrier client — the `addMiddleware` entrypoint the Integration
+ *  wires for edge (`{ entrypoint: '@bugsee/astro/edge', order: 'pre' }`). */
+export const onRequest: AstroMiddleware = createEdgeMiddleware();
