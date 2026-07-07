@@ -1,5 +1,12 @@
-// @bugsee/astro
-// Astro meta-adapter
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/astro — the package `.` entry, which will be the Astro Integration (`bugsee()`, AS3) that wires a
+// browser launch (`injectScript('page')`) + the request middleware (error capture + trace) + server/edge
+// init. Until AS3, the middleware surface is re-exported here for convenience (also at `@bugsee/astro/
+// middleware`, the Astro `addMiddleware` entrypoint).
+export {
+  type AstroMiddleware,
+  type AstroMiddlewareContext,
+  type AstroMiddlewareNext,
+  type CreateBugseeMiddlewareOptions,
+  createBugseeMiddleware,
+  onRequest,
+} from './middleware';

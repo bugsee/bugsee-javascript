@@ -9,3 +9,6 @@ allowBuilds:
   # not needed for build-time module code or tests, so skip its native-binary build.
   '@parcel/watcher': false
   esbuild: true
+  # sharp (Astro's image optimization, transitive via astro — a @bugsee/astro devDep) isn't needed for the
+  # adapter code or tests; skip its native-binary build.
+  sharp: false
