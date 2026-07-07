@@ -769,6 +769,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/svelte':
+        specifier: workspace:*
+        version: link:../svelte
       bugsee:
         specifier: workspace:*
         version: link:../bugsee
