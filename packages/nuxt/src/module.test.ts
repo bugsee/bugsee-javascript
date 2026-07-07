@@ -101,8 +101,8 @@ describe('clientPluginContent', () => {
     // Strip the ESM imports + turn the default export into a returnable expression, then compile: a dropped
     // `});` or unbalanced paren makes this throw a SyntaxError.
     const body = code.replace(/^import .*$/gm, '').replace('export default', 'return');
+    // Compiling the generated source (not executing it) is the validity check.
     expect(
-      // biome-ignore lint/security/noGlobalEval: compiling the generated source is the validity check.
       () => new Function('defineNuxtPlugin', 'useRuntimeConfig', 'installBugseeClient', body),
     ).not.toThrow();
   });
@@ -111,7 +111,10 @@ describe('clientPluginContent', () => {
 describe('the module default export', () => {
   it('is a defineNuxtModule with the `bugsee` config key wired to setupBugseeModule', () => {
     // The declared type is NuxtModule, but our mocked defineNuxtModule returns the definition verbatim.
-    const def = nuxtModule as unknown as { meta: { name: string; configKey: string }; setup: unknown };
+    const def = nuxtModule as unknown as {
+      meta: { name: string; configKey: string };
+      setup: unknown;
+    };
     expect(def.meta).toEqual({ name: '@bugsee/nuxt', configKey: 'bugsee' });
     expect(def.setup).toBe(setupBugseeModule); // the module delegates to the tested core
   });

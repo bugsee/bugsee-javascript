@@ -5,4 +5,5 @@ export {
   installBugseeNitro,
   type NitroAppLike,
   type NitroErrorContext,
+  type NitroRenderHtmlContext,
 } from './nitro';

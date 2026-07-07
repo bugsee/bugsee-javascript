@@ -7,7 +7,7 @@
 //
 // The logic is a pure function over a structural `NitroAppLike` so it is fully unit-testable; the U3 runtime
 // file wraps it with `defineNitroPlugin` (from `nitropack/runtime`) + `useRuntimeConfig()`.
-import { reportServerError } from '@bugsee/adapter-kit';
+import { reportServerError, traceMetaTag } from '@bugsee/adapter-kit';
 import { type Bugsee, type BugseeNodeLaunchOptions, launch as nodeLaunch } from 'bugsee/node';
 
 /** The Nitro error-hook context subset we read (structural; no `nitropack` dep). */
@@ -18,10 +18,18 @@ export interface NitroErrorContext {
   tags?: string[];
 }
 
-/** The Nitro app subset we use — its `hooks.hook('error', …)` seam (structural; no `nitropack` dep). */
+/** The Nitro/Nuxt `render:html` context subset we mutate — `head` fragments concatenated into the SSR
+ *  `<head>` (structural; no `nitropack`/`nuxt` dep). */
+export interface NitroRenderHtmlContext {
+  head: string[];
+}
+
+/** The Nitro app subset we use — its `hooks.hook(…)` seams for `error` (report) + `render:html` (trace
+ *  `<meta>` injection) (structural; no `nitropack` dep). */
 export interface NitroAppLike {
   hooks: {
     hook(event: 'error', handler: (error: unknown, context?: NitroErrorContext) => void): void;
+    hook(event: 'render:html', handler: (html: NitroRenderHtmlContext) => void): void;
   };
 }
 
@@ -30,6 +38,9 @@ export interface InstallBugseeNitroOptions extends BugseeNodeLaunchOptions {
   appToken: string;
   /** Test/advanced seam: the node launch. Default the batteries-included `bugsee/node` umbrella launch. */
   launch?: (appToken: string, options: BugseeNodeLaunchOptions) => Bugsee;
+  /** Inject `<meta name="traceparent">` into the SSR `<head>` (via `render:html`) so the client pageload
+   *  adopts the server-request trace (FE↔BE join, the moat's correlation capstone). Default `true`. */
+  injectTraceMeta?: boolean;
 }
 
 /** An H3Error carries a numeric `statusCode`; a <500 status is an expected client error (404/422/…), not a
@@ -40,14 +51,15 @@ function isExpectedClientError(error: unknown): boolean {
 }
 
 /**
- * Launch Bugsee for the Nuxt/Nitro server and wire the `error` hook. Returns the launched client. Call from
- * a Nitro server plugin: `export default defineNitroPlugin((nitroApp) => installBugseeNitro(nitroApp, …))`.
+ * Launch Bugsee for the Nuxt/Nitro server and wire the `error` hook (report) + `render:html` hook (trace
+ * `<meta>` injection). Returns the launched client. Call from a Nitro server plugin:
+ * `export default defineNitroPlugin((nitroApp) => installBugseeNitro(nitroApp, …))`.
  */
 export function installBugseeNitro(
   nitroApp: NitroAppLike,
   options: InstallBugseeNitroOptions,
 ): Bugsee {
-  const { appToken, launch = nodeLaunch, ...launchOptions } = options;
+  const { appToken, launch = nodeLaunch, injectTraceMeta = true, ...launchOptions } = options;
   const client = launch(appToken, launchOptions);
 
   nitroApp.hooks.hook('error', (error, context) => {
@@ -66,6 +78,22 @@ export function installBugseeNitro(
       mechanism: 'http-error',
     });
   });
+
+  // FE↔BE trace join: inject the active request's `<meta name="traceparent">` into the SSR `<head>` so the
+  // browser pageload adopts the server trace. `render:html` runs inside the run-scoped request context, so
+  // `traceMetaTag` sees the active trace; it yields `''` (nothing injected) when no trace is active.
+  if (injectTraceMeta) {
+    nitroApp.hooks.hook('render:html', (html) => {
+      // Best-effort: trace injection must NEVER break SSR rendering (interceptors must not alter app
+      // behavior). traceMetaTag is already total; this guards the `head.push` against a non-conformant host.
+      try {
+        const tag = traceMetaTag({ getClient: () => client });
+        if (tag !== '') html.head.push(tag);
+      } catch {
+        // swallow — a page renders fine without the trace meta
+      }
+    });
+  }
 
   return client;
 }

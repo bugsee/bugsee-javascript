@@ -1,17 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { installBugseeNitro, type NitroAppLike } from './nitro';
 
-/** A fake Nitro app that captures the registered `error` hook handler. */
+// Stub the shared kit's traceMetaTag so we control what render:html injects; keep reportServerError REAL
+// (the error-path tests assert on the client directly through it).
+const { traceMetaTag } = vi.hoisted(() => ({
+  traceMetaTag: vi.fn<(options?: { getClient?: () => unknown }) => string>(() => ''),
+}));
+vi.mock('@bugsee/adapter-kit', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@bugsee/adapter-kit')>()),
+  traceMetaTag,
+}));
+
+import { installBugseeNitro, type NitroAppLike, type NitroRenderHtmlContext } from './nitro';
+
+/** A fake Nitro app that captures the registered `error` + `render:html` hook handlers. */
 function fakeNitro() {
   let errorHandler: ((error: unknown, context?: unknown) => void) | undefined;
+  let renderHandler: ((html: NitroRenderHtmlContext) => void) | undefined;
   const nitroApp: NitroAppLike = {
     hooks: {
       hook(event, handler) {
         if (event === 'error') errorHandler = handler as typeof errorHandler;
+        if (event === 'render:html') renderHandler = handler as typeof renderHandler;
       },
     },
   };
-  return { nitroApp, fireError: (e: unknown, ctx?: unknown) => errorHandler?.(e, ctx) };
+  return {
+    nitroApp,
+    fireError: (e: unknown, ctx?: unknown) => errorHandler?.(e, ctx),
+    hasRenderHook: () => renderHandler !== undefined,
+    fireRender: (html: NitroRenderHtmlContext) => renderHandler?.(html),
+  };
 }
 
 function fakeClient() {
@@ -24,6 +42,8 @@ function fakeClient() {
 describe('installBugseeNitro', () => {
   afterEach(() => {
     delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+    traceMetaTag.mockReset();
+    traceMetaTag.mockReturnValue('');
   });
 
   it('launches the node SDK with the appToken + forwarded options, returns the client', () => {
@@ -86,5 +106,57 @@ describe('installBugseeNitro', () => {
     const params = client.event.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(params).toEqual({}); // no method/path/tags
     expect(client.logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('injects the trace <meta> into the SSR <head> (render:html), reading the launched client', () => {
+    const client = fakeClient();
+    const { nitroApp, fireRender } = fakeNitro();
+    traceMetaTag.mockReturnValue('<meta name="traceparent" content="00-t-s-01">');
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
+
+    const html: NitroRenderHtmlContext = { head: ['<title>x</title>'] };
+    fireRender(html);
+
+    expect(html.head).toContain('<meta name="traceparent" content="00-t-s-01">');
+    // reads the trace through the launched client (so the tag is THIS instance's active request trace)
+    const getClient = traceMetaTag.mock.calls[0]?.[0]?.getClient;
+    expect(getClient?.()).toBe(client);
+  });
+
+  it('injects NOTHING when no server trace is active (traceMetaTag → "")', () => {
+    const { nitroApp, fireRender } = fakeNitro();
+    traceMetaTag.mockReturnValue('');
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => fakeClient() as never });
+
+    const html: NitroRenderHtmlContext = { head: [] };
+    fireRender(html);
+
+    expect(html.head).toEqual([]); // no empty/garbage tag pushed
+  });
+
+  it('never breaks SSR rendering if the head injection throws (best-effort)', () => {
+    const { nitroApp, fireRender } = fakeNitro();
+    traceMetaTag.mockReturnValue('<meta name="traceparent" content="00-t-s-01">');
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => fakeClient() as never });
+
+    // A non-conformant host whose head.push throws must not break the render.
+    const hostileHtml = {
+      head: {
+        push() {
+          throw new Error('frozen head');
+        },
+      },
+    } as unknown as NitroRenderHtmlContext;
+    expect(() => fireRender(hostileHtml)).not.toThrow();
+  });
+
+  it('does NOT register the render:html hook when injectTraceMeta is false', () => {
+    const { nitroApp, hasRenderHook } = fakeNitro();
+    installBugseeNitro(nitroApp, {
+      appToken: 'tok',
+      injectTraceMeta: false,
+      launch: () => fakeClient() as never,
+    });
+    expect(hasRenderHook()).toBe(false);
   });
 });
