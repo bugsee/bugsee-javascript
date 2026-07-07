@@ -10,6 +10,6 @@ export {
   bugsee,
   bugsee as default,
   clientInitScript,
-  edgeServerInitScript,
-  serverInitScript,
+  SERVER_MIDDLEWARE_ID,
+  serverMiddlewareModule,
 } from './integration';

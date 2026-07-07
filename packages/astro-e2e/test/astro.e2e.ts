@@ -87,8 +87,9 @@ describe('@bugsee/astro — real Astro boot e2e', () => {
     });
     server.stderr?.on('data', (d: Buffer) => process.stderr.write(`[astro-server] ${d}`));
 
-    // Probing `/` also renders the index page → runs the injected registerServer (launches the SDK).
-    const up = await probeUntilUp(`${base}/`, 60_000);
+    // Probe an ENDPOINT (not a page) for readiness — so the whole run is endpoint-first: the SDK must launch
+    // from the middleware (the page-ssr script would NOT fire for endpoints).
+    const up = await probeUntilUp(`${base}/api/health`, 60_000);
     if (!up) throw new Error('astro server did not come up');
   });
 
@@ -97,12 +98,9 @@ describe('@bugsee/astro — real Astro boot e2e', () => {
     await collector?.close();
   });
 
-  it('injects the trace <meta> into the SSR HTML of a page (middleware response-rewrite)', async () => {
-    const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain('<meta name="traceparent"');
-  });
-
-  it('reports a thrown route as an uploaded bundle (moat server-error path)', async () => {
+  // Runs FIRST (before any page renders): proves the SDK launched from the middleware, not the page-gated
+  // page-ssr script — an endpoint-first cold request still delivers its error report.
+  it('reports a thrown ENDPOINT as an uploaded bundle, endpoint-first (moat server-error path)', async () => {
     const res = await fetch(`${base}/api/boom`);
     expect(res.status).toBe(500); // the route really threw
 
@@ -119,5 +117,10 @@ describe('@bugsee/astro — real Astro boot e2e', () => {
     expect(allText).toContain('e2e astro boom');
     expect(collector.sessions.length).toBeGreaterThan(0);
     expect(collector.issues.length).toBeGreaterThan(0);
+  });
+
+  it('injects the trace <meta> into the SSR HTML of a page (middleware response-rewrite)', async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    expect(html).toContain('<meta name="traceparent"');
   });
 });
