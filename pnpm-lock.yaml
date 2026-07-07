@@ -580,6 +580,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/vercel-edge':
+        specifier: workspace:*
+        version: link:../vercel-edge
       '@bugsee/vue':
         specifier: workspace:*
         version: link:../vue

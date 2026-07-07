@@ -10,12 +10,20 @@ import { baseConfig } from '../../tsup.config.base';
 // module + runtime bundles reference the node/browser cores instead of bundling them.
 export default defineConfig({
   ...baseConfig,
-  entry: ['src/index.ts', 'src/server.ts', 'src/client.ts', 'src/runtime/nitro-plugin.ts'],
+  entry: [
+    'src/index.ts',
+    'src/server.ts',
+    'src/client.ts',
+    'src/nitro-edge.ts',
+    'src/runtime/nitro-plugin.ts',
+    'src/runtime/nitro-plugin.edge.ts',
+  ],
   external: [
     '@nuxt/kit',
     'nitropack',
     'nitropack/runtime',
     '@bugsee/nuxt/server',
     '@bugsee/nuxt/client',
+    '@bugsee/nuxt/edge',
   ],
 });

@@ -22,14 +22,24 @@ export interface ModuleOptions {
   server?: Omit<Partial<InstallBugseeNitroOptions>, 'appToken' | 'launch'>;
 }
 
-/** The Nuxt object subset the module mutates (structural — avoids a `@nuxt/schema` dep). */
+/** The Nuxt object subset the module mutates + reads (structural — avoids a `@nuxt/schema` dep). */
 export interface NuxtLike {
   options: {
     runtimeConfig: {
       bugsee?: unknown;
       public: { bugsee?: unknown } & Record<string, unknown>;
     } & Record<string, unknown>;
+    /** The Nitro config — its `preset` chooses node vs edge server delivery. */
+    nitro?: { preset?: string };
   };
+}
+
+/** Is the resolved Nitro `preset` an EDGE target (Vercel Edge / Cloudflare / Netlify Edge / workerd)? Those
+ *  run the edge SDK, not `bugsee/node`. Node presets (`node-server`, `vercel`, `netlify`, …) return false. */
+function isEdgePreset(preset: string | undefined): boolean {
+  if (typeof preset !== 'string') return false;
+  const p = preset.toLowerCase();
+  return p.includes('edge') || p.includes('cloudflare') || p.includes('worker');
 }
 
 /** A runtime-config slot narrowed to a plain object (Nuxt may leave it `undefined` until set). */
@@ -67,9 +77,13 @@ export function setupBugseeModule(options: ModuleOptions, nuxt: NuxtLike): void 
     getContents: clientPluginContent,
   });
 
-  // Nitro server plugin — the shipped runtime file, resolved relative to this module.
+  // Nitro server plugin — the shipped runtime file, resolved relative to this module. On an edge preset we
+  // ship the EDGE plugin (launches the edge SDK, not `bugsee/node`) so only the right SDK is bundled.
   const resolver = createResolver(import.meta.url);
-  addServerPlugin(resolver.resolve('./runtime/nitro-plugin'));
+  const runtimePlugin = isEdgePreset(nuxt.options.nitro?.preset)
+    ? './runtime/nitro-plugin.edge'
+    : './runtime/nitro-plugin';
+  addServerPlugin(resolver.resolve(runtimePlugin));
 }
 
 export default defineNuxtModule<ModuleOptions>({

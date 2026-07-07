@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Nuxt meta-adapter: a Nuxt Module wiring @bugsee/vue (client) + @bugsee/node (Nitro server)",
+  "description": "Nuxt meta-adapter: a Nuxt Module wiring @bugsee/vue (client) + @bugsee/node (Nitro node server) + @bugsee/vercel-edge (Nitro edge preset)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -19,6 +19,10 @@
     "./client": {
       "types": "./src/client.ts",
       "import": "./src/client.ts"
+    },
+    "./edge": {
+      "types": "./src/nitro-edge.ts",
+      "import": "./src/nitro-edge.ts"
     }
   },
   "files": [
@@ -34,6 +38,7 @@
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
     "@bugsee/core": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*",
     "@bugsee/vue": "workspace:*",
     "bugsee": "workspace:*"
   },
@@ -70,6 +75,16 @@
         "require": {
           "types": "./dist/client.d.cts",
           "default": "./dist/client.cjs"
+        }
+      },
+      "./edge": {
+        "import": {
+          "types": "./dist/nitro-edge.d.ts",
+          "default": "./dist/nitro-edge.js"
+        },
+        "require": {
+          "types": "./dist/nitro-edge.d.cts",
+          "default": "./dist/nitro-edge.cjs"
         }
       }
     }

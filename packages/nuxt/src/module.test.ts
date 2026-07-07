@@ -79,10 +79,29 @@ describe('setupBugseeModule', () => {
     });
   });
 
-  it('registers the shipped Nitro server plugin via the resolved runtime path', () => {
+  it('registers the shipped NODE Nitro server plugin by default (non-edge preset)', () => {
     setupBugseeModule({ appToken: 'tok' }, fakeNuxt());
     expect(createResolver).toHaveBeenCalledTimes(1);
     expect(addServerPlugin).toHaveBeenCalledWith('RESOLVED:./runtime/nitro-plugin');
+  });
+
+  it('registers the node plugin for an explicit node preset', () => {
+    const nuxt = fakeNuxt();
+    nuxt.options.nitro = { preset: 'node-server' };
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    expect(addServerPlugin).toHaveBeenCalledWith('RESOLVED:./runtime/nitro-plugin');
+  });
+
+  it.each([
+    'vercel-edge',
+    'cloudflare-pages',
+    'cloudflare_module',
+    'netlify-edge',
+  ])('registers the EDGE plugin for the edge preset %s', (preset) => {
+    const nuxt = fakeNuxt();
+    nuxt.options.nitro = { preset };
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    expect(addServerPlugin).toHaveBeenCalledWith('RESOLVED:./runtime/nitro-plugin.edge');
   });
 });
 
