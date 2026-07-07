@@ -15,6 +15,18 @@
     "./middleware": {
       "types": "./src/middleware.ts",
       "import": "./src/middleware.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./client": {
+      "types": "./src/client.ts",
+      "import": "./src/client.ts"
+    },
+    "./edge": {
+      "types": "./src/edge.ts",
+      "import": "./src/edge.ts"
     }
   },
   "files": [
@@ -29,9 +41,12 @@
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*",
+    "bugsee": "workspace:*"
   },
   "devDependencies": {
+    "@bugsee/node": "workspace:*",
     "astro": "^5.0.0"
   }
 }

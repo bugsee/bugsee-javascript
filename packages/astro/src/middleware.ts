@@ -60,8 +60,9 @@ function reportAstroError(
 
 /** Inject the trace `<meta>` into an HTML response before `</head>`; return the ORIGINAL response untouched
  *  when it is not HTML, has no active trace, or has no `</head>`. Rewriting buffers the body (Astro's
- *  response is not streamed here) + drops the now-stale `content-length`. */
-async function injectTraceIntoResponse(
+ *  response is not streamed here) + drops the now-stale `content-length`. Exported so the edge middleware
+ *  (`@bugsee/astro/edge`) reuses the exact same injection. */
+export async function injectTraceIntoResponse(
   response: Response,
   options: TraceDataOptions,
 ): Promise<Response> {
