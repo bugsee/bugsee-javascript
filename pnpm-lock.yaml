@@ -735,12 +735,19 @@ importers:
 
   packages/replay:
     dependencies:
-      '@bugsee/browser-utils':
-        specifier: workspace:*
-        version: link:../browser-utils
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/rrweb':
+        specifier: workspace:*
+        version: link:../rrweb
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
+    devDependencies:
+      jsdom:
+        specifier: ^25.0.1
+        version: 25.0.1
 
   packages/replay-canvas:
     dependencies:

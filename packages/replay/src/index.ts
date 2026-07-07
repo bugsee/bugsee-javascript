@@ -1,5 +1,9 @@
-// @bugsee/replay
-// rrweb-based recorder (vendored Sentry fork) — external rrweb dep added when implemented
-// Tier 3. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/replay — session replay (browser). Lazy-loaded via the `replay` launch option (design D2/D8);
+// never in the errors-only bundle. Composes a rrweb recorder capture-provider + a ReplayEncoder service.
+// See docs/design/replay.md. Built so far: the fail-closed masking config (RP1).
+export {
+  MEDIA_SELECTOR,
+  type ReplayMaskingOptions,
+  type ResolvedReplayMasking,
+  resolveReplayMaskingOptions,
+} from './masking';
