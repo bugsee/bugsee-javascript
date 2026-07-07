@@ -14,7 +14,7 @@ import type {
   NameExtensionMapping,
   SeverityName,
 } from '@bugsee/types';
-import { assembleBundle } from './bundle-assembler';
+import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
@@ -218,6 +218,13 @@ export interface CreateClientOptions {
   getEnvironment?: () => EnvironmentEnvelope;
   /** Bundle archive name generator (default `<random20>.bundle.zip`). */
   bundleFileName?: () => string;
+  /**
+   * Per-file-type BINARY encoders, threaded into the bundle assembler (`BundleAssemblyContext.fileEncoders`)
+   * — a type with an encoder serializes to bytes instead of JSON (e.g. `replay` → gzipped `replay.bin`,
+   * registered by `@bugsee/replay` at launch). The SAME object is read by reference each report, so an
+   * extension loaded AFTER `createClient` (replay is lazy-loaded) can add its encoder into it. Default none.
+   */
+  fileEncoders?: BundleAssemblyContext['fileEncoders'];
   /** Trigger pipeline override; when omitted, built from uploadPipeline + appToken + getEnvironment. */
   triggerPipeline?: TriggerPipeline;
   /**
@@ -356,6 +363,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         clock,
         ...(captured !== undefined ? { requestContext: captured } : {}),
         ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
+        ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
       });
     };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });

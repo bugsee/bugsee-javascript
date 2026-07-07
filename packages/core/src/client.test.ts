@@ -472,6 +472,23 @@ function fakeMarkers() {
   return { store, put, remove };
 }
 
+describe('createClient — file encoders', () => {
+  it('threads fileEncoders into bundle assembly (a binary file type → bytes, not JSON)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      // Inject a `replay` entry at report time + a binary encoder for it (mirrors @bugsee/replay's wiring).
+      reportSnapshots: [() => [new CaptureDataEntryBase('replay', 1, { e: 1 })]],
+      fileEncoders: { replay: (payloads) => new Uint8Array([7, payloads.length]) },
+    });
+    await client.logException(new Error('x'));
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(unzipSync(bundle.body)['replay.bin']).toEqual(new Uint8Array([7, 1])); // encoder output, stored raw
+  });
+});
+
 describe('createClient — capture-recovery markers', () => {
   it('logException persists a recovery marker BEFORE assembly and clears it on settle', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
