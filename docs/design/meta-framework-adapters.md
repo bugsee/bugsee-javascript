@@ -108,17 +108,24 @@ adapters below consume the kit.
   uploads a bundle with our `http-error` mechanism + the real message, and the SSR HTML carries the injected
   `<meta name="traceparent">`). Note U3+U4 landed together inside `installBugseeNitro` (one Nitro plugin does
   launch + `error` hook + `render:html`); the U1 module ships the client plugin as a generated `#imports`
-  template (no heavy `nuxt` dep) + the shipped `runtime/nitro-plugin`. **REMAINING (scoped follow-ups, NOT
-  moat gaps):**
-  - **U6 edge/cloudflare preset — a distinct milestone, not a tidy-up.** On a Nitro `vercel-edge`/`cloudflare`
-    preset the runtime plugin must launch the EDGE SDK (`@bugsee/vercel-edge`/`@bugsee/cloudflare`) instead of
-    `bugsee/node` — different substrate: `run()`-scoped context + `waitUntil` flush, NO `node:http` emit-patch.
-    Approach: the module branches the shipped runtime plugin on the build-time preset (`nuxt.options.nitro.preset`
-    → a `nitro-plugin.edge` variant that composes the edge adapter); the `error`/`render:html` hooks are
-    preset-agnostic and reused as-is. Comparable in size to the standalone vercel-edge/cloudflare adapter
-    milestones (incl. an edge-VM e2e). The dominant Nuxt deploy target (node-server) is DONE.
+  template (no heavy `nuxt` dep) + the shipped `runtime/nitro-plugin`.
+  - **U6 edge/cloudflare preset — ✅ DONE (`153ec49`).** The module branches the shipped runtime plugin on the
+    build-time preset (`isEdgePreset(nuxt.options.nitro.preset)` → `runtime/nitro-plugin.edge`), so an edge
+    preset bundles ONLY the edge SDK, never `bugsee/node` (verified both ways in the built output).
+    `installBugseeNitroEdge` (`@bugsee/nuxt/edge`, composes `@bugsee/vercel-edge`) launches the edge SDK + wires
+    `nitroApp.hooks('error')` → report via `logException`+`flush`, held past the Response by
+    `resolveWaitUntil(ctx)` (Cloudflare's `event.context.cloudflare.context`, else Vercel Edge's global
+    request-context symbol). Validated by a **real-Nuxt `vercel-edge` build e2e** (`@bugsee/nuxt-e2e`
+    `edge-build.e2e.ts`: nuxi-builds the fixture for the edge preset, asserts the edge function bundle carries
+    `installBugseeNitroEdge`+`launchEdge` and NOT the node core / `node:http` emit-patch). **v1 = edge ERROR
+    REPORTING** (the differentiator; Sentry has no Nuxt edge). **v2 (documented, not built):** full per-request
+    `run()`-context + trace on edge — needs Nitro fetch-entry wrapping (Nitro owns the entry; the edge store is
+    `run()`-only, no `enterWith`, so a point-hook can't open a request-scoped context), plus per-preset
+    `@bugsee/cloudflare` enrichment (request.cf) instead of the shared vercel-edge composition, and a `deno-deploy`
+    branch (currently classified node).
   - **U7 source-maps — BLOCKED on #158** (the shared Vite/Rollup source-map-upload plugin). Not Nuxt-specific;
-    every adapter's build slice waits on #158. Wires in as an `addVitePlugin` once #158 ships.
+    every adapter's build slice waits on #158. Wires in as an `addVitePlugin` once #158 ships. **This is the
+    ONLY remaining Nuxt item, and it is externally blocked.**
 - **Astro** — A1 integration skeleton + client `injectScript('page')` · A2 server `injectScript('page-ssr')` +
   node/edge branch · A3 middleware (context + try/catch error capture, `order:'pre'`) · A4 trace via response
   rewrite · A5 source-maps (#158) · A6 real-Astro e2e.
