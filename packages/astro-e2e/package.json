@@ -1,0 +1,19 @@
+{
+  "name": "@bugsee/astro-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Real-Astro boot e2e: astro-builds a fixture app using @bugsee/astro (@astrojs/node) and asserts a thrown route uploads a bundle + the trace <meta> is injected. Not in `pnpm test`.",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "vitest run"
+  },
+  "dependencies": {
+    "@bugsee/astro": "workspace:*",
+    "@bugsee/util": "workspace:*"
+  },
+  "devDependencies": {
+    "@astrojs/node": "^9.0.0",
+    "astro": "^5.0.0",
+    "vitest": "^4.0.0"
+  }
+}

@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "pnpm --filter @bugsee/instrumentation-tests --filter @bugsee/nuxt-e2e --filter @bugsee/sveltekit-e2e test:e2e",
+    "test:e2e": "pnpm --filter @bugsee/instrumentation-tests --filter @bugsee/nuxt-e2e --filter @bugsee/sveltekit-e2e --filter @bugsee/astro-e2e test:e2e",
     "test:matrix": "bash scripts/test-matrix.sh",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
