@@ -14,3 +14,9 @@ export {
   type ReplayRecorder,
   type ReplayRecordFn,
 } from './recorder';
+export {
+  type RegisterReplayOptions,
+  type ReplayClientLike,
+  type ReplayFileEncoders,
+  registerReplay,
+} from './register';
