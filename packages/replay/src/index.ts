@@ -8,3 +8,9 @@ export {
   type ResolvedReplayMasking,
   resolveReplayMaskingOptions,
 } from './masking';
+export {
+  createReplayCaptureProvider,
+  type ReplayCaptureProviderOptions,
+  type ReplayRecorder,
+  type ReplayRecordFn,
+} from './recorder';
