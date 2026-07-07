@@ -341,3 +341,59 @@ describe('assembleBundle — request context merge (framework adapters)', () => 
     expect(unzip(bundle.body).manifest.attrs).toEqual({ app: 'a' });
   });
 });
+
+describe('assembleBundle — binary file encoders (replay)', () => {
+  it('routes a binary file type through its injected encoder → bytes (replay.bin)', () => {
+    const events = [
+      { type: 2, data: 'snapshot' },
+      { type: 3, data: 'mutation' },
+    ];
+    const map = new Map<FileType, CaptureDataEntry[]>([
+      ['replay', events.map((e, i) => entry('replay', 1000 + i, e))],
+    ]);
+    // A fake encoder: record what it received + emit deterministic bytes.
+    let received: unknown[] | undefined;
+    const encoder = (payloads: unknown[]): Uint8Array => {
+      received = payloads;
+      return new Uint8Array([0x1f, 0x8b, payloads.length]); // gzip-magic-ish + count
+    };
+    const bundle = assembleBundle(
+      createReportingRequest({ source: { type: 'error' }, id: 'r' }),
+      map,
+      context({ fileEncoders: { replay: encoder } }),
+    );
+
+    const files = unzipSync(bundle.body);
+    expect(received).toEqual(events); // the encoder got the ordered rrweb payloads
+    expect(files['replay.bin']).toEqual(new Uint8Array([0x1f, 0x8b, 2])); // stored as-is (NOT JSON)
+    // manifest lists it with the right type + filename.
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    expect(manifest.files).toContainEqual({ filename: 'replay.bin', type: 'replay' });
+  });
+
+  it('leaves JSON file types untouched when a binary encoder is present for another type', () => {
+    const map = new Map<FileType, CaptureDataEntry[]>([
+      ['log', [entry('log', 1, { message: 'hi' })]],
+      ['replay', [entry('replay', 2, { type: 2 })]],
+    ]);
+    const bundle = assembleBundle(
+      createReportingRequest({ source: { type: 'error' }, id: 'r' }),
+      map,
+      context({ fileEncoders: { replay: () => new Uint8Array([9]) } }),
+    );
+    const files = unzipSync(bundle.body);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ message: 'hi' }]);
+    expect(files['replay.bin']).toEqual(new Uint8Array([9]));
+  });
+
+  it('falls back to JSON when no encoder is registered for the type', () => {
+    const map = new Map<FileType, CaptureDataEntry[]>([['log', [entry('log', 1, { m: 1 })]]]);
+    const bundle = assembleBundle(
+      createReportingRequest({ source: { type: 'error' }, id: 'r' }),
+      map,
+      context({ fileEncoders: { replay: () => new Uint8Array([1]) } }), // no 'log' encoder
+    );
+    const files = unzipSync(bundle.body);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 1 }]);
+  });
+});

@@ -48,6 +48,12 @@ export interface BundleAssemblyContext {
   clock: Clock;
   /** Bundle archive name; defaults to `<random20>.bundle.zip`. Injectable for tests. */
   fileName?: () => string;
+  /**
+   * Per-file-type BINARY encoders. A file type with an encoder here is serialized to bytes by it (e.g.
+   * `replay` → the gzipped `replay.bin` rrweb stream, encoder from `@bugsee/replay`) instead of the default
+   * JSON path — keeping core codec-free. The encoder receives the type's ordered payloads (`entry.data`).
+   */
+  fileEncoders?: Partial<Record<FileType, (payloads: unknown[]) => Uint8Array>>;
 }
 
 const ALPHANUMERIC = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -144,7 +150,12 @@ export function assembleBundle(
     const filename = fileNameForType(type);
     files.push({ filename, type });
     const payloads = entries.map((entry) => entry.data);
-    typedFiles.push({ name: filename, data: JSON.stringify(serializeFileData(type, payloads)) });
+    // A BINARY file type (e.g. `replay` → gzipped `replay.bin`) goes through its injected encoder → bytes;
+    // every other type is JSON. Core stays codec-free — the encoder is provided by the platform/extension.
+    const encoder = context.fileEncoders?.[type];
+    const data =
+      encoder !== undefined ? encoder(payloads) : JSON.stringify(serializeFileData(type, payloads));
+    typedFiles.push({ name: filename, data });
   }
 
   // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.
