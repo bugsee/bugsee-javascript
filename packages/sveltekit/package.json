@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "SvelteKit meta-adapter",
+  "description": "SvelteKit meta-adapter: portable handleError + handle (ALS context + trace) + server/client/edge entries",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -18,10 +18,16 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/browser": "workspace:*",
-    "@bugsee/node": "workspace:*"
+    "@bugsee/adapter-kit": "workspace:*",
+    "@bugsee/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@sveltejs/kit": "^2.0.0"
   }
 }
