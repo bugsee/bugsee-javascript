@@ -19,6 +19,10 @@
     "./client": {
       "types": "./src/client.ts",
       "import": "./src/client.ts"
+    },
+    "./edge": {
+      "types": "./src/edge.ts",
+      "import": "./src/edge.ts"
     }
   },
   "files": [
@@ -35,6 +39,7 @@
     "@bugsee/adapter-kit": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/svelte": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*",
     "bugsee": "workspace:*"
   },
   "devDependencies": {

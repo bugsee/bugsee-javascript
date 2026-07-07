@@ -772,6 +772,9 @@ importers:
       '@bugsee/svelte':
         specifier: workspace:*
         version: link:../svelte
+      '@bugsee/vercel-edge':
+        specifier: workspace:*
+        version: link:../vercel-edge
       bugsee:
         specifier: workspace:*
         version: link:../bugsee

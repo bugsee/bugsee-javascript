@@ -28,8 +28,9 @@ export type SvelteKitHandle = (input: SvelteKitHandleInput) => unknown;
 export interface CreateHandleOptions extends TraceDataOptions {}
 
 /** Splice a `<meta name="traceparent">` (from the active trace) in before `</head>`. A no-op when no trace is
- *  active or the chunk has no `</head>`. (`transformPageChunk` runs per chunk; `</head>` lands in one chunk.) */
-function injectTraceMeta(html: string, options: CreateHandleOptions): string {
+ *  active or the chunk has no `</head>`. (`transformPageChunk` runs per chunk; `</head>` lands in one chunk.)
+ *  Exported so the edge handle (`@bugsee/sveltekit/edge`) reuses the exact same injection. */
+export function injectTraceMeta(html: string, options: CreateHandleOptions): string {
   if (!html.includes('</head>')) return html;
   const tag = traceMetaTag(options);
   return tag === '' ? html : html.replace('</head>', `${tag}</head>`);
