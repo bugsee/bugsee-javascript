@@ -101,6 +101,24 @@ adapters below consume the kit.
 - **Nuxt** — U1 module skeleton (`defineNuxtModule`) · U2 client plugin (`@bugsee/browser`+`@bugsee/vue`) · U3
   Nitro server plugin (`launch()`; verify patch-before-first-request) · U4 `nitroApp.hooks('error')` bridge · U5
   trace via `render:html` · U6 edge/cloudflare preset branch · U7 source-maps (#158).
+
+  **AS-BUILT STATUS (2026-07-07) — @bugsee/nuxt MOAT COMPLETE + real-boot validated.** U1–U5 shipped
+  (`893422b`/`84afc54`/`edc5b64`/`ea96f7c`/`83a64a7`) + a **real-Nuxt boot e2e** (`510b98f`,
+  `@bugsee/nuxt-e2e`: nuxi-builds a fixture app → boots the node-server `.output` → asserts a thrown route
+  uploads a bundle with our `http-error` mechanism + the real message, and the SSR HTML carries the injected
+  `<meta name="traceparent">`). Note U3+U4 landed together inside `installBugseeNitro` (one Nitro plugin does
+  launch + `error` hook + `render:html`); the U1 module ships the client plugin as a generated `#imports`
+  template (no heavy `nuxt` dep) + the shipped `runtime/nitro-plugin`. **REMAINING (scoped follow-ups, NOT
+  moat gaps):**
+  - **U6 edge/cloudflare preset — a distinct milestone, not a tidy-up.** On a Nitro `vercel-edge`/`cloudflare`
+    preset the runtime plugin must launch the EDGE SDK (`@bugsee/vercel-edge`/`@bugsee/cloudflare`) instead of
+    `bugsee/node` — different substrate: `run()`-scoped context + `waitUntil` flush, NO `node:http` emit-patch.
+    Approach: the module branches the shipped runtime plugin on the build-time preset (`nuxt.options.nitro.preset`
+    → a `nitro-plugin.edge` variant that composes the edge adapter); the `error`/`render:html` hooks are
+    preset-agnostic and reused as-is. Comparable in size to the standalone vercel-edge/cloudflare adapter
+    milestones (incl. an edge-VM e2e). The dominant Nuxt deploy target (node-server) is DONE.
+  - **U7 source-maps — BLOCKED on #158** (the shared Vite/Rollup source-map-upload plugin). Not Nuxt-specific;
+    every adapter's build slice waits on #158. Wires in as an `addVitePlugin` once #158 ships.
 - **Astro** — A1 integration skeleton + client `injectScript('page')` · A2 server `injectScript('page-ssr')` +
   node/edge branch · A3 middleware (context + try/catch error capture, `order:'pre'`) · A4 trace via response
   rewrite · A5 source-maps (#158) · A6 real-Astro e2e.
