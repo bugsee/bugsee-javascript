@@ -85,8 +85,13 @@ cherry-pick, NOT a blind replay of all commits:
 - **Skip:** `@sentry-internal/*` renames, Sentry breadcrumb/envelope/segment coupling, `beforeAddRecordingEvent` glue,
   player/rrvideo changes.
 
-**External action (user):** fork `rrweb-io/rrweb` → `github.com/<bugsee-org>/rrweb`. Until then, D2 keeps us on npm
-`@rrweb/record` behind the wrapper.
+**DONE (2026-07-08):** the fork `github.com/bugsee/rrweb` exists; branch `bugsee-port` carries the curated privacy
+hardening (input hard-floors incl. sensitive-`autocomplete`, + attribute-value masking via a `maskAttributeFn` hook);
+robustness was audited as already-in-upstream-2.1.0. `@bugsee/rrweb` consumes the fork via a **git dependency** on
+`@bugsee/rrweb-record` (branch `bugsee-dist` — a prebuilt, record-only bundle, replay player tree-shaken out, ~56 KB
+gzip), and `@bugsee/replay`'s masking config activates `maskAttributeFn`. Verified end-to-end by the real-rrweb e2e.
+**Deferred:** the `unmask`/`unblock`/`maskAllText` selective-opt-out (needs a per-node hot-path rearchitecture — its
+own slice) and Tier-3 size trimming.
 
 ---
 
