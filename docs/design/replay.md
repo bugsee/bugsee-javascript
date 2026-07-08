@@ -125,23 +125,35 @@ the existing per-report file assembly — no new upload path.
 
 ## 6. Slice plan (each: design → red test → green → per-entity mutator loop → multi-agent review → commit)
 
-- **RP0 — `@bugsee/rrweb` wrapper** (npm-backed): `record`, `eventWithTime`/masking types, re-export. Tiny; unblocks all.
-- **RP1 — masking config** (`resolveReplayMaskingOptions`): fail-closed defaults + Bugsee selectors + always-mask
-  password/cc/tel. Pure, exhaustive privacy tests + mutator.
-- **RP2 — `FileType 'replay'` + assembler binary-file support**: extend the core assembler to emit a binary/async file
-  for `replay` (via an injected encoder), leaving JSON types unchanged. Core change; test-first.
-- **RP3 — `ReplayEncoder` service**: fflate-in-worker `encode(events) → replay.bin` bytes; worker externalizable;
-  service token + EXPLICIT init. Tests with a fake worker + a decode round-trip (unzip → events).
-- **RP4 — `ReplayCaptureProvider`**: rrweb `record` → `replay` entries; start/stop, `checkoutEveryNms`, blackout.
-  Tests inject a fake `record` source (mirror `log-provider.test`).
-- **RP5 — launch wiring + lazy load** in `@bugsee/browser`/umbrella: `replay` option → `import('@bugsee/replay')` +
-  `registerReplay`; `includeVideo` gating; non-DOM shim. Bundle-budget guard (errors bundle unchanged; add-on ≤90 KB).
-- **RP6 — real-browser e2e** (Playwright, `@bugsee/instrumentation-tests` browser harness): launch with `replay:true`,
-  interact with a page, throw, assert the uploaded bundle has a `replay.bin` that unzips to a valid rrweb stream whose
-  first event is a full snapshot and that masked text is masked.
+**As-built status (2026-07-08): RP0–RP6 DONE + on master. `@bugsee/replay` records a real rrweb `replay.bin`
+end-to-end.** As-built deltas from the plan are noted per slice.
+
+- **RP0 — `@bugsee/rrweb` wrapper** ✅ (`635b531`) — npm-backed re-export (`record` + `eventWithTime`/`recordOptions`/
+  `listenerHandler` types). Swappable: the fork swap edits ONLY `packages/rrweb/src/index.ts`.
+- **RP1 — masking config** ✅ (`852a1b7`) — `resolveReplayMaskingOptions`: fail-closed defaults (maskAllText/Inputs +
+  blockAllMedia), always-mask password, Bugsee `.bugsee-mask/.bugsee-block/.bugsee-ignore` selectors. Exhaustive
+  privacy tests + mutator.
+- **RP2 — `FileType 'replay'` + assembler binary-file support** ✅ (`c8fa989`) — **as-built delta:** the seam (O1) is an
+  injected **`fileEncoders?: Partial<Record<FileType, (payloads) => Uint8Array>>`** on `BundleAssemblyContext`; JSON
+  types stay byte-identical (encoder only applied when present).
+- **RP3 — replay encoder** ✅ (`308ce44`) — **as-built delta (D5 revised):** SYNCHRONOUS stateless `encodeReplay(payloads)
+  = gzipSync(strToU8(JSON.stringify(...)))` (fflate), not a worker service. Decode round-trip tested.
+- **RP4 — `ReplayCaptureProvider`** ✅ (`9153c60`) — rrweb `record` → `replay` entries; `checkoutEveryNms` (def 60000),
+  `recordCrossOriginIframes:false`, start/stop, blackout. Tests inject a fake `record` (mirror `log-provider.test`).
+- **RP5 — launch wiring + lazy load** ✅ (core `28e4a6b` fileEncoders thread; register `bb44631`; browser `d2e14b8`) —
+  `replay` option → `import('@bugsee/replay')` + `registerReplay(client, fileEncoders, options)`; a shared mutable
+  `fileEncoders` map is passed by-ref to `createClient` and populated post-lazy-load. Verified: the main browser bundle
+  inlines NO rrweb/fflate code (only the `import()` specifier) — errors bundle unchanged.
+- **RP6 — real-rrweb e2e** ✅ (`74a9bfd`) — **as-built delta:** a **jsdom** real-rrweb integration test in
+  `@bugsee/instrumentation-tests` (`test/replay.e2e.ts`, per-file `// @vitest-environment jsdom`; run via
+  `pnpm test:e2e`). Boots the REAL `launchCore({replay:true})` → REAL lazy-loaded `@bugsee/replay` → REAL rrweb `record`
+  on a jsdom DOM, throws, and asserts the ACTUAL uploaded bundle's `replay.bin` ungzips to a stream with a FullSnapshot
+  (type 2) and that the secret is masked (**verified to DISCRIMINATE** — masking off ⇒ secret appears ⇒ test fails).
+  **DEFERRED → RP6b:** a cross-browser **Playwright** run (needs Playwright infra + the fork wired; jsdom ≠ a real
+  engine).
 - **RP7 — `@bugsee/replay-canvas`** (opt-in add-on) — deferred/optional.
-- **Fork track (parallel, user-gated):** create the Bugsee rrweb fork; port Tier 1→3 (§4); repoint the `@bugsee/rrweb`
-  wrapper. Independent of RP1–RP6.
+- **Fork track (parallel, user-gated):** the Bugsee rrweb fork EXISTS (GitHub, Bugsee org). Remaining: port Tier 1→3
+  (§4) + repoint the `@bugsee/rrweb` wrapper import. Independent of RP1–RP6.
 
 ---
 
