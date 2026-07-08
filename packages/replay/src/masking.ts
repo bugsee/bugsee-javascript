@@ -22,6 +22,28 @@ const BUGSEE_MASK = '.bugsee-mask,[data-bugsee-mask]';
 const BUGSEE_BLOCK = '.bugsee-block,[data-bugsee-block]';
 const BUGSEE_IGNORE = '.bugsee-ignore,[data-bugsee-ignore]';
 
+/** Attribute names whose values carry user content (not structure) and must be redacted when masking text.
+ *  Structural attributes (class/id/type/name/role/…) are intentionally excluded to preserve replay fidelity;
+ *  URL/style attributes (src/href/srcset/style) are handled by rrweb before `maskAttributeFn` runs. */
+const MASKED_ATTRIBUTES = new Set([
+  'title',
+  'alt',
+  'placeholder',
+  'label',
+  'value',
+  'aria-label',
+  'aria-description',
+  'aria-placeholder',
+  'aria-valuetext',
+  'aria-roledescription',
+  'data-tooltip',
+]);
+
+/** Fail-closed attribute masker: redacts the value of a user-content attribute, passes structure through. */
+function maskAttribute(key: string, value: string): string {
+  return MASKED_ATTRIBUTES.has(key.toLowerCase()) ? '*'.repeat(value.length) : value;
+}
+
 /** The privacy-relevant ReplayOptions (a subset of the public replay options). */
 export interface ReplayMaskingOptions {
   /** Mask every text node. Default `true` (fail-closed). When `false`, only Bugsee-marked text is masked. */
@@ -43,7 +65,7 @@ export interface ReplayMaskingOptions {
  *  required `string` here (assignable back to rrweb's optional fields when spread into `record()`). */
 export type ResolvedReplayMasking = Pick<
   recordOptions<unknown>,
-  'maskAllInputs' | 'maskInputOptions'
+  'maskAllInputs' | 'maskInputOptions' | 'maskAttributeFn'
 > & {
   maskTextSelector: string;
   blockSelector: string;
@@ -67,6 +89,9 @@ export function resolveReplayMaskingOptions(
     maskAllInputs,
     // Password inputs are ALWAYS masked — even with `maskAllInputs: false`, this hard floor stands.
     maskInputOptions: { password: true },
+    // When masking all text, also redact user-content attribute values (placeholder/title/aria-label/…),
+    // which rrweb serializes separately from text nodes. Consistent with text: skipped when maskAllText is off.
+    maskAttributeFn: maskAllText ? maskAttribute : undefined,
     // `maskAllText` → mask every text node (`*`); otherwise only opt-in Bugsee-marked text.
     maskTextSelector: maskAllText ? '*' : joinSelectors(BUGSEE_MASK, options.maskTextSelector),
     blockSelector: joinSelectors(

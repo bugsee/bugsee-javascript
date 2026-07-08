@@ -65,3 +65,31 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.maskTextSelector).not.toContain(',,');
   });
 });
+
+describe('resolveReplayMaskingOptions — attribute masking (maskAttributeFn)', () => {
+  const el = () => (globalThis as { document?: Document }).document?.createElement('div') ?? ({} as HTMLElement);
+
+  it('provides a maskAttributeFn by default (fail-closed) that redacts user-content attributes', () => {
+    const { maskAttributeFn } = resolveReplayMaskingOptions();
+    expect(typeof maskAttributeFn).toBe('function');
+    expect(maskAttributeFn?.('placeholder', 'you@host.com', el())).toBe('************');
+    expect(maskAttributeFn?.('title', 'Secret', el())).toBe('******');
+    expect(maskAttributeFn?.('aria-label', 'Email', el())).toBe('*****');
+  });
+
+  it('leaves structural attributes (class/id/type) untouched', () => {
+    const { maskAttributeFn } = resolveReplayMaskingOptions();
+    expect(maskAttributeFn?.('class', 'btn primary', el())).toBe('btn primary');
+    expect(maskAttributeFn?.('id', 'submit', el())).toBe('submit');
+    expect(maskAttributeFn?.('type', 'text', el())).toBe('text');
+  });
+
+  it('is case-insensitive on the attribute name', () => {
+    const { maskAttributeFn } = resolveReplayMaskingOptions();
+    expect(maskAttributeFn?.('PLACEHOLDER', 'abcd', el())).toBe('****');
+  });
+
+  it('does NOT set a maskAttributeFn when maskAllText is off (consistent with text)', () => {
+    expect(resolveReplayMaskingOptions({ maskAllText: false }).maskAttributeFn).toBeUndefined();
+  });
+});

@@ -775,9 +775,9 @@ importers:
 
   packages/rrweb:
     dependencies:
-      '@rrweb/record':
-        specifier: ^2.1.0
-        version: 2.1.0
+      '@bugsee/rrweb-record':
+        specifier: github:bugsee/rrweb#fb37e83094b7c76eafdd2cd499968cee099bc30a
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a(@rrweb/types@2.1.0)(rrweb@2.1.0)
       '@rrweb/types':
         specifier: ^2.1.0
         version: 2.1.0
@@ -1391,6 +1391,18 @@ packages:
 
   '@borewit/text-codec@0.2.2':
     resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
+
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a':
+    resolution: {gitHosted: true, integrity: sha512-64DaS9iul4E4GLkRpSLmDQPppoWDnfzofI2DaaHQqV+gOqRXc0gtX9JlWh/IZSee+iq8f7ycjiDHAmcz9xi6Pg==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a}
+    version: 2.1.0
+    peerDependencies:
+      '@rrweb/types': ^2.1.0
+      rrweb: ^2.1.0
+    peerDependenciesMeta:
+      '@rrweb/types':
+        optional: true
+      rrweb:
+        optional: true
 
   '@capsizecss/unpack@4.0.1':
     resolution: {integrity: sha512-CuNiSqg7+e1cO/GjffyMOm5Tt2jUF9CWHHnvQ/UkqvtkGfHdgwEC0wpmq7fkN3gxwpRnrAN0WzO3vREKmNolMQ==}
@@ -3483,9 +3495,6 @@ packages:
     resolution: {integrity: sha512-QVTUovf40zgTqlFVrKA1uXMVvU2QWEFWfAH8Wdc48IxLvrJMQVMBRjuQyUpzZCDkakImib9eVazbWlC6ksWtJw==}
     cpu: [x64]
     os: [win32]
-
-  '@rrweb/record@2.1.0':
-    resolution: {integrity: sha512-jnbpYQED6QdKn1MuEoqJyILkYhuWDhb3kzA/l1i+Di5sfP7apf3HvrlVIMoyZgATMlk2if65BUUrc5R+vabCjQ==}
 
   '@rrweb/types@2.1.0':
     resolution: {integrity: sha512-svOHkcuukP6rIjz2umwVsS7uYct+2h0N97+bg+8IJYKIUj5+YjwIvqx5y9NILFKPIu3yk+Mb+KDFfJ8RV+4JlA==}
@@ -8945,6 +8954,11 @@ snapshots:
 
   '@borewit/text-codec@0.2.2': {}
 
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a(@rrweb/types@2.1.0)(rrweb@2.1.0)':
+    optionalDependencies:
+      '@rrweb/types': 2.1.0
+      rrweb: 2.1.0
+
   '@capsizecss/unpack@4.0.1':
     dependencies:
       fontkitten: 1.0.3
@@ -10836,12 +10850,6 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.60.4':
     optional: true
-
-  '@rrweb/record@2.1.0':
-    dependencies:
-      '@rrweb/types': 2.1.0
-      '@rrweb/utils': 2.1.0
-      rrweb: 2.1.0
 
   '@rrweb/types@2.1.0': {}
 

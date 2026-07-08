@@ -1,19 +1,28 @@
 // @bugsee/rrweb — the single, SWAPPABLE rrweb import point for @bugsee/replay (+ @bugsee/replay-canvas).
 //
-// Today it re-exports the RECORD path from npm `@rrweb/record` (rrweb-io/rrweb, MIT). When the Bugsee rrweb
-// FORK (github.com/<bugsee-org>/rrweb — upstream rrweb + our curated Sentry-fork ports, see
-// docs/design/replay.md §4) is published/installable, only the imports in THIS file change — @bugsee/replay
-// stays untouched (design D1/D2).
+// The RECORD path is consumed from the Bugsee-hardened rrweb fork via `@bugsee/rrweb-record` (a git
+// dependency on github.com/bugsee/rrweb#bugsee-dist — a prebuilt, record-only bundle with the replay
+// player tree-shaken out; ~56 KB gzip). Swapping the source (fork ref / npm) touches ONLY this file —
+// @bugsee/replay stays untouched (design D1/D2).
 //
-// Record-only: `@rrweb/record` is the record-path entry (no player) so bundlers tree-shake the replay/player
-// code out. Type-only imports (`recordOptions`, event types) are erased — no bundle cost.
+// The event/option TYPES still come from the published rrweb/@rrweb/types type surface (they match the
+// fork's API); `recordOptions` is augmented locally with the fork-only `maskAttributeFn`. Type-only
+// imports are erased — no bundle cost.
+import type { recordOptions as BaseRecordOptions } from 'rrweb';
 
-// The record function (value).
-export { record } from '@rrweb/record';
+// The record function (value) — the Bugsee-hardened fork build.
+export { record } from '@bugsee/rrweb-record';
 
 // The core event + handle types.
 export type { EventType, eventWithTime, listenerHandler } from '@rrweb/types';
 
+// Fail-closed attribute-value masker (fork-only): redacts attribute values (placeholder/title/aria-label/
+// value) that would otherwise leak into a recording.
+export type MaskAttributeFn = (key: string, value: string, element: HTMLElement) => string;
+
 // The record options type — carries the masking/blocking surface (`maskAllText`/`maskAllInputs`/`blockClass`/
-// `maskInputOptions`/`checkoutEveryNms`/`emit`/…) that @bugsee/replay's masking config (RP1) maps onto.
-export type { recordOptions } from 'rrweb';
+// `maskInputOptions`/`checkoutEveryNms`/`emit`/…) that @bugsee/replay's masking config (RP1) maps onto,
+// augmented with the fork's `maskAttributeFn`.
+export type recordOptions<T = unknown> = BaseRecordOptions<T> & {
+  maskAttributeFn?: MaskAttributeFn;
+};
