@@ -45,7 +45,7 @@ describe('createReplayCaptureProvider', () => {
     const o = getOptions();
     expect(record).toHaveBeenCalledTimes(1);
     expect(o?.maskAllInputs).toBe(true); // masking spread in
-    expect(o?.maskTextSelector).toBe('*');
+    expect(o?.maskAllText).toBe(true);
     expect(o?.checkoutEveryNms).toBe(30_000);
     expect(o?.recordCrossOriginIframes).toBe(false);
     expect(typeof o?.emit).toBe('function');

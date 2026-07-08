@@ -20,9 +20,17 @@ export type { EventType, eventWithTime, listenerHandler } from '@rrweb/types';
 // value) that would otherwise leak into a recording.
 export type MaskAttributeFn = (key: string, value: string, element: HTMLElement) => string;
 
-// The record options type — carries the masking/blocking surface (`maskAllText`/`maskAllInputs`/`blockClass`/
+// The record options type — carries the masking/blocking surface (`maskAllInputs`/`blockClass`/
 // `maskInputOptions`/`checkoutEveryNms`/`emit`/…) that @bugsee/replay's masking config (RP1) maps onto,
-// augmented with the fork's `maskAttributeFn`.
+// augmented with the Bugsee fork's privacy options:
+//   • `maskAttributeFn` — redact attribute values;
+//   • `maskAllText` + `unmaskTextClass`/`unmaskTextSelector` — mask-everything with per-element opt-out;
+//   • `unblockSelector` — un-block specific media; `unmaskInputSelector` — un-mask specific inputs.
 export type recordOptions<T = unknown> = BaseRecordOptions<T> & {
   maskAttributeFn?: MaskAttributeFn;
+  maskAllText?: boolean;
+  unmaskTextClass?: string | RegExp | null;
+  unmaskTextSelector?: string | null;
+  unblockSelector?: string | null;
+  unmaskInputSelector?: string | null;
 };

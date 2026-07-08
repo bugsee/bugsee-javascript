@@ -776,8 +776,8 @@ importers:
   packages/rrweb:
     dependencies:
       '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#fb37e83094b7c76eafdd2cd499968cee099bc30a
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a(@rrweb/types@2.1.0)(rrweb@2.1.0)
+        specifier: github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)
       '@rrweb/types':
         specifier: ^2.1.0
         version: 2.1.0
@@ -1392,8 +1392,8 @@ packages:
   '@borewit/text-codec@0.2.2':
     resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a':
-    resolution: {gitHosted: true, integrity: sha512-64DaS9iul4E4GLkRpSLmDQPppoWDnfzofI2DaaHQqV+gOqRXc0gtX9JlWh/IZSee+iq8f7ycjiDHAmcz9xi6Pg==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a}
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920':
+    resolution: {gitHosted: true, integrity: sha512-zneGFYlhaxarSRWfCsyUZdzzInok+0GTrK5gwCXlNy806+sbsbYxGMmtKIo1c8uoF4F8tQv4NbX+jEWC0O642w==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920}
     version: 2.1.0
     peerDependencies:
       '@rrweb/types': ^2.1.0
@@ -8954,7 +8954,7 @@ snapshots:
 
   '@borewit/text-codec@0.2.2': {}
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/fb37e83094b7c76eafdd2cd499968cee099bc30a(@rrweb/types@2.1.0)(rrweb@2.1.0)':
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)':
     optionalDependencies:
       '@rrweb/types': 2.1.0
       rrweb: 2.1.0

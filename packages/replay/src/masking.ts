@@ -44,6 +44,10 @@ function maskAttribute(key: string, value: string): string {
   return MASKED_ATTRIBUTES.has(key.toLowerCase()) ? '*'.repeat(value.length) : value;
 }
 
+/** Bugsee-namespaced opt-OUT selectors (D3): un-mask text/inputs, un-block media. */
+const BUGSEE_UNMASK = '.bugsee-unmask,[data-bugsee-unmask]';
+const BUGSEE_SHOW = '.bugsee-show,[data-bugsee-show]';
+
 /** The privacy-relevant ReplayOptions (a subset of the public replay options). */
 export interface ReplayMaskingOptions {
   /** Mask every text node. Default `true` (fail-closed). When `false`, only Bugsee-marked text is masked. */
@@ -54,20 +58,25 @@ export interface ReplayMaskingOptions {
   blockAllMedia?: boolean;
   /** Additional CSS selector whose text to mask. */
   maskTextSelector?: string;
+  /** Additional CSS selector whose text/inputs to UN-mask (opt back in), additive to `.bugsee-unmask`. */
+  unmaskTextSelector?: string;
+  /** Additional CSS selector to UN-block (opt media back in), additive to `.bugsee-show`. */
+  unblockSelector?: string;
   /** Additional CSS selector to block. */
   blockSelector?: string;
   /** Additional CSS selector whose input events to ignore. */
   ignoreSelector?: string;
 }
 
-/** The rrweb `record()` masking/blocking fields we resolve. `maskAllInputs`/`maskInputOptions` are typed
- *  against the real rrweb options; the three selectors are always populated (fail-closed), so they are
- *  required `string` here (assignable back to rrweb's optional fields when spread into `record()`). */
+/** The rrweb `record()` masking/blocking fields we resolve. Selectors are always populated (fail-closed). */
 export type ResolvedReplayMasking = Pick<
   recordOptions<unknown>,
-  'maskAllInputs' | 'maskInputOptions' | 'maskAttributeFn'
+  'maskAllInputs' | 'maskInputOptions' | 'maskAttributeFn' | 'maskAllText'
 > & {
   maskTextSelector: string;
+  unmaskTextSelector: string;
+  unmaskInputSelector: string;
+  unblockSelector: string;
   blockSelector: string;
   ignoreSelector: string;
 };
@@ -92,8 +101,14 @@ export function resolveReplayMaskingOptions(
     // When masking all text, also redact user-content attribute values (placeholder/title/aria-label/…),
     // which rrweb serializes separately from text nodes. Consistent with text: skipped when maskAllText is off.
     maskAttributeFn: maskAllText ? maskAttribute : undefined,
-    // `maskAllText` → mask every text node (`*`); otherwise only opt-in Bugsee-marked text.
-    maskTextSelector: maskAllText ? '*' : joinSelectors(BUGSEE_MASK, options.maskTextSelector),
+    // `maskAllText` masks every text node with a per-element opt-out (a nearer `.bugsee-unmask` wins).
+    maskAllText,
+    // Additive explicit mask marks (also mask when maskAllText is off).
+    maskTextSelector: joinSelectors(BUGSEE_MASK, options.maskTextSelector),
+    // Per-element opt-OUT (D3): `.bugsee-unmask` un-masks text + inputs; `.bugsee-show` un-blocks media.
+    unmaskTextSelector: joinSelectors(BUGSEE_UNMASK, options.unmaskTextSelector),
+    unmaskInputSelector: joinSelectors(BUGSEE_UNMASK, options.unmaskTextSelector),
+    unblockSelector: joinSelectors(BUGSEE_SHOW, options.unblockSelector),
     blockSelector: joinSelectors(
       BUGSEE_BLOCK,
       blockAllMedia ? MEDIA_SELECTOR : undefined,

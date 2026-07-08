@@ -5,8 +5,24 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
   it('defaults to masking ALL text, ALL inputs, and blocking ALL media', () => {
     const m = resolveReplayMaskingOptions();
     expect(m.maskAllInputs).toBe(true);
-    expect(m.maskTextSelector).toBe('*'); // maskAllText → every text node masked
+    expect(m.maskAllText).toBe(true); // every text node masked, with per-element opt-out
     expect(m.blockSelector).toContain(MEDIA_SELECTOR); // blockAllMedia
+  });
+
+  it('wires the .bugsee-unmask / .bugsee-show opt-out selectors (D3)', () => {
+    const m = resolveReplayMaskingOptions();
+    expect(m.unmaskTextSelector).toContain('.bugsee-unmask');
+    expect(m.unmaskInputSelector).toContain('.bugsee-unmask');
+    expect(m.unblockSelector).toContain('.bugsee-show');
+  });
+
+  it('appends caller-provided unmask/unblock selectors', () => {
+    const m = resolveReplayMaskingOptions({
+      unmaskTextSelector: '.keep-visible',
+      unblockSelector: '.show-chart',
+    });
+    expect(m.unmaskTextSelector).toContain('.keep-visible');
+    expect(m.unblockSelector).toContain('.show-chart');
   });
 
   it('ALWAYS masks password inputs, even when maskAllInputs is turned off (hard floor)', () => {
@@ -17,7 +33,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
 
   it('when maskAllText is false, masks only Bugsee-marked text (not everything)', () => {
     const m = resolveReplayMaskingOptions({ maskAllText: false });
-    expect(m.maskTextSelector).not.toBe('*');
+    expect(m.maskAllText).toBe(false);
     expect(m.maskTextSelector).toContain('.bugsee-mask');
     expect(m.maskTextSelector).toContain('[data-bugsee-mask]');
   });

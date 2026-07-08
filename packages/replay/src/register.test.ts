@@ -47,7 +47,7 @@ describe('registerReplay', () => {
 
     const o = rec.getOptions();
     expect(o?.maskAllInputs).toBe(true);
-    expect(o?.maskTextSelector).toBe('*');
+    expect(o?.maskAllText).toBe(true);
     expect(o?.checkoutEveryNms).toBe(15_000);
   });
 
