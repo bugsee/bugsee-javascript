@@ -409,12 +409,18 @@ importers:
 
   packages/instrumentation-tests:
     dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@bugsee/bun':
         specifier: workspace:*
         version: link:../bun
       '@bugsee/cloudflare':
         specifier: workspace:*
         version: link:../cloudflare
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
       '@bugsee/deno':
         specifier: workspace:*
         version: link:../deno
@@ -424,6 +430,9 @@ importers:
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
+      '@bugsee/replay':
+        specifier: workspace:*
+        version: link:../replay
       '@bugsee/util':
         specifier: workspace:*
         version: link:../util
@@ -449,6 +458,9 @@ importers:
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
