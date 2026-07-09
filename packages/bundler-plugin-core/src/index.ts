@@ -2,6 +2,13 @@
 // `bugsee-cli` (sourcemaps inject + debug-files upload). Consumed by @bugsee/vite-plugin / @bugsee/webpack-plugin.
 // See docs/design/source-maps.md.
 export {
+  defaultDeleteMapFiles,
+  type RunFn,
+  type UploadSourcemapsOptions,
+  type UploadSourcemapsResult,
+  uploadSourcemaps,
+} from './orchestrate';
+export {
   BugseeCliError,
   type EnvRecord,
   type RunBugseeCliOptions,
