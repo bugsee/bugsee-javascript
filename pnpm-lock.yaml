@@ -215,6 +215,16 @@ importers:
         specifier: ^25.9.1
         version: 25.9.1
 
+  packages/bundler-plugin-core:
+    dependencies:
+      unplugin:
+        specifier: ^2.3.10
+        version: 2.3.11
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
+
   packages/capture:
     dependencies:
       '@bugsee/core':
