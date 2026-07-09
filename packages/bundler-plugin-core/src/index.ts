@@ -9,6 +9,18 @@ export {
   uploadSourcemaps,
 } from './orchestrate';
 export {
+  bugseeUnplugin,
+  bugseeUnpluginFactory,
+  type OutputLike,
+  resolveOutputDir,
+} from './plugin';
+export {
+  type BugseePluginOptions,
+  type ResolvedPluginOptions,
+  resolvePluginOptions,
+  runPluginUpload,
+} from './resolve';
+export {
   BugseeCliError,
   type EnvRecord,
   type RunBugseeCliOptions,
