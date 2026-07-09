@@ -1,5 +1,14 @@
-// @bugsee/vite-plugin
-// Vite plugin: auto-define __BUGSEE_DEBUG__, source-map upload trigger
-// Tier 4. See docs/design/sdk-design.md §5 and docs/implementation-standards.md.
-// Stub — implementation pending (test-first + mutator loop required before code lands).
-export {};
+// @bugsee/vite-plugin — the Vite entry over @bugsee/bundler-plugin-core. At build end it drives `bugsee-cli`
+// to inject debug-IDs, upload the source-maps, and delete the client `.map`s (privacy). See
+// docs/design/source-maps.md.
+//
+//   import { bugseeVitePlugin } from '@bugsee/vite-plugin';
+//   export default defineConfig({ plugins: [bugseeVitePlugin({ appToken: '…' })] });
+import { type BugseePluginOptions, bugseeUnplugin } from '@bugsee/bundler-plugin-core';
+
+export type { BugseePluginOptions };
+
+/** The Bugsee Vite plugin factory: `bugseeVitePlugin(options)` → a Vite plugin. */
+export const bugseeVitePlugin = bugseeUnplugin.vite;
+
+export default bugseeVitePlugin;

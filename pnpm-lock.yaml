@@ -926,7 +926,11 @@ importers:
         specifier: workspace:*
         version: link:../util
 
-  packages/vite-plugin: {}
+  packages/vite-plugin:
+    dependencies:
+      '@bugsee/bundler-plugin-core':
+        specifier: workspace:*
+        version: link:../bundler-plugin-core
 
   packages/vue:
     dependencies:
@@ -952,7 +956,11 @@ importers:
         specifier: workspace:*
         version: link:../performance
 
-  packages/webpack-plugin: {}
+  packages/webpack-plugin:
+    dependencies:
+      '@bugsee/bundler-plugin-core':
+        specifier: workspace:*
+        version: link:../bundler-plugin-core
 
   packages/webview:
     dependencies:

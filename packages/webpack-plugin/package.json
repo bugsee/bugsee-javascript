@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Webpack plugin: auto-define __BUGSEE_DEBUG__, source-map upload trigger",
+  "description": "Webpack plugin: drives the Bugsee source-map upload (inject debug-IDs + upload via bugsee-cli) at build end.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -18,6 +18,12 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@bugsee/bundler-plugin-core": "workspace:*"
   }
 }
