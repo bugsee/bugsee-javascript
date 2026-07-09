@@ -155,6 +155,12 @@ export {
 } from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
 export type { ServiceRegistrar, ServiceResolver } from './services';
+export {
+  applyDebugIds,
+  attachDebugIds,
+  buildDebugIdMap,
+  readDebugIds,
+} from './debug-id';
 export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
 export type {
   BugseeApi,

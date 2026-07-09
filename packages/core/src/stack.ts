@@ -13,6 +13,8 @@ export interface StackFrame {
   line?: number;
   /** 1-based column number. */
   column?: number;
+  /** Source-map debug-ID for this frame's bundle (set when a build injected one). See debug-id.ts. */
+  debugId?: string;
 }
 
 // §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path.
@@ -76,7 +78,8 @@ export function parseV8Stack(stack: string): StackFrame[] {
   return frames;
 }
 
-/** Render scrubbed frames back into a stack string (one `at fn (file:line:col)` line per frame). */
+/** Render scrubbed frames back into a stack string (one `at fn (file:line:col)` line per frame). A frame
+ *  carrying a source-map debug-ID gets an additive ` debugId=<id>` suffix (the server ignores or joins on it). */
 export function formatStack(frames: StackFrame[]): string {
   return frames
     .map((frame) => {
@@ -85,7 +88,8 @@ export function formatStack(frames: StackFrame[]): string {
         frame.line !== undefined && frame.column !== undefined
           ? `${frame.file}:${frame.line}:${frame.column}`
           : `${frame.file}`;
-      return `    at ${fn} (${location})`;
+      const debugId = frame.debugId !== undefined ? ` debugId=${frame.debugId}` : '';
+      return `    at ${fn} (${location})${debugId}`;
     })
     .join('\n');
 }

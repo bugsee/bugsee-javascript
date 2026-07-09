@@ -68,6 +68,25 @@ describe('createWindowErrorProvider', () => {
     expect(req.report.description).toBe('    at doWork (https://app.test/work.js:3:7)');
   });
 
+  it('stamps a source-map debug-ID (debugId=) when the bundle registered one', () => {
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    // the injected stub's Error().stack — its top frame is the bundle's own file
+    g._bugseeDebugIds = { 'Error\n    at reg (https://app.test/work.js:1:1)': 'dbg-77' };
+    try {
+      const w = fakeWindow();
+      const requests = started(createWindowErrorProvider(w.win));
+      const err = new Error('boom');
+      err.stack = 'Error\n    at doWork (https://app.test/work.js:3:7)'; // V8 dialect
+      w.emit('error', { error: err });
+      const req = requests[0] as ReportingRequest;
+      expect(req.report.description).toContain('debugId=dbg-77');
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+
   it('falls back to message + filename:lineno:colno when event.error is absent', () => {
     const w = fakeWindow();
     const requests = started(createWindowErrorProvider(w.win));

@@ -1,5 +1,5 @@
 import type { DetectionProvider } from '@bugsee/core';
-import { DetectionProviderBase, formatStack, parseLocation } from '@bugsee/core';
+import { applyDebugIds, DetectionProviderBase, formatStack, parseLocation } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { parseStack } from './stack';
 
@@ -22,7 +22,10 @@ function describeError(value: unknown): { summary: string; description?: string 
   if (value instanceof Error) {
     const summary = value.message || value.name;
     if (value.stack) {
-      return { summary, description: formatStack(parseStack(value.stack)) };
+      const frames = parseStack(value.stack);
+      // Stamp source-map debug-IDs (when a build injected them) so the report can symbolicate.
+      applyDebugIds(frames, { parseStack });
+      return { summary, description: formatStack(frames) };
     }
     return { summary };
   }

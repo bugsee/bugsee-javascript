@@ -161,4 +161,16 @@ describe('formatStack', () => {
   it('returns an empty string for no frames', () => {
     expect(formatStack([])).toBe('');
   });
+
+  it('appends an additive ` debugId=<id>` suffix when a frame carries a debug-ID', () => {
+    expect(
+      formatStack([{ function: 'f', file: '/a.js', line: 1, column: 2, debugId: 'abc-123' }]),
+    ).toBe('    at f (/a.js:1:2) debugId=abc-123');
+  });
+
+  it('omits the suffix for frames without a debug-ID', () => {
+    expect(formatStack([{ function: 'f', file: '/a.js', line: 1, column: 2 }])).not.toContain(
+      'debugId',
+    );
+  });
 });
