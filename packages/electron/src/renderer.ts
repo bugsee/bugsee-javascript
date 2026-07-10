@@ -4,9 +4,14 @@
 export {
   type LaunchRendererOptions,
   launchRenderer,
+  resolveRendererBridge,
   resolveRendererPost,
 } from './launch-renderer';
 export {
   createElectronRendererCaptureStore,
   type ElectronRendererCaptureStoreOptions,
 } from './renderer-capture-store';
+export {
+  createRendererControlHandler,
+  type RendererControlHandlerOptions,
+} from './renderer-control';

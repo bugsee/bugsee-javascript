@@ -9,6 +9,15 @@ export {
 } from './crash-reporter';
 export { type LaunchMainOptions, launchMain } from './launch-main';
 export {
+  type ControlSenderLike,
+  createElectronMainControl,
+  type ElectronMainControl,
+  type ElectronMainControlOptions,
+  type IpcMainControlEventLike,
+  type IpcMainControlLike,
+  type IpcMainControlListener,
+} from './main-control';
+export {
   createElectronMainReceiver,
   type ElectronMainReceiver,
   type ElectronMainReceiverOptions,

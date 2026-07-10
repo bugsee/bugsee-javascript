@@ -13,14 +13,16 @@ import {
   deriveMinidumpUrl,
   installNativeCrashReporter,
 } from './crash-reporter';
+import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
 
 export interface LaunchMainOptions extends BugseeLaunchOptions {
-  /** Electron's `ipcMain` (the app passes `require('electron').ipcMain`). */
-  ipcMain: IpcMainLike;
+  /** Electron's `ipcMain` (the app passes `require('electron').ipcMain`). Drives both the inbound capture
+   *  receiver (renderer→main) and the outbound control channel (main→renderer). */
+  ipcMain: IpcMainLike & IpcMainControlLike;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated (E5). */
   crashReporter?: CrashReporterLike;
   /** Override the minidump submit URL (default derived from the API base, Android-parity). */
@@ -36,14 +38,24 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const { ipcMain, crashReporter, minidumpUrl, crashReporterExtra, launch, ...nodeOptions } = options;
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
+  // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
+  // returns the already-wired client untouched, so all Electron wiring hangs off the first-launch internals.
+  if (internals === undefined) {
+    return client;
+  }
+
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
   const store = client.getService(CaptureStoreToken);
   const receiver = createElectronMainReceiver({ ipcMain, store });
   receiver.start();
 
-  // Native crashes (all processes): start Electron's crashReporter, session-correlated. `internals` is only
-  // present on the FIRST launch (the SDK is a per-process singleton), so this installs exactly once.
-  if (crashReporter !== undefined && internals !== undefined) {
+  // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
+  // and propagate pause/resume/flush/stop to every renderer.
+  const control = createElectronMainControl({ ipcMain, sessionId: internals.api.sessionId });
+  control.start();
+
+  // Native crashes (all processes): start Electron's crashReporter, session-correlated.
+  if (crashReporter !== undefined) {
     installNativeCrashReporter({
       crashReporter,
       appToken,
@@ -53,12 +65,22 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     });
   }
 
-  // Tie the receiver's lifecycle to the client: stopping the client removes the IPC listener.
+  // Tie the renderer-facing lifecycle to the client: stopping the client stops the renderers + removes the
+  // IPC listeners; flushing the client flushes the renderers too.
   const stop = client.stop.bind(client);
-  (client as { stop: Bugsee['stop'] }).stop = ((): ReturnType<Bugsee['stop']> => {
+  (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
+    control.stop(); // broadcast stop to renderers + remove the hello listener
     receiver.stop();
-    return stop();
+    return stop(timeout);
   }) as Bugsee['stop'];
+
+  const flush = client.flush.bind(client);
+  (client as { flush: Bugsee['flush'] }).flush = ((timeout?: number): ReturnType<
+    Bugsee['flush']
+  > => {
+    control.flush(); // ask renderers to flush too
+    return flush(timeout);
+  }) as Bugsee['flush'];
 
   return client;
 }

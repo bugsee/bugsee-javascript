@@ -3,7 +3,13 @@
 // See docs/design/electron.md. Per-runtime entry points (launchMain / launchRenderer / preload) land in
 // subsequent slices; this exposes the shared renderer↔main wire codec.
 export {
+  type ControlCommand,
+  type ControlMessage,
   type DecodedStreamEntry,
+  decodeControl,
   decodeStreamEntry,
+  encodeControl,
+  encodeHello,
   encodeStreamEntry,
+  isHello,
 } from './protocol';

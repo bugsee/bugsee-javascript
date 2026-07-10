@@ -102,8 +102,20 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   source + hook renderer lifecycle (`web-contents-created`/`render-process-gone`). One session across processes.
 - **E5 — native crashReporter integration.** `crashReporter.start` with session-correlated `extra`; collect + upload
   minidumps on native crash (incl. `render-process-gone reason:crashed`), tied to the session. Test with fakes.
-- **E6 — session handshake + capability negotiation.** Main assigns the session id to renderers via a `control` reply;
-  pause/resume/flush/stop propagate main→renderers (reuse the WebView control kinds).
+- **E6 — session handshake + control propagation.** ✅ BUILT. A same-version `control`/`hello` wire codec (`protocol.ts`)
+  carries all four WebView control kinds (pause/resume/flush/stop) plus a `session` handshake reply. The DOWNstream
+  half is `main-control.ts` (`createElectronMainControl`): it listens on `bugsee:hello`, replies to each renderer's
+  `hello` with the owner's session id on `bugsee:control`, registers the sender (deduped by identity — a reload
+  re-replies but doesn't double-register), and broadcasts pause/resume/flush/stop to every registered renderer
+  (each send guarded — a destroyed webContents can't break the broadcast to the rest). The preload bridge now exposes
+  `sendHello` + `onControl` alongside `post`; the renderer dispatcher is `renderer-control.ts` (pause/resume flip the
+  streaming store's `paused` flag — the UP stream drops while backgrounded, incidents still report via the separate
+  report path; flush/stop forward to the client; `session` → `onSessionId`). `launchMain` wires the control manager
+  off the first-launch internals, replies to hellos with `internals.api.sessionId`, and wraps `client.stop`/`flush` to
+  broadcast `stop`/`flush` down before the local drain. `launchRenderer` sends `hello` on launch and subscribes to
+  control. All gated on `internals` (present only on first launch), so a repeat `launchMain` returns the client
+  untouched (no second receiver/control). `pause()`/`resume()` are complete broadcast primitives on the manager,
+  ready for an app-background hook (the trigger, not the mechanism, is the only deferral).
 - **E7 — e2e.** A fake-Electron harness (fake ipcMain/ipcRenderer/crashReporter/web-contents) boots main + 2 renderers,
   drives capture + a renderer crash + a native minidump, and asserts ONE merged bundle + the correlated minidump.
 - **E8 — opt-in pixel-capture video source (D8).** A renderer/main video source over Electron's capture APIs

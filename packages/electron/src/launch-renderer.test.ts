@@ -1,12 +1,17 @@
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/browser';
 import type { CaptureStore, StoredEntry } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { launchRenderer, resolveRendererPost } from './launch-renderer';
-import { decodeStreamEntry } from './protocol';
+import {
+  launchRenderer,
+  resolveRendererBridge,
+  resolveRendererPost,
+} from './launch-renderer';
+import type { BugseeElectronBridge } from './preload-bridge';
+import { decodeStreamEntry, encodeControl, isHello } from './protocol';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
-  const client = { stop: vi.fn() } as unknown as Bugsee;
+  const client = { stop: vi.fn(() => Promise.resolve(true)), flush: vi.fn(() => Promise.resolve(true)) } as unknown as Bugsee;
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
   const launch = vi.fn((appToken: string, options: BugseeLaunchOptions) => {
     received = { appToken, options };
@@ -17,6 +22,28 @@ function fakeLaunch() {
     client,
     get received() {
       return received;
+    },
+  };
+}
+
+/** A fake renderer↔main bridge that records posts/hellos and holds the control handler for driving. */
+function fakeBridge() {
+  const posted: string[] = [];
+  const hellos: string[] = [];
+  let control: ((raw: string) => void) | undefined;
+  const bridge: BugseeElectronBridge = {
+    post: (raw) => posted.push(raw),
+    sendHello: (raw) => hellos.push(raw),
+    onControl: (handler) => {
+      control = handler;
+    },
+  };
+  return {
+    bridge,
+    posted,
+    hellos,
+    drive(raw: string): void {
+      control?.(raw);
     },
   };
 }
@@ -63,6 +90,55 @@ describe('launchRenderer', () => {
       delete g.__bugseeElectron;
     }
   });
+
+  it('announces itself with a hello handshake on launch', () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    expect(b.hellos).toHaveLength(1);
+    expect(isHello(b.hellos[0] as string)).toBe(true);
+  });
+
+  it('a main→renderer pause drops the UP stream; resume restores it', () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const store = f.received?.options.captureStore as CaptureStore;
+    const entry = { type: 'log', timestamp: 1, serialized: '{}' } as StoredEntry;
+
+    b.drive(encodeControl({ command: 'pause' }));
+    store.add(entry);
+    expect(b.posted).toHaveLength(0); // paused → nothing streamed up
+
+    b.drive(encodeControl({ command: 'resume' }));
+    store.add(entry);
+    expect(b.posted).toHaveLength(1); // resumed → streaming again
+  });
+
+  it('a main→renderer stop stops the renderer client', () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(encodeControl({ command: 'stop' }));
+    expect(f.client.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a main→renderer flush flushes the renderer client', () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(encodeControl({ command: 'flush' }));
+    expect(f.client.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('the session handshake reply is delivered to onSessionId', () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const onSessionId = vi.fn();
+    launchRenderer('tok', { launch: f.launch, bridge: b.bridge, onSessionId });
+    b.drive(encodeControl({ command: 'session', sessionId: 'owner-sess' }));
+    expect(onSessionId).toHaveBeenCalledWith('owner-sess');
+  });
 });
 
 describe('resolveRendererPost', () => {
@@ -80,5 +156,48 @@ describe('resolveRendererPost', () => {
 
   it('is a safe no-op when the bridge is not attached', () => {
     expect(() => resolveRendererPost()('x')).not.toThrow();
+  });
+});
+
+describe('resolveRendererBridge', () => {
+  const g = globalThis as {
+    __bugseeElectron?: Partial<BugseeElectronBridge>;
+  };
+  afterEach(() => {
+    delete g.__bugseeElectron;
+  });
+
+  it('re-resolves __bugseeElectron per call, forwarding post/sendHello/onControl', () => {
+    const posts: string[] = [];
+    const hellos: string[] = [];
+    const handlers: Array<(raw: string) => void> = [];
+    g.__bugseeElectron = {
+      post: (raw) => posts.push(raw),
+      sendHello: (raw) => hellos.push(raw),
+      onControl: (h) => handlers.push(h),
+    };
+    const b = resolveRendererBridge();
+    b.post('p');
+    b.sendHello('h');
+    const handler = (): void => {};
+    b.onControl(handler);
+    expect(posts).toEqual(['p']);
+    expect(hellos).toEqual(['h']);
+    expect(handlers).toEqual([handler]);
+  });
+
+  it('every method is a safe no-op when the bridge (or a method) is absent', () => {
+    const b = resolveRendererBridge();
+    expect(() => {
+      b.post('p');
+      b.sendHello('h');
+      b.onControl(() => {});
+    }).not.toThrow();
+    g.__bugseeElectron = {}; // present but missing methods
+    expect(() => {
+      b.post('p');
+      b.sendHello('h');
+      b.onControl(() => {});
+    }).not.toThrow();
   });
 });

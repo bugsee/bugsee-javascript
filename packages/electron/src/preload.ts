@@ -6,7 +6,10 @@
 // Takes electron as an argument (rather than importing it) so @bugsee/electron has no electron dependency.
 export {
   BUGSEE_BRIDGE_KEY,
+  BUGSEE_CONTROL_CHANNEL,
+  BUGSEE_HELLO_CHANNEL,
   BUGSEE_STREAM_CHANNEL,
+  type BugseeElectronBridge,
   type ContextBridgeLike,
   type IpcRendererLike,
   type RegisterBugseePreloadOptions,

@@ -3,8 +3,8 @@ import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
 import type { IpcMainEventLike, IpcMainListener } from './main-receiver';
-import { BUGSEE_STREAM_CHANNEL } from './preload-bridge';
-import { encodeStreamEntry } from './protocol';
+import { BUGSEE_CONTROL_CHANNEL, BUGSEE_HELLO_CHANNEL, BUGSEE_STREAM_CHANNEL } from './preload-bridge';
+import { decodeControl, encodeHello, encodeStreamEntry } from './protocol';
 
 function fakeIpcMain() {
   const listeners = new Map<string, IpcMainListener>();
@@ -18,14 +18,22 @@ function fakeIpcMain() {
   };
 }
 
-/** A fake node launch: a client that resolves a recording store from getService + a stop spy. */
+/** A fake renderer webContents sender that records the control it receives DOWN. */
+function fakeSender(id = 1) {
+  const sent: Array<{ channel: string; raw: string }> = [];
+  return { id, send: vi.fn((channel: string, raw: string) => sent.push({ channel, raw })), sent };
+}
+
+/** A fake node launch: a client that resolves a recording store from getService + stop/flush spies. */
 function fakeLaunch(options: { internals?: boolean } = {}) {
   const added: unknown[] = [];
   const stop = vi.fn(() => Promise.resolve(true));
+  const flush = vi.fn(() => Promise.resolve(true));
   const store = { add: (e: unknown) => added.push(e) };
   const client = {
     getService: vi.fn((token: unknown) => (token === CaptureStoreToken ? store : undefined)),
     stop,
+    flush,
   } as unknown as Bugsee;
   const internals =
     options.internals === false
@@ -40,6 +48,7 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
     launch: launch as never,
     client,
     stop,
+    flush,
     added,
     get received() {
       return received;
@@ -84,15 +93,45 @@ describe('launchMain', () => {
     expect(f.added).toEqual([{ type: 'log', timestamp: 9, serialized: '{"m":1}' }]);
   });
 
-  it('stopping the client removes the IPC listener AND calls node stop', async () => {
+  it('stopping the client removes the IPC listeners, broadcasts stop, AND calls node stop', async () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();
     const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    // A renderer registers via hello so the stop broadcast has a target.
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
 
     await client.stop();
 
     expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // receiver stopped
+    expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // control listener removed
+    expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['stop']); // renderer told to stop
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
+  });
+
+  it('replies to a renderer hello with the owner session id (the handshake)', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    expect(r.sent[0]?.channel).toBe(BUGSEE_CONTROL_CHANNEL);
+    expect(decodeControl(r.sent[0]!.raw)).toEqual({ command: 'session', sessionId: 'sess-xyz' });
+  });
+
+  it('flushing the client broadcasts flush to renderers AND calls node flush', async () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+
+    await client.flush();
+
+    expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['flush']);
+    expect(f.flush).toHaveBeenCalledTimes(1);
   });
 
   it('starts Electron crashReporter (session-correlated, derived URL) when one is provided', () => {
@@ -137,5 +176,15 @@ describe('launchMain', () => {
     const crashReporter = { start: vi.fn() };
     launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
     expect(crashReporter.start).not.toHaveBeenCalled();
+  });
+
+  it('wires nothing on a repeat launch (no receiver, no control) — returns the client untouched', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch({ internals: false });
+    const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    expect(client).toBe(f.client);
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // no second receiver
+    expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // no second control manager
+    expect(client.stop).toBe(f.stop); // stop NOT re-wrapped (the first launch owns the wiring)
   });
 });

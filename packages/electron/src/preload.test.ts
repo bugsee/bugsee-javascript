@@ -6,5 +6,7 @@ describe('@bugsee/electron/preload entry', () => {
     expect(typeof preload.registerBugseePreload).toBe('function');
     expect(preload.BUGSEE_BRIDGE_KEY).toBe('__bugseeElectron');
     expect(preload.BUGSEE_STREAM_CHANNEL).toBe('bugsee:stream');
+    expect(preload.BUGSEE_HELLO_CHANNEL).toBe('bugsee:hello');
+    expect(preload.BUGSEE_CONTROL_CHANNEL).toBe('bugsee:control');
   });
 });

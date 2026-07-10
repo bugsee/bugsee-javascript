@@ -1,8 +1,11 @@
-// The Electron renderer→main wire codec. Main and renderers run the SAME @bugsee/electron version (shipped
+// The Electron renderer↔main wire codec. Main and renderers run the SAME @bugsee/electron version (shipped
 // together), so — unlike the WebView bridge's versioned native protocol — this is a plain same-version JSON
-// envelope: an `entry` (a streamed capture record) with the already-serialized payload SPLICED in verbatim
-// (serialize once on the hot path, never walk/escape the payload), decoded on the main side into the fields
-// the aggregator needs. Kept minimal; report/control kinds are added by later slices.
+// envelope. Three kinds:
+//   `entry`   renderer→main: a streamed capture record with the already-serialized payload SPLICED in verbatim
+//             (serialize once on the hot path, never walk/escape the payload), decoded main-side into the
+//             fields the aggregator needs.
+//   `control` main→renderer: pause/resume/flush/stop + the `session` handshake reply (carries the session id).
+//   `hello`   renderer→main: the handshake request that prompts the main's `session` reply.
 import type { StreamingCaptureEntry } from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 
@@ -64,4 +67,72 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
     // Re-serialize the payload for the aggregator's `StoredEntry.serialized` (main-side, off the hot path).
     payload: JSON.stringify(message.p),
   };
+}
+
+/** The main→renderer control commands. `pause`/`resume`/`flush`/`stop` reuse the WebView control kinds;
+ *  `session` is the handshake reply assigning the owner's session id to a renderer. */
+export type ControlCommand = 'pause' | 'resume' | 'flush' | 'stop' | 'session';
+
+const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
+  'pause',
+  'resume',
+  'flush',
+  'stop',
+  'session',
+]);
+
+export interface ControlMessage {
+  command: ControlCommand;
+  /** The assigned session id — set only on the `session` handshake reply. */
+  sessionId?: string;
+}
+
+/** Encode a control message to a wire string (`sessionId` omitted unless present). */
+export function encodeControl(message: ControlMessage): string {
+  const wire: { k: 'control'; c: ControlCommand; sid?: string } = {
+    k: 'control',
+    c: message.command,
+  };
+  if (message.sessionId !== undefined) {
+    wire.sid = message.sessionId;
+  }
+  return JSON.stringify(wire);
+}
+
+interface WireControl {
+  k?: string;
+  c?: string;
+  sid?: string;
+}
+
+/** Decode a control wire string into a {@link ControlMessage}, or `undefined` if it isn't a valid control. */
+export function decodeControl(raw: string): ControlMessage | undefined {
+  let message: WireControl;
+  try {
+    message = JSON.parse(raw) as WireControl;
+  } catch {
+    return undefined;
+  }
+  if (message.k !== 'control' || message.c === undefined || !CONTROL_COMMANDS.has(message.c)) {
+    return undefined;
+  }
+  const decoded: ControlMessage = { command: message.c as ControlCommand };
+  if (message.sid !== undefined) {
+    decoded.sessionId = message.sid;
+  }
+  return decoded;
+}
+
+/** Encode the renderer→main handshake request. */
+export function encodeHello(): string {
+  return JSON.stringify({ k: 'hello' });
+}
+
+/** True iff `raw` is a hello handshake request. */
+export function isHello(raw: string): boolean {
+  try {
+    return (JSON.parse(raw) as { k?: string }).k === 'hello';
+  } catch {
+    return false;
+  }
 }
