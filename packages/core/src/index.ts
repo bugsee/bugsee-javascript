@@ -154,6 +154,11 @@ export {
   type RequestContext,
 } from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export {
+  createStreamingCaptureStore,
+  type StreamingCaptureEntry,
+  type StreamingCaptureStoreOptions,
+} from './streaming-capture-store';
 export type { ServiceRegistrar, ServiceResolver } from './services';
 export {
   applyDebugIds,

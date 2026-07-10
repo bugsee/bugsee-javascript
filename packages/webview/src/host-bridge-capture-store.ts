@@ -1,4 +1,4 @@
-import type { CaptureSnapshot, CaptureStore, StoredEntry } from '@bugsee/core';
+import { type CaptureStore, createStreamingCaptureStore } from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage } from './protocol';
@@ -26,61 +26,19 @@ export interface HostBridgeCaptureStoreOptions {
   redactedFor?: (type: FileType) => boolean;
 }
 
-/** An empty snapshot — the WebView SDK never assembles a local bundle (D2); native does. */
-function emptySnapshot(): CaptureSnapshot {
-  return {
-    async *stream(): AsyncIterableIterator<StoredEntry> {
-      // no local records — native owns the buffer (intentionally yields nothing)
-    },
-    drainAll(): Promise<Map<FileType, StoredEntry[]>> {
-      return Promise.resolve(new Map());
-    },
-    release(): void {
-      // nothing to free
-    },
-  };
-}
-
-/** Build the streaming capture store that posts every entry across the WebView boundary. */
+/** Build the streaming capture store that posts every entry across the WebView boundary. Delegates the
+ *  store logic to core's transport-agnostic `createStreamingCaptureStore`; the WebView specifics are the
+ *  bridge sink + the WebView wire codec (`encode(entryMessage(...))`). */
 export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions): CaptureStore {
   const { bridge } = opts;
-  const now = opts.now ?? ((): number => performance.now());
-  const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
-  let internal = 0;
-  const nextSeq = opts.seq ?? ((): number => internal++);
-  const paused = opts.paused ?? ((): boolean => false);
-  const redactedFor = opts.redactedFor ?? ((): boolean => false);
-
-  return {
-    add(record: StoredEntry): void {
-      // While paused (the WebView is backgrounded/offscreen) drop the capture stream — no bridge crossings.
-      // Incidents are NOT affected (the report path is separate), so a crash while backgrounded still reports.
-      if (paused()) {
-        return;
-      }
-      bridge.post(
-        encode(
-          entryMessage({
-            type: record.type,
-            seq: nextSeq(),
-            timestamp: record.timestamp,
-            mono: now(),
-            timeOrigin,
-            payload: record.serialized,
-            // D3 provenance: did a JS-side filter for this entry type already run? (native still re-applies).
-            redacted: redactedFor(record.type),
-          }),
-        ),
-      );
-    },
-    tick(): void {
-      // No-op: native owns the rolling window (no local parts to rotate/evict).
-    },
-    snapshot(): CaptureSnapshot {
-      return emptySnapshot();
-    },
-    clear(): void {
-      // No-op: nothing is buffered locally.
-    },
-  };
+  return createStreamingCaptureStore({
+    post: (raw) => bridge.post(raw),
+    // D3 provenance (`redacted`) is carried through by the core store per the injected redactedFor.
+    encodeEntry: (e) => encode(entryMessage(e)),
+    now: opts.now,
+    timeOrigin: opts.timeOrigin,
+    seq: opts.seq,
+    paused: opts.paused,
+    redactedFor: opts.redactedFor,
+  });
 }

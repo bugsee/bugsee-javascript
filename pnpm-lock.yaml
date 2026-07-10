@@ -285,9 +285,22 @@ importers:
 
   packages/electron:
     dependencies:
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../node
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
 
   packages/elysia:
     dependencies:
