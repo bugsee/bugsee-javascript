@@ -62,3 +62,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
 
 export const bugseeUnplugin: UnpluginInstance<BugseePluginOptions | undefined> =
   createUnplugin(bugseeUnpluginFactory);
+
+// Convenience per-bundler factories over the same core. `@bugsee/vite-plugin` / `@bugsee/webpack-plugin`
+// ship the two most common ones as their own packages; these cover the esbuild-based toolchains (Angular 17+,
+// Bun where its plugin hooks suffice), Rollup (Vite/meta-frameworks internals), and Rspack. Any other target
+// (Deno, tsc/swc, or a build with no plugin hook) uses the standalone `bugsee-cli` post-build step instead.
+export const bugseeRollupPlugin = bugseeUnplugin.rollup;
+export const bugseeEsbuildPlugin = bugseeUnplugin.esbuild;
+export const bugseeRspackPlugin = bugseeUnplugin.rspack;

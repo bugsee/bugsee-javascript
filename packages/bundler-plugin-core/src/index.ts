@@ -9,6 +9,9 @@ export {
   uploadSourcemaps,
 } from './orchestrate';
 export {
+  bugseeEsbuildPlugin,
+  bugseeRollupPlugin,
+  bugseeRspackPlugin,
   bugseeUnplugin,
   bugseeUnpluginFactory,
   type OutputLike,

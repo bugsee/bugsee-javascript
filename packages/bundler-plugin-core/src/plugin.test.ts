@@ -1,6 +1,13 @@
 import type { UnpluginOptions } from 'unplugin';
 import { describe, expect, it } from 'vitest';
-import { bugseeUnplugin, bugseeUnpluginFactory, resolveOutputDir } from './plugin';
+import {
+  bugseeEsbuildPlugin,
+  bugseeRollupPlugin,
+  bugseeRspackPlugin,
+  bugseeUnplugin,
+  bugseeUnpluginFactory,
+  resolveOutputDir,
+} from './plugin';
 import type { BugseePluginOptions } from './resolve';
 
 /** Invoke the factory (which requires a meta arg) and narrow its single-object result. */
@@ -51,5 +58,19 @@ describe('bugseeUnplugin', () => {
     expect(typeof bugseeUnplugin.vite).toBe('function');
     expect(typeof bugseeUnplugin.webpack).toBe('function');
     expect(typeof bugseeUnplugin.rollup).toBe('function');
+  });
+});
+
+describe('convenience per-bundler factories', () => {
+  it('exports callable rollup/esbuild/rspack plugin factories', () => {
+    expect(typeof bugseeRollupPlugin).toBe('function');
+    expect(typeof bugseeEsbuildPlugin).toBe('function');
+    expect(typeof bugseeRspackPlugin).toBe('function');
+  });
+
+  it('the rollup factory builds a plugin named "bugsee"', () => {
+    const plugin = bugseeRollupPlugin({ disabled: true }) as { name?: string };
+    const one = Array.isArray(plugin) ? plugin[0] : plugin;
+    expect(one?.name).toBe('bugsee');
   });
 });

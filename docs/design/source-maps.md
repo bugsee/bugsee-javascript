@@ -89,8 +89,28 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
   writes a marker) to assert the plugin drives inject+upload correctly without needing the real Rust binary; plus a
   runtime test that a report carries a debugId injected into a fixture bundle.
 
-## 7. Deferred
+## 7. Coverage across targets + map identity (analysis)
+
+**Targets without a plugin hook (Bun's built-in bundler, Deno, `tsc`/`swc`, Angular, custom pipelines).** The plugins
+are conveniences, not the mechanism: `bugsee-cli` operates on a finished output dir independent of the bundler, so the
+**universal path is the standalone CLI post-build step** (`sourcemaps inject` → `debug-files upload`; run before
+deploy). See `docs/source-maps-usage.md §2`. To widen the zero-config plugin experience cheaply, `@bugsee/bundler-plugin-core`
+also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core) — transitively covering
+Angular 17+ (esbuild), Vite/meta-framework internals (Rollup) and Rspack/Next-webpack. Deno/Bun stay CLI-post-build.
+
+**Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
+debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,
+so at symbolication the server selects the map by the debug-ID the *running code* reports — no pre-selection, and
+multiple chunks/layers coexist. Requirements/limits: (a) the toolchain must emit a **composed** final map (bundlers
+chain maps; a separate minify step must compose — the CLI trusts the on-disk final map, it doesn't compose layers);
+(b) `--dry-run` on both commands is the "show me what you'll pick" diagnostic; (c) **bytecode targets (RN/Hermes) are
+out of scope** — bytecode drops the JS comment+stub, so the running code reports no debug-ID; that's the separate RN
+SDK's concern (needs `hermes-compose-source-map` + a preserved bundle id).
+
+## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
 - Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.
-- rollup/esbuild/rspack plugin entries (trivial once the core exists — meta-framework adapters' P6 wires them).
+- Node/edge runtime debug-ID wiring (browser done in SM7) — trivial.
+- The exact debug-ID WIRE FORMAT — additive ` debugId=<id>` string suffix now; a structured `debug_meta`/per-frame
+  field is a refinement gated on the JS-backend symbolication contract.
 - Tunnel option (proxy uploads through the app origin) — opt-in, hardened, later.
