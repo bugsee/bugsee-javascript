@@ -75,6 +75,34 @@ describe('createPixelVideoController', () => {
     expect(source.snapshot).not.toHaveBeenCalled();
   });
 
+  it('never rejects: a throwing permission check routes to onError and stays inert', async () => {
+    const onError = vi.fn();
+    const source = fakeSource();
+    const controller = createPixelVideoController({
+      source,
+      hasPermission: async () => {
+        throw new Error('TCC query failed');
+      },
+      onError,
+    });
+    await expect(controller.start()).resolves.toBeUndefined(); // must NOT reject (no unhandled rejection)
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(source.started).toBe(false); // inert
+    expect(await controller.snapshot(1)).toEqual([]);
+  });
+
+  it('never rejects: a throwing source.start routes to onError and rolls back to inert', async () => {
+    const onError = vi.fn();
+    const source = fakeSource();
+    source.start = () => {
+      throw new Error('capturePage init failed');
+    };
+    const controller = createPixelVideoController({ source, hasPermission: () => true, onError });
+    await expect(controller.start()).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(await controller.snapshot(1)).toEqual([]); // active rolled back — no half-started state
+  });
+
   it('isolates a failing source: routes to onError and returns [] (never blocks the report)', async () => {
     const onError = vi.fn();
     const source = fakeSource();

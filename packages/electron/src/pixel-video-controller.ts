@@ -37,12 +37,19 @@ export function createPixelVideoController(
       if (active) {
         return; // idempotent
       }
-      const granted = (await options.hasPermission?.()) ?? true;
-      if (!granted) {
-        return; // no permission → stay inert (no capture, snapshots return [])
+      // Robust: a throwing permission seam or source.start must never reject (the call is floated at launch —
+      // an unhandled rejection would destabilize the host). Route to onError and stay inert.
+      try {
+        const granted = (await options.hasPermission?.()) ?? true;
+        if (!granted) {
+          return; // no permission → stay inert (no capture, snapshots return [])
+        }
+        active = true;
+        options.source.start();
+      } catch (error) {
+        active = false; // roll back — never a half-started state
+        options.onError?.(error);
       }
-      active = true;
-      options.source.start();
     },
     stop(): void {
       if (!active) {
