@@ -116,8 +116,16 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   control. All gated on `internals` (present only on first launch), so a repeat `launchMain` returns the client
   untouched (no second receiver/control). `pause()`/`resume()` are complete broadcast primitives on the manager,
   ready for an app-background hook (the trigger, not the mechanism, is the only deferral).
-- **E7 — e2e.** A fake-Electron harness (fake ipcMain/ipcRenderer/crashReporter/web-contents) boots main + 2 renderers,
-  drives capture + a renderer crash + a native minidump, and asserts ONE merged bundle + the correlated minidump.
+- **E7 — e2e.** ✅ BUILT (`electron-e2e.test.ts`). A fake-Electron IPC bus (fake ipcMain + per-renderer
+  ipcRenderer/webContents + preload contextBridge + crashReporter) boots the REAL `@bugsee/node` main via
+  `launchMain` (no launch seam) and TWO renderers via `launchRenderer` (only `@bugsee/browser`'s renderer internals
+  are faked — capture entries are injected into the real streaming store). It asserts: both renderers learn the
+  SAME owner session through the handshake; the native `crashReporter` is started once with that session in `extra`
+  (minidump↔session correlation) at the derived `/v2/apps/{token}/minidumps` URL; ONE merged bundle is uploaded
+  whose `logs.json` contains capture from main + renderer-1 + renderer-2; and `flush`/`stop` from the main
+  propagate down to both renderers. The renderer→main transport, the merge, and the real bundle assembly are all
+  exercised end to end (5 injected convergence regressions — dropped receiver add, wrong handshake session, no
+  stop/flush broadcast, dropped crash correlation — are all caught).
 - **E8 — opt-in pixel-capture video source (D8).** A renderer/main video source over Electron's capture APIs
   (`capturePage` for own-content low-fps, or `desktopCapturer`+`getDisplayMedia`+`MediaRecorder` for full fidelity),
   gated on `video: 'pixel'` + the macOS Screen-Recording permission; the encoded video becomes a bundle file. The rrweb

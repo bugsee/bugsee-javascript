@@ -298,6 +298,9 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.1
