@@ -19,7 +19,7 @@ function fakeIpcMain() {
 }
 
 /** A fake node launch: a client that resolves a recording store from getService + a stop spy. */
-function fakeLaunch() {
+function fakeLaunch(options: { internals?: boolean } = {}) {
   const added: unknown[] = [];
   const stop = vi.fn(() => Promise.resolve(true));
   const store = { add: (e: unknown) => added.push(e) };
@@ -27,10 +27,14 @@ function fakeLaunch() {
     getService: vi.fn((token: unknown) => (token === CaptureStoreToken ? store : undefined)),
     stop,
   } as unknown as Bugsee;
+  const internals =
+    options.internals === false
+      ? undefined
+      : { baseUrl: 'https://api.test', api: { sessionId: 'sess-xyz' } };
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
-  const launch = vi.fn((appToken: string, options: BugseeLaunchOptions) => {
-    received = { appToken, options };
-    return { client, internals: undefined };
+  const launch = vi.fn((appToken: string, launchOptions: BugseeLaunchOptions) => {
+    received = { appToken, options: launchOptions };
+    return { client, internals };
   });
   return {
     launch: launch as never,
@@ -89,5 +93,49 @@ describe('launchMain', () => {
 
     expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // receiver stopped
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
+  });
+
+  it('starts Electron crashReporter (session-correlated, derived URL) when one is provided', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const crashReporter = { start: vi.fn() };
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
+    expect(crashReporter.start).toHaveBeenCalledTimes(1);
+    expect(crashReporter.start.mock.calls[0]?.[0]).toMatchObject({
+      submitURL: 'https://api.test/v2/apps/tok/minidumps', // derived from internals.baseUrl
+      uploadToServer: true,
+      extra: { session_id: 'sess-xyz', app_token: 'tok' },
+    });
+  });
+
+  it('honours a minidumpUrl override', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const crashReporter = { start: vi.fn() };
+    launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      crashReporter,
+      minidumpUrl: 'https://dumps.custom/put',
+    });
+    expect(crashReporter.start.mock.calls[0]?.[0]).toMatchObject({
+      submitURL: 'https://dumps.custom/put',
+    });
+  });
+
+  it('does NOT start a crashReporter when none is provided', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    // (nothing to assert beyond no throw; covered by the absence of a crashReporter)
+    expect(f.received?.appToken).toBe('tok');
+  });
+
+  it('skips the crashReporter on a repeat launch (internals undefined — installed once)', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch({ internals: false });
+    const crashReporter = { start: vi.fn() };
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
+    expect(crashReporter.start).not.toHaveBeenCalled();
   });
 });
