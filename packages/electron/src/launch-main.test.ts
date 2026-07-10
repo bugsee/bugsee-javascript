@@ -213,6 +213,24 @@ describe('launchMain', () => {
     expect(source.stopped).toBe(true); // client.stop stops pixel capture
   });
 
+  it('client.stop still runs the node stop even if an Electron cleanup step throws', async () => {
+    const ipc = fakeIpcMain();
+    // A malformed ipcMain whose removeListener throws — the real shutdown must still complete.
+    ipc.ipcMain.removeListener = (() => {
+      throw new Error('removeListener boom');
+    }) as unknown as typeof ipc.ipcMain.removeListener;
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    f.stop.mockResolvedValue(false); // the node stop reports "not fully drained" — the wrapper must return it
+    const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, onError });
+
+    const result = await client.stop(); // does not throw
+
+    expect(result).toBe(false); // the wrapper returns the REAL node stop's result, not a fabricated one
+    expect(f.stop).toHaveBeenCalledTimes(1); // the real node stop ALWAYS runs
+    expect(onError).toHaveBeenCalled(); // the cleanup error was routed, not propagated
+  });
+
   it('omits pixel-video wiring entirely when no video option is given', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();

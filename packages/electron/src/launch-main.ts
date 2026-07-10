@@ -109,9 +109,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // IPC listeners; flushing the client flushes the renderers too.
   const stop = client.stop.bind(client);
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
-    control.stop(); // broadcast stop to renderers + remove the hello listener
-    receiver.stop();
-    videoController?.stop(); // stop pixel capture
+    // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
+    try {
+      control.stop(); // broadcast stop to renderers + remove the hello listener
+      receiver.stop();
+      videoController?.stop(); // stop pixel capture
+    } catch (error) {
+      nodeOptions.onError?.(error);
+    }
     return stop(timeout);
   }) as Bugsee['stop'];
 
