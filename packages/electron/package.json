@@ -19,6 +19,10 @@
     "./preload": {
       "types": "./src/preload.ts",
       "import": "./src/preload.ts"
+    },
+    "./main": {
+      "types": "./src/main.ts",
+      "import": "./src/main.ts"
     }
   },
   "files": [
