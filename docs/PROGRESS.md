@@ -83,7 +83,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §372). `createNoopCaptureProvider`/`createNoopInterceptor` (extend `CaptureProviderBase`/`InterceptorBase`) + named shims `createViewHierarchyProviderShim`/`createBreadcrumbsProviderShim`/`createXhrInterceptorShim`. Each is a structurally-valid provider/interceptor that captures nothing and warns ONCE (`logger.warnOnce`, keyed `shim:<name>`, message `<name> is a no-op on <runtime>; ignored`) on ACTIVATION (provider start / interceptor activate) — construction is side-effect-free. Logger (`Pick<Logger,'warnOnce'>`) + runtime label are injected by the platform (runtime-agnostic). **`replay` is intentionally NOT a shim** (design §372: option-driven, ignored-with-warn at option resolution). Per-platform named re-exports land with the platform packages.
 
 ### Scaffold only (1-file stubs, no impl yet)
-`electron`, `replay-canvas`, `vite-plugin`, `webpack-plugin` (the latter two = the #158 source-map upload tooling). Everything else once listed here is now built + on `master`: `bun`/`deno`/`webworker`, `performance` (APM), **`replay`** (session replay, RP0–RP6), `bugsee` (umbrella), `cloudflare`/`vercel-edge` (edge), the frontend adapters (`react`/`vue`/`svelte`/`solid`/`angular`/preact-compat), the meta-framework adapters (`nextjs`/`nuxt`/`remix`/`sveltekit`/`astro`), and the backend adapters (`express`/`fastify`/`hono`/`elysia`/`nestjs`/`koa`/`hapi`).
+`replay-canvas`, `vite-plugin`, `webpack-plugin` (the latter two = the #158 source-map upload tooling). Everything else once listed here is now built + on `master`: `bun`/`deno`/`webworker`, `performance` (APM), **`replay`** (session replay, RP0–RP6), **`electron`** (E0–E8, convergent-reviewed — main+renderer+native convergence + opt-in pixel video D8; `docs/design/electron.md`), `bugsee` (umbrella), `cloudflare`/`vercel-edge` (edge), the frontend adapters (`react`/`vue`/`svelte`/`solid`/`angular`/preact-compat), the meta-framework adapters (`nextjs`/`nuxt`/`remix`/`sveltekit`/`astro`), and the backend adapters (`express`/`fastify`/`hono`/`elysia`/`nestjs`/`koa`/`hapi`).
 
 ---
 
@@ -887,7 +887,7 @@ The SSR meta-frameworks are the shipped `@bugsee/nextjs` adapter with different 
 - **🎉 The 4 SSR meta-framework adapters are COMPLETE: Remix + Nuxt + SvelteKit + Astro** — all node + (Nuxt/SvelteKit/Astro) edge, each real-boot validated + convergence-reviewed, over the shared `@bugsee/adapter-kit`. Only shared follow-ups remain: source-maps (blocked on **#158**) + edge *boot* e2e for SvelteKit/Astro (needs adapter-vercel/cloudflare + an edge VM).
 
 ### After browser
-- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~, ~~`@bugsee/vercel-edge`~~, ~~`@bugsee/cloudflare`~~ (C1 DONE, above), ~~`@bugsee/webworker`~~ (Web Workers DONE; SW partial, above), ~~`@bugsee/webview`~~ (JS side DONE, above), `@bugsee/electron`.
+- ~~`@bugsee/bun`~~, ~~`@bugsee/deno`~~, ~~`@bugsee/vercel-edge`~~, ~~`@bugsee/cloudflare`~~ (C1 DONE, above), ~~`@bugsee/webworker`~~ (Web Workers DONE; SW partial, above), ~~`@bugsee/webview`~~ (JS side DONE, above), ~~`@bugsee/electron`~~ (E0–E8 DONE + convergent-reviewed, above).
 - Per-runtime `exports` conditions in `package.json` — the `bugsee` umbrella now HAS them (browser/node,
   see the dual-module milestone above); the platform packages (`@bugsee/browser`/`node`) are still
   single-entry (split when their runtimes branch). This is the *runtime* split, orthogonal to the ESM/CJS
