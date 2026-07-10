@@ -83,6 +83,7 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
 | **D5** | Native crashes via Electron `crashReporter` minidumps, uploaded correlated by session_id. | Industry approach (Sentry-electron); no native code. |
 | **D6** | Extract a transport-agnostic streaming-store core shared by @bugsee/webview + @bugsee/electron. | DRY; the store is identical, only `post` differs. |
 | **D7** | Main uses the durable queue + multi-instance coexistence on `dataDir`. | Crash-safe upload; main+workers share dataDir safely (already built). |
+| **D8** | **Visual capture = rrweb DOM-replay by default (zero-native) + an OPT-IN pixel-capture video source.** The rrweb default is essentially free: `@bugsee/replay` emits `replay` capture entries that flow through the SAME streaming path (renderer aggregator → streaming store → main → `replay.bin`), so a renderer launched with `replay:true` needs no special video code. The opt-in pixel source uses **Electron's own capture APIs** — `webContents.capturePage()` (own content, no permission) and/or `desktopCapturer`+`getDisplayMedia` (window/screen; **macOS Screen-Recording TCC permission** for full-screen, via `systemPreferences.getMediaAccessStatus/askForMediaAccess`) — encoded to a video file added to the bundle. Still NO bespoke per-OS native code; the one genuine OS surface is the macOS permission. | Electron UIs are web UIs → rrweb covers the common case at zero native cost + matches the web SDK; pixel capture is a fidelity upgrade (native chrome / GPU / multi-window) for apps that need it. |
 
 ## 5. Slice plan (each: design → red test → green → per-entity mutator loop → review → commit)
 
@@ -105,6 +106,10 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   pause/resume/flush/stop propagate main→renderers (reuse the WebView control kinds).
 - **E7 — e2e.** A fake-Electron harness (fake ipcMain/ipcRenderer/crashReporter/web-contents) boots main + 2 renderers,
   drives capture + a renderer crash + a native minidump, and asserts ONE merged bundle + the correlated minidump.
+- **E8 — opt-in pixel-capture video source (D8).** A renderer/main video source over Electron's capture APIs
+  (`capturePage` for own-content low-fps, or `desktopCapturer`+`getDisplayMedia`+`MediaRecorder` for full fidelity),
+  gated on `video: 'pixel'` + the macOS Screen-Recording permission; the encoded video becomes a bundle file. The rrweb
+  DEFAULT needs no slice — it rides the streaming path (renderer `replay:true`) covered by E1/E3.
 
 ## 6. Open questions / to confirm at slice time
 - **Minidump upload path** — `crashReporter.submitURL` posting directly to a Bugsee collector minidump endpoint vs
