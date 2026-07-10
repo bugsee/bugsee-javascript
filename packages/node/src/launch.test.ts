@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import {
   type BundleStore,
   BundleStoreToken,
+  CaptureDataEntryBase,
   CaptureStoreToken,
   ChunkStorageToken,
   type Clock,
@@ -1258,6 +1259,66 @@ describe('launch — capture recovery', () => {
     );
     await client.logException(new Error('boom'));
     expect(profileInBundle(transport)).toBe(false);
+  });
+});
+
+// A platform extension (e.g. @bugsee/electron pixel video) contributes report-time snapshot sources + a
+// binary file encoder through the launch options; launch forwards both to createClient / the assembler.
+describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)', () => {
+  const bundleFiles = (transport: ReturnType<typeof recordingTransport>['puts']) =>
+    unzipSync(transport[0] as Uint8Array);
+
+  it('forwards a report snapshot source AND its binary encoder into the assembled bundle', async () => {
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        // The extension's snapshot: an async-produced 'video' artifact pulled at report time.
+        reportSnapshots: [(now) => [new CaptureDataEntryBase('video', now, { frames: 3 })]],
+        // ...and its binary encoder (video is a binary file type — no JSON fallback).
+        fileEncoders: { video: (payloads) => new Uint8Array([0xa, payloads.length, 0xb]) },
+      }),
+    );
+    await client.logException(new Error('boom'));
+    const files = bundleFiles(puts);
+    expect('video.webm' in files).toBe(true);
+    // The encoder ran over the snapshot's payloads (1 entry) — binary bytes, not JSON.
+    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0xa, 1, 0xb]);
+  });
+
+  it('concatenates the internal profiling snapshot with a forwarded one (neither is dropped)', async () => {
+    const cpuProfile = { nodes: [{ id: 1 }], startTime: 0, endTime: 5, samples: [1], timeDeltas: [0] };
+    let started = false;
+    const cpuProfiler = {
+      get running() {
+        return started;
+      },
+      start: async () => {
+        started = true;
+      },
+      collect: async () => (started ? cpuProfile : undefined),
+      stop: async () => cpuProfile,
+    };
+    const { fn: transport, puts } = recordingTransport();
+    const { scheduler } = fakeScheduler();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        scheduler,
+        profiling: true,
+        cpuProfiler,
+        reportSnapshots: [(now) => [new CaptureDataEntryBase('video', now, { frames: 1 })]],
+        fileEncoders: { video: () => new Uint8Array([1]) },
+      }),
+    );
+    await client.logException(new Error('boom'));
+    const files = bundleFiles(puts);
+    expect('profile.json' in files).toBe(true); // internal snapshot kept
+    expect('video.webm' in files).toBe(true); // forwarded snapshot kept
   });
 });
 

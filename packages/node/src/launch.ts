@@ -12,6 +12,7 @@ import {
 import {
   type BugseeApi,
   type BugseeClient,
+  type BundleAssemblyContext,
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
@@ -251,6 +252,18 @@ export interface BugseeLaunchOptions {
    * context is opened. Injectable for tests. Default a fresh AsyncLocalStorage-backed store.
    */
   requestContextStore?: RequestContextStore;
+
+  /**
+   * Extra report-time snapshot sources (pulled at report assembly, merged into the bundle) — the seam a
+   * platform extension uses to contribute an async-produced artifact (e.g. the Electron pixel-capture video,
+   * D8). Concatenated AFTER the internal profiling snapshot, so a caller's sources never drop it.
+   */
+  reportSnapshots?: readonly ReportSnapshotSource[];
+  /**
+   * Per-file-type BINARY encoders threaded into the bundle assembler (e.g. the Electron video encoder for the
+   * `video` file). A platform extension registers its encoder here; JSON file types need no encoder.
+   */
+  fileEncoders?: BundleAssemblyContext['fileEncoders'];
 
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
@@ -508,6 +521,13 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const profilingSnapshot: ReportSnapshotSource = (now) =>
     profilingController !== undefined ? profilingController.snapshot(now) : [];
 
+  // Report-time snapshot sources: the internal profiling snapshot (when enabled) FIRST, then any a platform
+  // extension contributed (e.g. the Electron pixel-capture video) — concatenated so neither drops the other.
+  const reportSnapshots: ReportSnapshotSource[] = [
+    ...(profilingEnabled ? [profilingSnapshot] : []),
+    ...(options.reportSnapshots ?? []),
+  ];
+
   // Per-request context store (framework adapters): one AsyncLocalStorage-backed store, wired as the core
   // ContextProvider (so capture entries are stamped + reports merge the active context) AND registered as
   // a container service so adapters resolve it for run()/setUser/setAttribute. A no-op until run() opens a
@@ -527,7 +547,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
       : {}),
-    ...(profilingEnabled ? { reportSnapshots: [profilingSnapshot] } : {}),
+    ...(reportSnapshots.length > 0 ? { reportSnapshots } : {}),
+    ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),

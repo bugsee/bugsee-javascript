@@ -11,11 +11,13 @@ export const APP_TOKEN_FILENAME = 'apptoken';
 /** Bundle archive name suffix (§8.3: `<random20>.bundle.zip`). */
 export const BUNDLE_FILE_SUFFIX = '.bundle.zip';
 
-/** Wire file types the JS SDK emits (§8.4). `video` is mobile-only and never emitted here. */
+/** Wire file types the JS SDK emits (§8.4). `video` is the mobile-canonical video file — now also emitted
+ *  by the Electron opt-in pixel-capture source (D8). */
 export type FileType =
   | 'attachment'
   | 'replay'
   | 'screenshot'
+  | 'video'
   | 'traces.system'
   | 'traces.user'
   | 'events.system'
@@ -33,6 +35,7 @@ export type FileType =
 export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>, string>> = {
   replay: 'replay.bin',
   screenshot: 'screenshot.png',
+  video: 'video.webm', // encoded pixel-capture video — Electron opt-in (D8)
   'traces.system': 'traces.system.json',
   'traces.user': 'traces.user.json',
   'events.system': 'events.system.json',

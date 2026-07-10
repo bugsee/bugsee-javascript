@@ -37,4 +37,8 @@ describe('wire constants', () => {
     expect(DEFAULT_FILENAMES.performance).toBe('performance.json');
     expect(DEFAULT_FILENAMES.profile).toBe('profile.json'); // V8 CPU profile (node diagnostics)
   });
+
+  it('video default filename is the encoded pixel-capture stream (Electron)', () => {
+    expect(DEFAULT_FILENAMES.video).toBe('video.webm');
+  });
 });
