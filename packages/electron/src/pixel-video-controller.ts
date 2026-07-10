@@ -56,7 +56,13 @@ export function createPixelVideoController(
         return;
       }
       active = false;
-      options.source.stop();
+      // Robust: a throwing source.stop must not break the client shutdown cascade (launchMain calls this
+      // before the real client.stop). Route to onError and continue.
+      try {
+        options.source.stop();
+      } catch (error) {
+        options.onError?.(error);
+      }
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
       if (!active) {

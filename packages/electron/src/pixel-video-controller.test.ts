@@ -68,6 +68,18 @@ describe('createPixelVideoController', () => {
     expect(source.stopped).toBe(true);
   });
 
+  it('stop() never throws even if source.stop throws (routes to onError) — keeps shutdown robust', async () => {
+    const onError = vi.fn();
+    const source = fakeSource();
+    source.stop = () => {
+      throw new Error('recorder stop failed');
+    };
+    const controller = createPixelVideoController({ source, hasPermission: () => true, onError });
+    await controller.start();
+    expect(() => controller.stop()).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('snapshot before start returns [] (never queries the source)', async () => {
     const source = fakeSource();
     const controller = createPixelVideoController({ source, hasPermission: () => true });
