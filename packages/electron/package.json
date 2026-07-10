@@ -15,6 +15,10 @@
     "./renderer": {
       "types": "./src/renderer.ts",
       "import": "./src/renderer.ts"
+    },
+    "./preload": {
+      "types": "./src/preload.ts",
+      "import": "./src/preload.ts"
     }
   },
   "files": [
