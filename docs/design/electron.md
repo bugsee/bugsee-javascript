@@ -126,10 +126,24 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   propagate down to both renderers. The renderer→main transport, the merge, and the real bundle assembly are all
   exercised end to end (5 injected convergence regressions — dropped receiver add, wrong handshake session, no
   stop/flush broadcast, dropped crash correlation — are all caught).
-- **E8 — opt-in pixel-capture video source (D8).** A renderer/main video source over Electron's capture APIs
-  (`capturePage` for own-content low-fps, or `desktopCapturer`+`getDisplayMedia`+`MediaRecorder` for full fidelity),
-  gated on `video: 'pixel'` + the macOS Screen-Recording permission; the encoded video becomes a bundle file. The rrweb
-  DEFAULT needs no slice — it rides the streaming path (renderer `replay:true`) covered by E1/E3.
+- **E8 — opt-in pixel-capture video source (D8).** ✅ BUILT. The rrweb DOM-replay DEFAULT rides the streaming path
+  (renderer `replay:true`, E1/E3) and needs no slice; this is the OPT-IN pixel path, built as a report-time snapshot
+  source (the CPU-profile pattern — pulled at report assembly, never streamed). Landed across three packages:
+  - **protocol**: the mobile-canonical `'video'` FileType (now also JS-emitted) + `DEFAULT_FILENAMES.video =
+    'video.webm'`.
+  - **node**: `launchCore` forwards `reportSnapshots` + `fileEncoders` from the launch options into `createClient`
+    (concatenated AFTER the internal profiling snapshot) — the generic extension seam for an async-produced
+    report-time artifact + its binary encoder.
+  - **electron**: two pluggable `VideoCaptureSource`s behind injected seams — `createCapturePageVideoSource` (MAIN,
+    periodic `webContents.capturePage()` → bounded frame ring → injected muxer; own-window, no TCC) and
+    `createMediaRecorderVideoSource` (RENDERER, `MediaRecorder` over a MediaStream → webm). **Per the user, the two
+    combine**: capturePage supplies frames (no Screen-Recording permission) that a canvas→`MediaRecorder` encodes to
+    webm — composed into ONE source by the adapter, so `createPixelVideoController` stays source-agnostic. The
+    controller is permission-gated (`hasPermission` TCC seam → inert when denied) and exposes the `ReportSnapshotSource`;
+    `encodePixelVideo` is the `video` file encoder. `launchMain` accepts `video: { source, hasPermission? }`, builds the
+    controller, forwards its snapshot + encoder into the node launch, starts it (async permission), and stops it on
+    `client.stop`. The real Electron/DOM capturers + webm muxer are the app-/adapter-supplied injected seams (no
+    electron/DOM dependency in the package). The e2e proves an opt-in `video.webm` lands in the SAME merged bundle.
 
 ## 6. Open questions / to confirm at slice time
 - **Minidump upload path** — `crashReporter.submitURL` posting directly to a Bugsee collector minidump endpoint vs

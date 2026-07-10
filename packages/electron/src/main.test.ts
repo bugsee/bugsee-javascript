@@ -8,5 +8,9 @@ describe('@bugsee/electron/main entry', () => {
     expect(typeof main.createElectronMainControl).toBe('function');
     expect(typeof main.installNativeCrashReporter).toBe('function');
     expect(typeof main.deriveMinidumpUrl).toBe('function');
+    expect(typeof main.createPixelVideoController).toBe('function');
+    expect(typeof main.encodePixelVideo).toBe('function');
+    expect(typeof main.createCapturePageVideoSource).toBe('function');
+    expect(typeof main.createMediaRecorderVideoSource).toBe('function');
   });
 });

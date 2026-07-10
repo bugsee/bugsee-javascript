@@ -15,9 +15,25 @@ import {
 } from './crash-reporter';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
+import {
+  createPixelVideoController,
+  encodePixelVideo,
+  type PixelVideoController,
+} from './pixel-video-controller';
+import type { VideoCaptureSource } from './video-capture';
 
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
+
+/** Opt-in pixel-capture video (D8). The app supplies a source built with its Electron/DOM specifics (e.g.
+ *  `createCapturePageVideoSource` over `webContents.capturePage`, and/or a `MediaRecorder` source — they can
+ *  be composed into one source). rrweb DOM-replay stays the DEFAULT and rides the renderer streaming path. */
+export interface VideoLaunchOptions {
+  /** The pixel-video capture source. */
+  source: VideoCaptureSource;
+  /** macOS Screen-Recording (TCC) permission gate — resolves false → inert. Default granted. */
+  hasPermission?: () => boolean | Promise<boolean>;
+}
 
 export interface LaunchMainOptions extends BugseeLaunchOptions {
   /** Electron's `ipcMain` (the app passes `require('electron').ipcMain`). Drives both the inbound capture
@@ -29,13 +45,34 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   minidumpUrl?: string;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
   crashReporterExtra?: Record<string, string>;
+  /** Opt-in pixel-capture video (D8). Omit for the rrweb-replay default. */
+  video?: VideoLaunchOptions;
   /** Test seam: the node launch fn (default @bugsee/node `launchCore`). */
   launch?: NodeLaunch;
 }
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
-  const { ipcMain, crashReporter, minidumpUrl, crashReporterExtra, launch, ...nodeOptions } = options;
+  const { ipcMain, crashReporter, minidumpUrl, crashReporterExtra, video, launch, ...nodeOptions } =
+    options;
+
+  // Opt-in pixel video (D8): build the permission-gated controller and forward its report-time snapshot +
+  // the `video` binary encoder into the node launch (merged with any the caller passed directly).
+  let videoController: PixelVideoController | undefined;
+  if (video !== undefined) {
+    videoController = createPixelVideoController({
+      source: video.source,
+      ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
+      ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+    });
+    const controller = videoController;
+    nodeOptions.reportSnapshots = [
+      ...(nodeOptions.reportSnapshots ?? []),
+      (now: number) => controller.snapshot(now),
+    ];
+    nodeOptions.fileEncoders = { ...nodeOptions.fileEncoders, video: encodePixelVideo };
+  }
+
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
@@ -43,6 +80,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   if (internals === undefined) {
     return client;
   }
+
+  // Start pixel capture (async permission check; a report before it's active just carries no video).
+  videoController?.start();
 
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
   const store = client.getService(CaptureStoreToken);
@@ -71,6 +111,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     control.stop(); // broadcast stop to renderers + remove the hello listener
     receiver.stop();
+    videoController?.stop(); // stop pixel capture
     return stop(timeout);
   }) as Bugsee['stop'];
 

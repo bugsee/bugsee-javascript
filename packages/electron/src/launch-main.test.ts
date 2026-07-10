@@ -1,7 +1,9 @@
-import { CaptureStoreToken } from '@bugsee/core';
+import { CaptureDataEntryBase, CaptureStoreToken } from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
+import { encodePixelVideo } from './pixel-video-controller';
+import type { VideoCaptureSource } from './video-capture';
 import type { IpcMainEventLike, IpcMainListener } from './main-receiver';
 import { BUGSEE_CONTROL_CHANNEL, BUGSEE_HELLO_CHANNEL, BUGSEE_STREAM_CHANNEL } from './preload-bridge';
 import { decodeControl, encodeHello, encodeStreamEntry } from './protocol';
@@ -176,6 +178,48 @@ describe('launchMain', () => {
     const crashReporter = { start: vi.fn() };
     launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
     expect(crashReporter.start).not.toHaveBeenCalled();
+  });
+
+  it('wires opt-in pixel video: starts the source + forwards its snapshot & encoder to node launch', async () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const source: VideoCaptureSource & { started: boolean; stopped: boolean } = {
+      started: false,
+      stopped: false,
+      start() {
+        source.started = true;
+      },
+      stop() {
+        source.stopped = true;
+      },
+      snapshot: vi.fn(async (now: number) => [new CaptureDataEntryBase('video', now, new Uint8Array([1]))]),
+    };
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      video: { source, hasPermission: () => true },
+    });
+    await Promise.resolve(); // let the async permission check + start() settle
+    expect(source.started).toBe(true);
+
+    // The controller's snapshot is forwarded as a report snapshot source, and the video encoder is wired.
+    const opts = f.received?.options as BugseeLaunchOptions;
+    expect(opts.reportSnapshots).toHaveLength(1);
+    expect(await opts.reportSnapshots?.[0]?.(5)).toHaveLength(1); // pulls the source (active)
+    expect(opts.fileEncoders?.video).toBe(encodePixelVideo);
+    expect('video' in (f.received?.options ?? {})).toBe(false); // stripped before node launch
+
+    await client.stop();
+    expect(source.stopped).toBe(true); // client.stop stops pixel capture
+  });
+
+  it('omits pixel-video wiring entirely when no video option is given', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const opts = f.received?.options as BugseeLaunchOptions;
+    expect(opts.reportSnapshots).toBeUndefined();
+    expect(opts.fileEncoders).toBeUndefined();
   });
 
   it('wires nothing on a repeat launch (no receiver, no control) — returns the client untouched', () => {

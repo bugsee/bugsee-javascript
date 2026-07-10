@@ -7,13 +7,20 @@
 //   • stop/flush from the main propagate down to both renderers.
 // Only @bugsee/browser's renderer internals are faked (we inject capture entries into the real streaming
 // store); the renderer→main transport, the merge, and the bundle assembly are all REAL.
-import { CaptureStoreToken, createMemoryCaptureStore, type StoredEntry } from '@bugsee/core';
+import {
+  CaptureDataEntryBase,
+  type CaptureDataEntry,
+  CaptureStoreToken,
+  createMemoryCaptureStore,
+  type StoredEntry,
+} from '@bugsee/core';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import { type NodeRuntime, realSystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
 import { launchRenderer } from './launch-renderer';
+import type { VideoCaptureSource } from './video-capture';
 import type { CrashReporterStartOptions } from './crash-reporter';
 import type { IpcMainControlEventLike, IpcMainControlListener } from './main-control';
 import {
@@ -154,6 +161,15 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     const crashStarts: CrashReporterStartOptions[] = [];
     const crashReporter = { start: (o: CrashReporterStartOptions) => crashStarts.push(o) };
 
+    // A pixel-video source (fake capturer + encoder) — proves the opt-in D8 path lands a video.webm.
+    const videoSource: VideoCaptureSource = {
+      start: () => {},
+      stop: () => {},
+      snapshot: async (now: number): Promise<CaptureDataEntry[]> => [
+        new CaptureDataEntryBase('video', now, new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
+      ],
+    };
+
     // ── Boot the REAL main (real @bugsee/node launch), hermetic ──
     const mainClient = launchMain('tok', {
       ipcMain: bus.ipcMain,
@@ -166,6 +182,7 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
       process: fakeProcess(),
       systemProbe: realSystemProbe,
       onError: vi.fn(),
+      video: { source: videoSource, hasPermission: () => true },
     });
 
     // ── Boot 2 renderers; each says hello on launch and gets the session back ──
@@ -198,6 +215,9 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     expect(logs).toEqual(
       expect.arrayContaining([{ from: 'renderer-1' }, { from: 'renderer-2' }, { from: 'main' }]),
     );
+    // The opt-in pixel video rode the report-snapshot path into the SAME bundle (binary, via the encoder).
+    expect('video.webm' in files).toBe(true);
+    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
 
     // ── Control propagation: flush + stop from the main reach both renderers ──
     await mainClient.flush();

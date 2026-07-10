@@ -15,3 +15,10 @@ export {
   createRendererControlHandler,
   type RendererControlHandlerOptions,
 } from './renderer-control';
+export {
+  createMediaRecorderVideoSource,
+  type MediaRecorderLike,
+  type MediaRecorderVideoSourceOptions,
+  type VideoCaptureSource,
+  type VideoFrame,
+} from './video-capture';

@@ -8,5 +8,6 @@ describe('@bugsee/electron/renderer entry', () => {
     expect(typeof renderer.resolveRendererPost).toBe('function');
     expect(typeof renderer.resolveRendererBridge).toBe('function');
     expect(typeof renderer.createRendererControlHandler).toBe('function');
+    expect(typeof renderer.createMediaRecorderVideoSource).toBe('function');
   });
 });

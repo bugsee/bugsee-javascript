@@ -7,7 +7,7 @@ export {
   type InstallNativeCrashReporterOptions,
   installNativeCrashReporter,
 } from './crash-reporter';
-export { type LaunchMainOptions, launchMain } from './launch-main';
+export { type LaunchMainOptions, launchMain, type VideoLaunchOptions } from './launch-main';
 export {
   type ControlSenderLike,
   createElectronMainControl,
@@ -25,3 +25,18 @@ export {
   type IpcMainLike,
   type IpcMainListener,
 } from './main-receiver';
+export {
+  createPixelVideoController,
+  encodePixelVideo,
+  type PixelVideoController,
+  type PixelVideoControllerOptions,
+} from './pixel-video-controller';
+export {
+  type CapturePageVideoSourceOptions,
+  createCapturePageVideoSource,
+  createMediaRecorderVideoSource,
+  type MediaRecorderLike,
+  type MediaRecorderVideoSourceOptions,
+  type VideoCaptureSource,
+  type VideoFrame,
+} from './video-capture';
