@@ -449,6 +449,9 @@ importers:
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
+      '@bugsee/vite-plugin':
+        specifier: workspace:*
+        version: link:../vite-plugin
       '@bugsee/webview':
         specifier: workspace:*
         version: link:../webview
