@@ -71,7 +71,7 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
 | **DJ1** | Per-session runtime from `environment.platform.type` is authoritative for rendering/routing. | App-level runtime only. | Isomorphic apps have mixed-runtime sessions; the SDK already sends per-session platform. |
 | **DJ2** ✅ | `app.subtype` = optional app-level primary-runtime/framework HINT (onboarding/default lens), not per-session authority. **CONFIRMED 2026-07-11.** | subtype = the runtime (fixed per app); per-session only (no subtype). | Keeps the umbrella+sub schema, but a single subtype can't represent mixed-runtime apps; per-session `environment.platform.type` is authoritative. |
 | **DJ3** | Crash-type matrix: JS exception → sourcemap (reuse existing); native crash → minidump (`electron-native-crashes.md`), routed by a native flag on crash.json. | One JS processor guessing. | Mirrors Android `ndkCrash` true/false; reuses both existing paths cleanly. |
-| **DJ4** | Symbols: sourcemaps (debug-id-keyed, already supported) + native Breakpad (.node addons + Electron runtime). New `sourcemaps.*` S3 folder + job namespace for JS-source symbols; native syms ride the existing debug-id-generic store. Android-style collision guard (sourcemap + breakpad share a build). | Force everything through `symbols`/`mapping`. | Content-detection already routes format; a JS-named namespace keeps the app.type-coupled appserver routing clean + parity with ios/android. |
+| **DJ4** (rev. 2026-07-11) | Symbols: sourcemaps (debug-id-keyed, already supported) + native Breakpad (.node addons + Electron runtime) ride the **UNIFIED `symbols` folder + unified handling** — no dedicated `sourcemaps` namespace. Worker **content-detection** (magic bytes / JSON→sourcemap) selects the format/processor; Android-style **collision guard** (sourcemap + breakpad share a build id, keyed by `transform`) kept within the unified folder. | A separate `sourcemaps.*` S3 folder + job namespace. | **Org-wide symbols-storage unification** (per user 2026-07-11): all symbol types collapse from the `symbols`/`mappings` split into one `symbols` folder. JS rides that unified pipeline; content-detection already routes format, so no JS-named namespace is needed. |
 | **DJ5** | In the viewer, treat `javascript` like `web` for "native-device" branches (hide rotation/touch-frame/jailbreak/battery/device-model), PLUS add JS-specific rendering (runtime badges, JS stacks, Electron native threads). | Per-branch bespoke JS handling everywhere. | Most `app_type` branches are mobile-device concerns that don't apply; `web` already models "no native device". |
 | **DJ6** | Worker keeps JS runtimes **granular** in `normalize_platform` (don't fold to `web`); route `javascript` crashes to a new `crash/javascript.py`. | Fold JS runtimes to `web` and reuse. | Per-runtime routing (electron native vs browser JS) + per-runtime stats need the granularity. |
 
@@ -89,11 +89,20 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
   (`browser`/`node`/…) when `app.type === 'javascript'` (map client runtime → allowed for the umbrella).
 - **Platform normalization** (`platform.utils.js`): map SDK `environment.platform.type` JS runtimes to their
   canonical granular values (do NOT fold to a mobile type).
-- **Symbol pipeline** (`symbols.service.js`): add a `javascript` branch — accept **sourcemaps** (new
-  `sourcemaps` S3 folder + `sourcemaps.*` worker action) AND **native Breakpad** (.node/Electron; reuse the
-  `symbols` native path). Port the Android **collision guard** (`:447-469`) so a JS build's sourcemap and its
-  native `.node` Breakpad symbols (same build id) don't overwrite each other (keyed by `transform`). Allow
-  reprocessing for javascript (the `web` reject at `:275-286` stays).
+- **Symbol pipeline** (`symbols.service.js`) — **rides the org-wide symbols unification** (see box below):
+  the current app.type split (`symType = app.type==='ios' ? 'symbols' : 'mapping'`; S3 `symbols/{type}` vs
+  `mappings/{type}`; `symbols.delete` vs `mapping.delete` @ `:74,275-286,535,653,683`) collapses to a single
+  `symbols` folder + a single `symbols.*` job namespace. The `javascript` branch then simply accepts
+  **sourcemaps + native Breakpad** into that unified folder — no JS-specific split to add. Keep the
+  **collision guard** (`:447-469`) so a JS build's sourcemap and its native `.node` Breakpad symbols (same
+  build id) don't overwrite each other (keyed by `transform`). Allow reprocessing for javascript.
+
+  > **Symbols-storage unification (org-wide, per user 2026-07-11).** Independent of this design, the symbol
+  > directory + handling are being unified: **everything goes to one `symbols` folder** instead of the
+  > `symbols` (iOS dSYM) / `mappings` (Android ProGuard) split, with unified job handling. This design
+  > **assumes + rides** that unification — the `javascript` type adds sourcemaps + native Breakpad to the same
+  > unified pipeline (format chosen by content-detection). If the unification lands after J0–J2, the JS branch
+  > targets the unified folder from the start (do not re-introduce a JS-specific `sourcemaps` split).
 - **SDK-version config** (`config/default.js:132-147`): add `cfg.core.sdk['javascript']` (per-runtime
   current/old/min, or a single JS-SDK version stream). Formatter `application.formatter.js:57-58` then
   populates `sdk_outdated`/`sdk_latest` for javascript.
@@ -118,9 +127,11 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
     template).
   - native crash (native flag + `minidumpFile`) → the **generic minidump processor** from
     `electron-native-crashes.md` (factored out of `crash/helpers/android_ndk.py`, minus JTD/deobfuscation).
-- **Jobs**: sourcemaps already content-detected + processed; optionally add a `jobs/sourcemaps.py`
-  (`sourcemaps.process`/`.delete`/…) for app.type parity with `symbols`/`mapping` (the appserver enqueues
-  `sourcemaps.*`). Native syms ride the existing pipeline.
+- **Jobs**: with the symbols unification, all symbol uploads ride the single **`symbols.*`** job namespace
+  (the `mapping.*` split collapses); the worker's **content-detection** (`symbolfiles/utils.py:76-122`) already
+  selects the processor (sourcemap / ELF / Breakpad / dSYM / mapping) per file — so JS sourcemaps + native
+  Breakpad need **no new job namespace**. `crash/javascript.py` just consumes whatever the unified store holds
+  for the build's debug-ids.
 
 ### 5.3 viewer (Angular) — the richest surface
 
@@ -180,8 +191,9 @@ analog) selects the path. JS exceptions and native minidumps can coexist for the
   app-level primary-runtime/framework hint.
 - **OQ-B** — canonical worker/appserver normalized values for the JS runtimes (`browser`/`node`/`bun`/`deno`/
   `electron`/`webworker`/`serviceworker`/`edge`) and whether serviceworker/webworker collapse into `browser`.
-- **OQ-C** — symbol namespace: dedicated `sourcemaps.*` (S3 folder + worker jobs) vs reuse `symbols` with
-  content-detection. (Leaning dedicated for app.type-coupled appserver clarity + ios/android parity.)
+- ~~**OQ-C** — symbol namespace~~ **RESOLVED 2026-07-11** by the org-wide symbols-storage unification (per
+  user): all symbol types go to a single unified `symbols` folder + `symbols.*` jobs; JS sourcemaps + native
+  Breakpad ride it via content-detection — no dedicated `sourcemaps` namespace.
 - **OQ-D** — does `javascript` need a per-session-runtime field on the recording model distinct from
   `environment.platform.type` (viewer convenience) or is reading `environment.platform.type` enough?
 - **OQ-E** — client-validation mapping: exact set of JS SDK client-type strings accepted for
@@ -193,8 +205,9 @@ analog) selects the path. JS exceptions and native minidumps can coexist for the
   `cfg.core.sdk['javascript']` + migration. Viewer type union + constants/icons/labels. (No behavior yet.)
 - **J1 — worker JS-exception path**: `normalize_platform` runtimes + `crash/javascript.py` JS-exception branch
   reusing sourcemap symbolication; route `javascript` in `jobs/bundle.py`. Test-first with a JS-stack fixture.
-- **J2 — appserver symbols (sourcemaps)**: `javascript` symbol branch + `sourcemaps.*` job + S3 folder +
-  collision guard; wire the #158 bundler-plugin/bugsee-cli sourcemap upload to it.
+- **J2 — appserver symbols**: `javascript` symbol branch into the **unified `symbols` folder + `symbols.*`
+  job** (rides the org-wide unification; no `sourcemaps` split) + the collision guard; wire the #158
+  bundler-plugin/bugsee-cli sourcemap upload to it.
 - **J3 — viewer core**: type model + "treat-like-web" device branches + runtime badges + JS callstack
   (sourcemap frames) + docs routing. (Makes JS issues render correctly.)
 - **J4 — viewer onboarding + symbol UI**: `javascript` create-dialog wizard + per-runtime SDK snippets +

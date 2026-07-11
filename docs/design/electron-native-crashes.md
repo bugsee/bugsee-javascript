@@ -130,24 +130,30 @@ lookup are debug-id-generic; JTD-merge + deobfuscation are the only Android-spec
 - **Generic minidump processor** (`crash/processors/electron` or a shared `crash/helpers/minidump.py` factored
   out of `android_ndk.py`): reuse `_execute_minidump_stackwalk`, `_get_modules_uuids`, `_get_symbol_files`,
   the re-stackwalk-with-symbols, signature/summary generation, and the Lambda OOM fallback — **omit** the
-  Android-only `.jtd` Java-thread merge and R8/Proguard deobfuscation. Symbol-path routing (`symbols/android`
-  vs `mappings`) generalizes to an Electron symbol folder (§6.3).
+  Android-only `.jtd` Java-thread merge and R8/Proguard deobfuscation. Per-app symbol lookup targets the
+  **unified `symbols` folder** (see §6.3 note) rather than the legacy `symbols/android` vs `mappings` split.
 - **Write-back**: unchanged — the processor returns the same `BugseeBundleProcessResult` (threads, modules,
   signal, signatures, `crash_minidump_file`); `jobs/bundle.py` re-stores the symbolicated dump + updates
   issue/recording status/signatures + triggers integrations on `ready`.
 
 ### 6.3 Symbols — Electron runtime + app native addons
 
-Lookup needs **zero** changes (debug-id-generic). The work is **ingestion**:
+Lookup needs **zero** changes (debug-id-generic). The work is **ingestion**. Note the org-wide
+**symbols-storage unification** (per user 2026-07-11): the legacy per-app `symbols` (dSYM) vs `mappings`
+(ProGuard) split collapses to a single `symbols` folder + `symbols.*` jobs; format is chosen by
+content-detection. Electron symbols ride that unified per-app store; the shared **system-symbol** store
+(`system/symbols/{platform}`, OS/runtime symbols across apps) is a separate mechanism the unification doesn't
+change.
 
 - **Electron runtime symbols**: Electron publishes `*-symbols.zip` (Breakpad `.sym`) per version/arch/OS.
-  Ingest them into the store keyed by their `MODULE` debug-id — as **system symbols** (a job analogous to the
-  Android system-symbol store `system/symbols/android/`, e.g. `system/symbols/electron/`), so every app on a
-  given Electron version resolves them without per-app upload. A periodic/one-shot job fetches + parses +
-  stores them. **Open question OQ-2** (system vs per-app; who triggers the fetch).
+  Ingest them keyed by their `MODULE` debug-id — as **system symbols** (a job analogous to the Android
+  system-symbol store `system/symbols/android/`, e.g. `system/symbols/electron/`), so every app on a given
+  Electron version resolves them without per-app upload. A periodic/one-shot job fetches + parses + stores
+  them. **Open question OQ-2** (system vs per-app; who triggers the fetch).
 - **App native `.node` addons**: the app uploads their Breakpad `.sym` via the **existing** `POST
-  /v2/apps/{app}/symbols` endpoint — ideally via `bugsee-cli` (a natural extension of the #158 source-map
-  tooling to native debug files: `debug-files upload`). Keyed by debug-id like any native symbol.
+  /v2/apps/{app}/symbols` endpoint (into the **unified `symbols` folder**) — ideally via `bugsee-cli` (a
+  natural extension of the #158 source-map tooling to native debug files: `debug-files upload`). Keyed by
+  debug-id like any native symbol.
 
 ### 6.4 Appserver — no change
 
