@@ -52,9 +52,15 @@ not a single app-level attribute. **Confirmed model** (**DJ1/DJ2** — "umbrella
 
 - **`app.type = 'javascript'`** — the umbrella application type (immutable; onboarding, symbol UI, SDK
   install, docs routing).
-- **Per-session runtime = `environment.platform.type`** ∈ `browser | node | bun | deno | electron |
-  webworker | serviceworker | edge` — **already sent by the JS SDK per session**; the **authority** for
-  per-recording rendering/routing (mirrors today's `recordingSession.app_type`, just more granular).
+- **The JS SDK already stamps `environment.sdk.type = 'javascript'`** (protocol `wire.ts:45-51`) — the
+  **authoritative, already-sent routing discriminator** the worker keys on (see §5.2). No guessing from
+  platform strings.
+- **Per-session runtime = `environment.platform.type`** ∈ the protocol `PlatformType` union
+  (`wire.ts:24-34`): `web` (browser) `| node | bun | deno | workers | edge-light | service-worker |
+  web-worker | electron-main | electron-renderer` — **already sent per session**; the **authority** for
+  per-recording rendering/routing (mirrors today's `recordingSession.app_type`, more granular). Note the
+  browser sends `web`, so `platform.type` alone can't distinguish a JS crash from a legacy `web` crash —
+  `sdk.type` does.
 - **`app.subtype`** — an **optional app-level "primary runtime / framework" hint** (e.g. `node`, `electron`,
   `nextjs`) used only for onboarding defaults, the default UI lens, and symbol expectations — **NOT** the
   per-session authority. Isomorphic apps keep mixed-runtime sessions accurate because the session runtime
@@ -116,11 +122,19 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
 
 ### 5.2 worker (Python)
 
-- **`utils/platform.py:normalize_platform`**: recognize + keep granular the JS runtimes (`browser`, `node`,
-  `bun`, `deno`, `electron`, `webworker`, `serviceworker`, `edge`); settle canonical values (**OQ-B**).
-- **`jobs/bundle.py:_process_crash_report`** (`:206-230`): route a `javascript` app (by `app.type` and/or the
-  JS platform values) to a new `crash/javascript.py`, mirroring the `android`/`apple`/`managed` branches. Add
-  a `javascript` device-model/stats branch (`:673-686`) for runtime naming (Chrome / Node vX / Electron vX).
+- **Routing discriminator = `environment.sdk.type == 'javascript'`** (authoritative; already sent). Add the
+  `type` field to the worker's `BugseeEnvironmentSDK` typedef (`typedefs/entities.py`) and read it in
+  `jobs/bundle.py`. This routes ALL JS-SDK crashes (any runtime, handled/unhandled, JS-exception or native)
+  to a single `crash/javascript.py` — BEFORE the `managed`/`android`/`apple` branches (a browser's
+  `platform.type=='web'` would otherwise fall to the `apple` else-branch). React-Native etc. keep their own
+  sdk.type, so they still route through `managed`.
+- **`jobs/bundle.py:_process_crash_report`** (`:205-230`): insert `if is_javascript: crash_info =
+  javascript.process_crash_report(...)` as the first branch. Add a `javascript` device-model/stats branch
+  (`:673-686`) for runtime naming (Chrome / Node vX / Electron vX from `platform.type`).
+- **`utils/platform.py:normalize_platform`**: the JS runtime values (`web|node|bun|deno|workers|edge-light|
+  service-worker|web-worker|electron-main|electron-renderer`) are used only for per-runtime rendering/stats,
+  not routing (sdk.type routes). Keep them granular (don't fold to `web`). Canonicalization is **OQ-B** —
+  likely a no-op passthrough since the SDK already sends clean values.
 - **`crash/javascript.py`** (new): dispatch by the crash payload —
   - JS exception (`exception` + `frames`) → **reuse** `symbolfiles/(processors/)sourcemap.py` symbolication
     (the React-Native path generalized to plain JS stacks; `crash/managed/reactnative.py:228,240` is the
