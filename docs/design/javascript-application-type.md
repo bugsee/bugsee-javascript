@@ -44,11 +44,11 @@ onboarding, symbol UI, per-runtime display), and the worker (crash routing + pro
 - **SDK-version config is keyed by app.type** (`appserver/config/default.js:132-147` `cfg.core.sdk[type]`),
   and **client validation** requires `clientType === app.type` (`appserver/code/utils.js:1090-1101`).
 
-## 3. Core model decision — umbrella + **per-session** runtime (the crux)
+## 3. Core model decision — umbrella + **per-session** runtime (CONFIRMED 2026-07-11)
 
 The JS runtime (browser/node/electron/…) is **not fixed per app**: an *isomorphic* app (e.g. Next.js) produces
 **browser AND node AND edge** sessions from ONE Bugsee app. So the runtime is fundamentally **per-recording**,
-not a single app-level attribute. Proposed model (**DJ1/DJ2**, confirm at OQ-A):
+not a single app-level attribute. **Confirmed model** (**DJ1/DJ2** — "umbrella + per-session, both"):
 
 - **`app.type = 'javascript'`** — the umbrella application type (immutable; onboarding, symbol UI, SDK
   install, docs routing).
@@ -69,7 +69,7 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
 |---|---|---|---|
 | **DJ0** | Fresh `javascript` app.type; leave legacy `web` alone. | Reuse/revive `web`. | `web` carries deprecation baggage (rejected create/issues, no retention); a clean type avoids all of it. |
 | **DJ1** | Per-session runtime from `environment.platform.type` is authoritative for rendering/routing. | App-level runtime only. | Isomorphic apps have mixed-runtime sessions; the SDK already sends per-session platform. |
-| **DJ2** | `app.subtype` = optional app-level primary-runtime/framework HINT (onboarding/default lens), not per-session authority. | subtype = the runtime (fixed per app). | Keeps the umbrella+sub schema, but a single subtype can't represent mixed-runtime apps. **OQ-A.** |
+| **DJ2** ✅ | `app.subtype` = optional app-level primary-runtime/framework HINT (onboarding/default lens), not per-session authority. **CONFIRMED 2026-07-11.** | subtype = the runtime (fixed per app); per-session only (no subtype). | Keeps the umbrella+sub schema, but a single subtype can't represent mixed-runtime apps; per-session `environment.platform.type` is authoritative. |
 | **DJ3** | Crash-type matrix: JS exception → sourcemap (reuse existing); native crash → minidump (`electron-native-crashes.md`), routed by a native flag on crash.json. | One JS processor guessing. | Mirrors Android `ndkCrash` true/false; reuses both existing paths cleanly. |
 | **DJ4** | Symbols: sourcemaps (debug-id-keyed, already supported) + native Breakpad (.node addons + Electron runtime). New `sourcemaps.*` S3 folder + job namespace for JS-source symbols; native syms ride the existing debug-id-generic store. Android-style collision guard (sourcemap + breakpad share a build). | Force everything through `symbols`/`mapping`. | Content-detection already routes format; a JS-named namespace keeps the app.type-coupled appserver routing clean + parity with ios/android. |
 | **DJ5** | In the viewer, treat `javascript` like `web` for "native-device" branches (hide rotation/touch-frame/jailbreak/battery/device-model), PLUS add JS-specific rendering (runtime badges, JS stacks, Electron native threads). | Per-branch bespoke JS handling everywhere. | Most `app_type` branches are mobile-device concerns that don't apply; `web` already models "no native device". |
@@ -175,9 +175,9 @@ analog) selects the path. JS exceptions and native minidumps can coexist for the
 
 ## 8. Open questions
 
-- **OQ-A** — subtype semantics (DJ2): app-level primary-runtime/framework **hint** + per-session
-  environment authority (recommended) vs subtype = the runtime (fixed per app). Shapes the schema + every
-  branch.
+- ~~**OQ-A** — subtype semantics (DJ2)~~ **RESOLVED 2026-07-11**: umbrella + per-session (both) — app.type=
+  'javascript', per-session runtime from `environment.platform.type` (authoritative), `app.subtype` = optional
+  app-level primary-runtime/framework hint.
 - **OQ-B** — canonical worker/appserver normalized values for the JS runtimes (`browser`/`node`/`bun`/`deno`/
   `electron`/`webworker`/`serviceworker`/`edge`) and whether serviceworker/webworker collapse into `browser`.
 - **OQ-C** — symbol namespace: dedicated `sourcemaps.*` (S3 folder + worker jobs) vs reuse `symbols` with
