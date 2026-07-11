@@ -180,6 +180,48 @@ all-runtimes reality, and reuses the viewer's existing app-type-vs-per-recording
   per-session runtime (`environment.platform.type`) drives per-recording rendering. `recordingSession.data.
   app_type` becomes/extends to carry the JS runtime.
 
+## 5.4 The JS `crash.json` contract (SETTLED 2026-07-11)
+
+The JS SDK today sends the error as `request.json` `summary` + `description` (raw `error.stack` string) — **no
+structured frames, no per-frame debugId, no `crash.json`**. The worker's crash pipeline reads `crash.json →
+exception.frames`. Confirmed contract (structured, Android-parity, per-frame `debug_id`):
+
+```jsonc
+// crash.json (a new 'crash' capture entry the JS SDK must emit)
+{
+  "exception_type": "error",          // or "exception" (mirrors Android ExceptionType)
+  "ndkCrash": false,                  // true only for the native-minidump path (§ electron-native-crashes)
+  "handled": false,
+  "exception": {
+    "name": "TypeError",
+    "reason": "Cannot read properties of undefined (reading 'x')",
+    "frames": [
+      { "trace": "at handleClick (app.min.js:1:2345)",   // Android-parity string
+        "user": true, "hidden": false,
+        "data": { "source": "app.min.js", "member": "handleClick", "line": 1, "column": 2345 },
+        "debug_id": "<uuid>" }        // PER-FRAME (each bundle/chunk its own map) — the #158 resolution
+    ],
+    "cause": null,                    // recursive (Android-parity)
+    "debug_ids": []                   // optional crash-level list/map fallback
+  },
+  "signatures": []
+}
+```
+
+- **Why the worker needs almost nothing new**: its React Native path ALREADY consumes this shape —
+  `_collect_debug_ids` (per-frame `debug_id` + crash-level `debug_ids`), `_format_frame_trace_for_symbolication`
+  (reads `frame.data` line/col OR parses `trace`), `api.get_symbol_files`, `symbolfiles.get_symbol_file`,
+  `symbolfiles.sourcemap.symbolicate` (the `symbolic`/`SourceMapView` path), then writes `trace-sym` + `data`.
+- **#158 debugId wire format — RESOLVED**: a **structured per-frame `debug_id`** field in `exception.frames`
+  (NOT the additive ` debugId=<id>` string suffix). This is what the worker's `_collect_debug_ids` reads.
+- **SDK-side gap (separate JS-repo slice)**: emit a `crash` capture entry (`crash.json`) built from the
+  already-parsed structured `StackFrame[]` (`parseV8Stack` + `applyDebugIds`) with per-frame `debug_id`, and
+  wire `applyDebugIds` into ALL error paths (currently browser-only; node/edge/`logException` don't stamp).
+  Independent of the worker.
+
+**DJ7** ✅ (2026-07-11): JS crash wire = structured `crash.json` (Android-parity, per-frame `debug_id`);
+worker W2 reuses the RN symbolication; SDK `crash.json` emission is a separate slice.
+
 ## 6. Crash-type matrix (within the `javascript` umbrella)
 
 | Session runtime | Crash source | crash.json signal | Worker path | Symbols |
