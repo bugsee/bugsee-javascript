@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type Bundle,
+  type CrashpadSessionMarker,
   createFileChunkBackend,
   createReportingRequest,
+  type HarvestedDump,
+  type NativeCrashSource,
   type StoredEntry,
   serializeBundle,
   type UploadResult,
@@ -12,11 +15,13 @@ import {
 import {
   createFsChunkStorage,
   createNodeBundleStore,
+  createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
   ensureDir,
   writeFileSecure,
 } from '@bugsee/node-utils';
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recoverInstances } from './recover-instances';
 
@@ -99,6 +104,50 @@ const seedIncident = (dataDir: string, sub: string, gen: number, incidentId: str
     userIdentifier: null,
   });
 };
+
+/** Seed a DEAD sibling subtree with a closed capture generation (no report marker). */
+const seedCaptureGen = (dataDir: string, sub: string, gen: number, data: unknown): void => {
+  writeOwner(dataDir, sub, DEAD_PID);
+  const backend = createFileChunkBackend(
+    createFsChunkStorage(join(dataDir, sub, 'capture')),
+    { generation: gen, cleanOtherGenerations: false },
+  );
+  backend.openPart({ generation: gen, number: 0 }, gen);
+  backend.appendEntry({ generation: gen, number: 0 }, {
+    type: 'log',
+    timestamp: 1,
+    serialized: JSON.stringify({ timestamp: 1, data }),
+  } as StoredEntry);
+  backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+};
+
+/** Write a crashpad-session marker linking the subtree's generation + session to a Crashpad dir. */
+const seedCrashpadMarker = (dataDir: string, sub: string, gen: number, sessionId: string): void => {
+  createNodeCrashpadSessionMarkerStore(join(dataDir, sub, 'incidents')).put({
+    generation: gen,
+    sessionId,
+    dumpDir: '/crashpad/db',
+    attributes: {},
+    userIdentifier: null,
+  });
+};
+
+const dump = (name: string, ...bytes: number[]): HarvestedDump => ({ name, data: new Uint8Array(bytes) });
+
+/** A fake native-crash source over a fixed dump list, recording claims. */
+const fakeNativeSource = (dumps: HarvestedDump[]): NativeCrashSource & { claims: string[] } => {
+  const claims: string[] = [];
+  return {
+    claims,
+    harvest: (_m: CrashpadSessionMarker) => dumps,
+    claim: (_m: CrashpadSessionMarker, name: string) => {
+      claims.push(name);
+    },
+  };
+};
+
+const crashJsonOf = (bundle: Bundle): unknown =>
+  JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
 
 describe('recoverInstances', () => {
   it('re-uploads a dead sibling’s pending bundle and removes its subtree', async () => {
@@ -231,6 +280,105 @@ describe('recoverInstances', () => {
     expect(pipe.enqueue).not.toHaveBeenCalled(); // nothing deliverable
     expect(onError).toHaveBeenCalledWith(expect.any(Error)); // the torn blob was reported
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // purged → empty → subtree removed
+  });
+
+  it('synthesizes a session-stitched native crash from a dead sibling’s dump, then removes the subtree', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'before-native-crash' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-dead');
+    const source = fakeNativeSource([dump('main.dmp', 7, 8, 9)]);
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      nativeCrashSource: source,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    const bundle = pipe.bundles[0] as Bundle;
+    expect(bundle.request.type).toBe('crash');
+    expect(crashJsonOf(bundle)).toEqual({
+      exception_type: 'native',
+      ndkCrash: true,
+      minidumpFile: 'main.dmp',
+    });
+    // The .dmp rides as an attachment and the crashed session's capture is stitched in.
+    expect(Array.from(unzipSync(bundle.body)['main.dmp'] as Uint8Array)).toEqual([7, 8, 9]);
+    expect(JSON.parse(strFromU8(unzipSync(bundle.body)['logs.json'] as Uint8Array))).toEqual([
+      { m: 'before-native-crash' },
+    ]);
+    expect(source.claims).toEqual(['main.dmp']); // delivered → claimed
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully drained → subtree removed
+  });
+
+  it('clears a clean-exit sibling’s crashpad marker (no dumps) and removes the subtree — no upload', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'clean-session' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-clean');
+    const source = fakeNativeSource([]); // no native crash happened
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      nativeCrashSource: source,
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // nothing to recover
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // stale marker cleared → subtree removed
+  });
+
+  it('KEEPS the subtree, crashpad marker AND capture when a native dump is not delivered', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'native-capture' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-dead');
+    const source = fakeNativeSource([dump('main.dmp', 1)]);
+    const pipe = fakePipeline({ ok: false }); // delivery not confirmed
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      nativeCrashSource: source,
+    });
+
+    expect(source.claims).toEqual([]); // not claimed → re-harvestable
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // kept for retry
+    // The crashpad marker survives for the retry…
+    expect(
+      createNodeCrashpadSessionMarkerStore(join(dir, '9-9-dead', 'incidents')).read()?.sessionId,
+    ).toBe('sess-dead');
+    // …and so does the crashed generation's CAPTURE DATA — keepGenerations protected gen 800 from the
+    // recoverReports sweep (without it the sweep frees the generation and the native retry loses the
+    // session recording).
+    const survivor = createFileChunkBackend(createFsChunkStorage(join(dir, '9-9-dead', 'capture')), {
+      generation: -1,
+      cleanOtherGenerations: false,
+    });
+    expect(await survivor.listGenerations()).toContain(800);
+  });
+
+  it('skips native recovery entirely when no nativeCrashSource is configured', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'orphan' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-orphan');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context, // no nativeCrashSource
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // native path not run
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // no report incident → subtree swept
   });
 
   it('swallows an unreadable dataDir with no onError provided (default no-op sink)', async () => {

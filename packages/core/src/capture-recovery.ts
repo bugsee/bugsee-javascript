@@ -28,6 +28,12 @@ export interface RecoverReportsOptions {
   uploadPipeline: Pick<UploadPipeline, 'enqueue'>;
   /** Entry factory for reifying stored records. Default defaultEntryFactory. */
   entryFactory?: CaptureEntryFactory;
+  /**
+   * Generations the sweep must NOT free even without a pending report marker — e.g. a still-pending
+   * native crash (which leaves a crashpad-session marker, not a report marker) whose capture a later
+   * launch will retry. Default: none.
+   */
+  keepGenerations?: ReadonlySet<number>;
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
 }
@@ -86,8 +92,13 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
     // markers all delivered (now markerless) AND preserved no-incident gens. A gen with a still-pending
     // marker (undelivered) is KEPT for a retry. The current generation is the live store's — never swept.
     const stillPending = new Set(markers.list().map((marker) => marker.generation));
+    const keep = options.keepGenerations;
     for (const generation of await backend.listGenerations()) {
-      if (generation !== currentGeneration && !stillPending.has(generation)) {
+      if (
+        generation !== currentGeneration &&
+        !stillPending.has(generation) &&
+        keep?.has(generation) !== true
+      ) {
         backend.removeGeneration(generation);
       }
     }

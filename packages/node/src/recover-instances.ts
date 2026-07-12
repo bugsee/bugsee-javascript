@@ -4,12 +4,15 @@ import {
   type BundleStore,
   createFileChunkBackend,
   deserializeBundle,
+  type NativeCrashSource,
+  recoverNativeCrashes,
   recoverReports,
   type UploadPipeline,
 } from '@bugsee/core';
 import {
   createFsChunkStorage,
   createNodeBundleStore,
+  createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
   listFiles,
   remove,
@@ -46,6 +49,12 @@ export interface RecoverInstancesOptions {
   uploadPipeline: UploadPipeline;
   /** Base assembly context (appToken + environment + clock); the marker supplies per-incident state. */
   context: () => Omit<BundleAssemblyContext, 'attributes' | 'userIdentifier'>;
+  /**
+   * The Crashpad-dir seam (Electron). When set, each dead sibling's crashpad-session marker is read and
+   * its pending native `.dmp`s are harvested + synthesized into session-stitched crash bundles
+   * (docs/design/electron-native-crashes.md §6.1). Absent → native recovery is skipped.
+   */
+  nativeCrashSource?: NativeCrashSource;
   /** Now (ms) for the heartbeat-staleness check. Default Date.now. */
   now?: () => number;
   /** How long an alive-pid subtree may be heartbeat-stale before reclaim. Default DEFAULT_PATIENT_MS. */
@@ -93,21 +102,53 @@ async function recoverSubtree(
   const bundleStore = createNodeBundleStore(join(sub, 'pending'));
   await drainBundles(bundleStore, options.uploadPipeline, onError);
 
+  const backend = createFileChunkBackend(createFsChunkStorage(join(sub, 'capture')), {
+    generation: NO_GENERATION,
+    cleanOtherGenerations: false,
+  });
+
+  // Native-crash recovery (Electron/Crashpad — docs/design/electron-native-crashes.md §6.1): a native
+  // crash kills the process instantly, leaving a crashpad-session marker (NOT a report marker). It must
+  // run BEFORE recoverReports, whose sweep would otherwise free the crashed generation's capture. Only
+  // when a source is configured (Electron supplies it); a still-pending native crash protects its
+  // generation from the sweep (keepGenerations) and holds the subtree for a later retry.
+  let nativePending = false;
+  const keepGenerations = new Set<number>();
+  if (options.nativeCrashSource !== undefined) {
+    const crashpad = createNodeCrashpadSessionMarkerStore(join(sub, 'incidents'), onError);
+    const marker = crashpad.read();
+    if (marker !== undefined) {
+      const result = await recoverNativeCrashes({
+        backend,
+        marker,
+        source: options.nativeCrashSource,
+        context: options.context,
+        uploadPipeline: options.uploadPipeline,
+        onError,
+      });
+      if (result.complete) {
+        crashpad.remove();
+      } else {
+        nativePending = true;
+        keepGenerations.add(marker.generation);
+      }
+    }
+  }
+
   const markers = createNodeReportMarkerStore(join(sub, 'incidents'), onError);
   await recoverReports({
-    backend: createFileChunkBackend(createFsChunkStorage(join(sub, 'capture')), {
-      generation: NO_GENERATION,
-      cleanOtherGenerations: false,
-    }),
+    backend,
     currentGeneration: NO_GENERATION, // excludes nothing → the whole dead subtree is recovered
     markers,
     context: options.context,
     uploadPipeline: options.uploadPipeline,
+    keepGenerations,
     onError,
   });
 
-  // Remove the subtree ONLY when fully drained; otherwise keep it for a later launch to retry.
-  if (bundleStore.list().length === 0 && markers.list().length === 0) {
+  // Remove the subtree ONLY when fully drained (no bundles, no report markers, no pending native crash);
+  // otherwise keep it for a later launch to retry.
+  if (bundleStore.list().length === 0 && markers.list().length === 0 && !nativePending) {
     remove(sub);
   }
 }

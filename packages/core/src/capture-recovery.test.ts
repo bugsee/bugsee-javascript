@@ -223,6 +223,26 @@ describe('recoverReports', () => {
     expect(gens).not.toContain(50); // no-incident → swept
   });
 
+  it('does NOT sweep a generation listed in keepGenerations (a still-pending native crash retry)', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 77, [logRecord(1, { m: 'native-capture' })]); // NO report marker
+    seedGen(storage, 50, [logRecord(1, { m: 'no-incident' })]); // NO marker, not kept
+    const backend = readBackend(storage);
+
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers: fakeMarkers([]),
+      context: baseContext,
+      uploadPipeline: fakePipeline(),
+      keepGenerations: new Set([77]),
+    });
+
+    const gens = await backend.listGenerations();
+    expect(gens).toContain(77); // protected for the native retry
+    expect(gens).not.toContain(50); // still swept (not kept)
+  });
+
   it('isolates a per-generation failure: onError fires and other generations still recover', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 200, [logRecord(1, { m: 'ok' })]);
