@@ -242,6 +242,25 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // kept for retry
   });
 
+  it('KEEPS a dead sibling’s subtree when a report incident is undelivered (marker retained)', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-stuck'); // capture gen + a pending report marker, no bundles
+    const pipe = fakePipeline({ ok: false }); // the incident upload is not confirmed
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // the incident was attempted
+    // The report marker is retained (undelivered), so the subtree is NOT removed even though there are no
+    // bundles and no native crash — the marker clause of the removal gate holds it.
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true);
+    expect(createNodeReportMarkerStore(join(dir, '9-9-dead', 'incidents')).list()).toHaveLength(1);
+  });
+
   it('routes a sibling whose store cannot be listed (pending is a FILE) to onError, leaving it', async () => {
     const dir = mkDir();
     writeOwner(dir, '9-9-dead', DEAD_PID);
