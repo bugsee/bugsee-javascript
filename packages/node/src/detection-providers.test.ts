@@ -1,4 +1,4 @@
-import type { Client, ReportingRequest } from '@bugsee/core';
+import type { Client, CrashJson, ReportingRequest } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import {
   createUncaughtExceptionProvider,
@@ -61,9 +61,9 @@ describe('createUncaughtExceptionProvider', () => {
     expect(req.report.summary).toBe('boom');
     expect(req.report.description).toBe('    at doWork (/app/work.js:3:7)'); // file:// stripped
     // SC3: a structured crash.json is attached (handled:false — uncaught), with the parsed frame.
-    expect(req.report.crash?.handled).toBe(false);
-    expect(req.report.crash?.exception.name).toBe('Error');
-    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at doWork (/app/work.js:3:7)');
+    expect((req.report.crash as CrashJson | undefined)?.handled).toBe(false);
+    expect((req.report.crash as CrashJson | undefined)?.exception.name).toBe('Error');
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at doWork (/app/work.js:3:7)');
   });
 
   it('uses String(value) and no description/crash for a non-Error throw', () => {
@@ -84,8 +84,8 @@ describe('createUncaughtExceptionProvider', () => {
     expect(requests[0]?.report.summary).toBe('TypeError');
     expect(requests[0]?.report.description).toBeUndefined();
     // crash.json is still built for the Error (empty frames — nothing to symbolicate, but a valid crash).
-    expect(requests[0]?.report.crash?.exception.name).toBe('TypeError');
-    expect(requests[0]?.report.crash?.exception.frames).toEqual([]);
+    expect((requests[0]?.report.crash as CrashJson | undefined)?.exception.name).toBe('TypeError');
+    expect((requests[0]?.report.crash as CrashJson | undefined)?.exception.frames).toEqual([]);
   });
 
   it('deregisters on stop (no report after stop)', () => {
@@ -126,7 +126,7 @@ describe('createUnhandledRejectionProvider', () => {
     expect(req.report.type).toBe('error');
     expect(req.report.summary).toBe('rejected');
     expect(req.report.description).toBe('    at f (/a.js:1:2)');
-    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at f (/a.js:1:2)'); // SC3 crash.json attached
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at f (/a.js:1:2)'); // SC3 crash.json attached
   });
 
   it('handles a non-Error rejection reason (no crash.json)', () => {

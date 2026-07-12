@@ -1,4 +1,4 @@
-import type { Client, ReportingRequest } from '@bugsee/core';
+import type { Client, CrashJson, ReportingRequest } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 
@@ -56,8 +56,8 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     expect(requests[0]?.report.summary).toBe('rejected');
     expect(requests[0]?.report.description).toContain('worker.js:5:9');
     // SC3: structured crash.json attached (handled:false), V8-parsed frame.
-    expect(requests[0]?.report.crash?.handled).toBe(false);
-    expect(requests[0]?.report.crash?.exception.frames[0]?.trace).toBe('at handler (worker.js:5:9)');
+    expect((requests[0]?.report.crash as CrashJson | undefined)?.handled).toBe(false);
+    expect((requests[0]?.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at handler (worker.js:5:9)');
   });
 
   it('uses the error NAME when the message is empty', () => {
