@@ -9,6 +9,13 @@ export {
 } from './crash-reporter';
 export { type LaunchMainOptions, launchMain, type VideoLaunchOptions } from './launch-main';
 export {
+  type CrashDumpFs,
+  createElectronNativeCrashSource,
+  createNodeCrashDumpFs,
+  type ElectronNativeCrashSource,
+  type ElectronNativeCrashSourceOptions,
+} from './native-crash-source';
+export {
   type ControlSenderLike,
   createElectronMainControl,
   type ElectronMainControl,

@@ -8,7 +8,12 @@
 //   launchMain(appToken, { ipcMain });
 import { CaptureStoreToken } from '@bugsee/core';
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/node';
-import { type CrashReporterLike, installNativeCrashReporter } from './crash-reporter';
+import {
+  type CrashReporterLike,
+  getCrashDumpsDirectory,
+  installNativeCrashReporter,
+} from './crash-reporter';
+import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import {
@@ -64,6 +69,20 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       (now: number) => controller.snapshot(now),
     ];
     nodeOptions.fileEncoders = { ...nodeOptions.fileEncoders, video: encodePixelVideo };
+  }
+
+  // Native-crash harvesting (Electron/Crashpad): when a crashReporter is provided, wire its crash-dumps
+  // directory into the node launch so it persists a crashpad-session marker at START and, on the NEXT
+  // launch, harvests + session-stitches a dead run's `.dmp`s (see electron-native-crashes.md §6.1). The
+  // reporter itself is started (uploadToServer:false) AFTER launch, below.
+  if (crashReporter !== undefined) {
+    const dumpDir = getCrashDumpsDirectory(crashReporter);
+    if (dumpDir !== undefined) {
+      nodeOptions.nativeCrash = {
+        source: createElectronNativeCrashSource({ fs: createNodeCrashDumpFs() }),
+        dumpDir,
+      };
+    }
   }
 
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);

@@ -165,6 +165,29 @@ describe('launchMain', () => {
     });
   });
 
+  it('wires nativeCrash (source + Crashpad dump dir) into the node launch when a crashReporter is given', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const crashReporter = {
+      start: vi.fn(),
+      getCrashesDirectory: vi.fn(() => '/tmp/Crashpad'),
+    };
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
+
+    const opts = f.received?.options as BugseeLaunchOptions;
+    expect(opts.nativeCrash?.dumpDir).toBe('/tmp/Crashpad');
+    expect(typeof opts.nativeCrash?.source.harvest).toBe('function');
+    expect(typeof opts.nativeCrash?.source.claim).toBe('function');
+  });
+
+  it('omits nativeCrash when the crashReporter exposes no crash-dumps directory', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const crashReporter = { start: vi.fn() }; // no getCrashesDirectory
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
+    expect((f.received?.options as BugseeLaunchOptions).nativeCrash).toBeUndefined();
+  });
+
   it('does NOT start a crashReporter when none is provided', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();
