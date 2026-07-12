@@ -27,18 +27,25 @@ import {
   createFileChunkBackend,
   createMemoryCaptureStore,
   createReportingRequest,
+  type CrashpadSessionMarker,
   defineService,
   getCarrier,
+  type HarvestedDump,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type NativeCrashSource,
   ReportMarkerStoreToken,
   type StoredEntry,
   serializeBundle,
   serviceToken,
   TransportToken,
 } from '@bugsee/core';
-import { createFsChunkStorage, createNodeReportMarkerStore } from '@bugsee/node-utils';
+import {
+  createFsChunkStorage,
+  createNodeCrashpadSessionMarkerStore,
+  createNodeReportMarkerStore,
+} from '@bugsee/node-utils';
 import {
   BugseeOption,
   type EnvironmentEnvelope,
@@ -1259,6 +1266,119 @@ describe('launch — capture recovery', () => {
     );
     await client.logException(new Error('boom'));
     expect(profileInBundle(transport)).toBe(false);
+  });
+});
+
+// --- native-crash recovery (NM3/NM4): the crashpad-session marker persist + harvest-and-synthesize path -
+describe('launch — native-crash recovery', () => {
+  const dump = (name: string, ...bytes: number[]): HarvestedDump => ({
+    name,
+    data: new Uint8Array(bytes),
+  });
+  const fakeNativeSource = (dumps: HarvestedDump[]): NativeCrashSource & { claims: string[] } => {
+    const claims: string[] = [];
+    return {
+      claims,
+      harvest: (_m: CrashpadSessionMarker) => dumps,
+      claim: (_m: CrashpadSessionMarker, name: string) => {
+        claims.push(name);
+      },
+    };
+  };
+
+  it('persists a crashpad-session marker at START linking this generation + session to the dump dir', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-nc-start-'));
+    launchTracked(
+      'tok',
+      baseOptions({
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        nativeCrash: { source: fakeNativeSource([]), dumpDir: '/crashpad/db' },
+      }),
+    );
+
+    const marker = createNodeCrashpadSessionMarkerStore(
+      join(dir, FIXED_INSTANCE_ID, 'incidents'),
+    ).read();
+    expect(marker?.generation).toBe(1000); // fixedClock.wallNow() = this launch's capture generation
+    expect(marker?.dumpDir).toBe('/crashpad/db');
+    expect(typeof marker?.sessionId).toBe('string');
+    expect(marker?.sessionId).not.toBe('');
+  });
+
+  it('does NOT persist a crashpad-session marker when no nativeCrash is configured', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-nc-none-'));
+    launchTracked(
+      'tok',
+      baseOptions({ clock: fixedClock, dataDir: dir, instanceIdentity: FIXED_INSTANCE }),
+    );
+    expect(
+      createNodeCrashpadSessionMarkerStore(join(dir, FIXED_INSTANCE_ID, 'incidents')).read(),
+    ).toBeUndefined();
+  });
+
+  it('routes a crashpad-marker persist failure to onError without throwing into launch', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-nc-fail-'));
+    // Block the marker write: pre-create crashpad-session.json as a DIRECTORY so writeFileSecure throws.
+    mkdirSync(join(dir, FIXED_INSTANCE_ID, 'incidents', 'crashpad-session.json'), {
+      recursive: true,
+    });
+    const onError = vi.fn();
+
+    expect(() =>
+      launchTracked(
+        'tok',
+        baseOptions({
+          clock: fixedClock,
+          dataDir: dir,
+          instanceIdentity: FIXED_INSTANCE,
+          onError,
+          nativeCrash: { source: fakeNativeSource([]), dumpDir: '/crashpad/db' },
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error)); // the EISDIR write failure was routed
+  });
+
+  it('harvests a dead sibling’s dump and uploads a session-stitched native crash bundle, then sweeps it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-nc-recover-'));
+    // A prior crashed run: capture generation 500 + a crashpad-session marker (no report marker).
+    seedPriorGeneration(dir, 500, { m: 'pre-native-crash' }, false);
+    createNodeCrashpadSessionMarkerStore(join(dir, PRIOR_INSTANCE, 'incidents')).put({
+      generation: 500,
+      sessionId: 'sess-prior',
+      dumpDir: '/crashpad/db',
+      attributes: {},
+      userIdentifier: null,
+    });
+    const source = fakeNativeSource([dump('main.dmp', 4, 5, 6)]);
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        nativeCrash: { source, dumpDir: '/crashpad/db' },
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(JSON.parse(strFromU8(files['crash.json'] as Uint8Array))).toEqual({
+      exception_type: 'native',
+      ndkCrash: true,
+      minidumpFile: 'main.dmp',
+    });
+    expect(Array.from(files['main.dmp'] as Uint8Array)).toEqual([4, 5, 6]); // the .dmp attachment
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([
+      { m: 'pre-native-crash' }, // the crashed session's capture, stitched in
+    ]);
+    expect(source.claims).toEqual(['main.dmp']);
+    await vi.waitFor(() => expect(existsSync(join(dir, PRIOR_INSTANCE))).toBe(false)); // swept
   });
 });
 

@@ -35,6 +35,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type NativeCrashSource,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
   resolveLaunchOptions,
@@ -47,6 +48,7 @@ import {
   createBatchedFsChunkStorage,
   createCaptureRingWriter,
   createNodeBundleStore,
+  createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
   createWorkerThreadRingWorker,
   httpRequest,
@@ -287,6 +289,14 @@ export interface BugseeLaunchOptions {
    * derives from the real process + worker_threads + a random nonce.
    */
   instanceIdentity?: InstanceIdentity;
+  /**
+   * Native-crash harvesting (Electron/Crashpad — docs/design/electron-native-crashes.md §6.1). When set,
+   * launch persists a crashpad-session marker (this generation + session -> `dumpDir`) at START and threads
+   * `source` into instance recovery, so the NEXT launch harvests a dead sibling's pending `.dmp`s and
+   * synthesizes session-stitched crash bundles. `@bugsee/electron` supplies the seam; bare Node leaves it
+   * unset (no native crash reporter).
+   */
+  nativeCrash?: { source: NativeCrashSource; dumpDir: string };
 }
 
 /** The launched Bugsee client — the public Node SDK surface. */
@@ -689,12 +699,37 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // own prior generations" — a prior crashed run is just a dead sibling. Best-effort; never throws into
   // launch. (Liveness skip + atomic-rename claim land in slice 4; for now every non-own subtree is recovered,
   // correct while no live siblings exist.)
+  // Native-crash harvesting (Electron/Crashpad): persist THIS launch's crashpad-session marker at START so
+  // the next launch can tie a harvested `.dmp` to this session's capture generation. A native crash kills
+  // the process instantly (no incident handler runs), so the link MUST exist before the crash. Attributes /
+  // user are the launch-time snapshot (a native crash carries no crash-time global state).
+  if (
+    options.nativeCrash !== undefined &&
+    recoverEnabled &&
+    instanceLayout !== undefined
+  ) {
+    try {
+      createNodeCrashpadSessionMarkerStore(instanceLayout.incidentsDir, options.onError).put({
+        generation: captureGeneration,
+        sessionId: api.sessionId,
+        dumpDir: options.nativeCrash.dumpDir,
+        attributes: client.getAllAttributes(),
+        userIdentifier: client.getUserIdentifier(),
+      });
+    } catch (error) {
+      options.onError?.(error);
+    }
+  }
+
   if (recoverEnabled && instanceLayout !== undefined && effectiveDataDir !== undefined) {
     void recoverInstances({
       dataDir: effectiveDataDir,
       ownInstanceId: instanceLayout.instanceId,
       uploadPipeline,
       context: () => ({ appToken, environment: getEnvironment(), clock }),
+      ...(options.nativeCrash !== undefined
+        ? { nativeCrashSource: options.nativeCrash.source }
+        : {}),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
     });
   }
