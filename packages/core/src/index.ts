@@ -25,9 +25,18 @@ export {
   type OptionGate,
 } from './capture-coordinator';
 export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry';
+export { drainReified } from './capture-drain';
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export { type RecoverReportsOptions, recoverReports } from './capture-recovery';
+export {
+  type CrashpadSessionMarker,
+  type HarvestedDump,
+  type NativeCrashRecoveryResult,
+  type NativeCrashSource,
+  recoverNativeCrashes,
+  type RecoverNativeCrashesOptions,
+} from './native-crash-recovery';
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,

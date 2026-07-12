@@ -1,8 +1,8 @@
-import type { FileType } from '@bugsee/protocol';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import { drainReified } from './capture-drain';
 import { defaultEntryFactory } from './capture-data-entry';
 import type { ChunkBackend, FrozenPart } from './chunk-backend';
-import type { CaptureDataEntry, CaptureEntryFactory, CaptureSnapshot } from './contracts';
+import type { CaptureEntryFactory } from './contracts';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import type { UploadPipeline } from './transport';
 
@@ -14,39 +14,6 @@ import type { UploadPipeline } from './transport';
 // pipeline. A marker + its generation are removed only after delivery succeeds; preserved generations
 // that carry no incident are swept. Pure over injected ports (no fs/runtime), best-effort — every
 // failure routes to onError and the function never throws into launch.
-
-// Drain a snapshot into reified entries grouped by file type (the read half of CaptureExporter, but
-// over a snapshot we already hold rather than a live store), releasing the snapshot when done.
-async function drainReified(
-  snapshot: CaptureSnapshot,
-  factory: CaptureEntryFactory,
-  onError: (error: unknown) => void,
-): Promise<Map<FileType, CaptureDataEntry[]>> {
-  try {
-    const grouped = await snapshot.drainAll();
-    const out = new Map<FileType, CaptureDataEntry[]>();
-    for (const [type, records] of grouped) {
-      const entries: CaptureDataEntry[] = [];
-      for (const record of records) {
-        try {
-          const entry = factory(type);
-          entry.deserialize(record.serialized);
-          entries.push(entry);
-        } catch (error) {
-          // A torn trailing frame — the exact artifact a crash/SIGKILL leaves mid-write — yields one
-          // un-deserializable record (the snapshot parser only guards the timestamp, not the payload).
-          // Skip it; NEVER let one bad record poison the whole generation's recovery (which would keep
-          // the marker + chunks and repeat the failure on every launch — a permanent loss). Route to onError.
-          onError(error);
-        }
-      }
-      out.set(type, entries);
-    }
-    return out;
-  } finally {
-    snapshot.release();
-  }
-}
 
 export interface RecoverReportsOptions {
   /** The chunk backend (over the SAME medium as the live store) used to read prior generations. */
