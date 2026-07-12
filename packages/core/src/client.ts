@@ -15,6 +15,8 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import { buildCrashJson } from './crash';
+import type { StackFrame } from './stack';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
@@ -194,6 +196,13 @@ export type ReportSnapshotSource = (
 export interface CreateClientOptions {
   /** Time source; injectable for tests. Default createSystemClock(). */
   clock?: Clock;
+  /**
+   * Runtime stack parser used to build the structured `crash.json` from a thrown Error's stack (SC3). The
+   * browser tier injects its multi-engine (V8 + SpiderMonkey + JavaScriptCore) parser; V8 runtimes
+   * (node/bun/deno + Chromium) get the default {@link parseV8Stack}. Absent → crash.json still builds via
+   * the V8 default.
+   */
+  stackParser?: (stack: string) => StackFrame[];
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
@@ -584,10 +593,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
       const message = error instanceof Error ? error.message : String(error);
       const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
+      // Structured crash.json (SC3): built from the Error's stack + per-frame debug-ids. handled: true —
+      // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.
+      const crash = buildCrashJson(error, { parseStack: options.stackParser, handled: true });
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
         ...(exceptionOptions?.severity !== undefined
           ? { severity: exceptionOptions.severity }
           : {}),

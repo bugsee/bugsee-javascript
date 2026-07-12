@@ -489,6 +489,48 @@ describe('createClient — file encoders', () => {
   });
 });
 
+describe('createClient — crash.json (SC3)', () => {
+  const crashOf = (bundle: Bundle) =>
+    JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
+
+  it('logException writes a structured crash.json (handled) into the bundle', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const err = new Error('boom');
+    err.stack = 'Error: boom\n    at handleClick (app.min.js:1:2345)';
+    await client.logException(err);
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    expect(crash.exception_type).toBe('error');
+    expect(crash.handled).toBe(true);
+    expect(crash.exception.name).toBe('Error');
+    expect(crash.exception.reason).toBe('boom');
+    expect(crash.exception.frames[0].trace).toBe('at handleClick (app.min.js:1:2345)');
+    expect(crash.exception.frames[0].data).toEqual({
+      source: 'app.min.js',
+      member: 'handleClick',
+      line: 1,
+      column: 2345,
+    });
+  });
+
+  it('uses the injected stackParser (browser passes its multi-engine parser)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const stackParser = vi.fn(() => [{ function: 'fn', file: 'x.js', line: 5, column: 6 }]);
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, stackParser });
+    await client.logException(new Error('e'));
+    expect(stackParser).toHaveBeenCalled();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    expect(crash.exception.frames[0].data).toEqual({ source: 'x.js', member: 'fn', line: 5, column: 6 });
+  });
+
+  it('omits crash.json for a non-Error logException', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    await client.logException('just a string');
+    expect('crash.json' in unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body)).toBe(false);
+  });
+});
+
 describe('createClient — capture-recovery markers', () => {
   it('logException persists a recovery marker BEFORE assembly and clears it on settle', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
