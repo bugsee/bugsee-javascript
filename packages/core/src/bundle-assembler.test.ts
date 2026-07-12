@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureDataEntry } from './contracts';
+import type { CrashJson } from './crash';
 import { createReportingRequest } from './reporting';
 
 const env: EnvironmentEnvelope = {
@@ -395,5 +396,40 @@ describe('assembleBundle — binary file encoders (replay)', () => {
     );
     const files = unzipSync(bundle.body);
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([{ m: 1 }]);
+  });
+});
+
+describe('assembleBundle — crash.json', () => {
+  const crash: CrashJson = {
+    exception_type: 'error',
+    ndkCrash: false,
+    handled: true,
+    exception: {
+      name: 'TypeError',
+      reason: 'boom',
+      frames: [
+        {
+          trace: 'at f (a.js:1:2)',
+          user: true,
+          data: { source: 'a.js', member: 'f', line: 1, column: 2 },
+          debug_id: 'dbg',
+        },
+      ],
+    },
+  };
+
+  it('writes crash.json + lists it in the manifest when the report carries a crash', () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1', crash });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    expect(z.names).toContain('crash.json');
+    expect(JSON.parse(z.text('crash.json'))).toEqual(crash);
+    expect(z.manifest.files).toContainEqual({ filename: 'crash.json', type: 'crash' });
+  });
+
+  it('omits crash.json entirely when the report has no crash', () => {
+    const request = createReportingRequest({ source: { type: 'code_upload' }, id: 'r1' });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    expect(z.names).not.toContain('crash.json');
+    expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'crash' }));
   });
 });

@@ -1,5 +1,6 @@
 import type { Mechanism } from '@bugsee/protocol';
 import type { AttributeValue, IssueType, SeverityName } from '@bugsee/types';
+import type { CrashJson } from './crash';
 
 // Report assembly request (Android BugseeReportingRequest / ReportingSource / Report parity). A
 // detection provider (or a manual entry point) builds a ReportingRequest and submits it; the trigger
@@ -46,6 +47,9 @@ export interface Report {
   labels: string[];
   attributes: Record<string, AttributeValue>;
   signatures: string[];
+  /** Structured crash detail written to the bundle as `crash.json` (the backend crash pipeline's input).
+   *  Set for error/crash reports built from an Error; absent for manual/bug reports. */
+  crash?: CrashJson;
 }
 
 /** A report being assembled (Android ReportingRequest), carrying its source and metadata. */
@@ -68,6 +72,8 @@ export interface ReportingRequestInit {
   email?: string;
   labels?: string[];
   signatures?: string[];
+  /** Structured crash detail → `crash.json` (see {@link Report.crash}). */
+  crash?: CrashJson;
 }
 
 const defaultGenerateId = (): string =>
@@ -104,6 +110,7 @@ export function createReportingRequest(
     ...(init.summary !== undefined ? { summary: init.summary } : {}),
     ...(init.description !== undefined ? { description: init.description } : {}),
     ...(init.email !== undefined ? { email: init.email } : {}),
+    ...(init.crash !== undefined ? { crash: init.crash } : {}),
   };
   return { id, source: init.source, report };
 }

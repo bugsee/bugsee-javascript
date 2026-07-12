@@ -158,6 +158,14 @@ export function assembleBundle(
     typedFiles.push({ name: filename, data });
   }
 
+  // Structured crash detail (§8.4 `crash.json`) — a per-report file (not a rolling capture stream) built
+  // from the thrown Error at report time. The backend crash pipeline reads it for stack symbolication.
+  if (report.crash !== undefined) {
+    const crashFilename = fileNameForType('crash');
+    files.push({ filename: crashFilename, type: 'crash' });
+    typedFiles.push({ name: crashFilename, data: JSON.stringify(report.crash) });
+  }
+
   // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.
   const attrs =
     requestContext?.attributes !== undefined

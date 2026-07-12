@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { CrashJson } from './crash';
 import { createReportingRequest, type ReportingTriggerType } from './reporting';
 
 describe('createReportingRequest', () => {
@@ -7,6 +8,19 @@ describe('createReportingRequest', () => {
     expect(req.id).toBe('r1');
     expect(req.report.id).toBe('r1');
     expect(req.source).toEqual({ type: 'crash', origin: 'onerror' });
+  });
+
+  it('threads a crash object onto the report, and omits it when absent', () => {
+    const crash: CrashJson = {
+      exception_type: 'error',
+      ndkCrash: false,
+      handled: false,
+      exception: { name: 'E', frames: [] },
+    };
+    const withCrash = createReportingRequest({ source: { type: 'error' }, id: 'x', crash });
+    expect(withCrash.report.crash).toBe(crash);
+    const without = createReportingRequest({ source: { type: 'code_upload' }, id: 'y' });
+    expect('crash' in without.report).toBe(false);
   });
 
   it('generates an id when none is given', () => {
