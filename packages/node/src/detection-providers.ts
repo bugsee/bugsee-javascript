@@ -1,6 +1,6 @@
 import process from 'node:process';
-import type { DetectionProvider } from '@bugsee/core';
-import { DetectionProviderBase, formatStack, parseV8Stack } from '@bugsee/core';
+import type { CrashJson, DetectionProvider } from '@bugsee/core';
+import { buildCrashJson, DetectionProviderBase, formatStack, parseV8Stack } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
 // Node crash/error detection providers (design §3.2 globalErrorInterceptor on Node, §8.5 mechanisms).
@@ -27,6 +27,11 @@ function describeError(value: unknown): { summary: string; description?: string 
     return { summary };
   }
   return { summary: String(value) };
+}
+
+/** Structured crash.json (SC3) from an uncaught value — `handled: false`. Undefined for non-Errors. */
+function crashOf(value: unknown): CrashJson | undefined {
+  return buildCrashJson(value, { parseStack: parseV8Stack, handled: false });
 }
 
 abstract class NodeProcessDetectionProvider extends DetectionProviderBase {
@@ -57,11 +62,13 @@ class UncaughtExceptionProvider extends NodeProcessDetectionProvider {
 
   protected onDetected(value: unknown): void {
     const { summary, description } = describeError(value);
+    const crash = crashOf(value);
     this.handleReportingRequest(
       this.createCrashReport({
         mechanism: 'uncaught',
         summary,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
       }),
     );
   }
@@ -74,11 +81,13 @@ class UnhandledRejectionProvider extends NodeProcessDetectionProvider {
 
   protected onDetected(value: unknown): void {
     const { summary, description } = describeError(value);
+    const crash = crashOf(value);
     this.handleReportingRequest(
       this.createErrorReport({
         mechanism: 'unhandledrejection',
         summary,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
       }),
     );
   }

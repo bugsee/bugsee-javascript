@@ -60,14 +60,19 @@ describe('createUncaughtExceptionProvider', () => {
     expect(req.report.type).toBe('crash');
     expect(req.report.summary).toBe('boom');
     expect(req.report.description).toBe('    at doWork (/app/work.js:3:7)'); // file:// stripped
+    // SC3: a structured crash.json is attached (handled:false — uncaught), with the parsed frame.
+    expect(req.report.crash?.handled).toBe(false);
+    expect(req.report.crash?.exception.name).toBe('Error');
+    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at doWork (/app/work.js:3:7)');
   });
 
-  it('uses String(value) and no description for a non-Error throw', () => {
+  it('uses String(value) and no description/crash for a non-Error throw', () => {
     const p = fakeProcess();
     const requests = started(createUncaughtExceptionProvider(p.proc));
     p.emit('uncaughtException', 'just a string');
     expect(requests[0]?.report.summary).toBe('just a string');
     expect(requests[0]?.report.description).toBeUndefined();
+    expect(requests[0]?.report.crash).toBeUndefined(); // non-Error → no crash.json
   });
 
   it('falls back to the error name, and omits the description, when message/stack are absent', () => {
@@ -78,6 +83,9 @@ describe('createUncaughtExceptionProvider', () => {
     p.emit('uncaughtException', err);
     expect(requests[0]?.report.summary).toBe('TypeError');
     expect(requests[0]?.report.description).toBeUndefined();
+    // crash.json is still built for the Error (empty frames — nothing to symbolicate, but a valid crash).
+    expect(requests[0]?.report.crash?.exception.name).toBe('TypeError');
+    expect(requests[0]?.report.crash?.exception.frames).toEqual([]);
   });
 
   it('deregisters on stop (no report after stop)', () => {
@@ -118,14 +126,16 @@ describe('createUnhandledRejectionProvider', () => {
     expect(req.report.type).toBe('error');
     expect(req.report.summary).toBe('rejected');
     expect(req.report.description).toBe('    at f (/a.js:1:2)');
+    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at f (/a.js:1:2)'); // SC3 crash.json attached
   });
 
-  it('handles a non-Error rejection reason', () => {
+  it('handles a non-Error rejection reason (no crash.json)', () => {
     const p = fakeProcess();
     const requests = started(createUnhandledRejectionProvider(p.proc));
     p.emit('unhandledRejection', { code: 42 });
     expect(requests[0]?.report.summary).toBe('[object Object]');
     expect(requests[0]?.report.description).toBeUndefined();
+    expect(requests[0]?.report.crash).toBeUndefined();
   });
 
   it('defaults to the global process', () => {
