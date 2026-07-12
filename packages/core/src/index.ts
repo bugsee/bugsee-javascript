@@ -143,6 +143,7 @@ export {
 export {
   createReportingRequest,
   type Report,
+  type ReportAttachment,
   type ReportingRequest,
   type ReportingRequestInit,
   type ReportingSource,
@@ -173,6 +174,7 @@ export {
   type CrashException,
   type CrashFrame,
   type CrashJson,
+  type NativeCrashJson,
 } from './crash';
 export type {
   BugseeApi,

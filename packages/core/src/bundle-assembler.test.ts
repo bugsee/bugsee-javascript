@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureDataEntry } from './contracts';
-import type { CrashJson } from './crash';
+import type { CrashJson, NativeCrashJson } from './crash';
 import { createReportingRequest } from './reporting';
 
 const env: EnvironmentEnvelope = {
@@ -433,3 +433,33 @@ describe('assembleBundle — crash.json', () => {
     expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'crash' }));
   });
 });
+
+describe('assembleBundle — native crash (minidump + attachments)', () => {
+  const nativeCrash: NativeCrashJson = {
+    exception_type: 'native',
+    ndkCrash: true,
+    minidumpFile: 'dump-1.dmp',
+  };
+  const dmp = new Uint8Array([0x4d, 0x44, 0x4d, 0x50]); // "MDMP" minidump magic
+
+  it('writes a native crash.json + the .dmp attachment (byte-for-byte) + manifest entries', () => {
+    const request = createReportingRequest({
+      source: { type: 'crash', mechanism: 'uncaught' },
+      id: 'r1',
+      crash: nativeCrash,
+      attachments: [{ name: 'dump-1.dmp', data: dmp }],
+    });
+    const bundle = assembleBundle(request, new Map(), context());
+    const z = unzip(bundle.body);
+    expect(JSON.parse(z.text('crash.json'))).toEqual(nativeCrash); // native shape (minidumpFile)
+    expect(unzipSync(bundle.body)['dump-1.dmp']).toEqual(dmp); // the .dmp is embedded raw
+    expect(z.manifest.files).toContainEqual({ filename: 'crash.json', type: 'crash' });
+    expect(z.manifest.files).toContainEqual({ filename: 'dump-1.dmp', type: 'attachment' });
+  });
+
+  it('omits attachment files when the report has none', () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'attachment' }));
+  });
+})

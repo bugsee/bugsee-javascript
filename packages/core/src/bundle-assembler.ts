@@ -166,6 +166,14 @@ export function assembleBundle(
     typedFiles.push({ name: crashFilename, data: JSON.stringify(report.crash) });
   }
 
+  // Report-level attachments (§8.4 `attachment`) — extra binary/text files written verbatim (e.g. a
+  // harvested native-crash `.dmp` referenced by `crash.minidumpFile`). Listed in the manifest by their own
+  // filename so the backend can enumerate them.
+  for (const attachment of report.attachments ?? []) {
+    files.push({ filename: attachment.name, type: 'attachment' });
+    typedFiles.push({ name: attachment.name, data: attachment.data });
+  }
+
   // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.
   const attrs =
     requestContext?.attributes !== undefined

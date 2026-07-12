@@ -109,9 +109,21 @@ lookup are debug-id-generic; JTD-merge + deobfuscation are the only Android-spec
   dumps; we mainly need the DB-dir → session link.)
 - **Harvest on next launch**: read Crashpad's DB dir for **pending** completed dumps (Crashpad exposes a
   reports database; the `.dmp` files live under `<dir>/completed` / `pending`). For each pending dump whose
-  session subtree is recoverable, build a **recovered crash report** via the existing recovery pipeline
-  (`recoverReports`) tied to that session's persisted capture (video/logs/network), and **attach the `.dmp`**
-  as `crash.minidumpFile`.
+  session subtree is recoverable, build a crash report tied to that session's persisted capture
+  (video/logs/network) and **attach the `.dmp`** as `crash.minidumpFile`.
+  - **KEY REFINEMENT (session-stitched, confirmed 2026-07-12).** A native crash kills the process INSTANTLY,
+    so the JS SDK never detects/submits it → **there is NO report marker** (`ReportMarkerStore` markers are
+    written by `client.ts` on a JS-side incident submit — see capture-recovery research). The existing
+    `recoverReports` only rebuilds ALREADY-submitted incidents. So the native path must **SYNTHESIZE** the
+    incident at recovery: (a) at START persist `<subtree>/incidents/crashpad-session.json` linking the
+    Crashpad dump dir → this launch's `captureGeneration` + `sessionId`; (b) at NEXT launch, when
+    `recoverSubtree` (`packages/node/src/recover-instances.ts`) processes a DEAD sibling, read that marker,
+    harvest its pending `.dmp`s, and for each **synthesize** a crash `ReportingRequest` + native `crash.json`
+    (`minidumpFile`) + the `.dmp` attachment, DRAIN the dead generation's capture chunks
+    (`backend.snapshot` — the session's video/logs/network), and `assembleBundle` → upload through this
+    launch's pipeline. Reuses the per-generation drain + assembler + durable upload; the ONLY core additions
+    are (1) report-level binary **attachments** on `assembleBundle` (for the `.dmp`) and (2) a **native
+    `crash.json`** shape on `report.crash`.
 - **Native `crash.json`**: mirror Android — `exception_type: Native`, a `signal` block if derivable, and a
   **native flag** the worker keys on (see §7). The minidump filename is the attached file's name.
 - **Seams / no-dep**: Crashpad DB access is Electron/Node-specific → behind an injected `crashDumpSource`

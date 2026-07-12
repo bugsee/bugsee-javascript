@@ -1,6 +1,13 @@
 import type { Mechanism } from '@bugsee/protocol';
 import type { AttributeValue, IssueType, SeverityName } from '@bugsee/types';
-import type { CrashJson } from './crash';
+import type { CrashJson, NativeCrashJson } from './crash';
+
+/** An extra per-report binary/text file written verbatim into the bundle (e.g. a harvested native-crash
+ *  `.dmp`). Its `name` is the bundle filename the crash.json references (e.g. `crash.minidumpFile`). */
+export interface ReportAttachment {
+  name: string;
+  data: Uint8Array | string;
+}
 
 // Report assembly request (Android BugseeReportingRequest / ReportingSource / Report parity). A
 // detection provider (or a manual entry point) builds a ReportingRequest and submits it; the trigger
@@ -48,8 +55,11 @@ export interface Report {
   attributes: Record<string, AttributeValue>;
   signatures: string[];
   /** Structured crash detail written to the bundle as `crash.json` (the backend crash pipeline's input).
-   *  Set for error/crash reports built from an Error; absent for manual/bug reports. */
-  crash?: CrashJson;
+   *  A JS-exception ({@link CrashJson}) or a native-minidump ({@link NativeCrashJson}) container; absent for
+   *  manual/bug reports. */
+  crash?: CrashJson | NativeCrashJson;
+  /** Extra binary/text files written verbatim into the bundle (e.g. a native-crash `.dmp`). */
+  attachments?: readonly ReportAttachment[];
 }
 
 /** A report being assembled (Android ReportingRequest), carrying its source and metadata. */
@@ -73,7 +83,9 @@ export interface ReportingRequestInit {
   labels?: string[];
   signatures?: string[];
   /** Structured crash detail → `crash.json` (see {@link Report.crash}). */
-  crash?: CrashJson;
+  crash?: CrashJson | NativeCrashJson;
+  /** Extra binary/text bundle files (see {@link Report.attachments}). */
+  attachments?: readonly ReportAttachment[];
 }
 
 const defaultGenerateId = (): string =>
@@ -111,6 +123,7 @@ export function createReportingRequest(
     ...(init.description !== undefined ? { description: init.description } : {}),
     ...(init.email !== undefined ? { email: init.email } : {}),
     ...(init.crash !== undefined ? { crash: init.crash } : {}),
+    ...(init.attachments !== undefined ? { attachments: init.attachments } : {}),
   };
   return { id, source: init.source, report };
 }

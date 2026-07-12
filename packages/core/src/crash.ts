@@ -32,6 +32,16 @@ export interface CrashJson {
   exception: CrashException;
 }
 
+/** The NATIVE crash.json — a Crashpad/native segfault (Electron/Node native addon). The worker keys off
+ *  `minidumpFile` (present) and stackwalks the attached `.dmp`; the exception + signal are derived there.
+ *  See `docs/design/electron-native-crashes.md`. */
+export interface NativeCrashJson {
+  exception_type: 'native';
+  ndkCrash: true;
+  /** The name of the minidump file attached to the bundle (the worker downloads + stackwalks it). */
+  minidumpFile: string;
+}
+
 export interface BuildCrashOptions {
   /** Runtime stack parser (default {@link parseV8Stack}; the browser tier injects its multi-engine parser). */
   parseStack?: (stack: string) => StackFrame[];
