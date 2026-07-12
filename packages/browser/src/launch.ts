@@ -56,6 +56,7 @@ import {
   realBrowserProbe,
 } from './environment';
 import { createBrowserInputSource } from './input-source';
+import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
 import { createViewtreeSnapshotSource } from './viewtree';
@@ -383,6 +384,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appToken,
     getEnvironment,
     captureStore,
+    // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
+    // parses non-V8 stacks too (the detection providers already use it directly).
+    stackParser: parseStack,
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
     ...(reportMarkers !== undefined

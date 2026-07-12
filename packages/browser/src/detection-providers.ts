@@ -1,5 +1,11 @@
-import type { DetectionProvider } from '@bugsee/core';
-import { applyDebugIds, DetectionProviderBase, formatStack, parseLocation } from '@bugsee/core';
+import type { CrashJson, DetectionProvider } from '@bugsee/core';
+import {
+  applyDebugIds,
+  buildCrashJson,
+  DetectionProviderBase,
+  formatStack,
+  parseLocation,
+} from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { parseStack } from './stack';
 
@@ -30,6 +36,12 @@ function describeError(value: unknown): { summary: string; description?: string 
     return { summary };
   }
   return { summary: String(value) };
+}
+
+/** Structured crash.json (SC3) from a thrown value — `handled: false` (uncaught). Undefined for non-Errors
+ *  (incl. a cross-origin `error` event with no `.error`). Uses the browser's multi-engine stack parser. */
+function crashOf(value: unknown): CrashJson | undefined {
+  return buildCrashJson(value, { parseStack, handled: false });
 }
 
 // Describe an ErrorEvent: prefer the thrown value (`event.error`); when it's absent (a cross-origin
@@ -74,12 +86,16 @@ class WindowErrorProvider extends BrowserWindowDetectionProvider {
   protected readonly event = 'error' as const;
 
   protected onDetected(event: Event): void {
-    const { summary, description } = describeErrorEvent(event as ErrorEvent);
+    const errorEvent = event as ErrorEvent;
+    const { summary, description } = describeErrorEvent(errorEvent);
+    // The thrown value (absent for a cross-origin "Script error." → no crash.json).
+    const crash = crashOf(errorEvent.error);
     this.handleReportingRequest(
       this.createCrashReport({
         mechanism: 'uncaught',
         summary,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
       }),
     );
   }
@@ -91,12 +107,15 @@ class WindowUnhandledRejectionProvider extends BrowserWindowDetectionProvider {
   protected readonly event = 'unhandledrejection' as const;
 
   protected onDetected(event: Event): void {
-    const { summary, description } = describeError((event as PromiseRejectionEvent).reason);
+    const reason = (event as PromiseRejectionEvent).reason;
+    const { summary, description } = describeError(reason);
+    const crash = crashOf(reason);
     this.handleReportingRequest(
       this.createErrorReport({
         mechanism: 'unhandledrejection',
         summary,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
       }),
     );
   }

@@ -66,6 +66,9 @@ describe('createWindowErrorProvider', () => {
     expect(req.report.type).toBe('crash');
     expect(req.report.summary).toBe('boom');
     expect(req.report.description).toBe('    at doWork (https://app.test/work.js:3:7)');
+    // SC3: crash.json attached (handled:false), parsed with the browser's multi-engine parser (Firefox dialect).
+    expect(req.report.crash?.handled).toBe(false);
+    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at doWork (https://app.test/work.js:3:7)');
   });
 
   it('stamps a source-map debug-ID (debugId=) when the bundle registered one', () => {
@@ -81,13 +84,15 @@ describe('createWindowErrorProvider', () => {
       w.emit('error', { error: err });
       const req = requests[0] as ReportingRequest;
       expect(req.report.description).toContain('debugId=dbg-77');
+      // and the structured crash.json carries the per-frame debug_id (the worker's join key).
+      expect(req.report.crash?.exception.frames[0]?.debug_id).toBe('dbg-77');
     } finally {
       if (prev === undefined) delete g._bugseeDebugIds;
       else g._bugseeDebugIds = prev;
     }
   });
 
-  it('falls back to message + filename:lineno:colno when event.error is absent', () => {
+  it('falls back to message + filename:lineno:colno when event.error is absent (no crash.json)', () => {
     const w = fakeWindow();
     const requests = started(createWindowErrorProvider(w.win));
     w.emit('error', {
@@ -101,6 +106,7 @@ describe('createWindowErrorProvider', () => {
     expect(requests[0]?.report.description).toBe(
       '    at <anonymous> (https://app.test/page.js:12:5)',
     );
+    expect(requests[0]?.report.crash).toBeUndefined(); // cross-origin: no thrown Error → no crash.json
   });
 
   it('falls back to message when event.error is undefined (not just null)', () => {
@@ -189,14 +195,16 @@ describe('createUnhandledRejectionProvider', () => {
     expect(req.report.type).toBe('error');
     expect(req.report.summary).toBe('rejected');
     expect(req.report.description).toBe('    at f (https://app.test/a.js:1:2)');
+    expect(req.report.crash?.exception.frames[0]?.trace).toBe('at f (https://app.test/a.js:1:2)'); // SC3
   });
 
-  it('handles a non-Error rejection reason', () => {
+  it('handles a non-Error rejection reason (no crash.json)', () => {
     const w = fakeWindow();
     const requests = started(createUnhandledRejectionProvider(w.win));
     w.emit('unhandledrejection', { reason: { code: 42 } });
     expect(requests[0]?.report.summary).toBe('[object Object]');
     expect(requests[0]?.report.description).toBeUndefined();
+    expect(requests[0]?.report.crash).toBeUndefined();
   });
 
   it('defaults to the global window', () => {
