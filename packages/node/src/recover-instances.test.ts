@@ -364,6 +364,40 @@ describe('recoverInstances', () => {
     expect(await survivor.listGenerations()).toContain(800);
   });
 
+  it('clears the crashpad marker on complete even when the subtree is kept alive by an undelivered bundle', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'native' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-dead');
+    // A separate UNDELIVERED durable bundle keeps the subtree from being swept, so marker-clearing is
+    // observable INDEPENDENTLY of subtree removal (which would otherwise mask it).
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'stuck',
+      serializeBundle(aBundle('stuck')),
+    );
+    const source = fakeNativeSource([dump('main.dmp', 1)]);
+    // The native crash bundle (summary 'Native crash') uploads OK → complete; the 'stuck' bundle does NOT.
+    const pipe = {
+      enqueue: vi.fn((b: Bundle) => Promise.resolve({ ok: b.request.summary === 'Native crash' })),
+      flush: () => Promise.resolve(true),
+      drop: () => {},
+    };
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      nativeCrashSource: source,
+    });
+
+    expect(source.claims).toEqual(['main.dmp']); // native delivered → complete
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // subtree KEPT by the undelivered bundle
+    // The crashpad marker was cleared on complete — proven with the subtree still present.
+    expect(
+      createNodeCrashpadSessionMarkerStore(join(dir, '9-9-dead', 'incidents')).read(),
+    ).toBeUndefined();
+  });
+
   it('skips native recovery entirely when no nativeCrashSource is configured', async () => {
     const dir = mkDir();
     seedCaptureGen(dir, '9-9-dead', 800, { m: 'orphan' });
