@@ -167,6 +167,13 @@ export {
   readDebugIds,
 } from './debug-id';
 export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
+export {
+  type BuildCrashOptions,
+  buildCrashJson,
+  type CrashException,
+  type CrashFrame,
+  type CrashJson,
+} from './crash';
 export type {
   BugseeApi,
   Bundle,
