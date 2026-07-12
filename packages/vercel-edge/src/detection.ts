@@ -1,4 +1,6 @@
 import {
+  buildCrashJson,
+  type CrashJson,
   type DetectionProvider,
   DetectionProviderBase,
   formatStack,
@@ -32,6 +34,12 @@ function describeError(value: unknown): { summary: string; description?: string 
   return { summary: String(value) };
 }
 
+/** Structured crash.json (SC3) from a rejection reason — `handled: false`. Undefined for non-Errors. Edge is
+ *  V8, so the default parseV8Stack parses the stack. */
+function crashOf(value: unknown): CrashJson | undefined {
+  return buildCrashJson(value, { parseStack: parseV8Stack, handled: false });
+}
+
 class EdgeUnhandledRejectionProvider extends DetectionProviderBase {
   readonly name = 'edge-unhandled-rejection';
   readonly controllingOption = BugseeOption.DetectCrash;
@@ -58,11 +66,13 @@ class EdgeUnhandledRejectionProvider extends DetectionProviderBase {
   #onDetected(event: unknown): void {
     const reason = (event as { reason?: unknown } | null | undefined)?.reason;
     const { summary, description } = describeError(reason);
+    const crash = crashOf(reason);
     this.handleReportingRequest(
       this.createErrorReport({
         mechanism: 'unhandledrejection',
         summary,
         ...(description !== undefined ? { description } : {}),
+        ...(crash !== undefined ? { crash } : {}),
       }),
     );
   }

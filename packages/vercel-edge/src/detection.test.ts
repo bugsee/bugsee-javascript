@@ -55,6 +55,9 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     expect(requests[0]?.report.type).toBe('error');
     expect(requests[0]?.report.summary).toBe('rejected');
     expect(requests[0]?.report.description).toContain('worker.js:5:9');
+    // SC3: structured crash.json attached (handled:false), V8-parsed frame.
+    expect(requests[0]?.report.crash?.handled).toBe(false);
+    expect(requests[0]?.report.crash?.exception.frames[0]?.trace).toBe('at handler (worker.js:5:9)');
   });
 
   it('uses the error NAME when the message is empty', () => {
@@ -81,6 +84,7 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     t.emit('unhandledrejection', { reason: 'boom-string' });
     expect(requests[0]?.report.summary).toBe('boom-string');
     expect('description' in (requests[0]?.report ?? {})).toBe(false);
+    expect(requests[0]?.report.crash).toBeUndefined(); // non-Error → no crash.json
   });
 
   it('tolerates a null / undefined event (no `.reason` access throw) — reports String(undefined)', () => {
