@@ -214,6 +214,25 @@ generic path + source-maps (#158) — the native flag is absent, so they never h
 
 Ordered so each is independently verifiable; worker + SDK can proceed in parallel after S0.
 
+> **SDK build status (2026-07-12).** The whole SDK harvest-and-bundle path is BUILT + on master, test-first
+> with per-entity mutator loops + coverage gates:
+> - **NM1** (`@bugsee/core`): `NativeCrashJson` + report-level binary `attachments` + assembler writes them.
+> - **NM2** (`@bugsee/electron`): crashReporter rework → `uploadToServer:false` harvest mode +
+>   `getCrashDumpsDirectory`; dropped `deriveMinidumpUrl`/`minidumpUrl` (= **S-sdk-1**).
+> - **NM3** (`@bugsee/core` `recoverNativeCrashes` + `CrashpadSessionMarker`/`NativeCrashSource`;
+>   `@bugsee/node-utils` single-file crashpad-session marker store; `@bugsee/node` launch persists the marker
+>   at START + threads the source): the session-stitched **synthesis** engine (native crash leaves NO report
+>   marker → synthesize at recovery).
+> - **NM4** (`@bugsee/core` `recoverReports.keepGenerations`; `@bugsee/node` `recoverSubtree` runs native
+>   recovery BEFORE the sweep, protecting the crashed generation for retry): wired into instance recovery.
+> - **NM5** (`@bugsee/electron` `createElectronNativeCrashSource` reads `<dumpDir>/completed/*.dmp` via an
+>   injected fs seam + `launchMain` wiring) (= **S-sdk-2**). v1 = harvest-all + claim-once; per-dump session
+>   matching via minidump-annotation parsing deferred (OQ-5).
+>
+> REMAINING: the **worker** side (S-worker-1/2, S-sym-1/2) + **S0** dump-fixture spike + **S-e2e** (real
+> Electron dump → worker). The worker's JS-crash processor (`crash/javascript.py`) already dispatches native
+> minidumps to `android_ndk.process_ndk_crash_report`; the generic-processor factoring is S-worker-1.
+
 - **S0 — spike/verify (OQ-4/OQ-5)**: feed a REAL Electron Crashpad `.dmp` (+ Electron's published `.sym`) to
   the worker's `minidump_stackwalk` locally; confirm it stackwalks + symbolicates. De-risks the whole design.
 - **S-worker-1 — generic minidump processor**: factor the reusable core out of `android_ndk.py` into a shared
