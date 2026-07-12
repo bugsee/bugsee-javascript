@@ -7,6 +7,10 @@ export {
 } from './batched-fs-chunk-storage';
 export { createNodeBundleStore } from './bundle-store';
 export {
+  type CrashpadSessionMarkerStore,
+  createNodeCrashpadSessionMarkerStore,
+} from './crashpad-session-marker-store';
+export {
   type CaptureRingWriterOptions,
   createCaptureRingWriter,
   createSyncRingWorker,
