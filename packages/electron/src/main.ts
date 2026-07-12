@@ -3,7 +3,7 @@
 export {
   type CrashReporterLike,
   type CrashReporterStartOptions,
-  deriveMinidumpUrl,
+  getCrashDumpsDirectory,
   type InstallNativeCrashReporterOptions,
   installNativeCrashReporter,
 } from './crash-reporter';

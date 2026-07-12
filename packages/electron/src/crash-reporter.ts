@@ -1,8 +1,10 @@
-// Native crash capture (E5). Electron ships a built-in `crashReporter` (Crashpad/Breakpad) that captures
-// minidumps in EVERY process (main, renderer, GPU, child) with no per-OS native code from us. We start it
-// with the Bugsee minidump submit URL and, crucially, session-correlation params (`session_id`/`app_token`)
-// as global `extra` — Crashpad attaches them to every minidump, so the backend joins the native crash to the
-// JS session (Android's model). `electron` is taken as an arg (no dependency; fully testable).
+// Native crash capture (E5, reworked to harvest-and-bundle — docs/design/electron-native-crashes.md). Electron
+// ships a built-in `crashReporter` (Crashpad/Breakpad) that writes a minidump for EVERY process (main,
+// renderer, GPU, child) with no per-OS native code from us. We start it with `uploadToServer: false` so
+// Crashpad writes dumps to its local database but NEVER uploads them — the SDK harvests the `.dmp`s on the
+// next launch and packs each into a normal Bugsee bundle (stitched to the crashed session), which the worker
+// stackwalks. Session-correlation params (`session_id`/`app_token`) still ride inside the dump as `extra`.
+// `electron` is taken as an arg (no dependency; fully testable).
 
 export interface CrashReporterStartOptions {
   submitURL?: string;
@@ -15,32 +17,33 @@ export interface CrashReporterStartOptions {
 /** The subset of Electron's `crashReporter` we use. */
 export interface CrashReporterLike {
   start(options: CrashReporterStartOptions): void;
+  /** Electron's crash-dumps directory (Crashpad DB). Present on Electron's real crashReporter; the harvest
+   *  reads pending `.dmp`s from here. */
+  getCrashesDirectory?(): string;
 }
 
 export interface InstallNativeCrashReporterOptions {
   crashReporter: CrashReporterLike;
   appToken: string;
-  /** The client-minted session id — correlates the native minidump with the JS session. */
+  /** The client-minted session id — rides inside every minidump as `extra.session_id`. */
   sessionId: string;
-  /** The Bugsee minidump submit endpoint (Crashpad POSTs the dump here). */
-  submitURL: string;
   /** Extra crash params (merged UNDER the session correlation, which always wins). */
   extra?: Record<string, string>;
-  /** Auto-upload minidumps via Crashpad (default `true`). */
-  uploadToServer?: boolean;
   /** Additional Electron `crashReporter.start` options (companyName, productName, compress, …). */
-  startOptions?: Omit<CrashReporterStartOptions, 'submitURL' | 'uploadToServer' | 'extra'>;
+  startOptions?: Omit<CrashReporterStartOptions, 'uploadToServer' | 'extra'>;
 }
 
 /**
- * Start Electron's native crash reporter, pointed at Bugsee and stamped with the session-correlation params.
- * Call once in the main process (covers all processes). See {@link deriveMinidumpUrl} for the default URL.
+ * Start Electron's native crash reporter in HARVEST mode: `uploadToServer: false` (Crashpad writes dumps
+ * locally but never uploads — the SDK harvests + bundles them), stamped with the session-correlation params.
+ * Call once in the main process (covers all processes).
  */
 export function installNativeCrashReporter(options: InstallNativeCrashReporterOptions): void {
   options.crashReporter.start({
     ...options.startOptions,
-    submitURL: options.submitURL,
-    uploadToServer: options.uploadToServer ?? true,
+    // Crashpad writes the dump to its local database; the SDK harvests it on next launch (never a direct
+    // Crashpad upload — the backend ingests only bundle-embedded minidumps).
+    uploadToServer: false,
     extra: {
       // Caller extras first; the correlation params always win (never overridable).
       ...options.extra,
@@ -50,10 +53,7 @@ export function installNativeCrashReporter(options: InstallNativeCrashReporterOp
   });
 }
 
-/**
- * Default Bugsee minidump submit URL from the API base + app token (Android-parity `/v2/apps/{token}/…`
- * shape). The exact path is a backend detail — override via `submitURL` when it's confirmed.
- */
-export function deriveMinidumpUrl(baseUrl: string, appToken: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/v2/apps/${appToken}/minidumps`;
+/** The Crashpad crash-dumps directory the harvest reads (`.dmp`s land here); undefined when unavailable. */
+export function getCrashDumpsDirectory(crashReporter: CrashReporterLike): string | undefined {
+  return crashReporter.getCrashesDirectory?.();
 }

@@ -8,11 +8,7 @@
 //   launchMain(appToken, { ipcMain });
 import { CaptureStoreToken } from '@bugsee/core';
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/node';
-import {
-  type CrashReporterLike,
-  deriveMinidumpUrl,
-  installNativeCrashReporter,
-} from './crash-reporter';
+import { type CrashReporterLike, installNativeCrashReporter } from './crash-reporter';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import {
@@ -41,8 +37,6 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   ipcMain: IpcMainLike & IpcMainControlLike;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated (E5). */
   crashReporter?: CrashReporterLike;
-  /** Override the minidump submit URL (default derived from the API base, Android-parity). */
-  minidumpUrl?: string;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
   crashReporterExtra?: Record<string, string>;
   /** Opt-in pixel-capture video (D8). Omit for the rrweb-replay default. */
@@ -53,8 +47,7 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
-  const { ipcMain, crashReporter, minidumpUrl, crashReporterExtra, video, launch, ...nodeOptions } =
-    options;
+  const { ipcMain, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } = options;
 
   // Opt-in pixel video (D8): build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -94,14 +87,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const control = createElectronMainControl({ ipcMain, sessionId: internals.api.sessionId });
   control.start();
 
-  // Native crashes (all processes): start Electron's crashReporter, session-correlated.
+  // Native crashes (all processes): start Electron's crashReporter in harvest mode (uploadToServer:false),
+  // session-correlated. The dumps are harvested + bundled on the next launch (see electron-native-crashes.md).
   if (crashReporter !== undefined) {
     installNativeCrashReporter({
       crashReporter,
       appToken,
       sessionId: internals.api.sessionId,
-      submitURL: minidumpUrl ?? deriveMinidumpUrl(internals.baseUrl, appToken),
-      extra: crashReporterExtra,
+      ...(crashReporterExtra !== undefined ? { extra: crashReporterExtra } : {}),
     });
   }
 

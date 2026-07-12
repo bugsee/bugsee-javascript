@@ -136,20 +136,19 @@ describe('launchMain', () => {
     expect(f.flush).toHaveBeenCalledTimes(1);
   });
 
-  it('starts Electron crashReporter (session-correlated, derived URL) when one is provided', () => {
+  it('starts Electron crashReporter in harvest mode (uploadToServer:false, session-correlated)', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();
     const crashReporter = { start: vi.fn() };
     launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, crashReporter });
     expect(crashReporter.start).toHaveBeenCalledTimes(1);
     expect(crashReporter.start.mock.calls[0]?.[0]).toMatchObject({
-      submitURL: 'https://api.test/v2/apps/tok/minidumps', // derived from internals.baseUrl
-      uploadToServer: true,
+      uploadToServer: false, // Bugsee harvests + bundles the dump; no direct Crashpad upload
       extra: { session_id: 'sess-xyz', app_token: 'tok' },
     });
   });
 
-  it('honours a minidumpUrl override', () => {
+  it('forwards crashReporterExtra under the session correlation', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();
     const crashReporter = { start: vi.fn() };
@@ -157,10 +156,12 @@ describe('launchMain', () => {
       ipcMain: ipc.ipcMain,
       launch: f.launch,
       crashReporter,
-      minidumpUrl: 'https://dumps.custom/put',
+      crashReporterExtra: { app_version: '2.0' },
     });
-    expect(crashReporter.start.mock.calls[0]?.[0]).toMatchObject({
-      submitURL: 'https://dumps.custom/put',
+    expect(crashReporter.start.mock.calls[0]?.[0]?.extra).toEqual({
+      app_version: '2.0',
+      session_id: 'sess-xyz',
+      app_token: 'tok',
     });
   });
 

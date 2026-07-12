@@ -1,26 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type CrashReporterLike,
   type CrashReporterStartOptions,
-  deriveMinidumpUrl,
+  getCrashDumpsDirectory,
   installNativeCrashReporter,
 } from './crash-reporter';
 
-function fakeCrashReporter() {
+function fakeCrashReporter(over: Partial<CrashReporterLike> = {}) {
   const starts: CrashReporterStartOptions[] = [];
-  return { crashReporter: { start: vi.fn((o: CrashReporterStartOptions) => starts.push(o)) }, starts };
+  return {
+    crashReporter: {
+      start: vi.fn((o: CrashReporterStartOptions) => starts.push(o)),
+      ...over,
+    } as CrashReporterLike,
+    starts,
+  };
 }
 
-const base = { appToken: 'tok', sessionId: 'sess-1', submitURL: 'https://api.test/minidumps' };
+const base = { appToken: 'tok', sessionId: 'sess-1' };
 
 describe('installNativeCrashReporter', () => {
-  it('starts Crashpad with the submit URL, auto-upload, and session-correlation extra', () => {
+  it('starts Crashpad in HARVEST mode (uploadToServer:false) with the session-correlation extra', () => {
     const c = fakeCrashReporter();
     installNativeCrashReporter({ crashReporter: c.crashReporter, ...base });
     expect(c.starts[0]).toMatchObject({
-      submitURL: 'https://api.test/minidumps',
-      uploadToServer: true,
+      uploadToServer: false, // Bugsee harvests + bundles the dump; Crashpad never uploads
       extra: { session_id: 'sess-1', app_token: 'tok' },
     });
+    expect('submitURL' in (c.starts[0] ?? {})).toBe(false); // no direct-upload endpoint
   });
 
   it('merges caller extra UNDER the correlation params (session/app win, never overridable)', () => {
@@ -37,26 +44,26 @@ describe('installNativeCrashReporter', () => {
     });
   });
 
-  it('honours uploadToServer:false and passes through startOptions', () => {
+  it('passes through startOptions (companyName/compress/…)', () => {
     const c = fakeCrashReporter();
     installNativeCrashReporter({
       crashReporter: c.crashReporter,
       ...base,
-      uploadToServer: false,
       startOptions: { compress: true } as never,
     });
-    expect(c.starts[0]?.uploadToServer).toBe(false);
     expect(c.starts[0]?.compress).toBe(true);
+    expect(c.starts[0]?.uploadToServer).toBe(false); // startOptions can't flip harvest mode
   });
 });
 
-describe('deriveMinidumpUrl', () => {
-  it('builds the Android-parity /v2/apps/{token}/minidumps URL, trimming a trailing slash', () => {
-    expect(deriveMinidumpUrl('https://api.bugsee.com', 'abc')).toBe(
-      'https://api.bugsee.com/v2/apps/abc/minidumps',
-    );
-    expect(deriveMinidumpUrl('https://api.bugsee.com/', 'abc')).toBe(
-      'https://api.bugsee.com/v2/apps/abc/minidumps',
-    );
+describe('getCrashDumpsDirectory', () => {
+  it('returns the crashReporter crash-dumps directory when available', () => {
+    const c = fakeCrashReporter({ getCrashesDirectory: () => '/tmp/crashpad' });
+    expect(getCrashDumpsDirectory(c.crashReporter)).toBe('/tmp/crashpad');
+  });
+
+  it('returns undefined when the crashReporter has no getCrashesDirectory', () => {
+    const c = fakeCrashReporter();
+    expect(getCrashDumpsDirectory(c.crashReporter)).toBeUndefined();
   });
 });

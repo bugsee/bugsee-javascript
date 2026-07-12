@@ -189,12 +189,12 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     const r1 = bootRenderer(bus, 1);
     const r2 = bootRenderer(bus, 2);
 
-    // The native crash reporter was started once, session-correlated.
+    // The native crash reporter was started once, in harvest mode (uploadToServer:false), session-correlated.
     expect(crashStarts).toHaveLength(1);
     const session = crashStarts[0]?.extra?.session_id;
     expect(typeof session).toBe('string');
     expect(crashStarts[0]?.extra?.app_token).toBe('tok');
-    expect(crashStarts[0]?.submitURL).toMatch(/\/v2\/apps\/tok\/minidumps$/);
+    expect(crashStarts[0]?.uploadToServer).toBe(false);
 
     // Both renderers learned the SAME owner session via the handshake (== the minidump's session).
     expect(r1.sessionId()).toBe(session);
