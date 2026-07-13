@@ -88,13 +88,17 @@ dispatch the `symbols.process` job (which already handles the `sourcemap` format
 `symbols/`, dispatched to `symbols.process` (which generates the `.breakpad` server-side). Crash-time lookup
 `is_system=false` → `{org}/{app}/symbols/{id}.zip` (the worker's `_js_symbol_path(false)='symbols'`).
 
-**(c) Electron RUNTIME symbols (electron/node/V8) — SHARED system store.** Uploaded once per Electron version
-to `POST /symbols/system` (org-global, no per-app), stored at `system/symbols/electron/{id}.zip`; the worker
-ingests them via the **already-built `jobs/electron_symbols.py::System`**. Crash-time lookup `is_system=true`
-→ `system/symbols/electron/{id}.zip` (worker `_js_symbol_path(true)='symbols/electron'`). **A3 open detail**:
-the appserver `POST /symbols/system` must enqueue the `electron_symbols.system` worker action for an Electron
-`.sym` (today the system path enqueues `symbols.system`/`mapping.system`); decide the discriminator
-(upload `format`/a platform param) — this is Electron-specific + secondary to (a)/(b).
+**(c) Electron RUNTIME symbols (electron/node/V8) — SHARED system store.** Uploaded once per Electron version,
+org-global, stored at `system/symbols/electron/{id}.zip`; the worker ingests them via the **already-built
+`jobs/electron_symbols.py::System`**. Crash-time lookup `is_system=true` → `system/symbols/electron/{id}.zip`
+(worker `_js_symbol_path(true)='symbols/electron'`). **NOT an appserver change (confirmed 2026-07-13).** The
+appserver enqueues NO `*.system` job: `symbols.service.js::createSystemSymbol` (the `POST /symbols/system`
+handler) only PERSISTS the symbol record — and it is itself called *by* the worker (`api.create_system_symbol
+_record`) after the job runs. **Symbol worker tasks are enqueued by the S3 UPLOAD NOTIFICATION** (S3 event →
+SQS → worker, keyed by the upload path prefix). So routing an Electron `.sym` to `electron_symbols.system` is
+an S3-notification + upload-path-convention concern (infra/CLI/ops), NOT appserver code; and `createSystemSymbol`
+already accepts the Electron record format-agnostically (worker sends `format:'elf'`, which the `symbolfile`
+enum allows). → **No appserver work for the Electron system-symbol path.**
 
 **Concrete symbol-routing change (DA1).** iOS and javascript both map to the `symbols` folder + `symbols.*`
 jobs; Android keeps `mappings`/`mapping.*`. Rather than sprinkle `|| app.type === 'javascript'` across five
@@ -156,7 +160,7 @@ value on next boot; **no data migration required**. Optionally add an audit migr
 | Version check | `code/utils.js` (`isSupportedSdkVersion`) | runtime-aware lookup for `javascript` (map `platform.type`→sub-block) |
 | Symbols folder/jobs | `symbols.service.js:74,275-286,535,653,683` | route `javascript`→`symbols`/`symbols.*` via `usesSymbolsFolder`/`symbolJobPrefix` helpers |
 | Android guard | `symbols.service.js:426` | **no change** (JS already early-returns) |
-| System (Electron) | `symbols.service.js` system path (`createSystemSymbol`) | enqueue `electron_symbols.system` for an Electron `.sym` (A3 — discriminator TBD) |
+| System (Electron) | `symbols.service.js::createSystemSymbol` | **no change** — persists the record format-agnostically; the `electron_symbols.system` dispatch is done by the S3 upload notification (infra), not the appserver |
 | MCP enum | `mcp/tools/application.list.js:68` | `+ 'javascript'` |
 | Migration | new `0NN-*.migration.js` | optional audit only |
 | Client validation | `code/utils.js:1090-1101` | **no change** (DA3) |
@@ -164,27 +168,31 @@ value on next boot; **no data migration required**. Optionally add an audit migr
 
 ## 5. Slice plan (each independently shippable)
 
-- **A0 — data model + config**: enum constant + `cfg.core.sdk.javascript` (per-runtime) + runtime-aware
-  `isSupportedSdkVersion` + MCP enum. (No behavior beyond "a `javascript` app can be created + versions
-  resolve.") Test-first (appserver = mocha, `NODE_ENV=test`).
-- **A1 — symbol routing (JS exceptions + `.node`)**: the `usesSymbolsFolder`/`symbolJobPrefix` helpers +
-  the five branch edits + the reprocess `case`. Verifies a `javascript` app's sourcemap/ELF upload stages to
-  `symbols/`, stores at `{org}/{app}/symbols/`, and dispatches `symbols.process`. This unblocks S-sym-2
-  (app `.node`) + the #158 sourcemap upload for JS apps.
-- **A2 — Electron system-symbol dispatch**: route a `POST /symbols/system` Electron `.sym` to
-  `electron_symbols.system` (discriminator decision). Secondary (Electron-only).
-- **A3 — migration + audit** (optional).
+- **A0 — data model + config** ✅ **BUILT** (2026-07-13, appserver `feat/javascript-app-type`, in review
+  16332): enum constant + `cfg.core.sdk.javascript` (per-runtime) + runtime-aware `isSupportedSdkVersion`
+  (keyed by `env.sdk.type==='javascript'` + a `JS_RUNTIME_FAMILY` map) + MCP enum. Test-first, mutator-proven.
+- **A1 — symbol routing (JS exceptions + `.node`)** ✅ **BUILT** (in review 16333): the `usesSymbolsFolder`/
+  `symbolStorageFolder`/`symbolJobPrefix` helpers + the five branch edits + the reprocess `case`. A `javascript`
+  app's sourcemap/ELF upload stages to `symbols/`, stores at `{org}/{app}/symbols/`, dispatches `symbols.*`.
+  Unblocks S-sym-2 (app `.node`) + the #158 sourcemap upload for JS apps.
+- **A2 — Electron system-symbol dispatch** — ❌ **NOT an appserver change (resolved 2026-07-13).** Symbol
+  worker tasks are enqueued by the **S3 upload notification** (per user), not the appserver; `createSystemSymbol`
+  persists the Electron record format-agnostically. So routing an Electron `.sym` to `electron_symbols.system`
+  lives in the S3-notification config + the upload-path convention (infra/CLI/ops), out of appserver scope.
+- **A3 — migration + audit** (optional; additive enum widening needs none).
 
-## 6. Cross-repo dependencies + open items
+**⇒ The appserver JS-SDK support is COMPLETE with A0 + A1.** No further appserver code is required for the
+whole-JS-SDK symbol/app-type path (sourcemaps for every runtime, app `.node`, and — via infra dispatch —
+Electron runtime system symbols).
+
+## 6. Cross-repo dependencies + remaining (non-appserver)
 
 - **JS SDK** (javascript repo): send `clientType='javascript'` (DA3, one-line); confirm the SDK's
   version-report shape feeds the runtime-aware version check.
 - **bugsee-cli** (Rust): the sourcemap (`--type sourcemaps`) + `.node` (ELF) uploads already POST to
-  `/apps/{app}/symbols`; a `upload-electron-symbols` helper (system `.sym` per version) feeds A2.
-- **worker**: `electron_symbols.system` job exists; per-app sourcemap + `.node` processing exist. The A2
-  dispatch discriminator must match what the worker expects.
-- **A3 discriminator** (open): how `POST /symbols/system` picks `electron_symbols.system` vs
-  `symbols.system`/`mapping.system` — inspect the current system-symbol → worker-job dispatch and choose a
-  format/param marker.
+  `/apps/{app}/symbols`; a `upload-electron-symbols` helper (system `.sym` per version).
+- **S3 upload notification** (infra): map the Electron system `.sym` upload path prefix → the
+  `electron_symbols.system` worker action (this is the "A2" work — infra config, not appserver code).
+- **worker**: `electron_symbols.system` job exists; per-app sourcemap + `.node` processing exist.
 - **isSupportedSdkVersion shape** (A0 open): confirm exact signature to thread the per-runtime lookup.
 - Deferred: symbols/mappings **unification** (DA1); viewer J3/J4; S0 real-dump validation; S-e2e.
