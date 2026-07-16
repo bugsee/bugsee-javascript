@@ -1,6 +1,6 @@
 # Bugsee JavaScript SDK — Implementation Progress (Hand-off)
 
-**Status as of 2026-05-30, all on `master` (`origin = ssh://krassx@code.bugsee.com:29418/javascript`, 109 commits, in sync).**
+**Status as of 2026-05-30 (the original hand-off snapshot; see the dated deltas below for later work).** Repo migrated to **GitHub** 2026-07-16: `origin = https://github.com/bugsee/bugsee-javascript` (sole remote), default branch `main`; a **GitHub Actions CI gate** (`.github/workflows/ci.yml`) runs lint / typecheck / cycles / per-package coverage on every push + PR (§6).
 
 A **runnable Node SDK** exists: capture (console + network + system traces/events), report assembly + signed-PUT upload, uncaught-exception detection with flush-then-exit, and a durable bundle queue that re-uploads crash bundles on the next launch. Public launch-options use Android's canonical `com.bugsee.option.*` identifier scheme internally + on the wire. Every shipped slice was built test-first, mutator-verified, gated at 100% line/fn/stmt + ≥90% branch per package, and passed a multi-agent convergent review.
 
@@ -82,8 +82,8 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
 No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §372). `createNoopCaptureProvider`/`createNoopInterceptor` (extend `CaptureProviderBase`/`InterceptorBase`) + named shims `createViewHierarchyProviderShim`/`createBreadcrumbsProviderShim`/`createXhrInterceptorShim`. Each is a structurally-valid provider/interceptor that captures nothing and warns ONCE (`logger.warnOnce`, keyed `shim:<name>`, message `<name> is a no-op on <runtime>; ignored`) on ACTIVATION (provider start / interceptor activate) — construction is side-effect-free. Logger (`Pick<Logger,'warnOnce'>`) + runtime label are injected by the platform (runtime-agnostic). **`replay` is intentionally NOT a shim** (design §372: option-driven, ignored-with-warn at option resolution). Per-platform named re-exports land with the platform packages.
 
-### Scaffold only (1-file stubs, no impl yet)
-`replay-canvas`, `vite-plugin`, `webpack-plugin` (the latter two = the #158 source-map upload tooling). Everything else once listed here is now built + on `master`: `bun`/`deno`/`webworker`, `performance` (APM), **`replay`** (session replay, RP0–RP6), **`electron`** (E0–E8, convergent-reviewed — main+renderer+native convergence + opt-in pixel video D8; `docs/design/electron.md`), `bugsee` (umbrella), `cloudflare`/`vercel-edge` (edge), the frontend adapters (`react`/`vue`/`svelte`/`solid`/`angular`/preact-compat), the meta-framework adapters (`nextjs`/`nuxt`/`remix`/`sveltekit`/`astro`), and the backend adapters (`express`/`fastify`/`hono`/`elysia`/`nestjs`/`koa`/`hapi`).
+### Scaffold only
+`replay-canvas` (the opt-in canvas-replay add-on) is the sole unbuilt feature stub. `vite-plugin`/`webpack-plugin` are intentionally **thin re-export wrappers** over the built `@bugsee/bundler-plugin-core` (the #158 source-map / debug-id tooling — DONE), not stubs. Everything else once listed here is now built + on `main`: `bun`/`deno`/`webworker`, `performance` (APM), **`replay`** (session replay, RP0–RP6), **`electron`** (E0–E8, convergent-reviewed — main+renderer+native convergence + opt-in pixel video D8; `docs/design/electron.md`), `bugsee` (umbrella), `cloudflare`/`vercel-edge` (edge), the frontend adapters (`react`/`vue`/`svelte`/`solid`/`angular`/preact-compat), the meta-framework adapters (`nextjs`/`nuxt`/`remix`/`sveltekit`/`astro`), and the backend adapters (`express`/`fastify`/`hono`/`elysia`/`nestjs`/`koa`/`hapi`).
 
 ---
 
@@ -150,7 +150,7 @@ pnpm --filter @bugsee/<pkg> exec vitest run src/<file>.test.ts   # single test f
 pnpm --filter @bugsee/<pkg> exec tsc --noEmit                    # single-package typecheck
 ```
 
-Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` (no automated git hook installed).
+Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` (no automated git hook installed). CI enforces the same gate on every push to `main` + every PR (`.github/workflows/ci.yml`; coverage runs per-package via `turbo run test:coverage`).
 
 ### Supported runtime versions (2026-06-15, matching Sentry's "Node 18+")
 - **Node ≥ 18** — declared (`engines` on root + `@bugsee/node`/`node-utils`/`express`/`fastify`) and
@@ -173,7 +173,7 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
   (`scripts/test-matrix.sh`) runs a vitest-free scenario smoke (`packages/instrumentation-tests/smoke.ts`:
   the off-thread disk-capture worker path + the incoming-server context path) via `tsx` under each installed
   Node version — so it covers Node 18, where vitest can't load (`--full` also runs the unit suite on ≥20).
-  CI-agnostic (this is a Gerrit repo with no in-repo CI). **It caught two real Node-18 crashes** — both used
+  Complements CI: the GitHub Actions gate runs the unit suite on Node 22; this matrix adds the Node-18 / multi-version smoke vitest can't run. **It caught two real Node-18 crashes** — both used
   the global `crypto` (unflagged only on Node 19+): `instance-layout`'s subtree nonce (→ every disk launch)
   and the per-request context-id minter (`server-instrument` + 4 adapters → every instrumented request).
   Fixed (`node:crypto` for instance-layout; a portable `@bugsee/util` `randomId()` for the minters);
@@ -183,8 +183,8 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
 
 ## 6. Conventions (binding)
 
-- **Git remote is Gerrit**, not GitHub: `origin = ssh://krassx@code.bugsee.com:29418/javascript`. Current convention: **push DIRECT to `refs/heads/master`** (`git push origin HEAD:refs/heads/master`), skipping the Gerrit `refs/for/master` review queue. Do NOT use `gh`. The Gerrit commit-msg hook prints non-blocking warnings on subject > 50 / lines > 72 chars.
-- **Commit trailer**: every commit ends with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+- **Git remote is GitHub** (migrated from Gerrit 2026-07-16): `origin = https://github.com/bugsee/bugsee-javascript` (sole remote), default branch `main`. Use the `gh` CLI / PR flow; direct `git push origin main` also works. A **GitHub Actions CI gate** (`.github/workflows/ci.yml`) runs lint → typecheck → cycles → per-package coverage on every push to `main` + every PR — keep it green.
+- **Commit trailer**: every commit ends with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - **TDD / mutator loop** (binding, §2): no implementation without a failing test first; for every new/changed entity inject a mutation, confirm a test fails, restore; never commit a mutation. Hard limit 10 iterations per entity — if a mutation survives, strengthen the test.
 - **100% line/fn/stmt + ≥90% branch per package**, run on each commit; failing the gate fails the commit. Unreachable / platform-guarded lines may be excluded only via an explicit `/* v8 ignore … */` with a one-line justification.
 - **Multi-agent convergent review** (binding, §6): once impl + tests + gates pass for a feature, run fresh parallel review agents (read-only, cite `file:line`, no assumptions) and converge to a clean round before declaring done.
