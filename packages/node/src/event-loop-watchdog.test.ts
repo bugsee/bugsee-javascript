@@ -250,13 +250,24 @@ describe('createEventLoopWatchdog', () => {
       heartbeatIntervalMs: 20, // < fairMs
     });
     wd.start();
-    await new Promise((r) => setTimeout(r, 60)); // let the heartbeat tick + worker spin up
-    const end = Date.now() + 150; // block the loop ~150ms — the heartbeat timer can't fire
-    while (Date.now() < end) {
-      // busy spin
-    }
-    await vi.waitFor(() => expect(onHang).toHaveBeenCalled(), { timeout: 2000 });
+    // The worker is spawned ASYNCHRONOUSLY (worker_threads startup) and can only observe a block
+    // that happens AFTER it is polling. A single fixed "spin-up" wait is racy on a loaded CI runner
+    // where startup routinely exceeds it (the block then lands before monitoring begins and is never
+    // seen). So block the loop in ~120ms bursts and retry until one burst is caught — converging as
+    // soon as the worker is alive, whenever that is, while staying fast on a healthy runner.
+    await vi.waitFor(
+      () => {
+        if (onHang.mock.calls.length === 0) {
+          const end = Date.now() + 120; // > fairMs (60): a live worker MUST see this stall
+          while (Date.now() < end) {
+            // busy spin — freeze the loop so the heartbeat timer can't refresh the shared buffer
+          }
+        }
+        expect(onHang).toHaveBeenCalled();
+      },
+      { timeout: 8000, interval: 50 },
+    );
     expect(['fair', 'medium', 'severe']).toContain(onHang.mock.calls[0]?.[0]);
     wd.stop();
-  });
+  }, 12_000);
 });
