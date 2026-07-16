@@ -12,7 +12,7 @@ Design implication: runtime-portable code is the default. Anything runtime-speci
 
 Runnable **Node, Browser, Bun, and Deno** SDKs exist. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`.
 
-**Implemented (test-first, reviewed, on `master`):**
+**Implemented (test-first, reviewed, on `main`):**
 - Tier-0: `@bugsee/types`, `@bugsee/util`, `@bugsee/logger`, `@bugsee/protocol`, `@bugsee/service`.
 - Kernel: `@bugsee/core` (Client, capture aggregator/store/exporter, coordinators, trigger/upload pipelines, durable bundle queue + capture recovery, interceptor/emitter base, options resolver, internal DI ServiceContainer).
 - Shared capture: `@bugsee/capture` (console→log; fetch/xhr/ws/sse/webtransport → network umbrella; system traces/events providers).
