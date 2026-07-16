@@ -46,8 +46,10 @@ export class BugseeCliError extends Error {
 
 /**
  * Resolve the `bugsee-cli` binary: an explicit `BUGSEE_CLI_PATH` override wins, otherwise the bare name
- * `bugsee-cli` (found on PATH — which includes `node_modules/.bin` under npm/pnpm scripts, where the
- * cargo-dist `@bugsee/bugsee-cli` package installs it).
+ * `bugsee-cli`, found on PATH via `node_modules/.bin` (npm/pnpm put it there when a build script runs).
+ * `@bugsee/bugsee-cli` — the cargo-dist npm installer that downloads the platform binary and exposes that
+ * bin — is a DIRECT dependency of this package, so the binary is present with no extra install (zero-config).
+ * The `BUGSEE_CLI_PATH` override remains the escape hatch for locked-down/offline CI that blocks the download.
  */
 export function resolveBugseeCli(env: EnvRecord = process.env): string {
   const override = env.BUGSEE_CLI_PATH;
