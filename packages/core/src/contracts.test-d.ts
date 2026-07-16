@@ -2,7 +2,7 @@
 // must type-check; @ts-expect-error negatives pin required members. Example object literals are
 // type-checked (excess-property + missing-property checks).
 
-import type { FileType, NetworkEvent } from '@bugsee/protocol';
+import { BugseeOption, type FileType, type NetworkEvent } from '@bugsee/protocol';
 import type {
   CaptureAggregator,
   CaptureDataEntry,
@@ -13,6 +13,7 @@ import type {
   CaptureSnapshot,
   CaptureStore,
   Client,
+  ControllingOption,
   DetectionProvider,
   Extension,
   Interceptor,
@@ -121,7 +122,7 @@ const launchOptions: OptionsContainer = {
 // single aggregator. Sources are subscribed to separately (an interceptor), not via a hub.
 const networkProvider: CaptureProvider = {
   name: 'network',
-  controllingOption: 'captureNetwork',
+  controllingOption: BugseeOption.CaptureNetwork,
   init: (deps: CaptureProviderInit) => {
     const event: NetworkEvent = {
       timestamp: 1,
@@ -148,7 +149,7 @@ const networkProvider: CaptureProvider = {
 
 const detector: DetectionProvider = {
   name: 'crash',
-  controllingOption: 'detectCrash',
+  controllingOption: BugseeOption.DetectCrash,
   start: (_client: Client, report: (request: ReportingRequest) => void) => {
     report(createReportingRequest({ source: { type: 'crash' }, id: 'r1' }));
   },
@@ -160,6 +161,12 @@ const extension: Extension = {
   setup: (_client: Client) => {},
   stop: noop,
 };
+
+// --- ControllingOption: a canonical BugseeOption identifier (editor autocomplete) that still accepts any string. ---
+export const gateCanonical: ControllingOption = BugseeOption.CaptureNetwork; // a canonical option key
+export const gateArbitrary: ControllingOption = 'x-extension-defined-option'; // open: any string identifier accepted
+// @ts-expect-error controllingOption is a string identifier, never a non-string
+export const gateNotAString: ControllingOption = 123;
 
 // --- Negatives: omitting a required member must NOT type-check. ---
 // @ts-expect-error `timestamp` is required on Operation

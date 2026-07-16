@@ -1,4 +1,4 @@
-import type { FileType } from '@bugsee/protocol';
+import type { BugseeOptionTypes, FileType } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import type { EventSubscribable } from './emitter';
 import type { ReportingRequest } from './reporting';
@@ -185,6 +185,17 @@ export interface OptionsContainer {
 }
 
 /**
+ * The canonical launch-option identifier that gates a provider — a `BugseeOption.*` value (or an
+ * extension's `*Option.*`, declaration-merged into `@bugsee/protocol`'s `BugseeOptionTypes`). Typed
+ * as a literal union over the known identifiers for editor autocomplete + self-documentation, yet
+ * still accepts any string: production providers assign a typed `BugseeOption` constant (so the
+ * identifier is already checked at the source), and the coordinator resolves it by a runtime string
+ * lookup in the option gate — so extension/platform-defined identifiers plug in without coupling this
+ * core contract to a closed, per-compilation-unit key union.
+ */
+export type ControllingOption = keyof BugseeOptionTypes | (string & Record<never, never>);
+
+/**
  * Capture-pipeline data source (§16.2), Android BugseeCaptureDataProvider parity. Lifecycle splits
  * dependency wiring from per-launch configuration:
  * - init(init): ONCE at registration — capture the pipeline deps (hubs/operations/aggregator).
@@ -200,9 +211,8 @@ export interface OptionsContainer {
 export interface CaptureProvider {
   /** Component id (Android @BugseeCaptureComponentName). */
   name: string;
-  // TODO: narrow to `keyof BugseeOptions` once options.ts lands (e.g. 'captureNetwork').
-  /** The launch option that gates this provider; when false, the provider is skipped. */
-  controllingOption?: string;
+  /** The launch option that gates this provider; when its option is false, the provider is skipped. */
+  controllingOption?: ControllingOption;
   /** One-time: receive the capture-pipeline dependencies (Android constructor-init). */
   init(init: CaptureProviderInit): void;
   /** (Re)configure from launch options and begin capturing; may be cycled across launches. */
@@ -213,8 +223,8 @@ export interface CaptureProvider {
 /** Decides when to assemble & upload a report (§16.2). */
 export interface DetectionProvider {
   name: string;
-  // TODO: narrow to `keyof BugseeOptions` once options.ts lands.
-  controllingOption?: string;
+  /** The launch option that gates this detector; when its option is false, the detector is skipped. */
+  controllingOption?: ControllingOption;
   /** On detection, build a ReportingRequest and submit it via `report` (Android parity). */
   start(client: Client, report: (request: ReportingRequest) => void): void;
   stop(): void;

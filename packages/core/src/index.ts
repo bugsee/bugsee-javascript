@@ -67,6 +67,7 @@ export type {
   CaptureSnapshot,
   CaptureStore,
   Client,
+  ControllingOption,
   DetectionProvider,
   Extension,
   Interceptor,
