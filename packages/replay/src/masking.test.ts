@@ -83,7 +83,8 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
 });
 
 describe('resolveReplayMaskingOptions — attribute masking (maskAttributeFn)', () => {
-  const el = () => (globalThis as { document?: Document }).document?.createElement('div') ?? ({} as HTMLElement);
+  const el = () =>
+    (globalThis as { document?: Document }).document?.createElement('div') ?? ({} as HTMLElement);
 
   it('provides a maskAttributeFn by default (fail-closed) that redacts user-content attributes', () => {
     const { maskAttributeFn } = resolveReplayMaskingOptions();

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRendererControlHandler } from './renderer-control';
 import { encodeControl } from './protocol';
+import { createRendererControlHandler } from './renderer-control';
 
 function harness(over: Partial<Parameters<typeof createRendererControlHandler>[0]> = {}) {
   const calls = {
@@ -65,8 +65,6 @@ describe('createRendererControlHandler', () => {
   it('tolerates absent optional callbacks (flush/onSession)', () => {
     const h = harness({ flush: undefined, onSession: undefined });
     expect(() => h.handle(encodeControl({ command: 'flush' }))).not.toThrow();
-    expect(() =>
-      h.handle(encodeControl({ command: 'session', sessionId: 's' })),
-    ).not.toThrow();
+    expect(() => h.handle(encodeControl({ command: 'session', sessionId: 's' }))).not.toThrow();
   });
 });

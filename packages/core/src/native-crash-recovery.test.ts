@@ -129,7 +129,7 @@ describe('recoverNativeCrashes', () => {
 
     expect(result).toEqual({ harvested: 1, delivered: 1, complete: true });
     expect(enqueued).toHaveLength(1);
-    const out = unzip(enqueued[0]!.body);
+    const out = unzip((enqueued[0] as Bundle).body);
     // request.json is a native crash.
     expect(out.request.type).toBe('crash');
     expect(out.request.severity).toBe(5); // blocker
@@ -216,7 +216,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    const out = unzip(enqueued[0]!.body);
+    const out = unzip((enqueued[0] as Bundle).body);
     expect(out.manifest.attrs).toEqual({ build: '30.1' });
     expect(out.request.email).toBe('user@x.io'); // user identifier → request.json email
   });
@@ -255,7 +255,10 @@ describe('recoverNativeCrashes', () => {
     const boom = new Error('enqueue boom');
     const pipeline = {
       enqueue: vi.fn((bundle: Bundle) => {
-        if (JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array)).minidumpFile === 'bad.dmp') {
+        if (
+          JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array)).minidumpFile ===
+          'bad.dmp'
+        ) {
           throw boom;
         }
         enqueued.push(bundle);

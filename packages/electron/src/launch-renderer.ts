@@ -9,9 +9,9 @@
 //   launchRenderer(appToken, { replay: true });   // replay rides the same stream (D8 default video)
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import type { BugseeElectronBridge } from './preload-bridge';
+import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
 import { createRendererControlHandler } from './renderer-control';
-import { encodeHello } from './protocol';
 
 /** The browser `launchCore` shape, injectable for tests. */
 type BrowserLaunch = typeof launchCore;

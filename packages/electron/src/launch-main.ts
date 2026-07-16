@@ -13,9 +13,9 @@ import {
   getCrashDumpsDirectory,
   installNativeCrashReporter,
 } from './crash-reporter';
-import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
+import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
 import {
   createPixelVideoController,
   encodePixelVideo,
@@ -133,9 +133,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   }) as Bugsee['stop'];
 
   const flush = client.flush.bind(client);
-  (client as { flush: Bugsee['flush'] }).flush = ((timeout?: number): ReturnType<
-    Bugsee['flush']
-  > => {
+  (client as { flush: Bugsee['flush'] }).flush = ((
+    timeout?: number,
+  ): ReturnType<Bugsee['flush']> => {
     control.flush(); // ask renderers to flush too
     return flush(timeout);
   }) as Bugsee['flush'];

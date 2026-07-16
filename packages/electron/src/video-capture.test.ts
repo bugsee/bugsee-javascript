@@ -73,7 +73,9 @@ describe('createCapturePageVideoSource', () => {
     const s = fakeScheduler();
     let n = 0;
     const capturePage = vi.fn(async () => new Uint8Array([n++]));
-    const encode = vi.fn((frames: readonly { bytes: Uint8Array }[]) => new Uint8Array([frames.length]));
+    const encode = vi.fn(
+      (frames: readonly { bytes: Uint8Array }[]) => new Uint8Array([frames.length]),
+    );
     const source = createCapturePageVideoSource({
       capturePage,
       scheduler: s.scheduler,
@@ -96,7 +98,9 @@ describe('createCapturePageVideoSource', () => {
     const s = fakeScheduler();
     const times = [10, 20];
     let i = 0;
-    const encode = vi.fn((frames: readonly { timestamp: number }[]) => new Uint8Array(frames.map((f) => f.timestamp)));
+    const encode = vi.fn(
+      (frames: readonly { timestamp: number }[]) => new Uint8Array(frames.map((f) => f.timestamp)),
+    );
     const source = createCapturePageVideoSource({
       capturePage: async () => new Uint8Array([1]),
       scheduler: s.scheduler,

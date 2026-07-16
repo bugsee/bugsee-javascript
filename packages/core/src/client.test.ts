@@ -520,7 +520,12 @@ describe('createClient — crash.json (SC3)', () => {
     await client.logException(new Error('e'));
     expect(stackParser).toHaveBeenCalled();
     const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
-    expect(crash.exception.frames[0].data).toEqual({ source: 'x.js', member: 'fn', line: 5, column: 6 });
+    expect(crash.exception.frames[0].data).toEqual({
+      source: 'x.js',
+      member: 'fn',
+      line: 5,
+      column: 6,
+    });
   });
 
   it('omits crash.json for a non-Error logException', async () => {

@@ -7,16 +7,16 @@ export {
 } from './batched-fs-chunk-storage';
 export { createNodeBundleStore } from './bundle-store';
 export {
-  type CrashpadSessionMarkerStore,
-  createNodeCrashpadSessionMarkerStore,
-} from './crashpad-session-marker-store';
-export {
   type CaptureRingWriterOptions,
   createCaptureRingWriter,
   createSyncRingWorker,
   type RingWorker,
   type RingWorkerArgs,
 } from './capture-ring-writer';
+export {
+  type CrashpadSessionMarkerStore,
+  createNodeCrashpadSessionMarkerStore,
+} from './crashpad-session-marker-store';
 export { createFsChunkStorage } from './fs-chunk-storage';
 export {
   appendFileSecure,

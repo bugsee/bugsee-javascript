@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { applyDebugIds, attachDebugIds, buildDebugIdMap, readDebugIds } from './debug-id';
-import { type StackFrame, parseV8Stack } from './stack';
+import { parseV8Stack, type StackFrame } from './stack';
 
 // A V8 `Error().stack` whose TOP frame is the bundle's own file (what the injected stub captures).
-const bundleStack = (file: string) => `Error\n    at <anonymous> (${file}:1:234)\n    at ${file}:1:250`;
+const bundleStack = (file: string) =>
+  `Error\n    at <anonymous> (${file}:1:234)\n    at ${file}:1:250`;
 
 describe('readDebugIds', () => {
   it('reads `_bugseeDebugIds` from a global object', () => {
@@ -28,7 +29,8 @@ describe('readDebugIds', () => {
 describe('buildDebugIdMap', () => {
   it("maps each stack's TOP-frame file to its debug-ID (ignoring lower frames)", () => {
     // The top frame is the bundle that registered; a lower frame is a different file and must NOT be keyed.
-    const stack = 'Error\n    at reg (https://cdn/app.js:1:5)\n    at load (https://cdn/runtime.js:2:9)';
+    const stack =
+      'Error\n    at reg (https://cdn/app.js:1:5)\n    at load (https://cdn/runtime.js:2:9)';
     const map = buildDebugIdMap(
       { [stack]: 'app-id', [bundleStack('https://cdn/vendor.js')]: 'vendor-id' },
       parseV8Stack,

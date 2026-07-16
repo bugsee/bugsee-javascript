@@ -63,7 +63,9 @@ describe('createUncaughtExceptionProvider', () => {
     // SC3: a structured crash.json is attached (handled:false — uncaught), with the parsed frame.
     expect((req.report.crash as CrashJson | undefined)?.handled).toBe(false);
     expect((req.report.crash as CrashJson | undefined)?.exception.name).toBe('Error');
-    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at doWork (/app/work.js:3:7)');
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe(
+      'at doWork (/app/work.js:3:7)',
+    );
   });
 
   it('uses String(value) and no description/crash for a non-Error throw', () => {
@@ -126,7 +128,9 @@ describe('createUnhandledRejectionProvider', () => {
     expect(req.report.type).toBe('error');
     expect(req.report.summary).toBe('rejected');
     expect(req.report.description).toBe('    at f (/a.js:1:2)');
-    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at f (/a.js:1:2)'); // SC3 crash.json attached
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe(
+      'at f (/a.js:1:2)',
+    ); // SC3 crash.json attached
   });
 
   it('handles a non-Error rejection reason (no crash.json)', () => {

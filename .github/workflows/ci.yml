@@ -1,0 +1,54 @@
+name: CI
+
+# Runs the full per-change gate on every push to main and every pull request:
+# lint (biome) → typecheck (tsc via turbo) → dependency-cycle check (madge) →
+# tests with the per-package coverage gate (vitest via turbo — each package
+# enforces its own 100% line/fn/stmt + ≥90% branch threshold).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint · Typecheck · Cycles · Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm first (setup-node's pnpm cache needs pnpm on PATH). Version comes from
+      # the root package.json `packageManager` field (pnpm@11.3.0).
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      # vitest 4 (rolldown) requires Node ≥ 20; the SDK targets Node ≥ 18 at runtime,
+      # but the toolchain runs on 22.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (biome)
+        run: pnpm lint
+
+      - name: Typecheck (tsc)
+        run: pnpm typecheck
+
+      - name: Dependency cycles (madge)
+        run: pnpm check:cycles
+
+      # Per-package coverage gate (turbo runs each package's own test:coverage,
+      # each enforcing 100% line/fn/stmt + ≥90% branch). NOT the root merged
+      # `pnpm test:coverage`, whose single aggregate threshold the scaffold-only
+      # stub packages would drag below 100%.
+      - name: Test + per-package coverage gate (vitest)
+        run: pnpm exec turbo run test:coverage

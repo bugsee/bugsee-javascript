@@ -1,17 +1,16 @@
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/browser';
 import type { CaptureStore, StoredEntry } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  launchRenderer,
-  resolveRendererBridge,
-  resolveRendererPost,
-} from './launch-renderer';
+import { launchRenderer, resolveRendererBridge, resolveRendererPost } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { decodeStreamEntry, encodeControl, isHello } from './protocol';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
-  const client = { stop: vi.fn(() => Promise.resolve(true)), flush: vi.fn(() => Promise.resolve(true)) } as unknown as Bugsee;
+  const client = {
+    stop: vi.fn(() => Promise.resolve(true)),
+    flush: vi.fn(() => Promise.resolve(true)),
+  } as unknown as Bugsee;
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
   const launch = vi.fn((appToken: string, options: BugseeLaunchOptions) => {
     received = { appToken, options };

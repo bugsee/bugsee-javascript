@@ -462,4 +462,4 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
     const z = unzip(assembleBundle(request, new Map(), context()).body);
     expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'attachment' }));
   });
-})
+});

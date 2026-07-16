@@ -1,7 +1,7 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { drainReified } from './capture-drain';
 import { defaultEntryFactory } from './capture-data-entry';
+import { drainReified } from './capture-drain';
 import type { CaptureEntryFactory, CaptureSnapshot, StoredEntry } from './contracts';
 
 /** A fake snapshot over a fixed grouped record set that records its release. */

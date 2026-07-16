@@ -108,10 +108,10 @@ const seedIncident = (dataDir: string, sub: string, gen: number, incidentId: str
 /** Seed a DEAD sibling subtree with a closed capture generation (no report marker). */
 const seedCaptureGen = (dataDir: string, sub: string, gen: number, data: unknown): void => {
   writeOwner(dataDir, sub, DEAD_PID);
-  const backend = createFileChunkBackend(
-    createFsChunkStorage(join(dataDir, sub, 'capture')),
-    { generation: gen, cleanOtherGenerations: false },
-  );
+  const backend = createFileChunkBackend(createFsChunkStorage(join(dataDir, sub, 'capture')), {
+    generation: gen,
+    cleanOtherGenerations: false,
+  });
   backend.openPart({ generation: gen, number: 0 }, gen);
   backend.appendEntry({ generation: gen, number: 0 }, {
     type: 'log',
@@ -132,7 +132,10 @@ const seedCrashpadMarker = (dataDir: string, sub: string, gen: number, sessionId
   });
 };
 
-const dump = (name: string, ...bytes: number[]): HarvestedDump => ({ name, data: new Uint8Array(bytes) });
+const dump = (name: string, ...bytes: number[]): HarvestedDump => ({
+  name,
+  data: new Uint8Array(bytes),
+});
 
 /** A fake native-crash source over a fixed dump list, recording claims. */
 const fakeNativeSource = (dumps: HarvestedDump[]): NativeCrashSource & { claims: string[] } => {
@@ -376,10 +379,13 @@ describe('recoverInstances', () => {
     // …and so does the crashed generation's CAPTURE DATA — keepGenerations protected gen 800 from the
     // recoverReports sweep (without it the sweep frees the generation and the native retry loses the
     // session recording).
-    const survivor = createFileChunkBackend(createFsChunkStorage(join(dir, '9-9-dead', 'capture')), {
-      generation: -1,
-      cleanOtherGenerations: false,
-    });
+    const survivor = createFileChunkBackend(
+      createFsChunkStorage(join(dir, '9-9-dead', 'capture')),
+      {
+        generation: -1,
+        cleanOtherGenerations: false,
+      },
+    );
     expect(await survivor.listGenerations()).toContain(800);
   });
 

@@ -23,8 +23,7 @@ export interface DurableObjectInstrumentOptions {
   instrumentRpcMethods?: boolean | string[];
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint requires `any[]` constructor args (see
-// instrument-class.ts) so the returned subclass can `super(...args)` over the user's DO base.
+// biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint requires `any[]` constructor args (see instrument-class.ts) so the returned subclass can `super(...args)` over the user's DO base.
 type DurableObjectClass = new (...args: any[]) => object;
 
 /** Instrument a Durable Object class — wrap the EXPORT, not just the impl:

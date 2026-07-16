@@ -119,7 +119,10 @@ function buildException(
  * Build the structured crash.json container from a thrown value. Returns `undefined` for non-Errors (the
  * caller keeps the request.json summary/description fallback).
  */
-export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson | undefined {
+export function buildCrashJson(
+  error: unknown,
+  options: BuildCrashOptions = {},
+): CrashJson | undefined {
   if (!(error instanceof Error)) {
     return undefined;
   }

@@ -30,14 +30,6 @@ export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export { type RecoverReportsOptions, recoverReports } from './capture-recovery';
 export {
-  type CrashpadSessionMarker,
-  type HarvestedDump,
-  type NativeCrashRecoveryResult,
-  type NativeCrashSource,
-  recoverNativeCrashes,
-  type RecoverNativeCrashesOptions,
-} from './native-crash-recovery';
-export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
   contributeServiceManifest,
@@ -85,6 +77,20 @@ export type {
   StoredEntry,
 } from './contracts';
 export { CaptureStoreToken } from './contracts';
+export {
+  type BuildCrashOptions,
+  buildCrashJson,
+  type CrashException,
+  type CrashFrame,
+  type CrashJson,
+  type NativeCrashJson,
+} from './crash';
+export {
+  applyDebugIds,
+  attachDebugIds,
+  buildDebugIdMap,
+  readDebugIds,
+} from './debug-id';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {
   createDetectionCoordinator,
@@ -131,6 +137,14 @@ export {
   type MemoryCaptureStoreOptions,
 } from './memory-capture-store';
 export { createMemoryChunkBackend, type MemoryChunkBackendOptions } from './memory-chunk-backend';
+export {
+  type CrashpadSessionMarker,
+  type HarvestedDump,
+  type NativeCrashRecoveryResult,
+  type NativeCrashSource,
+  type RecoverNativeCrashesOptions,
+  recoverNativeCrashes,
+} from './native-crash-recovery';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   COMMON_OPTION_DEFINITIONS,
@@ -164,27 +178,13 @@ export {
   type RequestContext,
 } from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export type { ServiceRegistrar, ServiceResolver } from './services';
+export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
 export {
   createStreamingCaptureStore,
   type StreamingCaptureEntry,
   type StreamingCaptureStoreOptions,
 } from './streaming-capture-store';
-export type { ServiceRegistrar, ServiceResolver } from './services';
-export {
-  applyDebugIds,
-  attachDebugIds,
-  buildDebugIdMap,
-  readDebugIds,
-} from './debug-id';
-export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
-export {
-  type BuildCrashOptions,
-  buildCrashJson,
-  type CrashException,
-  type CrashFrame,
-  type CrashJson,
-  type NativeCrashJson,
-} from './crash';
 export type {
   BugseeApi,
   Bundle,

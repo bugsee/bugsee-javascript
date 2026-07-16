@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { StoredEntry } from './contracts';
-import {
-  type StreamingCaptureEntry,
-  createStreamingCaptureStore,
-} from './streaming-capture-store';
+import { createStreamingCaptureStore, type StreamingCaptureEntry } from './streaming-capture-store';
 
 const entry = (type: string, timestamp: number, serialized: string): StoredEntry =>
   ({ type, timestamp, serialized }) as StoredEntry;

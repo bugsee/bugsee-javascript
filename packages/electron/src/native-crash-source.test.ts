@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CrashpadSessionMarker } from '@bugsee/core';
+import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CrashDumpFs,
@@ -28,8 +28,7 @@ function fakeFs(files: Record<string, number[]>): CrashDumpFs & { removed: strin
   const removed: string[] = [];
   return {
     removed,
-    exists: (p: string) =>
-      store.has(p) || [...store.keys()].some((k) => k.startsWith(`${p}/`)),
+    exists: (p: string) => store.has(p) || [...store.keys()].some((k) => k.startsWith(`${p}/`)),
     readdir: (dir: string) => {
       const prefix = `${dir}/`;
       const names = [...store.keys()]
@@ -64,8 +63,10 @@ describe('createElectronNativeCrashSource', () => {
     const dumps = source.harvest(marker());
 
     expect(dumps.map((d) => d.name).sort()).toEqual(['a.dmp', 'b.dmp']);
-    expect(Array.from(dumps.find((d) => d.name === 'a.dmp')!.data)).toEqual([1, 2]);
-    expect(Array.from(dumps.find((d) => d.name === 'b.dmp')!.data)).toEqual([3]);
+    expect(Array.from((dumps.find((d) => d.name === 'a.dmp') as HarvestedDump).data)).toEqual([
+      1, 2,
+    ]);
+    expect(Array.from((dumps.find((d) => d.name === 'b.dmp') as HarvestedDump).data)).toEqual([3]);
   });
 
   it('returns [] when the completed dir does not exist (no crash yet)', () => {
@@ -112,7 +113,7 @@ describe('createElectronNativeCrashSource', () => {
 
     const dumps = source.harvest(m);
     expect(dumps.map((d) => d.name)).toEqual(['crash.dmp']);
-    expect(Array.from(dumps[0]!.data)).toEqual([10, 20, 30]); // real readFile bytes
+    expect(Array.from((dumps[0] as HarvestedDump).data)).toEqual([10, 20, 30]); // real readFile bytes
 
     source.claim(m, 'crash.dmp'); // real unlink
     expect(existsSync(join(root, 'completed', 'crash.dmp'))).toBe(false);

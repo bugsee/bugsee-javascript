@@ -22,12 +22,12 @@ import {
   ChunkStorageToken,
   type Clock,
   ContextProviderToken,
+  type CrashpadSessionMarker,
   contributeServiceManifest,
   createCaptureExporter,
   createFileChunkBackend,
   createMemoryCaptureStore,
   createReportingRequest,
-  type CrashpadSessionMarker,
   defineService,
   getCarrier,
   type HarvestedDump,
@@ -1409,7 +1409,13 @@ describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)',
   });
 
   it('concatenates the internal profiling snapshot with a forwarded one (neither is dropped)', async () => {
-    const cpuProfile = { nodes: [{ id: 1 }], startTime: 0, endTime: 5, samples: [1], timeDeltas: [0] };
+    const cpuProfile = {
+      nodes: [{ id: 1 }],
+      startTime: 0,
+      endTime: 5,
+      samples: [1],
+      timeDeltas: [0],
+    };
     let started = false;
     const cpuProfiler = {
       get running() {

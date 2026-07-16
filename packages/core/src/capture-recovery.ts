@@ -1,6 +1,6 @@
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
-import { drainReified } from './capture-drain';
 import { defaultEntryFactory } from './capture-data-entry';
+import { drainReified } from './capture-drain';
 import type { ChunkBackend, FrozenPart } from './chunk-backend';
 import type { CaptureEntryFactory } from './contracts';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';

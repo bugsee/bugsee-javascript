@@ -2,11 +2,15 @@ import { CaptureDataEntryBase, CaptureStoreToken } from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
-import { encodePixelVideo } from './pixel-video-controller';
-import type { VideoCaptureSource } from './video-capture';
 import type { IpcMainEventLike, IpcMainListener } from './main-receiver';
-import { BUGSEE_CONTROL_CHANNEL, BUGSEE_HELLO_CHANNEL, BUGSEE_STREAM_CHANNEL } from './preload-bridge';
+import { encodePixelVideo } from './pixel-video-controller';
+import {
+  BUGSEE_CONTROL_CHANNEL,
+  BUGSEE_HELLO_CHANNEL,
+  BUGSEE_STREAM_CHANNEL,
+} from './preload-bridge';
 import { decodeControl, encodeHello, encodeStreamEntry } from './protocol';
+import type { VideoCaptureSource } from './video-capture';
 
 function fakeIpcMain() {
   const listeners = new Map<string, IpcMainListener>();
@@ -119,7 +123,10 @@ describe('launchMain', () => {
     const r = fakeSender();
     ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
     expect(r.sent[0]?.channel).toBe(BUGSEE_CONTROL_CHANNEL);
-    expect(decodeControl(r.sent[0]!.raw)).toEqual({ command: 'session', sessionId: 'sess-xyz' });
+    expect(decodeControl((r.sent[0] as { raw: string }).raw)).toEqual({
+      command: 'session',
+      sessionId: 'sess-xyz',
+    });
   });
 
   it('flushing the client broadcasts flush to renderers AND calls node flush', async () => {
@@ -216,7 +223,9 @@ describe('launchMain', () => {
       stop() {
         source.stopped = true;
       },
-      snapshot: vi.fn(async (now: number) => [new CaptureDataEntryBase('video', now, new Uint8Array([1]))]),
+      snapshot: vi.fn(async (now: number) => [
+        new CaptureDataEntryBase('video', now, new Uint8Array([1])),
+      ]),
     };
     const client = launchMain('tok', {
       ipcMain: ipc.ipcMain,

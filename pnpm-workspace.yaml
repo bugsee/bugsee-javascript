@@ -4,6 +4,9 @@ packages:
 
 # esbuild (via tsup/vitest) needs its postinstall to fetch its native binary.
 allowBuilds:
+  # @bugsee/bugsee-cli's postinstall downloads the prebuilt Rust `bugsee-cli` binary the bundler plugins
+  # spawn (sourcemaps inject + debug-files upload). Allow it so the plugin is turnkey (zero-config).
+  '@bugsee/bugsee-cli': true
   '@nestjs/core': false
   # @parcel/watcher (transitive via @nuxt/kit, a @bugsee/nuxt devDep) is only for dev file-watching —
   # not needed for build-time module code or tests, so skip its native-binary build.
@@ -12,3 +15,6 @@ allowBuilds:
   # sharp (Astro's image optimization, transitive via astro — a @bugsee/astro devDep) isn't needed for the
   # adapter code or tests; skip its native-binary build.
   sharp: false
+
+minimumReleaseAgeExclude:
+  - '@bugsee/bugsee-cli@0.7.2'

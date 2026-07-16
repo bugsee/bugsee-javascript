@@ -15,8 +15,6 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
-import { buildCrashJson } from './crash';
-import type { StackFrame } from './stack';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
@@ -30,6 +28,7 @@ import {
   type Client,
   type OptionsContainer,
 } from './contracts';
+import { buildCrashJson } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import { createEnvironment } from './environment';
@@ -44,6 +43,7 @@ import {
   type ReportHandler,
   runFilter,
 } from './filters';
+import type { StackFrame } from './stack';
 
 export type { Breadcrumb, BreadcrumbInput } from './events';
 

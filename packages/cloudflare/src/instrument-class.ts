@@ -46,8 +46,7 @@ function rpcMethodNames(prototype: object, alreadyInstrumented: Set<string>): st
   });
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: the mixin constraint requires `any[]` constructor args so the
-// subclass can `super(...args)` over an arbitrary base — the standard TS class-mixin pattern.
+// biome-ignore lint/suspicious/noExplicitAny: the mixin constraint requires `any[]` constructor args so the subclass can `super(...args)` over an arbitrary base — the standard TS class-mixin pattern.
 type AnyClass = new (...args: any[]) => object;
 
 /** Instrument a Cloudflare class (Durable Object / WorkerEntrypoint). Returns a subclass that, on construction,
@@ -75,7 +74,6 @@ export function instrumentEdgeClass<C extends AnyClass>(
     }
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: see AnyClass — the mixin's super(...args) needs the any[] rest.
   return class extends TargetClass {
     // biome-ignore lint/suspicious/noExplicitAny: ditto — constructor args are the base's (ctx, env, …).
     constructor(...args: any[]) {

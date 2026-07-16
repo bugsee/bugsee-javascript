@@ -32,8 +32,7 @@ export interface WorkerEntrypointInstrumentOptions {
   instrumentRpcMethods?: boolean | string[];
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint needs `any[]` constructor args (see
-// instrument-class.ts) so the returned subclass can `super(...args)` over the user's WorkerEntrypoint base.
+// biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint needs `any[]` constructor args (see instrument-class.ts) so the returned subclass can `super(...args)` over the user's WorkerEntrypoint base.
 type WorkerEntrypointClass = new (...args: any[]) => object;
 
 export function withBugsee<Env, H extends ExportedHandler<Env>>(

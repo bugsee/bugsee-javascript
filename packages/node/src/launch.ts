@@ -703,11 +703,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // the next launch can tie a harvested `.dmp` to this session's capture generation. A native crash kills
   // the process instantly (no incident handler runs), so the link MUST exist before the crash. Attributes /
   // user are the launch-time snapshot (a native crash carries no crash-time global state).
-  if (
-    options.nativeCrash !== undefined &&
-    recoverEnabled &&
-    instanceLayout !== undefined
-  ) {
+  if (options.nativeCrash !== undefined && recoverEnabled && instanceLayout !== undefined) {
     try {
       createNodeCrashpadSessionMarkerStore(instanceLayout.incidentsDir, options.onError).put({
         generation: captureGeneration,

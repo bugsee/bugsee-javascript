@@ -27,7 +27,12 @@ describe('buildCrashJson', () => {
     const f0 = crash?.exception.frames[0];
     expect(f0?.trace).toBe('at handleClick (app.min.js:1:2345)'); // no debugId suffix — it's a separate field
     expect(f0?.user).toBe(true);
-    expect(f0?.data).toEqual({ source: 'app.min.js', member: 'handleClick', line: 1, column: 2345 });
+    expect(f0?.data).toEqual({
+      source: 'app.min.js',
+      member: 'handleClick',
+      line: 1,
+      column: 2345,
+    });
     expect(f0?.debug_id).toBeUndefined(); // no build injected one
   });
 

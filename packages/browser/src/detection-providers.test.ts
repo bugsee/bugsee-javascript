@@ -68,7 +68,9 @@ describe('createWindowErrorProvider', () => {
     expect(req.report.description).toBe('    at doWork (https://app.test/work.js:3:7)');
     // SC3: crash.json attached (handled:false), parsed with the browser's multi-engine parser (Firefox dialect).
     expect((req.report.crash as CrashJson | undefined)?.handled).toBe(false);
-    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at doWork (https://app.test/work.js:3:7)');
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe(
+      'at doWork (https://app.test/work.js:3:7)',
+    );
   });
 
   it('stamps a source-map debug-ID (debugId=) when the bundle registered one', () => {
@@ -85,7 +87,9 @@ describe('createWindowErrorProvider', () => {
       const req = requests[0] as ReportingRequest;
       expect(req.report.description).toContain('debugId=dbg-77');
       // and the structured crash.json carries the per-frame debug_id (the worker's join key).
-      expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.debug_id).toBe('dbg-77');
+      expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.debug_id).toBe(
+        'dbg-77',
+      );
     } finally {
       if (prev === undefined) delete g._bugseeDebugIds;
       else g._bugseeDebugIds = prev;
@@ -195,7 +199,9 @@ describe('createUnhandledRejectionProvider', () => {
     expect(req.report.type).toBe('error');
     expect(req.report.summary).toBe('rejected');
     expect(req.report.description).toBe('    at f (https://app.test/a.js:1:2)');
-    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe('at f (https://app.test/a.js:1:2)'); // SC3
+    expect((req.report.crash as CrashJson | undefined)?.exception.frames[0]?.trace).toBe(
+      'at f (https://app.test/a.js:1:2)',
+    ); // SC3
   });
 
   it('handles a non-Error rejection reason (no crash.json)', () => {

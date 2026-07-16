@@ -12,7 +12,9 @@ function fakeIpcMain() {
   return {
     ipcMain: {
       on(channel: string, listener: IpcMainControlListener): void {
-        (listeners.get(channel) ?? listeners.set(channel, new Set()).get(channel)!).add(listener);
+        const set = listeners.get(channel) ?? new Set<IpcMainControlListener>();
+        listeners.set(channel, set);
+        set.add(listener);
       },
       removeListener(channel: string, listener: IpcMainControlListener): void {
         listeners.get(channel)?.delete(listener);
@@ -55,7 +57,10 @@ describe('createElectronMainControl', () => {
     expect(control.rendererCount).toBe(1);
     expect(r.sent).toHaveLength(1);
     expect(r.sent[0]?.channel).toBe(BUGSEE_CONTROL_CHANNEL);
-    expect(decodeControl(r.sent[0]!.raw)).toEqual({ command: 'session', sessionId: 'sess-1' });
+    expect(decodeControl((r.sent[0] as { raw: string }).raw)).toEqual({
+      command: 'session',
+      sessionId: 'sess-1',
+    });
   });
 
   it('ignores a non-hello message on the hello channel (no reply, no registration)', () => {
@@ -102,7 +107,11 @@ describe('createElectronMainControl', () => {
     control.flush();
 
     for (const s of [a, b]) {
-      expect(s.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['pause', 'resume', 'flush']);
+      expect(s.sent.map((m) => decodeControl(m.raw)?.command)).toEqual([
+        'pause',
+        'resume',
+        'flush',
+      ]);
       expect(s.sent.every((m) => m.channel === BUGSEE_CONTROL_CHANNEL)).toBe(true);
     }
   });

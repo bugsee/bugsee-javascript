@@ -72,9 +72,12 @@ export function createCapturePageVideoSource(
       if (handle !== undefined) {
         return; // idempotent
       }
-      handle = options.scheduler.setInterval(() => {
-        void tick();
-      }, Math.round(1000 / fps));
+      handle = options.scheduler.setInterval(
+        () => {
+          void tick();
+        },
+        Math.round(1000 / fps),
+      );
     },
     stop(): void {
       if (handle !== undefined) {

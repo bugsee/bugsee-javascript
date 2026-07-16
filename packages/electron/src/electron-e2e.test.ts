@@ -7,27 +7,27 @@
 //   • stop/flush from the main propagate down to both renderers.
 // Only @bugsee/browser's renderer internals are faked (we inject capture entries into the real streaming
 // store); the renderer→main transport, the merge, and the bundle assembly are all REAL.
+
+import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import {
-  CaptureDataEntryBase,
   type CaptureDataEntry,
-  CaptureStoreToken,
+  CaptureDataEntryBase,
   createMemoryCaptureStore,
   type StoredEntry,
 } from '@bugsee/core';
-import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import { type NodeRuntime, realSystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
+import type { CrashReporterStartOptions } from './crash-reporter';
 import { launchMain } from './launch-main';
 import { launchRenderer } from './launch-renderer';
-import type { VideoCaptureSource } from './video-capture';
-import type { CrashReporterStartOptions } from './crash-reporter';
 import type { IpcMainControlEventLike, IpcMainControlListener } from './main-control';
 import {
-  type BugseeElectronBridge,
   BUGSEE_STREAM_CHANNEL,
+  type BugseeElectronBridge,
   registerBugseePreload,
 } from './preload-bridge';
+import type { VideoCaptureSource } from './video-capture';
 
 const jsonBody = (obj: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.stringify(obj)));
 
@@ -76,15 +76,23 @@ function fakeElectronBus() {
   const mainListeners = new Map<string, IpcMainControlListener[]>();
   const ipcMain = {
     on(channel: string, listener: IpcMainControlListener): void {
-      (mainListeners.get(channel) ?? mainListeners.set(channel, []).get(channel)!).push(listener);
+      const list = mainListeners.get(channel) ?? [];
+      mainListeners.set(channel, list);
+      list.push(listener);
     },
     removeListener(channel: string, listener: IpcMainControlListener): void {
-      mainListeners.set(channel, (mainListeners.get(channel) ?? []).filter((l) => l !== listener));
+      mainListeners.set(
+        channel,
+        (mainListeners.get(channel) ?? []).filter((l) => l !== listener),
+      );
     },
   };
 
   function renderer(id: number) {
-    const rendererListeners = new Map<string, Array<(event: unknown, ...args: unknown[]) => void>>();
+    const rendererListeners = new Map<
+      string,
+      Array<(event: unknown, ...args: unknown[]) => void>
+    >();
     // The renderer's webContents — the main uses its `send` to push control DOWN.
     const webContents = {
       id,
@@ -102,9 +110,9 @@ function fakeElectronBus() {
         }
       },
       on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void {
-        (rendererListeners.get(channel) ?? rendererListeners.set(channel, []).get(channel)!).push(
-          listener,
-        );
+        const list = rendererListeners.get(channel) ?? [];
+        rendererListeners.set(channel, list);
+        list.push(listener);
       },
     };
     return { webContents, ipcRenderer };
@@ -117,7 +125,12 @@ function fakeElectronBus() {
 function bootRenderer(
   bus: ReturnType<typeof fakeElectronBus>,
   id: number,
-): { store: { add(e: StoredEntry): void }; sessionId: () => string | undefined; stop: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> } {
+): {
+  store: { add(e: StoredEntry): void };
+  sessionId: () => string | undefined;
+  stop: ReturnType<typeof vi.fn>;
+  flush: ReturnType<typeof vi.fn>;
+} {
   const { ipcRenderer } = bus.renderer(id);
 
   // The real preload exposes the bridge; we capture what it would put on `window.__bugseeElectron`.
@@ -131,7 +144,10 @@ function bootRenderer(
   let injectedStore: { add(e: StoredEntry): void } | undefined;
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
-  const fakeBrowserLaunch = ((_token: string, options: { captureStore: { add(e: StoredEntry): void } }) => {
+  const fakeBrowserLaunch = ((
+    _token: string,
+    options: { captureStore: { add(e: StoredEntry): void } },
+  ) => {
     injectedStore = options.captureStore;
     return { client: { stop, flush }, internals: undefined };
   }) as never;
