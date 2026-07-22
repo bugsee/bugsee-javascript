@@ -106,6 +106,12 @@ export interface ReplayLaunchOptions {
   ignoreSelector?: string;
   /** Full-snapshot cadence (ms) — bounds the retained window. Default 60000. */
   checkoutEveryNms?: number;
+  /**
+   * Opt-in canvas recording (rrweb `<canvas>` capture). `true` or an options object enables it;
+   * `@bugsee/replay-canvas` is lazy-`import()`ed only then, so a no-canvas replay never loads it. Off by
+   * default. A structural subset of `@bugsee/replay-canvas`'s `CanvasReplayOptions` (no static dep here).
+   */
+  canvas?: boolean | { fps?: number; quality?: number; imageType?: 'image/webp' | 'image/jpeg' };
 }
 
 export interface BugseeLaunchOptions {
@@ -436,10 +442,24 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // stays ≤15KB), then install the recorder + register the replay.bin encoder into the shared map. The
   // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
   if (replayEnabled && fileEncoders !== undefined) {
-    const replayOptions = typeof options.replay === 'object' ? options.replay : {};
+    const replayOptions: ReplayLaunchOptions =
+      typeof options.replay === 'object' ? options.replay : {};
+    const { canvas: canvasOption, ...replayMasking } = replayOptions;
+    const canvasEnabled = canvasOption !== undefined && canvasOption !== false;
     void import('@bugsee/replay')
-      .then((m) => {
-        m.registerReplay(client, fileEncoders, replayOptions);
+      .then(async (m) => {
+        // Canvas is an opt-in add-on: lazy-`import()` @bugsee/replay-canvas ONLY when replay.canvas is set,
+        // resolve the rrweb canvas options, and thread them into the recorder (design RPC3). A no-canvas
+        // replay never loads it.
+        const canvas = canvasEnabled
+          ? (await import('@bugsee/replay-canvas')).createCanvasRecordConfig(
+              typeof canvasOption === 'object' ? canvasOption : {},
+            )
+          : undefined;
+        m.registerReplay(client, fileEncoders, {
+          ...replayMasking,
+          ...(canvas !== undefined ? { canvas } : {}),
+        });
       })
       .catch((error) => options.onError?.(error));
   }

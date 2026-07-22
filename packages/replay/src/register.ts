@@ -8,7 +8,12 @@ import type { CaptureProvider } from '@bugsee/core';
 import { record as rrwebRecord } from '@bugsee/rrweb';
 import { encodeReplay } from './encoder';
 import { type ReplayMaskingOptions, resolveReplayMaskingOptions } from './masking';
-import { createReplayCaptureProvider, type ReplayRecorder, type ReplayRecordFn } from './recorder';
+import {
+  type CanvasRecordConfig,
+  createReplayCaptureProvider,
+  type ReplayRecorder,
+  type ReplayRecordFn,
+} from './recorder';
 
 /** The client surface `registerReplay` needs (structural — no hard @bugsee/core client dep). */
 export interface ReplayClientLike {
@@ -25,6 +30,8 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
   checkoutEveryNms?: number;
   /** Test/advanced seam: the rrweb record fn. Default the real `@bugsee/rrweb` `record`. */
   record?: ReplayRecordFn;
+  /** Opt-in canvas recording (from `@bugsee/replay-canvas`); absent ⇒ DOM-only replay (unchanged). */
+  canvas?: CanvasRecordConfig;
 }
 
 /**
@@ -42,6 +49,7 @@ export function registerReplay(
     ...(options.checkoutEveryNms !== undefined
       ? { checkoutEveryNms: options.checkoutEveryNms }
       : {}),
+    ...(options.canvas !== undefined ? { canvas: options.canvas } : {}),
   });
   client.addCaptureProvider(provider);
   // Register the encoder into the SHARED map the client reads at assembly time (RP5a) — so the next report's

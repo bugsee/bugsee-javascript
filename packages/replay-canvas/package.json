@@ -18,10 +18,15 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/core": "workspace:*",
     "@bugsee/replay": "workspace:*"
+  },
+  "devDependencies": {
+    "@bugsee/core": "workspace:*"
   }
 }

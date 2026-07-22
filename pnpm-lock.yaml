@@ -148,6 +148,9 @@ importers:
       '@bugsee/replay':
         specifier: workspace:*
         version: link:../replay
+      '@bugsee/replay-canvas':
+        specifier: workspace:*
+        version: link:../replay-canvas
     devDependencies:
       '@bugsee/util':
         specifier: workspace:*
@@ -798,12 +801,13 @@ importers:
 
   packages/replay-canvas:
     dependencies:
-      '@bugsee/core':
-        specifier: workspace:*
-        version: link:../core
       '@bugsee/replay':
         specifier: workspace:*
         version: link:../replay
+    devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/rrweb:
     dependencies:

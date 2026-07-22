@@ -1,8 +1,21 @@
 # `@bugsee/replay-canvas` — canvas replay add-on (design)
 
-**Status:** Draft v1 (2026-07-16). Design only — not built. The last remaining feature stub in the
-monorepo (see `docs/PROGRESS.md` §1 "Scaffold only"). Builds ON the shipped `@bugsee/replay`
-(RP0–RP6, `docs/design/replay.md`) — read that first; this doc only covers the canvas delta.
+**Status:** Draft v1 (2026-07-16); **implementation started 2026-07-22** (see the build correction below).
+Builds ON the shipped `@bugsee/replay` (RP0–RP6, `docs/design/replay.md`) — read that first; this doc
+covers the canvas delta.
+
+> **Build correction (2026-07-22) — supersedes the `getCanvasManager` / new-`@bugsee/rrweb`-bundle mentions
+> below.** The repo pins **rrweb 2.1.0**, which records canvas by OPTIONS alone: `recordCanvas: true` +
+> `sampling.canvas: 'all' | number` (fps) + `dataURLOptions: { type, quality }`, with the canvas recorder
+> built into `record` — there is **no `getCanvasManager`** (that is a newer-rrweb API). Verified the fork's
+> `@bugsee/rrweb-record` bundle **already ships the canvas recorder** (`recordCanvas` / `initCanvasMutation-
+> Observer` / `canvasMutation` / `toDataURL` all present), so **O1 dissolves: no cross-repo fork work and no
+> new `@bugsee/rrweb` bundle/entry.** Therefore `CanvasRecordConfig = { recordCanvas: true; sampling: {
+> canvas: 'all' | number }; dataURLOptions: { type: string; quality: number } }` (no manager field), and
+> `@bugsee/replay-canvas` is a tiny **pure options-builder** (+ option defs + wiring) needing no rrweb import.
+> To keep the dependency graph cycle-free, the lazy `import('@bugsee/replay-canvas')` is driven from
+> `@bugsee/browser` (not from `registerReplay`) — so `@bugsee/replay` never imports `@bugsee/replay-canvas`.
+> The seam, lazy-loading, privacy model, and slices RPC1–RPC6 are otherwise unchanged; RPC0 is types-only.
 
 ---
 
@@ -63,9 +76,8 @@ default) nothing changes and no canvas code is referenced:
 ```ts
 export interface CanvasRecordConfig {
   recordCanvas: true;
-  sampling: { canvas: number };                 // fps
+  sampling: { canvas: 'all' | number };         // fps (or 'all' = every frame)
   dataURLOptions: { type: string; quality: number };
-  getCanvasManager: GetCanvasManager;           // rrweb canvas manager factory (from @bugsee/rrweb)
 }
 export interface ReplayCaptureProviderOptions {
   record: ReplayRecordFn;
@@ -77,14 +89,14 @@ export interface ReplayCaptureProviderOptions {
 ```
 
 `recordOptions` (from `@bugsee/rrweb`, = rrweb `BaseRecordOptions`) already types `recordCanvas` /
-`sampling.canvas` / `dataURLOptions` / `getCanvasManager`, so the seam is type-clean with no new rrweb
-type work. This is the ONLY edit to `@bugsee/replay`, and it is behavior-preserving when `canvas` is
-undefined (proven by an existing-recorder regression test).
+`sampling.canvas` (`'all' | number`) / `dataURLOptions`, so the seam is type-clean with no new rrweb type
+work. This is the ONLY edit to `@bugsee/replay`, and it is behavior-preserving when `canvas` is undefined
+(proven by an existing-recorder regression test).
 
 ### 1.2 What `@bugsee/replay-canvas` provides
 
-A single factory that resolves user options → a `CanvasRecordConfig`, pulling the runtime canvas
-manager from `@bugsee/rrweb`:
+A single factory that resolves user options → a `CanvasRecordConfig` (pure data — rrweb 2.1.0 needs no
+canvas manager; the canvas recorder already ships in the fork's `record` bundle):
 
 ```ts
 // @bugsee/replay-canvas
@@ -177,8 +189,9 @@ Canvas is the expensive part of replay; every default is chosen to be cheap-by-d
 
 ## 5. Packaging & lazy loading
 
-- `packages/replay-canvas/package.json` deps: `@bugsee/core` (types), `@bugsee/replay` (the seam types),
-  `@bugsee/rrweb` (canvas manager). Dual-module (tsup) per `docs/design/packaging-dual-module.md`;
+- `packages/replay-canvas/package.json` deps: `@bugsee/replay` only (the seam type `CanvasRecordConfig`);
+  `@bugsee/core` is a dev-only test type; NO `@bugsee/rrweb`/DOM runtime dep (a pure options-builder).
+  Dual-module (tsup) per `docs/design/packaging-dual-module.md`;
   `sideEffects: false`; dev entry `./src/index.ts`, publishConfig → `./dist`.
 - **Lazy the whole way down:** `@bugsee/browser` lazy-imports `@bugsee/replay` only when `replay` is set
   (existing RP5); `@bugsee/replay`'s `registerReplay` lazy-imports `@bugsee/replay-canvas` only when the

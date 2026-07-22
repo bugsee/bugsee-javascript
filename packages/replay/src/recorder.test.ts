@@ -112,4 +112,41 @@ describe('createReplayCaptureProvider', () => {
     provider.stop();
     expect(rec.stop).toHaveBeenCalledTimes(1);
   });
+
+  it('spreads a canvas config into the rrweb record options when provided (opt-in canvas)', () => {
+    const { record, getOptions } = fakeRecord();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+      canvas: {
+        recordCanvas: true,
+        sampling: { canvas: 2 },
+        dataURLOptions: { type: 'image/webp', quality: 0.6 },
+      },
+    });
+    provider.init(fakeInit().init);
+    provider.start(options());
+
+    const o = getOptions();
+    expect(o?.recordCanvas).toBe(true);
+    expect(o?.sampling?.canvas).toBe(2);
+    expect(o?.dataURLOptions).toEqual({ type: 'image/webp', quality: 0.6 });
+    expect(o?.maskAllText).toBe(true); // masking still applied alongside canvas
+    expect(o?.recordCrossOriginIframes).toBe(false); // canvas does not disturb the other options
+  });
+
+  it('records NO canvas by default — recordCanvas/sampling/dataURLOptions stay absent (DOM-only)', () => {
+    const { record, getOptions } = fakeRecord();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(fakeInit().init);
+    provider.start(options());
+
+    const o = getOptions();
+    expect(o?.recordCanvas).toBeUndefined();
+    expect(o?.sampling).toBeUndefined();
+    expect(o?.dataURLOptions).toBeUndefined();
+  });
 });

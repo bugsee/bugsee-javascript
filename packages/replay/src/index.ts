@@ -9,6 +9,7 @@ export {
   resolveReplayMaskingOptions,
 } from './masking';
 export {
+  type CanvasRecordConfig,
   createReplayCaptureProvider,
   type ReplayCaptureProviderOptions,
   type ReplayRecorder,

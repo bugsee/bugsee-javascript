@@ -13,6 +13,20 @@ import type { ResolvedReplayMasking } from './masking';
 /** The rrweb `record` function shape (from `@bugsee/rrweb`). */
 export type ReplayRecordFn = (options: recordOptions<eventWithTime>) => listenerHandler | undefined;
 
+/**
+ * Opt-in canvas-recording options, produced by `@bugsee/replay-canvas` and spread into the rrweb
+ * `record()` call. rrweb 2.1.0 records canvas by options alone (`recordCanvas` + `sampling.canvas` fps +
+ * `dataURLOptions`) — the canvas recorder is already inside the fork's `record` bundle, so there is no
+ * manager to inject. `undefined` ⇒ DOM-only replay (unchanged).
+ */
+export interface CanvasRecordConfig {
+  recordCanvas: true;
+  /** Canvas sampling: a frames-per-second number, or `'all'` for every frame. */
+  sampling: { canvas: 'all' | number };
+  /** Snapshot image encoding, e.g. `{ type: 'image/webp', quality: 0.6 }`. */
+  dataURLOptions: { type: string; quality: number };
+}
+
 export interface ReplayCaptureProviderOptions {
   /** The rrweb record function (`@bugsee/rrweb` `record`). */
   record: ReplayRecordFn;
@@ -20,6 +34,8 @@ export interface ReplayCaptureProviderOptions {
   masking: ResolvedReplayMasking;
   /** Full-snapshot cadence (ms) — bounds the retained ring window to one interval. Default 60000. */
   checkoutEveryNms?: number;
+  /** Opt-in canvas recording (from `@bugsee/replay-canvas`); `undefined` ⇒ DOM-only (unchanged). */
+  canvas?: CanvasRecordConfig;
 }
 
 /** A capture provider that also exposes blackout controls (wired to the client `startBlackout`). */
@@ -35,6 +51,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
   readonly #record: ReplayRecordFn;
   readonly #masking: ResolvedReplayMasking;
   readonly #checkoutEveryNms: number;
+  readonly #canvas: CanvasRecordConfig | undefined;
   #stop: listenerHandler | undefined;
   #blackedOut = false;
 
@@ -43,11 +60,14 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     this.#record = options.record;
     this.#masking = options.masking;
     this.#checkoutEveryNms = options.checkoutEveryNms ?? 60_000;
+    this.#canvas = options.canvas;
   }
 
   protected onStart(): void {
     this.#stop = this.#record({
       ...this.#masking,
+      // Opt-in canvas options (recordCanvas / sampling.canvas / dataURLOptions); nothing when DOM-only.
+      ...this.#canvas,
       checkoutEveryNms: this.#checkoutEveryNms,
       // Cross-origin iframes are never recorded (privacy); same-origin iframes are blocked via the masking
       // blockSelector (fail-closed, RP1).

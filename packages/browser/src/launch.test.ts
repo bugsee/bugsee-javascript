@@ -49,6 +49,15 @@ import { type BugseeLaunchOptions, launch, launchCore } from './launch';
 // Mock the lazy-loaded @bugsee/replay so replay tests don't spin up real rrweb; assert it's wired only when on.
 const { registerReplay } = vi.hoisted(() => ({ registerReplay: vi.fn() }));
 vi.mock('@bugsee/replay', () => ({ registerReplay }));
+// Mock the lazy-loaded @bugsee/replay-canvas resolver (opt-in canvas add-on); assert it loads only when on.
+const { createCanvasRecordConfig } = vi.hoisted(() => ({
+  createCanvasRecordConfig: vi.fn(() => ({
+    recordCanvas: true,
+    sampling: { canvas: 2 },
+    dataURLOptions: { type: 'image/webp', quality: 0.6 },
+  })),
+}));
+vi.mock('@bugsee/replay-canvas', () => ({ createCanvasRecordConfig }));
 
 // A test-only contributed service token (an "extension").
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
@@ -128,6 +137,7 @@ afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
   registerReplay.mockClear(); // vi.fn call history isn't cleared by restoreAllMocks
+  createCanvasRecordConfig.mockClear();
   vi.unstubAllGlobals();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
@@ -1100,5 +1110,38 @@ describe('launch — session replay (lazy)', () => {
     launchTracked('tok', baseOptions({ replay: true, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
+  it('wires canvas when replay.canvas is set — resolves the config + threads it into registerReplay', async () => {
+    launchTracked('tok', baseOptions({ replay: { canvas: { fps: 4 } } }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).toHaveBeenCalledWith({ fps: 4 });
+    const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
+    expect(opts.canvas).toEqual({
+      recordCanvas: true,
+      sampling: { canvas: 2 },
+      dataURLOptions: { type: 'image/webp', quality: 0.6 },
+    });
+  });
+
+  it('enables canvas with default options when replay.canvas is `true`', async () => {
+    launchTracked('tok', baseOptions({ replay: { canvas: true } }));
+    await vi.waitFor(() => expect(createCanvasRecordConfig).toHaveBeenCalledWith({}));
+  });
+
+  it('does NOT load @bugsee/replay-canvas when canvas is off (replay without canvas)', async () => {
+    launchTracked('tok', baseOptions({ replay: true }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
+    expect(opts.canvas).toBeUndefined();
+  });
+
+  it('does NOT load @bugsee/replay-canvas when replay.canvas is explicitly false', async () => {
+    launchTracked('tok', baseOptions({ replay: { canvas: false } }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled(); // explicit opt-out must not load the add-on
+    const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
+    expect(opts.canvas).toBeUndefined();
   });
 });

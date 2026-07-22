@@ -29,7 +29,8 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/integration-shims": "workspace:*",
     "@bugsee/protocol": "workspace:*",
-    "@bugsee/replay": "workspace:*"
+    "@bugsee/replay": "workspace:*",
+    "@bugsee/replay-canvas": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",

@@ -67,4 +67,35 @@ describe('registerReplay', () => {
     expect(() => registerReplay(client, {})).not.toThrow();
     expect(client.providers).toHaveLength(1);
   });
+
+  it('threads a canvas config through to the rrweb record options (opt-in canvas)', () => {
+    const rec = fakeRecord();
+    const recorder = registerReplay(
+      fakeClient(),
+      {},
+      {
+        record: rec.record,
+        canvas: {
+          recordCanvas: true,
+          sampling: { canvas: 3 },
+          dataURLOptions: { type: 'image/webp', quality: 0.5 },
+        },
+      },
+    );
+    recorder.init(fakeInit());
+    recorder.start({} as never);
+
+    const o = rec.getOptions();
+    expect(o?.recordCanvas).toBe(true);
+    expect(o?.sampling?.canvas).toBe(3);
+    expect(o?.dataURLOptions).toEqual({ type: 'image/webp', quality: 0.5 });
+  });
+
+  it('omits canvas by default (no canvas option → DOM-only record)', () => {
+    const rec = fakeRecord();
+    const recorder = registerReplay(fakeClient(), {}, { record: rec.record });
+    recorder.init(fakeInit());
+    recorder.start({} as never);
+    expect(rec.getOptions()?.recordCanvas).toBeUndefined();
+  });
 });
