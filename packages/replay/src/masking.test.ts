@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MEDIA_SELECTOR, resolveReplayMaskingOptions } from './masking';
+import { CANVAS_SELECTOR, MEDIA_SELECTOR, resolveReplayMaskingOptions } from './masking';
 
 describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
   it('defaults to masking ALL text, ALL inputs, and blocking ALL media', () => {
@@ -43,6 +43,19 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).not.toContain(MEDIA_SELECTOR);
     expect(m.blockSelector).toContain('.bugsee-block');
     expect(m.blockSelector).toContain('[data-bugsee-block]');
+  });
+
+  it('blocks ALL canvas when blockAllCanvas is set (strict opt-in-per-canvas via .bugsee-show)', () => {
+    const m = resolveReplayMaskingOptions({ blockAllCanvas: true });
+    expect(m.blockSelector).toContain(CANVAS_SELECTOR); // 'canvas' added to the block set
+    expect(m.unblockSelector).toContain('.bugsee-show'); // opted-in canvases un-block via the existing selector
+  });
+
+  it('does NOT block canvas by default (blockAllCanvas off → the opted-in add-on records canvases)', () => {
+    expect(resolveReplayMaskingOptions().blockSelector).not.toContain('canvas');
+    expect(resolveReplayMaskingOptions({ blockAllCanvas: false }).blockSelector).not.toContain(
+      'canvas',
+    );
   });
 
   it('excludes iframes (blocked) — part of the media set', () => {

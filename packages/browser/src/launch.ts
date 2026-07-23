@@ -98,6 +98,9 @@ export interface ReplayLaunchOptions {
   maskAllInputs?: boolean;
   /** Block all media/iframes. Default true. */
   blockAllMedia?: boolean;
+  /** Block all `<canvas>` — record only canvases opted in via `.bugsee-show`/`[data-bugsee-show]`. Default
+   *  false (the opt-in `canvas` add-on is the primary gate; this is the extra-strict per-canvas mode). */
+  blockAllCanvas?: boolean;
   /** Additional CSS selector whose text to mask. */
   maskTextSelector?: string;
   /** Additional CSS selector to block. */

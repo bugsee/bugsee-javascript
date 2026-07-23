@@ -17,6 +17,10 @@ import type { recordOptions } from '@bugsee/rrweb';
  *  `blockAllMedia`. Includes `iframe` — iframes are never recorded (§27#10). */
 export const MEDIA_SELECTOR = 'img,svg,image,video,audio,object,picture,embed,map,source,iframe';
 
+/** All `<canvas>` elements — blocked (placeholder, contents not recorded) when `blockAllCanvas`, so canvas
+ *  recording then captures ONLY canvases explicitly opted in via `.bugsee-show`/`[data-bugsee-show]`. */
+export const CANVAS_SELECTOR = 'canvas';
+
 /** Bugsee-namespaced opt-in selectors, additive to rrweb's `rr-*` class defaults. */
 const BUGSEE_MASK = '.bugsee-mask,[data-bugsee-mask]';
 const BUGSEE_BLOCK = '.bugsee-block,[data-bugsee-block]';
@@ -56,6 +60,9 @@ export interface ReplayMaskingOptions {
   maskAllInputs?: boolean;
   /** Block all media/iframes (placeholders). Default `true`. */
   blockAllMedia?: boolean;
+  /** Block all `<canvas>` — record ONLY canvases opted in via `.bugsee-show`. Default `false` (the canvas
+   *  add-on being opt-in is the primary gate; this is the extra-strict opt-in-per-canvas mode). */
+  blockAllCanvas?: boolean;
   /** Additional CSS selector whose text to mask. */
   maskTextSelector?: string;
   /** Additional CSS selector whose text/inputs to UN-mask (opt back in), additive to `.bugsee-unmask`. */
@@ -93,6 +100,7 @@ export function resolveReplayMaskingOptions(
   const maskAllText = options.maskAllText ?? true;
   const maskAllInputs = options.maskAllInputs ?? true;
   const blockAllMedia = options.blockAllMedia ?? true;
+  const blockAllCanvas = options.blockAllCanvas ?? false;
 
   return {
     maskAllInputs,
@@ -112,6 +120,7 @@ export function resolveReplayMaskingOptions(
     blockSelector: joinSelectors(
       BUGSEE_BLOCK,
       blockAllMedia ? MEDIA_SELECTOR : undefined,
+      blockAllCanvas ? CANVAS_SELECTOR : undefined,
       options.blockSelector,
     ),
     ignoreSelector: joinSelectors(BUGSEE_IGNORE, options.ignoreSelector),

@@ -145,10 +145,13 @@ model is fail-closed (`maskAllText`/`maskAllInputs`/`blockAllMedia` on by defaul
   are captured (default). Opting in is an explicit "canvas content is safe to record" decision.
 - **Per-canvas block honored:** a `<canvas>` inside any `.bugsee-block` / `.bugsee-ignore` / masked
   subtree is blocked by rrweb (placeholder, no pixels) — reuses the existing block selectors, no new API.
-- **`blockAllCanvas` escape hatch (proposed default TBD — O2):** a fail-closed switch that blocks every
-  canvas except those explicitly opted in via `.bugsee-show` / `[data-bugsee-show]` (mirrors
-  `blockAllMedia`). Default OFF (record canvases when the add-on is enabled) vs ON (paranoid) is the one
-  genuine privacy-policy decision — see §8.
+- **`blockAllCanvas` (BUILT 2026-07-23, default OFF):** a switch that blocks every `<canvas>` except those
+  opted in via `.bugsee-show` / `[data-bugsee-show]`. Implemented as a **top-level `replay.blockAllCanvas`
+  masking option** — a sibling of `blockAllMedia` in `masking.ts` (adds `'canvas'` to the composed
+  `blockSelector`; the existing `.bugsee-show` `unblockSelector` opts individual canvases back in) — NOT
+  nested under `canvas`, because block-selector composition is masking's job and it then flows through the
+  normal masking path with no extra wiring. Composes with canvas recording: `blockAllCanvas: true` +
+  `canvas: true` ⇒ record ONLY the opted-in canvases.
 - **Blackout still applies:** `startBlackout()` already pauses ALL visual capture including canvas
   (it gates `emit`), no extra work.
 - **Cross-origin canvases** that are tainted throw on `toDataURL`; rrweb swallows and skips them — a
@@ -233,11 +236,18 @@ Either resolves to a canonical `com.bugsee.option.replay.canvas*` identifier (de
 - **O1 — rrweb fork canvas build (cross-repo).** The fork (`github.com/bugsee/rrweb`, `bugsee-dist`) must
   emit a canvas-manager entry we expose as `@bugsee/rrweb/canvas`. Confirm we own/land that fork build now,
   or gate replay-canvas behind it (like replay's fork dependency was staged).
-- **O2 — `blockAllCanvas` default.** OFF (record canvases once the add-on is on; block sensitive ones via
-  selectors) — **proposed**, more useful — vs ON (block all, opt-in each via `.bugsee-show`) — stricter,
-  matches `blockAllMedia` literally.
-- **O3 — WebGL in v1?** Both 2D+WebGL now (**proposed**) vs 2D-only v1 + WebGL v1.1 (if the fork's WebGL
-  path is heavy/unstable).
+- **O2 — RESOLVED / BUILT (2026-07-23), default OFF.** `replay.blockAllCanvas` — a top-level masking
+  sibling of `blockAllMedia` (see §2). Blocks all `<canvas>` except `.bugsee-show`; composes with canvas
+  recording to record only opted-in canvases.
+- **O3 — WebGL split: NOT cleanly buildable in-SDK (2026-07-23 finding).** rrweb 2.1.0's canvas manager is
+  UNIFIED — `recordCanvas: true` records 2D **and** WebGL through one `initCanvasMutationObserver`, and the
+  fork even force-sets `preserveDrawingBuffer=true` on WebGL contexts so snapshots work — so **WebGL is
+  already captured** by the shipped snapshot config, content-agnostically. rrweb 2.1.0 exposes **no** option
+  to toggle WebGL independently; a literal 2D-vs-WebGL split would require modifying the fork's canvas-manager
+  source + rebuilding the `@bugsee/rrweb-record` bundle (cross-repo). Options: (a) leave as-is (WebGL works
+  via snapshots); (b) expose the capture-strategy lever rrweb DOES have — `sampling.canvas` as a number (fps
+  snapshots, current) vs `'all'` (record every draw call, higher fidelity, heavier); (c) do the fork work for
+  a real WebGL toggle. Awaiting a decision.
 - **O4 — option surface.** `replay:{canvas}` (**proposed**) vs top-level `replayCanvas`.
 - **O5 — Electron-renderer parity.** Renderers already run `@bugsee/browser` replay over the streaming
   store; confirm replay-canvas is simply enabled there too (expected free), no main-process work.

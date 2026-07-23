@@ -3,6 +3,7 @@
 // See docs/design/replay.md. Built so far: masking config (RP1) + the replay.bin encoder (RP3).
 export { encodeReplay } from './encoder';
 export {
+  CANVAS_SELECTOR,
   MEDIA_SELECTOR,
   type ReplayMaskingOptions,
   type ResolvedReplayMasking,

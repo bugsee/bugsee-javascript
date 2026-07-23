@@ -1144,4 +1144,11 @@ describe('launch — session replay (lazy)', () => {
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
     expect(opts.canvas).toBeUndefined();
   });
+
+  it('forwards blockAllCanvas through to the replay masking options', async () => {
+    launchTracked('tok', baseOptions({ replay: { blockAllCanvas: true } }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    const opts = registerReplay.mock.calls[0]?.[2] as { blockAllCanvas?: boolean };
+    expect(opts.blockAllCanvas).toBe(true); // not stripped by the canvas destructure; flows to masking
+  });
 });
