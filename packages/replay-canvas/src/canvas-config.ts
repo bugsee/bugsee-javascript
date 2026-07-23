@@ -7,8 +7,9 @@ import type { CanvasRecordConfig } from '@bugsee/replay';
 
 /** Friendly, cheap-by-default canvas-recording options. */
 export interface CanvasReplayOptions {
-  /** Snapshot rate in frames per second. Default 2; clamped to [1, 60] and rounded to a whole frame. */
-  fps?: number;
+  /** Canvas capture rate: a number = snapshot frames-per-second (default 2; clamped to [1, 60], rounded to a
+   *  whole frame); `'all'` = record EVERY canvas draw call (full fidelity for animation/WebGL, heavier). */
+  fps?: number | 'all';
   /** Snapshot image quality 0..1. Default 0.6; clamped to [0, 1]. */
   quality?: number;
   /** Snapshot image encoding. Default 'image/webp' (smaller); 'image/jpeg' for broader support. */
@@ -40,6 +41,12 @@ function resolveImageType(imageType: string | undefined): 'image/webp' | 'image/
   return imageType === 'image/jpeg' ? 'image/jpeg' : DEFAULT_IMAGE_TYPE;
 }
 
+/** Resolve rrweb's `sampling.canvas`: `'all'` records every draw call (full fidelity); otherwise the
+ *  snapshot fps (clamped). */
+function resolveSamplingCanvas(fps: number | 'all' | undefined): 'all' | number {
+  return fps === 'all' ? 'all' : resolveFps(fps);
+}
+
 /**
  * Resolve friendly {@link CanvasReplayOptions} into the {@link CanvasRecordConfig} seam consumed by
  * `@bugsee/replay` (spread into the rrweb `record()` call). Pure; cheap defaults; every value clamped.
@@ -47,7 +54,7 @@ function resolveImageType(imageType: string | undefined): 'image/webp' | 'image/
 export function createCanvasRecordConfig(options: CanvasReplayOptions = {}): CanvasRecordConfig {
   return {
     recordCanvas: true,
-    sampling: { canvas: resolveFps(options.fps) },
+    sampling: { canvas: resolveSamplingCanvas(options.fps) },
     dataURLOptions: {
       type: resolveImageType(options.imageType),
       quality: resolveQuality(options.quality),

@@ -50,4 +50,16 @@ describe('createCanvasRecordConfig', () => {
   it('always sets recordCanvas: true', () => {
     expect(createCanvasRecordConfig({ fps: 30 }).recordCanvas).toBe(true);
   });
+
+  it("records every draw call when fps is 'all' (full-fidelity mode, bypasses the snapshot fps)", () => {
+    const c = createCanvasRecordConfig({ fps: 'all' });
+    expect(c.sampling.canvas).toBe('all'); // 'all' → rrweb records every canvas mutation
+    expect(c.recordCanvas).toBe(true);
+    expect(c.dataURLOptions).toEqual({ type: 'image/webp', quality: 0.6 }); // still snapshots full checkouts
+  });
+
+  it('stays in numeric snapshot mode by default (a number, never the string "all")', () => {
+    expect(createCanvasRecordConfig().sampling.canvas).toBe(2);
+    expect(createCanvasRecordConfig({ fps: 5 }).sampling.canvas).toBe(5);
+  });
 });

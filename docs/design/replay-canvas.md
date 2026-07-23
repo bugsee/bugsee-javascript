@@ -239,15 +239,14 @@ Either resolves to a canonical `com.bugsee.option.replay.canvas*` identifier (de
 - **O2 — RESOLVED / BUILT (2026-07-23), default OFF.** `replay.blockAllCanvas` — a top-level masking
   sibling of `blockAllMedia` (see §2). Blocks all `<canvas>` except `.bugsee-show`; composes with canvas
   recording to record only opted-in canvases.
-- **O3 — WebGL split: NOT cleanly buildable in-SDK (2026-07-23 finding).** rrweb 2.1.0's canvas manager is
-  UNIFIED — `recordCanvas: true` records 2D **and** WebGL through one `initCanvasMutationObserver`, and the
-  fork even force-sets `preserveDrawingBuffer=true` on WebGL contexts so snapshots work — so **WebGL is
-  already captured** by the shipped snapshot config, content-agnostically. rrweb 2.1.0 exposes **no** option
-  to toggle WebGL independently; a literal 2D-vs-WebGL split would require modifying the fork's canvas-manager
-  source + rebuilding the `@bugsee/rrweb-record` bundle (cross-repo). Options: (a) leave as-is (WebGL works
-  via snapshots); (b) expose the capture-strategy lever rrweb DOES have — `sampling.canvas` as a number (fps
-  snapshots, current) vs `'all'` (record every draw call, higher fidelity, heavier); (c) do the fork work for
-  a real WebGL toggle. Awaiting a decision.
+- **O3 — RESOLVED / BUILT (2026-07-23) as a capture-fidelity knob.** rrweb 2.1.0's canvas manager is UNIFIED
+  (`recordCanvas: true` records 2D **and** WebGL through one `initCanvasMutationObserver`; the fork force-sets
+  `preserveDrawingBuffer=true` on WebGL contexts so snapshots work) — so **WebGL is already captured**, and
+  there is NO in-SDK 2D-vs-WebGL toggle. Instead, `CanvasReplayOptions.fps` now accepts **`number | 'all'`**:
+  a number = snapshot fps (cheap, default 2, covers 2D+WebGL); `'all'` = record EVERY canvas draw call (full
+  fidelity for animation/WebGL, heavier). Resolver-only change (the recorder seam already typed `'all' |
+  number`). A literal WebGL-exclusion toggle would still require fork work (not built; low value since WebGL
+  snapshots are already cheap).
 - **O4 — option surface.** `replay:{canvas}` (**proposed**) vs top-level `replayCanvas`.
 - **O5 — Electron-renderer parity.** Renderers already run `@bugsee/browser` replay over the streaming
   store; confirm replay-canvas is simply enabled there too (expected free), no main-process work.

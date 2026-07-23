@@ -31,6 +31,21 @@ describe('@bugsee/replay-canvas ⇄ @bugsee/replay integration', () => {
     expect(recordArgs?.maskAllText).toBe(true);
   });
 
+  it("threads full-fidelity ('all') canvas capture through registerReplay to rrweb record()", () => {
+    let recordArgs: RecordOpts | undefined;
+    const record: ReplayRecordFn = vi.fn((o) => {
+      recordArgs = o;
+      return vi.fn();
+    });
+    const canvas = createCanvasRecordConfig({ fps: 'all' });
+    const recorder = registerReplay({ addCaptureProvider: () => {} }, {}, { record, canvas });
+    recorder.init(fakeInit());
+    recorder.start({} as never);
+
+    expect(recordArgs?.recordCanvas).toBe(true);
+    expect(recordArgs?.sampling?.canvas).toBe('all'); // rrweb's seam accepts 'all' | number
+  });
+
   it('produces a DOM-only session (no canvas options) when the canvas config is absent', () => {
     let recordArgs: RecordOpts | undefined;
     const record: ReplayRecordFn = vi.fn((o) => {

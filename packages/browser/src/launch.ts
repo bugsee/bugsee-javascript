@@ -114,7 +114,9 @@ export interface ReplayLaunchOptions {
    * `@bugsee/replay-canvas` is lazy-`import()`ed only then, so a no-canvas replay never loads it. Off by
    * default. A structural subset of `@bugsee/replay-canvas`'s `CanvasReplayOptions` (no static dep here).
    */
-  canvas?: boolean | { fps?: number; quality?: number; imageType?: 'image/webp' | 'image/jpeg' };
+  canvas?:
+    | boolean
+    | { fps?: number | 'all'; quality?: number; imageType?: 'image/webp' | 'image/jpeg' };
 }
 
 export interface BugseeLaunchOptions {
