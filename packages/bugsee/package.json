@@ -1,5 +1,5 @@
 {
-  "name": "bugsee",
+  "name": "@bugsee/bugsee",
   "version": "0.0.0",
   "private": true,
   "license": "UNLICENSED",
@@ -92,6 +92,7 @@
     "@bugsee/capture": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
-    "@bugsee/performance": "workspace:*"
+    "@bugsee/performance": "workspace:*",
+    "@bugsee/protocol": "workspace:*"
   }
 }

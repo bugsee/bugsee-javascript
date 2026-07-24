@@ -5,12 +5,13 @@
 // Browser-only (composes `bugsee` browser + @bugsee/vue) → behind the `@bugsee/nuxt/client` subpath. A pure
 // function over a structural `NuxtAppLike` so it is fully unit-testable; the runtime file wraps it with
 // `defineNuxtPlugin` (from `nuxt/app`).
-import { installBugseeErrorHandler, type VueAppLike } from '@bugsee/vue';
+
 import {
   type Bugsee,
   type BugseeLaunchOptionsWithPerformance,
   launch as browserLaunch,
-} from 'bugsee';
+} from '@bugsee/bugsee';
+import { installBugseeErrorHandler, type VueAppLike } from '@bugsee/vue';
 
 /** The Nuxt app subset we use — its `vueApp` (a Vue app) (structural; no `nuxt`/`vue` dep). */
 export interface NuxtAppLike {

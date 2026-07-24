@@ -5,9 +5,9 @@
 // `instrumentation.server.ts`); the node incoming-server auto-instrumentation opens a per-request context +
 // `http.server` txn (which the `.` `handleError`/`handle` hooks then stitch reports + the trace `<meta>` to).
 // Bugsee uses a `node:http` emit-patch (not import-in-the-middle), so a normal top-level import suffices.
-import { type Bugsee, type BugseeNodeLaunchOptions, launch } from 'bugsee/node';
+import { type Bugsee, type BugseeNodeLaunchOptions, launch } from '@bugsee/bugsee/node';
 
-export type { Bugsee } from 'bugsee/node';
+export type { Bugsee } from '@bugsee/bugsee/node';
 
 /** Options for the SvelteKit server (Node) composition — the batteries-included node umbrella options. */
 export interface SvelteKitServerOptions extends BugseeNodeLaunchOptions {}

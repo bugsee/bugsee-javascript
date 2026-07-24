@@ -12,7 +12,7 @@
 // an OPTIONAL peer (install-lean, matching @bugsee/opentelemetry) — lazy-imported and skipped if absent.
 //
 // SERVER-only (node OTel SDK) → reached only from `./server`; never the portable `.` graph.
-import type { BugseeSpanProcessor } from 'bugsee/node';
+import type { BugseeSpanProcessor } from '@bugsee/bugsee/node';
 
 /** The minimal OTel surface we use — resolved from the optional peers by {@link defaultLoad}, or injected. */
 export interface OtelTracerModules {

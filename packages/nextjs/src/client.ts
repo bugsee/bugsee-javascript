@@ -8,15 +8,16 @@
 // It captures the SESSION (video/console/network/vitals) that the server-side onRequestError bridge (N3)
 // stitches to a failing request — together they deliver the cross-runtime "full session that led to this
 // failure" artifact.
-import { getCarrierClient } from '@bugsee/core';
-import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
 
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
+import { getCarrierClient } from '@bugsee/core';
+
+export type { Bugsee } from '@bugsee/bugsee';
 // Re-export the @bugsee/react surface so a Next app gets the React error boundary + Profiler + router
 // helpers from one place (`@bugsee/nextjs/client`) — these are CLIENT components the user mounts in their
 // tree (registerClient does not auto-wire them). `react` is an OPTIONAL peer (server-only users don't
 // need it).
 export * from '@bugsee/react';
-export type { Bugsee } from 'bugsee';
 
 /** Options for the Next.js client composition — the batteries-included browser umbrella options. */
 export interface NextjsClientOptions extends BugseeLaunchOptionsWithPerformance {}

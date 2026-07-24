@@ -1,12 +1,12 @@
+import { createTraceparentDecorator, type NetworkCapture } from '@bugsee/capture';
 import {
-  type Bugsee,
-  createBrowserInteractionSource,
-  createBrowserNavigationSource,
-  type LaunchInternals,
-  readMetaTraceContinuation,
-} from '@bugsee/browser';
-import { createTraceparentDecorator } from '@bugsee/capture';
-import { ClockToken, resolveLaunchOptions, SchedulerToken } from '@bugsee/core';
+  type BugseeApi,
+  type BugseeClient,
+  ClockToken,
+  type HttpTransport,
+  resolveLaunchOptions,
+  SchedulerToken,
+} from '@bugsee/core';
 import {
   type BugseeSpanProcessor,
   createBugseeSpanProcessor,
@@ -20,6 +20,7 @@ import {
   type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
+import type { EnvironmentEnvelope } from '@bugsee/protocol';
 
 /**
  * Per-runtime root-transaction policy. The browser collects a pageload transaction (+ web-vitals); Node
@@ -31,6 +32,32 @@ export interface UmbrellaPlatform {
   pageload: boolean;
   /** Process start time (ms) — when set, record an `app.start` startup transaction up to launch. */
   startupAtMs?: number;
+}
+
+/**
+ * The internal wiring `launchCore` hands back (the browser and node launchCore produce a structurally
+ * identical value). Typed against runtime-neutral packages only, so this shared module never imports a
+ * platform package — that is what keeps `@bugsee/browser` out of the node umbrella entry's type graph.
+ */
+interface UmbrellaInternals {
+  baseUrl: string;
+  api: BugseeApi;
+  transport: HttpTransport;
+  getEnvironment: () => EnvironmentEnvelope;
+  network: NetworkCapture;
+  appVersion: string | undefined;
+  appBuild: string | undefined;
+  onError: ((error: unknown) => void) | undefined;
+}
+
+// The browser-only capture-source FACTORIES the browser umbrella entry injects (so this shared module
+// never imports @bugsee/browser). Factories, not instances, so wire calls them ONLY when the option gate
+// passes — behaviour-identical to creating them inline. Types derived from what wirePerformance accepts.
+type WirePerformanceOptions = Parameters<typeof wirePerformance>[0];
+export interface UmbrellaBrowserSources {
+  createNavigationSource?: () => NonNullable<WirePerformanceOptions['navigationSource']>;
+  createInteractionSource?: () => NonNullable<WirePerformanceOptions['interactionSource']>;
+  readMetaTraceContinuation?: () => WirePerformanceOptions['pageloadContinuation'];
 }
 
 // The runtime-agnostic umbrella wiring: given a launched client + its LaunchInternals (from EITHER the
@@ -113,11 +140,12 @@ function defaultPageName(): string {
 /** Wire the on-by-default extensions onto a launched client. Returns the same client (stop() now also
  *  tears the extensions down). `internals` must be present (the caller skips this on a repeat launch). */
 export function wireUmbrella(
-  client: Bugsee,
-  internals: LaunchInternals,
+  client: BugseeClient,
+  internals: UmbrellaInternals,
   options: UmbrellaExtensionOptions,
   platform: UmbrellaPlatform,
-): Bugsee {
+  browserSources: UmbrellaBrowserSources = {},
+): BugseeClient {
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
@@ -157,7 +185,7 @@ export function wireUmbrella(
   // absent; wirePerformance subscribes to it (which activates it) and tears it down on stop.
   const navigationSource =
     platform.pageload && (options.traceNavigations ?? true)
-      ? createBrowserNavigationSource()
+      ? browserSources.createNavigationSource?.()
       : undefined;
 
   // Interaction transactions (F4) — browser only (`platform.pageload`), opt-out via `traceInteractions:
@@ -165,12 +193,14 @@ export function wireUmbrella(
   // (activating it) and tears it down on stop.
   const interactionSource =
     platform.pageload && (options.traceInteractions ?? true)
-      ? createBrowserInteractionSource()
+      ? browserSources.createInteractionSource?.()
       : undefined;
 
   // Pageload trace continuation (D4): on the browser, continue a server-injected `<meta name="traceparent">`
   // so the SSR request and the client pageload are one trace (a fresh root if absent/invalid).
-  const pageloadContinuation = platform.pageload ? readMetaTraceContinuation() : undefined;
+  const pageloadContinuation = platform.pageload
+    ? browserSources.readMetaTraceContinuation?.()
+    : undefined;
 
   const wired = wirePerformance({
     client,

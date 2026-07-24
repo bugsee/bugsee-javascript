@@ -4,7 +4,7 @@
 // a UI renderer). The Integration injects `injectScript('page', "import { registerClient } … registerClient(…)")`.
 //
 // Browser-only → behind the `@bugsee/astro/client` subpath, never the portable `.`/`./middleware` entries.
-import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
 export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {}

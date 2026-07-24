@@ -25,7 +25,8 @@
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
-    "@bugsee/web-adapter": "workspace:*"
+    "@bugsee/web-adapter": "workspace:*",
+    "@bugsee/bugsee": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18"

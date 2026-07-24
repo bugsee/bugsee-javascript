@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // Mock the browser umbrella launch so the client-init composition is tested without a real browser
 // environment (the real launch is covered in @bugsee/browser). vi.mock intercepts `import { launch }`.
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
-vi.mock('bugsee', () => ({ launch }));
+vi.mock('@bugsee/bugsee', () => ({ launch }));
 
 import * as clientEntry from './client';
 import { createOnRouterTransitionStart, onRouterTransitionStart, registerClient } from './client';

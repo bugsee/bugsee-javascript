@@ -87,7 +87,7 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/svelte": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
-    "bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",

@@ -71,6 +71,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter
@@ -80,15 +83,15 @@ importers:
       '@bugsee/adapter-kit':
         specifier: workspace:*
         version: link:../adapter-kit
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
-      bugsee:
-        specifier: workspace:*
-        version: link:../bugsee
     devDependencies:
       '@bugsee/node':
         specifier: workspace:*
@@ -195,6 +198,9 @@ importers:
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/bun:
     dependencies:
@@ -313,6 +319,9 @@ importers:
 
   packages/elysia:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -338,6 +347,9 @@ importers:
 
   packages/express:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -366,6 +378,9 @@ importers:
 
   packages/fastify:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -391,6 +406,9 @@ importers:
 
   packages/hapi:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -416,6 +434,9 @@ importers:
 
   packages/hono:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -514,6 +535,9 @@ importers:
 
   packages/koa:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -544,6 +568,9 @@ importers:
 
   packages/nestjs:
     dependencies:
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
@@ -587,6 +614,9 @@ importers:
       '@bugsee/adapter-kit':
         specifier: workspace:*
         version: link:../adapter-kit
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -596,9 +626,6 @@ importers:
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
-      bugsee:
-        specifier: workspace:*
-        version: link:../bugsee
     devDependencies:
       '@bugsee/node':
         specifier: workspace:*
@@ -659,6 +686,9 @@ importers:
       '@bugsee/adapter-kit':
         specifier: workspace:*
         version: link:../adapter-kit
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -668,9 +698,6 @@ importers:
       '@bugsee/vue':
         specifier: workspace:*
         version: link:../vue
-      bugsee:
-        specifier: workspace:*
-        version: link:../bugsee
       nuxt:
         specifier: '>=3.0.0'
         version: 4.4.8(@babel/plugin-proposal-decorators@7.29.0(@babel/core@7.29.0))(@babel/plugin-syntax-jsx@7.28.6(@babel/core@7.29.0))(@babel/plugin-syntax-typescript@7.29.7(@babel/core@7.29.0))(@biomejs/biome@2.4.15)(@parcel/watcher@2.5.6)(@types/node@25.9.1)(@vue/compiler-sfc@3.5.38)(cac@6.7.14)(db0@0.3.4)(esbuild@0.28.0)(ioredis@5.11.1)(lightningcss@1.32.0)(magicast@0.5.3)(rolldown@1.0.2)(rollup-plugin-visualizer@7.0.1(rolldown@1.0.2)(rollup@4.60.4))(rollup@4.60.4)(terser@5.48.0)(tsx@4.22.4)(typescript@6.0.3)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(yaml@2.9.0)
@@ -747,6 +774,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter
@@ -763,15 +793,15 @@ importers:
       '@bugsee/adapter-kit':
         specifier: workspace:*
         version: link:../adapter-kit
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
       '@bugsee/react':
         specifier: workspace:*
         version: link:../react
-      bugsee:
-        specifier: workspace:*
-        version: link:../bugsee
     devDependencies:
       '@bugsee/node':
         specifier: workspace:*
@@ -836,6 +866,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter
@@ -851,6 +884,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter
@@ -872,6 +908,9 @@ importers:
       '@bugsee/adapter-kit':
         specifier: workspace:*
         version: link:../adapter-kit
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -881,9 +920,6 @@ importers:
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
-      bugsee:
-        specifier: workspace:*
-        version: link:../bugsee
     devDependencies:
       '@bugsee/node':
         specifier: workspace:*
@@ -963,6 +999,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter

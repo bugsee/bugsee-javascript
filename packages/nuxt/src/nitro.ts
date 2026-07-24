@@ -8,7 +8,11 @@
 // The logic is a pure function over a structural `NitroAppLike` so it is fully unit-testable; the U3 runtime
 // file wraps it with `defineNitroPlugin` (from `nitropack/runtime`) + `useRuntimeConfig()`.
 import { reportServerError, traceMetaTag } from '@bugsee/adapter-kit';
-import { type Bugsee, type BugseeNodeLaunchOptions, launch as nodeLaunch } from 'bugsee/node';
+import {
+  type Bugsee,
+  type BugseeNodeLaunchOptions,
+  launch as nodeLaunch,
+} from '@bugsee/bugsee/node';
 
 /** The Nitro error-hook context subset we read (structural; no `nitropack` dep). */
 export interface NitroErrorContext {

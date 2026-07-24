@@ -18,10 +18,10 @@ import {
   type BugseeNodeLaunchOptions,
   type BugseeSpanProcessor,
   launch,
-} from 'bugsee/node';
+} from '@bugsee/bugsee/node';
 import { attachBugseeOtelProvider } from './otel-provider';
 
-export type { Bugsee, BugseeSpanProcessor } from 'bugsee/node';
+export type { Bugsee, BugseeSpanProcessor } from '@bugsee/bugsee/node';
 export {
   type AttachOtelProviderOptions,
   attachBugseeOtelProvider,

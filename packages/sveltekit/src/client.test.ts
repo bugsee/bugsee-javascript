@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
-vi.mock('bugsee', () => ({ launch }));
+vi.mock('@bugsee/bugsee', () => ({ launch }));
 
 import { handleErrorWithBugsee, registerClient, reportSvelteError } from './client';
 

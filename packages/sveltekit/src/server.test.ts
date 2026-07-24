@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
-vi.mock('bugsee/node', () => ({ launch }));
+vi.mock('@bugsee/bugsee/node', () => ({ launch }));
 
 import { registerServer } from './server';
 
