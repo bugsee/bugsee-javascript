@@ -100,7 +100,7 @@
     "@bugsee/adapter-kit": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
-    "bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",

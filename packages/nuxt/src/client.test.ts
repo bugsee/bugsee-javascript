@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // Mock the browser umbrella launch + spy @bugsee/vue's installBugseeErrorHandler (keep the rest of
 // @bugsee/vue real).
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
-vi.mock('bugsee', () => ({ launch }));
+vi.mock('@bugsee/bugsee', () => ({ launch }));
 const { installBugseeErrorHandler } = vi.hoisted(() => ({ installBugseeErrorHandler: vi.fn() }));
 vi.mock('@bugsee/vue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/vue')>();

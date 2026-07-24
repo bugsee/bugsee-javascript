@@ -27,6 +27,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@bugsee/bugsee": "workspace:*",
     "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/node": "workspace:*",

@@ -6,9 +6,9 @@
 // the node incoming-server auto-instrumentation opens a per-request context + `http.server` txn (which the
 // `.` `handleError` bridge then stitches its reports to). Bugsee uses a `node:http` emit-patch (not
 // import-in-the-middle), so a normal top-level import suffices — no fragile loader-hook preload ordering.
-import { type Bugsee, type BugseeNodeLaunchOptions, launch } from 'bugsee/node';
+import { type Bugsee, type BugseeNodeLaunchOptions, launch } from '@bugsee/bugsee/node';
 
-export type { Bugsee } from 'bugsee/node';
+export type { Bugsee } from '@bugsee/bugsee/node';
 
 // R3 (node half): the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
 // on the node-only entry, alongside launch.

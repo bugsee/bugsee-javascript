@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // Mock the browser umbrella launch (tested in @bugsee/browser). Spy @bugsee/react's reportReactError while
 // keeping the rest of @bugsee/react REAL (so the `export *` re-export is genuinely exercised).
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
-vi.mock('bugsee', () => ({ launch }));
+vi.mock('@bugsee/bugsee', () => ({ launch }));
 const { reportReactError } = vi.hoisted(() => ({ reportReactError: vi.fn() }));
 vi.mock('@bugsee/react', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/react')>();

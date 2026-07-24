@@ -44,7 +44,7 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/react": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
-    "bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.0.0",

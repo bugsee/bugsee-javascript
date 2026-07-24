@@ -5,7 +5,7 @@
 // hard-constraint 1). The dynamic imports use the package's OWN SUBPATH SPECIFIERS
 // (`@bugsee/nextjs/server` / `@bugsee/nextjs/edge`), NOT relative paths (`./server`): a bare specifier
 // stays EXTERNAL to the bundler in BOTH formats, so it emits a real lazy `import()` — whereas a relative
-// dynamic import is inlined (with its top-level `require('bugsee/node')` hoisted) into the CJS build,
+// dynamic import is inlined (with its top-level `require('@bugsee/bugsee/node')` hoisted) into the CJS build,
 // leaking node into the portable `.` entry (#172). The TYPE imports below are erased, so `./server` /
 // `./edge` there are fine. Options resolve via the package `exports` map (dev src / published dist alike).
 import type { NextjsEdgeOptions } from './edge';

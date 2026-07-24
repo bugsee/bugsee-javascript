@@ -1,5 +1,9 @@
 // @bugsee/fastify — Fastify adapter (tier 4, design: docs/design/framework-adapters.md).
 // One-call hook-based setup over the per-request context foundation. fastify is a PEER dependency.
+
+// Single-install re-export: surface the full public SDK (launch, Bugsee, options + manual-API
+// types) so users install only `@bugsee/fastify` and import everything from one place.
+export * from '@bugsee/bugsee/node';
 export {
   type FastifyAdapterOptions,
   type FastifyHookDone,

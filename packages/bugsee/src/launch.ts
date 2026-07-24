@@ -1,4 +1,11 @@
-import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
+import {
+  type Bugsee,
+  type BugseeLaunchOptions,
+  createBrowserInteractionSource,
+  createBrowserNavigationSource,
+  launchCore,
+  readMetaTraceContinuation,
+} from '@bugsee/browser';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
 // The `bugsee` umbrella launch() for the BROWSER — the batteries-included entry. It runs the browser
@@ -14,7 +21,19 @@ export interface BugseeLaunchOptionsWithPerformance
 export function launch(appToken: string, options: BugseeLaunchOptionsWithPerformance = {}): Bugsee {
   const { client, internals } = launchCore(appToken, options);
   // No internals → a prior launch already owns the process singleton (and already wired the extensions).
+  // Browser: pageload transaction. The browser-only capture sources are injected here (as factories) so
+  // the shared wireUmbrella — and therefore the node umbrella entry — never imports @bugsee/browser.
   return internals === undefined
     ? client
-    : wireUmbrella(client, internals, options, { pageload: true }); // browser: pageload transaction
+    : wireUmbrella(
+        client,
+        internals,
+        options,
+        { pageload: true },
+        {
+          createNavigationSource: createBrowserNavigationSource,
+          createInteractionSource: createBrowserInteractionSource,
+          readMetaTraceContinuation,
+        },
+      );
 }

@@ -5,14 +5,14 @@
 // the portable `.` or node `./server` entry. Captures the SESSION the server `handleError` bridge (R1)
 // stitches to a failing request.
 
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
 import type { BugseeClient } from '@bugsee/core';
 import { type ReactErrorInfo, reportReactError } from '@bugsee/react';
-import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
 
+export type { Bugsee } from '@bugsee/bugsee';
 // Re-export the @bugsee/react surface (error boundary / Profiler / router helpers) so a Remix app gets
 // everything from `@bugsee/remix/client`. `react` is an OPTIONAL peer (server-only users don't need it).
 export * from '@bugsee/react';
-export type { Bugsee } from 'bugsee';
 
 /** Options for the Remix client composition — the batteries-included browser umbrella options. */
 export interface RemixClientOptions extends BugseeLaunchOptionsWithPerformance {}

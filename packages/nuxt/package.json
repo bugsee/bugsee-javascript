@@ -40,7 +40,7 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
     "@bugsee/vue": "workspace:*",
-    "bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

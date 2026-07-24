@@ -6,7 +6,7 @@
 //      client-side load/render throw (labeled with the route id) via @bugsee/svelte's client error seam;
 //   2. init: `registerClient(appToken)` at the top of the client entry / root `+layout` — launches the
 //      browser SDK (DOM/console/network capture + web-vitals) that the error hook reports to.
-import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from 'bugsee';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
 
 // Re-export the @bugsee/svelte client surface (handleErrorWithBugsee, reportSvelteError, navigation naming).
 export * from '@bugsee/svelte';
