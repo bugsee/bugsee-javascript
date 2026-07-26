@@ -1,6 +1,9 @@
 # `@bugsee/replay-canvas` — canvas replay add-on (design)
 
-**Status:** Draft v1 (2026-07-16); **implementation started 2026-07-22** (see the build correction below).
+**Status:** **BUILT + on `main`** — RPC1–RPC6 (2026-07-22, 2-round convergent-reviewed), plus O2
+(`replay.blockAllCanvas`, strict opt-in-per-canvas) and O3 (the `fps: number | 'all'` capture-fidelity knob),
+each focused-reviewed. Design captured 2026-07-16 (see the build correction below).
+**Still deferred:** the real-browser Playwright canvas e2e (jsdom cannot render canvas).
 Builds ON the shipped `@bugsee/replay` (RP0–RP6, `docs/design/replay.md`) — read that first; this doc
 covers the canvas delta.
 

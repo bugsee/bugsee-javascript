@@ -1,8 +1,10 @@
 # Cross-project distributed tracing (frontend ↔ backend ↔ frontend)
 
-**Status:** Design (2026-06-20; aligned to the cross-SDK profile 2026-06-21). Backend gap-closure first;
-frontend hooks defined here, built with the frontend-adapters milestone. Builds on the propagation foundation
-in `opentelemetry-integration.md`.
+**Status:** **BUILT + on `main`.** Backend slices X0–X5/Y1 landed 2026-06-22 (Profile-v1-conformant, native
+non-OTel substrate; real two-hop e2e on node/bun/deno); the frontend hooks defined here shipped with the
+frontend-adapters milestone (`docs/design/frontend-adapters.md`). Design captured 2026-06-20, aligned to the
+cross-SDK profile 2026-06-21. Builds on the propagation foundation in `opentelemetry-integration.md`.
+**Deferred (not built):** originating-session re-propagation and the §17 upload item.
 
 > **Canonical cross-SDK contract.** The wire protocol below (W3C `traceparent` + the `bugsee=` `tracestate`
 > entry, ids, propagation/continuation, option names) is now pinned by the SDK-agnostic **Bugsee OTLP Profile
@@ -108,7 +110,7 @@ backend's reports carry the cross-project linkage). Missing/invalid header → f
 - `propagateTrace?: boolean` — the kill-switch (T2). **Per-platform default:** `true` on the `@bugsee/node`
   launch (allowlist-gated, so inert without `tracePropagationTargets` — a backend has no same-origin to leak
   to); `false` (opt-in) on the browser umbrella (the browser has a meaningful same-origin, so it is opt-in to
-  avoid surprising same-origin injection). **Browser propagation is wired by the `bugsee` umbrella, not the
+  avoid surprising same-origin injection). **Browser propagation is wired by the `@bugsee/bugsee` umbrella, not the
   bare `@bugsee/browser` package** (it needs the performance extension's active span; X3b).
 - `tracePropagationTargets?: Array<string | RegExp>` — cross-origin allowlist (same-origin always on; on Node,
   the ONLY way anything propagates — no same-origin there).
@@ -149,7 +151,7 @@ controls now; STAGE the §17 upload cutover** (it needs the Bugsee OTLP ingest e
 
 ## Backend gap-closure slices (each: test-first → mutator → review → commit)
 
-> **STATUS — ALL BACKEND SLICES COMPLETE + reviewed-to-convergence, on `master` (2026-06-22).** X0–X5 +
+> **STATUS — ALL BACKEND SLICES COMPLETE + reviewed-to-convergence, on `main` (2026-06-22).** X0–X5 +
 > Y1 (OTLP profile conformance) are built. The backend half of the cross-project tracing protocol is
 > closed: a backend continues an inbound W3C trace as a child (X2), stamps the report envelope with the
 > join key (T8/X5), propagates outbound (X3), and emits the BE→FE return headers (X4) — all conformant to

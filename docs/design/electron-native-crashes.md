@@ -1,6 +1,8 @@
 # Electron/JS native crashes → the existing minidump pipeline
 
-Status: **Design (Draft v1)** — 2026-07-11. Supersedes the E5 crashReporter *direct-upload* approach in
+Status: **SDK side BUILT + on `main`** (NM1–NM5, 2026-07-12, 3-round convergent-reviewed — see the build-status
+note in §"SDK build status"); the cross-repo halves (worker generic-minidump-processor factoring, Electron
+symbol ingestion in `appserver`) are still open. Design captured 2026-07-11. Supersedes the E5 crashReporter *direct-upload* approach in
 `docs/design/electron.md` (see Decision Log). Cross-repo: `@bugsee/electron` (this repo), `worker` (Python
 crash processor), symbol tooling. No `appserver` ingestion change.
 
@@ -214,7 +216,7 @@ generic path + source-maps (#158) — the native flag is absent, so they never h
 
 Ordered so each is independently verifiable; worker + SDK can proceed in parallel after S0.
 
-> **SDK build status (2026-07-12).** The whole SDK harvest-and-bundle path is BUILT + on master, test-first
+> **SDK build status (2026-07-12).** The whole SDK harvest-and-bundle path is BUILT + on main, test-first
 > with per-entity mutator loops + coverage gates:
 > - **NM1** (`@bugsee/core`): `NativeCrashJson` + report-level binary `attachments` + assembler writes them.
 > - **NM2** (`@bugsee/electron`): crashReporter rework → `uploadToServer:false` harvest mode +

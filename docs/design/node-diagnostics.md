@@ -1,6 +1,8 @@
 # Node diagnostics — CPU profiling + ANR / event-loop-block detection
 
-Status: **DESIGNED (2026-06-14), build in progress.** Closes the two "in-depth" gaps vs Sentry on
+Status: **BUILT + on `main`** (designed 2026-06-14). Both land in `@bugsee/node` as opt-in diagnostics —
+rolling V8 CPU profiling (`profile.json`) + the worker-thread ANR / event-loop-hang watchdog (→ `AppHang`
+reports) — and are inherited at full parity by `@bugsee/bun` and `@bugsee/deno`. Closes the two "in-depth" gaps vs Sentry on
 Node/Bun (we lead on network-body capture + durable crash delivery; profiling + ANR were the real
 diagnostic gaps). Build these before going "in-breadth" (framework adapters / more runtimes).
 

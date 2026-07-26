@@ -1,6 +1,6 @@
 # Bugsee JavaScript SDK — Dev Environment & Tooling
 
-**Status:** v1.1 (2026-05-30) — *in use*. The repo is bootstrapped: pnpm + turbo workspace, Vitest + Biome + tsc + madge wired, ~38 packages scaffolded (10 implemented, see `docs/PROGRESS.md`). This file consolidates the toolchain decided in `docs/design/sdk-design.md` (§12.1, §12.3, §12.5, §5.3) and `docs/implementation-standards.md` (§13). Source of truth for the live commands is the **Commands** section below.
+**Status:** v1.1 (2026-05-30) — *in use*. The repo is bootstrapped: pnpm + turbo workspace, Vitest + Biome + tsc + madge wired, 53 packages (all implemented — see `docs/PROGRESS.md`), with a GitHub Actions CI gate (`.github/workflows/ci.yml`: lint → typecheck → cycles → per-package coverage). This file consolidates the toolchain decided in `docs/design/sdk-design.md` (§12.1, §12.3, §12.5, §5.3) and `docs/implementation-standards.md` (§13). Source of truth for the live commands is the **Commands** section below.
 
 ---
 
@@ -20,7 +20,7 @@ Node + pnpm are the only hard requirements for general development; the others a
 
 ## Target runtimes
 
-Tooling runs on Node; the SDK is **built for and smoke-tested on** each target runtime separately (coverage is measured per runtime — see Testing). Tier-1: browsers, Node ≥18, Bun ≥1.1.13, Deno ≥1.36. Tier-2: Cloudflare Workers, Vercel Edge, Web/Service Workers. Electron is a stub in v1. Module format: **ESM-only** for tier-0; **ESM+CJS** for core/platform/framework/umbrella (design §12.5).
+Tooling runs on Node; the SDK is **built for and smoke-tested on** each target runtime separately (coverage is measured per runtime — see Testing). Tier-1: browsers, Node ≥18, Bun ≥1.1.13, Deno ≥1.36. Tier-2: Cloudflare Workers, Vercel Edge, Web/Service Workers. Electron ships in v1 (`@bugsee/electron`, main + renderer + native). Module format: **ESM-only** for tier-0; **ESM+CJS** for core/platform/framework/umbrella (design §12.5).
 
 ## Package manager & monorepo
 

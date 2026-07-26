@@ -1,6 +1,10 @@
 # WebView bridge — advanced JS SDK ↔ native mobile SDK (Android-first) — design
 
-**Status:** DESIGN (2026-06-30, brainstormed + decision-locked; NOT implemented). The protocol + architecture for
+**Status:** **BUILT (JS side) + on `main`** — slices 1–7 complete (skeleton, protocol, host bridge, capture-store
+swap, control commands, obscuring D10 + sub-frame composition D9, redaction D3, IIFE build D7, conformance
+harness). The **Android native receiver (slice 8)** is code-complete in the `android/sdk` repo; remaining
+cross-repo work = publish `@bugsee/webview` to npm + bump `webview-version.txt`. Design captured 2026-06-30
+(brainstormed + decision-locked). The protocol + architecture for
 running the new `@bugsee/*` JavaScript SDK inside an embedded native WebView and streaming its capture up to the
 hosting native Bugsee SDK (Android first; iOS / HarmonyOS / Cordova deferred). Replaces / supersedes the thin
 `webview-inject-script` once the obscuring capability is ported (see D10). Android is the canonical reference

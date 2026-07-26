@@ -1,8 +1,7 @@
 # Meta-framework adapters — design (Nuxt / Remix / SvelteKit / Astro)
 
-**Status:** DESIGN (2026-07-05). Informed by four sourced research reports (one per framework, each mapping
-the framework's instrumentation seams + Sentry's reference adapter to Bugsee's existing platforms). Not yet
-built. Sibling of the shipped `docs/design/nextjs-adapter.md` — read that first; this doc is deliberately the
+**Status:** BUILT + on `main` (2026-07-05 design; subsequently implemented). Informed by four sourced research reports (one per framework, each mapping
+the framework's instrumentation seams + Sentry's reference adapter to Bugsee's existing platforms). Sibling of `docs/design/nextjs-adapter.md` — read that first; this doc is deliberately the
 "same shape, different seam names" follow-on.
 
 ## 1. The finding: all four are the @bugsee/nextjs adapter with different seam names

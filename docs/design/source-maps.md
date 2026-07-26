@@ -1,6 +1,10 @@
 # Source-map upload tooling (task #158)
 
-Status: **Draft v2** (2026-07-09). Rewritten after finding the existing Rust `bugsee-cli`. Read alongside
+Status: **BUILT + on `main`** (#158) — debug-ID-primary; `@bugsee/vite-plugin` / `@bugsee/webpack-plugin` are
+thin wrappers over `@bugsee/bundler-plugin-core`, which SPAWNs the existing Rust `bugsee-cli` (no JS
+reimplementation); the runtime stamps `StackFrame.debugId` from `_bugseeDebugIds`. **Open:** the exact
+debugId wire format, gated on the backend contract. Design captured 2026-07-09 (Draft v2, rewritten after
+finding the existing Rust `bugsee-cli`). Read alongside
 `docs/design/sdk-design.md` + the framework/meta-framework adapter docs (their P6 "build integration" depends on this).
 
 ## 1. Problem

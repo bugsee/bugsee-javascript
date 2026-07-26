@@ -1,6 +1,6 @@
 # Multi-instance on-disk coexistence + recovery (worker_threads & multi-process) — BUILT
 
-**Status:** **BUILT + on `master`** (2026-06-17). Liveness = Hybrid PID-probe + (main-thread) heartbeat; scope
+**Status:** **BUILT + on `main`** (2026-06-17). Liveness = Hybrid PID-probe + (main-thread) heartbeat; scope
 = on-disk coexistence + recovery. Grounded in two read-only explorations: the **Bugsee Android SDK** canonical
 multi-process logic (`com.bugsee.library` NDK crash store) and our Node on-disk model. Android-canonical.
 Shipped as slices 1–5 (each test-first → mutator → multi-agent review → commit/push), all in `@bugsee/node`:

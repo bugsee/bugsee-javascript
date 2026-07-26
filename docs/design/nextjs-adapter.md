@@ -1,7 +1,7 @@
 # @bugsee/nextjs — design (research-enhanced)
 
-**Status:** DESIGN (2026-07-03). Informed by competitor + Next.js-platform research (three sourced reports;
-see the Decision Log). Not yet built.
+**Status:** BUILT + on `main` (2026-07-03 design; subsequently implemented). Informed by competitor + Next.js-platform research (three sourced reports;
+see the Decision Log).
 
 ## 1. The key finding: the Next.js instrumentation pattern is SETTLED and Next.js-NATIVE
 

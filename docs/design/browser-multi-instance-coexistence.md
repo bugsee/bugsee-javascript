@@ -1,6 +1,6 @@
 # Browser/worker multi-instance IndexedDB coexistence + recovery — design
 
-**Status:** Slices 1–5 BUILT + reviewed-to-convergence + on master (2026-06-30) — the durable BUNDLE queue
+**Status:** Slices 1–5 BUILT + reviewed-to-convergence + on main (2026-06-30) — the durable BUNDLE queue
 **and** the capture-chunk + report-marker stores are now fully multi-instance-safe on browser (webworker is
 bundle-only — it has no capture-recovery path yet, #165). The SEV1 capture/marker hazard the slice-4 review
 flagged is **CLOSED** (slice 5; see §1). The browser/worker-tier counterpart of the BUILT node

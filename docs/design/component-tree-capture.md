@@ -1,11 +1,9 @@
 # Component-tree capture (the framework component hierarchy alongside the DOM) — design
 
-Status: **DESIGN / FEASIBILITY (not built).** Captured 2026-06-25 from a feasibility question. The foundation
-(the `data-bugsee-component` annotation) is already built + on `master` (the frontend-adapters depth pass D2/
-D3 — see `docs/design/frontend-adapters.md`); the consumer (a report-time DOM/view-tree snapshot) is **not**
-built (the `@bugsee/replay` package is a 1-file scaffold). This doc records the feasibility analysis, the
-decision, and the recommended approach so it can be folded into the view-tree/replay capture when that
-milestone is taken on.
+Status: **DESIGN / FEASIBILITY.** Captured 2026-06-25 from a feasibility question. The foundation
+(the `data-bugsee-component` annotation) is already built + on `main` (the frontend-adapters depth pass D2/
+D3 — see `docs/design/frontend-adapters.md`); the report-time DOM/view-tree snapshot is also **built** (`@bugsee/browser` CE4 — `createDomSnapshot`/`createViewtreeSnapshotSource`, on `main`; `@bugsee/replay` is built RP0–RP6). The component-overlay integration (reading `data-bugsee-component` in the DOM-snapshot walk) is the one remaining follow-up item. This doc records the feasibility analysis, the
+decision, and the recommended approach.
 
 ---
 
@@ -73,7 +71,7 @@ report-time DOM/VT snapshot**, framework-agnostically — NOT by walking framewo
 
 Rationale:
 1. **It already works in production for all five frameworks.** The annotation lives on the DOM (emitted by
-   the build plugin for React/Preact/Solid, the Vue mixin, the Svelte preprocessor — all on `master`), so it
+   the build plugin for React/Preact/Solid, the Vue mixin, the Svelte preprocessor — all on `main`), so it
    is immune to the prod-stripping that kills the Vue/Angular/Svelte internals routes.
 2. **Stable names.** The build plugins emit literal component names → un-minified, unlike `type.name`.
 3. **Framework-agnostic — one implementation.** The same DOM walk yields the component tree for every
@@ -119,7 +117,7 @@ higher fidelity on React" item, **not** part of the framework-agnostic baseline.
 ## 4. Prerequisite + sequencing
 
 The one real prerequisite is the **report-time DOM / view-tree snapshot itself** — the `@bugsee/replay` /
-view-hierarchy capture, currently a 1-file scaffold. The component overlay is **not** a separate subsystem; it
+view-hierarchy capture, now built (`@bugsee/browser` CE4, `createDomSnapshot`/`createViewtreeSnapshotSource`; `@bugsee/replay` RP0–RP6, on `main`). The component overlay is **not** a separate subsystem; it
 rides on that walk. Sequencing:
 
 1. Build the report-time DOM/VT snapshot (the view-tree-on-report capture — the web analog of mobile VT).
@@ -145,10 +143,11 @@ captured per-event; the tree is the report-time aggregate of it.
 
 ---
 
-## 6. Status of the foundation (already on `master`)
+## 6. Status of the foundation (already on `main`)
 
 - `data-bugsee-component` emit: `@bugsee/babel-plugin-component-annotate` (React/Preact/Solid),
   `createBugseeVueComponentMixin` (`@bugsee/vue`), `@bugsee/svelte-plugin-component-annotate` (Svelte).
 - `data-bugsee-component` read: `componentNameFromElement` (`@bugsee/browser`) — the nearest-annotated-ancestor
   resolver the overlay would reuse. Already wired into interaction/input attribution (`ui.component`).
-- **Missing:** the report-time DOM/VT snapshot consumer (the `@bugsee/replay` scaffold).
+- **Built:** the report-time DOM/VT snapshot consumer (`@bugsee/browser` CE4 — `createDomSnapshot`/`createViewtreeSnapshotSource`, on `main`; `@bugsee/replay` RP0–RP6 also on `main`).
+- **Remaining follow-up:** folding the `data-bugsee-component` overlay into the DOM-snapshot walk (step 2 in the sequencing above).
