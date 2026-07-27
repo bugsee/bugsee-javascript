@@ -11,15 +11,16 @@
   "dependencies": {
     "@bugsee/browser": "workspace:*",
     "@bugsee/bun": "workspace:*",
-    "@bugsee/vite-plugin": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*",
+    "@bugsee/protocol": "workspace:*",
     "@bugsee/replay": "workspace:*",
     "@bugsee/util": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
+    "@bugsee/vite-plugin": "workspace:*",
     "@bugsee/webview": "workspace:*"
   },
   "devDependencies": {

@@ -483,6 +483,9 @@ importers:
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@bugsee/replay':
         specifier: workspace:*
         version: link:../replay

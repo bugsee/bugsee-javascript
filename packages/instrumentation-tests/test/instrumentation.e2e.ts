@@ -16,6 +16,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  assertBundleIntegrity,
+  assertNoSecrets,
+  type ParsedBundle as SharedParsedBundle,
+  parseBundles as sharedParseBundles,
+} from './bundle';
 import { type MockCollector, startMockCollector } from './collector';
 import { type RuntimeTarget, runScenarioProcess, runtimeTargets } from './runtimes';
 
@@ -29,11 +35,9 @@ interface ReportEnvelope {
   /** The W3C trace id the report fired in — the cross-project join key (T8). */
   trace_id?: string;
 }
-interface ParsedBundle {
-  issueId: string;
-  files: Record<string, Uint8Array>;
-  request: ReportEnvelope;
-}
+/** The shared ParsedBundle, narrowed to this suite's report envelope. */
+type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
+
 interface LogEntry {
   message: string;
   level: string;
@@ -47,11 +51,9 @@ interface NetworkEntry {
 const parseJson = <T>(bytes: Uint8Array | undefined): T =>
   JSON.parse(strFromU8(bytes as Uint8Array)) as T;
 
+/** Shared parser (test/bundle.ts), typed to this suite's envelope. */
 const parseBundles = (collector: MockCollector): ParsedBundle[] =>
-  collector.uploads.map((u) => {
-    const files = unzipSync(u.body) as Record<string, Uint8Array>;
-    return { issueId: u.issueId, files, request: parseJson<ReportEnvelope>(files['request.json']) };
-  });
+  sharedParseBundles(collector) as ParsedBundle[];
 
 const targets = runtimeTargets();
 for (const t of targets) {
@@ -87,6 +89,25 @@ describe.each(
 
     it('the app process exits cleanly', () => {
       expect(exitCode, stderr).toBe(0);
+    });
+
+    // Every uploaded bundle must be internally consistent: manifest ↔ zip agreement, no declared-but-
+    // missing file, no directory-shaped stand-in, no undeclared payload, no empty declared file. Added
+    // in Wave V0 — the review found a recovered crash bundle that declared `profile.json` while the zip
+    // held only `profile.json/`, and no harness assertion could see it
+    // (docs/review/core-D-bundle-upload-recovery.md).
+    it('every uploaded bundle is internally consistent (manifest ↔ zip)', () => {
+      expect(bundles.length).toBeGreaterThan(0);
+      for (const bundle of bundles) assertBundleIntegrity(bundle);
+    });
+
+    // The app token is written to the `apptoken` file by design; it must appear NOWHERE else — not in
+    // logs, not in a captured network entry, not in request.json. assertNoSecrets exempts `apptoken`
+    // and scans every other entry (binary included), which is the shape of check that would have caught
+    // the confirmed URL-credential leaks (docs/review/capture.md, docs/review/node-B-http-server.md).
+    it('never leaks the app token outside the apptoken file', () => {
+      expect(bundles.length).toBeGreaterThan(0);
+      for (const bundle of bundles) assertNoSecrets(bundle, ['e2e-app-token']);
     });
 
     it('opens exactly one session carrying the runtime platform identity', () => {
