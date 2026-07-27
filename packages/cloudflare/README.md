@@ -82,13 +82,29 @@ endpoint, no new backend.
 `ctx.waitUntil` from it to flush an incident's upload after the response returns (an edge isolate freezes the
 instant it responds).
 
-**AsyncLocalStorage requires `nodejs_compat`.** Per-request context isolation uses
-`globalThis.AsyncLocalStorage`, which Cloudflare exposes only when the **`nodejs_compat`** (or the narrower
-**`nodejs_als`**) compatibility flag is enabled. Add it to `wrangler.toml`:
+**AsyncLocalStorage must be passed in explicitly.** Per-request context isolation needs a run()-scoped
+async store. On Cloudflare, `globalThis.AsyncLocalStorage` **does not exist under any compatibility flag** —
+it is reachable only as an export of `node:async_hooks`. (Verified on real `workerd` 1.20260722.1 across the
+flag × compatibility-date matrix; see `docs/review/cloudflare.md` SEV1 #3. Earlier revisions of this README
+told you to add `nodejs_compat` and expect the global to appear — that was wrong, and the SDK silently ran
+without context isolation as a result.)
+
+Enable the flag **and** hand the store to `launch`:
 
 ```toml
+# wrangler.toml
 compatibility_flags = ["nodejs_compat"]
 ```
+
+```ts
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { launch } from '@bugsee/cloudflare';
+
+launch(env.BUGSEE_APP_TOKEN, { asyncLocalStorage: new AsyncLocalStorage() });
+```
+
+The SDK cannot import `node:async_hooks` itself: a static import would break the bundle for every
+deployment that does not enable the flag. Importing it in your own worker keeps that choice yours.
 
 Without it the SDK still runs but degrades to a single-slot context store (no isolation across `await`
 boundaries between concurrent requests in one isolate) and logs a one-time warning — it never throws. Tier 2.

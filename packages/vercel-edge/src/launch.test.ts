@@ -9,6 +9,7 @@ import {
 } from '@bugsee/core';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveEdgeStore } from './edge-context';
 import { type BugseeEdgeLaunchOptions, EdgeContextStoreToken, launchEdge } from './launch';
 
 const jsonBody = (o: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(o));
@@ -280,5 +281,49 @@ describe('launchEdge', () => {
     expect(second).toBe(first); // same client
     expect(onError).toHaveBeenCalledTimes(1);
     expect(String((onError.mock.calls[0]?.[0] as Error).message)).toMatch(/more than once/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Wave 0.1a (docs/review/REMEDIATION-PLAN.md): supplying AsyncLocalStorage explicitly.
+//
+// The adversarial review proved on real workerd 1.20260722.1 that `globalThis.AsyncLocalStorage` does NOT
+// exist on Cloudflare under ANY compatibility flag — it is reachable only as an export of
+// `node:async_hooks` (docs/review/cloudflare.md SEV1 #3). The probe therefore always misses there, so
+// per-request context is permanently degraded to the single-slot fallback and reports carry no
+// contextId. The edge tier cannot import `node:async_hooks` itself without breaking the bundle for
+// deployments that lack the flag, so the store must be INJECTABLE: the user imports AsyncLocalStorage in
+// their own worker (where their compat flags apply) and hands it to launch().
+describe('launchEdge — asyncLocalStorage injection', () => {
+  it('uses an explicitly supplied store instead of probing the global', async () => {
+    const seen: string[] = [];
+    // A minimal run()-scoped store standing in for a real AsyncLocalStorage.
+    let slot: unknown;
+    const injected = {
+      getStore: () => slot,
+      run: <R>(store: unknown, fn: () => R): R => {
+        const prev = slot;
+        slot = store;
+        seen.push('run');
+        try {
+          return fn();
+        } finally {
+          slot = prev;
+        }
+      },
+    };
+    const client = launchEdge('token', {
+      asyncLocalStorage: injected,
+    } as Parameters<typeof launchEdge>[1]);
+    const provider = (client as unknown as { contextProvider?: unknown }).contextProvider;
+    expect(provider ?? injected).toBeDefined();
+    // The decisive assertion: running a context goes through OUR store, not the probed global.
+    const store = resolveEdgeStore(client);
+    expect(store).toBeDefined();
+    store?.run({ contextId: 'c1' }, () => {
+      expect(store?.getCurrent()?.contextId).toBe('c1');
+    });
+    expect(seen).toContain('run');
+    await client.stop?.();
   });
 });

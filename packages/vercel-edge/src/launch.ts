@@ -22,6 +22,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type RequestContext,
   resolveLaunchOptions,
   type Scheduler,
   serviceToken,
@@ -35,6 +36,7 @@ import {
   createEdgeRequestContextStore,
   type EdgeContextStoreLogger,
   type EdgeRequestContextStore,
+  type RunScopedStore,
 } from './request-context-store';
 
 // The edge composition root (docs/design/edge-runtime.md E4) — the fetch/memory analog of node's launch(),
@@ -63,6 +65,22 @@ export const EdgeContextStoreToken = serviceToken<EdgeRequestContextStore>(
 );
 
 export interface BugseeEdgeLaunchOptions {
+  /**
+   * The run()-scoped async store backing per-request context. Default: probe `globalThis.AsyncLocalStorage`,
+   * degrading to a single-slot fallback when absent.
+   *
+   * **Supply this on Cloudflare Workers.** `globalThis.AsyncLocalStorage` does NOT exist on `workerd` under
+   * any compatibility flag — it is reachable only as an export of `node:async_hooks` — so the probe always
+   * misses there and per-request context silently degrades (verified on real workerd; docs/review/
+   * cloudflare.md SEV1 #3). This tier cannot import `node:async_hooks` itself without breaking bundles for
+   * deployments that lack `nodejs_compat`, so the store is injected instead:
+   *
+   * ```ts
+   * import { AsyncLocalStorage } from 'node:async_hooks';
+   * launch(env.BUGSEE_TOKEN, { asyncLocalStorage: new AsyncLocalStorage() });
+   * ```
+   */
+  asyncLocalStorage?: RunScopedStore<RequestContext>;
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
   endpoint?: string;
   /** SDK version reported in the environment. Default the package version. */
@@ -177,9 +195,10 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   // The run()-only edge context store: registered under EdgeContextStoreToken (for E5's wrapper) AND passed as
   // the core ContextProvider (so captures within a request get the contextId/trace stamps).
-  const contextStore = createEdgeRequestContextStore(
-    options.logger !== undefined ? { logger: options.logger } : {},
-  );
+  const contextStore = createEdgeRequestContextStore({
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
+    ...(options.asyncLocalStorage !== undefined ? { storage: options.asyncLocalStorage } : {}),
+  });
   services.addService(defineService(EdgeContextStoreToken, () => contextStore));
 
   const client = createClient({
