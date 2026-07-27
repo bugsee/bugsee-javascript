@@ -14,6 +14,7 @@ import { strToU8, zipSync } from '@bugsee/util';
 import { describe, expect, it } from 'vitest';
 import {
   assertBundleIntegrity,
+  assertNoContractViolations,
   assertNoSecrets,
   type ParsedBundle,
   parseBundles,
@@ -226,5 +227,45 @@ describe('assertNoSecrets', () => {
 
   it('rejects an empty secret, which would otherwise match everything and pass vacuously', () => {
     expect(() => assertNoSecrets(wellFormed(), [''])).toThrow(/empty/i);
+  });
+});
+
+describe('assertNoContractViolations', () => {
+  it('passes when the collector recorded none', () => {
+    expect(() => assertNoContractViolations({ violations: [] })).not.toThrow();
+  });
+
+  it('FAILS and surfaces where the violation was + what ajv said', () => {
+    expect(() =>
+      assertNoContractViolations({
+        violations: [
+          { where: 'manifest', errors: '[{"message":"must have required property files"}]' },
+        ],
+      }),
+    ).toThrow(/manifest/);
+    expect(() =>
+      assertNoContractViolations({
+        violations: [
+          { where: 'manifest', errors: '[{"message":"must have required property files"}]' },
+        ],
+      }),
+    ).toThrow(/required property files/);
+  });
+
+  it('reports every violation, not only the first', () => {
+    let err = '';
+    try {
+      assertNoContractViolations({
+        violations: [
+          { where: 'session', errors: 'first-problem' },
+          { where: 'issue', errors: 'second-problem' },
+        ],
+      });
+    } catch (e) {
+      err = String(e);
+    }
+    expect(err).toContain('first-problem');
+    expect(err).toContain('second-problem');
+    expect(err).toContain('2 upload-contract violation');
   });
 });

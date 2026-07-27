@@ -18,6 +18,7 @@ import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   assertBundleIntegrity,
+  assertNoContractViolations,
   assertNoSecrets,
   type ParsedBundle as SharedParsedBundle,
   parseBundles as sharedParseBundles,
@@ -108,6 +109,14 @@ describe.each(
     it('never leaks the app token outside the apptoken file', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertNoSecrets(bundle, ['e2e-app-token']);
+    });
+
+    // Every session envelope, issue envelope and bundle manifest/request.json is validated by the mock
+    // collector against packages/protocol/upload-contract.schema.json as it arrives. Without this
+    // assertion those violations would be recorded and ignored — the review found the collector
+    // "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1 #7).
+    it('emits nothing that violates the upload contract', () => {
+      assertNoContractViolations(collector);
     });
 
     it('opens exactly one session carrying the runtime platform identity', () => {

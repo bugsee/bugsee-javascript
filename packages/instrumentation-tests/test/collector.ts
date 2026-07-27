@@ -6,11 +6,31 @@
 // channel (no IPC needed).
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { strFromU8, unzipSync } from '@bugsee/util';
+import { Ajv, type ValidateFunction } from 'ajv';
+// Validated against the SAME schema file shipped from @bugsee/protocol (the wire-contract package), so
+// the harness and the contract cannot drift. Mirrors how webview-conformance.e2e.ts consumes
+// packages/webview/bridge-protocol.schema.json.
+import uploadContract from '../../protocol/upload-contract.schema.json' with { type: 'json' };
+
+// Compiled once. `strict: false` because the schema uses `definitions` + a top-level oneOf purely as a
+// container; we validate against the named definitions individually.
+const ajv = new Ajv({ allErrors: true, strict: false });
+ajv.addSchema(uploadContract, 'upload-contract');
+const validator = (name: string): ValidateFunction =>
+  ajv.getSchema(`upload-contract#/definitions/${name}`) as ValidateFunction;
 
 /** One captured signed-PUT upload: the issue it belongs to + the raw bundle (zip) bytes. */
 export interface CapturedUpload {
   issueId: string;
   body: Uint8Array;
+}
+
+/** A contract violation observed by the collector: which envelope, and what ajv said. */
+export interface ContractViolation {
+  /** Which envelope failed: the /v2/sessions body, the /v2/issues body, or a bundle's manifest.json. */
+  where: 'session' | 'issue' | 'manifest' | 'request.json';
+  errors: string;
 }
 
 export interface MockCollector {
@@ -26,6 +46,12 @@ export interface MockCollector {
   echoHits: number;
   /** The request headers of each /echo hit (so a test can assert injected traceparent/tracestate). */
   echoHeaders: Array<Record<string, string | string[] | undefined>>;
+  /**
+   * Every envelope that failed schema validation, in arrival order. The collector RECORDS rather than
+   * rejects, so a contract break shows up as a readable test failure instead of an opaque upload error
+   * mid-scenario. Assert it is empty — `assertNoContractViolations` does exactly that.
+   */
+  violations: ContractViolation[];
   close: () => Promise<void>;
 }
 
@@ -45,6 +71,13 @@ const sendJson = (res: ServerResponse, status: number, payload: unknown): void =
 
 /** Start the mock collector on an ephemeral loopback port. */
 export async function startMockCollector(): Promise<MockCollector> {
+  const violations: ContractViolation[] = [];
+  const check = (where: ContractViolation['where'], definition: string, value: unknown): void => {
+    const validate = validator(definition);
+    if (!validate(value)) {
+      violations.push({ where, errors: JSON.stringify(validate.errors, null, 2) });
+    }
+  };
   const sessions: Array<Record<string, unknown>> = [];
   const issues: Array<Record<string, unknown>> = [];
   const uploads: CapturedUpload[] = [];
@@ -65,13 +98,22 @@ export async function startMockCollector(): Promise<MockCollector> {
       try {
         if (method === 'POST' && url.endsWith('/v2/sessions')) {
           const body = await readBody(req);
-          sessions.push(JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>);
+          const session = JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>;
+          sessions.push(session);
+          // The session body NESTS the envelope under `environment` — it is not the envelope itself.
+          // (Verified against the real payload: an earlier version of this check validated the whole
+          // body and reported a false "missing platform" violation.)
+          if (session.environment !== undefined) {
+            check('session', 'environmentEnvelope', session.environment);
+          }
           sendJson(res, 200, { access_token: 'e2e-access-token' });
           return;
         }
         if (method === 'POST' && url.endsWith('/v2/issues')) {
           const body = await readBody(req);
-          issues.push(JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>);
+          const issue = JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>;
+          issues.push(issue);
+          check('issue', 'requestJson', issue);
           issueSeq += 1;
           const issueId = `i${issueSeq}`;
           const uploadPath = `/upload/${issueSeq}`;
@@ -86,6 +128,19 @@ export async function startMockCollector(): Promise<MockCollector> {
         if (method === 'PUT' && url.startsWith('/upload/')) {
           const body = await readBody(req);
           uploads.push({ issueId: issueByUploadPath.get(url) ?? url, body });
+          // Validate the bundle's own root JSON files. Wrapped: a malformed or unreadable bundle must be
+          // recorded as a violation, never crash the collector mid-scenario.
+          try {
+            const files = unzipSync(body) as Record<string, Uint8Array>;
+            const parse = (n: string): unknown =>
+              files[n] === undefined ? undefined : JSON.parse(strFromU8(files[n] as Uint8Array));
+            const manifest = parse('manifest.json');
+            if (manifest !== undefined) check('manifest', 'manifestJson', manifest);
+            const request = parse('request.json');
+            if (request !== undefined) check('request.json', 'requestJson', request);
+          } catch (err) {
+            violations.push({ where: 'manifest', errors: `unreadable bundle: ${String(err)}` });
+          }
           res.writeHead(200);
           res.end();
           return;
@@ -115,6 +170,7 @@ export async function startMockCollector(): Promise<MockCollector> {
     issues,
     uploads,
     echoHeaders,
+    violations,
     get echoHits() {
       return echoHits;
     },

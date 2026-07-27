@@ -117,6 +117,28 @@ export function assertBundleIntegrity(bundle: ParsedBundle): void {
   }
 }
 
+/** Minimal shape of the collector's recorded contract violations (see test/collector.ts). */
+export interface ViolationSource {
+  violations: Array<{ where: string; errors: string }>;
+}
+
+/**
+ * Assert the collector observed no schema violations.
+ *
+ * The mock collector validates every session/issue envelope and every bundle's `manifest.json` +
+ * `request.json` against `packages/protocol/upload-contract.schema.json`, but it RECORDS rather than
+ * rejects so a contract break surfaces as a readable assertion instead of an opaque mid-scenario upload
+ * error. Nothing enforces that unless a test calls this — a recorded-but-unasserted violation would be
+ * the same false assurance the review found everywhere.
+ */
+export function assertNoContractViolations(source: ViolationSource): void {
+  if (source.violations.length === 0) return;
+  const detail = source.violations.map((v) => `[${v.where}] ${v.errors}`).join('\n\n');
+  throw new Error(
+    `collector recorded ${source.violations.length} upload-contract violation(s):\n${detail}`,
+  );
+}
+
 /**
  * Assert that none of `secrets` appears anywhere in the bundle's bytes.
  *
