@@ -1,6 +1,6 @@
 # Durable Object tenant isolation — design (Wave 0.1)
 
-**Status:** DESIGN, for review. Fixes `docs/review/cloudflare.md` **SEV1 #2** — the most severe finding in
+**Status:** **BUILT + verified on real workerd** (S0–S5 complete, 2026-07-28). Fixes `docs/review/cloudflare.md` **SEV1 #2** — the most severe finding in
 the 53-package review. Depends on Wave 0.1a (`0391acc`), which made a working `AsyncLocalStorage`
 supplyable on Cloudflare.
 
@@ -195,3 +195,46 @@ Adds **S0**, before S1:
 | **S0** | Static-import `AsyncLocalStorage`, wire it into `launchEdge` by default; `nodejs_compat` documented as required; README + warning updated again to say "required" rather than "pass it yourself"; verify a real `wrangler`/`workerd` build both with and without the flag | `cloudflare` |
 
 S0 makes S1–S5 meaningful: without it, `owner` is never populated and the tenant fix is inert.
+
+---
+
+## 8. Outcome (2026-07-28)
+
+All slices landed, plus one the design did not anticipate.
+
+| Slice | Commit | Note |
+|---|---|---|
+| S0 automatic AsyncLocalStorage | `cf9533e` | `nodejs_compat` now required; zero user code |
+| S1 `StoredEntry.owner` | `ac998b2` | out-of-band, never on the wire |
+| S2 partitioned store | `76fc4e0` | also fixes noisy-tenant eviction |
+| S3 owner-scoped drain | `70d45c9` | |
+| **S4.5 wire the store in** | `a63eb6c` | **not in the original plan — see below** |
+| S4 DO stamps its id | `3be6fce` | |
+| S5 real-workerd e2e | this | miniflare + three co-located DOs |
+
+**S4.5 is the lesson.** S1–S4 all landed green, each with its own mutation loop, and the fix was still
+**inert**: nothing selected the partitioned store, so `launchEdge` kept using the plain memory one. 832
+passing tests and full per-slice mutation coverage did not notice, because every slice verified its own unit
+and nothing verified that the units were connected. It was caught by checking the wiring by hand before
+writing S5 — exactly the "components verified in isolation, integration unverified" gap the original review
+kept finding, reproduced while fixing it.
+
+**S5 is what makes that impossible to repeat.** `test/durable-object-tenants.e2e.ts` boots the real SDK,
+bundled as wrangler would, inside real `workerd` via miniflare, with three Durable Objects for three tenants
+co-located in one isolate. It asserts:
+
+1. the three tenants really did share one isolate (otherwise a green result would be vacuous);
+2. exactly one incident bundle, from the tenant that faulted;
+3. that bundle carries **neither** other tenant's secret.
+
+**Verified to have teeth, not merely green:** with `partitionCaptureByTenant` reverted to `false`, assertion
+3 fails with tenant C's real bundle containing `SECRET-OF-TENANT-A` and `SECRET-OF-TENANT-B` — the review's
+finding, reproduced end to end. It passes only because the fix is present and wired.
+
+This is the repo's first real-`workerd` coverage. `@edge-runtime/vm` cannot substitute: it has no Durable
+Object placement, so co-located tenants are not representable there.
+
+### Still open
+
+- §6 Q3 (configurable fail-closed policy) — left at the safe default; no consumer has asked.
+- The LRU partition bound (default 8) is untested against a workload with many short-lived DOs.

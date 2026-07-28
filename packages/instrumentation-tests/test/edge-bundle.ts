@@ -135,3 +135,25 @@ export async function bundleEdgeEntry(
 export function bundleEdgePackage(packageName: string): Promise<EdgeBundle> {
   return bundleEdgeSource(`export * from '${packageName}';`);
 }
+
+/**
+ * Bundle a Worker entry for REAL workerd (miniflare).
+ *
+ * Unlike the VM-smoke bundler this does NOT shim `node:async_hooks`: workerd with `nodejs_compat` provides
+ * the real module, and shimming it would defeat the point of running on the real runtime. It stays external
+ * so workerd resolves it at load.
+ */
+export async function bundleWorkerEntry(entryFile: string): Promise<string> {
+  const result = await build({
+    entryPoints: [entryFile],
+    bundle: true,
+    minify: false, // readable in failure output
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    external: ['node:*'],
+    legalComments: 'none',
+    write: false,
+  });
+  return result.outputFiles[0]?.text ?? '';
+}

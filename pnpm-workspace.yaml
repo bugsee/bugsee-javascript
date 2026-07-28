@@ -15,6 +15,9 @@ allowBuilds:
   # sharp (Astro's image optimization, transitive via astro — a @bugsee/astro devDep) isn't needed for the
   # adapter code or tests; skip its native-binary build.
   sharp: false
+  # workerd is the REAL Cloudflare Workers runtime, used by the miniflare e2e that proves Durable Object
+  # tenant isolation (Wave 0.1 S5). Its postinstall downloads the platform binary, so the build must run.
+  workerd: true
 
 minimumReleaseAgeExclude:
   - '@bugsee/bugsee-cli@0.7.2'
