@@ -113,8 +113,14 @@ export interface CaptureStore {
    * ~every second with the current wall-clock ms (driven by the Client; edge/lambda may skip it).
    */
   tick(nowMs: number): void;
-  /** Freeze the current in-window records into a snapshot for export; the live store keeps rolling. */
-  snapshot(): CaptureSnapshot;
+  /**
+   * Freeze the current in-window records into a snapshot for export; the live store keeps rolling.
+   *
+   * `options.owner` scopes the snapshot to ONE tenant. Stores that do not partition may ignore it; the
+   * partitioned store uses it to keep one Durable Object's incident bundle free of every other tenant's
+   * capture (docs/design/cloudflare-tenant-isolation.md).
+   */
+  snapshot(options?: { owner?: string }): CaptureSnapshot;
   /** Discard all live records. */
   clear(): void;
 }
@@ -158,10 +164,12 @@ export interface CaptureAggregator {
  * snapshot — the live store keeps rolling throughout (no drain-on-read).
  */
 export interface CaptureExporter {
-  /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot. */
-  stream(): AsyncIterableIterator<CaptureDataEntry>;
-  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7). */
-  drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
+  /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot.
+   *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
+  stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry>;
+  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7).
+   *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
+  drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>>;
 }
 
 /**

@@ -156,3 +156,55 @@ describe('createCaptureExporter — factory', () => {
     expect(entry?.data).toEqual({ m: 'x' });
   });
 });
+
+// S3 (docs/design/cloudflare-tenant-isolation.md §4.3): the exporter scopes the snapshot to one tenant.
+//
+// The partitioned store (S2) can already isolate; this is what ASKS it to. Without the owner reaching
+// snapshot(), every incident still drains every tenant — the leak, unchanged.
+describe('createCaptureExporter — owner-scoped export', () => {
+  const snapshotOf = (records: StoredEntry[]) => ({
+    stream: async function* () {
+      for (const r of records) yield r;
+    },
+    drainAll: async () => {
+      const m = new Map<StoredEntry['type'], StoredEntry[]>();
+      for (const r of records) m.set(r.type, [...(m.get(r.type) ?? []), r]);
+      return m;
+    },
+    release: () => {},
+  });
+
+  /** A store that records the options it was snapshotted with. */
+  const spyStore = () => {
+    const calls: Array<{ owner?: string } | undefined> = [];
+    const store: CaptureStore = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: (options?: { owner?: string }) => {
+        calls.push(options);
+        return snapshotOf([{ type: 'log', timestamp: 1, serialized: '{"timestamp":1,"data":{}}' }]);
+      },
+    };
+    return { store, calls };
+  };
+
+  it('drain forwards the owner to the store snapshot', async () => {
+    const { store, calls } = spyStore();
+    await createCaptureExporter(store).drain({ owner: 'tenant-C' });
+    expect(calls).toEqual([{ owner: 'tenant-C' }]);
+  });
+
+  it('stream forwards the owner to the store snapshot', async () => {
+    const { store, calls } = spyStore();
+    const it = createCaptureExporter(store).stream({ owner: 'tenant-C' });
+    await it.next();
+    expect(calls[0]).toEqual({ owner: 'tenant-C' });
+  });
+
+  it('drain without an owner snapshots unscoped (single-tenant path unchanged)', async () => {
+    const { store, calls } = spyStore();
+    await createCaptureExporter(store).drain();
+    expect(calls[0]?.owner).toBeUndefined();
+  });
+});

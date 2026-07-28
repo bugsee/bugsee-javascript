@@ -17,6 +17,7 @@ import { BugseeError } from './errors';
 import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
+import { createPartitionedCaptureStore } from './partitioned-capture-store';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
@@ -1457,5 +1458,67 @@ describe('createClient — capture-store tick timer', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// S3 (docs/design/cloudflare-tenant-isolation.md §4.3): an incident drains only the faulting TENANT.
+//
+// The client-level statement of the leak proven on real workerd, where tenant C's bundle carried tenant
+// A's and B's secrets (docs/review/cloudflare.md SEV1 #2). Store, aggregator and exporter are all REAL
+// here — only the context provider is driven, standing in for per-DO contexts in one isolate.
+describe('createClient — per-tenant capture isolation', () => {
+  it('an incident in one tenant enqueues that tenant only', async () => {
+    let current: RequestContext | undefined;
+    const store = createPartitionedCaptureStore({
+      createPartition: () => createMemoryCaptureStore(),
+    });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+      contextProvider: { getCurrent: () => current },
+    });
+
+    current = { contextId: 'ca', owner: 'tenant-A' };
+    client.log('SECRET-OF-A');
+    current = { contextId: 'cb', owner: 'tenant-B' };
+    client.log('SECRET-OF-B');
+    current = { contextId: 'cc', owner: 'tenant-C' };
+    client.log('INCIDENT-IN-C');
+    await client.logException(new Error('boom in C'));
+
+    const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const text = Object.values(files)
+      .map((b) => strFromU8(b))
+      .join('\n');
+    expect(text).toContain('INCIDENT-IN-C');
+    expect(text).not.toContain('SECRET-OF-A');
+    expect(text).not.toContain('SECRET-OF-B');
+  });
+
+  it('with no owners in play, the bundle still carries everything (single-tenant unchanged)', async () => {
+    const store = createPartitionedCaptureStore({
+      createPartition: () => createMemoryCaptureStore(),
+    });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+    });
+    client.log('FIRST');
+    client.log('SECOND');
+    await client.logException(new Error('boom'));
+    const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const text = Object.values(files)
+      .map((b) => strFromU8(b))
+      .join('\n');
+    expect(text).toContain('FIRST');
+    expect(text).toContain('SECOND');
   });
 });
