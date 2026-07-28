@@ -12,6 +12,7 @@
 import { fileURLToPath } from 'node:url';
 import { EdgeVM } from '@edge-runtime/vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { assertNoContractViolations } from './bundle';
 import { type MockCollector, startMockCollector } from './collector';
 import { bundleEdgeEntry, bundleEdgePackage } from './edge-bundle';
 
@@ -99,5 +100,14 @@ describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () 
     await runSmoke('__runDurableObject');
     expect(incidentIssue('durable-object vm incident')).toBeDefined();
     expect(collector.uploads.length).toBeGreaterThan(before);
+  });
+
+  // Runs last, so it covers every upload the three smokes above produced. The collector schema-validates
+  // each session/issue/manifest/request.json and RECORDS failures; that recording is inert unless a suite
+  // reads it, and until now only the node/bun/deno suite did. A wire break on the EDGE assembler — a
+  // different assembler from the node one — would have been recorded and silently discarded
+  // (docs/review/session-integration-review.md SEV2 #1).
+  it('none of the edge upload paths violate the upload contract', () => {
+    assertNoContractViolations(collector);
   });
 });

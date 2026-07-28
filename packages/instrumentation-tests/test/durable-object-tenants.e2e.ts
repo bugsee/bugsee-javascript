@@ -12,7 +12,7 @@
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { Miniflare } from 'miniflare';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { assertBundleIntegrity, parseBundles } from './bundle';
+import { assertBundleIntegrity, assertNoContractViolations, parseBundles } from './bundle';
 import { type MockCollector, startMockCollector } from './collector';
 import { bundleWorkerEntry } from './edge-bundle';
 
@@ -105,5 +105,13 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
       .join('\n');
     expect(all).not.toContain(SECRET_A);
     expect(all).not.toContain(SECRET_B);
+  });
+
+  it('the edge upload path emits nothing that violates the upload contract', () => {
+    // The collector schema-validates every session/issue/manifest/request.json and RECORDS failures. That
+    // recording is inert unless a suite reads it — and until now only the node/bun/deno suite did, so a
+    // wire break on the EDGE assembler (a different assembler, and the one this session built) would have
+    // been recorded and silently discarded (docs/review/session-integration-review.md SEV2 #1).
+    assertNoContractViolations(collector);
   });
 });
