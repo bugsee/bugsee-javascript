@@ -104,6 +104,14 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   ) {
     return undefined;
   }
+  // `JSON.stringify(undefined)` returns undefined, NOT a string — so an omitted or unserialisable `p` would
+  // break this function's own `payload: string` contract and reach `store.add` with a non-string
+  // `serialized`, throwing out of the ipcMain listener (docs/review/electron-wave02-review.md SEV1 #1).
+  // Validate rather than trust the declared type: `p` is untrusted renderer input like every other field.
+  const payload = JSON.stringify(message.p);
+  if (typeof payload !== 'string') {
+    return undefined;
+  }
   return {
     type: message.t,
     seq,
@@ -112,7 +120,7 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
     timeOrigin,
     redacted: message.red ?? false,
     // Re-serialize the payload for the aggregator's `StoredEntry.serialized` (main-side, off the hot path).
-    payload: JSON.stringify(message.p),
+    payload,
   };
 }
 

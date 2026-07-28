@@ -187,3 +187,20 @@ describe('decodeStreamEntry — hostile renderer input', () => {
     }
   });
 });
+
+describe('decodeStreamEntry — the payload field', () => {
+  it('rejects a message with NO payload rather than emitting a non-string one', () => {
+    // JSON.stringify(undefined) returns undefined, NOT a string — so an omitted `p` silently broke the
+    // decoder's own `payload: string` contract and reached store.add({ serialized: undefined }), throwing
+    // out of the ipcMain listener on the memory store (docs/review/electron-wave02-review.md SEV1 #1).
+    expect(decodeStreamEntry('{"k":"entry","t":"log"}')).toBeUndefined();
+    expect(decodeStreamEntry('{"k":"entry","t":"log","p":null}')?.payload).toBe('null');
+  });
+
+  it('always yields a string payload for every accepted message', () => {
+    for (const p of ['{}', '[]', '1', '"s"', 'true', 'null', '{"a":{"b":[1,2]}}']) {
+      const decoded = decodeStreamEntry(`{"k":"entry","t":"log","p":${p}}`);
+      expect(typeof decoded?.payload).toBe('string');
+    }
+  });
+});
