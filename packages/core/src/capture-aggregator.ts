@@ -57,7 +57,16 @@ export function createCaptureAggregator(
   const route = (entry: CaptureDataEntry): void => {
     try {
       stamp(entry);
-      store.add({ type: entry.type, timestamp: entry.timestamp, serialized: entry.serialize() });
+      // The owner is resolved from the SAME context read as the stamp, and passed OUT-OF-BAND so a
+      // partitioning store can route without deserializing (contracts.ts StoredEntry.owner). It is
+      // deliberately not written into the payload — the wire is unchanged by tenant partitioning.
+      const owner = options.getContext?.()?.owner;
+      store.add({
+        type: entry.type,
+        timestamp: entry.timestamp,
+        serialized: entry.serialize(),
+        ...(owner !== undefined ? { owner } : {}),
+      });
     } catch (error) {
       // Capture must never affect the app: a non-serializable payload or a store/disk error is reported,
       // not propagated into the synchronous interceptor/provider call that fed us. The entry is dropped.

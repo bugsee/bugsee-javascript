@@ -85,6 +85,15 @@ export interface StoredEntry {
   timestamp: number;
   /** The entry's serialized string form. */
   serialized: string;
+  /**
+   * Tenant/owner key for store partitioning, kept out-of-band for the same reason as `timestamp` — a store
+   * must route on it without deserializing. Set from the active `RequestContext.owner`; `undefined` on the
+   * single-tenant path, where partitioning is a no-op.
+   *
+   * Exists because Durable Objects for different tenants share one isolate, one client and one capture ring
+   * (docs/design/cloudflare-tenant-isolation.md).
+   */
+  owner?: string;
 }
 
 /**
