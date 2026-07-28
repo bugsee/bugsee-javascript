@@ -327,3 +327,39 @@ describe('launchEdge — asyncLocalStorage injection', () => {
     await client.stop?.();
   });
 });
+
+// S4.5 (docs/design/cloudflare-tenant-isolation.md): the partitioned store must actually be WIRED IN.
+//
+// S1-S4 built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
+// selected the partitioned store, so the whole chain was inert. This is the switch.
+describe('launchEdge — partitionCaptureByTenant', () => {
+  it('keeps tenants apart in the capture store when enabled', async () => {
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: true,
+      carrier: {},
+    } as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as {
+      add: (r: { type: string; timestamp: number; serialized: string; owner?: string }) => void;
+      snapshot: (o?: { owner?: string }) => {
+        stream: () => AsyncIterableIterator<{ serialized: string }>;
+      };
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'SECRET-A', owner: 'A' });
+    store.add({ type: 'log', timestamp: 2, serialized: 'SECRET-B', owner: 'B' });
+    const seen: string[] = [];
+    for await (const r of store.snapshot({ owner: 'B' }).stream()) seen.push(r.serialized);
+    expect(seen).toEqual(['SECRET-B']);
+    await client.stop?.();
+  });
+
+  it('uses the plain single-tenant store by default (unchanged for Vercel Edge)', async () => {
+    const client = launchEdge('tok', { carrier: {} } as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeUndefined(); // not a PartitionedCaptureStore
+    await client.stop?.();
+  });
+});

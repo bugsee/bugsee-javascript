@@ -27,6 +27,9 @@ export function launch(appToken: string, options: BugseeEdgeLaunchOptions = {}):
   return launchEdge(appToken, {
     platformType: 'workers',
     asyncLocalStorage: new AsyncLocalStorage(),
+    // Durable Objects for different customers share one isolate and therefore one capture ring; partition
+    // by tenant so an incident in one cannot upload another's data (SEV1 #2).
+    partitionCaptureByTenant: true,
     ...options,
   });
 }

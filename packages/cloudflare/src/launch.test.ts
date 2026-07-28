@@ -95,3 +95,24 @@ describe('launch (Cloudflare) — automatic AsyncLocalStorage', () => {
     expect(options.asyncLocalStorage).toBe(mine);
   });
 });
+
+// S4.5: Cloudflare turns tenant partitioning ON by default — it is where Durable Objects live.
+describe('launch (Cloudflare) — tenant partitioning', () => {
+  it('enables partitionCaptureByTenant by default', () => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok');
+    expect(spy).toHaveBeenCalledWith(
+      'tok',
+      expect.objectContaining({ partitionCaptureByTenant: true }),
+    );
+  });
+
+  it('lets a caller opt out explicitly', () => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok', { partitionCaptureByTenant: false });
+    expect(spy).toHaveBeenCalledWith(
+      'tok',
+      expect.objectContaining({ partitionCaptureByTenant: false }),
+    );
+  });
+});

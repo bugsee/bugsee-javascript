@@ -13,6 +13,7 @@ import {
   createBundleUploader,
   createClient,
   createMemoryCaptureStore,
+  createPartitionedCaptureStore,
   createServiceContainer,
   createUploadPipeline,
   defineService,
@@ -81,6 +82,16 @@ export interface BugseeEdgeLaunchOptions {
    * ```
    */
   asyncLocalStorage?: RunScopedStore<RequestContext>;
+  /**
+   * Keep each TENANT's capture in its own partition, so an incident uploads only the faulting tenant's
+   * data. Set by `@bugsee/cloudflare`, where many Durable Objects for different customers share one
+   * isolate and therefore one capture ring — the leak proven on real workerd
+   * (docs/review/cloudflare.md SEV1 #2, docs/design/cloudflare-tenant-isolation.md).
+   *
+   * Default false: Vercel Edge and plain fetch handlers are single-tenant, and partitioning there would be
+   * overhead with nothing to separate.
+   */
+  partitionCaptureByTenant?: boolean;
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
   endpoint?: string;
   /** SDK version reported in the environment. Default the package version. */
@@ -185,13 +196,21 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  const memoryStoreOptions = {
+    maxRecordingTimeMs: maxRecordingTime * 1000,
+    maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  };
   const captureStore =
     options.captureStore ??
-    createMemoryCaptureStore({
-      maxRecordingTimeMs: maxRecordingTime * 1000,
-      maxDataSizeBytes: maxDataSize * 1024 * 1024,
-      ...(options.clock !== undefined ? { clock: options.clock } : {}),
-    });
+    (options.partitionCaptureByTenant === true
+      ? // One ring PER TENANT. Each partition carries the full window/byte budget, so a noisy tenant can
+        // no longer evict a quiet one; the partition count is LRU-bounded inside the store.
+        createPartitionedCaptureStore({
+          createPartition: () => createMemoryCaptureStore(memoryStoreOptions),
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : createMemoryCaptureStore(memoryStoreOptions));
 
   // The run()-only edge context store: registered under EdgeContextStoreToken (for E5's wrapper) AND passed as
   // the core ContextProvider (so captures within a request get the contextId/trace stamps).
