@@ -7,7 +7,7 @@
 //   `control` main→renderer: pause/resume/flush/stop + the `session` handshake reply (carries the session id).
 //   `hello`   renderer→main: the handshake request that prompts the main's `session` reply.
 import type { StreamingCaptureEntry } from '@bugsee/core';
-import type { FileType } from '@bugsee/protocol';
+import { DEFAULT_FILENAMES, type FileType } from '@bugsee/protocol';
 
 /** A decoded streamed entry (the main receiver's view). `payload` is re-serialized for `StoredEntry.serialized`. */
 export interface DecodedStreamEntry {
@@ -46,6 +46,38 @@ interface WireEntry {
   p?: unknown;
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Renderer input is UNTRUSTED. The preload exposes `post()` to the page's main world, so anything an
+// XSS or a compromised renderer-side dependency can reach is attacker-controlled. Two fields are
+// security-critical because they leave the SDK's own data structures:
+//
+//   `t` — becomes `StoredEntry.type`, which the disk-backed chunk store (the DEFAULT on Electron main)
+//         `path.join`s into a filename. An unvalidated value escapes the capture root with `..`, giving
+//         an append-only arbitrary file write with attacker-controlled content — code execution as the
+//         user once it targets a shell rc file or any `.js` the app loads.
+//   `ts` — is written verbatim into the frame `${timestamp}\t${serialized}\n`, so a string with
+//         newlines injects records.
+//
+// Both are therefore validated against a closed set / a numeric check, and a message failing either is
+// DROPPED rather than sanitised: a renderer sending them is misbehaving, and there is no correct entry
+// to recover (docs/review/electron.md SEV1 #1).
+
+/** Every FileType the SDK emits — the closed set `t` must belong to. */
+const KNOWN_FILE_TYPES: ReadonlySet<string> = new Set<string>([
+  ...Object.keys(DEFAULT_FILENAMES),
+  'attachment', // the one FileType with no default filename
+]);
+
+function isKnownFileType(value: unknown): value is FileType {
+  return typeof value === 'string' && KNOWN_FILE_TYPES.has(value);
+}
+
+/** `undefined` input → 0 (the field is optional); a present-but-non-finite value → `undefined` (reject). */
+function optionalFiniteNumber(value: unknown): number | undefined {
+  if (value === undefined) return 0;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 /** Decode a wire string into a {@link DecodedStreamEntry}, or `undefined` if it isn't a valid `entry`. */
 export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   let message: WireEntry;
@@ -54,15 +86,30 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   } catch {
     return undefined;
   }
-  if (message.k !== 'entry' || message.t === undefined) {
+  if (message.k !== 'entry' || !isKnownFileType(message.t)) {
+    return undefined;
+  }
+  // Numeric fields are VALIDATED, not coerced. `timestamp` is written verbatim into the on-disk frame
+  // (`${timestamp}\t${serialized}\n`), so a string containing newlines injects records — the proven
+  // exploit used exactly that to smuggle a shell script into the file it escaped to.
+  const seq = optionalFiniteNumber(message.s);
+  const timestamp = optionalFiniteNumber(message.ts);
+  const mono = optionalFiniteNumber(message.mono);
+  const timeOrigin = optionalFiniteNumber(message.o);
+  if (
+    seq === undefined ||
+    timestamp === undefined ||
+    mono === undefined ||
+    timeOrigin === undefined
+  ) {
     return undefined;
   }
   return {
     type: message.t,
-    seq: message.s ?? 0,
-    timestamp: message.ts ?? 0,
-    mono: message.mono ?? 0,
-    timeOrigin: message.o ?? 0,
+    seq,
+    timestamp,
+    mono,
+    timeOrigin,
     redacted: message.red ?? false,
     // Re-serialize the payload for the aggregator's `StoredEntry.serialized` (main-side, off the hot path).
     payload: JSON.stringify(message.p),

