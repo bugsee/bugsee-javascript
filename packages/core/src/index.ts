@@ -155,6 +155,11 @@ export {
   resolveLaunchOptions,
 } from './options';
 export {
+  createPartitionedCaptureStore,
+  type PartitionedCaptureStore,
+  type PartitionedCaptureStoreOptions,
+} from './partitioned-capture-store';
+export {
   createRateLimiter,
   type RateLimiter,
   type RateLimiterOptions,
