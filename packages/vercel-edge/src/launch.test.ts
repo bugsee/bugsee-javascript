@@ -423,3 +423,31 @@ describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
     expect(String(errors[0])).toContain('per-tenant isolation is NOT active');
   });
 });
+
+describe('launchEdge — reused non-partitioned client diagnostic', () => {
+  it('names the isolation loss when a partitioning launch reuses a non-partitioned client', () => {
+    // Review pass 2 SEV3 #3: `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
+    // then a Durable Object's lazy launcher reuses that carrier client — which does not partition. The
+    // only signal was the generic "called more than once", which does not mention the leak.
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier })); // first: NOT partitioned
+    launchTracked(
+      'tok',
+      baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+    );
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
+    expect(errors.map(String).join('\n')).toContain("another tenant's capture");
+  });
+
+  it('stays quiet when the reused client DOES partition', () => {
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier, partitionCaptureByTenant: true }));
+    launchTracked(
+      'tok',
+      baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+    );
+    expect(errors.map(String).join('\n')).not.toContain('per-tenant isolation');
+  });
+});

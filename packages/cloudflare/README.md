@@ -107,5 +107,19 @@ problem is visible immediately instead of surfacing as silently missing context,
 per-tenant isolation in production. (A wrangler-shaped bundle still *builds*, since `node:*` is external; the
 failure is at worker load.) `@sentry/cloudflare` requires the flag for the same reason.
 
+**Per-tenant capture isolation.** Durable Objects for different customers share one isolate, so their
+capture is partitioned per DO id and an incident uploads only the faulting tenant's data. This is on by
+default; `partitionCaptureByTenant: false` disables it.
+
+The `maxDataSize` budget is **divided** across `maxTenantPartitions + 1` rings (default 8 + 1) so total
+capture memory stays within the cap however many tenants appear — the alternative, a full budget per
+partition, measured 116 MB against a 128 MB isolate. The trade-off is per-tenant headroom: with the 10 MB
+default each tenant gets ~1.16 MB of rolling window. If your Workers host few tenants per isolate, raise
+headroom with `maxDataSize`, or lower `maxTenantPartitions` to divide the budget fewer ways:
+
+```ts
+launch(env.BUGSEE_APP_TOKEN, { maxTenantPartitions: 3 }); // 10 MB / 4 ≈ 2.5 MB per tenant
+```
+
 Advanced: `launch(token, { asyncLocalStorage })` accepts an explicit store, for tests or a runtime that
 provides its own. Callers' options win over the default. Tier 2.

@@ -273,3 +273,36 @@ describe('createPartitionedCaptureStore — lifecycle + bounds', () => {
     expect(() => store.add(rec('a', '1'))).not.toThrow();
   });
 });
+
+describe('createPartitionedCaptureStore — bounds on the eviction bookkeeping', () => {
+  it('bounds the evicted-owner set instead of growing it forever', () => {
+    // Review pass 2 SEV2 #1: the first round of fixes tracked evicted owners in an UNBOUNDED Set —
+    // ~101 B/tenant forever on an isolate churning short-lived DOs, i.e. the same leak class the
+    // partitioning work exists to prevent, reintroduced by its own fix.
+    const errors: unknown[] = [];
+    const store = createPartitionedCaptureStore({
+      createPartition: fakePartition,
+      maxPartitions: 1,
+      onError: (e) => errors.push(e),
+    });
+    for (let i = 0; i < 200; i += 1) store.add(rec(`tenant-${i}`, String(i)));
+    // The very first tenants are long forgotten, so their incidents are no longer diagnosable...
+    store.snapshot({ owner: 'tenant-0' });
+    expect(errors).toEqual([]);
+    // ...while a RECENTLY evicted one still is.
+    store.snapshot({ owner: 'tenant-198' });
+    expect(String(errors[0])).toContain('evicted');
+  });
+
+  it('coerces an absurd maxPartitions instead of unbounding or zeroing the store', () => {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, 2.7]) {
+      const store = createPartitionedCaptureStore({
+        createPartition: fakePartition,
+        maxPartitions: bad,
+      });
+      for (let i = 0; i < 40; i += 1) store.add(rec(`t${i}`, String(i)));
+      expect(store.ownerCount()).toBeGreaterThanOrEqual(1);
+      expect(store.ownerCount()).toBeLessThanOrEqual(8); // never unbounded
+    }
+  });
+});

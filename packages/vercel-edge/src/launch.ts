@@ -7,6 +7,7 @@ import {
 import {
   type BugseeClient,
   type CaptureStore,
+  CaptureStoreToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   createBugseeApi,
@@ -178,6 +179,27 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
         'Bugsee.launch() called more than once in this isolate; the repeat call is ignored',
       ),
     );
+    // A repeat launch that ASKED for tenant partitioning gets the first client's store, which may not
+    // partition — e.g. `launchEdge(token)` ran first (it is re-exported by @bugsee/cloudflare) and a
+    // Durable Object's lazy launcher then reuses it. The generic message above does not name that
+    // consequence, and silence here is how the cross-tenant leak comes back (review pass 2, SEV3 #3).
+    if (options.partitionCaptureByTenant === true) {
+      const store = (alreadyLaunched as unknown as { getService?: (t: unknown) => unknown })
+        .getService;
+      const existing = store?.call(alreadyLaunched, CaptureStoreToken) as
+        | { owners?: () => string[] }
+        | undefined;
+      if (existing?.owners === undefined) {
+        options.onError?.(
+          new Error(
+            'Bugsee: this launch requested per-tenant isolation but an earlier launch in this isolate ' +
+              'created a NON-partitioned client, which is reused. On Cloudflare that means one Durable ' +
+              "Object incident can upload another tenant's capture. Launch via @bugsee/cloudflare first, " +
+              'or do not call launchEdge directly.',
+          ),
+        );
+      }
+    }
     return alreadyLaunched;
   }
 

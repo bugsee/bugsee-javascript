@@ -19,6 +19,12 @@ import { bundleWorkerEntry } from './edge-bundle';
 const SECRET_A = 'SECRET-OF-TENANT-A';
 const SECRET_B = 'SECRET-OF-TENANT-B';
 const INCIDENT_C = 'INCIDENT-IN-C';
+// Tenant C's own LOG, deliberately distinct from its error string. Review pass 2 SEV2 #2: when C's secret
+// and its thrown message were the same token, the suite passed with the owner-scoped drain killed and the
+// bundle stripped of logs.json entirely — the error text in request.json/crash.json satisfied the
+// assertion. A separate token means the suite can only pass if C's CAPTURE actually survived, so the test
+// detects "traded the leak for blindness" as well as the leak itself.
+const OWN_LOG_C = 'C-OWN-LOG-SECRET';
 
 describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
   let collector: MockCollector;
@@ -42,7 +48,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
     // Three tenants, one isolate. A and B return cleanly; C faults and produces the incident bundle.
     await mf.dispatchFetch(`http://do.test/?tenant=A&secret=${SECRET_A}`);
     await mf.dispatchFetch(`http://do.test/?tenant=B&secret=${SECRET_B}`);
-    await mf.dispatchFetch(`http://do.test/?tenant=C&secret=${INCIDENT_C}&fault=1`);
+    await mf.dispatchFetch(`http://do.test/?tenant=C&secret=${OWN_LOG_C}&fault=1`);
     // The DO awaits its flush in-request (ctx.waitUntil is inert on DOs), so the upload has landed.
   }, 120_000);
 
@@ -76,6 +82,19 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
       .map((bytes) => strFromU8(bytes as Uint8Array))
       .join('\n');
     expect(all).toContain(INCIDENT_C);
+  });
+
+  it('the faulting tenant KEPT its own capture (isolation must not become blindness)', () => {
+    // Asserts on logs.json specifically, and on a token that appears ONLY in C's log — not in its error.
+    // Without this, killing the owner-scoped drain produced a bundle with no logs.json at all and the
+    // suite still passed (review pass 2, SEV2 #2).
+    const bundles = parseBundles(collector);
+    const logs = bundles
+      .map((b) => b.files['logs.json'])
+      .filter((f): f is Uint8Array => f !== undefined)
+      .map((bytes) => strFromU8(bytes));
+    expect(logs.length).toBeGreaterThan(0); // logs.json must exist at all
+    expect(logs.join('\n')).toContain(OWN_LOG_C);
   });
 
   it('tenant C’s bundle carries NEITHER tenant A’s NOR tenant B’s secret', () => {

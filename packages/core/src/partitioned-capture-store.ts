@@ -39,17 +39,31 @@ export interface PartitionedCaptureStore extends CaptureStore {
 }
 
 const DEFAULT_MAX_PARTITIONS = 8;
+// How many EVICTED owner keys to remember, as a multiple of the partition bound. Enough that a tenant
+// cycling in and out is still diagnosable; small enough that the set can never become a memory problem.
+const EVICTED_TRACKING_FACTOR = 4;
 
 export function createPartitionedCaptureStore(
   options: PartitionedCaptureStoreOptions,
 ): PartitionedCaptureStore {
-  const maxPartitions = options.maxPartitions ?? DEFAULT_MAX_PARTITIONS;
+  // A non-finite, non-integer or < 1 value would silently either remove the bound or make every partition
+  // unusable, so it is coerced to something sane rather than trusted (review pass 2, SEV3 #4).
+  const requested = options.maxPartitions ?? DEFAULT_MAX_PARTITIONS;
+  const maxPartitions =
+    Number.isFinite(requested) && requested >= 1 ? Math.floor(requested) : DEFAULT_MAX_PARTITIONS;
   const onError = options.onError ?? ((): void => {});
   // Insertion-ordered, and re-inserted on touch — so the first key is the least-recently-used.
   const owned = new Map<string, CaptureStore>();
-  // Owners whose partition was reclaimed by the LRU bound. Kept (keys only — the ring itself is freed) so a
-  // later incident in that tenant can be diagnosed rather than silently producing an empty bundle.
+  // Owners whose partition was reclaimed by the LRU bound. Keys only — the ring itself is freed — so a later
+  // incident in that tenant can be diagnosed rather than silently producing an empty bundle.
+  //
+  // BOUNDED, deliberately. An unbounded set here is a monotone leak on an isolate churning through
+  // short-lived per-user Durable Objects: ~101 B of heap per distinct owner, forever, against the same
+  // 128 MB ceiling this whole partitioning effort exists to respect (review pass 2, SEV2 #1 — a leak the
+  // first round of fixes introduced while removing another). Beyond the cap the oldest key is dropped: the
+  // only loss is diagnostic precision for a long-departed tenant, which is worth far less than the memory.
   const evicted = new Set<string>();
+  const maxEvictedTracked = Math.max(1, maxPartitions) * EVICTED_TRACKING_FACTOR;
   let defaultPartition: CaptureStore | undefined;
 
   const guard = (fn: () => void): void => {
@@ -82,6 +96,11 @@ export function createPartitionedCaptureStore(
       }
       owned.delete(lru);
       evicted.add(lru);
+      while (evicted.size > maxEvictedTracked) {
+        const oldest = evicted.values().next().value as string | undefined;
+        if (oldest === undefined) break;
+        evicted.delete(oldest);
+      }
     }
     return created;
   };
