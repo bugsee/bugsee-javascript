@@ -26,6 +26,7 @@ import {
   type HttpTransport,
   type RequestContext,
   resolveLaunchOptions,
+  resolveMaxPartitions,
   type Scheduler,
   serviceToken,
   setCarrierClient,
@@ -184,11 +185,20 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     // Durable Object's lazy launcher then reuses it. The generic message above does not name that
     // consequence, and silence here is how the cross-tenant leak comes back (review pass 2, SEV3 #3).
     if (options.partitionCaptureByTenant === true) {
-      const store = (alreadyLaunched as unknown as { getService?: (t: unknown) => unknown })
-        .getService;
-      const existing = store?.call(alreadyLaunched, CaptureStoreToken) as
-        | { owners?: () => string[] }
-        | undefined;
+      // Guarded: this runs inside launch() against a client we did not create — it may lack the service,
+      // be mid-teardown, or be a foreign object someone else placed on the carrier. A throw here would
+      // break launch() itself, and the SDK crashing the host app at startup is far worse than the missing
+      // warning it replaces.
+      let existing: { owners?: () => string[] } | undefined;
+      try {
+        const store = (alreadyLaunched as unknown as { getService?: (t: unknown) => unknown })
+          .getService;
+        existing = store?.call(alreadyLaunched, CaptureStoreToken) as
+          | { owners?: () => string[] }
+          | undefined;
+      } catch {
+        existing = undefined; // unknown store kind → warn, which is the safe direction
+      }
       if (existing?.owners === undefined) {
         options.onError?.(
           new Error(
@@ -236,7 +246,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   const partitionByTenant = options.partitionCaptureByTenant === true;
-  const maxTenantPartitions = options.maxTenantPartitions ?? DEFAULT_MAX_TENANT_PARTITIONS;
+  // The SAME coercion the store applies, so the divisor below and the store's bound can never disagree.
+  const maxTenantPartitions = resolveMaxPartitions(options.maxTenantPartitions);
   // A caller-supplied store WINS over the partitioning switch — and that silently reinstates the
   // cross-tenant leak, so say so rather than failing open quietly.
   if (partitionByTenant && options.captureStore !== undefined) {

@@ -451,3 +451,75 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
     expect(errors.map(String).join('\n')).not.toContain('per-tenant isolation');
   });
 });
+
+describe('launchEdge — the partition bound and the budget divisor cannot disagree', () => {
+  // Review pass 2-fixes SEV2 #1: the store coerced maxPartitions but launchEdge's divisor used the RAW
+  // value, so `0` restored a full budget per partition (the 90 MB blow-up) and `NaN` produced a NaN budget
+  // that disabled the byte cap outright. Both now route through the one exported coercion.
+  const budgetsFor = async (maxTenantPartitions: unknown): Promise<number[]> => {
+    const sizes: number[] = [];
+    const core = await import('@bugsee/core');
+    const spy = vi.spyOn(core, 'createMemoryCaptureStore').mockImplementation((o) => {
+      if (o?.maxDataSizeBytes !== undefined) sizes.push(o.maxDataSizeBytes);
+      return {
+        add: () => {},
+        tick: () => {},
+        clear: () => {},
+        snapshot: () => ({
+          stream: async function* () {},
+          drainAll: async () => new Map(),
+          release: () => {},
+        }),
+      };
+    });
+    launchTracked(
+      'tok',
+      baseOptions({
+        partitionCaptureByTenant: true,
+        maxTenantPartitions: maxTenantPartitions as number,
+      }),
+    );
+    const store = clients.at(-1)?.getService(core.CaptureStoreToken) as unknown as {
+      add: (r: unknown) => void;
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'x', owner: 'a' });
+    spy.mockRestore();
+    return sizes;
+  };
+
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2.7, 'eight']) {
+    it(`derives a finite, bounded per-partition budget for ${String(bad)}`, async () => {
+      const sizes = await budgetsFor(bad);
+      expect(sizes.length).toBeGreaterThan(0);
+      for (const size of sizes) {
+        expect(Number.isFinite(size)).toBe(true);
+        expect(size).toBeGreaterThan(0);
+        // Never the whole budget: that is the blow-up the division exists to prevent.
+        expect(size).toBeLessThan(10 * 1024 * 1024);
+      }
+    });
+  }
+});
+
+describe('launchEdge — the reuse diagnostic never breaks launch()', () => {
+  it('survives an already-launched client whose getService throws', () => {
+    // Launch a REAL client onto the carrier first, so getCarrierClient actually returns something and the
+    // diagnostic path is genuinely entered — then make its getService hostile. An earlier version of this
+    // test used a hand-built carrier shape that getCarrierClient never resolved, so it passed while
+    // exercising nothing.
+    const carrier = {};
+    const first = launchTracked('tok', baseOptions({ carrier }));
+    (first as unknown as { getService: () => unknown }).getService = () => {
+      throw new Error('hostile');
+    };
+    const errors: unknown[] = [];
+    expect(() =>
+      launchEdge(
+        'tok',
+        baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+      ),
+    ).not.toThrow();
+    // And it still warns — a store it cannot inspect is treated as "not partitioning", the safe direction.
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
+  });
+});

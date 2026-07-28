@@ -43,14 +43,25 @@ const DEFAULT_MAX_PARTITIONS = 8;
 // cycling in and out is still diagnosable; small enough that the set can never become a memory problem.
 const EVICTED_TRACKING_FACTOR = 4;
 
+/**
+ * Coerce a requested partition bound to a usable integer.
+ *
+ * EXPORTED because the per-partition byte budget is derived from the same number somewhere else
+ * (`@bugsee/vercel-edge`'s launch divides `maxDataSize` by `bound + 1`). When only the store coerced,
+ * the two disagreed: `maxPartitions: 0` left the divisor at 0 → full budget per partition, resurrecting
+ * the 90 MB blow-up the division exists to prevent, and `NaN` produced a NaN budget that disabled the byte
+ * cap entirely (both proven empirically — docs/review/pass2-fixes-review.md SEV2 #1). One function, one
+ * answer, used by both sides.
+ */
+export function resolveMaxPartitions(requested: number | undefined): number {
+  const value = requested ?? DEFAULT_MAX_PARTITIONS;
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : DEFAULT_MAX_PARTITIONS;
+}
+
 export function createPartitionedCaptureStore(
   options: PartitionedCaptureStoreOptions,
 ): PartitionedCaptureStore {
-  // A non-finite, non-integer or < 1 value would silently either remove the bound or make every partition
-  // unusable, so it is coerced to something sane rather than trusted (review pass 2, SEV3 #4).
-  const requested = options.maxPartitions ?? DEFAULT_MAX_PARTITIONS;
-  const maxPartitions =
-    Number.isFinite(requested) && requested >= 1 ? Math.floor(requested) : DEFAULT_MAX_PARTITIONS;
+  const maxPartitions = resolveMaxPartitions(options.maxPartitions);
   const onError = options.onError ?? ((): void => {});
   // Insertion-ordered, and re-inserted on touch — so the first key is the least-recently-used.
   const owned = new Map<string, CaptureStore>();

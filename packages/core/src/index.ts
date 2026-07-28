@@ -158,6 +158,7 @@ export {
   createPartitionedCaptureStore,
   type PartitionedCaptureStore,
   type PartitionedCaptureStoreOptions,
+  resolveMaxPartitions,
 } from './partitioned-capture-store';
 export {
   createRateLimiter,
