@@ -141,11 +141,57 @@ the harness had no workerd coverage at all — this adds the first.
    store in the edge tier.
 3. **Should the fail-closed policy be configurable?** A single-tenant DO deployment might legitimately want
    unattributed entries. Default closed; option to open.
-4. **Wave 0.1a default.** `asyncLocalStorage` is currently opt-in, so `contextId`/owner will be absent
-   unless the user passes it — meaning this fix is inert without that step. Should `@bugsee/cloudflare`
-   ship a `/node-als` subpath that static-imports `node:async_hooks`, so users with `nodejs_compat` get it
-   automatically? That entry would only ever be imported by users who have the flag, so it cannot break
-   flagless bundles.
+4. ~~**Wave 0.1a default.**~~ **RESOLVED (2026-07-28): make it seamless — the user writes no code.** See §7.
 
-**Question 4 is the one that decides whether this fix reaches real users by default.** It should be settled
-before S1 starts.
+Questions 1–3 can be settled during implementation.
+
+---
+
+## 7. Resolved: automatic AsyncLocalStorage on Cloudflare (decision, 2026-07-28)
+
+**Decision:** `@bugsee/cloudflare` acquires `AsyncLocalStorage` itself and wires it into the context store.
+The user writes **no SDK code** for it — `launch(token)` is enough. Wave 0.1a's `asyncLocalStorage` option
+stays as an explicit override (tests, exotic runtimes), but nobody needs it on the happy path.
+
+**Mechanism:** a static `import { AsyncLocalStorage } from 'node:async_hooks'` in the Cloudflare package,
+which makes **`nodejs_compat` a required compatibility flag** for `@bugsee/cloudflare`.
+
+**Precedent — this is the industry norm, not a novel demand.** `@sentry/cloudflare` does exactly this:
+
+```ts
+// sentry-javascript/packages/cloudflare/src/async.ts:2-3
+// Note: Because we are using node:async_hooks, we need to set `node_compat` in the wrangler.toml
+import { AsyncLocalStorage } from 'node:async_hooks';
+```
+
+There is no flagless route: the review's workerd matrix confirms `globalThis.AsyncLocalStorage` is absent
+under every flag, and ALS is reachable *only* through `node:async_hooks`. So per-request context on
+Cloudflare requires the flag no matter who implements it. The only real choice is **how the requirement
+surfaces**.
+
+**The tradeoff, stated plainly.** A static import means a project without `nodejs_compat` fails at **build**
+with a resolver error, instead of building fine and silently degrading. That is a breaking change for any
+existing flagless deployment — but such a deployment gets **no working context isolation today anyway**, so
+nothing functional is lost; what changes is that the problem becomes visible instead of silent. Given the
+package is pre-1.0 and today's behaviour is "silently broken while the README claims otherwise", a loud
+build error is the better failure mode.
+
+**Why not the `/node-als` subpath** (the option this question originally proposed): it is not seamless. The
+user must know to import a different entry point — precisely the friction this decision rejects. It is
+retained only as a possible escape hatch (§7.1) if a flagless consumer ever turns up.
+
+### 7.1 Escape hatch (only if needed)
+
+If a real consumer cannot enable `nodejs_compat`, add a `@bugsee/cloudflare/no-node-compat` entry that omits
+the import and degrades to the single-slot store with the corrected warning. Do **not** build this
+speculatively — ship the seamless path first and add it on demand.
+
+### 7.2 Slice impact
+
+Adds **S0**, before S1:
+
+| Slice | Work | Package |
+|---|---|---|
+| **S0** | Static-import `AsyncLocalStorage`, wire it into `launchEdge` by default; `nodejs_compat` documented as required; README + warning updated again to say "required" rather than "pass it yourself"; verify a real `wrangler`/`workerd` build both with and without the flag | `cloudflare` |
+
+S0 makes S1–S5 meaningful: without it, `owner` is never populated and the tenant fix is inert.
