@@ -51,10 +51,20 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
     await collector?.close();
   });
 
-  it('the three tenants really did share ONE isolate (otherwise this test proves nothing)', () => {
-    // If workerd placed each DO in its own isolate there would be nothing to leak, and a green result
-    // below would be vacuous. One session per isolate is the observable proxy for co-location.
-    expect(collector.sessions.length).toBe(1);
+  it('the three tenants really did share ONE isolate (otherwise this test proves nothing)', async () => {
+    // If workerd placed each DO in its own isolate there would be nothing to leak and the assertions below
+    // would be vacuous, so this must be a REAL co-location check.
+    //
+    // The original proxy — `collector.sessions.length === 1` — could not do that job: a session is created
+    // per UPLOAD, and capture is incident-driven, so tenants A and B never upload. It stayed green with a
+    // single tenant and no co-location at all (docs/review/session-changes-review.md SEV1 #3).
+    //
+    // Instead ask the ONE per-isolate client which tenant partitions it is holding. Three distinct owners in
+    // one client's store is exactly "these three DOs shared an isolate".
+    const res = await mf.dispatchFetch('http://do.test/__owners');
+    const owners = (await res.json()) as string[] | null;
+    expect(owners).not.toBeNull();
+    expect(owners?.length).toBe(3);
   });
 
   it('produced exactly one incident bundle, from the tenant that faulted', () => {

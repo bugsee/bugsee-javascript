@@ -18,8 +18,10 @@ gate — they spawn real processes. Since 2026-07-27 they **do run in CI**, in t
 entirely, which the adversarial review root-caused as the reason most of its ~90 SEV1 findings survived
 ~100% unit coverage (`docs/review/e2e-harnesses.md`).
 
-The one exception is `test/bundle.test.ts` — the unit tests for the shared assertion library below.
-Those are `*.test.ts` on purpose, so they run in the fast `pnpm test` gate.
+The one exception is `test/bundle.test.ts` — the unit tests for the shared assertion library below. Those
+are `*.test.ts` on purpose and run via the `test:unit` script (`vitest.unit.config.ts`), which CI executes in
+the `check` job. They ran in NO CI job until 2026-07-28: this package had no `test:coverage` script, so
+`turbo run test:coverage` skipped it silently — the same `<NONEXISTENT>` hole the e2e job exists to close.
 
 ## What runs
 
@@ -64,7 +66,7 @@ defect — an assertion library that cannot fail is the exact theater being remo
 | `parseBundles(source)` | shared unzip + parse of `request.json`/`manifest.json` (was duplicated per suite) |
 | `readJson(bundle, name)` | throws, naming what IS present, so asserting on a never-emitted file fails loudly instead of reading `undefined` |
 | `assertBundleIntegrity(bundle)` | manifest ↔ zip agreement. Catches the confirmed core Pass D defect: a recovered crash bundle declared `profile.json` while the zip held only the directory-shaped entry `profile.json/` |
-| `assertNoSecrets(bundle, secrets)` | scans **every** entry, binary included, for values that must never ship. Catches the confirmed URL-query-string / body credential leaks. Exempts `apptoken`, which legitimately holds the token |
+| `assertNoSecrets(bundle, secrets)` | scans **every** entry, binary included, for values that must never ship. Catches the confirmed URL-query-string / body credential leaks. Exempts only the assembler's STRUCTURAL `apptoken` (an undeclared root entry) — an attachment merely named `apptoken` is still scanned |
 
 New suites and the sample apps of Wave V should use these rather than hand-rolling per-file parsing.
 

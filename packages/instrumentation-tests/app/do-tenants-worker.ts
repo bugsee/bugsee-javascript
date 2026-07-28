@@ -8,6 +8,7 @@
 // This is the ONLY place in the repo that exercises real Durable Object placement — @edge-runtime/vm has no
 // DO semantics, so multiple tenants sharing an isolate is not representable there.
 import { instrumentDurableObject, launch } from '@bugsee/cloudflare';
+import { CaptureStoreToken } from '@bugsee/core';
 
 // The minimal Durable Object surface this fixture uses. Declared locally rather than depending on
 // @cloudflare/workers-types: the harness needs two shapes, not the whole Workers API, and keeping the
@@ -54,7 +55,9 @@ export const Tenant = instrumentDurableObject(
   (env) => ({
     appToken: 'e2e-do-token',
     endpoint: (env as Env).BUGSEE_ENDPOINT,
-    // Deterministic + fast: no background tick, and capture stays in memory until the incident.
+    // Network capture off: the only traffic here is the SDK's own upload, so leaving it on adds noise
+    // without exercising anything this test is about. (The background tick still runs — an earlier comment
+    // here claimed otherwise; nothing in this config disables it.)
     captureNetwork: false,
   }),
   TenantObject,
@@ -63,8 +66,21 @@ export const Tenant = instrumentDurableObject(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // Launch once per isolate so the console interceptor is installed before any DO runs.
-    launch('e2e-do-token', { endpoint: env.BUGSEE_ENDPOINT, captureNetwork: false });
+    const client = launch('e2e-do-token', {
+      endpoint: env.BUGSEE_ENDPOINT,
+      captureNetwork: false,
+    });
     const url = new URL(request.url);
+    // Co-location probe: the tenant partitions the ONE per-isolate client is holding. If workerd placed the
+    // DOs in separate isolates this returns fewer than the tenants dispatched, because each isolate would
+    // have its own client and its own store. This is the isolate-scoped observable the e2e needs — the
+    // earlier proxy (session count) was per-UPLOAD and could not detect co-location at all.
+    if (url.pathname === '/__owners') {
+      const store = client.getService(CaptureStoreToken) as unknown as { owners?: () => string[] };
+      return new Response(JSON.stringify(store.owners?.() ?? null), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
     const tenant = url.searchParams.get('tenant') ?? 'A';
     // idFromName gives a STABLE, distinct DO per tenant — the archetypal one-DO-per-customer pattern.
     const stub = env.TENANT.get(env.TENANT.idFromName(tenant));

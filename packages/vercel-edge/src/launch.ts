@@ -53,6 +53,8 @@ const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Edge capture buffer ceiling (design §966: 10 MB on browser/edge).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
+// Mirrors the partitioned store's own default; kept here so the per-partition budget can be derived.
+const DEFAULT_MAX_TENANT_PARTITIONS = 8;
 
 const EDGE_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
@@ -92,6 +94,16 @@ export interface BugseeEdgeLaunchOptions {
    * overhead with nothing to separate.
    */
   partitionCaptureByTenant?: boolean;
+  /**
+   * Max TENANT partitions retained when `partitionCaptureByTenant` is on (default 8). The `maxDataSize`
+   * budget is DIVIDED across `maxTenantPartitions + 1` rings (the +1 is the unattributed default), so total
+   * capture memory stays within `maxDataSize` no matter how many tenants appear.
+   *
+   * Dividing rather than replicating is deliberate: giving every partition the full budget put 9 x 10 MB
+   * against a 128 MB Workers isolate — a measured 116 MB heap ceiling, leaving ~12 MB for the customer's own
+   * code (docs/review/session-changes-review.md SEV1 #2).
+   */
+  maxTenantPartitions?: number;
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
   endpoint?: string;
   /** SDK version reported in the environment. Default the package version. */
@@ -201,13 +213,34 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
+  const partitionByTenant = options.partitionCaptureByTenant === true;
+  const maxTenantPartitions = options.maxTenantPartitions ?? DEFAULT_MAX_TENANT_PARTITIONS;
+  // A caller-supplied store WINS over the partitioning switch — and that silently reinstates the
+  // cross-tenant leak, so say so rather than failing open quietly.
+  if (partitionByTenant && options.captureStore !== undefined) {
+    options.onError?.(
+      new Error(
+        'Bugsee: partitionCaptureByTenant was requested but an explicit captureStore was supplied, so ' +
+          'per-tenant isolation is NOT active. On Cloudflare this means one Durable Object incident can ' +
+          "upload another tenant's capture. Omit captureStore, or partition it yourself.",
+      ),
+    );
+  }
   const captureStore =
     options.captureStore ??
-    (options.partitionCaptureByTenant === true
-      ? // One ring PER TENANT. Each partition carries the full window/byte budget, so a noisy tenant can
-        // no longer evict a quiet one; the partition count is LRU-bounded inside the store.
+    (partitionByTenant
+      ? // One ring PER TENANT, with the byte budget DIVIDED across them (+1 for the unattributed default)
+        // so total capture memory never exceeds maxDataSize. Partition count is LRU-bounded in the store.
         createPartitionedCaptureStore({
-          createPartition: () => createMemoryCaptureStore(memoryStoreOptions),
+          createPartition: () =>
+            createMemoryCaptureStore({
+              ...memoryStoreOptions,
+              maxDataSizeBytes: Math.max(
+                1,
+                Math.floor(memoryStoreOptions.maxDataSizeBytes / (maxTenantPartitions + 1)),
+              ),
+            }),
+          maxPartitions: maxTenantPartitions,
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         })
       : createMemoryCaptureStore(memoryStoreOptions));

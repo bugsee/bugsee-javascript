@@ -47,6 +47,9 @@ export function createPartitionedCaptureStore(
   const onError = options.onError ?? ((): void => {});
   // Insertion-ordered, and re-inserted on touch — so the first key is the least-recently-used.
   const owned = new Map<string, CaptureStore>();
+  // Owners whose partition was reclaimed by the LRU bound. Kept (keys only — the ring itself is freed) so a
+  // later incident in that tenant can be diagnosed rather than silently producing an empty bundle.
+  const evicted = new Set<string>();
   let defaultPartition: CaptureStore | undefined;
 
   const guard = (fn: () => void): void => {
@@ -70,6 +73,7 @@ export function createPartitionedCaptureStore(
       return existing;
     }
     const created = options.createPartition();
+    evicted.delete(owner);
     owned.set(owner, created);
     while (owned.size > maxPartitions) {
       const lru = owned.keys().next().value as string | undefined;
@@ -77,6 +81,7 @@ export function createPartitionedCaptureStore(
         break;
       }
       owned.delete(lru);
+      evicted.add(lru);
     }
     return created;
   };
@@ -87,15 +92,32 @@ export function createPartitionedCaptureStore(
   ];
 
   /**
-   * The partitions a snapshot may read.
+   * The partitions a snapshot may read. **Fail closed in BOTH directions** (§4.4).
    *
-   * FAIL CLOSED (§4.4): once ANY owner exists the isolate is known to be multi-tenant, so unattributed
-   * entries cannot be attributed to a tenant and are excluded from every owner-scoped snapshot. Including
-   * them is precisely the leak this exists to prevent.
+   * - A tenant-scoped snapshot sees ONLY that tenant: never another's, and never the unattributed default
+   *   (which, on a multi-tenant isolate, may hold any tenant's capture).
+   * - An UNSCOPED snapshot sees only the default partition — never any tenant's.
+   *
+   * The second half was originally missing, and it was the whole bug: an owner-less report — `withBugsee`'s
+   * fetch wrapper and the on-by-default `unhandledrejection` safety net both produce one — took the unscoped
+   * branch and merged every tenant partition, so a front-handler incident on a multi-tenant isolate still
+   * carried every Durable Object's secrets. Reproduced on real workerd before this fix.
+   *
+   * On a single-tenant isolate no owners exist, so "default only" IS everything and behaviour is unchanged.
    */
   const partitionsFor = (owner: string | undefined): CaptureStore[] => {
     if (owner === undefined) {
-      return allPartitions();
+      return defaultPartition !== undefined ? [defaultPartition] : [];
+    }
+    if (!owned.has(owner) && evicted.has(owner)) {
+      // The tenant existed but its partition was reclaimed (LRU). Surface it: an empty bundle is otherwise
+      // indistinguishable from a tenant that captured nothing.
+      onError(
+        new Error(
+          `Bugsee: capture for tenant "${owner}" was evicted before its incident was assembled; ` +
+            `the bundle will contain no capture. Raise maxPartitions (currently ${maxPartitions}).`,
+        ),
+      );
     }
     const partition = owned.get(owner);
     return partition !== undefined ? [partition] : [];

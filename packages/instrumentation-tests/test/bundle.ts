@@ -14,8 +14,8 @@
 //   readJson              → asserting on a file that was never emitted must FAIL, not read `undefined`.
 //
 // Kept in `test/` (not `src/`) because this package ships nothing; it is harness code. It has its own
-// unit tests (bundle.test.ts) which run in the fast `pnpm test` gate — an assertion library that cannot
-// fail is precisely the theater this work removes, so every assertion has a negative test.
+// unit tests (bundle.test.ts), run in CI by the `test:unit` task — an assertion library that cannot fail is
+// precisely the theater this work removes, so every assertion has a negative test.
 import type { ManifestJson } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 
@@ -148,6 +148,13 @@ export function assertNoContractViolations(source: ViolationSource): void {
  * An empty secret is rejected — it would match every file and turn this into a no-op that always passes.
  */
 export function assertNoSecrets(bundle: ParsedBundle, secrets: readonly string[]): void {
+  // The apptoken exemption keys on PROVENANCE, not the name: only the assembler's structural apptoken (a
+  // root entry the manifest does not declare) is skipped. An attachment that merely happens to be called
+  // `apptoken` IS declared in the manifest, so it stays in scope and cannot be used to smuggle a leak past
+  // this check (docs/review/session-changes-review.md SEV3 #8).
+  const declared = new Set((bundle.manifest?.files ?? []).map((f) => f.filename));
+  const isStructuralAppToken = (name: string): boolean =>
+    name === 'apptoken' && !declared.has(name);
   for (const secret of secrets) {
     if (secret === '') {
       throw new Error('assertNoSecrets: empty secret would match everything — pass real values');
@@ -156,7 +163,7 @@ export function assertNoSecrets(bundle: ParsedBundle, secrets: readonly string[]
 
   const leaks: string[] = [];
   for (const [name, bytes] of Object.entries(bundle.files)) {
-    if (name === 'apptoken' || name.endsWith('/')) continue;
+    if (isStructuralAppToken(name) || name.endsWith('/')) continue;
     // Decode leniently: binary payloads still surface ASCII substrings, which is what a leak looks like.
     let text: string;
     try {

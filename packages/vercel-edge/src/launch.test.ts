@@ -315,8 +315,6 @@ describe('launchEdge — asyncLocalStorage injection', () => {
     const client = launchEdge('token', {
       asyncLocalStorage: injected,
     } as Parameters<typeof launchEdge>[1]);
-    const provider = (client as unknown as { contextProvider?: unknown }).contextProvider;
-    expect(provider ?? injected).toBeDefined();
     // The decisive assertion: running a context goes through OUR store, not the probed global.
     const store = resolveEdgeStore(client);
     expect(store).toBeDefined();
@@ -361,5 +359,67 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     ) as unknown as { owners?: () => string[] };
     expect(store.owners).toBeUndefined(); // not a PartitionedCaptureStore
     await client.stop?.();
+  });
+});
+
+// Fixes for the adversarial review of this session's changes (docs/review/session-changes-review.md).
+describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
+  it('divides the byte budget across partitions instead of replicating it', async () => {
+    // SEV1 #2: giving each partition the full maxDataSize put 9 x 10 MB against a 128 MB isolate
+    // (measured 116 MB heap). The total must stay within maxDataSize however many tenants appear.
+    const sizes: Array<number | undefined> = [];
+    const core = await import('@bugsee/core');
+    const spy = vi.spyOn(core, 'createMemoryCaptureStore').mockImplementation((o) => {
+      sizes.push(o?.maxDataSizeBytes);
+      return {
+        add: () => {},
+        tick: () => {},
+        clear: () => {},
+        snapshot: () => ({
+          stream: async function* () {},
+          drainAll: async () => new Map(),
+          release: () => {},
+        }),
+      };
+    });
+    launchTracked('tok', baseOptions({ partitionCaptureByTenant: true, maxTenantPartitions: 3 }));
+    // Force partitions to be created.
+    const store = clients.at(-1)?.getService(core.CaptureStoreToken) as unknown as {
+      add: (r: unknown) => void;
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'x', owner: 'a' });
+    store.add({ type: 'log', timestamp: 1, serialized: 'y', owner: 'b' });
+    const perPartition = sizes.filter((n): n is number => n !== undefined);
+    expect(perPartition.length).toBeGreaterThan(0);
+    // 10 MB default / (3 + 1) partitions.
+    const expected = Math.floor((10 * 1024 * 1024) / 4);
+    for (const size of perPartition) expect(size).toBe(expected);
+    // And the total across the maximum number of rings stays within the configured budget.
+    expect(expected * 4).toBeLessThanOrEqual(10 * 1024 * 1024);
+    spy.mockRestore();
+  });
+
+  it('reports through onError when an explicit captureStore silently disables isolation', () => {
+    // SEV2 #6: the override wins over the switch, reinstating the cross-tenant leak with no diagnostic.
+    const errors: unknown[] = [];
+    const inert = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release: () => {},
+      }),
+    };
+    launchTracked(
+      'tok',
+      baseOptions({
+        partitionCaptureByTenant: true,
+        captureStore: inert as never,
+        onError: (e) => errors.push(e),
+      }),
+    );
+    expect(String(errors[0])).toContain('per-tenant isolation is NOT active');
   });
 });

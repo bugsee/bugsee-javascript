@@ -140,13 +140,57 @@ describe('createPartitionedCaptureStore — snapshot isolation (THE fix)', () =>
     expect(seen).toEqual(['a', 'b']);
   });
 
-  it('an unfiltered snapshot still returns everything (existing callers unaffected)', async () => {
+  it('an UNSCOPED snapshot sees no tenant data at all (the leak that shipped in S2)', async () => {
+    // Originally this returned every partition merged, and that was the whole bug: an owner-less report —
+    // withBugsee's fetch wrapper and the on-by-default unhandledrejection net both produce one — took this
+    // branch, so a front-handler incident carried every Durable Object's secrets. Reproduced on real
+    // workerd by the adversarial review (docs/review/session-changes-review.md SEV1 #1).
     const store = createPartitionedCaptureStore({ createPartition: fakePartition });
-    store.add(rec('tenant-A', 'a'));
-    store.add(rec('tenant-B', 'b'));
+    store.add(rec(undefined, 'UNATTRIBUTED'));
+    store.add(rec('tenant-A', 'SECRET-OF-A'));
+    store.add(rec('tenant-B', 'SECRET-OF-B'));
     const seen: string[] = [];
     for await (const r of store.snapshot().stream()) seen.push(r.serialized);
-    expect(seen.sort()).toEqual(['a', 'b']);
+    expect(seen).toEqual(['UNATTRIBUTED']);
+    expect(seen.join()).not.toContain('SECRET-OF-A');
+    expect(seen.join()).not.toContain('SECRET-OF-B');
+  });
+
+  it('an unscoped snapshot on a single-tenant isolate still returns everything', async () => {
+    // No owners ever seen → "default only" IS everything. This is the compatibility guarantee.
+    const store = createPartitionedCaptureStore({ createPartition: fakePartition });
+    store.add(rec(undefined, 'a'));
+    store.add(rec(undefined, 'b'));
+    const seen: string[] = [];
+    for await (const r of store.snapshot().stream()) seen.push(r.serialized);
+    expect(seen).toEqual(['a', 'b']);
+  });
+
+  it('reports through onError when an evicted tenant is later asked for', async () => {
+    const errors: unknown[] = [];
+    const store = createPartitionedCaptureStore({
+      createPartition: fakePartition,
+      maxPartitions: 1,
+      onError: (e) => errors.push(e),
+    });
+    store.add(rec('a', '1'));
+    store.add(rec('b', '2')); // evicts 'a'
+    const seen: string[] = [];
+    for await (const r of store.snapshot({ owner: 'a' }).stream()) seen.push(r.serialized);
+    expect(seen).toEqual([]); // still fails closed — no other tenant's data
+    expect(String(errors[0])).toContain('evicted');
+    expect(String(errors[0])).toContain('"a"');
+  });
+
+  it('does not report eviction for an owner that simply never existed', () => {
+    const errors: unknown[] = [];
+    const store = createPartitionedCaptureStore({
+      createPartition: fakePartition,
+      onError: (e) => errors.push(e),
+    });
+    store.add(rec('a', '1'));
+    store.snapshot({ owner: 'never-seen' });
+    expect(errors).toEqual([]);
   });
 
   it('a snapshot for an owner with no entries is empty, not a leak of everything', async () => {

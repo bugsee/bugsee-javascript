@@ -100,18 +100,30 @@ no owner (single-tenant), behaviour is byte-identical to today.
 ### 4.4 Unattributed entries — **fail closed**
 
 Entries captured with no active context (module scope, the DO constructor, background timers) have no
-owner. Policy: **an unattributed entry is included only when the isolate has never seen an owner.** Once
-any owner exists — i.e. the isolate is known to be multi-tenant — unattributed entries are excluded from
-every bundle.
+owner. Policy: **fail closed in BOTH directions.** A tenant-scoped snapshot sees only that tenant — never
+another's, never the unattributed default. An **unscoped** snapshot sees only the default partition — never
+any tenant's.
+
+The second half was missing in the first implementation and was the whole remaining leak: an owner-less
+report (`withBugsee`'s fetch wrapper, or the on-by-default `unhandledrejection` net) took the unscoped branch
+and merged every tenant partition, so a front-handler incident still carried every DO's secrets. Corrected
+2026-07-28 after it was reproduced on real workerd.
 
 This deliberately loses some genuinely-relevant capture in exchange for never leaking across tenants. The
 alternative (include everywhere) *is* the current bug.
 
 ### 4.5 Memory
 
-N partitions must not multiply the byte cap. Proposal: keep **one global cap**, evict from the largest
-partition first so a noisy tenant cannot starve a quiet one. Partitions are reclaimed **LRU** — a DO
-evicted by Cloudflare must not leak its ring for the isolate's lifetime.
+N partitions must not multiply the byte cap. **As built (corrected 2026-07-28):** the `maxDataSize` budget
+is **DIVIDED** across `maxTenantPartitions + 1` rings, so the total stays within the configured cap however
+many tenants appear. Partitions are reclaimed **LRU** — a DO evicted by Cloudflare must not leak its ring for
+the isolate's lifetime — and a later incident for an evicted tenant is reported through `onError` rather than
+silently producing an empty bundle.
+
+The first implementation instead gave **every** partition the full budget and bounded only the count. That
+put 9 x 10 MB against a 128 MB Workers isolate — a measured 116 MB heap, leaving ~12 MB for the customer's
+code. Dividing is what this section always intended; "evict largest-first from one global pool" was the
+original wording, and division achieves the same bound without cross-partition eviction machinery.
 
 ---
 
@@ -120,7 +132,7 @@ evicted by Cloudflare must not leak its ring for the isolate's lifetime.
 | Slice | Work | Package |
 |---|---|---|
 | **S1** | `StoredEntry.owner` + aggregator passes it; `CaptureStore.add` accepts it | `core` |
-| **S2** | Partitioned memory capture store: per-owner rings, global cap, largest-first eviction, LRU reclaim | `core` (used by edge) |
+| **S2** | Partitioned memory capture store: per-owner rings, budget divided across partitions, LRU reclaim | `core` (used by edge) |
 | **S3** | `snapshot({ owner })` + bundle assembler passes the faulting owner; fail-closed unattributed policy | `core` |
 | **S4** | DO instrumentation sets the owner from `ctx.id` onto the per-invocation context | `cloudflare` |
 | **S5** | **Real-workerd e2e reproducing the leak first**, then proving it fixed: three DOs, secrets in A and B, incident in C, assert C's bundle contains neither | `instrumentation-tests` |

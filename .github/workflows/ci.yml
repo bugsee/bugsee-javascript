@@ -53,6 +53,12 @@ jobs:
       - name: Test + per-package coverage gate (vitest)
         run: pnpm exec turbo run test:coverage
 
+      # Harness-owned unit tests (e.g. the bundle-assertion library's negative suite). These live in a
+      # package with no test:coverage script, so `turbo run test:coverage` skipped them silently — the same
+      # <NONEXISTENT> hole the e2e job exists to close.
+      - name: Harness unit tests (vitest)
+        run: pnpm exec turbo run test:unit
+
   # End-to-end harnesses: the REAL SDK booted in real node/bun/deno processes against a
   # mock collector, plus the real-framework suites (nuxt / sveltekit / astro).
   #

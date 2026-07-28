@@ -102,9 +102,10 @@ Per-request context isolation needs a run()-scoped async store. On Cloudflare, `
 global to appear — that was wrong, and the SDK silently ran without context isolation as a result.)
 
 The SDK therefore imports `node:async_hooks` itself, which is why the flag is required rather than merely
-recommended. **Without it your Worker fails to build** with a module-resolution error — deliberately, so the
-problem is visible at build time instead of surfacing as silently missing context, route attribution and
-per-tenant isolation in production. `@sentry/cloudflare` requires the flag for the same reason.
+recommended. **Without it your Worker fails to start**, with workerd unable to resolve the builtin — deliberately, so the
+problem is visible immediately instead of surfacing as silently missing context, route attribution and
+per-tenant isolation in production. (A wrangler-shaped bundle still *builds*, since `node:*` is external; the
+failure is at worker load.) `@sentry/cloudflare` requires the flag for the same reason.
 
 Advanced: `launch(token, { asyncLocalStorage })` accepts an explicit store, for tests or a runtime that
 provides its own. Callers' options win over the default. Tier 2.

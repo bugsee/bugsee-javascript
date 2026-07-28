@@ -269,3 +269,24 @@ describe('assertNoContractViolations', () => {
     expect(err).toContain('2 upload-contract violation');
   });
 });
+
+describe('assertNoSecrets — apptoken exemption keys on provenance', () => {
+  it('still exempts the assembler’s structural apptoken (undeclared root entry)', () => {
+    expect(() => assertNoSecrets(wellFormed(), ['token-abc'])).not.toThrow();
+  });
+
+  it('does NOT exempt an attachment that merely happens to be named apptoken', () => {
+    // Declared in the manifest ⇒ it is a payload file, not the structural token, so it stays in scope.
+    const b = makeBundle({
+      'request.json': '{}',
+      'manifest.json': JSON.stringify({
+        version: 2,
+        time: { start: 1, end: 2 },
+        files: [{ filename: 'apptoken', type: 'attachment' }],
+        attrs: {},
+      }),
+      apptoken: 'hunter2-smuggled',
+    });
+    expect(() => assertNoSecrets(b, ['hunter2-smuggled'])).toThrow(/hunter2-smuggled/);
+  });
+});
