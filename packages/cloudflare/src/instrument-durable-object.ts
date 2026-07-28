@@ -10,6 +10,18 @@ import { cloudflareRequestAttributes } from './request-cf';
 // a Bugsee context + flush via the constructor's `ctx`; arbitrary RPC methods are opt-in (default off, matching
 // Sentry's `instrumentPrototypeMethods`).
 
+/** The DO id as the tenant key. Defensive: `id` is absent in tests/stubs and a throwing `toString` must
+ *  never break construction, so anything unusable yields `undefined` (no owner → no partitioning). */
+function durableObjectOwner(ctx: unknown): string | undefined {
+  try {
+    const id = (ctx as { id?: { toString?: () => string } } | undefined)?.id;
+    const value = id?.toString?.();
+    return typeof value === 'string' && value !== '' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const handlerAttributes = (handler: string): Record<string, AttributeValue> => ({
   'cloudflare.handler': handler,
 });
@@ -59,5 +71,9 @@ export function instrumentDurableObject<C extends DurableObjectClass>(
     ],
     options.instrumentRpcMethods ?? false,
     true, // a DO's ctx.waitUntil is a no-op → await the flush in-request (see edge-context.ts awaitFlush)
+    // The TENANT key: a Durable Object id identifies the customer/room/user this instance serves, and many
+    // instances share one isolate. Without it their capture shares one ring and an incident in one uploads
+    // every other tenant's data (docs/review/cloudflare.md SEV1 #2).
+    durableObjectOwner,
   );
 }

@@ -61,6 +61,10 @@ export function instrumentEdgeClass<C extends AnyClass>(
   methods: InstrumentedMethod[],
   rpc: boolean | string[] = false,
   awaitFlush = false,
+  /** Derives the TENANT key from the constructor's ctx (the Durable Object id). Omitted for
+   *  WorkerEntrypoint, which is single-tenant by construction. See
+   *  docs/design/cloudflare-tenant-isolation.md §4.1. */
+  resolveOwner?: (ctx: unknown) => string | undefined,
 ): C {
   const specs: InstrumentedMethod[] = [...methods];
   if (rpc !== false) {
@@ -80,6 +84,8 @@ export function instrumentEdgeClass<C extends AnyClass>(
       super(...args);
       const client = ensureClient(args[1]); // env
       const ctx = args[0] as EdgeExecutionContext | undefined; // DurableObjectState / ExecutionContext
+      // Resolved ONCE per instance: the tenant is a property of the DO, not of an invocation.
+      const owner = resolveOwner?.(args[0]);
       for (const { name, attributes } of specs) {
         const original = (this as Record<string, unknown>)[name];
         if (typeof original !== 'function') {
@@ -87,8 +93,15 @@ export function instrumentEdgeClass<C extends AnyClass>(
         }
         const method = original as (...methodArgs: unknown[]) => unknown;
         (this as Record<string, unknown>)[name] = (...methodArgs: unknown[]): unknown =>
-          runInEdgeContext(client, { attributes: attributes(methodArgs), ctx, awaitFlush }, () =>
-            method.apply(this, methodArgs),
+          runInEdgeContext(
+            client,
+            {
+              attributes: attributes(methodArgs),
+              ctx,
+              awaitFlush,
+              ...(owner !== undefined ? { owner } : {}),
+            },
+            () => method.apply(this, methodArgs),
           );
       }
     }

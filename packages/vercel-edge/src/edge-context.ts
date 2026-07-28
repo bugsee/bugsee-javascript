@@ -27,6 +27,11 @@ export interface EdgeInvocationOptions {
   /** The platform ExecutionContext (Cloudflare passes it to the handler) used to acquire `waitUntil`; absent on
    *  Vercel Edge (the resolver reads the global request-context symbol there instead). */
   ctx?: EdgeExecutionContext;
+  /** Tenant key for capture-store partitioning — the DURABLE OBJECT id on Cloudflare. Unlike the
+   *  per-invocation `contextId`, this is stable for the tenant, so its rolling window stays its own and an
+   *  incident bundle cannot pick up another tenant's capture. Absent for single-tenant handlers (fetch),
+   *  where partitioning is a no-op (docs/design/cloudflare-tenant-isolation.md §4.1). */
+  owner?: string;
   /** AWAIT the flush inside the invocation instead of deferring it to `waitUntil`. Required for Durable Objects:
    *  `DurableObjectState.waitUntil` is a documented NO-OP (it only exists for API compatibility), so the only
    *  thing that keeps a DO alive long enough for the incident upload is the request handler's promise staying
@@ -50,6 +55,7 @@ export async function runInEdgeContext<T>(
   const waitUntil = resolveWaitUntil(options.ctx);
   const context: RequestContext = {
     contextId: randomId(),
+    ...(options.owner !== undefined ? { owner: options.owner } : {}),
     ...(options.attributes !== undefined ? { attributes: options.attributes } : {}),
   };
   const capture = async (): Promise<T> => {
