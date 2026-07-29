@@ -5,7 +5,13 @@
 // processes — no re-basing needed. `electron` is taken as plain args (no dependency; fully testable).
 import type { StoredEntry } from '@bugsee/core';
 import { BUGSEE_STREAM_CHANNEL } from './preload-bridge';
-import { type DecodedStreamEntry, decodeStreamEntry } from './protocol';
+import {
+  type DecodedReport,
+  type DecodedStreamEntry,
+  decodeReport,
+  decodeStreamEntry,
+  isReport,
+} from './protocol';
 
 /** An Electron `ipcMain` event (we only read the sender's id, to tag the originating window). */
 export interface IpcMainEventLike {
@@ -26,6 +32,15 @@ export interface ElectronMainReceiverOptions {
   channel?: string;
   /** Called after each decoded entry is stored (with the originating window id) — a seam for report joins. */
   onEntry?: (entry: DecodedStreamEntry, windowId: number) => void;
+  /**
+   * Called with a renderer-forwarded INCIDENT (R3). Routed here WITHOUT touching the capture store: an
+   * incident is not a captured record, and storing it would put a second, array-shaped `crash.json` in the
+   * bundle and pollute every later report in the rolling window
+   * (docs/design/electron-renderer-incident-convergence.md §4.1).
+   */
+  onReport?: (report: DecodedReport, windowId: number) => void;
+  /** Internal-error sink. A failure handling one message must never break the channel. */
+  onError?: (error: unknown) => void;
 }
 
 export interface ElectronMainReceiver {
@@ -38,21 +53,38 @@ export function createElectronMainReceiver(
   options: ElectronMainReceiverOptions,
 ): ElectronMainReceiver {
   const channel = options.channel ?? BUGSEE_STREAM_CHANNEL;
+  // R5: the whole listener is contained. It runs inside Electron's ipcMain dispatch, so a throw here — a
+  // malformed message, a store failure, a user callback that raises — escapes into the host app's IPC
+  // machinery and can take the channel (and with it all renderer capture) down. R3 adds report submission
+  // inside this listener, which is precisely why the containment lands first.
   const listener = (event: IpcMainEventLike, ...args: unknown[]): void => {
-    const raw = args[0];
-    if (typeof raw !== 'string') {
-      return;
+    try {
+      const raw = args[0];
+      if (typeof raw !== 'string') {
+        return;
+      }
+      const windowId = event.sender?.id ?? -1;
+      // Incidents route to the join WITHOUT entering the capture store (see onReport).
+      if (isReport(raw)) {
+        const report = decodeReport(raw);
+        if (report !== undefined) {
+          options.onReport?.(report, windowId);
+        }
+        return;
+      }
+      const decoded = decodeStreamEntry(raw);
+      if (decoded === undefined) {
+        return;
+      }
+      options.store.add({
+        type: decoded.type,
+        timestamp: decoded.timestamp,
+        serialized: decoded.payload,
+      });
+      options.onEntry?.(decoded, windowId);
+    } catch (error) {
+      options.onError?.(error);
     }
-    const decoded = decodeStreamEntry(raw);
-    if (decoded === undefined) {
-      return;
-    }
-    options.store.add({
-      type: decoded.type,
-      timestamp: decoded.timestamp,
-      serialized: decoded.payload,
-    });
-    options.onEntry?.(decoded, event.sender?.id ?? -1);
   };
 
   return {

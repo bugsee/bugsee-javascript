@@ -124,6 +124,71 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   };
 }
 
+// ---------------------------------------------------------------------------------------------------
+// The renderer→main REPORT message (docs/design/electron-renderer-incident-convergence.md §4.1).
+//
+// A DEDICATED kind, not an `entry`. The first design draft reused `entry` with `type: 'crash'` to avoid a
+// protocol change — but the codec is same-version by declaration (see the file header), so a new kind costs
+// nothing, and reusing `entry` was actively harmful: `main-receiver` store.adds every entry BEFORE the join
+// callback, so the incident would land in the main rolling capture store and the assembler would emit TWO
+// files named `crash.json` — one array-shaped — with the stale entry polluting every later bundle in the
+// 60 s window. WebView splits `entryMessage`/`reportMessage` for the same reason.
+
+/** A decoded renderer incident: the `{ source, report }` pair the main side submits as a ReportingRequest. */
+export interface DecodedReport {
+  /** The ReportingRequest source (mechanism / origin) as serialized by the renderer. */
+  source: Record<string, unknown>;
+  /** The Report payload. */
+  report: Record<string, unknown>;
+  /** Wall-clock ms when the renderer raised it. */
+  timestamp: number;
+}
+
+/** Encode a renderer incident for the main process. */
+export function encodeReport(source: unknown, report: unknown, timestamp: number): string {
+  return JSON.stringify({ k: 'report', p: { source, report }, ts: timestamp });
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Decode a renderer incident, or `undefined` if it is not a well-formed `report`.
+ *
+ * Renderer input is UNTRUSTED — the same channel and the same sender as the entry path hardened in Wave 0.2
+ * (docs/review/electron.md SEV1 #1). Both halves of the payload must be plain objects; anything else is
+ * dropped rather than submitted, since a malformed incident has no correct interpretation.
+ */
+export function decodeReport(raw: string): DecodedReport | undefined {
+  let message: { k?: string; p?: unknown; ts?: unknown };
+  try {
+    message = JSON.parse(raw) as typeof message;
+  } catch {
+    return undefined;
+  }
+  if (message.k !== 'report' || !isPlainObject(message.p)) {
+    return undefined;
+  }
+  const { source, report } = message.p;
+  if (!isPlainObject(source) || !isPlainObject(report)) {
+    return undefined;
+  }
+  const timestamp = message.ts === undefined ? 0 : message.ts;
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+    return undefined;
+  }
+  return { source, report, timestamp };
+}
+
+/** True iff `raw` is a report message (so the receiver can route it without decoding twice). */
+export function isReport(raw: string): boolean {
+  try {
+    return (JSON.parse(raw) as { k?: string }).k === 'report';
+  } catch {
+    return false;
+  }
+}
+
 /** The main→renderer control commands. `pause`/`resume`/`flush`/`stop` reuse the WebView control kinds;
  *  `session` is the handshake reply assigning the owner's session id to a renderer. */
 export type ControlCommand = 'pause' | 'resume' | 'flush' | 'stop' | 'session';
