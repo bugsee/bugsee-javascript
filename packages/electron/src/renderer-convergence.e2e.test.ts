@@ -15,8 +15,9 @@
 //      entry, which would have produced two files named crash.json (one array-shaped) and polluted every
 //      later bundle in the rolling window. A test that only checked "an incident arrived" passes over that.
 import { createMemoryCaptureStore, type StoredEntry } from '@bugsee/core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createElectronMainReceiver } from './main-receiver';
+import type { DecodedReport } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
 
 /** A loopback IPC pair: whatever the renderer posts is delivered to the main listener synchronously. */
@@ -41,7 +42,7 @@ function loopbackIpc() {
 describe('R0 — renderer incident convergence', () => {
   let ipc: ReturnType<typeof loopbackIpc>;
   let mainStore: ReturnType<typeof createMemoryCaptureStore>;
-  let joined: Array<{ source: unknown; report: unknown }>;
+  let joined: DecodedReport[];
 
   beforeEach(() => {
     ipc = loopbackIpc();
@@ -54,8 +55,8 @@ describe('R0 — renderer incident convergence', () => {
     createElectronMainReceiver({
       ipcMain: ipc.ipcMain as never,
       store: mainStore,
-      onReport: (report) => joined.push(report),
-    } as never).start();
+      onReport: (report: DecodedReport) => joined.push(report),
+    }).start();
   };
 
   it('forwards a renderer incident to main instead of uploading it from the renderer', () => {
@@ -86,9 +87,6 @@ describe('R0 — renderer incident convergence', () => {
     startMain();
     postIncident(ipc.post, { source: { mechanism: 'uncaught' }, report: { summary: 'boom' } });
 
-    const stored: StoredEntry[] = [];
-    const probe = { ...mainStore, add: (e: StoredEntry) => stored.push(e) };
-    void probe;
     // Nothing of type `crash` may have been routed into the store by the incident.
     const snapshot = mainStore.snapshot();
     const seen: StoredEntry[] = [];
