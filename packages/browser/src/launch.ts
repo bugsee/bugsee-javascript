@@ -45,6 +45,7 @@ import {
   type Scheduler,
   setCarrierClient,
   TransportToken,
+  type TriggerPipeline,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import type { WindowEvents } from './detection-providers';
@@ -189,6 +190,18 @@ export interface BugseeLaunchOptions {
   scheduler?: Scheduler;
   /** Capture store override. Default in-memory. */
   captureStore?: CaptureStore;
+  /**
+   * Replace the report path: every detected incident and explicit `logException` is routed here INSTEAD of
+   * being assembled into a bundle and uploaded. Default: the built-in assemble + upload.
+   *
+   * Exists for hosts where this process is not the uploader. `@bugsee/electron` renderers stream their
+   * capture UP to the main process, so a renderer that assembled locally would produce a bundle from a
+   * streaming store that yields nothing, under its own session id, while the main session holding all the
+   * capture recorded no incident (docs/design/electron-renderer-incident-convergence.md §4.2).
+   *
+   * Symmetric with `captureStore` above — the same shape of seam, for the read side of the same problem.
+   */
+  triggerPipeline?: TriggerPipeline;
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
   /** System-traces sampler. Default the performance.memory sampler. */
@@ -395,6 +408,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appToken,
     getEnvironment,
     captureStore,
+    ...(options.triggerPipeline !== undefined ? { triggerPipeline: options.triggerPipeline } : {}),
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,

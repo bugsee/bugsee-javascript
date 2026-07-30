@@ -200,3 +200,62 @@ describe('resolveRendererBridge', () => {
     }).not.toThrow();
   });
 });
+
+describe('launchRenderer — incidents forward instead of uploading (R2)', () => {
+  it('injects a forwarding triggerPipeline into the browser launch', () => {
+    let injected: { triggerPipeline?: { report: (r: unknown) => Promise<unknown> } } | undefined;
+    const fakeLaunch = ((_t: string, o: never) => {
+      injected = o as never;
+      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+    }) as never;
+    launchRenderer('tok', { bridge: fakeBridge().bridge, launch: fakeLaunch, post: () => {} });
+    expect(typeof injected?.triggerPipeline?.report).toBe('function');
+  });
+
+  it('IGNORES a caller-supplied triggerPipeline — it would restore the broken local-upload path', () => {
+    const mine = { report: () => Promise.resolve({ ok: true }) };
+    let injected: { triggerPipeline?: unknown } | undefined;
+    const fakeLaunch = ((_t: string, o: never) => {
+      injected = o as never;
+      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+    }) as never;
+    launchRenderer('tok', {
+      bridge: fakeBridge().bridge,
+      launch: fakeLaunch,
+      post: () => {},
+      triggerPipeline: mine,
+    } as never);
+    // Guaranteed by spread ORDER (ours lands after the caller's options), which is what this pins. An
+    // earlier version also destructured the caller's value away; that was redundant, and this test passed
+    // because of the ordering either way — so the ordering is what it now asserts.
+    expect(injected?.triggerPipeline).not.toBe(mine);
+    expect(typeof (injected?.triggerPipeline as { report?: unknown })?.report).toBe('function');
+  });
+
+  it('cannot deliver before the session handshake, and can after', async () => {
+    // Before the handshake there is no converged session to attribute an incident to.
+    const posted: string[] = [];
+    let injected:
+      | { triggerPipeline: { report: (r: unknown) => Promise<{ ok: boolean }> } }
+      | undefined;
+    const fakeLaunch = ((_t: string, o: never) => {
+      injected = o as never;
+      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+    }) as never;
+    const harness = fakeBridge();
+    launchRenderer('tok', {
+      bridge: harness.bridge,
+      launch: fakeLaunch,
+      post: (raw) => posted.push(raw),
+    });
+    const req = { source: { mechanism: 'uncaught' }, report: { summary: 'boom' } };
+
+    expect(await injected?.triggerPipeline.report(req)).toEqual({ ok: false });
+    expect(posted).toEqual([]);
+
+    harness.drive(JSON.stringify({ k: 'control', c: 'session', sid: 'main-session' }));
+    expect(await injected?.triggerPipeline.report(req)).toEqual({ ok: true });
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse(posted[0] as string).k).toBe('report');
+  });
+});

@@ -1152,3 +1152,41 @@ describe('launch — session replay (lazy)', () => {
     expect(opts.blockAllCanvas).toBe(true); // not stripped by the canvas destructure; flows to masking
   });
 });
+
+// R1 (docs/design/electron-renderer-incident-convergence.md §4.2): an injectable trigger pipeline.
+//
+// Symmetric with the `captureStore` seam that already exists. @bugsee/electron needs it because a renderer
+// must FORWARD its incidents to the main process rather than assembling a bundle from its streaming store —
+// which yields nothing — and uploading under a foreign session id (docs/review/electron.md SEV1 #2).
+// @bugsee/webview solves the same problem, but only because it composes its client directly via
+// createClient; a full browser SDK cannot do that without duplicating this entire module.
+describe('launchCore — triggerPipeline seam', () => {
+  it('routes reports through an injected pipeline instead of assembling + uploading', async () => {
+    const reported: unknown[] = [];
+    const client = launchCore(
+      'tok',
+      baseOptions({
+        triggerPipeline: {
+          report: async (request: unknown) => {
+            reported.push(request);
+            return { ok: true };
+          },
+        },
+      } as Partial<BugseeLaunchOptions>),
+    ).client;
+    await client.logException(new Error('renderer boom'));
+    expect(reported).toHaveLength(1);
+    expect(JSON.stringify(reported[0])).toContain('renderer boom');
+    await client.stop();
+  });
+
+  it('falls back to the built-in assemble+upload pipeline when none is injected', async () => {
+    // The compatibility guarantee: every existing consumer is untouched.
+    const transport = uploadTransport();
+    const client = launchCore('tok', baseOptions({ transport })).client;
+    await client.logException(new Error('boom'));
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => String(url).includes('/v2/issues'))).toBe(true);
+    await client.stop();
+  });
+});
