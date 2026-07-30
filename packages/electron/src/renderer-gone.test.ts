@@ -75,12 +75,48 @@ describe('createRendererGoneHandler — reason gating', () => {
 });
 
 describe('createRendererGoneHandler — claiming the minidump', () => {
-  it('claims a dump that is already present and attaches it to the incident', async () => {
-    const h = harness({}, [[dump('a.dmp')]]);
+  it('claims a dump that APPEARS AFTER the crash, and attaches it', async () => {
+    // Baseline harvest is empty, then `ours.dmp` lands → it is ours.
+    const h = harness({}, [[], [dump('ours.dmp')]]);
     await h.handler.handle(1, { reason: 'crashed' });
-    expect(h.claimed).toEqual(['a.dmp']);
+    expect(h.claimed).toEqual(['ours.dmp']);
     expect(h.submitted[0]?.dump).toBeDefined();
     expect(h.fallbacks).toEqual([]);
+  });
+
+  it('does NOT claim a PRE-EXISTING dump — it belongs to another crash', async () => {
+    // The harvest seam returns ALL completed dumps with no per-process/per-run filtering, and claim DELETES.
+    // Taking a pre-existing one destroys another crash's evidence and misattributes it here
+    // (code review SEV1-4). A stale dump left by an earlier fallback is the realistic case.
+    const h = harness({}, [[dump('someone-elses.dmp')]]);
+    await h.handler.handle(1, { reason: 'crashed' });
+    expect(h.claimed).toEqual([]);
+    expect(h.submitted[0]?.dump).toBeUndefined();
+    expect(h.fallbacks).toEqual(['crashed']); // fell back rather than stealing it
+  });
+
+  it('two concurrent crashes never take the same dump', async () => {
+    // claim() is exists-guarded and does not throw on a double-claim, so without in-flight bookkeeping both
+    // incidents would silently carry one renderer's dump (code review SEV1-4b).
+    let call = 0;
+    const claimed: string[] = [];
+    const handler = createRendererGoneHandler({
+      marker: () => marker,
+      source: {
+        // Baselines empty for both, then ONE fresh dump visible to both waiters.
+        harvest: () => (call++ < 2 ? [] : [dump('single.dmp')]),
+        claim: (_m, name) => claimed.push(name),
+      },
+      submit: () => {},
+      sleep: () => Promise.resolve(),
+      dumpWaitMs: 100,
+      dumpPollMs: 100,
+    });
+    await Promise.all([
+      handler.handle(1, { reason: 'crashed' }),
+      handler.handle(2, { reason: 'crashed' }),
+    ]);
+    expect(claimed).toEqual(['single.dmp']); // exactly once
   });
 
   it('WAITS for a dump Crashpad has not finished writing yet', async () => {
@@ -93,22 +129,20 @@ describe('createRendererGoneHandler — claiming the minidump', () => {
 
   it('claims BEFORE submitting, so recovery cannot double-report it', async () => {
     const order: string[] = [];
-    const h = harness(
-      {
-        source: {
-          harvest: () => [dump('x.dmp')],
-          claim: () => order.push('claim'),
-        },
-        submit: () => order.push('submit'),
+    let call = 0;
+    const h = harness({
+      source: {
+        harvest: () => (call++ === 0 ? [] : [dump('x.dmp')]), // baseline empty, then ours
+        claim: () => order.push('claim'),
       },
-      [[dump('x.dmp')]],
-    );
+      submit: () => order.push('submit'),
+    });
     await h.handler.handle(1, { reason: 'crashed' });
     expect(order).toEqual(['claim', 'submit']);
   });
 
   it('does not attempt a claim for a reason Crashpad does not dump for', async () => {
-    const h = harness({}, [[dump('a.dmp')]]);
+    const h = harness({}, [[], [dump('a.dmp')]]);
     await h.handler.handle(1, { reason: 'oom' });
     expect(h.claimed).toEqual([]);
     expect(h.submitted[0]?.dump).toBeUndefined();
@@ -131,17 +165,15 @@ describe('createRendererGoneHandler — fallback to what is available', () => {
   });
 
   it('submits with the dump even when the claim throws — a duplicate beats a lost crash', async () => {
-    const h = harness(
-      {
-        source: {
-          harvest: () => [dump('x.dmp')],
-          claim: () => {
-            throw new Error('unlink failed');
-          },
+    let call = 0;
+    const h = harness({
+      source: {
+        harvest: () => (call++ === 0 ? [] : [dump('x.dmp')]),
+        claim: () => {
+          throw new Error('unlink failed');
         },
       },
-      [[dump('x.dmp')]],
-    );
+    });
     await h.handler.handle(1, { reason: 'crashed' });
     expect(h.submitted[0]?.dump).toBeDefined();
     expect(String(h.errors[0])).toContain('unlink failed');
@@ -199,5 +231,53 @@ describe('createRendererGoneHandler — fallback to what is available', () => {
     await h.handle(1, { reason: 'crashed' });
     expect(unref).toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+});
+
+describe('createRendererGoneHandler — a poll that throws after a good baseline', () => {
+  it('reports the error and still submits (the outer guard, not the baseline one)', async () => {
+    // The baseline harvest succeeds, so awaitDump's own catch does not fire; a LATER poll throwing must be
+    // contained by the outer guard rather than costing us the incident.
+    let call = 0;
+    const submitted: unknown[] = [];
+    const errors: unknown[] = [];
+    const handler = createRendererGoneHandler({
+      marker: () => marker,
+      source: {
+        harvest: () => {
+          if (call++ === 0) return []; // baseline OK
+          throw new Error('poll failed');
+        },
+        claim: () => {},
+      },
+      submit: (i) => submitted.push(i),
+      onError: (e) => errors.push(e),
+      sleep: () => Promise.resolve(),
+      dumpWaitMs: 100,
+      dumpPollMs: 100,
+    });
+    await handler.handle(1, { reason: 'crashed' });
+    expect(submitted).toHaveLength(1);
+    expect(String(errors[0])).toContain('poll failed');
+  });
+});
+
+describe('createRendererGoneHandler — defaults', () => {
+  it('uses a no-op onError when none is supplied (never throws outward)', async () => {
+    const submitted: unknown[] = [];
+    const handler = createRendererGoneHandler({
+      marker: () => marker,
+      source: {
+        harvest: () => {
+          throw new Error('boom');
+        },
+        claim: () => {},
+      },
+      submit: (i) => submitted.push(i),
+      sleep: () => Promise.resolve(),
+      dumpWaitMs: 0,
+    });
+    await expect(handler.handle(1, { reason: 'crashed' })).resolves.toBeUndefined();
+    expect(submitted).toHaveLength(1); // still reported what was available
   });
 });

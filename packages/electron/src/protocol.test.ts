@@ -4,11 +4,14 @@ import { describe, expect, it } from 'vitest';
 import {
   type ControlMessage,
   decodeControl,
+  decodeReport,
   decodeStreamEntry,
   encodeControl,
   encodeHello,
+  encodeReport,
   encodeStreamEntry,
   isHello,
+  isReport,
 } from './protocol';
 
 const streamEntry = (over: Partial<StreamingCaptureEntry> = {}): StreamingCaptureEntry => ({
@@ -202,5 +205,52 @@ describe('decodeStreamEntry — the payload field', () => {
       const decoded = decodeStreamEntry(`{"k":"entry","t":"log","p":${p}}`);
       expect(typeof decoded?.payload).toBe('string');
     }
+  });
+});
+
+describe('decodeReport — hostile / malformed input', () => {
+  it('rejects non-JSON', () => {
+    expect(decodeReport('not json')).toBeUndefined();
+  });
+
+  it('rejects a non-report kind and a non-object payload', () => {
+    expect(decodeReport(JSON.stringify({ k: 'entry', p: {} }))).toBeUndefined();
+    for (const p of ['str', 1, true, null, ['a']]) {
+      expect(decodeReport(JSON.stringify({ k: 'report', p }))).toBeUndefined();
+    }
+  });
+
+  it('rejects when either half of the payload is not a plain object', () => {
+    const cases = [
+      { source: 'x', report: {} },
+      { source: {}, report: 'x' },
+      { source: [], report: {} },
+      { source: {}, report: [] },
+      { report: {} }, // source missing
+      { source: {} }, // report missing
+    ];
+    for (const p of cases) {
+      expect(decodeReport(JSON.stringify({ k: 'report', p }))).toBeUndefined();
+    }
+  });
+
+  it('rejects a non-finite / non-numeric timestamp, and defaults an absent one', () => {
+    const p = { source: {}, report: {} };
+    for (const ts of ['1', {}, [], true, null]) {
+      expect(decodeReport(JSON.stringify({ k: 'report', p, ts }))).toBeUndefined();
+    }
+    expect(decodeReport(JSON.stringify({ k: 'report', p }))?.timestamp).toBe(0);
+  });
+
+  it('round-trips a well-formed report through encodeReport', () => {
+    const raw = encodeReport({ mechanism: 'uncaught' }, { summary: 's' }, 5);
+    expect(decodeReport(raw)).toEqual({
+      source: { mechanism: 'uncaught' },
+      report: { summary: 's' },
+      timestamp: 5,
+    });
+    expect(isReport(raw)).toBe(true);
+    expect(isReport('nope')).toBe(false);
+    expect(isReport(JSON.stringify({ k: 'entry' }))).toBe(false);
   });
 });

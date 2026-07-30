@@ -38,6 +38,9 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
   const store = { add: (e: unknown) => added.push(e) };
   const client = {
     getService: vi.fn((token: unknown) => (token === CaptureStoreToken ? store : undefined)),
+    // The real client has this (client.ts:493); the fake lacked it, which is why wiring R3's detection
+    // provider surfaced here rather than in production.
+    addDetectionProvider: vi.fn(),
     stop,
     flush,
   } as unknown as Bugsee;
@@ -282,4 +285,144 @@ describe('launchMain', () => {
     expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // no second control manager
     expect(client.stop).toBe(f.stop); // stop NOT re-wrapped (the first launch owns the wiring)
   });
+});
+
+describe('launchMain — renderer incidents are WIRED end to end', () => {
+  // The code review's SEV1-1: R2 stopped renderers uploading, but nothing on the main side received or
+  // submitted the forwarded incident, so renderer incidents were silently DESTROYED while the app was told
+  // `{ok:true}` — strictly worse than the defect being fixed. These tests exist so that cannot recur: they
+  // fail if launchMain stops passing `onReport`, or stops registering the provider that submits it.
+  it('registers a detection provider that renderer incidents are submitted through', () => {
+    const h = fakeLaunch();
+    const { launch, client } = h;
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch });
+    expect(client.addDetectionProvider).toHaveBeenCalledTimes(1);
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      name: string;
+    };
+    expect(provider.name).toBe('electron-renderer-incident');
+  });
+
+  it('a forwarded incident reaches the provider and becomes a reporting request', () => {
+    const h = fakeLaunch();
+    const { launch, client } = h;
+    const ipc = fakeIpcMain();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch });
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      start: (c: unknown, report: (r: unknown) => void) => void;
+    };
+    const submitted: unknown[] = [];
+    provider.start(client, (r) => submitted.push(r));
+
+    ipc.emit(
+      BUGSEE_STREAM_CHANNEL,
+      {},
+      JSON.stringify({
+        k: 'report',
+        p: {
+          source: { type: 'crash', mechanism: 'uncaught' },
+          report: { summary: 'renderer boom' },
+        },
+        ts: 1,
+      }),
+    );
+
+    expect(submitted).toHaveLength(1);
+    expect(JSON.stringify(submitted[0])).toContain('renderer boom');
+    // The mechanism must survive — re-filing it as a handled error is the defect the design forbids.
+    expect(JSON.stringify(submitted[0])).toContain('uncaught');
+  });
+
+  it('watches render-process-gone when an app is supplied', () => {
+    const { launch } = fakeLaunch();
+    const on = vi.fn();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch, app: { on } as never });
+    expect(on).toHaveBeenCalledWith('render-process-gone', expect.any(Function));
+  });
+});
+
+describe('launchMain — render-process-gone wiring detail', () => {
+  const goneOf = (over: Partial<Parameters<typeof launchMain>[1]> = {}) => {
+    const { launch, client } = fakeLaunch();
+    let listener:
+      | ((e: unknown, c: { id?: number }, d: { reason: string; exitCode?: number }) => void)
+      | undefined;
+    launchMain('tok', {
+      launch,
+      app: { on: (_e: string, l: never) => (listener = l) } as never,
+      ipcMain: fakeIpcMain().ipcMain,
+      ...over,
+    });
+    return { client, fire: (id: number, reason: string) => listener?.({}, { id }, { reason }) };
+  };
+
+  it('submits a gone incident through the provider (no crashReporter → no dump to claim)', async () => {
+    const { client, fire } = goneOf();
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      start: (c: unknown, r: (x: unknown) => void) => void;
+    };
+    const submitted: unknown[] = [];
+    provider.start(client, (r) => submitted.push(r));
+    fire(11, 'oom');
+    await vi.waitFor(() => expect(submitted).toHaveLength(1));
+    expect(JSON.stringify(submitted[0])).toContain('oom');
+    expect(JSON.stringify(submitted[0])).toContain('11'); // the faulting window id
+  });
+
+  it('ignores clean-exit rather than manufacturing a crash', async () => {
+    const { client, fire } = goneOf();
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      start: (c: unknown, r: (x: unknown) => void) => void;
+    };
+    const submitted: unknown[] = [];
+    provider.start(client, (r) => submitted.push(r));
+    fire(11, 'clean-exit');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(submitted).toEqual([]);
+  });
+
+  it('defaults a missing webContents id to -1 rather than throwing', async () => {
+    const { launch, client } = fakeLaunch();
+    let listener: ((e: unknown, c: undefined, d: { reason: string }) => void) | undefined;
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: (_e: string, l: never) => (listener = l) } as never,
+    });
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      start: (c: unknown, r: (x: unknown) => void) => void;
+    };
+    const submitted: unknown[] = [];
+    provider.start(client, (r) => submitted.push(r));
+    expect(() => listener?.({}, undefined, { reason: 'oom' })).not.toThrow();
+    await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  });
+});
+
+describe('launchMain — gone handling without a crashReporter', () => {
+  it('uses an inert dump source for a dump-producing reason, and still submits', async () => {
+    // No crashReporter → no Crashpad dir → nothing to claim. The handler must fall back to capture + reason
+    // rather than failing, which exercises the inert source's harvest/claim.
+    const { launch, client } = fakeLaunch();
+    let listener: ((e: unknown, c: { id?: number }, d: { reason: string }) => void) | undefined;
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: (_e: string, l: never) => (listener = l) } as never,
+    });
+    const provider = (client.addDetectionProvider as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as {
+      start: (c: unknown, r: (x: unknown) => void) => void;
+    };
+    const submitted: unknown[] = [];
+    provider.start(client, (r) => submitted.push(r));
+    listener?.({}, { id: 4 }, { reason: 'crashed' }); // a DUMP reason, so the source is consulted
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 5000 });
+    expect(JSON.stringify(submitted[0])).toContain('crashed');
+  }, 10_000);
 });

@@ -259,3 +259,19 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
     expect(JSON.parse(posted[0] as string).k).toBe('report');
   });
 });
+
+describe('launchRenderer — default post path', () => {
+  it('posts through the resolved bridge when no explicit post is supplied', async () => {
+    // Covers the default `post` closure: without an override the pipeline must reach the bridge itself.
+    let injected: { triggerPipeline: { report: (r: unknown) => Promise<unknown> } } | undefined;
+    const fakeLaunch = ((_t: string, o: never) => {
+      injected = o as never;
+      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+    }) as never;
+    const harness = fakeBridge();
+    launchRenderer('tok', { bridge: harness.bridge, launch: fakeLaunch });
+    harness.drive(JSON.stringify({ k: 'control', c: 'session', sid: 's' }));
+    await injected?.triggerPipeline.report({ source: {}, report: { summary: 'x' } });
+    expect(harness.posted.some((raw) => JSON.parse(raw).k === 'report')).toBe(true);
+  });
+});

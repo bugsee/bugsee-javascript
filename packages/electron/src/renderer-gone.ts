@@ -53,8 +53,12 @@ const DUMP_REASONS: ReadonlySet<string> = new Set([
 export interface RendererGoneHandlerOptions {
   /** The live session marker (session id + Crashpad dump dir) the incident is attributed to. */
   marker: () => CrashpadSessionMarker | undefined;
-  /** The Crashpad seam — the SAME one the next-launch recovery uses, so a claim here removes it from there. */
-  source: {
+  /**
+   * The Crashpad seam — the SAME one the next-launch recovery uses, so a claim here removes it from there.
+   * Optional: with no `crashReporter` there is no dump dir, `marker` is undefined too, and the handler
+   * reports what is available without consulting a source.
+   */
+  source?: {
     harvest(marker: CrashpadSessionMarker): Promise<HarvestedDump[]> | HarvestedDump[];
     claim(marker: CrashpadSessionMarker, name: string): void;
   };
@@ -106,16 +110,45 @@ export function createRendererGoneHandler(
   const sleep = options.sleep ?? defaultSleep;
   const onError = options.onError ?? ((): void => {});
 
-  /** Poll for a dump belonging to this session, bounded by `waitMs`. Undefined if none arrives. */
-  const awaitDump = async (marker: CrashpadSessionMarker): Promise<HarvestedDump | undefined> => {
-    const deadline = waitMs;
+  // Dumps this handler has already taken, so two concurrent `render-process-gone` events cannot both pick the
+  // same file. `claim` is exists-guarded and does NOT throw on a double-claim, so without this two incidents
+  // would silently carry one renderer's dump (code review SEV1-4b).
+  const taken = new Set<string>();
+
+  /**
+   * Poll for a dump that belongs to THIS crash, bounded by `waitMs`.
+   *
+   * The harvest seam deliberately returns ALL completed dumps with no per-process or per-run filtering
+   * (`native-crash-source.ts` — "v1 SCOPE: harvest ALL completed dumps"), so taking `dumps[0]` would claim
+   * whatever happened to be there: a dump an earlier fallback deliberately left unclaimed, a GPU or utility
+   * process's dump, or an unrecovered dump from a previous run. Claiming DELETES, so that destroys another
+   * crash's evidence and misattributes it to this one (code review SEV1-4).
+   *
+   * So: snapshot what already exists BEFORE waiting, and only accept a name that appears afterwards.
+   */
+  const awaitDump = async (
+    marker: CrashpadSessionMarker,
+    source: NonNullable<RendererGoneHandlerOptions['source']>,
+  ): Promise<HarvestedDump | undefined> => {
+    const preexisting = new Set<string>();
+    try {
+      for (const dump of await source.harvest(marker)) {
+        preexisting.add(dump.name);
+      }
+    } catch (error) {
+      onError(error);
+      return undefined; // cannot establish a baseline → never guess which dump is ours
+    }
     let waited = 0;
     for (;;) {
-      const dumps = await options.source.harvest(marker);
-      if (dumps.length > 0) {
-        return dumps[0];
+      const fresh = (await source.harvest(marker)).find(
+        (dump) => !preexisting.has(dump.name) && !taken.has(dump.name),
+      );
+      if (fresh !== undefined) {
+        taken.add(fresh.name);
+        return fresh;
       }
-      if (waited >= deadline) {
+      if (waited >= waitMs) {
         return undefined;
       }
       await sleep(pollMs);
@@ -135,7 +168,8 @@ export function createRendererGoneHandler(
           windowId,
           ...(details.exitCode !== undefined ? { exitCode: details.exitCode } : {}),
         };
-        if (marker === undefined || !DUMP_REASONS.has(details.reason)) {
+        const source = options.source;
+        if (marker === undefined || source === undefined || !DUMP_REASONS.has(details.reason)) {
           // No marker (main not launched / no dump dir), or a reason Crashpad does not dump for: report what
           // is available.
           options.submit(base);
@@ -143,7 +177,7 @@ export function createRendererGoneHandler(
         }
         let dump: HarvestedDump | undefined;
         try {
-          dump = await awaitDump(marker);
+          dump = await awaitDump(marker, source);
         } catch (error) {
           onError(error); // a harvest failure must not cost us the incident
         }
@@ -156,7 +190,7 @@ export function createRendererGoneHandler(
         // If the claim throws we still submit — with the dump — and accept a possible duplicate from
         // recovery rather than dropping a crash we already hold.
         try {
-          options.source.claim(marker, dump.name);
+          source.claim(marker, dump.name);
         } catch (error) {
           onError(error);
         }
