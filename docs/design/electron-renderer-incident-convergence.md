@@ -130,9 +130,26 @@ crashes that never happened.
 
 **The real duplicate is not the one the first draft named.** For `reason: 'crashed'` the already-built native
 minidump harvest (`docs/design/electron-native-crashes.md`, NM1–NM5) also produces an incident for the same
-event. R4 must reconcile with it: either R4 handles only the non-dump reasons and defers `crashed` to the
-harvest, or R4 claims the dump immediately. **Decide in R4** — this is a real collision between two shipped
-subsystems, and the first draft did not mention it at all.
+event.
+
+**DECIDED (2026-07-30): R4 CLAIMS the dump itself, and falls back to what is available.** The live incident is
+the more valuable one — it carries the session's capture and context, which the next-launch recovery path only
+partially reconstructs — so R4 attaches the dump to it. Claiming deletes the dump, which is exactly what stops
+the recovery path re-reporting the same crash.
+
+Crashpad writes asynchronously, so at `render-process-gone` time the dump is usually not in `completed/` yet.
+Claiming therefore polls, bounded (default 2 s). Ordering matters and is tested: **claim before submit**, so a
+crash between the two cannot be re-reported.
+
+Fallback, in priority order:
+- **No dump within the window** → submit with capture + reason, **without** claiming, so a late dump can still
+  reach next-launch recovery. **Residual cost, stated plainly:** that can yield a second, dump-bearing
+  incident for the same crash. Losing the crash entirely would be worse, and `onFallback` exists so a host can
+  measure how often it happens.
+- **Claim throws** (e.g. unlink fails) → submit *with* the dump anyway. A possible duplicate beats dropping a
+  crash we already hold.
+- **Harvest throws, or no session marker yet** → submit with what is available.
+- **A reason Crashpad does not dump for** (`oom`, `launch-failed`, `killed`) → no claim attempted at all.
 
 ### 4.5 De-duplication
 
