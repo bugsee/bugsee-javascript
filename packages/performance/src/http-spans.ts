@@ -1,5 +1,5 @@
 import type { EventSubscribable } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import { type NetworkEvent, type NetworkStage, sanitizeUrl } from '@bugsee/protocol';
 import type { Span } from './span';
 
 // Active-APM http instrumentation: subscribe to the network interceptor (the cross-runtime
@@ -114,7 +114,9 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     active.recordChildSpan('http.client', {
       startTimestampMs: start.startTimestampMs,
       endTimestampMs: e.timestamp,
-      description: `${start.method} ${start.url.replace(/[?#].*$/, '')}`,
+      // Dropping `?…` removes query secrets but NOT a `user:pass@` credential, which node:http fully
+      // supports; the description is uploaded like any other attribute (Wave 1.1).
+      description: `${start.method} ${sanitizeUrl(start.url.replace(/[?#].*$/, ''))}`,
       attributes: {
         'http.method': start.method,
         'http.mechanism': e.mechanism,

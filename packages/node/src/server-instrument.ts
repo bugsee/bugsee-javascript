@@ -1,6 +1,7 @@
 import { parseTraceparent } from '@bugsee/capture';
 import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
@@ -18,8 +19,8 @@ import { type RequestContextStore, RequestContextStoreToken } from './request-co
 /** Plain request facts the caller extracts from its framework (no framework objects). */
 export interface ServerRequestInfo {
   method: string;
-  /** The request URL/path → `http.url` (raw; the redaction pipeline scrubs query secrets). The
-   * query-stripped path is the route-name fallback. */
+  /** The request URL/path. Pass it RAW — `buildContext` scrubs it with `sanitizeUrl` before it becomes
+   * `http.url`, so callers must not pre-redact. The query-stripped path is the route-name fallback. */
   url: string;
   /** The matched route pattern (`/users/:id`) → `http.route` + span name; refine later via `setRoute`. */
   route?: string;
@@ -239,9 +240,12 @@ const safeGetClient = (getClient: () => BugseeClient | undefined): BugseeClient 
   }
 };
 
+// `http.url` is the inbound request target and rides into reports and the `http.server` span. It carries
+// whatever the client sent — including `?api_key=…` — so it is redacted here, at the one point every
+// server path (node/bun/deno http, and the express/fastify/koa/hapi/elysia adapters) funnels through.
 const buildContext = (info: ServerRequestInfo, newContextId: () => string): RequestContext => ({
   contextId: newContextId(),
-  attributes: { 'http.method': info.method, 'http.url': info.url },
+  attributes: { 'http.method': info.method, 'http.url': sanitizeUrl(info.url) },
   ...(info.user !== undefined ? { user: info.user } : {}),
 });
 

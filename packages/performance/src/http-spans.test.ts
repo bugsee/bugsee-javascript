@@ -59,11 +59,26 @@ describe('collectHttpSpans', () => {
         opts: {
           startTimestampMs: 1000,
           endTimestampMs: 1080,
-          description: 'POST https://x/a', // query (with the token) stripped
+          description: 'POST https://x/a', // query (with the token) stripped — see the userinfo test below
           attributes: { 'http.method': 'POST', 'http.mechanism': 'fetch', 'http.status_code': 201 },
         },
       },
     ]);
+  });
+
+  it('redacts URL userinfo credentials from the span description (Wave 1.1)', () => {
+    // Stripping `?…` removes query secrets but leaves `user:pass@` completely intact, and the span
+    // description is uploaded like any other attribute. node:http supports userinfo and it is routine for
+    // private registries and service-to-service calls (docs/review/node-B-http-server.md SEV1 #3).
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit(
+      'before',
+      netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'http://alice:PWSECRET@reg/pkg' }),
+    );
+    emit('complete', netEvent({ id: 'r1', timestamp: 50, status: 200 }));
+    expect(calls[0]?.opts.description).toBe('GET http://alice:%3Credacted%3E@reg/pkg');
   });
 
   it('F3: stamps the backend http.server span id read from the response `traceresponse` header', () => {

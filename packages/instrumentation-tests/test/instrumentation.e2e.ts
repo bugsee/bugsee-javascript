@@ -446,6 +446,65 @@ describe.each(
     });
   });
 
+  describe('privacy: URL and body secrets never reach the uploaded bundle', () => {
+    // The regression gate for Wave 1.1/1.2. The original finding was proven by reading the SDK's own
+    // dataDir off disk and grepping for markers; this does the same against the delivered bundle, so a
+    // future change that unwires any sanitizer fails here even if every unit test still passes.
+    let collector: MockCollector;
+    let exitCode: number | null;
+    let stderr: string;
+    let bundles: ParsedBundle[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      const result = await runScenarioProcess(target, collector.url, 'privacy');
+      exitCode = result.exitCode;
+      stderr = result.stderr;
+      bundles = parseBundles(collector);
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+    });
+
+    it('the app process exits cleanly', () => {
+      expect(exitCode, stderr).toBe(0);
+    });
+
+    it('delivered a bundle that actually captured the probe traffic', () => {
+      // Guards the whole block against passing vacuously: markers cannot leak from a bundle that holds
+      // no network entries, so the absence assertions below are only meaningful once this holds.
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe');
+      expect(probe, 'no privacy probe bundle was delivered').toBeDefined();
+      const network = (probe as ParsedBundle).files['network.json'];
+      expect(
+        network,
+        'no network.json — nothing was captured, so the scan below proves nothing',
+      ).toBeDefined();
+      expect(strFromU8(network as Uint8Array)).toContain('/echo');
+    });
+
+    it('leaks no URL query secret, no URL userinfo credential, and no form-body password', () => {
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
+      assertNoSecrets(probe, [
+        'QUERYAPIKEYSECRET', // ?api_key=   — leaked to disk before Wave 1.1
+        'URLUSERINFOSECRET', // user:pass@  — leaked to disk before Wave 1.1 (node-only)
+        'FORMPASSWORDSECRET', // urlencoded body — leaked before Wave 1.2
+        'HEADERAUTHSECRET', // control: already redacted
+        'JSONBODYSECRET', // control: already redacted
+      ]);
+    });
+
+    it('redacts rather than DROPS — the non-secret query value still rides', () => {
+      // A sanitizer that deleted the URL, or the whole entry, would also pass the scan above while
+      // destroying the diagnostic value the capture exists for.
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
+      const network = strFromU8(probe.files['network.json'] as Uint8Array);
+      expect(network).toContain('QUERYPLAINVALUE'); // the non-sensitive param survived
+      expect(network).toContain('api_key=%3Credacted%3E'); // and the sensitive one was replaced in place
+    });
+  });
+
   describe('crash scenario: uncaughtException → crash bundle → exit 1', () => {
     let collector: MockCollector;
     let exitCode: number | null;

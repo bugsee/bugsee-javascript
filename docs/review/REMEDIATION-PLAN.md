@@ -32,11 +32,26 @@ serious hole, and none blocks anything else.
 
 | # | Fix | Where | Notes | Est |
 |---|---|---|---|---|
-| 1.1 | **Redact URLs on the wire path** — scrub query strings and `user:pass@` credentials at the single choke point | `packages/node` (`node:http` owner — the root cause), `packages/capture` | Root-caused during review: the seven backend adapters are clean; the engine leaks. One fix covers all of them, plus `nestjs`'s `manifest.json` `http.url`. | 3–4d |
-| 1.2 | **Form-urlencoded bodies ship credentials in the clear** — apply body sanitisation to urlencoded as it is to JSON | `packages/capture` | Same class as 1.1, different content type. | 1–2d |
+| 1.1 | ✅ **DONE** — **Redact URLs on the wire path** — scrub query strings and `user:pass@` credentials at the single choke point | `packages/node` (`node:http` owner — the root cause), `packages/capture` | Root-caused during review: the seven backend adapters are clean; the engine leaks. One fix covers all of them, plus `nestjs`'s `manifest.json` `http.url`. | 3–4d |
+| 1.1b | ✅ **DONE** — **Redact URLs embedded in network ERROR MESSAGES** | `packages/protocol`, `packages/capture` | **Not in the original findings** — found by the privacy e2e *after* 1.1 was in place and passing: the URL field was correctly redacted while `customError`/`custom.error` quoted the same URL back verbatim (undici's "Request cannot be constructed from a URL that includes credentials: …"). Android already carries this defense (`NetworkDataSanitizer.sanitizeErrorMessage`). | — |
+| 1.2 | ✅ **DONE** — **Form-urlencoded bodies ship credentials in the clear** — apply body sanitisation to urlencoded as it is to JSON | `packages/capture` | Same class as 1.1, different content type. | 1–2d |
 | 1.3 | **Replay masking model** — make the always-masked floor (`password`, `cc-*`) genuinely non-overridable; replace the 11-entry attribute denylist with an allowlist or a value-shape heuristic | `packages/replay` | `.bugsee-unmask` currently defeats the password floor — raw passwords and card numbers get serialised. `data-user-email` leaks at defaults. | 4–6d |
 | 1.4 | **Fail-closed on every privacy path** — a malformed selector, a throwing masking config, or a failed rect computation must obscure MORE, never less | `packages/replay`, `packages/replay-canvas`, `packages/webview` | Today: one typo in `blockSelector` silently disables ALL blocking page-wide; WebView obscuring is fail-open three ways. | 3–5d |
 | 1.5 | **Canvas privacy** — make `.bugsee-show` actually work on the canvas path, and make `.bugsee-ignore`/`.bugsee-mask` protect canvas pixels | `packages/replay-canvas` (+ rrweb fork: `unblockSelector` is never passed) | Requires a change in the rrweb fork — cross-repo, so start the fork work early. | 3–5d |
+
+**Wave 1.1 / 1.2 as built.** One portable redactor in `@bugsee/protocol` (`sanitizeUrl`, `sanitizeErrorMessage`,
+plus non-JSON body key redaction in `sanitizeBody`), ported from Android's `NetworkDataSanitizer` rather than
+invented, with two deliberate supersets over it: **URL userinfo** (`node:http` supports `user:pass@`; browsers
+strip it, so Android never needed it) and **fragment params** (OAuth implicit flow returns `#access_token=`).
+Wired at every place a URL reaches the wire: the network capture choke point (covers fetch/xhr/ws/sse/
+webtransport *and* `node:http`, which folds in via `additionalSources`), `@bugsee/node`'s `server-instrument`
+(covers express/fastify/koa/hapi/elysia in one change), plus `nestjs`, `astro`, `vercel-edge` and the
+`http.client` span description in `@bugsee/performance`.
+
+**Verification.** A `privacy` e2e scenario re-runs the review's own probe against the real SDK and scans the
+delivered bundle bytes. It is teeth-checked: unwiring each of the three redactors individually makes it fail
+with the corresponding marker, and it asserts redaction rather than deletion (the non-sensitive param must
+still ride). It earned its keep immediately — it found 1.1b, which unit tests at 100% coverage did not.
 
 ---
 

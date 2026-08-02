@@ -335,6 +335,62 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
   await client.stop(20_000);
 }
 
+/**
+ * Privacy battery (Wave 1.1 / 1.2). A direct re-run of the probe that FOUND the leaks
+ * (docs/review/node-B-http-server.md SEV1 #3, docs/review/capture.md SEV1 #4/#5): drive real traffic whose
+ * every secret-bearing position is filled with a distinctive marker, then let the e2e scan the uploaded
+ * bytes for those markers. The original probe recovered QUERY_APIKEY, QUERY_PLAIN and URL_USERINFO from the
+ * SDK's own dataDir while headers and JSON bodies were correctly redacted — so the markers are placed to
+ * distinguish "redaction ran" from "redaction ran on this field".
+ *
+ * Deliberately end-to-end rather than unit: the unit suites for these paths were at ~100% coverage while
+ * every one of these leaks was live. Only the emitted bytes settle it. Exits 0.
+ */
+async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  // 1. Query-string secrets on a real captured outgoing request.
+  const q = await fetch(`${collectorUrl}/echo?api_key=QUERYAPIKEYSECRET&plain=QUERYPLAINVALUE`);
+  await q.text();
+
+  // 2. URL userinfo — node:http fully supports `user:pass@`, and this is the node-exclusive half of the
+  //    finding. Routed at the collector's own host so the request really is made and really is captured.
+  const withoutScheme = collectorUrl.replace(/^https?:\/\//, '');
+  const u = await fetch(`http://alice:URLUSERINFOSECRET@${withoutScheme}/echo`).catch(
+    () => undefined, // some runtimes reject userinfo in fetch(); the capture still happened
+  );
+  await u?.text();
+
+  // 3. The canonical form login POST. The SDK itself stamps the urlencoded Content-Type when the caller
+  //    sets none, which is what keeps the body past the capture gate — so this must be sent WITHOUT one.
+  const f = await fetch(`${collectorUrl}/echo`, {
+    method: 'POST',
+    body: new URLSearchParams({ username: 'bob', password: 'FORMPASSWORDSECRET' }),
+  });
+  await f.text();
+
+  // 4. Controls: a header and a JSON body secret. These were ALREADY redacted before this wave; if a
+  //    marker of theirs ever appears, the regression is in the pre-existing sanitizer, not the new code.
+  const j = await fetch(`${collectorUrl}/echo`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer HEADERAUTHSECRET', 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'JSONBODYSECRET' }),
+  });
+  await j.text();
+
+  // An incident drains the capture window, so every entry above rides into this bundle.
+  await client.logException(new Error('e2e privacy probe'));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -362,6 +418,10 @@ export async function runScenario(
   }
   if (opts.scenario === 'propagation') {
     await runPropagationScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'privacy') {
+    await runPrivacyScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);

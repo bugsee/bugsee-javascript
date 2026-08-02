@@ -114,6 +114,21 @@ describe('openServerRequest', () => {
     }).not.toThrow();
   });
 
+  it('redacts secrets in the request URL before they reach `http.url`', () => {
+    // Wave 1.1. `info.url` is the raw request target, and its own doc comment claimed "the redaction
+    // pipeline scrubs query secrets" — it did not (docs/review/node-B-http-server.md SEV3 #12). This is
+    // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
+    // place that has to be right.
+    const store = fakeStore();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => fakeTxn()) } });
+    openServerRequest(info({ method: 'GET', url: '/pay?api_key=SECRET&page=2' }), {
+      getClient: () => client,
+      newContextId: () => 'cid-1',
+    });
+    const [ctx] = store.enterWith.mock.calls[0] as [{ attributes: Record<string, string> }];
+    expect(ctx.attributes['http.url']).toBe('/pay?api_key=%3Credacted%3E&page=2');
+  });
+
   it('returns a no-op span when getClient throws', () => {
     const span = openServerRequest(info(), {
       getClient: () => {

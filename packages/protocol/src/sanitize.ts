@@ -1,4 +1,5 @@
 import { utf8ByteLength } from '@bugsee/util';
+import { redactSensitivePairs } from './pairs';
 import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import type { NetworkEvent, NoBodyReason } from './wire';
@@ -67,11 +68,51 @@ function isJsonContentType(contentType: string | undefined): boolean {
   );
 }
 
+/** A header/STOMP field name: the RFC 7230 token charset, minus the characters that only ever appear in
+ *  structured text (`{`, `"`, `,`, whitespace). */
+const HEADER_TOKEN = /^[A-Za-z0-9_.!#$%&'*+^`|~-]+$/;
+
+/**
+ * Redact the values of sensitive keys in a `key: value` line sequence — the STOMP / header-style shape
+ * (`CONNECT\npasscode:s3cret`), which reaches reports because WebSocket frame bodies are captured by
+ * default. Line-delimited; each line splits on its FIRST colon. A leading colon is not a key, and a key
+ * that is not sensitive is left alone, so timestamps and URLs inside a value survive.
+ */
+function redactSensitiveColonLines(body: string): string {
+  if (!body.includes(':')) {
+    return body;
+  }
+  let changed = false;
+  const lines = body.split('\n').map((line) => {
+    const colon = line.indexOf(':');
+    const key = line.slice(0, colon).trim();
+    // The key must look like a header/STOMP token. Without this, `{"password":"x"}` under a non-JSON
+    // Content-Type reads as the key `{"password"` and the pass replaces the rest of the LINE — redacting
+    // the value but destroying the closing brace. Refusing to treat punctuation as a key keeps the
+    // structural passes from corrupting any body they were not designed to parse.
+    if (colon > 0 && HEADER_TOKEN.test(key) && isSensitiveKey(key)) {
+      changed = true;
+      return `${line.slice(0, colon + 1)}${REDACTED}`;
+    }
+    return line;
+  });
+  return changed ? lines.join('\n') : body;
+}
+
+/** Redact sensitive values in a form-urlencoded body. Plain text (no `=`) is left untouched. */
+function redactSensitiveFormBody(body: string): string {
+  return body.includes('=') ? redactSensitivePairs(body, 0, body.length) : body;
+}
+
 /**
  * Sanitize a request/response body string by Content-Type (design §8.10). A JSON media type (see
- * {@link isJsonContentType}) → recursive key-denylist redaction (re-serialized); everything else → the
- * shape pass only (token / card scrub). Never throws: invalid JSON degrades to the shape pass.
- * (Form-urlencoded key redaction is a follow-up; today it gets the shape pass.)
+ * {@link isJsonContentType}) → recursive key-denylist redaction (re-serialized). Anything else — INCLUDING
+ * a body that claimed a JSON type but does not parse — gets the two textual shapes we can structurally
+ * read: form-urlencoded `key=value&…` and colon-delimited `key: value`, then the shape pass.
+ *
+ * The non-JSON key redaction is Android parity (`NetworkDataSanitizer.sanitizeBody`) and closes
+ * docs/review/capture.md SEV1 #5: `new URLSearchParams({username, password})` is the canonical HTML login
+ * body, and it was stored verbatim because the denylist ran for JSON media types only. Never throws.
  */
 export function sanitizeBody(
   body: string,
@@ -82,10 +123,10 @@ export function sanitizeBody(
     try {
       return JSON.stringify(sanitizeJson(JSON.parse(body), options));
     } catch {
-      return redactShapes(body, options); // not valid JSON → shape pass
+      // Not valid JSON → fall through to the structural passes rather than trusting the declared type.
     }
   }
-  return redactShapes(body, options);
+  return redactShapes(redactSensitiveColonLines(redactSensitiveFormBody(body)), options);
 }
 
 /** Find a header's value case-insensitively (header maps preserve the producer's casing). */

@@ -86,7 +86,8 @@ export function runScenarioProcess(
     | 'multi-instance'
     | 'disk-recovery'
     | 'worker'
-    | 'propagation',
+    | 'propagation'
+    | 'privacy',
   extraEnv: Record<string, string> = {},
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {

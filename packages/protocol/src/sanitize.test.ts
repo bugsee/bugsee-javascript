@@ -179,7 +179,7 @@ describe('sanitizeBody', () => {
     expect(sanitizeBody(`not json ${GH}`, 'application/json')).toBe(`not json ${R}`);
   });
 
-  it('shape-scans a non-JSON body (text/plain) without key redaction', () => {
+  it('shape-scans a non-JSON body (text/plain) that has no key=value structure', () => {
     expect(sanitizeBody(`hello ${GH} world`, 'text/plain')).toBe(`hello ${R} world`);
   });
 
@@ -293,5 +293,98 @@ describe('gateNetworkBody', () => {
     const out = gateNetworkBody(e, OPTS);
     expect(out.custom?.headers).toEqual({ 'X-A': '1' });
     expect(out.custom?.error).toBe('boom');
+  });
+});
+
+// Wave 1.2 (docs/review/capture.md SEV1 #5). `sanitizeBody` applied the key denylist to JSON media types
+// ONLY, so the canonical HTML login POST — `new URLSearchParams({username, password})` — was stored in the
+// clear. Worse, @bugsee/capture STAMPS the `application/x-www-form-urlencoded` Content-Type when the caller
+// set none, which is exactly what lets the body past the capture gate. Android has always redacted these
+// (NetworkDataSanitizer.sanitizeBody → redactSensitiveFormBody / redactSensitiveColonLines); this is parity.
+const URL_R = '%3Credacted%3E';
+
+describe('sanitizeBody — form-urlencoded key redaction', () => {
+  it('redacts the credentials in a form login POST (review probe R1a, verbatim)', () => {
+    expect(
+      sanitizeBody(
+        'username=bob&password=hunter2&api_key=K123',
+        'application/x-www-form-urlencoded;charset=UTF-8',
+      ),
+    ).toBe(`username=bob&password=${URL_R}&api_key=${URL_R}`);
+  });
+
+  it('redacts a urlencoded-shaped text/plain body (review probe R1c, verbatim)', () => {
+    expect(sanitizeBody('password=hunter2&ssn=123-45-6789', 'text/plain')).toBe(
+      `password=${URL_R}&ssn=${URL_R}`,
+    );
+  });
+
+  it('redacts when the SDK captured no Content-Type at all', () => {
+    expect(sanitizeBody('token=abc', undefined)).toBe(`token=${URL_R}`);
+  });
+
+  it('redacts a urlencoded body that arrived under a JSON Content-Type but is not JSON', () => {
+    // The JSON parse fails; falling back to the shape pass alone would ship the credential.
+    expect(sanitizeBody('password=hunter2', 'application/json')).toBe(`password=${URL_R}`);
+  });
+
+  it('leaves a body with no `=` untouched', () => {
+    expect(sanitizeBody('just some prose about a password', 'text/plain')).toBe(
+      'just some prose about a password',
+    );
+  });
+
+  it('still applies the shape pass to the surviving values', () => {
+    expect(sanitizeBody(`user=bob&note=${GH}`, 'text/plain')).toBe(`user=bob&note=${R}`);
+  });
+
+  it('does not redact non-sensitive fields', () => {
+    expect(sanitizeBody('page=2&sort=asc', 'application/x-www-form-urlencoded')).toBe(
+      'page=2&sort=asc',
+    );
+  });
+});
+
+describe('sanitizeBody — colon-delimited (STOMP / header-style) bodies', () => {
+  it('redacts a STOMP CONNECT passcode', () => {
+    // WebSocket frame bodies reach the report by default; STOMP puts the credential on a `key:value` line.
+    expect(sanitizeBody('CONNECT\naccept-version:1.2\npasscode:s3cret\n', 'text/plain')).toBe(
+      `CONNECT\naccept-version:1.2\npasscode:${R}\n`,
+    );
+  });
+
+  it('leaves a non-sensitive colon line alone, including one whose value contains colons', () => {
+    expect(sanitizeBody('started:12:30:01', 'text/plain')).toBe('started:12:30:01');
+  });
+
+  it('matches the key ignoring surrounding whitespace', () => {
+    expect(sanitizeBody('Authorization: Bearer xyz', 'text/plain')).toBe(`Authorization:${R}`);
+  });
+
+  it('matches an INDENTED key — leading whitespace must not hide the credential', () => {
+    expect(sanitizeBody('frame\n   passcode: s3cret', 'text/plain')).toBe(
+      `frame\n   passcode:${R}`,
+    );
+  });
+
+  it('does not redact a line that has no colon at all', () => {
+    // `indexOf` returns -1 for such a line; slicing on it would read `passwordX` as the key `password`
+    // and blank the whole line. Only lines that actually carry `key: value` are eligible.
+    expect(sanitizeBody('passwordX\nnote: ok', 'text/plain')).toBe('passwordX\nnote: ok');
+  });
+
+  it('leaves a body with no colon untouched', () => {
+    expect(sanitizeBody('plain text', 'text/plain')).toBe('plain text');
+  });
+
+  it('does not treat a leading colon as a key', () => {
+    expect(sanitizeBody(':password', 'text/plain')).toBe(':password');
+  });
+
+  it('never corrupts a structured body — JSON punctuation is not a header key', () => {
+    // `{"password"` is not a field name. Reading it as one redacts the rest of the LINE, taking the
+    // closing brace with it and leaving unparseable output in the report.
+    expect(sanitizeBody('{"password":"x"}', 'application/json5')).toBe('{"password":"x"}');
+    expect(sanitizeBody('[{"token":"x"}]', 'text/plain')).toBe('[{"token":"x"}]');
   });
 });

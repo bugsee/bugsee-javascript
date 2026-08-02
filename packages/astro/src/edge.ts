@@ -9,6 +9,7 @@
 //
 // Edge subpath (composes @bugsee/vercel-edge) → never the portable `.`/`./middleware`/`./server` entries.
 import { type AttributeValue, getCarrierClient } from '@bugsee/core';
+import { sanitizeUrl } from '@bugsee/protocol';
 import {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
@@ -51,7 +52,9 @@ function edgeAttributes(context: AstroMiddlewareContext): Record<string, Attribu
   const method = context?.request?.method;
   const url = context?.request?.url;
   if (method !== undefined) attrs['http.method'] = method;
-  if (url !== undefined) attrs['http.url'] = url;
+  // Astro exposes the FULL request URL (query included), unlike vercel-edge's pathname reduction — so it
+  // needs the same scrub the network path got (Wave 1.1).
+  if (url !== undefined) attrs['http.url'] = sanitizeUrl(url);
   return attrs;
 }
 

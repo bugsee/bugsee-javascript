@@ -31,7 +31,8 @@
     "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/node": "workspace:*",
-    "@bugsee/performance": "workspace:*"
+    "@bugsee/performance": "workspace:*",
+    "@bugsee/protocol": "workspace:*"
   },
   "peerDependencies": {
     "@nestjs/common": "^9 || ^10 || ^11",

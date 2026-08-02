@@ -89,6 +89,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
@@ -589,6 +592,9 @@ importers:
       '@bugsee/performance':
         specifier: workspace:*
         version: link:../performance
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
     devDependencies:
       '@bugsee/util':
         specifier: workspace:*

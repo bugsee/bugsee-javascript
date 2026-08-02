@@ -13,7 +13,9 @@ import {
   type NetworkEvent,
   type NetworkStage,
   sanitizeBody,
+  sanitizeErrorMessage,
   sanitizeHeaders,
+  sanitizeUrl,
 } from '@bugsee/protocol';
 
 // Runtime-agnostic network capture CONSUMER (design §16.1): subscribes to one or more network SOURCES
@@ -25,23 +27,47 @@ import {
 /** A network source — any emitter exposing NetworkStage channels (e.g. the fetch interceptor). */
 export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>>;
 
-// Per-event default PII redaction (§8.10, [R:wire m9]): redact sensitive request/response headers and
-// scrub the captured body by Content-Type (JSON key denylist, else a shape pass). Non-mutating (the hub
+// Per-event default PII redaction (§8.10, [R:wire m9]): redact the URL (sensitive query/fragment params
+// and any `user:pass@` credential), the sensitive request/response headers, and the captured body by
+// Content-Type (JSON key denylist, else form/colon key redaction plus a shape pass). Non-mutating (the hub
 // event other subscribers see stays raw); returns the same event when there is nothing to redact.
+//
+// The URL is handled FIRST and OUTSIDE the `custom` guard: ws/sse/webtransport events carry no headers or
+// body, so an early return on `custom === undefined` would ship `wss://…?token=…` verbatim. This provider
+// is the single redaction point for every transport — including node:http, which folds in through
+// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere
+// (docs/review/capture.md SEV1 #4, docs/review/node-B-http-server.md SEV1 #3).
 const sanitize = (event: NetworkEvent): NetworkEvent => {
+  const url = sanitizeUrl(event.url);
+  // The failure message quotes the URL back on most transports, so redacting `url` alone leaves the same
+  // secret one field over — proven by the privacy e2e with the url fix already in place.
+  const customError =
+    typeof event.customError === 'string'
+      ? sanitizeErrorMessage(event.customError)
+      : event.customError;
   const custom = event.custom;
   if (custom === undefined) {
-    return event;
+    return url === event.url && customError === event.customError
+      ? event
+      : { ...event, url, customError };
   }
   const headers = custom.headers === undefined ? custom.headers : sanitizeHeaders(custom.headers);
   const body =
     typeof custom.body === 'string'
       ? sanitizeBody(custom.body, contentTypeOf(custom.headers))
       : custom.body;
-  if (headers === custom.headers && body === custom.body) {
+  const error =
+    typeof custom.error === 'string' ? sanitizeErrorMessage(custom.error) : custom.error;
+  if (
+    url === event.url &&
+    customError === event.customError &&
+    headers === custom.headers &&
+    body === custom.body &&
+    error === custom.error
+  ) {
     return event;
   }
-  return { ...event, custom: { ...custom, headers, body } };
+  return { ...event, url, customError, custom: { ...custom, headers, body, error } };
 };
 
 class NetworkCaptureProvider extends CaptureProviderBase {
