@@ -511,3 +511,25 @@ describe('createNetworkCaptureProvider', () => {
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
   });
 });
+
+describe('network sanitize — custom.error as the ONLY dirty field', () => {
+  it('redacts it even when url, headers and body are all clean', async () => {
+    // Review finding: no test covered `custom.error` being the sole field needing redaction, and the
+    // unchanged-check could have returned the raw event. A probe emitted `u:PWSECRET@h/x` verbatim.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'error',
+      netEvent({
+        type: 'error',
+        url: 'https://api/clean',
+        custom: { error: 'failed http://u:PWSECRET@h/x' },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.custom?.error).toBe('failed http://u:%3Credacted%3E@h/x');
+  });
+});

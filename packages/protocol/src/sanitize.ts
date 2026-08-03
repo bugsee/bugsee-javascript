@@ -99,9 +99,47 @@ function redactSensitiveColonLines(body: string): string {
   return changed ? lines.join('\n') : body;
 }
 
-/** Redact sensitive values in a form-urlencoded body. Plain text (no `=`) is left untouched. */
+/** A urlencoded parameter NAME: the RFC 3986 unreserved/sub-delim set plus `%`, `[`/`]` (PHP arrays) and
+ *  `+`. Deliberately excludes whitespace, quotes and angle brackets — the characters that mark prose or
+ *  markup rather than a form field. */
+const FORM_KEY = /^[A-Za-z0-9_.~!$'()*+,:@\-[\]%]+$/;
+
+/**
+ * Does this body actually LOOK like `key=value&key=value`?
+ *
+ * Without this guard the pass treated every non-JSON body containing an `=` as a form: the "key" became all
+ * the prose before the first `=`, and if that prose happened to contain a denylist substring (`auth`, `pass`,
+ * `pin`, `ein`, `dob`…) the ENTIRE remainder of the body was replaced. Measured over 20 real repo files as
+ * `text/plain` bodies, 10 lost more than 90 % of their bytes — `<config auth="basic" …/>` collapsed to
+ * `<config auth=%3Credacted%3E`. That is mass data destruction on captured bodies, not redaction.
+ *
+ * The sibling colon pass shipped with exactly this guard (`HEADER_TOKEN`); this one did not.
+ */
+function looksLikeFormBody(body: string): boolean {
+  if (!body.includes('=')) {
+    return false;
+  }
+  let sawPair = false;
+  for (const segment of body.split(/[&;]/)) {
+    const eq = segment.indexOf('=');
+    const key = eq === -1 ? segment : segment.slice(0, eq);
+    if (key !== '' && !FORM_KEY.test(key)) {
+      return false; // prose, markup or SQL — not a form field name
+    }
+    sawPair ||= eq !== -1;
+  }
+  return sawPair;
+}
+
+/** Redact sensitive values in a form-urlencoded body. Anything that is not form-SHAPED is left untouched. */
 function redactSensitiveFormBody(body: string): string {
-  return body.includes('=') ? redactSensitivePairs(body, 0, body.length) : body;
+  return looksLikeFormBody(body) ? redactSensitivePairs(body, 0, body.length) : body;
+}
+
+/** Does the body look like a JSON document, whatever the Content-Type claims? */
+function looksLikeJson(body: string): boolean {
+  const first = body.trimStart()[0];
+  return first === '{' || first === '[';
 }
 
 /**
@@ -119,7 +157,12 @@ export function sanitizeBody(
   contentType: string | undefined,
   options?: ShapeRedactionOptions,
 ): string {
-  if (isJsonContentType(contentType)) {
+  // Parse as JSON when the TYPE says so OR the body SHAPE says so. Type alone was not enough: the textual
+  // passes below are structurally incapable of reading JSON (the form pass needs `=`, the colon pass rejects
+  // `{"password"` as a field name), so a JSON body under any non-canonical JSON media type was returned
+  // verbatim — including `application/x-amz-json-1.1`, the AWS SDK v3 default for DynamoDB, KMS, Cognito and
+  // STS, and `application/x-ndjson`. A label must never buy a body LESS redaction than its content earns.
+  if (isJsonContentType(contentType) || looksLikeJson(body)) {
     try {
       return JSON.stringify(sanitizeJson(JSON.parse(body), options));
     } catch {

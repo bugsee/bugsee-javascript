@@ -24,11 +24,13 @@ import { redactShapes, type ShapeRedactionOptions } from './shapes';
 
 /** Redact the userinfo credential in `scheme://user:pass@host/…`, if any. */
 function redactUserinfo(url: string): string {
+  // `scheme://` or a protocol-relative `//host` — the latter still carries a real authority, and its
+  // userinfo was surviving because only `://` was recognised.
   const schemeEnd = url.indexOf('://');
-  if (schemeEnd < 0) {
+  const authorityStart = schemeEnd >= 0 ? schemeEnd + 3 : url.startsWith('//') ? 2 : -1;
+  if (authorityStart < 0) {
     return url; // relative or schemeless — no authority, so no userinfo
   }
-  const authorityStart = schemeEnd + 3;
   // The authority ends at the first `/`, `?` or `#`; an `@` past that point is path/query/fragment text.
   let authorityEnd = url.length;
   for (let i = authorityStart; i < url.length; i += 1) {
@@ -61,12 +63,23 @@ function redactUserinfo(url: string): string {
  * email address cannot be read as a query string, because a token is not a query and carries no pairs.
  */
 export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOptions): string {
-  const scrubbed = message.replace(/\S+/g, (token) =>
-    token.includes('://') || token.includes('?') || token.includes('@')
-      ? sanitizeUrl(token, options)
-      : token,
-  );
-  return redactShapes(scrubbed, options); // tokens that were not URL-ish still get the shape pass
+  const scrubbed = message.replace(/\S+/g, (token) => {
+    if (token.includes('://') || token.includes('?')) {
+      return sanitizeUrl(token, options);
+    }
+    // `user:pw@host` quoted in a connection error carries a credential with no scheme in sight, and a bare
+    // `a=1&password=x` is a form payload echoed into the message. Neither reaches `sanitizeUrl`'s authority
+    // or query logic, so both are handled directly.
+    if (token.includes('@') && /^[^@/]+:[^@/]+@/.test(token)) {
+      const colon = token.indexOf(':');
+      return `${token.slice(0, colon + 1)}${REDACTED_URL_ENCODED}${token.slice(token.indexOf('@'))}`;
+    }
+    if (token.includes('=')) {
+      return redactSensitivePairs(token, 0, token.length);
+    }
+    return token;
+  });
+  return shapePass(scrubbed, options); // tokens that were not URL-ish still get the shape pass
 }
 
 /**
@@ -76,8 +89,10 @@ export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOp
 export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): string {
   let out = redactUserinfo(url);
 
-  const query = out.indexOf('?');
-  if (query >= 0) {
+  // Scan from EVERY `?`, not just the first: `?next=https://y/?token=SECRET` puts a second query string
+  // inside the first, and the outer key (`next`) is innocuous so the outer pass leaves it alone. Repeat
+  // scans are idempotent, so overlapping regions cost nothing but a comparison.
+  for (let query = out.indexOf('?'); query >= 0; query = out.indexOf('?', query + 1)) {
     const hash = out.indexOf('#', query);
     out = redactSensitivePairs(out, query + 1, hash >= 0 ? hash : out.length);
   }
@@ -87,5 +102,21 @@ export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): strin
     out = redactSensitivePairs(out, fragment + 1, out.length);
   }
 
-  return redactShapes(out, options);
+  return shapePass(out, options);
+}
+
+/**
+ * The shape pass, bounded by length.
+ *
+ * `redactShapes`'s JWT pattern backtracks per `eyJ` occurrence, and a URL has no size limit of its own —
+ * measured 7.7 s on 200 KB of `eyJ`-dense input and 48 s on 500 KB, synchronously, on the application's own
+ * thread inside the interceptor. That is precisely the "interceptors must not alter app behavior" rule this
+ * SDK is bound by, and it is reachable wherever a URL is attacker-influenced. Structural redaction (query,
+ * fragment, userinfo) is unbounded and still applies; only the pattern scan is skipped past the cap, which
+ * is far larger than any legitimate URL.
+ */
+const MAX_SHAPE_SCAN = 8192;
+
+function shapePass(value: string, options?: ShapeRedactionOptions): string {
+  return value.length > MAX_SHAPE_SCAN ? value : redactShapes(value, options);
 }

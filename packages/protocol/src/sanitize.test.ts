@@ -169,9 +169,15 @@ describe('sanitizeBody', () => {
     expect(sanitizeBody('{"token":"x"}', '  application/json  ')).toBe(`{"token":"${R}"}`);
   });
 
-  it('does not treat a non-JSON media type that merely contains "json" as JSON', () => {
-    // 'application/json5' is not standard JSON; key denylist must not run (shape pass still does).
-    expect(sanitizeBody('{"password":"x"}', 'application/json5')).toBe('{"password":"x"}');
+  it('key-redacts a JSON-SHAPED body whatever the media type claims', () => {
+    // The type gate alone left AWS SDK v3 traffic (`application/x-amz-json-1.1`) and ndjson in the clear,
+    // because the textual passes cannot read JSON at all. A label must never buy LESS redaction than the
+    // content earns, so the shape decides too.
+    expect(sanitizeBody('{"password":"x"}', 'application/json5')).toBe(`{"password":"${R}"}`);
+    expect(sanitizeBody('{"Password":"hunter2"}', 'application/x-amz-json-1.1')).toBe(
+      `{"Password":"${R}"}`,
+    );
+    expect(sanitizeBody('{"token":"t"}', 'text/plain')).toBe(`{"token":"${R}"}`);
   });
 
   it('degrades to the shape pass when a JSON body fails to parse (never throws)', () => {
@@ -381,10 +387,44 @@ describe('sanitizeBody — colon-delimited (STOMP / header-style) bodies', () =>
     expect(sanitizeBody(':password', 'text/plain')).toBe(':password');
   });
 
-  it('never corrupts a structured body — JSON punctuation is not a header key', () => {
-    // `{"password"` is not a field name. Reading it as one redacts the rest of the LINE, taking the
-    // closing brace with it and leaving unparseable output in the report.
-    expect(sanitizeBody('{"password":"x"}', 'application/json5')).toBe('{"password":"x"}');
-    expect(sanitizeBody('[{"token":"x"}]', 'text/plain')).toBe('[{"token":"x"}]');
+  it('never corrupts a structured body that it cannot parse', () => {
+    // `{"password"` is not a field name, and `<config auth` is not a form key. Reading either as one used to
+    // replace the rest of the line/body, leaving unparseable output in the report.
+    const brokenJson = '{"password": "x", }} not really json';
+    expect(sanitizeBody(brokenJson, 'application/json5')).toBe(brokenJson);
+    expect(sanitizeBody('<config auth="basic" retries="3" host="a.example"/>', 'text/plain')).toBe(
+      '<config auth="basic" retries="3" host="a.example"/>',
+    );
+  });
+});
+
+// Review finding (privacy reviewer, SEV1 #1): the form pass ran on ANY non-JSON body containing `=`, so
+// prose whose first `=` was preceded by a denylist substring lost everything after it. Measured across 20
+// real repo files as text/plain bodies: 10 lost >90% of their bytes.
+describe('sanitizeBody — the form pass never eats a body that is not a form', () => {
+  const intact = [
+    ['markup', '<config auth="basic" retries="3" host="a.example"/>'],
+    ['SQL', 'UPDATE users SET pass_hash = $1 WHERE id = $2 RETURNING id, email'],
+    ['prose with an equals', 'protein = 12g, carbs = 30g, fat = 5g'],
+    ['html', '<!DOCTYPE html><p>The site is being rebuilt.</p><div class="notice">x</div>'],
+    ['css', '.a { padding: 2px; } .pin { display: none; }'],
+  ] as const;
+
+  for (const [label, body] of intact) {
+    it(`leaves ${label} byte-for-byte`, () => {
+      expect(sanitizeBody(body, 'text/plain')).toBe(body);
+    });
+  }
+
+  it('still redacts a body that IS form-shaped', () => {
+    expect(sanitizeBody('username=bob&password=hunter2', 'text/plain')).toBe(
+      `username=bob&password=${URL_R}`,
+    );
+  });
+
+  it('redacts a form body using the legacy `;` separator', () => {
+    expect(sanitizeBody('username=bob;password=hunter2', 'text/plain')).toBe(
+      `username=bob;password=${URL_R}`,
+    );
   });
 });

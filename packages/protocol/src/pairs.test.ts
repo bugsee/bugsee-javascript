@@ -54,7 +54,10 @@ describe('redactSensitivePairs — what it redacts', () => {
 });
 
 describe('redactSensitivePairs — what it must NOT touch', () => {
-  it('returns the ORIGINAL instance when nothing is sensitive (no needless copying)', () => {
+  it('returns the input unchanged when nothing is sensitive', () => {
+    // NOTE: `toBe` on a string is value equality, so this cannot assert instance identity — an earlier
+    // version claimed to (`return input.split('').join('')` survived it). Value equality is the property
+    // that actually matters; the allocation-avoidance is an implementation detail, not a contract.
     const input = 'a=1&b=2';
     expect(all(input)).toBe(input);
   });
@@ -100,5 +103,27 @@ describe('redactSensitivePairs — idempotence', () => {
   it('re-scanning an already-redacted string changes nothing further', () => {
     const once = all('password=hunter2&q=1');
     expect(all(once)).toBe(once);
+  });
+});
+
+describe('redactSensitivePairs — one level into a nested URL value', () => {
+  it('leaves an empty value alone', () => {
+    expect(all('next=&page=2')).toBe('next=&page=2');
+  });
+
+  it('leaves a nested value whose query holds nothing sensitive', () => {
+    const input = 'next=https://y.com/?page=2';
+    expect(all(input)).toBe(input);
+  });
+
+  it('leaves a value with a trailing `?` and nothing after it', () => {
+    const input = 'next=https://y.com/?';
+    expect(all(input)).toBe(input);
+  });
+
+  it('redacts a plain nested query without re-encoding the rest', () => {
+    expect(all('next=https://y.com/?token=SECRET&keep=1')).toBe(
+      'next=https://y.com/?token=%3Credacted%3E&keep=1',
+    );
   });
 });

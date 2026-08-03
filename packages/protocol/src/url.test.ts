@@ -105,6 +105,16 @@ describe('sanitizeUrl — URL userinfo credentials (node-only; browsers strip th
     );
   });
 
+  it('ends the authority at `?` or `#`, not only at `/`', () => {
+    // Without these arms `https://host?email=bob@example.com` reads the whole query as userinfo and becomes
+    // `https://%3Credacted%3E@example.com` — destroying the URL and inventing a credential. No test reached
+    // them despite the file reporting 100% branch coverage (v8 does not count `||` operands).
+    expect(sanitizeUrl('https://host?email=bob@example.com')).toBe(
+      'https://host?email=bob@example.com',
+    );
+    expect(sanitizeUrl('https://host#a@b')).toBe('https://host#a@b');
+  });
+
   it('ignores an `@` that appears BEFORE the authority instead of mis-slicing the URL', () => {
     expect(sanitizeUrl('user@name://host/p')).toBe('user@name://host/p');
   });
@@ -161,7 +171,8 @@ describe('sanitizeUrl — robustness', () => {
     }
   });
 
-  it('returns the original string when there is nothing to redact', () => {
+  it('returns the string unchanged when there is nothing to redact', () => {
+    // Value equality, not identity — see the note in pairs.test.ts.
     const url = 'https://api.example.com/v1/items?page=2';
     expect(sanitizeUrl(url)).toBe(url);
   });
@@ -229,5 +240,65 @@ describe('sanitizeErrorMessage', () => {
   it('never throws and returns the original when there is nothing to redact', () => {
     expect(sanitizeErrorMessage('')).toBe('');
     expect(sanitizeErrorMessage('socket hang up')).toBe('socket hang up');
+  });
+});
+
+// Review findings (privacy reviewer SEV2 #3/#4/#5/#6/#7): each was reproduced against the real exports
+// before the fix, and each is pinned here.
+describe('sanitizeUrl — separators, nesting, and bounds', () => {
+  it('redacts a `;`-separated query parameter (the legacy CGI/PHP separator)', () => {
+    expect(sanitizeUrl('https://x.com/a?foo=1;api_key=SECRET;bar=2')).toBe(
+      'https://x.com/a?foo=1;api_key=%3Credacted%3E;bar=2',
+    );
+  });
+
+  it('redacts a secret in a URL NESTED inside a query value (the OAuth redirect_uri shape)', () => {
+    expect(sanitizeUrl('https://x.com/a?next=https://y.com/?token=SECRET')).toBe(
+      'https://x.com/a?next=https://y.com/?token=%3Credacted%3E',
+    );
+  });
+
+  it('redacts a secret in a PERCENT-ENCODED nested URL', () => {
+    const out = sanitizeUrl('https://x.com/a?next=https%3A%2F%2Fy.com%2F%3Ftoken%3DSECRET');
+    expect(out).not.toContain('SECRET');
+    expect(out).toContain('next=');
+  });
+
+  it('redacts userinfo on a protocol-relative URL', () => {
+    expect(sanitizeUrl('//user:pw@example.com/a')).toBe('//user:%3Credacted%3E@example.com/a');
+  });
+
+  it('does not spend unbounded time on a hostile URL', () => {
+    // The JWT pattern backtracks per `eyJ`; 200 KB measured at 7.7 s synchronously on the app's thread.
+    const hostile = `https://x/${'eyJ'.repeat(70_000)}`;
+    const started = Date.now();
+    const out = sanitizeUrl(hostile);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(out).toBe(hostile); // structural redaction found nothing; the shape scan was skipped
+  });
+
+  it('still shape-scans a normal-length URL', () => {
+    expect(sanitizeUrl('https://api/verify/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig')).toContain(
+      '<redacted>',
+    );
+  });
+});
+
+describe('sanitizeErrorMessage — the shapes the token gate used to miss', () => {
+  it('redacts a quoted form payload with no URL around it', () => {
+    expect(sanitizeErrorMessage('a=1&password=x&b=2 was the payload')).toBe(
+      'a=1&password=%3Credacted%3E&b=2 was the payload',
+    );
+  });
+
+  it('redacts a schemeless `user:pw@host` credential', () => {
+    expect(sanitizeErrorMessage('user:pw@example.com refused the connection')).toBe(
+      'user:%3Credacted%3E@example.com refused the connection',
+    );
+  });
+
+  it('still leaves ordinary prose and a bare email alone', () => {
+    const prose = 'Contact bob@example.com — the build failed at 12:30';
+    expect(sanitizeErrorMessage(prose)).toBe(prose);
   });
 });
