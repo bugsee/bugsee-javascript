@@ -497,7 +497,10 @@ describe('launch (webview)', () => {
         .msgs()
         .filter((m): m is EntryMessage => m.k === 'entry' && m.t === 'log')
         .find((e) => JSON.stringify(e.p).includes('seq-before-secure'));
-      const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
+      // The LAST secure message: [0] is now the initial push emitted at start(), which precedes the log line
+      // — the seq claim is about the post driven by the focus event after it.
+      const secures = fake.msgs().filter((m): m is SecureMessage => m.k === 'secure');
+      const secure = secures[secures.length - 1];
       expect(log).toBeDefined();
       expect(secure).toBeDefined();
       // A SHARED counter ⇒ the secure seq is strictly greater than the prior log entry's; a private obscuring
@@ -720,5 +723,40 @@ describe('launch (webview)', () => {
       expect(logs.find((e) => JSON.stringify(e.p).includes('redact-before-set'))?.red).toBe(false);
       expect(logs.find((e) => JSON.stringify(e.p).includes('redact-after-set'))?.red).toBe(true);
     });
+  });
+});
+
+describe('sub-frame obscuring failures never escape launch()', () => {
+  it('launch() survives a child composer whose start throws', () => {
+    // `window.parent` is [Replaceable]; one line of page script makes postMessage throw. The channel guards
+    // only the TOP frame, so the sub-frame path escaped launch() entirely (onError never fired).
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument();
+    const onError = vi.fn();
+    const win = {
+      top: {},
+      self: {},
+      addEventListener: () => {
+        throw new Error('hostile page');
+      },
+      removeEventListener: () => {},
+      parent: {
+        postMessage: () => {
+          throw new Error('hostile parent');
+        },
+      },
+    };
+    expect(() =>
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win as never,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalled();
   });
 });

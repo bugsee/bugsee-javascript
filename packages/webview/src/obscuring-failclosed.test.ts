@@ -259,3 +259,141 @@ describe('the composer fails closed too', () => {
     expect(onError).toHaveBeenCalled();
   });
 });
+
+// Review round 1 (webview reviewer, SEV1 #1/#2/#3). The previous fix hardened the PULL
+// (`__bugsee_bridge.snapshot()`); the Android receiver masks from the PUSH — `WebViewBridgeConnection` →
+// `BridgeSecureSink.setSecureAreas(...)`, which REPLACES the stored rects — and `requestSnapshot` has no
+// production caller at all. So every claim below is about what native actually receives.
+describe('the PUSH path — the one native masks from — also fails closed', () => {
+  const composerWith = (doc: SecureDocument, onError = vi.fn()) => {
+    const posted: unknown[][] = [];
+    const composer = createObscuringComposer({
+      document: doc as never,
+      isTopFrame: true,
+      onCompose: (areas) => posted.push(areas),
+      onError,
+    });
+    return { composer, posted, onError };
+  };
+
+  it('pushes the initial rects at start, instead of leaving native with nothing', () => {
+    // Declaring the capability stands native's own masking down. With no initial push it masked NOTHING
+    // until the first mutation/scroll/focus — and a static page injected after `load` never pushed at all.
+    const { composer, posted } = composerWith(okDoc([{ top: 5, left: 6, bottom: 7, right: 8 }]));
+    composer.start();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toEqual([{ type: 'text', top: 5, left: 6, bottom: 7, right: 8 }]);
+    composer.stop();
+  });
+
+  it('pushes the full-frame rect when a refresh fails, rather than posting nothing', () => {
+    // Posting nothing leaves native's PREVIOUS rects in place — the "stale rects report success" state the
+    // policy explicitly rejects, on the live path.
+    //
+    // The failure has to occur in the COMPOSE/emit step, not in collection: `source.snapshot()` already
+    // fails closed on its own, so a throwing `querySelectorAll` never reaches this catch and a test built on
+    // one passes whether or not the catch exists. Reading the scroll offset throws inside `emit()`.
+    let broken = false;
+    const posted: unknown[][] = [];
+    const onError = vi.fn();
+    const composer = createObscuringComposer({
+      document: okDoc([{ top: 5, left: 6, bottom: 7, right: 8 }]) as never,
+      window: {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        get scrollX(): number {
+          if (broken) throw new Error('scroll read failed');
+          return 0;
+        },
+        get scrollY(): number {
+          if (broken) throw new Error('scroll read failed');
+          return 0;
+        },
+      } as never,
+      isTopFrame: true,
+      onCompose: (areas) => posted.push(areas),
+      onError,
+    });
+    composer.start();
+    const before = posted.length;
+    broken = true;
+    composer.refresh();
+    expect(posted.length).toBe(before + 1);
+    expect(posted[posted.length - 1]).toEqual([FAIL_CLOSED_AREA]);
+    expect(onError).toHaveBeenCalled();
+    composer.stop();
+  });
+
+  it('pushes the full-frame rect when start() itself fails', () => {
+    // A swallowed start() failure left `obscuring` declared while the bubble listener was never attached —
+    // native stood down and every SUB-FRAME became invisible, undetectably. The failure must be in the
+    // ATTACH step for the same layering reason as above.
+    const posted: unknown[][] = [];
+    const onError = vi.fn();
+    const composer = createObscuringComposer({
+      document: okDoc() as never,
+      window: {
+        addEventListener: () => {
+          throw new Error('hostile page replaced addEventListener');
+        },
+        removeEventListener: () => {},
+        scrollX: 0,
+        scrollY: 0,
+      } as never,
+      isTopFrame: true,
+      onCompose: (areas) => posted.push(areas),
+      onError,
+    });
+    composer.start();
+    expect(posted[posted.length - 1]).toEqual([FAIL_CLOSED_AREA]);
+    expect(onError).toHaveBeenCalled();
+    composer.stop();
+  });
+});
+
+describe('a SUB-frame fails closed to its parent, and never throws into the page', () => {
+  it('bubbles the full-frame rect to the parent when start() fails', () => {
+    const bubbles: unknown[] = [];
+    const onError = vi.fn();
+    const composer = createObscuringComposer({
+      document: okDoc() as never,
+      window: {
+        addEventListener: () => {
+          throw new Error('hostile page');
+        },
+        removeEventListener: () => {},
+        parent: { postMessage: (m: unknown) => bubbles.push(m) },
+      } as never,
+      isTopFrame: false,
+      onError,
+    });
+    composer.start();
+    expect((bubbles[bubbles.length - 1] as { areas: unknown[] }).areas).toEqual([FAIL_CLOSED_AREA]);
+    composer.stop();
+  });
+
+  it('does not throw into the page when even the fail-closed post fails', () => {
+    // `window.parent` is [Replaceable] — one line of page script makes postMessage throw. Reporting the
+    // failure is all that is left; taking the host page down with us is not an option.
+    const onError = vi.fn();
+    const composer = createObscuringComposer({
+      document: throwingDoc() as never,
+      window: {
+        addEventListener: () => {
+          throw new Error('hostile page');
+        },
+        removeEventListener: () => {},
+        parent: {
+          postMessage: () => {
+            throw new Error('hostile parent');
+          },
+        },
+      } as never,
+      isTopFrame: false,
+      onError,
+    });
+    expect(() => composer.start()).not.toThrow();
+    expect(onError).toHaveBeenCalled();
+    composer.stop();
+  });
+});

@@ -30,6 +30,7 @@ import {
   getServiceManifests,
   type LogEventFilter,
   type NetworkEventFilter,
+  neverThrow,
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
@@ -361,7 +362,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
   obscuring?.start();
-  childComposer?.start();
+  // The channel guards the TOP frame; a SUB-frame composer is called directly, so its failures escaped
+  // launch() itself — and `window.parent` is [Replaceable], so one line of page script was enough
+  // (measured: `launch()` threw `hostile parent`, onError never fired).
+  neverThrow(() => childComposer?.start(), options.onError);
 
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
@@ -370,7 +374,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       obscuring?.stop(); // detach the secure-area observers/listeners
-      childComposer?.stop();
+      neverThrow(() => childComposer?.stop(), options.onError);
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       global.__bugsee_bridge = undefined;

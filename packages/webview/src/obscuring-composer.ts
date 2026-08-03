@@ -143,13 +143,39 @@ export function createObscuringComposer(opts: {
 
   /** Emit: top frame → composed+scrolled to native; child frame → bubble composed (viewport) to the parent. */
   const emit = (): void => {
-    const composed = compose();
+    const composed = composeOrFailClosed();
     if (isTopFrame) {
       onCompose?.(
         offset(composed, Math.floor(window?.scrollX ?? 0), Math.floor(window?.scrollY ?? 0)),
       );
     } else {
       window?.parent?.postMessage({ [BUBBLE_KEY]: BUBBLE_VERSION, areas: composed }, '*');
+    }
+  };
+
+  /** Compose, or answer with the whole-frame rect — never with silence. */
+  const composeOrFailClosed = (): SecureArea[] => {
+    try {
+      return compose();
+    } catch (error) {
+      onError?.(error);
+      return [FAIL_CLOSED_AREA];
+    }
+  };
+
+  /** Push the whole-frame rect, so a failure obscures MORE rather than leaving native's list stale. */
+  const failClosed = (): void => {
+    try {
+      if (isTopFrame) {
+        onCompose?.([FAIL_CLOSED_AREA]);
+      } else {
+        window?.parent?.postMessage(
+          { [BUBBLE_KEY]: BUBBLE_VERSION, areas: [FAIL_CLOSED_AREA] },
+          '*',
+        );
+      }
+    } catch (error) {
+      onError?.(error);
     }
   };
 
@@ -199,20 +225,40 @@ export function createObscuringComposer(opts: {
       }
     },
     refresh(): void {
-      ownAreas = source.snapshot();
-      emit();
+      // The PUSH path — and the one native actually masks from. A failure here used to emit NOTHING, so
+      // native silently kept its previous rects: exactly the "stale rects report success" state the pull
+      // path was hardened against. Grounded in the Android receiver: `WebViewBridgeConnection` →
+      // `BridgeSecureSink.setSecureAreas(...)` REPLACES the stored rects, while the pull
+      // (`requestSnapshot`) has no production caller at all.
+      try {
+        ownAreas = source.snapshot();
+        emit();
+      } catch (error) {
+        onError?.(error);
+        failClosed();
+      }
     },
     start(): void {
-      ownAreas = source.snapshot();
-      source.start();
-      if (window !== undefined) {
-        const handler = (e: unknown): void => onMessage(e);
-        window.addEventListener('message', handler);
-        detachMessage = (): void => window.removeEventListener('message', handler);
+      try {
+        ownAreas = source.snapshot();
+        source.start();
+        if (window !== undefined) {
+          const handler = (e: unknown): void => onMessage(e);
+          window.addEventListener('message', handler);
+          detachMessage = (): void => window.removeEventListener('message', handler);
+        }
+      } catch (error) {
+        // A swallowed start() failure used to leave `obscuring` declared while the bubble listener was never
+        // attached — native stood its own masking down and every SUB-FRAME became invisible, with nothing
+        // able to detect it. Degrade to masking the whole frame instead.
+        onError?.(error);
+        failClosed();
+        return;
       }
-      if (!isTopFrame) {
-        emit(); // a child bubbles its initial areas so STATIC child content still reaches the parent
-      }
+      // ALWAYS emit an initial set. A top frame used to push nothing at launch, so between declaring the
+      // capability and the first mutation/scroll/focus native masked NOTHING — and a static page injected
+      // after `load` never pushed at all.
+      emit();
     },
     stop(): void {
       source.stop();
