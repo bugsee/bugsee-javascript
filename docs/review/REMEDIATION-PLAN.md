@@ -48,6 +48,12 @@ webtransport *and* `node:http`, which folds in via `additionalSources`), `@bugse
 (covers express/fastify/koa/hapi/elysia in one change), plus `nestjs`, `astro`, `vercel-edge` and the
 `http.client` span description in `@bugsee/performance`.
 
+**Correction (review round 1).** The form-urlencoded pass shipped here had no shape guard and DESTROYED
+non-form bodies — 10 of 20 real files lost >90 % of their bytes as `text/plain` — and JSON leaked whole under
+non-canonical JSON media types (`application/x-amz-json-1.1`, the AWS SDK v3 default). Both fixed in
+`a73086b`, along with `;` separators, nested-URL values, two `sanitizeErrorMessage` gate misses,
+protocol-relative userinfo, and an unbounded shape scan that blocked the app thread for 7.7 s on 200 KB.
+
 **Verification.** A `privacy` e2e scenario re-runs the review's own probe against the real SDK and scans the
 delivered bundle bytes. It is teeth-checked: unwiring each of the three redactors individually makes it fail
 with the corresponding marker, and it asserts redaction rather than deletion (the non-sensitive param must
@@ -71,6 +77,13 @@ still ride). It earned its keep immediately — it found 1.1b, which unit tests 
   `maskAllText`, `blockSelector` → `blockAllMedia`, `ignoreSelector` → `maskAllInputs`).
 - **Prototype pollution and falsy non-booleans no longer downgrade defaults** (SEV2 #11): own-property reads
   plus a strict `typeof === 'boolean'` check, so `maskAllText: 0` is no longer passed to rrweb as "off".
+
+**Correction (review round 1).** The floor documented here as absolute was not: with `maskAllInputs:false`
+every `autocomplete`-declared sensitive field (cc-number, one-time-code, current/new-password, multi-token
+forms) leaked its typed value, because `maskInputOptions` is keyed by input TYPE. The attribute allowlist also
+introduced two regressions — masking the `data-*`/`aria-*` UI-STATE attributes broke styling for a default
+modern React app, and masking SVG `display` INVERTED it, making deliberately hidden content visible. All
+fixed in `6f33f02`.
 
 **Verification.** `masking.integration.test.ts` drives the REAL rrweb over a REAL DOM and asserts the bytes it
 emits. This is the gap the review named explicitly: its "Masking fail-closed audit" table has ✗ in the
@@ -114,7 +127,7 @@ inside host code with no guard**.
 |---|---|---|---|
 | 2.1 | 🟡 **helper BUILT + frontend seams applied**; middleware/hooks/interceptors remain — **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped | `packages/core` + applied across ~15 packages | 5–8d |
 | 2.2 | **Enforce it** — a lint rule or an exported-surface test asserting every host-facing export is wrapped, so this cannot regress | `packages/core` + tooling | 2–3d |
-| 2.3 | ✅ **DONE** — **Chain, never clobber, the host's error handler** (frontend: vue/angular/svelte/solid; backend: fixed at the shared request engine, covering express/koa/fastify/nestjs/hapi/elysia, plus hono's own pre-work) | the 5 frontend + 7 backend adapters | 4–6d |
+| 2.3 | ✅ **DONE** (corrected in review round 1) — **Chain, never clobber, the host's error handler**. The first pass marked this done while express and koa were still unguarded: both build their request `info`, including the app-supplied `user` callback, OUTSIDE the engine. Fixed in `9d11417`, with real-framework tests. | the 5 frontend + 7 backend adapters | 4–6d |
 | 2.4 | ✅ **DONE** — **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
 | 2.5 | ✅ **DONE** — **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
 
@@ -129,6 +142,13 @@ suppressed (node-A SEV1 #4) — the artifact operators reach for first.
 supervisor only ever sees two facts: whether the process exits at all, and with which code. Both are
 teeth-checked — reverting the watchdog `unref` hangs the process for the full 15 s budget, and defaulting the
 rejection mode back to a passive listener drops the exit code to 0 on all three runtimes.
+
+**Correction (review round 1):** `stop()` never removed the rejection policy listener, so a stopped SDK still
+suppressed Node's default disposition and a relaunch accumulated listeners; `exitOnUncaught:false` was ignored
+on the rejection path; and the watchdog's DEFAULT scheduler re-installed the very pin 2.4 fixed. All fixed in
+`38d6a17`. Two e2e gaps were also real: the tests never asserted the scenario ran, and could not distinguish
+`preserve` from `none`. Note the `exit-clean` teeth-check only bites on node — bun and deno never re-ref the
+MessagePort.
 
 **The e2e took three attempts to become capable of failing**, which is worth recording: the scenario first
 returned before the watchdog worker had spawned, and then the harness entry's own
@@ -148,6 +168,11 @@ guards BOTH failure modes a host boundary has: a synchronous throw, and a return
 idiomatic fire-and-forget `void client.logException(...)` surfaces a rejection as an *unhandled rejection* in
 the host process one tick later, which on Node is a crash again now that Wave 2.5 restored the default
 disposition.
+
+**Claim correction:** the first version of this section said "measured against real vue / @angular/core /
+Hono". Those measurements were the reviewers', not this repo's — no committed test used a real framework, and
+a real-Hono suite passed with the guard removed. Real-framework tests for express, koa, hono and vue landed
+in `9d11417`.
 
 Applied at the shared `reportError` (the root cause behind all four frontend SEV1s) and at each adapter's own
 seam, since vue's component-name lookup, svelte's route read and angular's error unwrapping all run in the
