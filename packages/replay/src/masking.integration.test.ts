@@ -113,6 +113,13 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
     expect(json).not.toContain('4111111111111111');
   });
 
+  // KNOWN RESIDUAL — the show-password toggle is only PARTLY closed, and deliberately has no test here.
+  // rrweb stamps `data-rr-is-password` when it OBSERVES the type flip, and the masking config now honours
+  // that stamp (asserted deterministically in masking.test.ts). But a full-snapshot checkout that lands
+  // before the mutation observer fires sees the field as plain `type=text` + `.bugsee-unmask` and serialises
+  // the value. An end-to-end test of this is inherently racy — a first draft of one failed ~40% of runs —
+  // and a flaky test is worse than an honest note. Closing it fully needs the fork to stamp synchronously.
+
   it('STILL un-masks a benign input marked `.bugsee-unmask` — the escape hatch survives', async () => {
     // The floor must be surgical: closing it by refusing to un-mask anything would be a different product.
     const { json } = await drive('<input type="text" class="bugsee-unmask" value="SEARCHTERM">');
@@ -121,14 +128,47 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
 });
 
 describe('the sensitive floor holds on the LIVE input path too, with maskAllInputs off', () => {
-  it('masks a `type=tel` value typed by the user', async () => {
-    // The fork's live observer gates purely on `maskInputOptions`, never re-deriving the sensitive rules —
-    // so `tel` has to be declared there or it ships raw (SEV2 #4).
-    const { json } = await drive('<input type="tel" id="t">', { maskAllInputs: false }, () =>
-      typeInto('#t', '5558675309')(),
-    );
-    expect(json).not.toContain('5558675309');
-  });
+  // Review round 1 (replay reviewer, SEV1 #1): this block previously covered ONLY `tel` and `password` —
+  // the two categories that happened to work — while the module header claimed a floor "no option and no
+  // DOM marking can lift". `maskInputOptions` is keyed by input TYPE, so it cannot name a field declared
+  // sensitive by `autocomplete`, and the fork's live observer gates on that map alone. Those values were
+  // emitted RAW. The fix is to stop recording their input events at all (the ignore set).
+  const sensitive: Array<[string, string, string]> = [
+    ['type=password', '<input type="password" id="f">', 'PWSECRET'],
+    ['type=tel', '<input type="tel" id="f">', '5558675309'],
+    [
+      'autocomplete=cc-number',
+      '<input type="text" autocomplete="cc-number" id="f">',
+      '4111111111111111',
+    ],
+    [
+      'autocomplete=one-time-code',
+      '<input type="text" autocomplete="one-time-code" id="f">',
+      '123456',
+    ],
+    [
+      'autocomplete=current-password',
+      '<input type="text" autocomplete="current-password" id="f">',
+      'PWSECRET',
+    ],
+    [
+      'autocomplete=new-password',
+      '<input type="text" autocomplete="new-password" id="f">',
+      'PWSECRET',
+    ],
+    [
+      'multi-token autocomplete',
+      '<input type="text" autocomplete="section-b shipping cc-number" id="f">',
+      '4111111111111111',
+    ],
+  ];
+
+  for (const [label, html, secret] of sensitive) {
+    it(`masks a ${label} value typed by the user`, async () => {
+      const { json } = await drive(html, { maskAllInputs: false }, () => typeInto('#f', secret)());
+      expect(json).not.toContain(secret);
+    });
+  }
 
   it('masks a `type=tel` value already present in the snapshot', async () => {
     const { json } = await drive('<input type="tel" value="5558675309">', {
@@ -137,11 +177,12 @@ describe('the sensitive floor holds on the LIVE input path too, with maskAllInpu
     expect(json).not.toContain('5558675309');
   });
 
-  it('masks a typed password even with maskAllInputs off', async () => {
-    const { json } = await drive('<input type="password" id="p">', { maskAllInputs: false }, () =>
-      typeInto('#p', 'PWSECRET')(),
+  it('still records a BENIGN input’s typing when maskAllInputs is off', async () => {
+    // The floor must stay surgical: ignoring every input would be a different product.
+    const { json } = await drive('<input type="text" id="f">', { maskAllInputs: false }, () =>
+      typeInto('#f', 'SEARCHTERM')(),
     );
-    expect(json).not.toContain('PWSECRET');
+    expect(json).toContain('SEARCHTERM');
   });
 });
 
@@ -206,6 +247,29 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
     }
   });
 
+  it('leaves `display`/`visibility` untouched — masking them makes hidden content VISIBLE', async () => {
+    // `display="none"` masked to `****` is invalid, so it renders as UNSET: SVG the app deliberately hid
+    // became visible in the replay. A privacy failure produced by a privacy fix.
+    const { json } = await drive(
+      '<svg viewBox="0 0 8 8"><g display="none" visibility="hidden"><path d="M1 1 L2 2"/></g></svg>',
+      { blockAllMedia: false },
+    );
+    expect(json).toContain('"display":"none"');
+    expect(json).toContain('"visibility":"hidden"');
+  });
+
+  it('leaves UI-STATE attributes untouched, so a modern app still replays styled', async () => {
+    // `data-state`/`data-theme`/`aria-expanded` are CSS/Tailwind variant selectors (Radix, shadcn,
+    // next-themes, headless UI). Masking them broke open/closed, active-nav, tab selection and whole-palette
+    // theming for a DEFAULT install.
+    const { json } = await drive(
+      '<div data-theme="dark"><button aria-expanded="true" data-state="open" data-side="bottom">x</button></div>',
+    );
+    for (const kept of ['dark', 'true', 'open', 'bottom']) {
+      expect(json, kept).toContain(kept);
+    }
+  });
+
   it('leaves SVG geometry untouched, so icons still draw', async () => {
     // `svg` is inside MEDIA_SELECTOR, so it is blocked (and its attributes absent) at defaults — this is
     // only observable with media un-blocked. Masking `d`/`viewBox` would silently destroy every icon.
@@ -254,18 +318,16 @@ describe('an invalid caller selector fails CLOSED and never reaches the DOM', ()
     }
   });
 
-  it('leaves the host application’s canvas.getContext working when blockSelector is malformed', async () => {
-    // The end-to-end shape of the same defect: an interceptor must never alter host behaviour.
-    const canvas = document.createElement('canvas');
-    document.body.appendChild(canvas);
-    const { json } = await drive('<canvas id="c"></canvas>', {
-      blockSelector: 'div[',
-      blockAllCanvas: true,
-    });
-    expect(() =>
-      (document.querySelector('#c') as HTMLCanvasElement).getContext('2d'),
-    ).not.toThrow();
-    expect(json).toBeTypeOf('string');
+  it('resolves a parseable block selector for the canvas patch to consume', async () => {
+    // SCOPE NOTE: the end-to-end `getContext` assertion this replaces was VACUOUS — jsdom's getContext never
+    // throws (it emits a jsdomError, which also made this suite intermittently fail), and `recordCanvas` was
+    // never enabled, so rrweb's canvas patch was never installed. It passed with every selector malformed.
+    // The reachable property is the one asserted above: every resolved selector parses, which is what makes
+    // the canvas patch's UNGUARDED `matches()` call unable to throw into the host's getContext. Asserting
+    // the end-to-end behaviour needs a real browser; jsdom cannot.
+    const resolved = resolveReplayMaskingOptions({ blockSelector: 'div[', blockAllCanvas: true });
+    expect(() => document.createElement('div').matches(resolved.blockSelector)).not.toThrow();
+    expect(resolved.blockSelector).toContain('canvas');
   });
 
   it('keeps media blocked when `blockSelector` is malformed', async () => {

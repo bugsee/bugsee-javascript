@@ -1,3 +1,4 @@
+// @vitest-environment jsdom -- the selector guards are asserted against the real DOM matcher
 import { describe, expect, it } from 'vitest';
 import { CANVAS_SELECTOR, MEDIA_SELECTOR, resolveReplayMaskingOptions } from './masking';
 
@@ -82,6 +83,46 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.unmaskTextSelector).toContain('*'); // the caller's text opt-out is untouched
   });
 
+  it('excludes an element rrweb has stamped as a former password field', () => {
+    // rrweb sets `data-rr-is-password` when a field's type is flipped away from `password` — its own memory
+    // of what the field is. Without it in the guard, a `.bugsee-unmask` show-password toggle un-masked a
+    // field rrweb was still protecting, i.e. the Bugsee mark made things WORSE than no SDK at all.
+    const m = resolveReplayMaskingOptions();
+    const el = document.createElement('input');
+    el.className = 'bugsee-unmask';
+    el.setAttribute('type', 'text');
+    el.setAttribute('data-rr-is-password', 'true');
+    expect(el.matches(m.unmaskInputSelector)).toBe(false);
+    expect(el.matches(m.ignoreSelector)).toBe(true); // and its input events are not recorded
+  });
+
+  it('masks a marked element’s attribute even when `matches` itself throws (fail closed)', () => {
+    const mask = resolveReplayMaskingOptions({ maskAllText: false }).maskAttributeFn as (
+      k: string,
+      v: string,
+      el: unknown,
+    ) => string;
+    const hostile = {
+      matches: () => {
+        throw new Error('hostile element');
+      },
+    };
+    expect(mask('data-ssn', '123-45-6789', hostile)).toBe('***********');
+  });
+
+  it('rejects a selector that `matches()` cannot parse, even if `querySelector` can', () => {
+    // Validation must use the API rrweb consumes. Measured divergence in jsdom: `div:has(:has(div))` passes
+    // querySelector and THROWS in matches() — and rrweb's `matches()` call sites are exactly the fail-open
+    // this validation exists to close.
+    const errors: unknown[] = [];
+    const m = resolveReplayMaskingOptions(
+      { blockSelector: 'div:has(:has(div))' },
+      { onError: (e) => errors.push(e) },
+    );
+    expect(errors).toHaveLength(1);
+    expect(() => document.createElement('div').matches(m.blockSelector)).not.toThrow();
+  });
+
   it('when maskAllText is false, masks only Bugsee-marked text (not everything)', () => {
     const m = resolveReplayMaskingOptions({ maskAllText: false });
     expect(m.maskAllText).toBe(false);
@@ -118,7 +159,13 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     const m = resolveReplayMaskingOptions();
     expect(m.blockSelector).toContain('.bugsee-block');
     expect(m.blockSelector).toContain('[data-bugsee-block]');
-    expect(m.ignoreSelector).toBe('.bugsee-ignore,[data-bugsee-ignore]');
+    // Sensitive inputs ride here too — not recording their input events is what closes the live-path leak
+    // that `maskInputOptions` (keyed by input TYPE) structurally cannot reach.
+    expect(m.ignoreSelector).toContain('.bugsee-ignore');
+    expect(m.ignoreSelector).toContain('[data-bugsee-ignore]');
+    for (const sensitive of ['password', 'tel', 'cc-', 'one-time-code']) {
+      expect(m.ignoreSelector, sensitive).toContain(sensitive);
+    }
   });
 
   it('appends the caller-provided additive selectors', () => {
@@ -170,7 +217,17 @@ describe('resolveReplayMaskingOptions — attribute masking (maskAttributeFn)', 
     expect(maskAttributeFn?.('PLACEHOLDER', 'abcd', el())).toBe('****');
   });
 
-  it('does NOT set a maskAttributeFn when maskAllText is off (consistent with text)', () => {
-    expect(resolveReplayMaskingOptions({ maskAllText: false }).maskAttributeFn).toBeUndefined();
+  it('still masks attributes on EXPLICITLY marked elements when maskAllText is off', () => {
+    // The coupling to maskAllText is deliberate for DEFAULTS, but `.bugsee-mask` is an instruction, not a
+    // default — ignoring it there leaked `data-ssn` off an element the app had explicitly marked.
+    const mask = resolveReplayMaskingOptions({ maskAllText: false }).maskAttributeFn as (
+      k: string,
+      v: string,
+      el: unknown,
+    ) => string;
+    const marked = { matches: (sel: string) => sel.includes('bugsee-mask') };
+    const plain = { matches: () => false };
+    expect(mask('data-ssn', '123-45-6789', marked)).toBe('***********');
+    expect(mask('data-ssn', '123-45-6789', plain)).toBe('123-45-6789');
   });
 });

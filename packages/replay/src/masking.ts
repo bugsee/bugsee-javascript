@@ -64,11 +64,20 @@ const SENSITIVE_INPUT_MATCHERS = [
   '[autocomplete*="password" i]',
   '[autocomplete*="cc-" i]',
   '[autocomplete="one-time-code" i]',
+  // rrweb stamps this when a field's `type` was flipped away from `password` — its own memory of what the
+  // field is. Without it here, a `.bugsee-unmask` show-password toggle un-masked a field that rrweb was
+  // still protecting: measured raw on the snapshots after the flip, and protected when the mark was absent.
+  // PARTIAL: the stamp is applied when rrweb OBSERVES the flip, so a checkout snapshot that lands first
+  // still sees a plain `type=text` field. Closing that fully needs the fork to stamp synchronously.
+  '[data-rr-is-password]',
 ];
 
 /** `:not(…)` chain excluding every sensitive input, appended to each un-mask fragment. Chained rather than
  *  `:not(a, b)` because the selector-list form of `:not()` is newer than the browsers we support. */
 const SENSITIVE_INPUT_GUARD = SENSITIVE_INPUT_MATCHERS.map((m) => `:not(${m})`).join('');
+
+/** The same sensitive inputs as a positive selector, for the IGNORE set. */
+const SENSITIVE_INPUT_SELECTOR = SENSITIVE_INPUT_MATCHERS.join(',');
 
 /**
  * The input un-mask selector: Bugsee's opt-out marks, each guarded so a sensitive input can never match.
@@ -89,6 +98,65 @@ const BUGSEE_UNMASK_INPUT = BUGSEE_UNMASK.split(',')
  */
 const STRUCTURAL_ATTRIBUTES = new Set([
   // identity + presentation
+  // UI STATE — these drive CSS/Tailwind variant selectors, so masking them breaks a default install of a
+  // modern React app (Radix/shadcn `data-state|side|orientation`, next-themes `data-theme`, headless UI)
+  // and the aria state selectors. They carry interface state, never user data.
+  'data-state',
+  'data-side',
+  'data-orientation',
+  'data-theme',
+  'data-mode',
+  'data-disabled',
+  'data-highlighted',
+  'data-headlessui-state',
+  'aria-expanded',
+  'aria-selected',
+  'aria-checked',
+  'aria-current',
+  'aria-hidden',
+  'aria-disabled',
+  'aria-pressed',
+  'aria-busy',
+  'aria-live',
+  'aria-haspopup',
+  'aria-modal',
+  'aria-orientation',
+  'aria-controls',
+  'aria-owns',
+  'aria-labelledby',
+  'aria-describedby',
+  'aria-activedescendant',
+  // `display`/`visibility` MUST pass through: masked to `****` they read as invalid → rendered as unset, so
+  // SVG/HTML content the app deliberately HID became visible in the replay — a privacy failure produced by
+  // a privacy fix.
+  'display',
+  'visibility',
+  'pointer-events',
+  'overflow',
+  'paint-order',
+  'xml:space',
+  'textlength',
+  'markerwidth',
+  'markerheight',
+  'refx',
+  'refy',
+  'orient',
+  'markerunits',
+  'filterunits',
+  'primitiveunits',
+  'maskunits',
+  'maskcontentunits',
+  'clippathunits',
+  'stddeviation',
+  'in',
+  'in2',
+  'result',
+  'flood-color',
+  'flood-opacity',
+  'fx',
+  'fy',
+  'fr',
+  'patterntransform',
   'class',
   'id',
   'style',
@@ -278,6 +346,16 @@ function maskAttribute(key: string, value: string): string {
   return '*'.repeat(value.length);
 }
 
+/** Mask attributes only on elements carrying an explicit Bugsee mask mark (used when `maskAllText` is off). */
+function maskMarkedAttribute(key: string, value: string, element: unknown): string {
+  const el = element as { matches?: (selector: string) => boolean } | null | undefined;
+  try {
+    return el?.matches?.(BUGSEE_MASK) === true ? maskAttribute(key, value) : value;
+  } catch {
+    return maskAttribute(key, value); // unreadable element → mask (fail closed)
+  }
+}
+
 /** The privacy-relevant ReplayOptions (a subset of the public replay options). */
 export interface ReplayMaskingOptions {
   /** Mask every text node. Default `true` (fail-closed). When `false`, only Bugsee-marked text is masked. */
@@ -342,12 +420,18 @@ function readBoolean(source: object, key: string, fallback: boolean): boolean {
  *  either — so the selector is passed through untouched. */
 function isValidSelector(selector: string): boolean {
   const doc = (globalThis as { document?: Document }).document;
-  /* v8 ignore next 3 -- DOM-less runtimes never reach rrweb; covered by a stubbed-global test */
+  /* v8 ignore next 3 -- unreachable in this package's jsdom suite: `document` is always present, and a
+     DOM-less runtime never reaches rrweb at all. The previous justification here claimed "covered by a
+     stubbed-global test"; no such test existed, and planting a throw in these lines left all 69 tests
+     green. A coverage exclusion must state what is true. */
   if (doc === undefined) {
     return true;
   }
   try {
-    doc.createDocumentFragment().querySelector(selector);
+    // `matches()`, not `querySelector()` — that is the API rrweb consumes (`isBlocked`/`serializeElement`),
+    // and its parser is not guaranteed identical. Measured divergence in jsdom: `div:has(:has(div))` passes
+    // querySelector and THROWS in matches().
+    doc.createElement('div').matches(selector);
     return true;
   } catch {
     return false;
@@ -406,7 +490,10 @@ export function resolveReplayMaskingOptions(
     maskInputOptions: { password: true, tel: true },
     // When masking all text, also redact attribute values, which rrweb serializes separately from text
     // nodes. Consistent with text: skipped when maskAllText is off.
-    maskAttributeFn: maskAllText ? maskAttribute : undefined,
+    // With maskAllText off, attribute masking still applies to elements the app EXPLICITLY marked — the
+    // mark is an instruction, not a default, and ignoring it there leaked `data-ssn` on a `.bugsee-mask`
+    // element. rrweb passes the element, so the narrower rule is expressible.
+    maskAttributeFn: maskAllText ? maskAttribute : maskMarkedAttribute,
     // `maskAllText` masks every text node with a per-element opt-out (a nearer `.bugsee-unmask` wins).
     maskAllText,
     // Additive explicit mask marks (also mask when maskAllText is off).
@@ -422,6 +509,10 @@ export function resolveReplayMaskingOptions(
       blockAllCanvas ? CANVAS_SELECTOR : undefined,
       block.value,
     ),
-    ignoreSelector: joinSelectors(BUGSEE_IGNORE, ignore.value),
+    // Sensitive inputs also have their input EVENTS ignored. `maskInputOptions` is keyed by input TYPE, so
+    // it cannot name a field declared sensitive by `autocomplete` — with `maskAllInputs:false` the fork's
+    // live observer therefore emitted raw `cc-number`, `one-time-code` and `current-password` values. Not
+    // recording their events at all closes that, whatever the masking options say.
+    ignoreSelector: joinSelectors(BUGSEE_IGNORE, SENSITIVE_INPUT_SELECTOR, ignore.value),
   };
 }
