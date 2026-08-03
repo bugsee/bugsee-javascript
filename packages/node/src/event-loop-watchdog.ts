@@ -205,7 +205,17 @@ export function createEventLoopWatchdog(deps: EventLoopWatchdogDeps): EventLoopW
 }
 
 const globalScheduler: Scheduler = {
-  setInterval: (cb, ms) =>
-    (globalThis as { setInterval(cb: () => void, ms: number): unknown }).setInterval(cb, ms),
+  setInterval: (cb, ms) => {
+    const handle = (globalThis as { setInterval(cb: () => void, ms: number): unknown }).setInterval(
+      cb,
+      ms,
+    );
+    // UNREF: the heartbeat must never hold the host process open. The worker's MessagePort pin was fixed
+    // in 95b3aef, but this timer re-installed the same defect through the default scheduler — measured
+    // NEVER_EXITED with the plain global timer versus exit 0 in 439 ms with an unref'ing one. The same
+    // applies to a caller-injected `scheduler`, which is why that option now documents the requirement.
+    (handle as { unref?: () => void }).unref?.();
+    return handle;
+  },
   clearInterval: (h) => (globalThis as { clearInterval(h: unknown): void }).clearInterval(h),
 };

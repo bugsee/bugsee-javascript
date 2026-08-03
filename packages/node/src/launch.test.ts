@@ -654,6 +654,34 @@ describe('launch', () => {
     await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
+  it('removes the rejection policy listener on stop() — a stopped SDK owns nothing', async () => {
+    // stop() removed the uncaughtException listener and forgot the rejection listener added alongside it.
+    // Measured: after stop(), `warn` + a rejection kept the process alive where the control exits 1, and
+    // launch→stop→launch accumulated listeners (3), producing two prints and two exits per rejection.
+    const fp = fakeProcess();
+    const client = launch('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    expect(fp.count('unhandledRejection')).toBe(2); // detection provider + policy
+    await client.stop();
+    expect(fp.count('unhandledRejection')).toBe(0);
+    fp.fire('unhandledRejection', new Error('after stop'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fp.exit).not.toHaveBeenCalled();
+  });
+
+  it('honours exitOnUncaught:false on the REJECTION path too', async () => {
+    // Both options mean "do not end my process on the SDK's account"; they were not composed, so a
+    // rejection still killed a host that had explicitly opted out.
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), exitOnUncaught: false }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected'); // still reported and printed
+  });
+
   it('installs no uncaughtException handler when detectCrashes is false', () => {
     const fp = fakeProcess();
     launchTracked(

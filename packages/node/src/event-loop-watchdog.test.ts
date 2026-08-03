@@ -298,3 +298,26 @@ describe('createEventLoopWatchdog', () => {
     wd.stop();
   }, 12_000);
 });
+
+describe('the default scheduler cannot pin the host process', () => {
+  it('unrefs the heartbeat timer it creates', () => {
+    // The worker MessagePort pin was fixed in 95b3aef, but the DEFAULT scheduler re-installed the same
+    // defect through a plain global setInterval — measured NEVER_EXITED versus exit 0 in 439 ms.
+    const unref = vi.fn();
+    vi.stubGlobal(
+      'setInterval',
+      vi.fn(() => ({ unref })),
+    );
+    const wd = createEventLoopWatchdog({
+      thresholds: T,
+      onHang: vi.fn(),
+      now: () => 1000,
+      workerFactory: fakeWorkerSetup().factory,
+      heartbeatIntervalMs: 1000,
+    });
+    wd.start();
+    expect(unref).toHaveBeenCalled();
+    wd.stop();
+    vi.unstubAllGlobals();
+  });
+});

@@ -244,7 +244,9 @@ export interface BugseeLaunchOptions {
   process?: NodeRuntime;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
-  /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
+  /** Scheduler for the capture-store tick + system-traces sampling. Its timers MUST be `unref`'d (or
+   *  otherwise not hold the loop open) — several SDK timers rely on it, and a plain `setInterval`
+   *  implementation stops the host process from ever exiting. Default global timers. */
   scheduler?: Scheduler;
   /** Capture store override; wins over dataDir/capturedDataStore. Default file-backed on disk (D3); 'memory' opts out. */
   captureStore?: CaptureStore;
@@ -810,7 +812,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     } catch {
       // a flush failure must never replace the rejection's own handling
     }
-    void client.flush(shutdownTimeoutMs).finally(() => proc.exit(1));
+    void client.flush(shutdownTimeoutMs).finally(() => {
+      // `exitOnUncaught:false` means "never end my process on the SDK's account". It gated the uncaught
+      // path only, so a rejection still killed a host that had explicitly opted out — and the
+      // uninstrumented equivalent stays alive.
+      if (exitOnUncaught) {
+        proc.exit(1);
+      }
+    });
   });
   if (detectCrash && rejectionMode !== 'none') {
     proc.on('unhandledRejection', onUnhandledRejection);
@@ -873,6 +882,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     stop(timeout?: number): Promise<boolean> {
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
+        // …and the rejection policy listener. Leaving it behind meant a STOPPED SDK still suppressed
+        // Node's default disposition: `warn` + stop() + a rejection kept the process alive (control exits
+        // 1), and `preserve` + stop() called flushSync on a disposed store and exit(1) from a stopped
+        // client. launch→stop→launch accumulated listeners: 3 after two cycles, two prints, two exits.
+        proc.off('unhandledRejection', onUnhandledRejection);
       }
       if (flushesOnExit) {
         proc.off('exit', onProcessExit); // the dispose() below already flushes + closes

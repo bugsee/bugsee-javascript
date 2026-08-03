@@ -26,6 +26,9 @@ describe.each(targets)('process lifecycle — $name', (target) => {
     const result = await runScenarioProcess(target, collector.url, 'exit-clean', {}, 15_000);
     expect(result.timedOut, `process never exited:\n${result.stderr}`).toBe(false);
     expect(result.exitCode, result.stderr).toBe(0);
+    // …and the scenario actually RAN. Asserting only the exit code lets a silently no-op'd launch() pass.
+    expect(result.stdout).toContain('e2e exit-clean launched');
+    expect(result.stdout).toContain('e2e exit-clean work done');
   }, 30_000);
 
   it('an unhandled rejection still crashes the process with exit 1', async () => {
@@ -36,5 +39,11 @@ describe.each(targets)('process lifecycle — $name', (target) => {
     expect(result.timedOut, `process never exited:\n${result.stderr}`).toBe(false);
     expect(result.exitCode, result.stderr).toBe(1);
     expect(result.stderr).toContain('e2e unhandled rejection');
+    expect(result.stdout).toContain('e2e reject armed');
+    // …and the SDK actually CAPTURED it. Exit code + stderr alone cannot distinguish `preserve` from
+    // `none`: bare Node produces both on its own, so setting the default to 'none' left every assertion
+    // green while nothing was reported.
+    const reported = collector.uploads.length > 0 || collector.sessions.length > 0;
+    expect(reported, 'the SDK reported nothing — exit code alone cannot prove capture').toBe(true);
   }, 30_000);
 });
