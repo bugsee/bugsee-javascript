@@ -35,8 +35,8 @@ serious hole, and none blocks anything else.
 | 1.1 | ✅ **DONE** — **Redact URLs on the wire path** — scrub query strings and `user:pass@` credentials at the single choke point | `packages/node` (`node:http` owner — the root cause), `packages/capture` | Root-caused during review: the seven backend adapters are clean; the engine leaks. One fix covers all of them, plus `nestjs`'s `manifest.json` `http.url`. | 3–4d |
 | 1.1b | ✅ **DONE** — **Redact URLs embedded in network ERROR MESSAGES** | `packages/protocol`, `packages/capture` | **Not in the original findings** — found by the privacy e2e *after* 1.1 was in place and passing: the URL field was correctly redacted while `customError`/`custom.error` quoted the same URL back verbatim (undici's "Request cannot be constructed from a URL that includes credentials: …"). Android already carries this defense (`NetworkDataSanitizer.sanitizeErrorMessage`). | — |
 | 1.2 | ✅ **DONE** — **Form-urlencoded bodies ship credentials in the clear** — apply body sanitisation to urlencoded as it is to JSON | `packages/capture` | Same class as 1.1, different content type. | 1–2d |
-| 1.3 | **Replay masking model** — make the always-masked floor (`password`, `cc-*`) genuinely non-overridable; replace the 11-entry attribute denylist with an allowlist or a value-shape heuristic | `packages/replay` | `.bugsee-unmask` currently defeats the password floor — raw passwords and card numbers get serialised. `data-user-email` leaks at defaults. | 4–6d |
-| 1.4 | **Fail-closed on every privacy path** — a malformed selector, a throwing masking config, or a failed rect computation must obscure MORE, never less | `packages/replay`, `packages/replay-canvas`, `packages/webview` | Today: one typo in `blockSelector` silently disables ALL blocking page-wide; WebView obscuring is fail-open three ways. | 3–5d |
+| 1.3 | ✅ **DONE** — **Replay masking model** — make the always-masked floor (`password`, `cc-*`) genuinely non-overridable; replace the 11-entry attribute denylist with an allowlist or a value-shape heuristic | `packages/replay` | `.bugsee-unmask` currently defeats the password floor — raw passwords and card numbers get serialised. `data-user-email` leaks at defaults. | 4–6d |
+| 1.4 | 🟡 **replay DONE**, `replay-canvas`/`webview` remain — **Fail-closed on every privacy path** — a malformed selector, a throwing masking config, or a failed rect computation must obscure MORE, never less | `packages/replay`, `packages/replay-canvas`, `packages/webview` | Today: one typo in `blockSelector` silently disables ALL blocking page-wide; WebView obscuring is fail-open three ways. | 3–5d |
 | 1.5 | **Canvas privacy** — make `.bugsee-show` actually work on the canvas path, and make `.bugsee-ignore`/`.bugsee-mask` protect canvas pixels | `packages/replay-canvas` (+ rrweb fork: `unblockSelector` is never passed) | Requires a change in the rrweb fork — cross-repo, so start the fork work early. | 3–5d |
 
 **Wave 1.1 / 1.2 as built.** One portable redactor in `@bugsee/protocol` (`sanitizeUrl`, `sanitizeErrorMessage`,
@@ -52,6 +52,35 @@ webtransport *and* `node:http`, which folds in via `additionalSources`), `@bugse
 delivered bundle bytes. It is teeth-checked: unwiring each of the three redactors individually makes it fail
 with the corresponding marker, and it asserts redaction rather than deletion (the non-sensitive param must
 still ride). It earned its keep immediately — it found 1.1b, which unit tests at 100% coverage did not.
+
+**Wave 1.3 / 1.4 (replay) as built.** All in `packages/replay/src/masking.ts`, the single choke point:
+
+- **The sensitive floor moved into the SELECTOR.** rrweb resolves an input as
+  `unmaskInputSelector.matches(el) ? raw : maskInputValue(…)` — the un-mask check comes first and
+  short-circuits, so `maskInputOptions:{password:true}` was never consulted for an un-masked element. Each
+  un-mask fragment now carries a `:not(…)` guard per sensitive input (password / tel / `autocomplete*="cc-"` /
+  one-time-code), and the caller's `unmaskTextSelector` no longer feeds the input path at all — so
+  `unmaskTextSelector:'*'` can no longer un-mask every password on the page. `tel` was added to
+  `maskInputOptions` because the fork's LIVE observer gates on that map alone (SEV1 #1, SEV2 #4).
+- **Attributes became an allowlist** (SEV1 #2). Only rendering-critical names pass through — including the
+  SVG geometry/paint set, without which every icon would be destroyed. `data-*`, `<meta content>` and any
+  bespoke attribute are masked, length-preserved.
+- **A malformed caller selector can no longer disable privacy** (SEV1 #3, SEV2 #10). Each fragment is
+  validated; an invalid one is dropped, reported through `onError`, and — for the opt-IN selectors, where
+  dropping would itself weaken privacy — escalated to the strictest setting (`maskTextSelector` →
+  `maskAllText`, `blockSelector` → `blockAllMedia`, `ignoreSelector` → `maskAllInputs`).
+- **Prototype pollution and falsy non-booleans no longer downgrade defaults** (SEV2 #11): own-property reads
+  plus a strict `typeof === 'boolean'` check, so `maskAllText: 0` is no longer passed to rrweb as "off".
+
+**Verification.** `masking.integration.test.ts` drives the REAL rrweb over a REAL DOM and asserts the bytes it
+emits. This is the gap the review named explicitly: its "Masking fail-closed audit" table has ✗ in the
+*"test asserts the real rrweb config?"* column on **every** row, which is why three fail-open defects survived
+a suite at 100 % coverage. Every guarantee in that table is now asserted against rrweb's actual output.
+
+**Known residual (measured, not assumed).** URL attributes never reach `maskAttributeFn` — instrumenting it
+over a page carrying `href`/`src` shows only `data-x` arriving, because rrweb resolves and absolutizes URL
+attributes on its own path. PII inside a URL therefore **cannot** be scrubbed from this seam; closing it needs
+a change in the rrweb fork. A test pins the current behaviour so that a fork change surfaces here.
 
 ---
 

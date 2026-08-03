@@ -25,10 +25,61 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.unblockSelector).toContain('.show-chart');
   });
 
-  it('ALWAYS masks password inputs, even when maskAllInputs is turned off (hard floor)', () => {
+  it('declares the sensitive types the live input observer gates on, with maskAllInputs off', () => {
+    // NOTE: this asserts a property of the returned CONFIG. It is not the hard-floor guarantee — rrweb never
+    // consults `maskInputOptions` for an element matched by the un-mask selector, which is exactly how the
+    // documented floor came to be false while this test passed (docs/review/replay.md SEV1 #1). The floor
+    // itself is asserted against real rrweb in masking.integration.test.ts; this only pins that `tel` is
+    // declared, since the live observer gates on this map alone.
     const m = resolveReplayMaskingOptions({ maskAllInputs: false });
     expect(m.maskAllInputs).toBe(false);
-    expect(m.maskInputOptions).toEqual({ password: true }); // never unmaskable
+    expect(m.maskInputOptions).toEqual({ password: true, tel: true });
+  });
+
+  it('falls back to the fail-closed defaults when handed a non-object', () => {
+    // `replay: null` / a stray string from untyped JS must not produce a half-built config.
+    for (const bad of [null, 'yes', 42]) {
+      const m = resolveReplayMaskingOptions(bad as never);
+      expect(m.maskAllText, String(bad)).toBe(true);
+      expect(m.maskAllInputs, String(bad)).toBe(true);
+      expect(m.blockSelector, String(bad)).toContain(MEDIA_SELECTOR);
+    }
+  });
+
+  it('masks an unknown attribute and passes a structural one through', () => {
+    const mask = resolveReplayMaskingOptions().maskAttributeFn as (k: string, v: string) => string;
+    expect(mask('data-user-email', 'a@b.com')).toBe('*******'); // length preserved, value gone
+    expect(mask('CLASS', 'card')).toBe('card'); // matched case-insensitively
+  });
+
+  it('returns a non-string attribute value untouched instead of throwing', () => {
+    // rrweb hands a boolean/number for some properties; `'*'.repeat(value.length)` would throw on those,
+    // and a throw here escapes into the host page's serialization (docs/review/replay.md SEV3 #8). Not
+    // reachable through rrweb itself, so it is pinned directly.
+    const mask = resolveReplayMaskingOptions().maskAttributeFn as (
+      k: string,
+      v: unknown,
+    ) => unknown;
+    expect(() => mask('data-x', true)).not.toThrow();
+    expect(mask('data-x', true)).toBe(true);
+    expect(mask('data-x', 42)).toBe(42);
+  });
+
+  it('never lets a sensitive input match the input un-mask selector', () => {
+    const m = resolveReplayMaskingOptions({ unmaskTextSelector: '*' });
+    // Every fragment is one of Bugsee's own marks — the caller's `*` reaches TEXT only, never input values.
+    for (const fragment of m.unmaskInputSelector.split(',')) {
+      expect(
+        fragment.startsWith('.bugsee-unmask') || fragment.startsWith('[data-bugsee-unmask]'),
+        fragment,
+      ).toBe(true);
+      // …and each carries the full sensitive guard, so no fragment can admit a sensitive input.
+      for (const guard of ['password', 'tel', 'cc-', 'one-time-code']) {
+        expect(fragment, guard).toContain(`:not([`);
+        expect(fragment, guard).toContain(guard);
+      }
+    }
+    expect(m.unmaskTextSelector).toContain('*'); // the caller's text opt-out is untouched
   });
 
   it('when maskAllText is false, masks only Bugsee-marked text (not everything)', () => {

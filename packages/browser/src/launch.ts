@@ -478,6 +478,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         m.registerReplay(client, fileEncoders, {
           ...replayMasking,
           ...(canvas !== undefined ? { canvas } : {}),
+          // Give replay's masking resolver a sink: it drops an invalid caller selector rather than letting
+          // it disable privacy page-wide, and that downgrade must not be silent (Wave 1.4).
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
         });
       })
       .catch((error) => options.onError?.(error));

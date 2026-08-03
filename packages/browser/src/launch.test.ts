@@ -1090,6 +1090,15 @@ describe('launch — session replay (lazy)', () => {
     expect(call[2]).toEqual({ maskAllText: false, checkoutEveryNms: 5000 }); // options forwarded
   });
 
+  it('forwards the launch onError so a dropped masking selector is actually reported', async () => {
+    // Wave 1.4. @bugsee/replay reports an invalid selector it had to drop; that report needs a sink on the
+    // production path, or the fix is only reachable from replay's own tests.
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ replay: { blockSelector: 'div[' }, onError }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect((registerReplay.mock.calls[0]?.[2] as { onError?: unknown }).onError).toBe(onError);
+  });
+
   it('enables replay with default options when replay is `true`', async () => {
     launchTracked('tok', baseOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));

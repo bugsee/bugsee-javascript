@@ -1,3 +1,4 @@
+// @vitest-environment jsdom -- selector validation (Wave 1.4) needs a DOM to parse against
 import type { CaptureDataEntry, CaptureProvider, CaptureProviderInit } from '@bugsee/core';
 import type { eventWithTime, recordOptions } from '@bugsee/rrweb';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,6 +36,23 @@ describe('registerReplay', () => {
     // The returned recorder exposes the blackout controls (for the caller to wire client.startBlackout).
     expect(typeof recorder.startBlackout).toBe('function');
     expect(typeof recorder.stopBlackout).toBe('function');
+  });
+
+  it('reports a dropped invalid masking selector through the caller onError', () => {
+    // Wave 1.4. Without this wiring the resolver's report has nowhere to go, and a developer's typo'd
+    // selector is silently downgraded — which is how the original defect stayed invisible in the first place.
+    const errors: unknown[] = [];
+    registerReplay(
+      fakeClient(),
+      {},
+      {
+        record: fakeRecord().record,
+        blockSelector: 'div[',
+        onError: (e) => errors.push(e),
+      },
+    );
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain('blockSelector');
   });
 
   it('builds the recorder with the fail-closed masking + checkoutEveryNms (started → rrweb record opts)', () => {
