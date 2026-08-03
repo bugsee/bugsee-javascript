@@ -320,19 +320,31 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
   const obscuringDoc = domDocument as unknown as ComposerDocument;
   const obscuringWin = win !== undefined ? { window: win as unknown as ComposerWindow } : {};
+  const obscuringErr = options.onError !== undefined ? { onError: options.onError } : {};
   if ((options.captureObscuring ?? true) && domDocument !== undefined) {
     if (isTopFrame) {
-      obscuring = createObscuringChannel({ bridge, document: obscuringDoc, ...obscuringWin, seq });
+      obscuring = createObscuringChannel({
+        bridge,
+        document: obscuringDoc,
+        ...obscuringWin,
+        ...obscuringErr,
+        seq,
+      });
     } else {
       childComposer = createObscuringComposer({
         document: obscuringDoc,
         ...obscuringWin,
+        ...obscuringErr,
         isTopFrame: false,
       });
     }
   }
-  // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native).
-  const caps = obscuring !== undefined ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
+  // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native), and
+  // only once a collection has been PROVEN to work. Declaring the capability is what makes native stand its
+  // legacy masking script down (D10), and the protocol has no retraction message — so on a page where
+  // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
+  // answer (docs/review/webview.md SEV1 #2).
+  const caps = obscuring?.probe() === true ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture

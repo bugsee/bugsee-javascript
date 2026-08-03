@@ -1,5 +1,6 @@
 import {
   createObscuringSource,
+  FAIL_CLOSED_AREA,
   type MutationObserverCtor,
   type SecureDocument,
   type SecureWindow,
@@ -71,8 +72,11 @@ export function createObscuringComposer(opts: {
   onCompose?: (areas: SecureArea[]) => void;
   /** MutationObserver constructor; injectable for tests. */
   mutationObserver?: MutationObserverCtor;
+  /** Where a collection/compose failure is reported (Wave 1.4). */
+  onError?: (error: unknown) => void;
 }): ObscuringComposer {
   const { document, window, isTopFrame, onCompose } = opts;
+  const onError = opts.onError;
   // Raw child-VIEWPORT areas keyed by the bubbling child window (re-mapped fresh at compose time).
   const childAreas = new Map<unknown, readonly SecureArea[]>();
   let ownAreas: readonly SecureArea[] = [];
@@ -173,6 +177,7 @@ export function createObscuringComposer(opts: {
       emit();
     },
     ...(opts.mutationObserver !== undefined ? { mutationObserver: opts.mutationObserver } : {}),
+    ...(onError !== undefined ? { onError } : {}),
   });
 
   let detachMessage: (() => void) | undefined;
@@ -181,9 +186,17 @@ export function createObscuringComposer(opts: {
 
   return {
     snapshot(): SecureArea[] {
-      ownAreas = source.snapshot(); // fresh own areas for the synchronous native pull
-      const composed = compose();
-      return isTopFrame ? documentAbsolute(composed) : [...composed];
+      // The synchronous native pull, at frame-capture time. `source.snapshot()` already fails closed, but
+      // compose() reads every child iframe's live rect and documentAbsolute() reads window scroll — either
+      // can throw on a hostile or mid-teardown page, and native has already stood its own masking down.
+      try {
+        ownAreas = source.snapshot(); // fresh own areas for the synchronous native pull
+        const composed = compose();
+        return isTopFrame ? documentAbsolute(composed) : [...composed];
+      } catch (error) {
+        onError?.(error);
+        return [FAIL_CLOSED_AREA];
+      }
     },
     refresh(): void {
       ownAreas = source.snapshot();

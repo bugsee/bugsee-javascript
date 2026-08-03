@@ -229,6 +229,45 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
 });
 
 describe('an invalid caller selector fails CLOSED and never reaches the DOM', () => {
+  it('never emits a selector the DOM cannot parse — whatever the caller passes', async () => {
+    // The property that closes docs/review/replay-canvas.md SEV1 #3. rrweb's canvas manager calls its
+    // block check from INSIDE the patch it installs on `HTMLCanvasElement.prototype.getContext`, and that
+    // check is NOT wrapped — so a malformed selector reaching the joined string threw a DOMException out of
+    // the host application's own `getContext('2d')` call, before the original method ran. Chart.js,
+    // signature pads and PDF.js break outright. Every resolved selector being parseable makes that
+    // unreachable at the source, which is why it is asserted as one property over all of them.
+    for (const bad of ['div[', 'a:has(', '::', '[', '>', 'p((']) {
+      const resolved = resolveReplayMaskingOptions({
+        blockSelector: bad,
+        maskTextSelector: bad,
+        unmaskTextSelector: bad,
+        unblockSelector: bad,
+        ignoreSelector: bad,
+      });
+      for (const [field, selector] of Object.entries(resolved)) {
+        if (typeof selector !== 'string' || selector === '') continue;
+        expect(
+          () => document.createDocumentFragment().querySelector(selector),
+          `${field}: ${bad}`,
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it('leaves the host application’s canvas.getContext working when blockSelector is malformed', async () => {
+    // The end-to-end shape of the same defect: an interceptor must never alter host behaviour.
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    const { json } = await drive('<canvas id="c"></canvas>', {
+      blockSelector: 'div[',
+      blockAllCanvas: true,
+    });
+    expect(() =>
+      (document.querySelector('#c') as HTMLCanvasElement).getContext('2d'),
+    ).not.toThrow();
+    expect(json).toBeTypeOf('string');
+  });
+
   it('keeps media blocked when `blockSelector` is malformed', async () => {
     // One comma-joined string: a single malformed fragment made `matches()` throw for EVERY element, and
     // rrweb's bare `catch {}` returned "not blocked" — disabling blocking page-wide (SEV1 #3).

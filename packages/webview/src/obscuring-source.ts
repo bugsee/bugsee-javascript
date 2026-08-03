@@ -45,28 +45,65 @@ interface MutationObserverLike {
 }
 export type MutationObserverCtor = new (callback: () => void) => MutationObserverLike;
 
+/**
+ * The answer when secure areas CANNOT be computed: obscure the whole frame.
+ *
+ * Fail-closed policy (Wave 1.4, docs/review/webview.md SEV1 #1). Declaring the `obscuring` capability is what
+ * makes native stand its own legacy masking down, so a failure here has no second line of defence — native
+ * would render the frame with password / cc-* / `.bugsee-hide` content visible. Returning the LAST KNOWN rects
+ * is deliberately NOT the policy: it reports success while a field added after the failure goes unmasked. If
+ * we cannot see the page, the only honest answer is "mask all of it".
+ *
+ * Anchored at the origin and effectively unbounded, so it still covers the frame after the composer offsets it
+ * into document-absolute coordinates by the current scroll position.
+ */
+export const FAIL_CLOSED_AREA: SecureArea = Object.freeze({
+  type: 'hidden',
+  top: 0,
+  left: 0,
+  bottom: 1e7,
+  right: 1e7,
+});
+
+/** Optional wiring shared by the collector and the source. */
+export interface ObscuringErrorSink {
+  onError?: (error: unknown) => void;
+}
+
 /** Read the current secure areas from the document, each a VIEWPORT-relative rect (`getBoundingClientRect`). The
  *  obscuring COMPOSER applies the offsets that turn these into document-absolute coordinates — the top-frame
  *  scroll, and (for rects bubbled up from a sub-frame) the iframe's position — so the source itself stays a pure
- *  per-frame collector. */
-export function collectSecureAreas(document: SecureDocument): SecureArea[] {
-  const seen = new Set<RectEl>();
-  const areas: SecureArea[] = [];
-  const add = (element: RectEl, type: SecureArea['type']): void => {
-    if (seen.has(element)) {
-      return; // an input matched by BOTH selectors is reported once (as `text`, collected first)
+ *  per-frame collector.
+ *
+ *  Never throws: any failure is reported and answered with {@link FAIL_CLOSED_AREA}. Both the query and the
+ *  measurement are inside the guard — an element detached mid-measure, or a page that redefines
+ *  `getBoundingClientRect`, fails the same way. */
+export function collectSecureAreas(
+  document: SecureDocument,
+  sink: ObscuringErrorSink = {},
+): SecureArea[] {
+  try {
+    const seen = new Set<RectEl>();
+    const areas: SecureArea[] = [];
+    const add = (element: RectEl, type: SecureArea['type']): void => {
+      if (seen.has(element)) {
+        return; // an input matched by BOTH selectors is reported once (as `text`, collected first)
+      }
+      seen.add(element);
+      const r = element.getBoundingClientRect();
+      areas.push({ type, top: r.top, left: r.left, bottom: r.bottom, right: r.right });
+    };
+    for (const element of Array.from(document.querySelectorAll(SECURE_INPUT_SELECTOR))) {
+      add(element, 'text');
     }
-    seen.add(element);
-    const r = element.getBoundingClientRect();
-    areas.push({ type, top: r.top, left: r.left, bottom: r.bottom, right: r.right });
-  };
-  for (const element of Array.from(document.querySelectorAll(SECURE_INPUT_SELECTOR))) {
-    add(element, 'text');
+    for (const element of Array.from(document.querySelectorAll(HIDE_SELECTOR))) {
+      add(element, 'hidden');
+    }
+    return areas;
+  } catch (error) {
+    sink.onError?.(error);
+    return [FAIL_CLOSED_AREA];
   }
-  for (const element of Array.from(document.querySelectorAll(HIDE_SELECTOR))) {
-    add(element, 'hidden');
-  }
-  return areas;
 }
 
 export interface ObscuringSource {
@@ -85,10 +122,22 @@ export function createObscuringSource(opts: {
   onChange: (areas: SecureArea[]) => void;
   /** MutationObserver constructor; injectable for tests. Default `globalThis.MutationObserver`. */
   mutationObserver?: MutationObserverCtor;
+  /** Where a collection/attach failure is reported. Without it the downgrade is silent. */
+  onError?: (error: unknown) => void;
 }): ObscuringSource {
   const { document, window, onChange } = opts;
-  const areas = (): SecureArea[] => collectSecureAreas(document);
-  const recompute = (): void => onChange(areas());
+  const onError = opts.onError;
+  const areas = (): SecureArea[] => collectSecureAreas(document, { onError });
+  // A recompute that throws used to be swallowed by the event-dispatch machinery, leaving the previous rects
+  // in place — so the mask went STALE and silent. `areas()` already fails closed, so the emit that follows a
+  // failure obscures the whole frame instead.
+  const recompute = (): void => {
+    try {
+      onChange(areas());
+    } catch (error) {
+      onError?.(error);
+    }
+  };
   const detach: Array<() => void> = [];
   let started = false;
 
@@ -99,36 +148,50 @@ export function createObscuringSource(opts: {
         return; // idempotent — a second start() must not double-attach observers/listeners (duplicate emits)
       }
       started = true;
-      const Observer =
-        opts.mutationObserver ??
-        (globalThis as { MutationObserver?: MutationObserverCtor }).MutationObserver;
-      if (Observer !== undefined) {
-        const observer = new Observer(recompute);
-        observer.observe(document.body ?? document, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          characterData: true, // a text-node change can move/resize a secure element (legacy parity)
-        });
-        detach.push(() => observer.disconnect());
-      }
-      const options = { capture: true, passive: true };
-      if (window !== undefined) {
-        for (const type of WINDOW_EVENTS) {
-          window.addEventListener(type, recompute, options);
-          detach.push(() => window.removeEventListener(type, recompute, options));
-        }
-      }
-      for (const type of DOCUMENT_EVENTS) {
-        document.addEventListener(type, recompute, options);
-        detach.push(() => document.removeEventListener(type, recompute, options));
+      try {
+        attach();
+      } catch (error) {
+        // A throw here used to abort launch() AFTER the `obscuring` capability was declared, leaving native
+        // stood down and receiving nothing for the whole session.
+        onError?.(error);
       }
     },
     stop(): void {
       started = false;
       for (const off of detach.splice(0)) {
-        off();
+        try {
+          off();
+        } catch (error) {
+          onError?.(error);
+        }
       }
     },
   };
+
+  function attach(): void {
+    const Observer =
+      opts.mutationObserver ??
+      (globalThis as { MutationObserver?: MutationObserverCtor }).MutationObserver;
+    if (Observer !== undefined) {
+      const observer = new Observer(recompute);
+      observer.observe(document.body ?? document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true, // a text-node change can move/resize a secure element (legacy parity)
+      });
+      detach.push(() => observer.disconnect());
+    }
+    const options = { capture: true, passive: true };
+    if (window !== undefined) {
+      for (const type of WINDOW_EVENTS) {
+        window.addEventListener(type, recompute, options);
+        detach.push(() => window.removeEventListener(type, recompute, options));
+      }
+    }
+    for (const type of DOCUMENT_EVENTS) {
+      document.addEventListener(type, recompute, options);
+      detach.push(() => document.removeEventListener(type, recompute, options));
+    }
+  }
 }

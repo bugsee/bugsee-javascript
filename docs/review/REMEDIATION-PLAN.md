@@ -36,7 +36,7 @@ serious hole, and none blocks anything else.
 | 1.1b | ✅ **DONE** — **Redact URLs embedded in network ERROR MESSAGES** | `packages/protocol`, `packages/capture` | **Not in the original findings** — found by the privacy e2e *after* 1.1 was in place and passing: the URL field was correctly redacted while `customError`/`custom.error` quoted the same URL back verbatim (undici's "Request cannot be constructed from a URL that includes credentials: …"). Android already carries this defense (`NetworkDataSanitizer.sanitizeErrorMessage`). | — |
 | 1.2 | ✅ **DONE** — **Form-urlencoded bodies ship credentials in the clear** — apply body sanitisation to urlencoded as it is to JSON | `packages/capture` | Same class as 1.1, different content type. | 1–2d |
 | 1.3 | ✅ **DONE** — **Replay masking model** — make the always-masked floor (`password`, `cc-*`) genuinely non-overridable; replace the 11-entry attribute denylist with an allowlist or a value-shape heuristic | `packages/replay` | `.bugsee-unmask` currently defeats the password floor — raw passwords and card numbers get serialised. `data-user-email` leaks at defaults. | 4–6d |
-| 1.4 | 🟡 **replay DONE**, `replay-canvas`/`webview` remain — **Fail-closed on every privacy path** — a malformed selector, a throwing masking config, or a failed rect computation must obscure MORE, never less | `packages/replay`, `packages/replay-canvas`, `packages/webview` | Today: one typo in `blockSelector` silently disables ALL blocking page-wide; WebView obscuring is fail-open three ways. | 3–5d |
+| 1.4 | ✅ **DONE** — **Fail-closed on every privacy path** — a malformed selector, a throwing masking config, or a failed rect computation must obscure MORE, never less | `packages/replay`, `packages/replay-canvas`, `packages/webview` | Today: one typo in `blockSelector` silently disables ALL blocking page-wide; WebView obscuring is fail-open three ways. | 3–5d |
 | 1.5 | **Canvas privacy** — make `.bugsee-show` actually work on the canvas path, and make `.bugsee-ignore`/`.bugsee-mask` protect canvas pixels | `packages/replay-canvas` (+ rrweb fork: `unblockSelector` is never passed) | Requires a change in the rrweb fork — cross-repo, so start the fork work early. | 3–5d |
 
 **Wave 1.1 / 1.2 as built.** One portable redactor in `@bugsee/protocol` (`sanitizeUrl`, `sanitizeErrorMessage`,
@@ -81,6 +81,26 @@ a suite at 100 % coverage. Every guarantee in that table is now asserted against
 over a page carrying `href`/`src` shows only `data-x` arriving, because rrweb resolves and absolutizes URL
 attributes on its own path. PII inside a URL therefore **cannot** be scrubbed from this seam; closing it needs
 a change in the rrweb fork. A test pins the current behaviour so that a fork change surfaces here.
+
+**Wave 1.4 (`replay-canvas` + `webview`) as built.**
+
+- **`replay-canvas` SEV1 #3 closed by the same root cause.** The canvas-specific amplification was that
+  rrweb's canvas manager calls its block check from INSIDE the patch it installs on
+  `HTMLCanvasElement.prototype.getContext`, *unwrapped* — so a malformed `blockSelector` threw a DOMException
+  out of the host application's own `getContext('2d')` (breaking Chart.js, PDF.js, signature pads) while
+  simultaneously leaking every canvas's pixels. Validating selectors makes it unreachable at the source;
+  pinned as one property — *every resolved selector is parseable* — over a matrix of malformed inputs.
+- **`webview` obscuring now fails closed on all three paths** the review identified (SEV1 #1): the
+  synchronous native pull, `start()`, and change-tracking recompute. The policy is a **full-frame secure
+  rect**, deliberately NOT "last known good": stale rects report success while a field added after the
+  failure goes unmasked. Every failure is reported through `onError` rather than being silent.
+- **The `obscuring` capability is now gated on a successful probe** (SEV1 #2). Declaring it is what makes
+  native stand its legacy masking script down, and the protocol has no retraction message — so on a page
+  where collection already throws, the SDK stays silent and native keeps its own masking. No wire change,
+  so this needs no Android coordination.
+
+Remaining in `webview`: the bridge-authentication items (SEV1 #3/#4) are **Wave 0.3**, still gated on the
+Android receiver per D1. `replay-canvas` SEV1 #1/#2 are **1.5**, gated on the rrweb fork.
 
 ---
 

@@ -373,6 +373,27 @@ describe('launch (webview)', () => {
       expect(hello.caps).toContain('obscuring'); // tells native to drop its legacy masking script
     });
 
+    it('does NOT declare `obscuring` when collection is already failing (Wave 1.4)', () => {
+      // Declaring the capability is what makes native stand its own masking down, and the protocol has no
+      // way to retract it. On a page where rect collection throws — one line of script is enough — staying
+      // silent keeps native's legacy masking in place instead of leaving the frame unmasked all session.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const broken = {
+        ...(dom.document as unknown as Record<string, unknown>),
+        querySelectorAll: () => {
+          throw new Error('page broke the DOM');
+        },
+      };
+      const onError = vi.fn();
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: broken as unknown as Document, onError }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
+      expect(onError).toHaveBeenCalled(); // and it is not silent
+    });
+
     it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global })); // no document
