@@ -114,7 +114,7 @@ inside host code with no guard**.
 |---|---|---|---|
 | 2.1 | 🟡 **helper BUILT + frontend seams applied**; middleware/hooks/interceptors remain — **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped | `packages/core` + applied across ~15 packages | 5–8d |
 | 2.2 | **Enforce it** — a lint rule or an exported-surface test asserting every host-facing export is wrapped, so this cannot regress | `packages/core` + tooling | 2–3d |
-| 2.3 | 🟡 **frontend DONE** (vue/angular/svelte/solid); the 7 backend adapters remain — **Chain, never clobber, the host's error handler** | the 5 frontend + 7 backend adapters | 4–6d |
+| 2.3 | ✅ **DONE** — **Chain, never clobber, the host's error handler** (frontend: vue/angular/svelte/solid; backend: fixed at the shared request engine, covering express/koa/fastify/nestjs/hapi/elysia, plus hono's own pre-work) | the 5 frontend + 7 backend adapters | 4–6d |
 | 2.4 | ✅ **DONE** — **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
 | 2.5 | ✅ **DONE** — **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
 
@@ -165,6 +165,26 @@ because the Wave 2.1 rule is enforced by construction rather than re-derived per
 had been below the 100 % line/statement/function gate, which nothing had caught because core's own coverage
 was never re-run after that wave. Now 100 % line/statement/function, with the two genuinely unreachable
 loop guards annotated rather than fake-tested.
+
+---
+
+**Wave 2.3 (backend) as built.** Fixed at the shared engine rather than per adapter: `runServerRequest` in
+`@bugsee/node` is what express and koa call with `next()` INSIDE the dispatch callback, so an SDK failure
+before dispatch meant the route handler never ran and the SDK's own error became the request's outcome — a
+customer-visible 500, with the app's error middleware handed a Bugsee-internal `Error` as if it were their
+bug. Any SDK-side failure now degrades to running the request UNINSTRUMENTED.
+
+The subtlety that matters is separating the two error sources. A `dispatched` flag distinguishes "the SDK
+failed before the request ran" from "the application's handler threw": the first degrades, the second is
+rethrown untouched. Without it the fallback would re-enter dispatch and run the customer's route handler a
+SECOND time — a duplicated write, not merely a lost report. A mutation removing the flag initially survived,
+because the obvious test (throwing client + throwing handler) fails before dispatch is ever entered and so
+cannot tell the two apart; pinning it needs the healthy-engine path.
+
+`@bugsee/hono` additionally guards its own pre-work, which the engine cannot reach: `options.user` is an
+APPLICATION-supplied callback that needs no SDK bug to throw (`(c) => c.req.header('authorization').split(' ')[1]`
+on any unauthenticated request), and Hono's `compose` laundered that into `app.onError` as a 500. Its
+structural peers hapi and elysia already guarded these operations and returned 200 under the same probes.
 
 ---
 

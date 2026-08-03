@@ -63,6 +63,8 @@ export interface ServerInstrumentOptions {
   shouldReport?: (err: unknown) => boolean;
   /** BE→FE return headers (default both off, T9). The caller writes {@link ServerRequestSpan.responseHeaders}. */
   traceResponse?: TraceResponseConfig;
+  /** Where an SDK-internal failure in the request path is reported. It is never thrown into the request. */
+  onError?: (error: unknown) => void;
 }
 
 /** A handle over the in-flight request. All methods are safe no-ops when no client is launched. */
@@ -338,20 +340,43 @@ export function runServerRequest<T>(
   options: ServerInstrumentOptions,
   dispatch: (span: ServerRequestSpan) => T,
 ): T {
-  const client = safeGetClient(options.getClient ?? defaultGetClient);
-  if (client === undefined) {
-    return dispatch(NOOP_SPAN);
+  // Wave 2.1/2.3 — THE REQUEST PATH IS INERT. `dispatch` is where the framework calls `next()` / the route
+  // handler, so if the SDK throws before invoking it, the customer's handler never runs and the SDK's own
+  // error becomes the request's outcome: a 500 on a request that would have succeeded, with the app's error
+  // middleware handed a Bugsee-internal Error as if it were their bug
+  // (docs/review/backend-express-fastify-koa.md SEV1 #1, docs/review/backend-hono-hapi-elysia.md SEV1 #1 —
+  // both reproduced against real servers). Any SDK-side failure degrades to running the request
+  // UNINSTRUMENTED, which loses telemetry and nothing else.
+  //
+  // `dispatched` is what keeps that from swallowing the application's OWN error: once dispatch has been
+  // entered, anything thrown belongs to the host and is rethrown untouched.
+  let dispatched = false;
+  const run = (span: ServerRequestSpan): T => {
+    dispatched = true;
+    return dispatch(span);
+  };
+  try {
+    const client = safeGetClient(options.getClient ?? defaultGetClient);
+    if (client === undefined) {
+      return run(NOOP_SPAN);
+    }
+    const store = resolveStore(client);
+    const existing = refinableSpan(store?.getCurrent());
+    if (existing !== undefined) {
+      return run(refiningHandle(existing, info, store, options));
+    }
+    if (store === undefined) {
+      return run(makeSpan(client, info, options, true));
+    }
+    const context = buildContext(info, options.newContextId ?? defaultNewContextId);
+    return store.run(context, () => run(makeSpan(client, info, options, true))); // run-scoped → refinable
+  } catch (error) {
+    if (dispatched) {
+      throw error; // the HOST's error — never ours to swallow
+    }
+    options.onError?.(error);
+    return dispatch(NOOP_SPAN); // the SDK failed before the request ran: run it uninstrumented
   }
-  const store = resolveStore(client);
-  const existing = refinableSpan(store?.getCurrent());
-  if (existing !== undefined) {
-    return dispatch(refiningHandle(existing, info, store, options));
-  }
-  if (store === undefined) {
-    return dispatch(makeSpan(client, info, options, true));
-  }
-  const context = buildContext(info, options.newContextId ?? defaultNewContextId);
-  return store.run(context, () => dispatch(makeSpan(client, info, options, true))); // run-scoped → refinable
 }
 
 /** A refining handle over the owner's span: setRoute / captureError act on the owner; finish/cancel are
