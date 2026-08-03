@@ -102,6 +102,8 @@ export function createPartitionedCaptureStore(
     owned.set(owner, created);
     while (owned.size > maxPartitions) {
       const lru = owned.keys().next().value as string | undefined;
+      /* v8 ignore next 3 -- unreachable: the loop condition guarantees owned.size > maxPartitions >= 1, so
+         the map is never empty here; kept as a belt-and-braces guard against an infinite loop. */
       if (lru === undefined) {
         break;
       }
@@ -109,6 +111,8 @@ export function createPartitionedCaptureStore(
       evicted.add(lru);
       while (evicted.size > maxEvictedTracked) {
         const oldest = evicted.values().next().value as string | undefined;
+        /* v8 ignore next -- unreachable: the loop condition guarantees the set is non-empty; kept so a
+           future change cannot turn this into an infinite loop. */
         if (oldest === undefined) break;
         evicted.delete(oldest);
       }

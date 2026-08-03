@@ -6,6 +6,8 @@ export {
   type AdapterClientOptions,
   type AdapterMechanism,
   getPerformanceApi,
+  guarded,
+  neverThrow,
   type ReportErrorOptions,
   type RouteNamingOptions,
   reportError,

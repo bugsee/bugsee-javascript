@@ -306,3 +306,45 @@ describe('createPartitionedCaptureStore — bounds on the eviction bookkeeping',
     }
   });
 });
+
+describe('releasing a snapshot is contained', () => {
+  it('reports a partition whose release() throws instead of propagating into the export path', () => {
+    // `release()` runs at the end of a report's export. A throwing partition must surface through onError,
+    // not out of the exporter — the same host-boundary rule as everywhere else.
+    const errors: unknown[] = [];
+    const store = createPartitionedCaptureStore({
+      createPartition: () => {
+        const base = fakePartition();
+        return {
+          ...base,
+          snapshot: () => ({
+            ...base.snapshot(),
+            release: () => {
+              throw new Error('release failed');
+            },
+          }),
+        } as never;
+      },
+      maxPartitions: 4,
+      onError: (e) => errors.push(e),
+    });
+    store.add(rec('a', '1'));
+    expect(() => store.snapshot({ owner: 'a' }).release()).not.toThrow();
+    expect(String(errors[0])).toContain('release failed');
+  });
+});
+
+describe('the default error sink', () => {
+  it('swallows a partition failure when no onError was supplied', () => {
+    const store = createPartitionedCaptureStore({
+      createPartition: () =>
+        ({
+          add: () => {
+            throw new Error('partition broke');
+          },
+        }) as never,
+      maxPartitions: 2,
+    });
+    expect(() => store.add(rec('a', '1'))).not.toThrow();
+  });
+});

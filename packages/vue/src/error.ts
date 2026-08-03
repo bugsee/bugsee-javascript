@@ -1,4 +1,9 @@
-import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
+import {
+  type AdapterMechanism,
+  neverThrow,
+  type ReportErrorOptions,
+  reportError,
+} from '@bugsee/web-adapter';
 import { vueComponentName } from './component-name';
 
 // The @bugsee/vue ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Vue 3). Hooks Vue's
@@ -43,7 +48,10 @@ export function reportVueError(error: unknown, options: ReportVueErrorOptions = 
 export function installBugseeErrorHandler(app: VueAppLike, options: VueErrorOptions = {}): void {
   const previous = app.config.errorHandler;
   app.config.errorHandler = (err, instance, info) => {
-    reportVueError(err, { ...options, info, instance });
+    // Contained (Wave 2.1): the component-name lookup and label building run here too, and a throw from any
+    // of it would skip the app's own handler below — turning a recoverable error into an unrecoverable one
+    // at exactly the moment the app needs its handler most.
+    neverThrow(() => reportVueError(err, { ...options, info, instance }), options.onError);
     if (typeof previous === 'function') previous(err, instance, info); // preserve the app's own handler
   };
 }

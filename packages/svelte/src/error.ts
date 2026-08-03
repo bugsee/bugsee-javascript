@@ -1,4 +1,9 @@
-import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
+import {
+  type AdapterMechanism,
+  neverThrow,
+  type ReportErrorOptions,
+  reportError,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/svelte ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for SvelteKit). Wraps
 // SvelteKit's `handleError` hook (the user exports it from `src/hooks.client.ts`): report the thrown error
@@ -41,11 +46,15 @@ export function handleErrorWithBugsee(
   options: SvelteErrorOptions = {},
 ): HandleErrorHook {
   return (input) => {
-    const routeId = input.event?.route?.id;
-    reportSvelteError(input.error, {
-      ...options,
-      ...(typeof routeId === 'string' && routeId !== '' ? { routeId } : {}),
-    });
+    // Contained (Wave 2.1): route extraction reads a framework-supplied object and the report follows, and
+    // a throw from either used to skip the app's own handleError — which is what SvelteKit renders from.
+    neverThrow(() => {
+      const routeId = input.event?.route?.id;
+      reportSvelteError(input.error, {
+        ...options,
+        ...(typeof routeId === 'string' && routeId !== '' ? { routeId } : {}),
+      });
+    }, options.onError);
     return appHandler?.(input); // the app keeps its own handleError (and its App.Error return)
   };
 }

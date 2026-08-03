@@ -112,9 +112,9 @@ inside host code with no guard**.
 
 | # | Fix | Where | Est |
 |---|---|---|---|
-| 2.1 | **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped: framework error seams, middleware/hooks, interceptors, event listeners, public API methods, and `waitUntil`/`finally` paths | `packages/core` + applied across ~15 packages | 5–8d |
+| 2.1 | 🟡 **helper BUILT + frontend seams applied**; middleware/hooks/interceptors remain — **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped | `packages/core` + applied across ~15 packages | 5–8d |
 | 2.2 | **Enforce it** — a lint rule or an exported-surface test asserting every host-facing export is wrapped, so this cannot regress | `packages/core` + tooling | 2–3d |
-| 2.3 | **Chain, never clobber, the host's error handler** — Angular `ErrorHandler`, Vue `app.config.errorHandler`, Hono `onError`, Fastify `setErrorHandler`, Nest `ExceptionFilter`, Express error middleware (`next(err)`) | the 5 frontend + 7 backend adapters | 4–6d |
+| 2.3 | 🟡 **frontend DONE** (vue/angular/svelte/solid); the 7 backend adapters remain — **Chain, never clobber, the host's error handler** | the 5 frontend + 7 backend adapters | 4–6d |
 | 2.4 | ✅ **DONE** — **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
 | 2.5 | ✅ **DONE** — **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
 
@@ -139,6 +139,32 @@ Fixing 2.1 + 2.3 closes, in one coordinated change: the React unmount, the Vue e
 Solid discarded fallback, the dead SvelteKit error page, the express/koa/hono 500s, the Nest `openSpan` 500,
 `web-adapter`'s zero containment, `core`'s `runFilter`, the `browser` listener throw-paths, the `vercel-edge`
 `waitUntil` `finally`, and the OTel `onEnd` escape.
+
+---
+
+**Wave 2.1 / 2.3 (frontend) as built.** `neverThrow` / `guarded` in `@bugsee/core`, re-exported from
+`@bugsee/web-adapter` so an adapter contains its own pre-report work without taking a core dependency. It
+guards BOTH failure modes a host boundary has: a synchronous throw, and a returned promise — because the
+idiomatic fire-and-forget `void client.logException(...)` surfaces a rejection as an *unhandled rejection* in
+the host process one tick later, which on Node is a crash again now that Wave 2.5 restored the default
+disposition.
+
+Applied at the shared `reportError` (the root cause behind all four frontend SEV1s) and at each adapter's own
+seam, since vue's component-name lookup, svelte's route read and angular's error unwrapping all run in the
+same seam and outside the inner guard. Angular's `BugseeErrorHandler` now chains to Angular's default
+behaviour: the documented `{ provide: ErrorHandler, useClass: BugseeErrorHandler }` wiring REPLACED whatever
+handler the app had, so an app with no custom handler lost the only thing that surfaces uncaught errors in
+the console (measured: 1 `console.error` before, 0 after).
+
+The review noted that **no test in any of the four packages ever injected an SDK client that throws**, and
+that the two mutations encoding that gap survived. Each adapter now has one, asserting the customer's handler
+still runs. Solid's seam guard is documented as currently redundant (its report path has no pre-work), kept
+because the Wave 2.1 rule is enforced by construction rather than re-derived per adapter.
+
+**Also closed here: pre-existing coverage debt in `@bugsee/core`.** `partitioned-capture-store.ts` (Wave 0.1)
+had been below the 100 % line/statement/function gate, which nothing had caught because core's own coverage
+was never re-run after that wave. Now 100 % line/statement/function, with the two genuinely unreachable
+loop guards annotated rather than fake-tested.
 
 ---
 
