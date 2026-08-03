@@ -72,6 +72,8 @@ export interface ProcessResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  /** True when the child had to be killed because it never exited (only set when a timeout was given). */
+  timedOut?: boolean;
 }
 
 /** Spawn one scenario in the target runtime; resolve when it exits. `extraEnv` parameterizes a scenario
@@ -87,8 +89,13 @@ export function runScenarioProcess(
     | 'disk-recovery'
     | 'worker'
     | 'propagation'
-    | 'privacy',
+    | 'privacy'
+    | 'exit-clean'
+    | 'reject',
   extraEnv: Record<string, string> = {},
+  /** Kill the child and report `timedOut` if it has not exited by then. Used by the process-lifecycle
+   *  scenarios, where "exits on its own" IS the assertion — without it a pinned process just stalls. */
+  timeoutMs?: number,
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {
     return Promise.reject(new Error(`runtime ${target.name} is unavailable`));
@@ -111,7 +118,18 @@ export function runScenarioProcess(
     child.stderr.on('data', (c: Buffer) => {
       stderr += c.toString();
     });
+    let timedOut = false;
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGKILL');
+          }, timeoutMs);
     child.on('error', reject);
-    child.on('exit', (exitCode) => resolve({ exitCode, stdout, stderr }));
+    child.on('exit', (exitCode) => {
+      if (timer !== undefined) clearTimeout(timer);
+      resolve({ exitCode, stdout, stderr, timedOut });
+    });
   });
 }

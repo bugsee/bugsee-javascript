@@ -74,6 +74,12 @@ import { createHttpServerInterceptor, type ServerInstallable } from './http-serv
 import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
 import { startLivenessHeartbeat } from './liveness-heartbeat';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+import {
+  foreignListenerCount,
+  markOwnHandler,
+  printFatal,
+  type UnhandledRejectionMode,
+} from './process-policy';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
 import { recoverInstances } from './recover-instances';
 import {
@@ -147,6 +153,12 @@ export interface BugseeLaunchOptions {
   captureLogs?: boolean;
   /** Capture network (fetch/xhr/ws/sse/webtransport + node:http). Default true. */
   captureNetwork?: boolean;
+  /**
+   * How an unhandled promise rejection is disposed of (decision D2). Default `'preserve'`: capture it, then
+   * reproduce Node's own outcome (print + exit 1). `'warn'` captures and prints but stays alive (Sentry's
+   * default); `'none'` installs no listener, leaving Node's behaviour completely untouched.
+   */
+  unhandledRejections?: UnhandledRejectionMode;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
@@ -633,7 +645,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // (Android BugseeDetectionHang). Each is gated by its controllingOption (the coordinator skips it when
   // disabled), so they are added unconditionally.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc));
-  client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+  if ((options.unhandledRejections ?? 'preserve') !== 'none') {
+    client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+  }
   client.addDetectionProvider(
     createHangDetectionProvider({
       thresholds: {
@@ -738,7 +752,22 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const detectCrash = resolved.isEnabled(BugseeOption.DetectCrash);
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const exitOnUncaught = options.exitOnUncaught ?? true;
-  const onUncaughtException = (): void => {
+  const rejectionMode = options.unhandledRejections ?? 'preserve';
+  // Write where Node's own default handler would have written. Installing a listener SUPPRESSES that
+  // default, so without this the operator loses the stack from their stdout/stderr pipeline — the first
+  // artifact they reach for (docs/review/node-A-launch.md SEV1 #4).
+  const writeStderr = (text: string): void => {
+    const stderr = (proc as { stderr?: { write?: (text: string) => void } }).stderr;
+    if (typeof stderr?.write === 'function') {
+      stderr.write(text);
+    }
+  };
+  /** True when Bugsee is the ONLY handler for `event`, i.e. Node's default disposition would have applied.
+   *  If the host installed its own handler it intends to survive (or to print/exit its own way), and acting
+   *  here would change the outcome purely because the SDK is installed (decision D2). */
+  const bugseeIsSoleHandler = (event: string): boolean => foreignListenerCount(proc, event) === 0;
+
+  const onUncaughtException = markOwnHandler((error: unknown): void => {
     // Synchronously flush the batched capture writer FIRST, so the crash report (assembled from capture)
     // and the rolling buffer are durable before we exit — a catchable crash loses nothing.
     try {
@@ -746,14 +775,45 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     } catch {
       // a flush failure must never replace the crash's own handling
     }
+    const sole = bugseeIsSoleHandler('uncaughtException');
+    if (sole) {
+      printFatal('[bugsee] uncaught exception:', error, writeStderr);
+    }
     void client.flush(shutdownTimeoutMs).finally(() => {
-      if (exitOnUncaught) {
+      // Exit only when Node would have exited anyway. A host that registered its own handler has taken
+      // responsibility for the outcome; killing its process because Bugsee happens to be installed is the
+      // same class of defect as the rejection suppression below, in the opposite direction.
+      if (exitOnUncaught && sole) {
         proc.exit(1);
       }
     });
-  };
+  });
   if (detectCrash) {
     proc.on('uncaughtException', onUncaughtException);
+  }
+
+  // Unhandled rejections (decision D2). Registering ANY listener disables Node's default disposition —
+  // since Node 15, throw-and-exit-1 — so a passive reporting listener silently converts a crashing service
+  // into one that keeps running and reports exit 0 to systemd/k8s/CI (SEV1 #1). `preserve` reproduces the
+  // outcome the host would have had; `warn` is Sentry's default (alive, but visible); `none` installs
+  // nothing at all, leaving Node entirely untouched.
+  const onUnhandledRejection = markOwnHandler((reason: unknown): void => {
+    if (!bugseeIsSoleHandler('unhandledRejection')) {
+      return; // the host already handles rejections — Node's default was never in play
+    }
+    printFatal('[bugsee] unhandled promise rejection:', reason, writeStderr);
+    if (rejectionMode !== 'preserve') {
+      return;
+    }
+    try {
+      chunkStorage?.flushSync?.();
+    } catch {
+      // a flush failure must never replace the rejection's own handling
+    }
+    void client.flush(shutdownTimeoutMs).finally(() => proc.exit(1));
+  });
+  if (detectCrash && rejectionMode !== 'none') {
+    proc.on('unhandledRejection', onUnhandledRejection);
   }
 
   // Flush-on-exit (P1.4): node's `'exit'` event is the LAST synchronous hook before the process goes — it

@@ -70,25 +70,38 @@ const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 function fakeProcess(onExit?: (code?: number) => void) {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const exit = vi.fn(onExit);
+  const written: string[] = [];
   const proc: NodeRuntime = {
-    on(event, listener) {
+    on(event: string, listener: (...args: unknown[]) => void) {
       const list = listeners.get(event) ?? [];
       list.push(listener);
       listeners.set(event, list);
       return proc;
     },
-    off(event, listener) {
+    off(event: string, listener: (...args: unknown[]) => void) {
       listeners.set(
         event,
         (listeners.get(event) ?? []).filter((l) => l !== listener),
       );
       return proc;
     },
+    // Modelled because the process POLICY depends on both: `listeners` is how the SDK tells the host's
+    // handlers from its own (so it never exits a process the host meant to keep alive), and `stderr` is
+    // where Node's suppressed default output has to be reproduced.
+    listeners: (event: string) => [...(listeners.get(event) ?? [])],
+    stderr: { write: (text: string) => written.push(text) },
     exit,
-  };
+  } as unknown as NodeRuntime;
   return {
     proc,
     exit,
+    stderr: written,
+    /** Register a listener the SDK does NOT own, standing in for the host app's own handler. */
+    addHostListener: (event: string) => {
+      const list = listeners.get(event) ?? [];
+      list.push(() => {});
+      listeners.set(event, list);
+    },
     fire: (event: string, ...args: unknown[]) => {
       for (const l of [...(listeners.get(event) ?? [])]) {
         l(...args);
@@ -564,6 +577,81 @@ describe('launch', () => {
     fp.fire('uncaughtException', new Error('boom'));
     await vi.waitFor(() => expect(transport.mock.calls.length).toBeGreaterThanOrEqual(3));
     expect(fp.exit).not.toHaveBeenCalled();
+  });
+
+  // Wave 2.5 / decision D2 — the SDK must not change how the host process lives and dies.
+  it('reproduces Node’s crash for an unhandled rejection: prints and exits 1', async () => {
+    // Registering ANY unhandledRejection listener disables Node's default (throw, exit 1) — so a passive
+    // reporting listener turned a crashing service into one that kept running and reported SUCCESS to
+    // systemd/k8s/CI (docs/review/node-A-launch.md SEV1 #1).
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('stays alive on `warn`, printing but not exiting (Sentry’s default)', async () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), unhandledRejections: 'warn' }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('installs NO rejection listener at all on `none`, leaving Node untouched', () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), unhandledRejections: 'none' }),
+    );
+    expect(fp.count('unhandledRejection')).toBe(0); // neither the reporter nor the policy
+  });
+
+  it('does NOT exit when the HOST also handles unhandled rejections', async () => {
+    // The host's own listener already disabled Node's default, so the process was never going to die.
+    // Exiting here would break the app purely because Bugsee is installed — the same defect inverted.
+    const fp = fakeProcess();
+    fp.addHostListener('unhandledRejection');
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toBe(''); // and it does not print over the host's own handling
+  });
+
+  it('does NOT exit on an uncaught exception when the HOST installed its own handler', async () => {
+    const fp = fakeProcess();
+    fp.addHostListener('uncaughtException');
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('uncaughtException', new Error('boom'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+  });
+
+  it('re-prints an uncaught exception to stderr, which installing a listener suppressed', async () => {
+    // Operators lose the stack from their log pipeline otherwise — the first artifact they reach for
+    // (SEV1 #4).
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('uncaughtException', new Error('boom'));
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
+    expect(fp.stderr.join('')).toContain('boom');
+    expect(fp.stderr.join('')).toContain('launch.test'); // the real stack, not just the message
+  });
+
+  it('still exits cleanly when the runtime exposes no stderr to print to', async () => {
+    // A non-Node process-like (or an injected double) may have no `stderr`. Losing the printed artifact is
+    // acceptable; throwing while handling a crash is not.
+    const fp = fakeProcess();
+    (fp.proc as unknown as { stderr?: unknown }).stderr = undefined;
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    expect(() => fp.fire('uncaughtException', new Error('boom'))).not.toThrow();
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
   it('installs no uncaughtException handler when detectCrashes is false', () => {

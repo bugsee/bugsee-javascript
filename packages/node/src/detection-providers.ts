@@ -2,6 +2,7 @@ import process from 'node:process';
 import type { CrashJson, DetectionProvider } from '@bugsee/core';
 import { buildCrashJson, DetectionProviderBase, formatStack, parseV8Stack } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
+import { markOwnHandler } from './process-policy';
 
 // Node crash/error detection providers (design §3.2 globalErrorInterceptor on Node, §8.5 mechanisms).
 // Each subscribes to a process event and submits a ReportingRequest via DetectionProviderBase:
@@ -37,7 +38,9 @@ function crashOf(value: unknown): CrashJson | undefined {
 abstract class NodeProcessDetectionProvider extends DetectionProviderBase {
   protected abstract readonly event: 'uncaughtException' | 'unhandledRejection';
   readonly #proc: ProcessEvents;
-  readonly #handler = (value: unknown): void => this.onDetected(value);
+  // Marked as Bugsee-owned so the process policy can tell OUR listeners from the host's — the SDK installs
+  // more than one listener per event, so a raw count cannot answer "does the host handle this too?" (D2).
+  readonly #handler = markOwnHandler((value: unknown): void => this.onDetected(value));
 
   constructor(proc: ProcessEvents) {
     super();

@@ -391,6 +391,52 @@ async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promi
   await client.stop(20_000);
 }
 
+/**
+ * Process-lifecycle battery (Wave 2.4 / 2.5). Two claims that can ONLY be made about a real process:
+ *
+ *  exit-clean — launch with the DEFAULTS (hang detection on) and then simply return. The process must exit
+ *    on its own. It did not: the watchdog worker is unref'd at spawn, but attaching its `message` listener
+ *    re-refs the MessagePort, so every CLI / migration / CI job / cron task that called launch() hung
+ *    forever. A unit test cannot see this — the pin is real Node MessagePort behaviour, not SDK logic.
+ *
+ *  reject — raise an unhandled rejection and let the process do what it will. Node's default since v15 is
+ *    to crash with exit 1; merely REGISTERING a listener disables that, so the SDK silently turned a
+ *    crashing service into exit 0. The assertion is the exit code, which is exactly what a supervisor sees.
+ */
+async function runExitCleanScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    recover: false,
+    onError: noteOnError,
+    // detectHangs and profiling left at their DEFAULTS — the defect is in the default configuration.
+  });
+  console.log('e2e exit-clean launched');
+  // Do a little work first. Returning immediately would let the process exit before the watchdog worker has
+  // even spawned — the test would then pass whether or not the pin exists, which is exactly how a
+  // verification test becomes theatre. 300 ms is comfortably past worker startup.
+  await sleep(300);
+  console.log('e2e exit-clean work done');
+  // Deliberately no stop() and no flush(): a short-lived program just ends, and the SDK must not keep the
+  // event loop alive on its own account.
+}
+
+async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+    // unhandledRejections left at its DEFAULT ('preserve').
+  });
+  console.log('e2e reject armed');
+  // A genuine unhandled rejection: no catch, nothing awaiting it.
+  void Promise.reject(new Error('e2e unhandled rejection'));
+  await sleep(10_000); // stay alive; the SDK's policy is what must end this process
+}
+
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -418,6 +464,14 @@ export async function runScenario(
   }
   if (opts.scenario === 'propagation') {
     await runPropagationScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'exit-clean') {
+    await runExitCleanScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'reject') {
+    await runRejectScenario(launch, opts.collectorUrl);
     return;
   }
   if (opts.scenario === 'privacy') {

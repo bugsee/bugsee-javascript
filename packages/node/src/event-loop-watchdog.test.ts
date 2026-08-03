@@ -19,7 +19,8 @@ function fakeWorkerSetup() {
     listener?: (m: WatchdogMessage) => void;
     terminated: boolean;
     created: number;
-  } = { terminated: false, created: 0 };
+    refs: string[];
+  } = { terminated: false, created: 0, refs: [] };
   const factory = (sab: SharedArrayBuffer, config: { pollMs: number; fairMs: number }) => {
     captured.sab = sab;
     captured.config = config;
@@ -27,8 +28,13 @@ function fakeWorkerSetup() {
     return {
       on: (_e: 'message', l: (m: WatchdogMessage) => void) => {
         captured.listener = l;
+        // Node re-refs the worker's public MessagePort the moment a `message` listener is attached, which
+        // silently undoes the unref done at spawn. Modelled here because that is the whole defect.
+        captured.refs.push('on');
       },
-      unref: () => {},
+      unref: () => {
+        captured.refs.push('unref');
+      },
       terminate: () => {
         captured.terminated = true;
       },
@@ -113,6 +119,27 @@ describe('spawnWatchdogWorker', () => {
 });
 
 describe('createEventLoopWatchdog', () => {
+  it('unrefs the worker AFTER attaching the message listener, so it cannot pin the host process', () => {
+    // Wave 2.4 (docs/review/node-C-diagnostics-multiinstance.md SEV1 #1). The worker is unref'd at spawn,
+    // but attaching a `message` listener starts and RE-REFS its MessagePort — so with `detectHangs` on by
+    // default, every short-lived program that calls launch() (a CLI, a migration, a CI job, a cron task)
+    // hung forever instead of exiting. Measured: default launch → still alive at 5 s, active handle
+    // "MessagePort"; `detectHangs:false` → exits in 8 ms. The order is what fixes it, so the order is what
+    // is asserted.
+    const fw = fakeWorkerSetup();
+    const wd = createEventLoopWatchdog({
+      thresholds: T,
+      onHang: vi.fn(),
+      now: () => 1000,
+      scheduler: fakeScheduler().scheduler,
+      workerFactory: fw.factory,
+      heartbeatIntervalMs: 1000,
+    });
+    wd.start();
+    expect(fw.captured.refs[fw.captured.refs.indexOf('on') + 1]).toBe('unref');
+    expect(fw.captured.refs.lastIndexOf('unref')).toBeGreaterThan(fw.captured.refs.indexOf('on'));
+  });
+
   it('start() spawns the worker over a heart-beaten buffer and schedules the heartbeat', () => {
     const fw = fakeWorkerSetup();
     const fs = fakeScheduler();

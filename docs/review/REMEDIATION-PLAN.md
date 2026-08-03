@@ -115,11 +115,25 @@ inside host code with no guard**.
 | 2.1 | **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped: framework error seams, middleware/hooks, interceptors, event listeners, public API methods, and `waitUntil`/`finally` paths | `packages/core` + applied across ~15 packages | 5–8d |
 | 2.2 | **Enforce it** — a lint rule or an exported-surface test asserting every host-facing export is wrapped, so this cannot regress | `packages/core` + tooling | 2–3d |
 | 2.3 | **Chain, never clobber, the host's error handler** — Angular `ErrorHandler`, Vue `app.config.errorHandler`, Hono `onError`, Fastify `setErrorHandler`, Nest `ExceptionFilter`, Express error middleware (`next(err)`) | the 5 frontend + 7 backend adapters | 4–6d |
-| 2.4 | **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
-| 2.5 | **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
+| 2.4 | ✅ **DONE** — **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
+| 2.5 | ✅ **DONE** — **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
 
-**Decision needed on 2.5:** should the SDK install a global `unhandledRejection` listener at all by default?
-Recommendation: capture without altering the process outcome, and make any behaviour change explicitly opt-in.
+**Decision on 2.5: resolved as D2 and BUILT.** `unhandledRejections: 'preserve' | 'warn' | 'none'`, default
+`'preserve'` — capture, print, and reproduce Node's own outcome (exit 1). Both process policies additionally
+act ONLY when Bugsee is the sole handler for the event: if the host registered its own handler it has taken
+responsibility for the outcome, and exiting its process because the SDK happens to be installed is the same
+defect inverted. `uncaughtException` also re-prints the error to stderr, which installing a listener had
+suppressed (node-A SEV1 #4) — the artifact operators reach for first.
+
+**Verification.** A `lifecycle` e2e runs both claims against REAL node/bun/deno processes, because a
+supervisor only ever sees two facts: whether the process exits at all, and with which code. Both are
+teeth-checked — reverting the watchdog `unref` hangs the process for the full 15 s budget, and defaulting the
+rejection mode back to a passive listener drops the exit code to 0 on all three runtimes.
+
+**The e2e took three attempts to become capable of failing**, which is worth recording: the scenario first
+returned before the watchdog worker had spawned, and then the harness entry's own
+`runScenario(...).then(() => process.exit(0))` ended the process regardless — so "does it exit on its own"
+could never fail. `exit-clean` is now exempt from that explicit exit.
 
 Fixing 2.1 + 2.3 closes, in one coordinated change: the React unmount, the Vue empty-DOM mount failure, the
 Solid discarded fallback, the dead SvelteKit error page, the express/koa/hono 500s, the Nest `openSpan` 500,

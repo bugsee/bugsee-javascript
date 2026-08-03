@@ -13,7 +13,14 @@ export function runEntry(launch: LaunchFn): void {
     return;
   }
   runScenario(launch, { collectorUrl, scenario })
-    .then(() => process.exit(0))
+    .then(() => {
+      // `exit-clean` asserts that a default launch() leaves the process able to exit BY ITSELF. Calling
+      // process.exit() here would end it regardless, making that assertion incapable of failing — so this
+      // one scenario returns and lets the event loop drain (or not) on its own merits.
+      if (scenario !== 'exit-clean') {
+        process.exit(0);
+      }
+    })
     .catch((err: unknown) => {
       console.error('[e2e] scenario failed', err); // standalone entry diagnostic
       process.exit(3);
