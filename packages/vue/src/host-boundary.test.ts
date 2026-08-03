@@ -16,6 +16,36 @@ afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
+describe('vue does not delete the app’s error surfacing', () => {
+  it('chains to Vue’s OWN default when the app has no errorHandler', () => {
+    // Installing a handler REPLACES Vue's default. Measured on real vue 3.5.38: the production build went
+    // from 1 console.error to 0. Identical to the Angular defect fixed in e17f389 — its sibling, one
+    // package over, which that commit did not carry across.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const app = { config: {} as { errorHandler?: unknown } };
+    installBugseeErrorHandler(app as never, {
+      getClient: () => ({ logException: () => Promise.resolve() }) as never,
+    });
+    const err = new Error('uncaught');
+    (app.config.errorHandler as (e: unknown, i: unknown, s: string) => void)(err, {}, 'render');
+    expect(consoleError).toHaveBeenCalledWith(err);
+    consoleError.mockRestore();
+  });
+
+  it('prefers the app’s own handler over the default when one exists', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previous = vi.fn();
+    const app = { config: { errorHandler: previous } };
+    installBugseeErrorHandler(app as never, {
+      getClient: () => ({ logException: () => Promise.resolve() }) as never,
+    });
+    app.config.errorHandler(new Error('e'), {}, 'render');
+    expect(previous).toHaveBeenCalledTimes(1);
+    expect(consoleError).not.toHaveBeenCalled(); // no double-surfacing
+    consoleError.mockRestore();
+  });
+});
+
 describe('vue error handler is a contained host boundary', () => {
   it('does not throw into Vue, and STILL runs the app’s own handler, when the SDK throws', () => {
     const previous = vi.fn();

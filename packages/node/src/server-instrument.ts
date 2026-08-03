@@ -374,7 +374,14 @@ export function runServerRequest<T>(
     if (dispatched) {
       throw error; // the HOST's error — never ours to swallow
     }
-    options.onError?.(error);
+    // The sink itself is host-supplied and may throw. Unguarded it re-opened the exact hole this function
+    // exists to close: the throw escaped into the request AND `dispatch` below never ran. Reproduced
+    // through the public `wrapFetchHandler` (Bun/Deno): `handlerRan=0`.
+    try {
+      options.onError?.(error);
+    } catch {
+      // a broken sink must never become the request's outcome
+    }
     return dispatch(NOOP_SPAN); // the SDK failed before the request ran: run it uninstrumented
   }
 }

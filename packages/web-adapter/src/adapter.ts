@@ -82,7 +82,12 @@ export function reportError(error: unknown, options: ReportErrorOptions = {}): v
 /** Refine the active navigation transaction's name via the performance naming seam (F5/D5). A no-op when
  *  the SDK or the performance extension is not available. */
 export function setRouteName(name: string, options: RouteNamingOptions = {}): void {
-  const client = resolveClient(options.getClient);
-  if (client === undefined) return;
-  tryGetPerf(client)?.setRouteName(name);
+  // Contained for the same reason `reportError` is: this runs from a host callback (a router subscription,
+  // a navigation hook), and `getClient` is a public option that can throw. Wave 2.1's rule is "every
+  // host-facing entry point", and this one was missed in the first pass.
+  neverThrow(() => {
+    const client = resolveClient(options.getClient);
+    if (client === undefined) return;
+    tryGetPerf(client)?.setRouteName(name);
+  }, options.onError);
 }

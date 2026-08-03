@@ -2,6 +2,11 @@
 // unhandledRejection detection, console/network capture. Built test-first per
 // docs/implementation-standards.md.
 
+// Re-exported so the backend adapters can contain their OWN pre-request work (header reads, route
+// extraction, the application-supplied `user` callback) without each taking a direct @bugsee/core
+// dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.
+export { guarded, neverThrow } from '@bugsee/core';
+
 export {
   type CpuProfile,
   type CpuProfiler,

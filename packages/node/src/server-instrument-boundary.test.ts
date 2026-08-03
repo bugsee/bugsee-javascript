@@ -44,6 +44,26 @@ describe('runServerRequest never turns an SDK fault into the request’s outcome
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('still runs the handler when the caller’s onError SINK throws', () => {
+    // The degrade path reported the fault through a host-supplied sink BEFORE dispatching. Unguarded, a
+    // broken sink escaped into the request AND dispatch never ran — re-opening the exact hole this function
+    // closes, one line later. Reproduced through the public `wrapFetchHandler`: handlerRan=0.
+    const handler = vi.fn(() => 'APP-OK');
+    expect(
+      runServerRequest(
+        info,
+        {
+          getClient: throwingClient,
+          onError: () => {
+            throw new Error('CUSTOMER SINK THREW');
+          },
+        },
+        handler,
+      ),
+    ).toBe('APP-OK');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   it('hands the handler a working no-op span, so the adapter’s own calls are safe', () => {
     runServerRequest(info, { getClient: throwingClient }, (span) => {
       expect(() => {

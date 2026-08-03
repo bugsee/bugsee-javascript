@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  neverThrow,
   type RequestContextStore,
   RequestContextStoreToken,
   runServerRequest,
@@ -53,7 +54,8 @@ export interface ExpressAdapterOptions {
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
   /** Mint a context id; default a portable random id. Injectable for tests. */
-  newContextId?: () => string;
+  newContextId?: () => string /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */;
+  onError?: (error: unknown) => void;
 }
 
 const headerValue = (
@@ -88,16 +90,22 @@ const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
 export function requestHandler(options: ExpressAdapterOptions = {}): RequestMiddleware {
   const opts = toOptions(options);
   return (req, res, next) => {
-    const route = routeOf(req);
-    const traceparent = headerValue(req.headers, 'traceparent');
-    const user = options.user?.(req);
-    const info = {
-      method: req.method ?? 'GET',
-      url: urlOf(req),
-      ...(route !== undefined ? { route } : {}),
-      ...(traceparent !== undefined ? { traceparent } : {}),
-      ...(user !== undefined ? { user } : {}),
-    };
+    // Built INSIDE a guard: the engine cannot see this work, and `options.user` is an application-supplied
+    // callback that needs no SDK bug to throw (`(req) => req.headers.authorization.split(' ')[1]` on any
+    // unauthenticated request). Unguarded it 500'd the request and handed express's own error middleware a
+    // Bugsee-internal TypeError as if it were the app's bug — measured on real express 5.
+    const info = neverThrow(() => {
+      const route = routeOf(req);
+      const traceparent = headerValue(req.headers, 'traceparent');
+      const user = options.user?.(req);
+      return {
+        method: req.method ?? 'GET',
+        url: urlOf(req),
+        ...(route !== undefined ? { route } : {}),
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+    }, options.onError) ?? { method: 'GET', url: '' };
     runServerRequest(info, opts, (span) => {
       const finalize = (): void => {
         const finalRoute = routeOf(req); // the parametrized route is known once routing has run
