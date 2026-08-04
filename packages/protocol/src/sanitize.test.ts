@@ -90,6 +90,73 @@ describe('sanitizeHeaders — a non-string value must not throw', () => {
     const headers = { authorization: 12345 } as unknown as Record<string, string>;
     expect(sanitizeHeaders(headers).authorization).toBe('<redacted>');
   });
+
+  it('does not throw on a value that cannot be coerced at all', () => {
+    // `String(x)` is not total. A null-prototype object, or one with a throwing `Symbol.toPrimitive`,
+    // throws — and a throw here deletes the entry, which is the exact thing the coercion exists to stop.
+    for (const hostile of [
+      Object.create(null),
+      {
+        toString() {
+          throw new Error('hostile');
+        },
+      },
+      {
+        [Symbol.toPrimitive]() {
+          throw new Error('hostile');
+        },
+      },
+    ]) {
+      const headers = { 'X-H': hostile } as unknown as Record<string, string>;
+      expect(() => sanitizeHeaders(headers)).not.toThrow();
+      expect(sanitizeHeaders(headers)['X-H']).toBe('<redacted>'); // fails closed
+    }
+  });
+});
+
+describe('contentTypeOf — the shared accessor coerces', () => {
+  it('returns a string for a non-string Content-Type', () => {
+    // Both consumers assume a string and both throw on a number: `sanitizeBody` via `.toLowerCase()`,
+    // `gateNetworkBody` via `.trim()`. Either throw is swallowed by the emitter and deletes the network
+    // entry. Fixing only sanitizeBody's caller left the gate crashing, so the guard lives in the accessor.
+    expect(contentTypeOf({ 'Content-Type': 42 } as unknown as Record<string, string>)).toBe('42');
+    expect(() =>
+      gateNetworkBody(
+        evt({ headers: { 'Content-Type': 42 } as unknown as Record<string, string>, body: 'x' }),
+        {
+          maxBytes: 100,
+          captureWithoutType: false,
+        },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      sanitizeBody(
+        'password=x',
+        contentTypeOf({ 'Content-Type': 42 } as unknown as Record<string, string>),
+      ),
+    ).not.toThrow();
+  });
+
+  it('still returns undefined when the header is absent', () => {
+    expect(contentTypeOf({ Accept: '*/*' })).toBeUndefined();
+    expect(contentTypeOf(undefined)).toBeUndefined();
+  });
+});
+
+describe('sanitizeParams — a non-string value must not throw either', () => {
+  it('coerces rather than throwing, like its sibling', () => {
+    // The defense added to `sanitizeHeaders` was not swept to its structural peer, which reaches
+    // `redactShapes` by the identical route.
+    const params = { count: 42, ok: true } as unknown as Record<string, string>;
+    expect(() => sanitizeParams(params)).not.toThrow();
+    expect(sanitizeParams(params)).toEqual({ count: '42', ok: 'true' });
+  });
+
+  it('still redacts a sensitive key whose value is not a string', () => {
+    expect(sanitizeParams({ token: 42 } as unknown as Record<string, string>).token).toBe(
+      '<redacted>',
+    );
+  });
 });
 
 describe('sanitizeParams', () => {

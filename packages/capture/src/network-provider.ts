@@ -43,7 +43,11 @@ const sanitizeText = (value: string | undefined): string | undefined =>
   typeof value === 'string' ? sanitizeErrorMessage(value) : value;
 
 const sanitize = (event: NetworkEvent): NetworkEvent => {
-  const url = sanitizeUrl(event.url);
+  // Guarded like its three siblings (`customError`, `custom.body`, `custom.error`). `url` was the one
+  // field with no `typeof` check, so a producer emitting a non-string would throw here and the emitter
+  // would silently delete the entry. No producer does today — every interceptor coerces — but discovering
+  // that through a vanished report is the wrong way to find out.
+  const url = typeof event.url === 'string' ? sanitizeUrl(event.url) : event.url;
   // The three free-text fields the SERVER fills in. `statusText` is the HTTP reason phrase, `reason` is the
   // WebSocket/WebTransport close reason (`close(4001, 'invalid token …')` is idiomatic), `channel` is the
   // SSE event name. All three were copied through untouched — under a comment calling this the single
@@ -69,9 +73,13 @@ const sanitize = (event: NetworkEvent): NetworkEvent => {
     return topUnchanged ? event : { ...event, url, customError, statusText, reason, channel };
   }
   const headers = custom.headers === undefined ? custom.headers : sanitizeHeaders(custom.headers);
+  // The content type is read off the SANITIZED headers, whose values are coerced to strings. Reading it
+  // off `custom.headers` meant a `Content-Type: 42` reached `sanitizeBody` as a number and threw on
+  // `.toLowerCase()` — the emitter swallowed it and the entire entry vanished. That is precisely the
+  // failure the header coercion was added to eliminate, re-entered one line later by the raw accessor.
   const body =
     typeof custom.body === 'string'
-      ? sanitizeBody(custom.body, contentTypeOf(custom.headers))
+      ? sanitizeBody(custom.body, contentTypeOf(headers))
       : custom.body;
   const error =
     typeof custom.error === 'string' ? sanitizeErrorMessage(custom.error) : custom.error;

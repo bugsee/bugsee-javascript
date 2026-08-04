@@ -275,6 +275,45 @@ describe('createNetworkCaptureProvider', () => {
     expect(captured.reason).toBe('going away');
   });
 
+  it('survives a non-string Content-Type and still redacts the body', async () => {
+    // The XHR coercion fix built a sanitized header copy — and then the very next line read the CONTENT
+    // TYPE off the RAW headers. `contentTypeOf({'Content-Type': 42})` returns the number, and
+    // `sanitizeBody(body, 42)` throws on `.toLowerCase()`. The throw is swallowed by the emitter dispatch
+    // and the whole entry disappears: the exact failure mode the coercion was written to eliminate,
+    // reproduced one line later through the sibling accessor.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({
+        type: 'complete',
+        custom: {
+          headers: { 'Content-Type': 42 as unknown as string },
+          body: 'password=hunter2',
+        },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured).toBeDefined(); // the entry must still exist at all
+    expect(captured.custom?.body).not.toContain('hunter2');
+  });
+
+  it('survives a non-string url without dropping the entry', async () => {
+    // `sanitizeUrl(event.url)` is the one field with no `typeof` guard, where customError/body/error all
+    // have one. No producer emits a non-string today; a sanitizer that deletes the data it was asked to
+    // sanitize is the wrong way to find that out.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ type: 'complete', url: undefined as unknown as string }));
+    expect((await drainNetwork(store))?.[0]?.data).toBeDefined();
+  });
+
   it('redacts customError even when it is the ONLY field that changes', async () => {
     // With a clean url, no headers and no body, an unchanged-check that ignores customError returns the
     // raw event — so the redaction above would run and then be thrown away.

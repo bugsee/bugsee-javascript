@@ -9,6 +9,25 @@ import type { NetworkEvent, NoBodyReason } from './wire';
 // (e.g. from JSON.parse'd untrusted data) is stored as own data and cannot corrupt a prototype.
 
 /**
+ * Coerce a captured value to text without ever throwing.
+ *
+ * `String(x)` is not total: a null-prototype object, or one with a throwing `toString`/`Symbol.toPrimitive`,
+ * throws `TypeError: Cannot convert object to primitive value`. Since the whole point of coercing here is
+ * that a throw inside the sanitizer makes the emitter drop the entire network entry, the coercion itself
+ * must not be able to throw.
+ */
+function asText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return String(value);
+  } catch {
+    return REDACTED; // unreadable → fail closed rather than lose the entry
+  }
+}
+
+/**
  * Redacts sensitive header values entirely; shape-scans the rest. Header names/casing preserved.
  *
  * Values are COERCED, not trusted to be strings. The type says `string`, but headers arrive from
@@ -24,19 +43,20 @@ export function sanitizeHeaders(
 ): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
   for (const [name, value] of Object.entries(headers)) {
-    out[name] = isSensitiveHeader(name) ? REDACTED : redactShapes(String(value), options);
+    out[name] = isSensitiveHeader(name) ? REDACTED : redactShapes(asText(value), options);
   }
   return out;
 }
 
-/** Flat query/form params: sensitive key -> redacted; other values shape-scanned. */
+/** Flat query/form params: sensitive key -> redacted; other values shape-scanned. Values are coerced for
+ *  the same reason {@link sanitizeHeaders} coerces them — a throw here deletes the whole entry. */
 export function sanitizeParams(
   params: Record<string, string>,
   options?: ShapeRedactionOptions,
 ): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(params)) {
-    out[key] = isSensitiveKey(key) ? REDACTED : redactShapes(value, options);
+    out[key] = isSensitiveKey(key) ? REDACTED : redactShapes(asText(value), options);
   }
   return out;
 }
@@ -316,7 +336,12 @@ function findHeader(headers: Record<string, string> | undefined, name: string): 
 
 /** The `Content-Type` header value, found case-insensitively (drives body sanitization dispatch). */
 export function contentTypeOf(headers: Record<string, string> | undefined): string | undefined {
-  return findHeader(headers, 'content-type');
+  // Coerced HERE rather than at each call site. Both consumers assume a string and both throw on a number
+  // — `sanitizeBody` via `.toLowerCase()`, `gateNetworkBody` via `.trim()` — and either throw is swallowed
+  // by the emitter, deleting the whole network entry. Fixing only `sanitizeBody`'s caller left the gate
+  // still crashing; the accessor is the shared seam, so the guard belongs in it.
+  const found = findHeader(headers, 'content-type');
+  return found === undefined ? undefined : asText(found);
 }
 
 export interface NetworkBodyGateOptions {
