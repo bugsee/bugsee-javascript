@@ -8,8 +8,21 @@ export interface ShapeRedactionOptions {
   creditCards?: boolean;
 }
 
+/**
+ * The JWT pattern, held separately because it is the ONLY superlinear one.
+ *
+ * Measured on `eyJ`-dense input: 16 KB = 50 ms, 64 KB = 786 ms, 256 KB = 14 s, 512 KB = 58 s — clean O(n²)
+ * from backtracking between the two dots. Every other pattern below is sub-millisecond on the same
+ * adversarial input, so bounding the whole set (as a previous version did) threw away real coverage to
+ * contain one regex: 7 of 7 probed >32 KB secrets — AWS keys and Stripe tokens included — stopped being
+ * redacted. The bound applies to this pattern alone.
+ */
+const JWT_PATTERN = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+/** Above this length the JWT scan is skipped — far past any legitimate token, well under the cost cliff. */
+const MAX_JWT_SCAN = 32_768;
+
 const SHAPE_PATTERNS: readonly RegExp[] = [
-  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, // JWT
   /A(?:KIA|SIA|GPA|IDA|ROA)[0-9A-Z]{16}/g, // AWS access key id
   /(?:sk|pk|rk)_live_[A-Za-z0-9]+/g, // Stripe live secret/publishable/restricted keys
   /whsec_[A-Za-z0-9]+/g, // Stripe webhook signing secret
@@ -43,23 +56,9 @@ function redactCreditCards(value: string): string {
   });
 }
 
-/**
- * Above this length the pattern scan is skipped.
- *
- * The JWT pattern backtracks per `eyJ` occurrence, and several inputs here have no size limit of their own
- * — a URL, an error message, a header value. Measured 7.7 s on 200 KB of `eyJ`-dense input, synchronously,
- * on the application's own thread inside the interceptor. The bound sits HERE rather than at one call site,
- * because a previous fix capped only `sanitizeUrl` and left bodies and headers unbounded. It is far above
- * any legitimate value, and structural (key-based) redaction is unaffected by it.
- */
-const MAX_SHAPE_SCAN = 32_768;
-
 /** Redacts values matching known secret shapes (JWT, AWS, Stripe, GitHub; opt-in credit cards). */
 export function redactShapes(value: string, options?: ShapeRedactionOptions): string {
-  if (value.length > MAX_SHAPE_SCAN) {
-    return value;
-  }
-  let out = value;
+  let out = value.length > MAX_JWT_SCAN ? value : value.replace(JWT_PATTERN, REDACTED);
   for (const pattern of SHAPE_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }

@@ -376,7 +376,13 @@ async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promi
   });
   await f.text();
 
-  // 4. Controls: a header and a JSON body secret. These were ALREADY redacted before this wave; if a
+  // 4. A SHAPE-matched secret — one with no key name to match, caught only by the pattern pass. Round-3
+  //    review found this path had zero e2e coverage: neutering `redactShapes` entirely left the whole
+  //    privacy scenario green.
+  const s = await fetch(`${collectorUrl}/echo?ref=AKIAIOSFODNN7EXAMPLE`);
+  await s.text();
+
+  // 5. Controls: a header and a JSON body secret. These were ALREADY redacted before this wave; if a
   //    marker of theirs ever appears, the regression is in the pre-existing sanitizer, not the new code.
   const j = await fetch(`${collectorUrl}/echo`, {
     method: 'POST',

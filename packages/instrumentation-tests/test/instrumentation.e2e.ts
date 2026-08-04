@@ -490,6 +490,7 @@ describe.each(
         'QUERYAPIKEYSECRET', // ?api_key=   — leaked to disk before Wave 1.1
         'URLUSERINFOSECRET', // user:pass@  — leaked to disk before Wave 1.1 (node-only)
         'FORMPASSWORDSECRET', // urlencoded body — leaked before Wave 1.2
+        'AKIAIOSFODNN7EXAMPLE', // shape-matched: no key name to match, only the pattern pass catches it
         'HEADERAUTHSECRET', // control: already redacted
         'JSONBODYSECRET', // control: already redacted
       ]);

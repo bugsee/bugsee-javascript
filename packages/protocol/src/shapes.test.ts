@@ -116,3 +116,27 @@ describe('redactShapes', () => {
     });
   });
 });
+
+describe('the length bound is scoped to the JWT pattern alone', () => {
+  const big = (secret: string) => `${'x'.repeat(40_000)} ${secret}`;
+
+  it('still redacts non-JWT shapes in a very large value', () => {
+    // Bounding the whole set threw away real coverage to contain one regex: 7 of 7 probed >32 KB secrets
+    // stopped being redacted, AWS keys and Stripe tokens among them.
+    expect(redactShapes(big('AKIAIOSFODNN7EXAMPLE'))).toContain('<redacted>');
+    expect(redactShapes(big('sk_live_abc123'))).toContain('<redacted>');
+    expect(redactShapes(big(`ghp_${'a'.repeat(36)}`))).toContain('<redacted>');
+    expect(redactShapes(big('whsec_abc123'))).toContain('<redacted>');
+  });
+
+  it('skips only the JWT scan above the bound, and stays fast', () => {
+    const hostile = 'eyJ'.repeat(30_000); // ~90 KB, the shape that backtracks
+    const started = Date.now();
+    expect(() => redactShapes(hostile)).not.toThrow();
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('still redacts a JWT below the bound', () => {
+    expect(redactShapes('t eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig')).toBe('t <redacted>');
+  });
+});
