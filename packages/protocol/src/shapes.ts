@@ -11,11 +11,19 @@ export interface ShapeRedactionOptions {
 /**
  * The JWT pattern, ANCHORED — which is what makes it linear.
  *
- * `(^|[^A-Za-z0-9_-])`: a JWT starts a token, so `eyJ` glued to a preceding base64url character is not a
- * candidate. That removes the OVERLAPPING START POSITIONS which are the entire source of the O(n²) — in
- * `eyJeyJeyJ…` every third offset used to begin a fresh scan to end-of-run. Within one candidate there is
- * nothing to backtrack through, because `.` is not in the character class, so the two split points are
- * forced rather than searched.
+ * `(^|[^A-Za-z0-9_-]|%[0-9A-Fa-f]{2})`: a JWT starts a token, so `eyJ` glued to a preceding base64url
+ * character is not a candidate. That removes the OVERLAPPING START POSITIONS which are the entire source of
+ * the O(n²) — in `eyJeyJeyJ…` every third offset used to begin a fresh scan to end-of-run. Within one
+ * candidate there is nothing to backtrack through, because `.` is not in the character class, so the two
+ * split points are forced rather than searched.
+ *
+ * The `%[0-9A-Fa-f]{2}` alternative is NOT cosmetic. Every percent-escape ends in a hex character and every
+ * hex character is inside `[A-Za-z0-9_-]`, so `%3D`, `%20`, `%2F` and friends all read as token characters
+ * and were rejected. That made the length bound below a COVERAGE gate rather than the cost-only gate it was
+ * documented as, and left `id_token%3DeyJ…` — the OAuth implicit-flow redirect, the single most common way
+ * a JWT appears in a URL or form body — shipping in the clear above 8 KB. It does not reintroduce the
+ * quadratic: `%` is outside the base64url class, so a percent-dense input cannot also carry a long run for
+ * a candidate to scan (measured 1 MB of `%3DeyJ` at 1.1 ms, and `%25eyJ` + a 1 MB run at 1.9 ms).
  *
  * Measured on `eyJ`-dense input, before → after: 16 KB 46.9 ms → 0.03 ms, 128 KB 2650 ms → 0.22 ms,
  * 512 KB 41,882 ms → 0.85 ms, 2 MB → 3.5 ms.
@@ -27,7 +35,8 @@ export interface ShapeRedactionOptions {
  *
  * The `$1` in the replacement puts the delimiter back — the pattern consumes it.
  */
-const JWT_ANCHORED = /(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+const JWT_ANCHORED =
+  /(^|[^A-Za-z0-9_-]|%[0-9A-Fa-f]{2})eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 /**
  * The original unanchored pattern, kept as a bounded SUPERSET pass.
@@ -40,8 +49,17 @@ const JWT_ANCHORED = /(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za
 const JWT_UNANCHORED = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 /**
- * Above this length the unanchored superset pass is skipped. It is a COST gate, not a coverage gate:
- * {@link JWT_ANCHORED} runs at every size, so no secret's redaction depends on this number.
+ * Above this length the unanchored superset pass is skipped.
+ *
+ * It gates ONE class of coverage: a JWT glued directly to a preceding base64url character
+ * (`sometoken_eyJ…`), which {@link JWT_ANCHORED} deliberately does not treat as a candidate. Everything
+ * that follows a real delimiter — literal OR percent-encoded — is caught at any size.
+ *
+ * The previous wording here ("a COST gate, not a coverage gate: no secret's redaction depends on this
+ * number") was FALSE, and falsely reassuring: percent-escapes were not in the anchor, so every
+ * `id_token%3DeyJ…` above 8 KB depended on this number and leaked. The lesson recorded rather than the
+ * claim repeated — a bound is a coverage gate for exactly the inputs the unbounded path cannot see, and
+ * that set has to be enumerated, not asserted.
  *
  * That distinction is the whole point. This constant previously gated ALL JWT redaction, and moving it from
  * `sanitizeUrl` into this function silently extended it from 2 call sites to 6 — `sanitizeBody`,

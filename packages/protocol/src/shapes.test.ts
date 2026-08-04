@@ -193,6 +193,44 @@ describe('the JWT scan is linear, so size no longer costs coverage', () => {
     expect(redactShapes(`XXX${jwt}`)).toBe(`XXX${R}`);
   });
 
+  it('matches a JWT after a PERCENT-ENCODED delimiter, at any size', () => {
+    // THE GAP THIS CLOSES. Every percent-escape ends in a hex character, and every hex character is inside
+    // `[A-Za-z0-9_-]` — so `%3D`, `%20`, `%2F`, `%3A` all looked like token characters and the anchor
+    // rejected them. Only the BOUNDED superset pass caught those, which made the bound a COVERAGE gate
+    // (the comment claimed it was cost-only) and left the 8193–20480 window open for exactly the shape a
+    // JWT usually arrives in: `id_token%3DeyJ…`, the OAuth implicit-flow redirect.
+    for (const enc of ['%3D', '%20', '%2F', '%3A', '%22', '%26']) {
+      const small = `redirect_uri=%2Fcb%3Fid_token${enc}${jwt}`;
+      expect(redactShapes(small), `${enc} small`).not.toContain(jwt);
+      const large = `${'x'.repeat(20_000)}\nredirect_uri=%2Fcb%3Fid_token${enc}${jwt}`;
+      expect(redactShapes(large), `${enc} above the bound`).not.toContain(jwt);
+    }
+  });
+
+  it('does not read a hex-looking run that is not an escape as a delimiter', () => {
+    // `FFeyJ…` must stay mid-identifier (superset pass only); `%ZZ` and a truncated `%3` are not escapes.
+    const pad = 'x'.repeat(20_000);
+    expect(redactShapes(`${pad} abc%ZZ${jwt}`)).toContain(jwt);
+    expect(redactShapes(`${pad} x%3${jwt}`)).toContain(jwt);
+  });
+
+  it('redacts EVERY mid-identifier JWT, not just the first', () => {
+    // The superset pass's own `/g` was untested: below the bound the anchored pass consumes every
+    // delimiter-preceded JWT first, so the superset pass only ever sees mid-identifier ones — and every
+    // test that reached it placed exactly one. Dropping its `/g` leaked the second silently.
+    const second = jwt.replace('IjEi', 'IjJi');
+    expect(redactShapes(`a_${jwt} b_${second}`)).toBe(`a_${R} b_${R}`);
+  });
+
+  it('runs the superset pass AT the bound, not just below it', () => {
+    // The bound's inclusivity was unpinned: `<=` vs `<` differed only at exactly 8192 bytes, a one-byte
+    // window no test covered.
+    const tail = `_${jwt}`; // mid-identifier, so ONLY the superset pass can catch it
+    const atBound = 'x'.repeat(8192 - tail.length) + tail;
+    expect(atBound).toHaveLength(8192);
+    expect(redactShapes(atBound)).toContain(R);
+  });
+
   it('still matches a JWT after every delimiter a real payload uses', () => {
     for (const lead of ['', ' ', 'Bearer ', '"', ':', '=', '/', ',', '\n', '{"t":"', '?tok=']) {
       expect(redactShapes(`${lead}${jwt}`)).toBe(`${lead}${R}`);

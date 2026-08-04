@@ -162,32 +162,54 @@ describe('sanitizeJson', () => {
     expect(input).toEqual({ token: 'x', nested: { secret: 's' } });
   });
 
-  it('keeps the SHAPE of an object or array under a sensitive key', () => {
-    // The whole subtree was replaced by the marker string, so a report could not even show WHICH fields
-    // existed. Every leaf is still redacted — the structure survives, the content does not.
+  it('replaces the ENTIRE value under a sensitive key with the marker, whatever its type', () => {
+    // I briefly changed this to walk the subtree and redact each leaf, so a report could show which fields
+    // existed. That was wrong on three independent counts, all found in review round 5:
+    //
+    //  1. It opened a redaction BYPASS. Walking recurses; a deep body throws RangeError; `sanitizeBody`'s
+    //     catch falls to the textual passes; and `JSON_PAIR` cannot match `"password":{` because its value
+    //     alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 deep after.
+    //  2. KEY NAMES became a leak channel. `{"tokens":{"eyJhbGciOiJIUzI1NiJ9.abc":true}}` emits the token,
+    //     because the token IS the key. Maps keyed by a secret or an identifier are ordinary.
+    //  3. It broke Android parity, which CLAUDE.md makes binding. `NetworkDataSanitizer` does
+    //     `obj.put(key, REDACTED_VALUE)` unconditionally, and sdk-design.md §873 requires the sanitizer's
+    //     output be byte-identical to mobile.
+    //
+    // Plus `{"token":{}}` came back as `{"token":{}}` — the marker vanished entirely.
+    //
+    // The diagnostic complaint that motivated the change is real and is ACCEPTED as the cost: inside a
+    // subtree the app itself labelled `password`/`token`/`secret`, nothing survives. Showing which fields
+    // existed would need a shape SUMMARY (key count, types) rather than key names, and a backend contract.
     expect(sanitizeJson({ shipping: { carrier: 'UPS', tracking: '1Z9' } })).toEqual({
-      shipping: { carrier: R, tracking: R },
+      shipping: R,
     });
-    expect(sanitizeJson({ token: ['a', 'b'] })).toEqual({ token: [R, R] });
-    expect(sanitizeJson({ secret: { a: { b: 'deep' } } })).toEqual({ secret: { a: { b: R } } });
-  });
-
-  it('redacts NON-string leaves under a sensitive key too', () => {
-    // Recursing without forcing would leave numbers and booleans — `{"password":{"pin":1234}}` — intact,
-    // which is the leak the wholesale replacement was avoiding.
-    expect(sanitizeJson({ password: { pin: 1234, ok: true, z: null } })).toEqual({
-      password: { pin: R, ok: R, z: R },
-    });
-  });
-
-  it('still replaces a scalar under a sensitive key with the marker', () => {
-    // Deliberately unchanged: the marker is one consistent convention across the wire format. Emitting a
-    // same-typed placeholder instead (0 / false) would assert a value that was never there.
+    expect(sanitizeJson({ token: ['a', 'b'] })).toEqual({ token: R });
+    expect(sanitizeJson({ password: { pin: 1234, ok: true } })).toEqual({ password: R });
+    expect(sanitizeJson({ token: {} })).toEqual({ token: R }); // the marker never disappears
+    expect(sanitizeJson({ token: [] })).toEqual({ token: R });
     expect(sanitizeJson({ password: true, token: 42, secret: null })).toEqual({
       password: R,
       token: R,
       secret: R,
     });
+  });
+
+  it('never lets a key name inside a sensitive subtree reach the output', () => {
+    const out = JSON.stringify(sanitizeJson({ tokens: { 'eyJhbGciOiJIUzI1NiJ9.abc': true } }));
+    expect(out).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(
+      JSON.stringify(sanitizeJson({ credentials: { 'alice@corp.example': 'p1' } })),
+    ).not.toContain('alice@corp.example');
+  });
+
+  it('does not leak a deep body through a RangeError', () => {
+    // Walking the subtree made this throw out of `sanitizeJson`, and `sanitizeBody`'s catch then shipped
+    // the body verbatim. Terminating at the sensitive key means the depth is never reached.
+    let deep = '{"inner":"SECRETVALUE"}';
+    for (let i = 0; i < 12_000; i += 1) {
+      deep = `{"a":${deep}}`;
+    }
+    expect(sanitizeBody(`{"password":${deep}}`, 'application/json')).not.toContain('SECRETVALUE');
   });
 });
 

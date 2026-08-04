@@ -42,37 +42,24 @@ export function sanitizeParams(
 }
 
 /**
- * Every leaf replaced by the marker, structure and key names kept.
- *
- * Used for the subtree under a sensitive key. Recursing WITHOUT forcing would leave numbers and booleans
- * intact — `{"password":{"pin":1234}}` — which is the leak the wholesale replacement was avoiding; forcing
- * keeps the shape without keeping any content.
- */
-function redactTree(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redactTree);
-  }
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = Object.create(null);
-    for (const [key, val] of Object.entries(value)) {
-      out[key] = redactTree(val);
-    }
-    return out;
-  }
-  return REDACTED;
-}
-
-/**
  * Recursively sanitizes a parsed JSON value: object keys checked against the key denylist (sensitive
  * -> redacted), string values shape-scanned, arrays/objects recursed, other primitives unchanged.
  *
- * A sensitive key holding an OBJECT or ARRAY keeps its shape (see {@link redactTree}). Replacing the whole
- * subtree with the marker meant a report could not show which fields even existed — `{"shipping":{...}}`
- * became `{"shipping":"<redacted>"}` and the carrier, the tracking field and their names were all gone.
+ * A sensitive key's value is replaced WHOLE, whatever its type — the subtree is never walked. I briefly
+ * changed this to walk and redact each leaf so a report could show which fields existed; review round 5
+ * found that wrong on three independent counts:
  *
- * A sensitive key holding a SCALAR still becomes the marker string, including booleans and numbers. That is
- * deliberate: the marker is one consistent convention across the wire format, and emitting a same-typed
- * placeholder (`0` / `false`) would assert a value that was never there.
+ *  1. It opened a redaction BYPASS. Walking recurses, so a deep body threw RangeError out of here,
+ *     `sanitizeBody`'s catch fell to the textual passes, and `JSON_PAIR` cannot match `"password":{` —
+ *     its value alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 after.
+ *  2. KEY NAMES became a leak channel. `{"tokens":{"eyJ…":true}}` emitted the token, because the token IS
+ *     the key. Maps keyed by a secret or an identifier (session→token, user→credential) are ordinary.
+ *  3. It broke Android parity, which CLAUDE.md makes binding: `NetworkDataSanitizer` does
+ *     `obj.put(key, REDACTED_VALUE)` unconditionally, and sdk-design.md requires byte-identical output.
+ *
+ * The diagnostic cost is accepted and real: inside a subtree the app labelled `password`/`token`/`secret`,
+ * a report cannot show which fields existed. Recovering that safely needs a shape SUMMARY (key count and
+ * types, never key names) plus a backend contract — not a walk.
  */
 export function sanitizeJson(value: unknown, options?: ShapeRedactionOptions): unknown {
   if (typeof value === 'string') {
@@ -84,11 +71,7 @@ export function sanitizeJson(value: unknown, options?: ShapeRedactionOptions): u
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, val] of Object.entries(value)) {
-      if (!isSensitiveKey(key)) {
-        out[key] = sanitizeJson(val, options);
-      } else {
-        out[key] = val !== null && typeof val === 'object' ? redactTree(val) : REDACTED;
-      }
+      out[key] = isSensitiveKey(key) ? REDACTED : sanitizeJson(val, options);
     }
     return out;
   }
