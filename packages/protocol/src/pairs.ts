@@ -126,8 +126,24 @@ export function isFormSegment(segment: string): boolean {
   // Trim the wrapping a real key never carries but a quoted or spaced one does. Without this the gate was
   // applied to the SENSITIVE segment's own key, so ` password=hunter2`, `"password"=hunter2` and
   // `user.password =hunter2` shipped verbatim — the neighbour's shape no longer mattered, but the segment's
-  // own still did, in the leak direction. Inner punctuation (`<config auth`, `my password`) is still
-  // rejected: that is prose, and reading it as a key is what destroyed bodies in the first place.
+  // own still did, in the leak direction. Inner punctuation (`my password`) is still rejected: that is
+  // prose, and reading it as a key is what destroyed bodies in the first place.
+  //
+  // THE COST, STATED IN FULL. Trimming admits every spaced or quoted single-token key in a text body, and
+  // key matching is by SUBSTRING, so a benign field whose name merely CONTAINS a sensitive token now loses
+  // its value. Measured: 8 of 23 realistic config/log lines, and ~1% of real-world field names (164 of
+  // 16,125 distinct JSON keys in this repo's own dependency tree; 2,742 of 235,976 dictionary words).
+  //
+  //   author = Jane Doe    -> redacted   ("auth")
+  //   mapping = a->b       -> redacted   ("pin")
+  //   shipping = express   -> redacted   ("pin")
+  //   protein = 12g        -> redacted   ("ein")
+  //   passed = true        -> redacted   ("pass")
+  //
+  // Earlier commits disclosed `protein` and left the rest implicit, which read as a curiosity rather than a
+  // class. `author` is close to the most common metadata key in software. The direction is safe — a
+  // non-secret is dropped, never a secret kept — and narrowing it means changing `isSensitiveKey` from
+  // substring matching, which is Android-parity behaviour and a separate decision.
   const key = segment
     .slice(0, eq)
     .trim()

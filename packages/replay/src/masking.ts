@@ -63,7 +63,12 @@ const SENSITIVE_INPUT_MATCHERS = [
   '[type="tel" i]',
   '[autocomplete*="password" i]',
   '[autocomplete*="cc-" i]',
-  '[autocomplete="one-time-code" i]',
+  // `~=`, not `=`. `autocomplete` is a TOKEN LIST, so the exact-value form did not match
+  // `autocomplete="webauthn one-time-code"` — spec-valid, and the documented pairing for WebAuthn-assisted
+  // OTP autofill. The field fell outside the floor entirely and `.bugsee-unmask` could lift it. `~=` matches
+  // a strict superset of what `=` matched (the bare value is a one-token list), so nothing is lost.
+  // The two matchers above use `*=` and were already token-list safe, which is why only this one leaked.
+  '[autocomplete~="one-time-code" i]',
   // rrweb stamps this when a field's `type` was flipped away from `password` — its own memory of what the
   // field is. Without it here, a `.bugsee-unmask` show-password toggle un-masked a field that rrweb was
   // still protecting: measured raw on the snapshots after the flip, and protected when the mark was absent.
@@ -346,11 +351,18 @@ function maskAttribute(key: string, value: string): string {
   return '*'.repeat(value.length);
 }
 
-/** Mask attributes only on elements carrying an explicit Bugsee mask mark (used when `maskAllText` is off). */
+/**
+ * Mask attributes on elements under an explicit Bugsee mask mark (used when `maskAllText` is off).
+ *
+ * `closest()`, not `matches()`. The mark is documented and used as a SUBTREE instruction — marking a
+ * container is how anyone would wrap a form — but `matches()` tests the marked element alone, so
+ * `<div class="bugsee-mask"><input data-ssn="…"></div>` masked nothing. Every text-side selector rrweb
+ * consumes is subtree-scoped; this one silently was not.
+ */
 function maskMarkedAttribute(key: string, value: string, element: unknown): string {
-  const el = element as { matches?: (selector: string) => boolean } | null | undefined;
+  const el = element as { closest?: (selector: string) => unknown } | null | undefined;
   try {
-    return el?.matches?.(BUGSEE_MASK) === true ? maskAttribute(key, value) : value;
+    return el?.closest?.(BUGSEE_MASK) != null ? maskAttribute(key, value) : value;
   } catch {
     return maskAttribute(key, value); // unreadable element → mask (fail closed)
   }

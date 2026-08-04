@@ -120,6 +120,16 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
   // the value. An end-to-end test of this is inherently racy — a first draft of one failed ~40% of runs —
   // and a flaky test is worse than an honest note. Closing it fully needs the fork to stamp synchronously.
 
+  it('masks a multi-token `autocomplete="webauthn one-time-code"` marked `.bugsee-unmask`', async () => {
+    // `autocomplete` is a TOKEN LIST. The matcher used `=` (exact value), so any OTP field that also
+    // declares `webauthn` — the documented pairing for WebAuthn-assisted autofill — was not on the floor
+    // and `.bugsee-unmask` lifted it. `~=` is the token-list operator and matches a strict superset.
+    const { json } = await drive(
+      '<input type="text" autocomplete="webauthn one-time-code" class="bugsee-unmask" value="123456">',
+    );
+    expect(json).not.toContain('123456');
+  });
+
   it('STILL un-masks a benign input marked `.bugsee-unmask` — the escape hatch survives', async () => {
     // The floor must be surgical: closing it by refusing to un-mask anything would be a different product.
     const { json } = await drive('<input type="text" class="bugsee-unmask" value="SEARCHTERM">');
@@ -160,6 +170,15 @@ describe('the sensitive floor holds on the LIVE input path too, with maskAllInpu
       'multi-token autocomplete',
       '<input type="text" autocomplete="section-b shipping cc-number" id="f">',
       '4111111111111111',
+    ],
+    [
+      // The multi-token case above uses `cc-`, matched with `*=`, so it passed whatever the OTHER matchers
+      // did. `one-time-code` was matched with `=` — EXACT value — and `autocomplete` is a TOKEN LIST:
+      // `webauthn one-time-code` is spec-valid and is what you write for WebAuthn-assisted OTP autofill.
+      // It fell outside the floor entirely, so `.bugsee-unmask` could lift it.
+      'multi-token autocomplete with one-time-code',
+      '<input type="text" autocomplete="webauthn one-time-code" id="f">',
+      '123456',
     ],
   ];
 
@@ -282,6 +301,26 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
     for (const structural of ['0 0 24 24', 'M4 4 L8 8', '#abc']) {
       expect(json, structural).toContain(structural);
     }
+  });
+
+  it('masks attributes on DESCENDANTS of a `.bugsee-mask` element', async () => {
+    // `matches()` tests the marked element ALONE, so marking a container did nothing for the fields inside
+    // it — which is how anyone would expect to use the mark, and how it reads in the docs. Every text-side
+    // selector rrweb consumes is subtree-scoped; this one was not.
+    const { json } = await drive(
+      '<div class="bugsee-mask"><input data-ssn="123-45-6789" placeholder="SSNLABEL"></div>',
+      { maskAllText: false },
+    );
+    expect(json).not.toContain('123-45-6789');
+    expect(json).not.toContain('SSNLABEL');
+  });
+
+  it('still leaves an UNMARKED element’s attributes alone with maskAllText off', async () => {
+    // The narrower rule must stay narrow: `closest()` must not become "mask everything".
+    const { json } = await drive('<div><input placeholder="SEARCHLABEL"></div>', {
+      maskAllText: false,
+    });
+    expect(json).toContain('SEARCHLABEL');
   });
 
   it('leaves the Bugsee marker attributes intact — they drive masking itself', async () => {

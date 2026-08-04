@@ -103,7 +103,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
       el: unknown,
     ) => string;
     const hostile = {
-      matches: () => {
+      closest: () => {
         throw new Error('hostile element');
       },
     };
@@ -225,8 +225,10 @@ describe('resolveReplayMaskingOptions — attribute masking (maskAttributeFn)', 
       v: string,
       el: unknown,
     ) => string;
-    const marked = { matches: (sel: string) => sel.includes('bugsee-mask') };
-    const plain = { matches: () => false };
+    // `closest`, not `matches` — the mark covers the subtree, so a descendant of a marked container is
+    // masked too. `closest` returns the marked ANCESTOR (or the element itself), hence a node, not a bool.
+    const marked = { closest: (sel: string) => (sel.includes('bugsee-mask') ? {} : null) };
+    const plain = { closest: () => null };
     expect(mask('data-ssn', '123-45-6789', marked)).toBe('***********');
     expect(mask('data-ssn', '123-45-6789', plain)).toBe('123-45-6789');
   });

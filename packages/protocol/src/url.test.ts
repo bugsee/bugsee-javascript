@@ -340,8 +340,23 @@ describe('sanitizeErrorMessage — the shapes the token gate used to miss', () =
   });
 
   it('does not corrupt code quoted into a message', () => {
-    // `expect(a==b&&passphrase)` has no form-shaped key (`expect(a=` fails the charset), so it is untouched.
+    // CORRECTED RATIONALE. This said "`expect(a=` fails the charset" — it does not: FORM_KEY includes `(`,
+    // and `isFormSegment` tests the key WITHOUT the `=`, so `expect(a` passes the gate. What actually
+    // protects this token is that `expect(a` is not a sensitive key, and that after the `&` split the
+    // `passphrase)` segment carries no `=` at all. The shape gate is not what makes this case safe.
     expect(sanitizeErrorMessage('expect(a==b&&passphrase)')).toBe('expect(a==b&&passphrase)');
+  });
+
+  it('leaves a path or prose token carrying `=` alone — the shape gate’s actual job', () => {
+    // The gate `isFormSegment(token)` in sanitizeErrorMessage had NO test: removing it passed the entire
+    // suite while changing behaviour on real diagnostics. These are the inputs it exists for.
+    for (const message of [
+      'failed at src/auth/token=abc',
+      'assert x<>token=1',
+      'diff --git a/token=1 b/token=1',
+    ]) {
+      expect(sanitizeErrorMessage(message)).toBe(message);
+    }
   });
 
   it('over-redacts config-shaped text, deliberately', () => {
