@@ -1,5 +1,6 @@
 import {
   type AdapterMechanism,
+  neverThrow,
   type ReportErrorOptions,
   reportError,
   resolveClient,
@@ -42,8 +43,15 @@ export function linkComponentStack(error: unknown, componentStack: string | unde
  * handler that also routes here is a possible later addition — see D8; not built yet.)
  */
 export function reportReactError(error: unknown, options: ReportReactErrorOptions = {}): void {
-  const client = resolveClient(options.getClient);
-  if (client === undefined) return; // no launched SDK → nothing to report to (and don't touch the error)
-  linkComponentStack(error, options.componentStack); // mutates error.cause (non-destructive); see above
-  reportError(error, { ...options, getClient: () => client });
+  // CONTAINED, including the pre-work. `reportError` guards its own body, but `resolveClient` and
+  // `linkComponentStack` ran OUTSIDE that guard — and `getClient` is an APPLICATION-supplied callback that
+  // needs no SDK bug to throw. This runs inside React's error path, the one place whose purpose is to make
+  // an error survivable, so a throw here replaces the app's error with the SDK's and stops its own handler
+  // from running. Same shape as the hono `options.user` finding: the inner guard was never the whole seam.
+  neverThrow(() => {
+    const client = resolveClient(options.getClient);
+    if (client === undefined) return; // no launched SDK → nothing to report to (and don't touch the error)
+    linkComponentStack(error, options.componentStack); // mutates error.cause (non-destructive); see above
+    reportError(error, { ...options, getClient: () => client });
+  }, options.onError);
 }
