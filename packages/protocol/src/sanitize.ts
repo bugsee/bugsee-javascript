@@ -193,6 +193,19 @@ function redactJsonPairs(body: string): string {
  * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
  * a regex, so a large body cannot backtrack.
  */
+/**
+ * The `name` parameter of a part's Content-Disposition, or undefined.
+ *
+ * Anchored on `;` or whitespace so it cannot match inside `filename=`. The un-anchored `/name="([^"]*)"/`
+ * did exactly that: RFC 7578 does not mandate parameter order, so `filename="a.txt"; name="password"` gave
+ * the captured name `a.txt`, which is not sensitive, and the password shipped. Quoted, single-quoted and
+ * bare-token forms are all legal and all accepted.
+ */
+function partName(headers: string): string | undefined {
+  const m = /(?:^|[;\s])name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]+))/i.exec(headers);
+  return m === null ? undefined : (m[1] ?? m[2] ?? m[3]);
+}
+
 function redactMultipart(body: string, contentType: string | undefined): string | undefined {
   const declared = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType ?? '');
   // The Content-Type is the authority, but a captured body sometimes arrives without one; the first line of
@@ -214,18 +227,25 @@ function redactMultipart(body: string, contentType: string | undefined): string 
   }
   let changed = false;
   const out = parts.map((part) => {
-    const sep = part.indexOf('\r\n\r\n');
+    // CRLF is what the RFC says; bare LF is what several real clients send. Taking whichever blank line
+    // comes first — rather than `indexOf('\r\n\r\n')` alone — is the difference between reading the part
+    // and skipping it entirely, and skipping it shipped the value.
+    const crlf = part.indexOf('\r\n\r\n');
+    const lf = part.indexOf('\n\n');
+    const sep = crlf >= 0 && (lf < 0 || crlf <= lf) ? crlf : lf;
     if (sep < 0) {
       return part; // a preamble, the closing `--`, or a part with no header block
     }
-    const name = /name="([^"]*)"/i.exec(part.slice(0, sep))?.[1];
+    const gap = sep === crlf ? 4 : 2;
+    const name = partName(part.slice(0, sep));
     if (name === undefined || !isSensitiveKey(name)) {
       return part;
     }
     changed = true;
-    const value = part.slice(sep + 4);
-    // Keep the CRLF that separates the value from the next boundary — it is framing, not content.
-    return `${part.slice(0, sep)}\r\n\r\n${REDACTED}${value.endsWith('\r\n') ? '\r\n' : ''}`;
+    const value = part.slice(sep + gap);
+    // Keep the line break that separates the value from the next boundary — framing, not content.
+    const trailing = value.endsWith('\r\n') ? '\r\n' : value.endsWith('\n') ? '\n' : '';
+    return `${part.slice(0, sep)}${part.slice(sep, sep + gap)}${REDACTED}${trailing}`;
   });
   return changed ? out.join(delimiter) : undefined;
 }
@@ -272,11 +292,12 @@ export function sanitizeBody(
       );
     }
   }
-  const multipart = redactMultipart(body, contentType);
-  if (multipart !== undefined) {
-    return redactShapes(multipart, options);
-  }
-  return redactShapes(redactSensitiveColonLines(redactFormBody(body)), options);
+  // The multipart pass ADDS to the textual passes; it does not replace them. Returning its result early
+  // meant redacting one part switched the form and colon passes off for the whole body — so a part holding
+  // `api_key: sk_live_…` or `token=…` shipped in the clear BECAUSE a sibling part had been redacted.
+  // Redacting one secret un-redacted another.
+  const multipart = redactMultipart(body, contentType) ?? body;
+  return redactShapes(redactSensitiveColonLines(redactFormBody(multipart)), options);
 }
 
 /** Find a header's value case-insensitively (header maps preserve the producer's casing). */

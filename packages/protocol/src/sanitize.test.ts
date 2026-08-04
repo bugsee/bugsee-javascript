@@ -348,6 +348,58 @@ describe('sanitizeBody — multipart/form-data', () => {
     expect(sanitizeBody(mk('password', 'hunter2'), 'multipart/form-data')).not.toContain('hunter2');
   });
 
+  it('still runs the form and colon passes on the OTHER parts', () => {
+    // REGRESSION. `redactMultipart` returned early whenever it changed anything, so redacting one part
+    // switched the form and colon passes off for the whole body — redacting one secret UN-redacted
+    // another. The pre-commit build caught the `api_key:` line via the colon pass; this build shipped it.
+    const body =
+      `------X\r\nContent-Disposition: form-data; name="password"\r\n\r\np@ssw0rd\r\n` +
+      `------X\r\nContent-Disposition: form-data; name="metadata"\r\n\r\napi_key: sk_test_LEAKED\r\n` +
+      `------X\r\nContent-Disposition: form-data; name="opts"\r\n\r\ntoken=SECOND_SECRET\r\n------X--`;
+    const out = sanitizeBody(body, 'multipart/form-data; boundary=----X');
+    expect(out).not.toContain('p@ssw0rd'); // the part-name pass
+    expect(out).not.toContain('sk_test_LEAKED'); // the colon pass, on a sibling part
+    expect(out).not.toContain('SECOND_SECRET'); // the form pass, on a sibling part
+  });
+
+  it('shape-scans a multipart part with a non-sensitive name', () => {
+    // Every other multipart test uses a key-NAME secret, so nothing pinned that the shape pass reaches
+    // multipart at all. A JWT in a part called `note` has no key to match on.
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N';
+    const body = `------X\r\nContent-Disposition: form-data; name="note"\r\n\r\n${jwt}\r\n------X--`;
+    expect(sanitizeBody(body, 'multipart/form-data; boundary=----X')).not.toContain(jwt);
+  });
+
+  it.each([
+    ['filename before name', 'filename="a.txt"; name="password"'],
+    ['unquoted name', 'name=password'],
+    ['single-quoted name', "name='password'"],
+  ])('finds the part name when written as %s', (_label, disposition) => {
+    // `/name="([^"]*)"/ ` matched INSIDE `filename="a.txt"`, captured `a.txt`, found it non-sensitive and
+    // shipped the value. RFC 7578 does not mandate parameter order, and unquoted tokens are legal.
+    const body = `------X\r\nContent-Disposition: form-data; ${disposition}\r\n\r\nhunter2\r\n------X--`;
+    expect(sanitizeBody(body, 'multipart/form-data; boundary=----X')).not.toContain('hunter2');
+  });
+
+  it('handles parts separated by bare LF, leaving the framing byte-exact', () => {
+    // `indexOf('\r\n\r\n')` skipped the part entirely, so the value shipped. Asserted WHOLE, not with
+    // `not.toContain`: a fixed 4-character gap on a 2-character separator eats the first two bytes of the
+    // value, which still removes the secret and still passes a "secret is gone" check.
+    const body = `------X\nContent-Disposition: form-data; name="password"\n\nhunter2\n------X--`;
+    expect(sanitizeBody(body, 'multipart/form-data; boundary=----X')).toBe(
+      `------X\nContent-Disposition: form-data; name="password"\n\n<redacted>\n------X--`,
+    );
+  });
+
+  it('does not destroy a body whose declared boundary never appears', () => {
+    // The `parts.length < 2` guard had no test: without it the whole body is read as one part and
+    // everything after the first blank line is replaced.
+    const body = 'Content-Disposition: form-data; name="token"\r\n\r\nline1\r\nline2\r\nline3';
+    const out = sanitizeBody(body, 'multipart/form-data; boundary=----ABSENT');
+    expect(out).toContain('line2');
+    expect(out).toContain('line3');
+  });
+
   it('falls through to the textual passes when the declared boundary is absent from the body', () => {
     // A mislabelled body must still get the form/colon/shape passes, not be handed to a multipart reader
     // that finds nothing and reports success.
