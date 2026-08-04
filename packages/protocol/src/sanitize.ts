@@ -42,8 +42,37 @@ export function sanitizeParams(
 }
 
 /**
+ * Every leaf replaced by the marker, structure and key names kept.
+ *
+ * Used for the subtree under a sensitive key. Recursing WITHOUT forcing would leave numbers and booleans
+ * intact — `{"password":{"pin":1234}}` — which is the leak the wholesale replacement was avoiding; forcing
+ * keeps the shape without keeping any content.
+ */
+function redactTree(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactTree);
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = Object.create(null);
+    for (const [key, val] of Object.entries(value)) {
+      out[key] = redactTree(val);
+    }
+    return out;
+  }
+  return REDACTED;
+}
+
+/**
  * Recursively sanitizes a parsed JSON value: object keys checked against the key denylist (sensitive
  * -> redacted), string values shape-scanned, arrays/objects recursed, other primitives unchanged.
+ *
+ * A sensitive key holding an OBJECT or ARRAY keeps its shape (see {@link redactTree}). Replacing the whole
+ * subtree with the marker meant a report could not show which fields even existed — `{"shipping":{...}}`
+ * became `{"shipping":"<redacted>"}` and the carrier, the tracking field and their names were all gone.
+ *
+ * A sensitive key holding a SCALAR still becomes the marker string, including booleans and numbers. That is
+ * deliberate: the marker is one consistent convention across the wire format, and emitting a same-typed
+ * placeholder (`0` / `false`) would assert a value that was never there.
  */
 export function sanitizeJson(value: unknown, options?: ShapeRedactionOptions): unknown {
   if (typeof value === 'string') {
@@ -55,7 +84,11 @@ export function sanitizeJson(value: unknown, options?: ShapeRedactionOptions): u
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, val] of Object.entries(value)) {
-      out[key] = isSensitiveKey(key) ? REDACTED : sanitizeJson(val, options);
+      if (!isSensitiveKey(key)) {
+        out[key] = sanitizeJson(val, options);
+      } else {
+        out[key] = val !== null && typeof val === 'object' ? redactTree(val) : REDACTED;
+      }
     }
     return out;
   }

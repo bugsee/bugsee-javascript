@@ -72,7 +72,15 @@ describe('reportError', () => {
   });
 
   it('is a no-op when no client is resolvable', () => {
-    expect(() => reportError(new Error('x'), { getClient: () => undefined })).not.toThrow();
+    // `not.toThrow()` alone cannot fail: `neverThrow` guarantees it whether or not the guard exists.
+    // Deleting `if (client === undefined) return` calls `logException` on undefined, which throws INTO
+    // neverThrow and reports an SDK-internal error for the ordinary "SDK not launched" case. `onError`
+    // staying silent is what distinguishes a real no-op from a swallowed TypeError.
+    const onError = vi.fn();
+    expect(() =>
+      reportError(new Error('x'), { getClient: () => undefined, onError }),
+    ).not.toThrow();
+    expect(onError).not.toHaveBeenCalled();
   });
 });
 
@@ -107,7 +115,12 @@ describe('setRouteName', () => {
   });
 
   it('is a no-op when no client is resolvable', () => {
-    expect(() => setRouteName('/x', { getClient: () => undefined })).not.toThrow();
+    // Same assertion as reportError's, for the same reason — though here the guard is provably EQUIVALENT
+    // to no guard (`tryGetPerf`'s own catch absorbs the undefined access), so this pins the no-op contract
+    // rather than the guard. Recorded so a future reader does not mistake it for a teeth check.
+    const onError = vi.fn();
+    expect(() => setRouteName('/x', { getClient: () => undefined, onError })).not.toThrow();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('is a no-op when the performance extension is not registered (ext throws)', () => {

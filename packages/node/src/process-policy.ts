@@ -64,6 +64,10 @@ export function foreignListenerCount(proc: ListenerSource, event: string): numbe
  * - `warn` — capture it and print, but keep the process alive. This is Sentry's default; it is a real
  *   behaviour change versus an uninstrumented process, so it is opt-in here rather than the default.
  * - `none` — do not capture rejections at all. Node's untouched default applies, since no listener exists.
+ *
+ * This setting is the SOLE authority for the rejection path. `exitOnUncaught` is named for uncaught
+ * exceptions and no longer gates rejections: composing the two let an exception option silently downgrade
+ * `preserve` to `warn`, which is the behaviour change `preserve` exists to prevent.
  */
 export type UnhandledRejectionMode = 'preserve' | 'warn' | 'none';
 

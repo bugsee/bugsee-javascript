@@ -668,9 +668,18 @@ describe('launch', () => {
     expect(fp.exit).not.toHaveBeenCalled();
   });
 
-  it('honours exitOnUncaught:false on the REJECTION path too', async () => {
-    // Both options mean "do not end my process on the SDK's account"; they were not composed, so a
-    // rejection still killed a host that had explicitly opted out.
+  it('does NOT let exitOnUncaught:false silently defeat `preserve` on the rejection path', async () => {
+    // REVERSED, deliberately. This asserted that `exitOnUncaught:false` also suppressed the rejection exit,
+    // on the reading that both options mean "do not end my process on the SDK's account".
+    //
+    // That reading reintroduces the exact SEV1 `preserve` exists to prevent. Since Node 15 an unhandled
+    // rejection terminates the process, so `preserve` — the DEFAULT — is what keeps a crashing service
+    // crashing. Letting an option named for uncaught EXCEPTIONS silently downgrade it turns the service
+    // into one that survives and reports exit 0 to systemd/k8s/CI, purely because the SDK is installed.
+    // That is the "interceptors must not alter app behavior" principle inverted.
+    //
+    // Each option now governs the event it is named for. A host that wants neither path to exit sets
+    // `unhandledRejections:'warn'`, which is precisely what that mode is for.
     const fp = fakeProcess();
     launchTracked(
       'tok',
@@ -678,8 +687,33 @@ describe('launch', () => {
     );
     fp.fire('unhandledRejection', new Error('rejected'));
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1); // Node's own outcome, preserved
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('lets `warn` opt out of the rejection exit, independently of exitOnUncaught', async () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({
+        process: fp.proc,
+        captureStore: memStore(),
+        exitOnUncaught: false,
+        unhandledRejections: 'warn',
+      }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fp.exit).not.toHaveBeenCalled();
     expect(fp.stderr.join('')).toContain('rejected'); // still reported and printed
+  });
+
+  it('still exits on a rejection under `preserve` with exitOnUncaught left at its default', async () => {
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1);
   });
 
   it('installs no uncaughtException handler when detectCrashes is false', () => {

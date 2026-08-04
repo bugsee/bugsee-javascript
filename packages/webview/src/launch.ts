@@ -345,7 +345,13 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // legacy masking script down (D10), and the protocol has no retraction message — so on a page where
   // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
   // answer (docs/review/webview.md SEV1 #2).
-  const caps = obscuring?.probe() === true ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
+  //
+  // The probe result gates the CHANNEL as well as the capability. Declaring nothing but starting anyway
+  // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
+  // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
+  // from `caps`.
+  const obscuringWorks = obscuring?.probe() === true;
+  const caps = obscuringWorks ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
@@ -361,7 +367,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
-  obscuring?.start();
+  // Only when the probe proved collection works — see `obscuringWorks` above.
+  if (obscuringWorks) {
+    obscuring?.start();
+  }
   // The channel guards the TOP frame; a SUB-frame composer is called directly, so its failures escaped
   // launch() itself — and `window.parent` is [Replaceable], so one line of page script was enough
   // (measured: `launch()` threw `hostile parent`, onError never fired).

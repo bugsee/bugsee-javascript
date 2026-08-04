@@ -144,10 +144,12 @@ export function isFormSegment(segment: string): boolean {
   // class. `author` is close to the most common metadata key in software. The direction is safe — a
   // non-secret is dropped, never a secret kept — and narrowing it means changing `isSensitiveKey` from
   // substring matching, which is Android-parity behaviour and a separate decision.
-  const key = segment
-    .slice(0, eq)
-    .trim()
-    .replace(/^["']|["']$/g, '');
+  // One pass over each end, stripping whitespace and quotes together. Trimming FIRST and then removing a
+  // single quote per side left `" password "=hunter2` and `""password""=hunter2` shipping verbatim — the
+  // fix for the wrapping class only handled the orderings it was tested with. Backticks, braces and angle
+  // brackets stay excluded on purpose: those mark prose and markup, and reading `<password>=x` as a field
+  // is the class that destroyed bodies.
+  const key = segment.slice(0, eq).replace(/^[\s"']+|[\s"']+$/g, '');
   return FORM_KEY.test(key);
 }
 

@@ -226,7 +226,14 @@ export interface BugseeLaunchOptions {
   captureWriter?: 'inline' | 'worker';
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
   shutdownTimeoutMs?: number;
-  /** Call process.exit(1) after flushing an uncaught exception. Default true. */
+  /**
+   * Call process.exit(1) after flushing an uncaught EXCEPTION. Default true.
+   *
+   * Governs the `uncaughtException` path only. The unhandled-REJECTION path is governed by
+   * {@link NodeLaunchOptions.unhandledRejections}: set it to `'warn'` to keep the process alive there.
+   * Setting this to `false` does not affect rejections — it used to, which silently downgraded the
+   * `preserve` default and turned a crashing service into one reporting exit 0.
+   */
   exitOnUncaught?: boolean;
   /**
    * Durably persist each bundle before upload and re-upload any left behind by a crashed/killed run
@@ -813,12 +820,15 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // a flush failure must never replace the rejection's own handling
     }
     void client.flush(shutdownTimeoutMs).finally(() => {
-      // `exitOnUncaught:false` means "never end my process on the SDK's account". It gated the uncaught
-      // path only, so a rejection still killed a host that had explicitly opted out — and the
-      // uninstrumented equivalent stays alive.
-      if (exitOnUncaught) {
-        proc.exit(1);
-      }
+      // `exitOnUncaught` is NOT consulted here: it is named for uncaught EXCEPTIONS, and `unhandledRejections`
+      // is the authority for this path. Composing them looked reasonable — both read as "do not end my
+      // process on the SDK's account" — but it let an exception option silently downgrade `preserve`, which
+      // is the DEFAULT and the only thing keeping a crashing service crashing. Since Node 15 an unhandled
+      // rejection terminates the process, so suppressing the exit here reports 0 to systemd/k8s/CI purely
+      // because the SDK is installed. (The comment that stood here claimed "the uninstrumented equivalent
+      // stays alive" — it does not; it dies.) A host that wants neither path to exit sets
+      // `unhandledRejections:'warn'`, which is exactly what that mode is for.
+      proc.exit(1);
     });
   });
   if (detectCrash && rejectionMode !== 'none') {

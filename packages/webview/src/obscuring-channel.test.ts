@@ -53,12 +53,19 @@ describe('createObscuringChannel', () => {
     const { bridge, doc, channel } = setup({ [HIDE]: [el(10)] });
     channel.start();
     doc.fire('focus'); // a tracked change
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start()
-    const m = JSON.parse(bridge.posted[0] as string) as SecureMessage;
+    // EXACT, not `>= 1`. These were `toHaveLength(1)` until start() gained an unconditional initial
+    // push; relaxing them to `>= 1` made them unable to fail — see the stop() test below.
+    expect(bridge.posted).toHaveLength(2); // [0] initial push from start(), [1] the focus-driven change
+    // Asserted on [1], the CHANGE — the title says "on change", and reading [0] tested the initial push
+    // instead, so the focus path this test exists for was never checked. The sequence number distinguishes
+    // them: [0] took 100, so a message that is really the change carries 101.
+    const initial = JSON.parse(bridge.posted[0] as string) as SecureMessage;
+    expect(initial.s).toBe(100);
+    const m = JSON.parse(bridge.posted[1] as string) as SecureMessage;
     expect(m).toEqual({
       b: 1,
       k: 'secure',
-      s: 100,
+      s: 101,
       ts: 5000,
       mono: 1.5,
       o: 200,
@@ -77,7 +84,7 @@ describe('createObscuringChannel', () => {
   it('emit() posts the current rects (the native `snapshot` command path)', () => {
     const { bridge, channel } = setup({ [HIDE]: [el(0)] });
     channel.emit();
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start()
+    expect(bridge.posted).toHaveLength(1); // emit() only — start() was never called
     const m = JSON.parse(bridge.posted[0] as string) as SecureMessage;
     expect(m.k).toBe('secure');
     expect(m.p).toEqual([{ type: 'hidden', top: 0, left: 1, bottom: 2, right: 3 }]);
@@ -87,10 +94,10 @@ describe('createObscuringChannel', () => {
     const { bridge, doc, channel } = setup({ [HIDE]: [el(0)] });
     channel.start();
     doc.fire('focus');
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start()
+    expect(bridge.posted).toHaveLength(2); // [0] initial push, [1] the focus-driven change
     channel.stop();
     doc.fire('focus');
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start() // detached
+    expect(bridge.posted).toHaveLength(2); // STILL 2 — detached. `>= 1` here asserted nothing at all.
   });
 
   it('defaults wallNow/now/timeOrigin to the ambient clock when omitted (real values, not constants)', () => {
@@ -131,7 +138,7 @@ describe('createObscuringChannel', () => {
     });
     channel.start();
     mutate(); // a DOM change observed via the injected observer
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start()
+    expect(bridge.posted).toHaveLength(2); // [0] initial push, [1] the mutation-driven change
     channel.stop();
   });
 
@@ -148,7 +155,7 @@ describe('createObscuringChannel', () => {
     });
     channel.start();
     win.fire('scroll');
-    expect(bridge.posted.length).toBeGreaterThanOrEqual(1); // [0] is the initial push from start() // a window scroll drove a secure post
+    expect(bridge.posted).toHaveLength(2); // [0] initial push, [1] the scroll-driven change
     channel.stop();
   });
 });

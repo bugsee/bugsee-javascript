@@ -161,6 +161,34 @@ describe('sanitizeJson', () => {
     sanitizeJson(input);
     expect(input).toEqual({ token: 'x', nested: { secret: 's' } });
   });
+
+  it('keeps the SHAPE of an object or array under a sensitive key', () => {
+    // The whole subtree was replaced by the marker string, so a report could not even show WHICH fields
+    // existed. Every leaf is still redacted — the structure survives, the content does not.
+    expect(sanitizeJson({ shipping: { carrier: 'UPS', tracking: '1Z9' } })).toEqual({
+      shipping: { carrier: R, tracking: R },
+    });
+    expect(sanitizeJson({ token: ['a', 'b'] })).toEqual({ token: [R, R] });
+    expect(sanitizeJson({ secret: { a: { b: 'deep' } } })).toEqual({ secret: { a: { b: R } } });
+  });
+
+  it('redacts NON-string leaves under a sensitive key too', () => {
+    // Recursing without forcing would leave numbers and booleans — `{"password":{"pin":1234}}` — intact,
+    // which is the leak the wholesale replacement was avoiding.
+    expect(sanitizeJson({ password: { pin: 1234, ok: true, z: null } })).toEqual({
+      password: { pin: R, ok: R, z: R },
+    });
+  });
+
+  it('still replaces a scalar under a sensitive key with the marker', () => {
+    // Deliberately unchanged: the marker is one consistent convention across the wire format. Emitting a
+    // same-typed placeholder instead (0 / false) would assert a value that was never there.
+    expect(sanitizeJson({ password: true, token: 42, secret: null })).toEqual({
+      password: R,
+      token: R,
+      secret: R,
+    });
+  });
 });
 
 describe('sanitizeBody — JSON that does not parse', () => {
@@ -184,6 +212,19 @@ describe('sanitizeBody — JSON that does not parse', () => {
 
   it('redacts an unquoted value too', () => {
     expect(sanitizeBody('{"api_key":abc123,"n":NaN}', 'application/json')).not.toContain('abc123');
+  });
+
+  it('redacts a secret nested past the recursion limit', () => {
+    // Deep nesting makes JSON.parse (or the recursive walk) throw RangeError; the catch then handed the
+    // body to passes that cannot read JSON, so it shipped verbatim. The textual JSON pass closes it — this
+    // pins that, because nothing else asserts the deep case and it was closed as a side effect.
+    for (const depth of [500, 3000, 6000]) {
+      let body = '{"password":"LEAKED"}';
+      for (let i = 0; i < depth; i += 1) {
+        body = `{"a":${body}}`;
+      }
+      expect(sanitizeBody(body, 'application/json'), `depth ${depth}`).not.toContain('LEAKED');
+    }
   });
 
   it('leaves non-sensitive keys in unparseable JSON byte-for-byte alone', () => {
@@ -222,6 +263,28 @@ describe('sanitizeBody — JSON that does not parse', () => {
     // The pass is gated on the JSON branch; prose quoting `"password": x` in a text body is not a document.
     const prose = 'the docs say "password": is required';
     expect(sanitizeBody(prose, 'text/plain')).toBe(prose);
+  });
+});
+
+describe('sanitizeBody — a sensitive key wrapped in whitespace and quotes together', () => {
+  // `.trim()` ran BEFORE the quote strip and removed only ONE quote per side, so any combination that
+  // left whitespace inside the quotes still failed the shape gate and shipped the value.
+  it.each([
+    ['space inside double quotes', '" password "=hunter2'],
+    ['space inside single quotes', "' password '=hunter2"],
+    ['doubled quotes', '""password""=hunter2'],
+    ['quote then space', '" password"=hunter2'],
+    ['tab inside quotes', '"\tpassword"=hunter2'],
+  ])('redacts %s', (_label, body) => {
+    expect(sanitizeBody(body, 'text/plain')).not.toContain('hunter2');
+  });
+
+  it('still refuses bracket- and backtick-wrapped keys — those are prose, not form fields', () => {
+    // FORM_KEY deliberately excludes markup characters. Treating `<password>=x` as a field would read a
+    // template placeholder or a doc snippet as a credential, which is the class that destroyed bodies.
+    for (const body of ['`password`=hunter2', '{password}=hunter2', '<password>=hunter2']) {
+      expect(sanitizeBody(body, 'text/plain')).toBe(body);
+    }
   });
 });
 

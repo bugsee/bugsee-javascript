@@ -392,6 +392,10 @@ describe('launch (webview)', () => {
       );
       expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
       expect(onError).toHaveBeenCalled(); // and it is not silent
+      // …and it must not POST either. Withholding the capability but still starting the channel sends
+      // `secure` frames native never negotiated — under a protocol with no retraction message, on the exact
+      // page whose collection we just declared broken. "Staying silent" has to mean silent on the wire.
+      expect(fake.msgs().some((m) => (m as { k?: string }).k === 'secure')).toBe(false);
     });
 
     it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
@@ -727,25 +731,55 @@ describe('launch (webview)', () => {
 });
 
 describe('sub-frame obscuring failures never escape launch()', () => {
-  it('launch() survives a child composer whose start throws', () => {
+  // The original single test made BOTH `addEventListener` and `parent.postMessage` hostile. The listener
+  // throws first, so the `parent.postMessage` path the comment named — the [Replaceable] `window.parent`
+  // that motivated the guard — was never reached. Split, so each failure source is actually exercised.
+  const subFrameWin = (hostile: 'listener' | 'parent') => ({
+    top: {},
+    self: {},
+    addEventListener:
+      hostile === 'listener'
+        ? () => {
+            throw new Error('hostile page');
+          }
+        : () => {},
+    removeEventListener: () => {},
+    parent: {
+      postMessage:
+        hostile === 'parent'
+          ? () => {
+              throw new Error('hostile parent');
+            }
+          : () => {},
+    },
+  });
+
+  it('launch() survives a sub-frame whose `parent.postMessage` throws', () => {
     // `window.parent` is [Replaceable]; one line of page script makes postMessage throw. The channel guards
     // only the TOP frame, so the sub-frame path escaped launch() entirely (onError never fired).
     const fake = fakeGlobal();
     const dom = fakeDomDocument();
     const onError = vi.fn();
-    const win = {
-      top: {},
-      self: {},
-      addEventListener: () => {
-        throw new Error('hostile page');
-      },
-      removeEventListener: () => {},
-      parent: {
-        postMessage: () => {
-          throw new Error('hostile parent');
-        },
-      },
-    };
+    const win = subFrameWin('parent');
+    expect(() =>
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win as never,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('launch() survives a child composer whose start throws', () => {
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument();
+    const onError = vi.fn();
+    const win = subFrameWin('listener');
     expect(() =>
       track(
         'tok',
