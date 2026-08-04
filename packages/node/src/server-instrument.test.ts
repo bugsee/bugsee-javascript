@@ -324,6 +324,40 @@ describe('openServerRequest', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /raw');
   });
 
+  it('sanitizes the url path used for the span name and http.route', () => {
+    // `http.url` was sanitized; the span NAME and `http.route` were derived from the same raw url through
+    // `urlPath`, which only strips the query. So `GET /app;jsessionid=ABC` redacted one field and shipped
+    // the same session id in two others — the identical shape as the statusText/reason/channel finding,
+    // one file over. `jsessionid` is in the denylist, so the denylist already meant to catch this.
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    const span = openServerRequest(
+      info({ method: 'GET', url: '/app;jsessionid=9A2B4C6D8E/index.jsp?q=1' }),
+      { getClient: () => client },
+    );
+    span.captureError(new Error('x'));
+    span.finish(500);
+    expect(store.setAttribute).toHaveBeenCalledWith(
+      'http.route',
+      '/app;jsessionid=%3Credacted%3E/index.jsp',
+    );
+    expect(txn.setName).toHaveBeenCalledWith('GET /app;jsessionid=%3Credacted%3E/index.jsp');
+  });
+
+  it('leaves an ordinary path untouched in the span name and http.route', () => {
+    const store = fakeStore();
+    const txn = fakeTxn();
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    const span = openServerRequest(info({ method: 'GET', url: '/users/42/orders?q=1' }), {
+      getClient: () => client,
+    });
+    span.captureError(new Error('x'));
+    span.finish(200);
+    expect(store.setAttribute).toHaveBeenCalledWith('http.route', '/users/42/orders');
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/42/orders');
+  });
+
   it('works without the performance extension (reports, no transaction)', () => {
     const logException = vi.fn(() => Promise.resolve());
     const client = fakeClient({ logException });

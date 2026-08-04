@@ -46,8 +46,13 @@ function authorityStartOf(url: string): number {
   if (url.startsWith('//')) {
     return 2;
   }
-  const schemeEnd = url.indexOf('://');
-  return schemeEnd >= 0 ? schemeEnd + 3 : -1;
+  // Matched at the START, not searched for. `indexOf('://')` is unbounded, so on a path-only request target
+  // — which is exactly what `node:http` server capture passes — a nested absolute URL in the QUERY was read
+  // as the authority. That pushed the path window past its own end and silently disabled the matrix-param
+  // scan for `/checkout;jsessionid=…?return=https://shop/thanks`: the canonical login-flow shape, and the
+  // one flow that actually carries `;jsessionid=`.
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
+  return scheme === null ? -1 : scheme[0].length;
 }
 
 /** Where the authority ends — the start of the path, query or fragment. 0 for a relative URL, which has no

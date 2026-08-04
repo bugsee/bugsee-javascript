@@ -136,9 +136,18 @@ const defaultGetClient = (): BugseeClient | undefined => getCarrierClient<Bugsee
 // Portable id (NOT the global `crypto`, undefined on Node 18; NOT `node:crypto`, absent on edge runtimes).
 const defaultNewContextId = (): string => randomId();
 
+/**
+ * The path, with the query stripped AND the path itself sanitized.
+ *
+ * Stripping the query is not enough: a matrix parameter lives IN the path (`/app;jsessionid=…`, canonical
+ * Java servlet URL rewriting), so this value carried a session id into the transaction name and
+ * `http.route` while `http.url` — derived from the same `info.url` two lines away — was redacted. The same
+ * "redacting one field leaves the secret one field over" shape that the network provider's
+ * statusText/reason/channel fix closed.
+ */
 const urlPath = (url: string): string => {
   const q = url.indexOf('?');
-  return q === -1 ? url : url.slice(0, q);
+  return sanitizeUrl(q === -1 ? url : url.slice(0, q));
 };
 
 const spanName = (info: ServerRequestInfo, route: string | undefined): string =>

@@ -291,6 +291,32 @@ describe('sanitizeUrl — separators, nesting, and bounds', () => {
     );
   });
 
+  it('redacts a matrix parameter when the QUERY carries a nested absolute URL', () => {
+    // `authorityStartOf` fell back to `indexOf('://')`, which is unbounded, so for a path-only request
+    // target the nested URL in the query moved the authority window into the query and `pathStart` ended
+    // up past `pathEnd` — killing the scan. `?return=`/`?redirect_uri=` carrying an absolute URL is the
+    // canonical login-flow shape, and it is exactly the flow that carries `;jsessionid=`.
+    expect(sanitizeUrl('/checkout;jsessionid=9A2B4C6D8E?return=https://shop.example/thanks')).toBe(
+      '/checkout;jsessionid=%3Credacted%3E?return=https://shop.example/thanks',
+    );
+    expect(sanitizeUrl('/a;token=SECRET?next=https://x.io/y')).toBe(
+      '/a;token=%3Credacted%3E?next=https://x.io/y',
+    );
+  });
+
+  it('redacts a matrix parameter on a path-only request target', () => {
+    // What `node:http` server capture actually passes — `req.url` is a path, never absolute.
+    expect(sanitizeUrl('/app;jsessionid=ABC/index.jsp')).toBe(
+      '/app;jsessionid=%3Credacted%3E/index.jsp',
+    );
+  });
+
+  it('does not scan the AUTHORITY as if it were a path', () => {
+    // Nothing pinned where the path window starts; scanning from `indexOf('/')` alone would read the host
+    // as path text and over-redact it.
+    expect(sanitizeUrl('https://h;password=x/a')).toBe('https://h;password=x/a');
+  });
+
   it('does not read an ordinary path segment as a matrix parameter', () => {
     for (const url of [
       'https://a.io/a/b/c',
