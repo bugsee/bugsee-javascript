@@ -36,7 +36,25 @@ async function drive(
   act?.();
   await new Promise((resolve) => setTimeout(resolve, 30));
   stop?.();
-  return { json: JSON.stringify(events), events };
+  const json = JSON.stringify(events);
+
+  // ANTI-VACUITY GUARD, applied to every test that uses this harness.
+  //
+  // Almost every assertion in this file is `expect(json).not.toContain(secret)`, and an EMPTY payload
+  // satisfies that perfectly. Round 5 proved the risk was live rather than theoretical: gutting the
+  // capture (`blockSelector: '*'`) left three of the tests added in 3eb7fa2 still passing against a
+  // payload containing nothing at all. They were covered only by positive assertions living in other
+  // tests, which is coverage by luck — the canary and the test that needs it must not be separable.
+  //
+  // Asserting here rather than per-test means a test cannot be written without it. A full snapshot is
+  // always emitted, and the driven markup always yields a serialized element, so both hold for every
+  // caller regardless of the masking options under test.
+  expect(
+    events.some((event) => event.type === SNAPSHOT_EVENT),
+    'no snapshot emitted',
+  ).toBe(true);
+  expect(json.includes('"tagName"'), 'snapshot serialized no elements').toBe(true);
+  return { json, events };
 }
 
 /** Type into an input the way a user does, so the LIVE input observer path runs (not just the snapshot). */

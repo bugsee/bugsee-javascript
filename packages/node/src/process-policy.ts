@@ -66,6 +66,9 @@ export function foreignListenerCount(proc: ListenerSource, event: string): numbe
  * - `warn` — capture it and print, but keep the process alive. This is Sentry's default; it is a real
  *   behaviour change versus an uninstrumented process, so it is opt-in here rather than the default.
  * - `none` — do not capture rejections at all. Node's untouched default applies, since no listener exists.
+ *   NOTE the combination `exitOnUncaught:false` + `none`: it reads like "never end my process", but no
+ *   listener is installed, so Node's own default still terminates it — and Bugsee reports nothing about
+ *   the one thing that killed it. `'warn'` is the setting that means "stay alive AND tell me".
  *
  * This setting is the SOLE authority for the rejection path. `exitOnUncaught` is named for uncaught
  * exceptions and no longer gates rejections: composing the two let an exception option silently downgrade

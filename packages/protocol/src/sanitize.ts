@@ -236,6 +236,88 @@ function redactJsonPairs(body: string): string {
  * a regex, so a large body cannot backtrack.
  */
 /**
+ * `<tag …>text` — the element-text pass. No backreference to the closing tag: it matches an open tag, then
+ * the text up to the next `<`, which is enough to decide and cannot backtrack.
+ *
+ * The attribute group must START with whitespace or `/`, neither of which is in the tag-name class. That
+ * is load-bearing, not stylistic: with an attribute group that could also match name characters, the two
+ * quantifiers overlap and an unterminated tag (`<aaaa…` with no `>`) makes the name give back one
+ * character at a time, retrying the attributes to end-of-string each time. My first version did exactly
+ * that and cost 36 SECONDS on a 200 KB input — a ReDoS written into the pass I added in the round whose
+ * theme was shipping ReDoS while fixing ReDoS. With the boundary explicit it is 1.4 ms at 1 MB.
+ *
+ * Accepted limitation: `[^>]*` ends the tag at a `>` inside a quoted attribute value, so `<a b="x>y">`
+ * is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent one.
+ */
+const XML_ELEMENT = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g;
+
+/** ` attr="value"` / ` attr='value'` — the attribute pass. */
+const XML_ATTRIBUTE = /(\s)([A-Za-z_][\w.:-]*)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
+
+/**
+ * Does this body look like an XML DOCUMENT, whatever the Content-Type claims?
+ *
+ * A leading `<` is not enough. `<config auth="basic" retries="3"/>` is a config line an existing test
+ * requires be left byte-for-byte alone, and `<password>=hunter2` is form-ish prose — both start with `<`.
+ * Requiring an XML declaration or a closing tag keeps shape-detection to things that really are documents;
+ * a self-closing single element is only treated as XML when the Content-Type says so.
+ */
+function looksLikeXml(body: string): boolean {
+  const head = body.trimStart();
+  return head.startsWith('<?xml') || (head.startsWith('<') && /<\/[A-Za-z_]/.test(body));
+}
+
+/** Is this a Content-Type that denotes XML — `application/xml`, `text/xml`, or an RFC 6839 `+xml` suffix
+ *  (`application/soap+xml`, `application/atom+xml`, …)? */
+function isXmlContentType(contentType: string | undefined): boolean {
+  const lower = (contentType ?? '').toLowerCase();
+  const semi = lower.indexOf(';');
+  const media = (semi === -1 ? lower : lower.slice(0, semi)).trim();
+  return media === 'application/xml' || media === 'text/xml' || media.endsWith('+xml');
+}
+
+/**
+ * Redact sensitive element text and attribute values in an XML body.
+ *
+ * Multipart got a structural reader and XML did not, though it is a far more common enterprise wire format
+ * than STOMP — which does have one. `<password>hunter2</password>` carries no `=` for the form pass, and
+ * the colon pass's HEADER_TOKEN rejects `<password>` as a field name, so every textual pass missed it and
+ * a SOAP login body shipped its credential verbatim.
+ *
+ * Keyed on the TAG or ATTRIBUTE NAME being sensitive, so ordinary markup and prose are untouched. Returns
+ * undefined when nothing changed, so the caller can fall through to the other passes.
+ */
+function redactXml(body: string): string | undefined {
+  // The marker is XML-ESCAPED here and nowhere else. A bare `<redacted>` inside a document would read as a
+  // tag, so a consumer parsing the captured body would see the SDK invent an element; escaping the whole
+  // output instead would destroy every tag in the document.
+  const marker = REDACTED.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let changed = false;
+  const out = body.replace(XML_ELEMENT, (match, tag: string, attrs: string, text: string) => {
+    const scrubbed = attrs.replace(
+      XML_ATTRIBUTE,
+      (attrMatch, space: string, name: string, eq: string, dq?: string, sq?: string) => {
+        if (!isSensitiveKey(name)) {
+          return attrMatch;
+        }
+        changed = true;
+        return dq !== undefined
+          ? `${space}${name}${eq}"${marker}"`
+          : `${space}${name}${eq}'${marker}'`;
+      },
+    );
+    // Only the text of a SENSITIVE tag is replaced; whitespace-only text is left alone so indentation
+    // between nested elements is not turned into a marker.
+    if (!isSensitiveKey(tag) || text.trim() === '') {
+      return `<${tag}${scrubbed}>${text}`;
+    }
+    changed = true;
+    return `<${tag}${scrubbed}>${marker}`;
+  });
+  return changed ? out : undefined;
+}
+
+/**
  * The `name` parameter of a part's Content-Disposition, or undefined.
  *
  * Anchored on `;` or whitespace so it cannot match inside `filename=`. The un-anchored `/name="([^"]*)"/`
@@ -338,6 +420,15 @@ export function sanitizeBody(
   // meant redacting one part switched the form and colon passes off for the whole body — so a part holding
   // `api_key: sk_live_…` or `token=…` shipped in the clear BECAUSE a sibling part had been redacted.
   // Redacting one secret un-redacted another.
+  // XML by TYPE or by SHAPE, for the same reason JSON is: a label must never buy a body less redaction
+  // than its content earns, and SOAP/enterprise traffic arrives under a long tail of `+xml` media types.
+  // Like multipart, this ADDS to the textual passes rather than replacing them.
+  if (isXmlContentType(contentType) || looksLikeXml(body)) {
+    const xml = redactXml(body);
+    if (xml !== undefined) {
+      return redactShapes(xml, options);
+    }
+  }
   const multipart = redactMultipart(body, contentType) ?? body;
   return redactShapes(redactSensitiveColonLines(redactFormBody(multipart)), options);
 }

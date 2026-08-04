@@ -433,6 +433,83 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
   });
 });
 
+describe('sanitizeBody — XML', () => {
+  // Multipart got a structural reader; XML did not, and it is a far more common enterprise wire format
+  // than STOMP — which DOES have one. `<password>hunter2</password>` has no `=` for the form pass, and the
+  // colon pass's HEADER_TOKEN rejects `<password>` as a field name, so every textual pass missed it.
+  it.each([
+    ['element text', '<login><password>hunter2</password></login>'],
+    ['SOAP-ish namespaced tag', '<s:Body><s:Password>hunter2</s:Password></s:Body>'],
+    ['mixed case tag', '<Login><Password>hunter2</Password></Login>'],
+    ['tag with attributes', '<cred type="basic"><password lang="en">hunter2</password></cred>'],
+    ['attribute value', '<user name="bob" password="hunter2"/>'],
+    ['single-quoted attribute', "<user password='hunter2'/>"],
+    ['xml declaration', '<?xml version="1.0"?><r><api_key>hunter2</api_key></r>'],
+    ['whitespace around text', '<r><token>\n  hunter2\n</token></r>'],
+  ])('redacts a sensitive %s', (_label, body) => {
+    const out = sanitizeBody(body, 'application/xml');
+    expect(out).not.toContain('hunter2');
+    expect(out).toContain('redacted');
+  });
+
+  it('leaves non-sensitive XML byte-for-byte alone', () => {
+    for (const body of [
+      '<order><city>New York</city><qty>3</qty></order>',
+      '<a href="https://x.io/y">link</a>',
+      '<r><note>the password field is required</note></r>',
+    ]) {
+      expect(sanitizeBody(body, 'application/xml')).toBe(body);
+    }
+  });
+
+  it('keeps the surrounding markup intact', () => {
+    expect(sanitizeBody('<login><password>hunter2</password></login>', 'text/xml')).toBe(
+      '<login><password>&lt;redacted&gt;</password></login>',
+    );
+    expect(sanitizeBody('<user name="bob" password="hunter2"/>', 'text/xml')).toBe(
+      '<user name="bob" password="&lt;redacted&gt;"/>',
+    );
+  });
+
+  it('does not turn indentation into a marker when a sensitive tag holds ELEMENTS', () => {
+    // A sensitive tag whose content is child elements has whitespace-only text after its open tag. Without
+    // the whitespace guard that indentation becomes `<redacted>`, producing a document whose structure the
+    // SDK invented — and the nested values are still handled on their own iteration.
+    const body =
+      '<credentials>\n  <user>bob</user>\n  <password>hunter2</password>\n</credentials>';
+    const out = sanitizeBody(body, 'application/xml');
+    expect(out).toContain('<user>bob</user>'); // untouched, and its indentation intact
+    expect(out).not.toContain('hunter2');
+    expect(out).toBe(
+      '<credentials>\n  <user>bob</user>\n  <password>&lt;redacted&gt;</password>\n</credentials>',
+    );
+  });
+
+  it('reaches XML sent under an unhelpful Content-Type, by shape', () => {
+    expect(sanitizeBody('<login><password>hunter2</password></login>', 'text/plain')).not.toContain(
+      'hunter2',
+    );
+  });
+
+  it('does not read HTML prose as XML fields', () => {
+    // The pass is keyed on the TAG NAME being sensitive, so ordinary markup is untouched.
+    const html = '<p>Enter your password below</p><div class="pin">3</div>';
+    expect(sanitizeBody(html, 'text/html')).toBe(html);
+  });
+
+  it('stays linear on hostile XML-shaped input', () => {
+    for (const hostile of [
+      `<${'a'.repeat(200_000)}`, // an unterminated tag
+      '<a>'.repeat(80_000), // many opens, never closed
+      `<a ${'b="c" '.repeat(60_000)}>`, // one tag, very many attributes
+    ]) {
+      const started = Date.now();
+      sanitizeBody(hostile, 'application/xml');
+      expect(Date.now() - started).toBeLessThan(100);
+    }
+  });
+});
+
 describe('sanitizeBody — multipart/form-data', () => {
   const mk = (name: string, value: string) =>
     `------X\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n------X--`;
