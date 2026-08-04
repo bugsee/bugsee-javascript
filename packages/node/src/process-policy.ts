@@ -60,7 +60,9 @@ export function foreignListenerCount(proc: ListenerSource, event: string): numbe
  * How an unhandled promise rejection is disposed of (decision D2).
  *
  * - `preserve` (DEFAULT) — capture it, then reproduce Node's own outcome: print to stderr and exit 1. The
- *   only setting consistent with Bugsee's binding rule that the SDK never alters host behaviour.
+ *   only setting consistent with Bugsee's binding rule that the SDK never alters host behaviour. "Node's
+ *   own outcome" is READ, not assumed: under a host-set `--unhandled-rejections=warn|none` (via argv or
+ *   NODE_OPTIONS) Node keeps the process alive, and so does this — see {@link nodeTerminatesOnRejection}.
  * - `warn` — capture it and print, but keep the process alive. This is Sentry's default; it is a real
  *   behaviour change versus an uninstrumented process, so it is opt-in here rather than the default.
  * - `none` — do not capture rejections at all. Node's untouched default applies, since no listener exists.
@@ -70,6 +72,38 @@ export function foreignListenerCount(proc: ListenerSource, event: string): numbe
  * `preserve` to `warn`, which is the behaviour change `preserve` exists to prevent.
  */
 export type UnhandledRejectionMode = 'preserve' | 'warn' | 'none';
+
+/**
+ * Would Node ITSELF have terminated this process on an unhandled rejection?
+ *
+ * `preserve` means "reproduce Node's own outcome", so it has to ask what that outcome actually is rather
+ * than assume the default. A host can set `--unhandled-rejections=warn|none|warn-with-error-code` and keep
+ * its process alive; under those flags `preserve` was calling `process.exit(1)` and killing a process Node
+ * would have kept running — the exact inversion of the bug `preserve` exists to prevent, and the option
+ * that used to work around it (`exitOnUncaught:false`) no longer gates this path.
+ *
+ * The flag arrives two ways and BOTH must be read: `execArgv` when passed on the command line, and
+ * `NODE_OPTIONS` when set in the environment (it is not reflected into `execArgv`). `throw` and `strict`
+ * both terminate; an unset/unknown value is Node's default, which terminates.
+ */
+export function nodeTerminatesOnRejection(source: {
+  execArgv?: readonly string[];
+  env?: Record<string, string | undefined>;
+}): boolean {
+  const flags = [...(source.execArgv ?? []), ...(source.env?.NODE_OPTIONS ?? '').split(/\s+/)];
+  // The LAST occurrence wins, matching Node's own precedence for a repeated flag.
+  let mode: string | undefined;
+  for (const flag of flags) {
+    if (flag.startsWith('--unhandled-rejections=')) {
+      mode = flag.slice('--unhandled-rejections='.length);
+    }
+  }
+  // Only the three modes that keep the process alive suppress the exit. Anything else — unset, `throw`,
+  // `strict`, or a value we do not recognise — falls back to Node's default, which terminates. Node itself
+  // refuses to boot on an unrecognised value, so that branch is unreachable in practice; defaulting it to
+  // "terminates" keeps a future Node mode from silently turning `preserve` into `warn`.
+  return mode !== 'warn' && mode !== 'none' && mode !== 'warn-with-error-code';
+}
 
 /** Print what Node would have printed, so the crash artifact survives the SDK suppressing the default. */
 export function printFatal(label: string, value: unknown, write: (text: string) => void): void {

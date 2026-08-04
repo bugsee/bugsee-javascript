@@ -398,6 +398,47 @@ describe('launch (webview)', () => {
       expect(fake.msgs().some((m) => (m as { k?: string }).k === 'secure')).toBe(false);
     });
 
+    it('stays silent on the native `snapshot` COMMAND too when the probe failed', () => {
+      // The `start()` path was gated; its sibling was not. `obscuring?.emit()` on the snapshot command ran
+      // unconditionally, so native asking for a frame still got a `secure` message it had never negotiated
+      // — on the page whose collection was just declared broken. "Silent on the wire" has to mean every
+      // path that can reach the wire, not the one the fix happened to be looking at.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const broken = {
+        ...(dom.document as unknown as Record<string, unknown>),
+        querySelectorAll: () => {
+          throw new Error('page broke the DOM');
+        },
+      };
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: broken as unknown as Document,
+          onError: vi.fn(),
+        }),
+      );
+      sendControl(fake.global, { command: 'snapshot' });
+      expect(fake.msgs().some((m) => (m as { k?: string }).k === 'secure')).toBe(false);
+    });
+
+    it('DOES post on the native `snapshot` command when the probe succeeded', () => {
+      // The canary for the test above. Without this, "no secure message" would also be satisfied by a
+      // control channel that never routes `snapshot` at all, and the assertion would prove nothing.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(5)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      const before = fake.msgs().filter((m) => (m as { k?: string }).k === 'secure').length;
+      sendControl(fake.global, { command: 'snapshot' });
+      expect(fake.msgs().filter((m) => (m as { k?: string }).k === 'secure').length).toBe(
+        before + 1,
+      );
+    });
+
     it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global })); // no document

@@ -77,6 +77,7 @@ import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import {
   foreignListenerCount,
   markOwnHandler,
+  nodeTerminatesOnRejection,
   printFatal,
   type UnhandledRejectionMode,
 } from './process-policy';
@@ -828,7 +829,14 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // because the SDK is installed. (The comment that stood here claimed "the uninstrumented equivalent
       // stays alive" — it does not; it dies.) A host that wants neither path to exit sets
       // `unhandledRejections:'warn'`, which is exactly what that mode is for.
-      proc.exit(1);
+      //
+      // …but "Node's outcome" is not a constant. A host running `--unhandled-rejections=warn` (or `none`,
+      // or via NODE_OPTIONS) keeps its process alive, and exiting here would kill a process Node would have
+      // kept — the exact inversion of the bug this mode prevents, with the previous workaround
+      // (`exitOnUncaught:false`) no longer gating this path. So `preserve` asks.
+      if (nodeTerminatesOnRejection(proc as { execArgv?: readonly string[] })) {
+        proc.exit(1);
+      }
     });
   });
   if (detectCrash && rejectionMode !== 'none') {

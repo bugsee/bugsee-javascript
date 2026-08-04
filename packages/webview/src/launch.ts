@@ -185,6 +185,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   let paused = false;
   let publicClient: Bugsee;
   let obscuring: ObscuringChannel | undefined; // TOP frame: the native I/O channel
+  // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
+  let obscuringWorks = false;
   let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
   const control = createBridgeControl({
     reportTrigger: options.reportTrigger ?? false,
@@ -199,7 +201,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
         void publicClient.flush();
       } else if (command === 'stop') {
         void publicClient.stop();
-      } else if (command === 'snapshot') {
+      } else if (command === 'snapshot' && obscuringWorks) {
+        // Gated on the same probe as `start()`. Ungated, native asking for a frame got a `secure` message
+        // it had never negotiated — on the page whose collection was just declared broken. "Silent on the
+        // wire" has to cover every path that reaches the wire, not the one the fix was looking at.
         obscuring?.emit();
       }
       // unknown → ignored.
@@ -350,7 +355,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
   // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
   // from `caps`.
-  const obscuringWorks = obscuring?.probe() === true;
+  obscuringWorks = obscuring?.probe() === true;
   const caps = obscuringWorks ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for

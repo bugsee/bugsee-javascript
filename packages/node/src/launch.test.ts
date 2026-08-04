@@ -708,6 +708,29 @@ describe('launch', () => {
     expect(fp.stderr.join('')).toContain('rejected'); // still reported and printed
   });
 
+  it('does NOT exit under `preserve` when the HOST configured --unhandled-rejections=warn', async () => {
+    // `preserve` means "reproduce Node's own outcome", and Node's outcome is not a constant: with this
+    // flag a real process survives and exits 0 (verified). Exiting anyway kills a process Node would have
+    // kept alive — the inversion of the very bug `preserve` prevents — and the previous escape hatch
+    // (`exitOnUncaught:false`) no longer gates this path, so `preserve` has to ask rather than assume.
+    const fp = fakeProcess();
+    (fp.proc as unknown as { execArgv: string[] }).execArgv = ['--unhandled-rejections=warn'];
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected'); // still captured and printed
+  });
+
+  it('still exits under `preserve` when the host flag says throw', async () => {
+    const fp = fakeProcess();
+    (fp.proc as unknown as { execArgv: string[] }).execArgv = ['--unhandled-rejections=throw'];
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1);
+  });
+
   it('still exits on a rejection under `preserve` with exitOnUncaught left at its default', async () => {
     const fp = fakeProcess();
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));

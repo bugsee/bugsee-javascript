@@ -3,6 +3,7 @@ import {
   foreignListenerCount,
   type ListenerSource,
   markOwnHandler,
+  nodeTerminatesOnRejection,
   printFatal,
 } from './process-policy';
 
@@ -84,5 +85,51 @@ describe('printFatal', () => {
     const write = vi.fn();
     printFatal('x', 'y', write);
     expect((write.mock.calls[0]?.[0] as string).endsWith('\n')).toBe(true);
+  });
+});
+
+describe('nodeTerminatesOnRejection', () => {
+  // `preserve` reproduces NODE's outcome, so it must read what that outcome is. A host running
+  // `--unhandled-rejections=warn` keeps its process alive (verified against real node: exit 0), and
+  // `preserve` was calling process.exit(1) anyway -- killing a process Node would have kept running, which
+  // is the exact inversion of the bug `preserve` exists to prevent.
+  it.each([
+    ['unset', {}, true],
+    ['throw', { execArgv: ['--unhandled-rejections=throw'] }, true],
+    ['strict', { execArgv: ['--unhandled-rejections=strict'] }, true],
+    ['warn', { execArgv: ['--unhandled-rejections=warn'] }, false],
+    ['none', { execArgv: ['--unhandled-rejections=none'] }, false],
+    ['warn-with-error-code', { execArgv: ['--unhandled-rejections=warn-with-error-code'] }, false],
+    ['an unknown value', { execArgv: ['--unhandled-rejections=bogus'] }, true],
+  ])('reads the mode from execArgv: %s', (_label, source, expected) => {
+    expect(nodeTerminatesOnRejection(source)).toBe(expected);
+  });
+
+  it('reads the mode from NODE_OPTIONS too, which execArgv does NOT reflect', () => {
+    // Verified against real node: `NODE_OPTIONS=--unhandled-rejections=warn` lands in process.env only.
+    expect(
+      nodeTerminatesOnRejection({ env: { NODE_OPTIONS: '--unhandled-rejections=warn' } }),
+    ).toBe(false);
+    expect(
+      nodeTerminatesOnRejection({
+        env: { NODE_OPTIONS: '--max-old-space-size=4096 --unhandled-rejections=none' },
+      }),
+    ).toBe(false);
+    expect(nodeTerminatesOnRejection({ env: { NODE_OPTIONS: '--enable-source-maps' } })).toBe(true);
+    expect(nodeTerminatesOnRejection({ env: {} })).toBe(true);
+  });
+
+  it('lets the LAST occurrence win, as node does', () => {
+    expect(
+      nodeTerminatesOnRejection({
+        execArgv: ['--unhandled-rejections=warn', '--unhandled-rejections=throw'],
+      }),
+    ).toBe(true);
+    expect(
+      nodeTerminatesOnRejection({
+        execArgv: ['--unhandled-rejections=throw'],
+        env: { NODE_OPTIONS: '--unhandled-rejections=warn' },
+      }),
+    ).toBe(false);
   });
 });
