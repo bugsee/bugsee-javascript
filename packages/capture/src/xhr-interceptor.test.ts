@@ -60,6 +60,25 @@ function setup(opts: Partial<XhrInterceptorOptions> = {}) {
 }
 
 describe('createXhrInterceptor — capture', () => {
+  it('coerces a non-string header value, and still sends the caller’s own value', () => {
+    // `setRequestHeader('X-Count', 42)` is ordinary JS — the browser coerces it. This interceptor stored it
+    // RAW where its fetch and node:http siblings both String()-coerce, so a number reached the sanitizer,
+    // `redactShapes` threw on `.replace`, the emitter swallowed the throw, and the entry's whole `before`
+    // stage — request headers and request body — disappeared from the report with no diagnostic.
+    const { Xhr, events } = setup();
+    const xhr = new Xhr();
+    xhr.open('post', 'https://api/x');
+    (xhr as unknown as { setRequestHeader: (n: string, v: unknown) => void }).setRequestHeader(
+      'X-Count',
+      42,
+    );
+    xhr.send('payload');
+    const captured = events[0]?.[1] as { custom?: { headers?: Record<string, unknown> } };
+    expect(captured.custom?.headers?.['X-Count']).toBe('42');
+    // Passthrough is untouched: an interceptor must not alter what the application actually sent.
+    expect(xhr.reqHeaders['X-Count']).toBe(42);
+  });
+
   it('emits before then complete on load (method upcased, req+resp headers, passthrough)', () => {
     const { Xhr, events } = setup();
     const xhr = new Xhr();

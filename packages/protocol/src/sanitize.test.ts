@@ -67,6 +67,31 @@ describe('sanitizeHeaders', () => {
   });
 });
 
+describe('sanitizeHeaders — a non-string value must not throw', () => {
+  // `redactShapes` calls `value.length` then `value.replace`. A number throws, the throw is swallowed by
+  // MultiKeyEmitterBase's dispatch, and the WHOLE network entry disappears — request headers and request
+  // body both. Reachable because xhr-interceptor stored the `setRequestHeader` argument raw, where the
+  // fetch and node:http interceptors both String()-coerce it. One `setRequestHeader('X-Count', 42)` — which
+  // the browser itself coerces without complaint — silently deleted the request half of every such report.
+  it.each([
+    ['number', 42, '42'],
+    ['boolean', true, 'true'],
+    ['array', [1, 2], '1,2'],
+    ['null', null, 'null'],
+    ['undefined', undefined, 'undefined'],
+    ['object', { a: 1 }, '[object Object]'],
+  ])('coerces a %s header value instead of throwing', (_label, value, expected) => {
+    const headers = { 'X-Odd': value } as unknown as Record<string, string>;
+    expect(() => sanitizeHeaders(headers)).not.toThrow();
+    expect(sanitizeHeaders(headers)['X-Odd']).toBe(expected);
+  });
+
+  it('still redacts a sensitive header whose value is not a string', () => {
+    const headers = { authorization: 12345 } as unknown as Record<string, string>;
+    expect(sanitizeHeaders(headers).authorization).toBe('<redacted>');
+  });
+});
+
 describe('sanitizeParams', () => {
   it('redacts sensitive keys and shape-scans other values', () => {
     expect(sanitizeParams({ password: 'hunter2', note: 'sk_live_x', q: 'hello' })).toEqual({
@@ -135,6 +160,123 @@ describe('sanitizeJson', () => {
     const input = { token: 'x', nested: { secret: 's' } };
     sanitizeJson(input);
     expect(input).toEqual({ token: 'x', nested: { secret: 's' } });
+  });
+});
+
+describe('sanitizeBody — JSON that does not parse', () => {
+  // The textual fallbacks are structurally incapable of reading JSON: `redactFormBody` returns early (no
+  // `=`) and `redactSensitiveColonLines`'s HEADER_TOKEN rejects `{"password"` as a field name. So a body
+  // that LOOKS like JSON but fails JSON.parse got ZERO redaction — not partial, none.
+  it.each([
+    [
+      'NaN (Python json.dumps allow_nan — Flask/FastAPI + numpy/pandas)',
+      '{"password":"hunter2","score":NaN}',
+    ],
+    ['Infinity', '{"password":"hunter2","r":Infinity}'],
+    ['trailing comma', '{\n  "password": "hunter2",\n}'],
+    ['single quotes around the value', '{"password": \'hunter2\'}'],
+    ['truncated mid-document', '{"a":1,"password":"hunter2"'],
+  ])('redacts a sensitive key in unparseable JSON — %s', (_label, body) => {
+    const out = sanitizeBody(body, 'application/json');
+    expect(out).not.toContain('hunter2');
+    expect(out).toContain('redacted');
+  });
+
+  it('redacts an unquoted value too', () => {
+    expect(sanitizeBody('{"api_key":abc123,"n":NaN}', 'application/json')).not.toContain('abc123');
+  });
+
+  it('leaves non-sensitive keys in unparseable JSON byte-for-byte alone', () => {
+    const body = '{"city":"NY","score":NaN}';
+    expect(sanitizeBody(body, 'application/json')).toBe(body);
+  });
+
+  it('changes only the value’s bytes, keeping the original separator', () => {
+    expect(sanitizeBody('{\n  "password" :  "hunter2",\n  "n": NaN\n}', 'application/json')).toBe(
+      '{\n  "password" :  "<redacted>",\n  "n": NaN\n}',
+    );
+  });
+
+  it('reaches a secret nested inside an object or array', () => {
+    // An unquoted-value alternative that admits `{` swallows the nested object as the OUTER key's value,
+    // moving lastIndex past the nested secret entirely.
+    expect(sanitizeBody('{"outer":{"password":"p"},"n":NaN}', 'application/json')).toBe(
+      '{"outer":{"password":"<redacted>"},"n":NaN}',
+    );
+    expect(sanitizeBody('{"arr":[{"token":"t"}],"n":NaN}', 'application/json')).toBe(
+      '{"arr":[{"token":"<redacted>"}],"n":NaN}',
+    );
+  });
+
+  it('stays linear on hostile JSON-shaped input', () => {
+    // The unanchored form of this pattern put a candidate start at every `"` — 16 ms at 8 KB, 227 ms at
+    // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
+    // over, which is why it now has a test rather than a comment.
+    const hostile = `{"${'\\"'.repeat(128_000)}`; // ~256 KB, escaped quotes, never closed
+    const started = Date.now();
+    sanitizeBody(hostile, 'application/json');
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('does not apply the JSON pass to a body that is not JSON-shaped', () => {
+    // The pass is gated on the JSON branch; prose quoting `"password": x` in a text body is not a document.
+    const prose = 'the docs say "password": is required';
+    expect(sanitizeBody(prose, 'text/plain')).toBe(prose);
+  });
+});
+
+describe('sanitizeBody — multipart/form-data', () => {
+  const mk = (name: string, value: string) =>
+    `------X\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n------X--`;
+
+  it('redacts a sensitive part value, leaving the framing byte-exact', () => {
+    // The value sits alone after a blank line with no `=` and no `:`, and the part header's own key
+    // (Content-Disposition) is not sensitive, so every textual pass missed it entirely.
+    //
+    // Asserted whole, not with `not.toContain`: the CRLF before the closing boundary is FRAMING. Dropping
+    // it still passes a "secret is gone" check while producing a body no multipart parser can read.
+    expect(sanitizeBody(mk('password', 'hunter2'), 'multipart/form-data; boundary=----X')).toBe(
+      '------X\r\nContent-Disposition: form-data; name="password"\r\n\r\n<redacted>\r\n------X--',
+    );
+  });
+
+  it('leaves a non-sensitive part untouched, boundaries and CRLFs intact', () => {
+    const body = mk('city', 'New York');
+    expect(sanitizeBody(body, 'multipart/form-data; boundary=----X')).toBe(body);
+  });
+
+  it('redacts only the sensitive part in a multi-part body', () => {
+    const body =
+      `------X\r\nContent-Disposition: form-data; name="user"\r\n\r\nbob\r\n` +
+      `------X\r\nContent-Disposition: form-data; name="password"\r\n\r\nhunter2\r\n------X--`;
+    const out = sanitizeBody(body, 'multipart/form-data; boundary=----X');
+    expect(out).toContain('bob');
+    expect(out).not.toContain('hunter2');
+  });
+
+  it('handles a quoted boundary parameter', () => {
+    const out = sanitizeBody(mk('password', 'hunter2'), 'multipart/form-data; boundary="----X"');
+    expect(out).not.toContain('hunter2');
+  });
+
+  it('falls back to sniffing the delimiter when the Content-Type carries no boundary', () => {
+    expect(sanitizeBody(mk('password', 'hunter2'), 'multipart/form-data')).not.toContain('hunter2');
+  });
+
+  it('falls through to the textual passes when the declared boundary is absent from the body', () => {
+    // A mislabelled body must still get the form/colon/shape passes, not be handed to a multipart reader
+    // that finds nothing and reports success.
+    expect(sanitizeBody('password=hunter2', 'multipart/form-data; boundary=----X')).toBe(
+      'password=%3Credacted%3E',
+    );
+  });
+
+  it('does not read a `--` prefixed body with no CRLF as multipart', () => {
+    // `body.indexOf('\r\n')` is -1 here, and `slice(0, -1)` would make a delimiter of the whole body minus
+    // its last character — matching nothing, or worse, splitting on near-arbitrary text.
+    expect(sanitizeBody('--just a dashed line, password=hunter2', 'text/plain')).toBe(
+      '--just a dashed line, password=%3Credacted%3E',
+    );
   });
 });
 
@@ -390,8 +532,14 @@ describe('sanitizeBody — colon-delimited (STOMP / header-style) bodies', () =>
   it('never corrupts a structured body that it cannot parse', () => {
     // `{"password"` is not a field name, and `<config auth` is not a form key. Reading either as one used to
     // replace the rest of the line/body, leaving unparseable output in the report.
+    //
+    // The JSON assertion was `toBe(brokenJson)` — asserting the body came back byte-identical, secret and
+    // all. That encoded the leak rather than the intent: "does not corrupt" means the STRUCTURE survives,
+    // not that the value does. Only the value is replaced now; everything around it is still byte-exact.
     const brokenJson = '{"password": "x", }} not really json';
-    expect(sanitizeBody(brokenJson, 'application/json5')).toBe(brokenJson);
+    expect(sanitizeBody(brokenJson, 'application/json5')).toBe(
+      '{"password": "<redacted>", }} not really json',
+    );
     expect(sanitizeBody('<config auth="basic" retries="3" host="a.example"/>', 'text/plain')).toBe(
       '<config auth="basic" retries="3" host="a.example"/>',
     );
@@ -487,6 +635,15 @@ describe('sanitizeBody — NDJSON', () => {
     // textual passes cannot read JSON, so it shipped byte-for-byte unredacted.
     expect(sanitizeBody('{"password":"x"}\n{"token":"y"}', 'application/x-ndjson')).toBe(
       `{"password":"${R}"}\n{"token":"${R}"}`,
+    );
+  });
+
+  it('preserves CRLF line endings in an ndjson body', () => {
+    // `split('\n')` leaves a trailing `\r` on each line; JSON.parse tolerates it and JSON.stringify drops
+    // it, so every `\r` in the body was silently deleted. A byte the SDK invented losing is still a byte
+    // the report no longer matches the wire on.
+    expect(sanitizeBody('{"password":"x"}\r\n{"a":1}', 'application/x-ndjson')).toBe(
+      '{"password":"<redacted>"}\r\n{"a":1}',
     );
   });
 

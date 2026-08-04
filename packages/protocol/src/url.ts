@@ -22,25 +22,51 @@ import { redactShapes, type ShapeRedactionOptions } from './shapes';
 // segment. Never throws: pure string work, and the one call that can throw (`decodeURIComponent`, inside
 // the pair scanner) is guarded there.
 
+/** Index of the first of `chars` at or after `from`, or `fallback` when none is present. */
+function firstOf(url: string, chars: readonly string[], fallback: number, from = 0): number {
+  let best = fallback;
+  for (const c of chars) {
+    const i = url.indexOf(c, from);
+    if (i >= 0 && i < best) {
+      best = i;
+    }
+  }
+  return best;
+}
+
+/**
+ * Where the authority begins, or -1 when the URL has none (relative or schemeless).
+ *
+ * The protocol-relative case is tested FIRST. `indexOf('://')` is unbounded, so consulting it first meant a
+ * nested absolute URL anywhere in the query (`//bob:pw@a.io/p?next=https://c.io/`) moved the authority
+ * window into the QUERY and the real authority was never examined — leaving the branch dead in precisely
+ * the shape it was added to handle.
+ */
+function authorityStartOf(url: string): number {
+  if (url.startsWith('//')) {
+    return 2;
+  }
+  const schemeEnd = url.indexOf('://');
+  return schemeEnd >= 0 ? schemeEnd + 3 : -1;
+}
+
+/** Where the authority ends — the start of the path, query or fragment. 0 for a relative URL, which has no
+ *  authority and whose path therefore begins at the start of the string. */
+function authorityEnd(url: string): number {
+  const start = authorityStartOf(url);
+  return start < 0 ? 0 : firstOf(url, ['/', '?', '#'], url.length, start);
+}
+
 /** Redact the userinfo credential in `scheme://user:pass@host/…`, if any. */
 function redactUserinfo(url: string): string {
   // `scheme://` or a protocol-relative `//host` — the latter still carries a real authority, and its
   // userinfo was surviving because only `://` was recognised.
-  const schemeEnd = url.indexOf('://');
-  const authorityStart = schemeEnd >= 0 ? schemeEnd + 3 : url.startsWith('//') ? 2 : -1;
+  const authorityStart = authorityStartOf(url);
   if (authorityStart < 0) {
     return url; // relative or schemeless — no authority, so no userinfo
   }
   // The authority ends at the first `/`, `?` or `#`; an `@` past that point is path/query/fragment text.
-  let authorityEnd = url.length;
-  for (let i = authorityStart; i < url.length; i += 1) {
-    const c = url[i];
-    if (c === '/' || c === '?' || c === '#') {
-      authorityEnd = i;
-      break;
-    }
-  }
-  const at = url.lastIndexOf('@', authorityEnd - 1);
+  const at = url.lastIndexOf('@', firstOf(url, ['/', '?', '#'], url.length, authorityStart) - 1);
   if (at < authorityStart) {
     return url; // no userinfo in the authority
   }
@@ -86,6 +112,16 @@ export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOp
  */
 export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): string {
   let out = redactUserinfo(url);
+
+  // The PATH, for `;`-delimited matrix parameters — `/app;jsessionid=…` is canonical Java servlet URL
+  // rewriting, and `jsessionid` is in the denylist, so the denylist already intended to catch it while the
+  // scan window (first `?` onward) prevented it. Scanned with `/` as an extra separator so a matrix value
+  // ends at its path segment instead of consuming the rest of the path.
+  const pathStart = out.indexOf('/', authorityEnd(out));
+  const pathEnd = firstOf(out, ['?', '#'], out.length);
+  if (pathStart >= 0 && pathStart < pathEnd) {
+    out = redactSensitivePairs(out, pathStart, pathEnd, true);
+  }
 
   // The FIRST `?` only. A nested query (`?next=https://y/?token=SECRET`) is deliberately NOT scanned — the
   // version that did was mutually recursive and became a remote DoS. Asserted as a known gap in url.test.ts.

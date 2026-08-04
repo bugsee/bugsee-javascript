@@ -8,14 +8,23 @@ import type { NetworkEvent, NoBodyReason } from './wire';
 // shape pass (§shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
 // (e.g. from JSON.parse'd untrusted data) is stored as own data and cannot corrupt a prototype.
 
-/** Redacts sensitive header values entirely; shape-scans the rest. Header names/casing preserved. */
+/**
+ * Redacts sensitive header values entirely; shape-scans the rest. Header names/casing preserved.
+ *
+ * Values are COERCED, not trusted to be strings. The type says `string`, but headers arrive from
+ * application code: `setRequestHeader('X-Count', 42)` is ordinary JS that the browser coerces without
+ * complaint. `redactShapes` then called `.replace` on a number and threw, the throw was swallowed by the
+ * emitter's dispatch, and the entire network entry vanished — request headers AND request body — with no
+ * diagnostic. A sanitizer silently deleting the data it was asked to sanitize is the worst failure mode
+ * available to it, so this fails toward "capture something".
+ */
 export function sanitizeHeaders(
   headers: Record<string, string>,
   options?: ShapeRedactionOptions,
 ): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
   for (const [name, value] of Object.entries(headers)) {
-    out[name] = isSensitiveHeader(name) ? REDACTED : redactShapes(value, options);
+    out[name] = isSensitiveHeader(name) ? REDACTED : redactShapes(String(value), options);
   }
   return out;
 }
@@ -112,7 +121,11 @@ function sanitizeNdjson(body: string, options?: ShapeRedactionOptions): string |
       continue;
     }
     try {
-      out.push(JSON.stringify(sanitizeJson(JSON.parse(line), options)));
+      // `split('\n')` leaves the `\r` of a CRLF on the end of the line. JSON.parse tolerates it and
+      // JSON.stringify discards it, so every `\r` in the body was silently deleted — the re-serialized
+      // report then differed from the bytes on the wire. Strip it for parsing, put it back after.
+      const cr = line.endsWith('\r') ? '\r' : '';
+      out.push(JSON.stringify(sanitizeJson(JSON.parse(line), options)) + cr);
     } catch {
       return undefined; // one unparseable line → not NDJSON; leave the body to the textual passes
     }
@@ -124,6 +137,81 @@ function sanitizeNdjson(body: string, options?: ShapeRedactionOptions): string |
 function looksLikeJson(body: string): boolean {
   const first = body.trimStart()[0];
   return first === '{' || first === '[';
+}
+
+/**
+ * `"key": value` pairs, for JSON-SHAPED text that does not parse.
+ *
+ * ANCHORED on `[{,]` — a JSON key is always preceded by an opening brace or a comma. That is not cosmetic:
+ * the unanchored form was quadratic for exactly the reason the JWT pattern was, a candidate start at every
+ * `"`. On `{"\"\"\"…` (escaped quotes, never closed) it cost 16 ms at 8 KB and 227 ms at 32 KB; anchored it
+ * is 0.43 ms at 256 KB. I wrote the unanchored version first, in this same review round, having just fixed
+ * that defect one file over.
+ *
+ * The unquoted-value alternative excludes `{` and `"` so a scalar cannot swallow a nested object — without
+ * that, `{"outer":{"password":"p"}}` consumed the inner object as `outer`'s value and the nested secret
+ * escaped. The separator is captured and replayed so only the VALUE's bytes change.
+ */
+const JSON_PAIR = /([{,]\s*)"((?:[^"\\]|\\.)*)"(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\]\s{"]+)/g;
+
+/**
+ * Textual key redaction for a body that is JSON-shaped but is NOT a JSON document.
+ *
+ * Reached when both `JSON.parse` and the NDJSON pass fail, where the fallbacks are structurally blind: the
+ * form pass needs an `=`, and the colon pass's HEADER_TOKEN rejects `{"password"` as a field name. So a body
+ * like `{"password":"hunter2","score":NaN}` got ZERO redaction — not partial, none. That exact shape is what
+ * Python's `json.dumps` emits by default (`allow_nan=True`), so Flask/FastAPI/Django responses carrying
+ * numpy or pandas values hit it routinely; truncated and trailing-comma documents land here too.
+ */
+function redactJsonPairs(body: string): string {
+  return body.replace(JSON_PAIR, (match, lead: string, key: string, separator: string) =>
+    isSensitiveKey(key) ? `${lead}"${key}"${separator}"${REDACTED}"` : match,
+  );
+}
+
+/**
+ * Redact sensitive parts of a `multipart/form-data` body, or undefined when it is not multipart.
+ *
+ * Nothing else could reach these: a part's value sits alone after a blank line carrying no `=` and no `:`,
+ * and the part header's own key (`Content-Disposition`) is not sensitive — so a file-upload login form
+ * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
+ * a regex, so a large body cannot backtrack.
+ */
+function redactMultipart(body: string, contentType: string | undefined): string | undefined {
+  const declared = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType ?? '');
+  // The Content-Type is the authority, but a captured body sometimes arrives without one; the first line of
+  // a multipart body IS the delimiter, so sniff it rather than give up and ship the value. `firstLine` must
+  // be checked before slicing — a body starting with `--` and carrying no CRLF gives `indexOf` -1, and
+  // `slice(0, -1)` would silently produce a delimiter one character short of the whole body.
+  const firstLine = body.indexOf('\r\n');
+  const sniffed =
+    body.startsWith('--') && firstLine > 2
+      ? body.slice(0, firstLine)
+      : /* not multipart */ undefined;
+  const delimiter = declared === null ? sniffed : `--${declared[1] ?? declared[2]}`;
+  if (delimiter === undefined || delimiter === '--') {
+    return undefined;
+  }
+  const parts = body.split(delimiter);
+  if (parts.length < 2) {
+    return undefined;
+  }
+  let changed = false;
+  const out = parts.map((part) => {
+    const sep = part.indexOf('\r\n\r\n');
+    if (sep < 0) {
+      return part; // a preamble, the closing `--`, or a part with no header block
+    }
+    const name = /name="([^"]*)"/i.exec(part.slice(0, sep))?.[1];
+    if (name === undefined || !isSensitiveKey(name)) {
+      return part;
+    }
+    changed = true;
+    const value = part.slice(sep + 4);
+    // Keep the CRLF that separates the value from the next boundary — it is framing, not content.
+    return `${part.slice(0, sep)}\r\n\r\n${REDACTED}${value.endsWith('\r\n') ? '\r\n' : ''}`;
+  });
+  return changed ? out.join(delimiter) : undefined;
 }
 
 /**
@@ -158,7 +246,19 @@ export function sanitizeBody(
       if (ndjson !== undefined) {
         return ndjson;
       }
+      // JSON-shaped but not a document (NaN/Infinity, a trailing comma, truncation). Read the pairs
+      // textually rather than hand the body to passes that cannot see JSON keys at all — then still run
+      // the form and colon passes, because a body can arrive under a JSON Content-Type and be neither
+      // (`password=hunter2` sent as `application/json` is real, and only the form pass reads it).
+      return redactShapes(
+        redactSensitiveColonLines(redactFormBody(redactJsonPairs(body))),
+        options,
+      );
     }
+  }
+  const multipart = redactMultipart(body, contentType);
+  if (multipart !== undefined) {
+    return redactShapes(multipart, options);
   }
   return redactShapes(redactSensitiveColonLines(redactFormBody(body)), options);
 }

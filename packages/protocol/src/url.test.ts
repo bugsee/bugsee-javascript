@@ -270,6 +270,38 @@ describe('sanitizeUrl — separators, nesting, and bounds', () => {
     expect(sanitizeUrl('//user:pw@example.com/a')).toBe('//user:%3Credacted%3E@example.com/a');
   });
 
+  it('redacts protocol-relative userinfo even when a `://` appears LATER in the URL', () => {
+    // `indexOf('://')` was consulted first and is unbounded, so a nested absolute URL in the query moved
+    // `authorityStart` into the QUERY and the real authority was never examined. That is exactly the shape
+    // the protocol-relative branch was added for, so the branch was dead in its own motivating case.
+    expect(sanitizeUrl('//bob:SECRET@a.io/p?next=https://c.io/d')).toBe(
+      '//bob:%3Credacted%3E@a.io/p?next=https://c.io/d',
+    );
+  });
+
+  it('redacts a `;`-delimited matrix / path parameter', () => {
+    // `;jsessionid=` is canonical Java servlet URL rewriting, and `jsessionid` is IN the denylist — so the
+    // denylist intended to catch this and the scan window (first `?` onward only) prevented it. The path is
+    // scanned with `/` as an additional separator, so the value ends at the segment, not at the query.
+    expect(sanitizeUrl('https://a.io/app;jsessionid=SECRETVALUE/index.jsp')).toBe(
+      'https://a.io/app;jsessionid=%3Credacted%3E/index.jsp',
+    );
+    expect(sanitizeUrl('https://a.io/p;token=SECRETVALUE')).toBe(
+      'https://a.io/p;token=%3Credacted%3E',
+    );
+  });
+
+  it('does not read an ordinary path segment as a matrix parameter', () => {
+    for (const url of [
+      'https://a.io/a/b/c',
+      'https://a.io/files/report=final.pdf',
+      'https://a.io/v1/users/42?page=2',
+      'https://a.io/a;b;c/d',
+    ]) {
+      expect(sanitizeUrl(url)).toBe(url);
+    }
+  });
+
   it('does not spend unbounded time on a hostile URL', () => {
     // The JWT pattern backtracks per `eyJ`; 200 KB measured at 7.7 s synchronously on the app's thread.
     const hostile = `https://x/${'eyJ'.repeat(70_000)}`;

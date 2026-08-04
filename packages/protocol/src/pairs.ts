@@ -63,7 +63,14 @@ function decodeKey(raw: string): string {
  * through two review rounds — including the rewrite whose stated purpose was removing a DoS from this file.
  * The single pass is also faster on ordinary queries (18.7 ms → 13.7 ms on a 977 KB query string).
  */
-export function redactSensitivePairs(input: string, start: number, end: number): string {
+export function redactSensitivePairs(
+  input: string,
+  start: number,
+  end: number,
+  /** Also break segments on `/`. Set when scanning a URL PATH, where `;jsessionid=…` is a matrix parameter
+   *  whose value ends at the path segment — without it the redaction would swallow the rest of the path. */
+  splitOnSlash = false,
+): string {
   let out: string | undefined;
   let copyFrom = 0;
   // Clamp into the string. `pos = pairEnd + 1` does not advance when `pairEnd` is -Infinity, so an
@@ -78,8 +85,8 @@ export function redactSensitivePairs(input: string, start: number, end: number):
     let pairEnd = pos;
     for (; pairEnd < stop; pairEnd += 1) {
       const c = input[pairEnd];
-      if (c === '&' || c === ';') {
-        break; // SEPARATORS, spelled out so the scan stays a single character walk
+      if (c === '&' || c === ';' || (splitOnSlash && c === '/')) {
+        break; // separators, spelled out so the scan stays a single character walk
       }
       if (eq < 0 && c === '=') {
         eq = pairEnd;

@@ -239,6 +239,42 @@ describe('createNetworkCaptureProvider', () => {
     expect(captured.custom?.error).toBe(expected);
   });
 
+  it.each([
+    ['statusText', 'Unauthorized: token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'],
+    ['reason', 'closing: password=hunter2'],
+    ['channel', 'refresh eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'],
+  ])('redacts the free-text field `%s`, which is remote-controlled', async (field, raw) => {
+    // These three carry text chosen by the SERVER, not the app: the HTTP reason phrase, the WebSocket
+    // CloseEvent reason (up to 123 bytes, and `close(4001, 'invalid token …')` is the idiomatic use), and
+    // the SSE event name. All three were copied through untouched while the comment above `sanitize()`
+    // called this "the single redaction point for every transport".
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ type: 'complete', [field]: raw }));
+    const captured = (await drainNetwork(store))?.[0]?.data as unknown as Record<string, string>;
+    expect(captured[field]).not.toContain('hunter2');
+    expect(captured[field]).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(captured[field]).toContain('redacted');
+  });
+
+  it('leaves an ordinary status phrase byte-for-byte alone', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({ type: 'complete', statusText: 'Not Found', reason: 'going away' }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.statusText).toBe('Not Found');
+    expect(captured.reason).toBe('going away');
+  });
+
   it('redacts customError even when it is the ONLY field that changes', async () => {
     // With a clean url, no headers and no body, an unchanged-check that ignores customError returns the
     // raw event — so the redaction above would run and then be thrown away.
