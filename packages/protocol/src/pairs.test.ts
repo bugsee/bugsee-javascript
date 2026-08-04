@@ -89,6 +89,52 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
     );
   });
 
+  it('leaves the region after `end` untouched when `end` lands ON an `=`', () => {
+    // The test above never places an `=` at `end`, so it does not defend its own boundary: relaxing the
+    // segment check to `eq <= pairEnd` passed the whole suite while writing a marker past `end`.
+    expect(redactSensitivePairs('@ password.=&x?"', 1, 11)).toBe('@ password.=&x?"');
+    expect(redactSensitivePairs('a=1&password=s', 0, 12)).toBe('a=1&password=s');
+  });
+
+  it('terminates on an out-of-range window instead of spinning forever', () => {
+    // `pos = pairEnd + 1` never advances when `pairEnd` is -Infinity, so the loop cannot exit. No in-repo
+    // caller can produce it (all four pass computed indices), but this is an exported function and a
+    // non-terminating loop in the capture path hangs the host application, not just the SDK.
+    expect(redactSensitivePairs('a=1&password=x', Number.NEGATIVE_INFINITY, 14)).toBe(
+      'a=1&password=%3Credacted%3E',
+    );
+    expect(redactSensitivePairs('a=1&password=x', -5, 99)).toBe('a=1&password=%3Credacted%3E');
+    expect(redactSensitivePairs('a=1', Number.NaN, 3)).toBe('a=1');
+  });
+
+  it('does not walk past the end of the string when `end` overshoots', () => {
+    // An `end` past `length` yields the right ANSWER either way — the scan just reads `undefined` — so only
+    // the cost is observable, and it has to be large enough to see: unclamped costs 31 ms at 10 million and
+    // 301 ms at 100 million, against 0 ms clamped. A 10-million bound passed the assertion at 50 ms.
+    const started = Date.now();
+    expect(redactSensitivePairs('a=1&password=x', 0, 100_000_000)).toBe(
+      'a=1&password=%3Credacted%3E',
+    );
+    expect(Date.now() - started).toBeLessThan(50);
+  });
+
+  it('scans a long separator run in linear time', () => {
+    // `indexOf('=', pos)` was unbounded by `end`, so every segment in a run carrying no `=` rescanned to
+    // end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M — quadratic, and reachable through
+    // `sanitizeUrl(event.url)`, which has no length cap. The header comment claimed "linear" throughout.
+    const hostile = `https://h/p?${'&'.repeat(400_000)}`;
+    const started = Date.now();
+    expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('scans a long `;` separator run in linear time too', () => {
+    const hostile = `https://h/p?${';'.repeat(400_000)}`;
+    const started = Date.now();
+    expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
   it('never throws on a malformed percent escape in the key', () => {
     // decodeURIComponent('%zz') throws; a URL we merely observed must never break capture.
     expect(() => all('%zz=v')).not.toThrow();

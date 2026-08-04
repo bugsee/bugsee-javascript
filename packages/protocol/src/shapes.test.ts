@@ -141,7 +141,76 @@ describe('the length bound is scoped to the JWT pattern alone', () => {
   });
 });
 
+describe('the JWT scan is linear, so size no longer costs coverage', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N';
+
+  it('redacts a JWT in a value far above the bound', () => {
+    // THE REGRESSION THIS FIXES. The bound was moved from `sanitizeUrl` into this function, where it
+    // silently came to gate `sanitizeBody`/`sanitizeJson`/`sanitizeHeaders`/`sanitizeParams` too — all of
+    // which called `redactShapes` UNBOUNDED before. Bodies capture at 20480 bytes by default, so every JWT
+    // in an 8193–20480 byte body shipped in the clear.
+    expect(redactShapes(`${'x'.repeat(40_000)} ${jwt}`)).toContain(R);
+    expect(redactShapes(`{"a":"${'y'.repeat(20_000)}","jwt":"${jwt}"}`)).toContain(R);
+  });
+
+  it('redacts EVERY JWT in a value, not just the first', () => {
+    // `/g` became load-bearing on a brand-new line when the pattern was lifted out of SHAPE_PATTERNS into
+    // its own `.replace()`. Every other JWT test uses exactly one JWT, so dropping the flag was invisible.
+    const two = `a=${jwt}&b=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIyIn0.sigB`;
+    expect(redactShapes(two)).toBe(`a=${R}&b=${R}`);
+  });
+
+  it('redacts every JWT ABOVE the bound too, where only the anchored pass runs', () => {
+    // Below the bound the two passes mask each other: dropping `/g` from the anchored pattern still passed
+    // every test, because the unanchored pass caught the second JWT with its own `/g`. Only above the bound
+    // is the anchored pattern's `/g` observable on its own.
+    const pad = 'x'.repeat(9000);
+    expect(redactShapes(`${pad} ${jwt} mid ${jwt}`)).toBe(`${pad} ${R} mid ${R}`);
+  });
+
+  it('does not treat `_` or `-` as a token boundary before `eyJ`', () => {
+    // They are IN the base64url class, so admitting them as leading delimiters puts a candidate start at
+    // every `_eyJ` and restores the quadratic blow-up the anchor exists to remove: 1915 ms at 128 KB.
+    const hostile = '_eyJ'.repeat(32_768); // 128 KB
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('stays fast on a huge hostile value — the pattern cannot backtrack', () => {
+    // 512 KB of `eyJ` cost 41.9 SECONDS before the pattern was anchored. Anchoring removes the overlapping
+    // start positions; the atomic-group emulation `(?=(x+))\1` removes the give-back.
+    const hostile = 'eyJ'.repeat(170_000); // ~512 KB
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('still matches a JWT glued mid-identifier, below the bound', () => {
+    // This is the ONLY class the anchored pattern gives up, and the bounded superset pass is what keeps it.
+    // Without a test here that pass is untested weight and would be deleted as dead code.
+    expect(redactShapes(`sometoken_${jwt}`)).toBe(`sometoken_${R}`);
+    expect(redactShapes(`XXX${jwt}`)).toBe(`XXX${R}`);
+  });
+
+  it('still matches a JWT after every delimiter a real payload uses', () => {
+    for (const lead of ['', ' ', 'Bearer ', '"', ':', '=', '/', ',', '\n', '{"t":"', '?tok=']) {
+      expect(redactShapes(`${lead}${jwt}`)).toBe(`${lead}${R}`);
+    }
+  });
+});
+
 describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
+  it('does not run the unanchored superset pass above 8 KB', () => {
+    // Pins the bound from ABOVE. Without this, `MAX_UNANCHORED_SCAN = 16_384` passed all 302 tests — the
+    // two existing tests only bracket it to [8042, 16499], a 2× window costing 43–53 ms/request. 8.4 KB is
+    // just above the intended bound: cheap at 8192, ~13 ms at any larger value.
+    const hostile = 'eyJ'.repeat(2_800); // 8400 bytes
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(5);
+  });
+
   it('is fast in the 8–32 KB window Node’s default header size lands in', () => {
     // Moving the bound into this function silently raised it from 8192 to 32768, widening the reachable
     // DoS window 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread CPU, and Node's default

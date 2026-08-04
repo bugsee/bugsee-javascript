@@ -27,9 +27,6 @@ import { isSensitiveKey, REDACTED_URL_ENCODED } from './sensitive';
 //
 //  3. THE DECISION IS PER SEGMENT. Whether one segment is redactable says nothing about its neighbours.
 
-/** `&` and the legacy `;` (PHP's configurable `arg_separator`, the old CGI/HTML form). */
-const SEPARATORS = /[&;]/;
-
 /**
  * Body separators additionally include newlines and commas.
  *
@@ -57,19 +54,40 @@ function decodeKey(raw: string): string {
  * Everything else — including the whole region past `end` (e.g. a URL fragment) — is copied verbatim.
  * Returns the ORIGINAL string when nothing sensitive was found. Linear in the input length, no recursion,
  * and it never throws.
+ *
+ * ONE pass finds the segment end and the segment's first `=` together. The previous version searched twice —
+ * `slice(pos, end).search(SEPARATORS)` for the separator and `indexOf('=', pos)` for the equals — and the
+ * second search was NOT bounded by `end`. On a run of separators carrying no `=`, every iteration therefore
+ * rescanned to end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M. That is quadratic, remotely
+ * reachable through `sanitizeUrl(event.url)` (no length cap), and it sat under a comment asserting linearity
+ * through two review rounds — including the rewrite whose stated purpose was removing a DoS from this file.
+ * The single pass is also faster on ordinary queries (18.7 ms → 13.7 ms on a 977 KB query string).
  */
 export function redactSensitivePairs(input: string, start: number, end: number): string {
   let out: string | undefined;
   let copyFrom = 0;
-  let pos = start;
+  // Clamp into the string. `pos = pairEnd + 1` does not advance when `pairEnd` is -Infinity, so an
+  // out-of-range `start` spun forever. A SYNCHRONOUS infinite loop is unrecoverable — it wedged the test
+  // runner through `--testTimeout`, and in the capture path it would hang the host application with no
+  // watchdog able to interrupt it. NaN falls out through the `pos < end` comparison, which is false.
+  let pos = Math.max(0, start);
+  const stop = Math.min(input.length, end);
 
-  while (pos < end) {
-    const sepOffset = input.slice(pos, end).search(SEPARATORS);
-    const pairEnd = sepOffset === -1 ? end : pos + sepOffset;
-    const eq = input.indexOf('=', pos);
+  while (pos < stop) {
+    let eq = -1;
+    let pairEnd = pos;
+    for (; pairEnd < stop; pairEnd += 1) {
+      const c = input[pairEnd];
+      if (c === '&' || c === ';') {
+        break; // SEPARATORS, spelled out so the scan stays a single character walk
+      }
+      if (eq < 0 && c === '=') {
+        eq = pairEnd;
+      }
+    }
 
     // Rule 2: a segment carrying no `=` is not a key/value pair, so it is left exactly as it is.
-    if (eq >= 0 && eq < pairEnd && isSensitiveKey(decodeKey(input.slice(pos, eq)))) {
+    if (eq >= 0 && isSensitiveKey(decodeKey(input.slice(pos, eq)))) {
       out ??= '';
       out += `${input.slice(copyFrom, eq)}=${REDACTED_URL_ENCODED}`;
       copyFrom = pairEnd;

@@ -9,26 +9,51 @@ export interface ShapeRedactionOptions {
 }
 
 /**
- * The JWT pattern, held separately because it is the ONLY superlinear one.
+ * The JWT pattern, ANCHORED — which is what makes it linear.
  *
- * Measured on `eyJ`-dense input: 16 KB = 50 ms, 64 KB = 786 ms, 256 KB = 14 s, 512 KB = 58 s — clean O(n²)
- * from backtracking between the two dots. Every other pattern below is sub-millisecond on the same
- * adversarial input, so bounding the whole set (as a previous version did) threw away real coverage to
- * contain one regex: 7 of 7 probed >32 KB secrets — AWS keys and Stripe tokens included — stopped being
- * redacted. The bound applies to this pattern alone.
+ * `(^|[^A-Za-z0-9_-])`: a JWT starts a token, so `eyJ` glued to a preceding base64url character is not a
+ * candidate. That removes the OVERLAPPING START POSITIONS which are the entire source of the O(n²) — in
+ * `eyJeyJeyJ…` every third offset used to begin a fresh scan to end-of-run. Within one candidate there is
+ * nothing to backtrack through, because `.` is not in the character class, so the two split points are
+ * forced rather than searched.
+ *
+ * Measured on `eyJ`-dense input, before → after: 16 KB 46.9 ms → 0.03 ms, 128 KB 2650 ms → 0.22 ms,
+ * 512 KB 41,882 ms → 0.85 ms, 2 MB → 3.5 ms.
+ *
+ * An atomic-group emulation (`(?=(x+))\1`) was tried here first, on the assumption that the `+` needed to be
+ * stopped from giving back. The mutator loop disproved it: removing the atomic groups passed every test, and
+ * a direct comparison found 0 output differences over 400,000 random strings with the plain form marginally
+ * FASTER. Anchoring alone is sufficient; the atomic form was complexity buying nothing.
+ *
+ * The `$1` in the replacement puts the delimiter back — the pattern consumes it.
  */
-const JWT_PATTERN = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+const JWT_ANCHORED = /(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 /**
- * Above this length the JWT scan is skipped.
+ * The original unanchored pattern, kept as a bounded SUPERSET pass.
  *
- * 8 KB, not 32 KB. Moving the bound from `sanitizeUrl` into this function silently RAISED it from 8192 and
- * so widened the reachable DoS window by 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread
- * CPU, and Node's default `maxHeaderSize` of 16384 lands exactly inside that window — reachable by default
- * through `server-instrument`'s `sanitizeUrl(info.url)` on every inbound request. 100 crafted requests
- * measured 4 s of CPU. A real JWT is well under 8 KB.
+ * It differs from {@link JWT_ANCHORED} on exactly one class: a JWT glued mid-identifier (`sometoken_eyJ…`).
+ * Keeping it means output below the bound is byte-identical to the pre-anchor implementation — verified as
+ * 0 differences over 20,000 JWT placements across every realistic delimiter — so this change cannot silently
+ * narrow coverage the way moving the bound did.
  */
-const MAX_JWT_SCAN = 8192;
+const JWT_UNANCHORED = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+/**
+ * Above this length the unanchored superset pass is skipped. It is a COST gate, not a coverage gate:
+ * {@link JWT_ANCHORED} runs at every size, so no secret's redaction depends on this number.
+ *
+ * That distinction is the whole point. This constant previously gated ALL JWT redaction, and moving it from
+ * `sanitizeUrl` into this function silently extended it from 2 call sites to 6 — `sanitizeBody`,
+ * `sanitizeJson`, `sanitizeHeaders` and `sanitizeParams` had all called `redactShapes` unbounded. Bodies
+ * capture at 20480 bytes by default, so that opened an 8193–20480 byte window in which every JWT shipped in
+ * the clear. Two review rounds argued about this number while the scope regression sat untouched.
+ *
+ * 8 KB because the unanchored pattern still backtracks: ~12 ms at 8 KB, and Node's default `maxHeaderSize`
+ * of 16384 is reachable by default through `server-instrument`'s `sanitizeUrl(info.url)`. A real JWT is well
+ * under 8 KB, so the superset pass loses nothing that matters above it.
+ */
+const MAX_UNANCHORED_SCAN = 8192;
 
 const SHAPE_PATTERNS: readonly RegExp[] = [
   /A(?:KIA|SIA|GPA|IDA|ROA)[0-9A-Z]{16}/g, // AWS access key id
@@ -66,7 +91,10 @@ function redactCreditCards(value: string): string {
 
 /** Redacts values matching known secret shapes (JWT, AWS, Stripe, GitHub; opt-in credit cards). */
 export function redactShapes(value: string, options?: ShapeRedactionOptions): string {
-  let out = value.length > MAX_JWT_SCAN ? value : value.replace(JWT_PATTERN, REDACTED);
+  let out = value.replace(JWT_ANCHORED, `$1${REDACTED}`);
+  if (value.length <= MAX_UNANCHORED_SCAN) {
+    out = out.replace(JWT_UNANCHORED, REDACTED);
+  }
   for (const pattern of SHAPE_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }
