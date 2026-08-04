@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createObscuringComposer } from './obscuring-composer';
-import { FAIL_CLOSED_AREA } from './obscuring-source';
+import { FAIL_CLOSED_AREA, SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type { SecureArea } from './protocol';
 
 const secureEl = (top: number) => ({
@@ -11,8 +11,7 @@ const iframeEl = (contentWindow: unknown, top: number, left: number) => ({
   getBoundingClientRect: () => ({ top, left, bottom: top + 100, right: left + 100 }),
 });
 
-const SECURE_INPUT =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 const HIDE = '.bugsee-hide';
 
 // A fake DOM document: querySelectorAll by selector (secure selectors + 'iframe') + an event registry + body.

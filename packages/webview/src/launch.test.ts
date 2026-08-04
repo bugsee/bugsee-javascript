@@ -8,6 +8,7 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWebViewLaunchOptions, launch } from './launch';
+import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
   BatchMessage,
   ByeMessage,
@@ -67,8 +68,7 @@ function fakeDomDocument(
 const secureEl = (top: number) => ({
   getBoundingClientRect: () => ({ top, left: top + 1, bottom: top + 2, right: top + 3 }),
 });
-const SECURE_INPUT =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 
 const inertScheduler: Scheduler = {
   setInterval: () => 0 as unknown as ReturnType<Scheduler['setInterval']>,

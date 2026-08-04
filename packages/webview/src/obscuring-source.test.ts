@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { collectSecureAreas, createObscuringSource } from './obscuring-source';
+import {
+  collectSecureAreas,
+  createObscuringSource,
+  SECURE_INPUT_SELECTOR,
+} from './obscuring-source';
 import type { SecureArea } from './protocol';
 
 // A fake element with a rect.
@@ -24,8 +28,7 @@ function fakeDoc(bySelector: Record<string, ReturnType<typeof el>[]>) {
 }
 
 // The auto-detect secure-input selector EXCLUDES `.bugsee-show` (the legacy opt-out keeps such a field visible).
-const SECURE_INPUT =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 const HIDE = '.bugsee-hide';
 
 describe('collectSecureAreas', () => {

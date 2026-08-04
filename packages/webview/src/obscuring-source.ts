@@ -10,10 +10,34 @@ import type { SecureArea } from './protocol';
 // scroll/resize/orientation + document focus/blur; `snapshot()` reads the current set on demand (native calls it
 // synchronously at frame-capture time).
 
-/** Secure INPUT fields auto-masked by default (passwords + payment-card inputs). `:not(.bugsee-show)` honors the
- *  legacy opt-out — an app may mark such a field `.bugsee-show` to keep it visible in the capture. */
-const SECURE_INPUT_SELECTOR =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+/**
+ * Secure INPUT fields auto-masked by default. `:not(.bugsee-show)` honors the legacy opt-out — an app may
+ * mark such a field `.bugsee-show` to keep it visible in the capture.
+ *
+ * This is the NATIVE-side masking floor: these rects are what native paints over in its captured video
+ * frames, so anything missing here is legible in the recording. It is the structural sibling of
+ * `@bugsee/replay`'s `SENSITIVE_INPUT_MATCHERS`, and it had drifted badly behind it — carrying only
+ * `type=password` and `autocomplete*="cc-"`, with no ` i` flag. Measured in jsdom:
+ * `input[autocomplete*="cc-"]` does NOT match `autocomplete="CC-NUMBER"`, so an uppercase card field was
+ * visible in the native frames. `one-time-code`, `type=tel`, `autocomplete*="password"` and rrweb's
+ * `data-rr-is-password` stamp were absent outright.
+ *
+ * `type` values are ASCII-case-insensitive per HTML, so `[type=password]` needs no flag; `autocomplete`
+ * values are not, which is why every autocomplete matcher carries ` i`. `~=` is the token-list operator —
+ * `autocomplete` is a LIST, so `webauthn one-time-code` must match.
+ */
+const SECURE_INPUT_MATCHERS = [
+  'input[type=password]',
+  'input[type=tel i]',
+  'input[autocomplete*="password" i]',
+  'input[autocomplete*="cc-" i]',
+  'input[autocomplete~="one-time-code" i]',
+  'input[data-rr-is-password]',
+];
+
+export const SECURE_INPUT_SELECTOR = SECURE_INPUT_MATCHERS.map(
+  (m) => `${m}:not(.bugsee-show)`,
+).join(', ');
 /** Elements an app/integrator explicitly marks to mask. */
 const HIDE_SELECTOR = '.bugsee-hide';
 // The events that can move/add/remove a secure area. `load` (window) matters for COMPOSITION: when the frame
