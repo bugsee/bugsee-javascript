@@ -61,7 +61,13 @@ function decodeKey(raw: string): string {
  * rescanned to end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M. That is quadratic, remotely
  * reachable through `sanitizeUrl(event.url)` (no length cap), and it sat under a comment asserting linearity
  * through two review rounds — including the rewrite whose stated purpose was removing a DoS from this file.
- * The single pass is also faster on ordinary queries (18.7 ms → 13.7 ms on a 977 KB query string).
+ *
+ * On ORDINARY queries the single pass is a wash, not a win. Re-measured per shape at 977 KB, best of 9:
+ * segment-dense queries get faster (`a=1&` 13.7 → 8.9 ms, a realistic 4-param query 12.2 → 9.4 ms), and a
+ * query with FEW, LONG values gets slower (`query=the+quick+brown+fox…` 2.1 → 3.2 ms, +54%) because a
+ * character loop only beats a regex scan when segments are short. An earlier version of this comment
+ * claimed a flat "18.7 ms → 13.7 ms" improvement; that number came from one shape and was reported as
+ * though it were general. The justification for this rewrite is the quadratic case, not the linear one.
  */
 export function redactSensitivePairs(
   input: string,

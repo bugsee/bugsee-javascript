@@ -97,6 +97,12 @@ describe('getPerformanceApi', () => {
   });
 
   it('returns undefined when no client / the ext is not registered', () => {
+    // NOTE, for anyone doing a teeth check here: `getPerformanceApi`'s own `client === undefined` guard is
+    // a PROVEN EQUIVALENT MUTANT, like `setRouteName`'s — `tryGetPerf`'s internal `catch` absorbs the
+    // undefined access and returns undefined either way. So there are FOUR no-client guards in this
+    // package with TWO equivalent survivors, not three with one; a commit message of mine said otherwise,
+    // and also named the wrong one of the pair. The two that DO have teeth are `reportError`'s and
+    // `recordRenderSpan`'s, both pinned by `expect(onError).not.toHaveBeenCalled()`.
     expect(getPerformanceApi(() => undefined)).toBeUndefined();
     const noPerf = {
       ext: () => {

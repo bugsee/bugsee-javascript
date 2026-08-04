@@ -179,7 +179,9 @@ describe('the JWT scan is linear, so size no longer costs coverage', () => {
 
   it('stays fast on a huge hostile value — the pattern cannot backtrack', () => {
     // 512 KB of `eyJ` cost 41.9 SECONDS before the pattern was anchored. Anchoring removes the overlapping
-    // start positions; the atomic-group emulation `(?=(x+))\1` removes the give-back.
+    // start positions. (An earlier draft of this line also credited an atomic-group emulation
+    // `(?=(x+))\1` — which the SAME commit had already deleted as provably redundant. The comment
+    // outlived the code it described by one file.)
     const hostile = 'eyJ'.repeat(170_000); // ~512 KB
     const started = Date.now();
     redactShapes(hostile);
