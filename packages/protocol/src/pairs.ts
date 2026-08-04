@@ -95,7 +95,19 @@ const FORM_KEY = /^[A-Za-z0-9_.~!$'()*+,:@\-[\]%]+$/;
  */
 export function isFormSegment(segment: string): boolean {
   const eq = segment.indexOf('=');
-  return eq > 0 && FORM_KEY.test(segment.slice(0, eq));
+  if (eq <= 0) {
+    return false;
+  }
+  // Trim the wrapping a real key never carries but a quoted or spaced one does. Without this the gate was
+  // applied to the SENSITIVE segment's own key, so ` password=hunter2`, `"password"=hunter2` and
+  // `user.password =hunter2` shipped verbatim — the neighbour's shape no longer mattered, but the segment's
+  // own still did, in the leak direction. Inner punctuation (`<config auth`, `my password`) is still
+  // rejected: that is prose, and reading it as a key is what destroyed bodies in the first place.
+  const key = segment
+    .slice(0, eq)
+    .trim()
+    .replace(/^["']|["']$/g, '');
+  return FORM_KEY.test(key);
 }
 
 /**

@@ -19,8 +19,16 @@ export interface ShapeRedactionOptions {
  */
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
-/** Above this length the JWT scan is skipped — far past any legitimate token, well under the cost cliff. */
-const MAX_JWT_SCAN = 32_768;
+/**
+ * Above this length the JWT scan is skipped.
+ *
+ * 8 KB, not 32 KB. Moving the bound from `sanitizeUrl` into this function silently RAISED it from 8192 and
+ * so widened the reachable DoS window by 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread
+ * CPU, and Node's default `maxHeaderSize` of 16384 lands exactly inside that window — reachable by default
+ * through `server-instrument`'s `sanitizeUrl(info.url)` on every inbound request. 100 crafted requests
+ * measured 4 s of CPU. A real JWT is well under 8 KB.
+ */
+const MAX_JWT_SCAN = 8192;
 
 const SHAPE_PATTERNS: readonly RegExp[] = [
   /A(?:KIA|SIA|GPA|IDA|ROA)[0-9A-Z]{16}/g, // AWS access key id

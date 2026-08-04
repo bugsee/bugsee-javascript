@@ -405,7 +405,6 @@ describe('sanitizeBody — the form pass never eats a body that is not a form', 
   const intact = [
     ['markup', '<config auth="basic" retries="3" host="a.example"/>'],
     ['SQL', 'UPDATE users SET pass_hash = $1 WHERE id = $2 RETURNING id, email'],
-    ['prose with an equals', 'protein = 12g, carbs = 30g, fat = 5g'],
     ['html', '<!DOCTYPE html><p>The site is being rebuilt.</p><div class="notice">x</div>'],
     ['css', '.a { padding: 2px; } .pin { display: none; }'],
   ] as const;
@@ -470,7 +469,12 @@ describe('sanitizeBody — the form guard decides PER SEGMENT', () => {
     expect(sanitizeBody('AUTH_MODE=basic\nDB_HOST=db.internal\nDB_PORT=5432', 'text/plain')).toBe(
       `AUTH_MODE=${URL_R}\nDB_HOST=db.internal\nDB_PORT=5432`,
     );
-    // …and the same for comma-separated fields (`protein` contains `ein`).
+    // …and the same for spaced, comma-separated fields. Keys are trimmed before the shape gate — without
+    // that, ` password=hunter2` and `"password"=hunter2` shipped verbatim, because the gate was being
+    // applied to the SENSITIVE segment's own key. The cost is that spaced prose is redacted per field.
+    expect(sanitizeBody('protein = 12g, carbs = 30g, fat = 5g', 'text/plain')).toBe(
+      `protein =${URL_R}, carbs = 30g, fat = 5g`,
+    );
     expect(sanitizeBody('protein=12g,carbs=30g,fat=5g', 'text/plain')).toBe(
       `protein=${URL_R},carbs=30g,fat=5g`,
     );
@@ -495,5 +499,27 @@ describe('sanitizeBody — NDJSON', () => {
   it('leaves prose that merely starts with a brace alone', () => {
     const prose = '{not json\nstill not json';
     expect(sanitizeBody(prose, 'text/plain')).toBe(prose);
+  });
+});
+
+describe('sanitizeBody — the gate is not applied to the sensitive key itself', () => {
+  const wrapped = [
+    ['leading space', 'foo=1& password=hunter2'],
+    ['quoted key', '"password"=hunter2'],
+    ['trailing space before =', 'user.password =hunter2'],
+    ['tab', 'x&\tpassword=hunter2'],
+  ] as const;
+  for (const [label, body] of wrapped) {
+    it(`redacts a sensitive key wrapped in ${label}`, () => {
+      // The neighbour's shape stopped mattering in the per-segment rewrite, but the segment's OWN shape
+      // still did — in the leak direction.
+      expect(sanitizeBody(body, 'text/plain'), label).not.toContain('hunter2');
+    });
+  }
+
+  it('still refuses to read prose or markup as a key', () => {
+    for (const body of ['<config auth="basic" retries="3"/>', 'my auth token = abc']) {
+      expect(sanitizeBody(body, 'text/plain'), body).toBe(body);
+    }
   });
 });

@@ -67,11 +67,11 @@ export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOp
     if (token.includes('://') || token.includes('?')) {
       return sanitizeUrl(token, options);
     }
-    // `user:pw@host` quoted in a connection error carries a credential with no scheme in sight, and a bare
-    // `a=1&password=x` is a form payload echoed into the message. Neither reaches `sanitizeUrl`'s authority
-    // or query logic, so both are handled directly.
-    // A form payload quoted into the message. Gated on the segment SHAPE, so `expect(a==b&&pass)` and
-    // `config auth=off` — code and prose, not forms — are left alone.
+    // A form payload quoted into the message. NOTE: a SCHEMELESS `user:pw@host` is deliberately NOT handled
+    // — the branch that did corrupted 7 of 7 probed diagnostics (`npm:express@4.18.2`, `mailto:`,
+    // `C:\Users\bob@corp`, `at 10:30@worker-3`). Credentials inside a real `://` URL are still redacted.
+    // Gated on segment SHAPE, so `expect(a==b&&pass)` is untouched; `config auth=off` IS redacted, which is
+    // over-redaction of a non-secret and the safe direction (asserted by name in url.test.ts).
     if (token.includes('=') && isFormSegment(token)) {
       return redactSensitivePairs(token, 0, token.length);
     }
@@ -87,9 +87,8 @@ export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOp
 export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): string {
   let out = redactUserinfo(url);
 
-  // Scan from EVERY `?`, not just the first: `?next=https://y/?token=SECRET` puts a second query string
-  // inside the first, and the outer key (`next`) is innocuous so the outer pass leaves it alone. Repeat
-  // scans are idempotent, so overlapping regions cost nothing but a comparison.
+  // The FIRST `?` only. A nested query (`?next=https://y/?token=SECRET`) is deliberately NOT scanned — the
+  // version that did was mutually recursive and became a remote DoS. Asserted as a known gap in url.test.ts.
   const query = out.indexOf('?');
   if (query >= 0) {
     const hash = out.indexOf('#', query);

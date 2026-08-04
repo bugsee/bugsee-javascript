@@ -140,3 +140,20 @@ describe('the length bound is scoped to the JWT pattern alone', () => {
     expect(redactShapes('t eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig')).toBe('t <redacted>');
   });
 });
+
+describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
+  it('is fast in the 8–32 KB window Node’s default header size lands in', () => {
+    // Moving the bound into this function silently raised it from 8192 to 32768, widening the reachable
+    // DoS window 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread CPU, and Node's default
+    // maxHeaderSize is 16384 — reachable by default via server-instrument on every inbound request.
+    const hostile = 'eyJ'.repeat(5_500); // ~16.5 KB, the exact worst case
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(5);
+  });
+
+  it('still redacts a JWT just under the bound', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig';
+    expect(redactShapes(`${'x'.repeat(8000)} ${jwt}`)).toContain('<redacted>');
+  });
+});
