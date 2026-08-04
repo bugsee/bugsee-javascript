@@ -137,7 +137,11 @@ function redactSensitiveColonLines(body: string): string {
     // structural passes from corrupting any body they were not designed to parse.
     if (colon > 0 && HEADER_TOKEN.test(key) && isSensitiveKey(key)) {
       changed = true;
-      return `${line.slice(0, colon + 1)}${REDACTED}`;
+      // Keep the `\r` that `split('\n')` left on the end of the line. Dropping it deleted every CRLF in a
+      // redacted body — STOMP frames are CRLF by spec — so the uploaded body no longer matched the bytes
+      // on the wire. The identical defect was fixed in the NDJSON path and not swept to here.
+      const cr = line.endsWith('\r') ? '\r' : '';
+      return `${line.slice(0, colon + 1)}${REDACTED}${cr}`;
     }
     return line;
   });
@@ -188,7 +192,8 @@ function looksLikeJson(body: string): boolean {
  * that, `{"outer":{"password":"p"}}` consumed the inner object as `outer`'s value and the nested secret
  * escaped. The separator is captured and replayed so only the VALUE's bytes change.
  */
-const JSON_PAIR = /([{,]\s*)"((?:[^"\\]|\\.)*)"(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\]\s{"]+)/g;
+const JSON_PAIR =
+  /([{,]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([A-Za-z_$][\w$]*))(\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,}\]\s{"']+)/g;
 
 /**
  * Textual key redaction for a body that is JSON-shaped but is NOT a JSON document.
@@ -200,8 +205,25 @@ const JSON_PAIR = /([{,]\s*)"((?:[^"\\]|\\.)*)"(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\
  * numpy or pandas values hit it routinely; truncated and trailing-comma documents land here too.
  */
 function redactJsonPairs(body: string): string {
-  return body.replace(JSON_PAIR, (match, lead: string, key: string, separator: string) =>
-    isSensitiveKey(key) ? `${lead}"${key}"${separator}"${REDACTED}"` : match,
+  return body.replace(
+    JSON_PAIR,
+    (
+      match,
+      lead: string,
+      dq: string | undefined,
+      sq: string | undefined,
+      bare: string | undefined,
+      separator: string,
+    ) => {
+      const key = dq ?? sq ?? bare ?? '';
+      if (!isSensitiveKey(key)) {
+        return match;
+      }
+      // Re-emit the key in the quoting style it arrived in, so only the VALUE's bytes change.
+      const quoted = dq !== undefined ? `"${key}"` : sq !== undefined ? `'${key}'` : key;
+      const marker = sq !== undefined ? `'${REDACTED}'` : `"${REDACTED}"`;
+      return `${lead}${quoted}${separator}${marker}`;
+    },
   );
 }
 

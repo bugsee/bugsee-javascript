@@ -377,6 +377,62 @@ describe('sanitizeBody — a sensitive key wrapped in whitespace and quotes toge
   });
 });
 
+describe('sanitizeBody — the colon pass preserves CRLF', () => {
+  it('keeps the `\\r` of a CRLF line it redacts', () => {
+    // The same defect the NDJSON path was fixed for, one function over: `split('\n')` leaves the `\r` at
+    // the end of the line, and rebuilding from `line.slice(0, colon + 1)` drops it. STOMP frames are CRLF
+    // by spec, so the uploaded body stopped matching the bytes on the wire.
+    expect(sanitizeBody('passcode: s3cret\r\nhost: h\r\n', 'text/plain')).toBe(
+      'passcode:<redacted>\r\nhost: h\r\n',
+    );
+  });
+
+  it('leaves a bare-LF body on LF', () => {
+    expect(sanitizeBody('passcode: s3cret\nhost: h\n', 'text/plain')).toBe(
+      'passcode:<redacted>\nhost: h\n',
+    );
+  });
+});
+
+describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
+  it.each([
+    ['Python str(dict) / repr', "{'password': 'hunter2', 'n': 1}"],
+    ['JS object literal / JSON5', '{password: "hunter2"}'],
+    ['single-quoted key, double-quoted value', '{\'password\': "hunter2"}'],
+  ])('redacts a sensitive key in %s', (_label, body) => {
+    // `JSON_PAIR` requires a DOUBLE-quoted key, so these got nothing. A Python service logging
+    // `str(request.form)` and a JS console dump are both ordinary captured-body shapes.
+    const out = sanitizeBody(body, 'application/json');
+    expect(out).not.toContain('hunter2');
+    expect(out).toContain('redacted');
+  });
+
+  it('leaves a non-sensitive single-quoted body byte-for-byte alone', () => {
+    const body = "{'city': 'NY', 'n': 1}";
+    expect(sanitizeBody(body, 'application/json')).toBe(body);
+  });
+
+  it('re-emits the key in the quoting style it arrived in', () => {
+    expect(sanitizeBody("{'password': 'hunter2'}", 'application/json')).toBe(
+      "{'password': '<redacted>'}",
+    );
+    expect(sanitizeBody('{password: "hunter2"}', 'application/json')).toBe(
+      '{password: "<redacted>"}',
+    );
+  });
+
+  it('stays linear after admitting single-quoted and bare keys', () => {
+    // Two new alternatives went into a pattern whose UNANCHORED form was quadratic. Measured across eight
+    // adversarial shapes (unterminated quotes of both kinds, bare idents, dense commas/colons/braces):
+    // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
+    for (const hostile of [`{'${"\\'".repeat(128_000)}`, `{${'ab,'.repeat(80_000)}`]) {
+      const started = Date.now();
+      sanitizeBody(hostile, 'application/json');
+      expect(Date.now() - started).toBeLessThan(100);
+    }
+  });
+});
+
 describe('sanitizeBody — multipart/form-data', () => {
   const mk = (name: string, value: string) =>
     `------X\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n------X--`;
