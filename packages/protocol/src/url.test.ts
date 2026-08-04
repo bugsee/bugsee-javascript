@@ -252,16 +252,18 @@ describe('sanitizeUrl — separators, nesting, and bounds', () => {
     );
   });
 
-  it('redacts a secret in a URL NESTED inside a query value (the OAuth redirect_uri shape)', () => {
-    expect(sanitizeUrl('https://x.com/a?next=https://y.com/?token=SECRET')).toBe(
-      'https://x.com/a?next=https://y.com/?token=%3Credacted%3E',
-    );
+  it('does NOT scan into a nested URL value — an accepted gap, because the fix was a DoS', () => {
+    // Handling it required recursion, which measured 2.3 s at 4 KB and 117 s at 16 KB on the app's thread
+    // and threw past ~16 KB, reachable remotely via `req.url`. Documented as a limitation instead.
+    const url = 'https://x.com/a?next=https://y.com/?token=SECRET';
+    expect(sanitizeUrl(url)).toBe(url);
   });
 
-  it('redacts a secret in a PERCENT-ENCODED nested URL', () => {
-    const out = sanitizeUrl('https://x.com/a?next=https%3A%2F%2Fy.com%2F%3Ftoken%3DSECRET');
-    expect(out).not.toContain('SECRET');
-    expect(out).toContain('next=');
+  it('stays fast on a hostile query, and never throws', () => {
+    const hostile = `https://api/s?q=${'?='.repeat(8000)}`;
+    const started = Date.now();
+    expect(() => sanitizeUrl(hostile)).not.toThrow();
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('redacts userinfo on a protocol-relative URL', () => {
@@ -291,9 +293,32 @@ describe('sanitizeErrorMessage — the shapes the token gate used to miss', () =
     );
   });
 
-  it('redacts a schemeless `user:pw@host` credential', () => {
-    expect(sanitizeErrorMessage('user:pw@example.com refused the connection')).toBe(
-      'user:%3Credacted%3E@example.com refused the connection',
+  it('leaves scheme-like tokens alone — the schemeless credential form is an accepted gap', () => {
+    // A `[^@/]+:[^@/]+@` branch caught `user:pw@host`, and also `npm:express@4.18.2`, `docker:nginx@sha256`,
+    // `mailto:bob@example.com`, `C:\\Users\\bob@corp` and `at 10:30@worker-3` — 7 of 7 probed diagnostics
+    // corrupted. Credentials inside a real URL are still redacted (that token carries `://`).
+    for (const token of ['npm:express@4.18.2', 'mailto:bob@example.com', 'at 10:30@worker-3']) {
+      expect(sanitizeErrorMessage(`connect ${token} failed`), token).toBe(
+        `connect ${token} failed`,
+      );
+    }
+    expect(sanitizeErrorMessage('failed http://user:pw@example.com/x')).toBe(
+      'failed http://user:%3Credacted%3E@example.com/x',
+    );
+  });
+
+  it('does not corrupt code quoted into a message', () => {
+    // `expect(a==b&&passphrase)` has no form-shaped key (`expect(a=` fails the charset), so it is untouched.
+    expect(sanitizeErrorMessage('expect(a==b&&passphrase)')).toBe('expect(a==b&&passphrase)');
+  });
+
+  it('over-redacts config-shaped text, deliberately', () => {
+    // `auth=off` IS form-shaped, so it is redacted even though nothing secret is present. That is
+    // over-redaction of a non-secret, not a leak — the safe direction for a boundary that cannot tell a
+    // quoted form payload from a quoted config line. Recorded so the behaviour is a decision, not a
+    // surprise.
+    expect(sanitizeErrorMessage('config auth=off;retries=3 applied')).toBe(
+      'config auth=%3Credacted%3E;retries=3 applied',
     );
   });
 

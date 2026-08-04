@@ -1,5 +1,5 @@
 import { utf8ByteLength } from '@bugsee/util';
-import { redactSensitivePairs } from './pairs';
+import { redactFormBody } from './pairs';
 import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import type { NetworkEvent, NoBodyReason } from './wire';
@@ -99,41 +99,25 @@ function redactSensitiveColonLines(body: string): string {
   return changed ? lines.join('\n') : body;
 }
 
-/** A urlencoded parameter NAME: the RFC 3986 unreserved/sub-delim set plus `%`, `[`/`]` (PHP arrays) and
- *  `+`. Deliberately excludes whitespace, quotes and angle brackets — the characters that mark prose or
- *  markup rather than a form field. */
-const FORM_KEY = /^[A-Za-z0-9_.~!$'()*+,:@\-[\]%]+$/;
-
-/**
- * Does this body actually LOOK like `key=value&key=value`?
- *
- * Without this guard the pass treated every non-JSON body containing an `=` as a form: the "key" became all
- * the prose before the first `=`, and if that prose happened to contain a denylist substring (`auth`, `pass`,
- * `pin`, `ein`, `dob`…) the ENTIRE remainder of the body was replaced. Measured over 20 real repo files as
- * `text/plain` bodies, 10 lost more than 90 % of their bytes — `<config auth="basic" …/>` collapsed to
- * `<config auth=%3Credacted%3E`. That is mass data destruction on captured bodies, not redaction.
- *
- * The sibling colon pass shipped with exactly this guard (`HEADER_TOKEN`); this one did not.
- */
-function looksLikeFormBody(body: string): boolean {
-  if (!body.includes('=')) {
-    return false;
+/** Sanitize an NDJSON body line by line, or undefined when it is not NDJSON. */
+function sanitizeNdjson(body: string, options?: ShapeRedactionOptions): string | undefined {
+  if (!body.includes('\n')) {
+    return undefined;
   }
-  let sawPair = false;
-  for (const segment of body.split(/[&;]/)) {
-    const eq = segment.indexOf('=');
-    const key = eq === -1 ? segment : segment.slice(0, eq);
-    if (key !== '' && !FORM_KEY.test(key)) {
-      return false; // prose, markup or SQL — not a form field name
+  const lines = body.split('\n');
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === '') {
+      out.push(line);
+      continue;
     }
-    sawPair ||= eq !== -1;
+    try {
+      out.push(JSON.stringify(sanitizeJson(JSON.parse(line), options)));
+    } catch {
+      return undefined; // one unparseable line → not NDJSON; leave the body to the textual passes
+    }
   }
-  return sawPair;
-}
-
-/** Redact sensitive values in a form-urlencoded body. Anything that is not form-SHAPED is left untouched. */
-function redactSensitiveFormBody(body: string): string {
-  return looksLikeFormBody(body) ? redactSensitivePairs(body, 0, body.length) : body;
+  return out.join('\n');
 }
 
 /** Does the body look like a JSON document, whatever the Content-Type claims? */
@@ -166,10 +150,17 @@ export function sanitizeBody(
     try {
       return JSON.stringify(sanitizeJson(JSON.parse(body), options));
     } catch {
-      // Not valid JSON → fall through to the structural passes rather than trusting the declared type.
+      // Not one JSON document. NDJSON is the common case — `{"a":1}\n{"b":2}` never parses whole, and the
+      // textual passes below cannot read JSON at all, so it used to ship verbatim despite the commit that
+      // claimed `application/x-ndjson` was covered. Try it line by line, and only accept the result if
+      // EVERY non-blank line parses (so prose that merely starts with `{` is not mangled).
+      const ndjson = sanitizeNdjson(body, options);
+      if (ndjson !== undefined) {
+        return ndjson;
+      }
     }
   }
-  return redactShapes(redactSensitiveColonLines(redactSensitiveFormBody(body)), options);
+  return redactShapes(redactSensitiveColonLines(redactFormBody(body)), options);
 }
 
 /** Find a header's value case-insensitively (header maps preserve the producer's casing). */

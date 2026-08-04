@@ -43,8 +43,22 @@ function redactCreditCards(value: string): string {
   });
 }
 
+/**
+ * Above this length the pattern scan is skipped.
+ *
+ * The JWT pattern backtracks per `eyJ` occurrence, and several inputs here have no size limit of their own
+ * — a URL, an error message, a header value. Measured 7.7 s on 200 KB of `eyJ`-dense input, synchronously,
+ * on the application's own thread inside the interceptor. The bound sits HERE rather than at one call site,
+ * because a previous fix capped only `sanitizeUrl` and left bodies and headers unbounded. It is far above
+ * any legitimate value, and structural (key-based) redaction is unaffected by it.
+ */
+const MAX_SHAPE_SCAN = 32_768;
+
 /** Redacts values matching known secret shapes (JWT, AWS, Stripe, GitHub; opt-in credit cards). */
 export function redactShapes(value: string, options?: ShapeRedactionOptions): string {
+  if (value.length > MAX_SHAPE_SCAN) {
+    return value;
+  }
   let out = value;
   for (const pattern of SHAPE_PATTERNS) {
     out = out.replace(pattern, REDACTED);

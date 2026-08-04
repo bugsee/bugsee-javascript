@@ -428,3 +428,72 @@ describe('sanitizeBody — the form pass never eats a body that is not a form', 
     );
   });
 });
+
+// Round-2 findings against the first attempt at this guard. Each case was measured leaking or being
+// destroyed before the per-segment rewrite.
+describe('sanitizeBody — the form guard decides PER SEGMENT', () => {
+  const leaky: Array<[string, string]> = [
+    ['UTF-8 key', 'contraseña=x&password=hunter2'],
+    ['cyrillic key', 'пароль=x&password=hunter2'],
+    ['slash in key', 'a/b=1&password=hunter2'],
+    ['question mark in key', 'a?b=1&password=hunter2'],
+    ['angle brackets', '<x>=1&password=hunter2'],
+    ['unencoded & in a value', 'desc=a & b&password=hunter2'],
+    ['unencoded ; and space', 'note=hi; there&password=hunter2'],
+    ['quote in key', 'a"b=1&password=hunter2'],
+  ];
+  for (const [label, body] of leaky) {
+    it(`still redacts the password when a neighbouring segment has a ${label}`, () => {
+      // A whole-body verdict skipped ALL of these — one odd key shipped a real credential in the clear.
+      const out = sanitizeBody(body, 'application/x-www-form-urlencoded');
+      expect(out, label).not.toContain('hunter2');
+      expect(out, label).toContain(URL_R);
+    });
+  }
+
+  const intact: Array<[string, string]> = [
+    ['markup', '<config auth="basic" retries="3"/>'],
+    ['SQL', 'UPDATE users SET pass_hash = $1 WHERE id = $2'],
+    ['CSS', '.a { padding: 2px; } .pin { display: none; }'],
+    ['a clean .env', 'DB_HOST=db.internal\nDB_PORT=5432\nREGION=us-east-1'],
+  ];
+  for (const [label, body] of intact) {
+    it(`leaves ${label} byte-for-byte`, () => {
+      expect(sanitizeBody(body, 'text/plain'), label).toBe(body);
+    });
+  }
+
+  it('confines a mis-read to ONE line instead of eating the rest of the body', () => {
+    // `AUTH_MODE` is form-shaped and matches `auth`, so its value is redacted — over-redaction of a config
+    // value, which is the safe direction. What matters is the blast radius: without newline separators the
+    // whole file after the first `=` was replaced (63% of bytes gone).
+    expect(sanitizeBody('AUTH_MODE=basic\nDB_HOST=db.internal\nDB_PORT=5432', 'text/plain')).toBe(
+      `AUTH_MODE=${URL_R}\nDB_HOST=db.internal\nDB_PORT=5432`,
+    );
+    // …and the same for comma-separated fields (`protein` contains `ein`).
+    expect(sanitizeBody('protein=12g,carbs=30g,fat=5g', 'text/plain')).toBe(
+      `protein=${URL_R},carbs=30g,fat=5g`,
+    );
+  });
+});
+
+describe('sanitizeBody — NDJSON', () => {
+  it('redacts every line of a multi-line ndjson body', () => {
+    // A previous commit claimed `application/x-ndjson` was covered; real ndjson never parses whole, and the
+    // textual passes cannot read JSON, so it shipped byte-for-byte unredacted.
+    expect(sanitizeBody('{"password":"x"}\n{"token":"y"}', 'application/x-ndjson')).toBe(
+      `{"password":"${R}"}\n{"token":"${R}"}`,
+    );
+  });
+
+  it('preserves blank lines in an ndjson body', () => {
+    expect(sanitizeBody('{"token":"y"}\n\n{"password":"x"}', 'application/x-ndjson')).toBe(
+      `{"token":"${R}"}\n\n{"password":"${R}"}`,
+    );
+  });
+
+  it('leaves prose that merely starts with a brace alone', () => {
+    const prose = '{not json\nstill not json';
+    expect(sanitizeBody(prose, 'text/plain')).toBe(prose);
+  });
+});

@@ -44,8 +44,13 @@ describe('redactSensitivePairs — what it redacts', () => {
     expect(all('token=')).toBe('token=%3Credacted%3E');
   });
 
-  it('redacts a valueless sensitive key, normalising it to `key=<redacted>`', () => {
-    expect(all('token&page=2')).toBe('token=%3Credacted%3E&page=2');
+  it('leaves a VALUELESS segment alone — it must never invent a credential', () => {
+    // Normalising `?token` to `token=<redacted>` also made a `;`-delimited value list read as keys, and
+    // because matching is by substring (`shipping` contains `pin`) the scanner INVENTED an `=` and a marker
+    // where the source had neither. A report must not assert that a credential existed.
+    expect(all('token&page=2')).toBe('token&page=2');
+    expect(all('tags=running;shipping;food')).toBe('tags=running;shipping;food');
+    expect(all('name=Robert;Pinter')).toBe('name=Robert;Pinter');
   });
 
   it('handles a sensitive pair in the LAST position', () => {
@@ -106,24 +111,16 @@ describe('redactSensitivePairs — idempotence', () => {
   });
 });
 
-describe('redactSensitivePairs — one level into a nested URL value', () => {
-  it('leaves an empty value alone', () => {
-    expect(all('next=&page=2')).toBe('next=&page=2');
-  });
-
-  it('leaves a nested value whose query holds nothing sensitive', () => {
-    const input = 'next=https://y.com/?page=2';
-    expect(all(input)).toBe(input);
-  });
-
-  it('leaves a value with a trailing `?` and nothing after it', () => {
-    const input = 'next=https://y.com/?';
-    expect(all(input)).toBe(input);
-  });
-
-  it('redacts a plain nested query without re-encoding the rest', () => {
-    expect(all('next=https://y.com/?token=SECRET&keep=1')).toBe(
-      'next=https://y.com/?token=%3Credacted%3E&keep=1',
-    );
+describe('redactSensitivePairs — no nesting, by design', () => {
+  it('does NOT scan into a nested URL value, and stays linear on hostile input', () => {
+    // A previous version did, via mutual recursion with its caller: 72 ms at 1 KB, 2.3 s at 4 KB, 117 s at
+    // 16 KB on the app's own thread, plus a RangeError past ~16 KB — remotely reachable through `req.url`.
+    // The OAuth `redirect_uri` shape is therefore an accepted gap; a DoS is not an acceptable price for it.
+    const nested = 'next=https://y.com/?token=SECRET';
+    expect(all(nested)).toBe(nested);
+    const hostile = `q=${'?='.repeat(4000)}`;
+    const started = Date.now();
+    expect(() => all(hostile)).not.toThrow();
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
