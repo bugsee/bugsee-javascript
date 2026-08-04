@@ -245,10 +245,27 @@ describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
     // Pins the bound from ABOVE. Without this, `MAX_UNANCHORED_SCAN = 16_384` passed all 302 tests — the
     // two existing tests only bracket it to [8042, 16499], a 2× window costing 43–53 ms/request. 8.4 KB is
     // just above the intended bound: cheap at 8192, ~13 ms at any larger value.
-    const hostile = 'eyJ'.repeat(2_800); // 8400 bytes
-    const started = Date.now();
-    redactShapes(hostile);
-    expect(Date.now() - started).toBeLessThan(5);
+    // Asserted as a RATIO, not a wall-clock budget. The 5 ms form measured 0–1 ms clean and 12–13 ms
+    // broken: 5× headroom below and only 2.4× above, so a CI runner ~2.5× slower than a dev machine puts
+    // the clean and broken bands on top of each other and the test starts flaking. A ratio has no such
+    // scale dependence — the quadratic pass costs ~1000× the linear one whatever the hardware.
+    const above = 'eyJ'.repeat(2_800); // 8400 bytes — just above the bound
+    const below = 'eyJ'.repeat(2_600); // 7800 bytes — just below it, so the superset pass DOES run
+    // `Date.now()`, not `performance.now()` — this package compiles without the DOM or Node libs, so
+    // `performance` is not a declared global here. 5 iterations puts the slow side at ~60 ms, well clear
+    // of the 1 ms resolution.
+    const time = (value: string): number => {
+      const started = Date.now();
+      for (let i = 0; i < 5; i += 1) {
+        redactShapes(value);
+      }
+      return Date.now() - started;
+    };
+    time(above); // warm up, so JIT state is not attributed to the measurement
+    time(below);
+    // Same input size to within 8%, so any difference is the skipped pass rather than the length. The
+    // `+ 1` keeps the comparison meaningful when the fast side rounds to 0 ms.
+    expect(time(above) + 1).toBeLessThan(time(below) / 10);
   });
 
   it('is fast in the 8–32 KB window Node’s default header size lands in', () => {

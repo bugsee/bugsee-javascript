@@ -46,6 +46,25 @@ const BUGSEE_MASK = '.bugsee-mask,[data-bugsee-mask]';
 const BUGSEE_BLOCK = '.bugsee-block,[data-bugsee-block]';
 const BUGSEE_IGNORE = '.bugsee-ignore,[data-bugsee-ignore]';
 
+/**
+ * MARK SCOPING — not uniform, and worth knowing before marking a container.
+ *
+ * Measured against the real rrweb fork (round 5), 4 of 6 consumers walk the subtree and 2 test the element
+ * alone, because rrweb decides which API each selector goes through:
+ *
+ *   .bugsee-mask   → maskTextSelector      SUBTREE
+ *   .bugsee-mask   → maskAttributeFn       SUBTREE  (this file; it was element-only until round 5)
+ *   .bugsee-block  → blockSelector         SUBTREE
+ *   .bugsee-unmask → unmaskTextSelector    SUBTREE
+ *   .bugsee-unmask → unmaskInputSelector   ELEMENT ONLY  ← rrweb uses matches()
+ *   .bugsee-show   → unblockSelector       ELEMENT ONLY  ← rrweb uses matches()
+ *
+ * So `.bugsee-block` on a wrapper blocks everything inside it, but `.bugsee-show` on that same wrapper
+ * un-blocks only the wrapper — the `blockAllCanvas` opt-in has to go on the `<canvas>` itself. Both
+ * element-only cases live in the fork's `matches()` calls, so they cannot be fixed from here; recording
+ * them beats leaving the next reader to discover the asymmetry from behaviour.
+ */
+
 /** Bugsee-namespaced opt-OUT selectors (D3): un-mask text, un-block media. */
 const BUGSEE_UNMASK = '.bugsee-unmask,[data-bugsee-unmask]';
 const BUGSEE_SHOW = '.bugsee-show,[data-bugsee-show]';
@@ -362,7 +381,17 @@ function maskAttribute(key: string, value: string): string {
 function maskMarkedAttribute(key: string, value: string, element: unknown): string {
   const el = element as { closest?: (selector: string) => unknown } | null | undefined;
   try {
-    return el?.closest?.(BUGSEE_MASK) != null ? maskAttribute(key, value) : value;
+    if (el?.closest?.(BUGSEE_MASK) == null) {
+      return value; // not under a mask at all
+    }
+    // NEAREST mark wins, matching how text resolves `.bugsee-unmask` against `.bugsee-mask`. Attributes had
+    // no opt-out in either branch: before the mark was subtree-scoped you could just not mark the child,
+    // and afterwards marking a container starred out everything beneath it with no way to re-admit a field.
+    const unmask = el.closest?.(BUGSEE_UNMASK);
+    if (unmask != null && el.closest?.(`${BUGSEE_MASK},${BUGSEE_UNMASK}`) === unmask) {
+      return value;
+    }
+    return maskAttribute(key, value);
   } catch {
     return maskAttribute(key, value); // unreadable element → mask (fail closed)
   }

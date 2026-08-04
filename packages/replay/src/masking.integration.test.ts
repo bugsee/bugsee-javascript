@@ -315,6 +315,19 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
     expect(json).not.toContain('SSNLABEL');
   });
 
+  it('lets `.bugsee-unmask` opt an attribute back in, nearest mark winning', async () => {
+    // TEXT has an opt-out (`unmaskTextSelector`); attributes had none in either branch. Once the mark
+    // became subtree-scoped, marking a container starred out every non-allowlisted attribute beneath it
+    // with no way to re-admit one — previously you could simply not mark the child, and now you cannot.
+    const { json } = await drive(
+      '<div class="bugsee-mask"><input data-ssn="123-45-6789">' +
+        '<span class="bugsee-unmask" title="KEEPMEPLEASE"></span></div>',
+      { maskAllText: false },
+    );
+    expect(json).not.toContain('123-45-6789'); // still masked under the mark
+    expect(json).toContain('KEEPMEPLEASE'); // opted back in
+  });
+
   it('still leaves an UNMARKED element’s attributes alone with maskAllText off', async () => {
     // The narrower rule must stay narrow: `closest()` must not become "mask everything".
     const { json } = await drive('<div><input placeholder="SEARCHLABEL"></div>', {

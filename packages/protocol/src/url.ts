@@ -122,6 +122,17 @@ export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): strin
   // rewriting, and `jsessionid` is in the denylist, so the denylist already intended to catch it while the
   // scan window (first `?` onward) prevented it. Scanned with `/` as an extra separator so a matrix value
   // ends at its path segment instead of consuming the rest of the path.
+  //
+  // DISCLOSED COST, measured. This is NEW exposure — before this pass the path was never scanned — and it
+  // inherits the substring key matching documented in pairs.ts. A base64url path segment ending in `=`
+  // padding reads as `key=value`, and 3-letter denylist entries (`pin`, `jwt`, `cvv`, `dob`, `ein`, `otp`,
+  // `ssn`) hit inside it: ~2.3% of random padded segments over 100k trials, e.g.
+  // `/asset/utZyvh…nldF=/file.js` → `/asset/utZyvh…nldF=%3Credacted%3E/file.js`. Plus the ordinary word
+  // class — `/shipping=express/label`, `/mapping=a/b`. The content of the segment survives; the segment is
+  // invalidated. Direction is safe (over-redaction, never a leak), the differential over 13,708 real-shaped
+  // URLs found zero cases where this redacts LESS, and a hand-built corpus of CDN transform paths, OData
+  // `(ID=1)`, GCS, imgproxy, npm tarballs and `data:`/`blob:`/`mailto:` URLs came back unchanged. Narrowing
+  // it means changing `isSensitiveKey` off substring matching, which is Android parity and a separate call.
   const pathStart = out.indexOf('/', authorityEnd(out));
   const pathEnd = firstOf(out, ['?', '#'], out.length);
   if (pathStart >= 0 && pathStart < pathEnd) {

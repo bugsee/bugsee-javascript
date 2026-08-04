@@ -180,8 +180,8 @@ Two residual notes, neither a hazard: (a) the ESM build code-splits `wire.ts` in
 | interaction transactions | yes (browser only) | — | `traceInteractions: false` | `wire.ts:194-197` |
 | http client spans | yes (rides `networkSource`) | inherits the single-slot defect | via `performanceMonitoring` | `wire.ts:214` |
 | **incoming-server instrumentation** | **yes** (`@bugsee/node`) | one `http.server` txn per request into the single slot | `instrumentIncomingRequests: false` | `node/src/launch.ts:784` |
-| crash detection + `process.exit(1)` | yes | — | `detectCrashes:false` / `exitOnUncaught:false` | `node/src/launch.ts:739-756` |
-| **`unhandledRejection` listener** | **yes** | **converts host crash (exit 1) → exit 0** | only via `detectCrashes:false`, which also kills crash reporting | `node/src/detection-providers.ts:78-80` |
+| crash detection + `process.exit(1)` | yes | — | `detectCrashes:false` / `exitOnUncaught:false` (uncaught EXCEPTIONS only) | `node/src/launch.ts:739-756` |
+| **`unhandledRejection` listener** | **yes** | none — `preserve` (default) reproduces Node's own outcome, reading `--unhandled-rejections` from argv/NODE_OPTIONS | `unhandledRejections:'warn'` (alive) or `'none'` (no listener); `exitOnUncaught` does NOT gate this path | `node/src/launch.ts` · `process-policy.ts` |
 | OTel **consume** | **no** — opt-in | (would ship the `traceId.slice(0,16)` root-span-id fabrication) | requires `otelConsume:true` **and** `onOtelSpanProcessor` | `wire.ts:247` |
 | OTel **OTLP export tee** | **no** — opt-in | as above | requires `otelExportUrl` | `wire.ts:167-180`, `opentelemetry/src/to-otlp.ts:99` |
 | traceparent propagation | **no** on browser (`?? false`); node owns its own | umbrella correctly declines to wire the perf-sourced one on Node | `propagateTrace` | `wire.ts:261` |
