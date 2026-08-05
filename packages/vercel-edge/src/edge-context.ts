@@ -1,4 +1,5 @@
 import type { AttributeValue, RequestContext } from '@bugsee/core';
+import { neverThrow } from '@bugsee/core';
 import { randomId } from '@bugsee/util';
 import { type Bugsee, EdgeContextStoreToken } from './launch';
 import type { EdgeRequestContextStore } from './request-context-store';
@@ -38,6 +39,12 @@ export interface EdgeInvocationOptions {
    *  pending — the flush must be awaited before the method returns. (Module Workers / WorkerEntrypoint have a
    *  real, effective `ctx.waitUntil`, so they leave this `false` and defer the flush — no added response latency.) */
   awaitFlush?: boolean;
+  /**
+   * Where an SDK-internal failure inside the wrapper is reported. It is never thrown into the invocation:
+   * this wrapper IS the customer's request, so an escape changes the request's outcome rather than costing
+   * a report.
+   */
+  onError?: (error: unknown) => void;
 }
 
 /** Run `fn` as a Bugsee-instrumented edge invocation: in a fresh per-invocation context (stamped with
@@ -64,7 +71,13 @@ export async function runInEdgeContext<T>(
     } catch (error) {
       // Fire-and-forget: the report is registered as pending, which the finally's flush then awaits. Rethrow so
       // the platform / the user's own error handling still runs.
-      void client.logException(error, { mechanism: 'uncaught' });
+      //
+      // CONTAINED, and this is the seam that matters most in the package: the CUSTOMER'S error is in flight
+      // here. An SDK throw out of `logException` replaced it, so the app's own handling saw
+      // "SDK internal failure" instead of what actually went wrong. `neverThrow` also attaches a rejection
+      // handler to the returned promise, so the fire-and-forget call cannot surface as an unhandled
+      // rejection in the isolate one tick later.
+      neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), options.onError);
       throw error;
     }
   };
@@ -72,10 +85,26 @@ export async function runInEdgeContext<T>(
     return store !== undefined ? await store.run(context, capture) : await capture();
   } finally {
     // Keep the isolate alive until any incident upload from this invocation completes (a no-op on a clean one).
+    //
+    // CONTAINED. A `finally` is the one place a throw REPLACES whatever the block was already doing: on a
+    // clean request it turned the handler's return value into a rejection (a 200 became a 500 for a request
+    // that had succeeded), and on a failing one it masked the customer's error with the flush's. `waitUntil`
+    // is platform- or app-supplied and can throw on its own account.
+    // A flush that can only RESOLVE. `neverThrow` alone was not enough here and the distinction matters:
+    // it contains a SYNCHRONOUS throw and returns the promise unchanged, so `await`ing it still rejected
+    // (the Durable Object path), and handing it to `waitUntil` still gave the platform a rejecting promise
+    // to await. Both are async failures of the upload, which must never become the request's outcome.
+    const flushed = async (): Promise<void> => {
+      try {
+        await client.flush();
+      } catch (error) {
+        neverThrow(() => options.onError?.(error)); // a throwing sink must not defeat the guard either
+      }
+    };
     if (options.awaitFlush === true) {
-      await client.flush(); // Durable Object: ctx.waitUntil is inert → hold the request open by awaiting
+      await flushed(); // Durable Object: ctx.waitUntil is inert → hold the request open by awaiting
     } else {
-      waitUntil(client.flush());
+      neverThrow(() => waitUntil(flushed()), options.onError);
     }
   }
 }
