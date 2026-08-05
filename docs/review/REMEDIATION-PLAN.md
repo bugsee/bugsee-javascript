@@ -19,8 +19,8 @@ serious hole, and none blocks anything else.
 
 | # | Fix | Where | Why first | Est |
 |---|---|---|---|---|
-| 0.1 | **Cross-tenant capture-ring sharing in Durable Objects** — give each DO instance its own store; never share module-scope capture state | `packages/cloudflare` | One tenant's uploaded bundle contained other tenants' secrets. This is a data-protection incident class, not a bug class. | 2–3d |
-| 0.2 | **Renderer-controlled `type` reaches `path.join` in main** — validate/allowlist every renderer-supplied wire field before it touches the filesystem | `packages/electron` | Arbitrary-path, arbitrary-content file write from any renderer; XSS in loaded content escalates to disk write. | 2–3d |
+| 0.1 | ✅ **DONE** — **Cross-tenant capture-ring sharing in Durable Objects** — each DO instance gets its own partition. Built as `createPartitionedCaptureStore` in `@bugsee/core` (`partitioned-capture-store.ts`), with the tenant `owner` threaded from `instrument-durable-object.ts` / `instrument-class.ts`. Design: `docs/design/cloudflare-tenant-isolation.md`. Tested in `partitioned-capture-store.test.ts` + the cloudflare suites. | `packages/cloudflare`, `packages/core` | 2–3d |
+| 0.2 | ✅ **DONE** — **Renderer-controlled `type` reaches `path.join` in main** — `t` is validated against a closed `KNOWN_FILE_TYPES` set and `ts` against a finite-number check, in `packages/electron/src/protocol.ts`. A failing message is DROPPED, not sanitised. `protocol.test.ts` asserts the proven exploit string (`'../../../../victim/pwned.txt'`) and seven sibling shapes are all rejected. | `packages/electron` | 2–3d |
 | 0.3 | **Unauthenticated, page-replaceable bridge globals** — mint a per-session token at injection, verify on every inbound message, resolve the native sink ONCE and capture it | `packages/webview` | Any later-loading script on the page taps the whole un-redacted capture stream, or suppresses capture entirely. | 3–4d |
 
 **Decision needed on 0.3:** hardening the bridge is a wire-protocol change and the Android receiver
@@ -125,8 +125,8 @@ inside host code with no guard**.
 
 | # | Fix | Where | Est |
 |---|---|---|---|
-| 2.1 | 🟡 **helper BUILT + frontend seams applied**; middleware/hooks/interceptors remain — **One shared `neverThrow` boundary helper** in core, plus a rule that EVERY host-facing entry point is wrapped | `packages/core` + applied across ~15 packages | 5–8d |
-| 2.2 | **Enforce it** — a lint rule or an exported-surface test asserting every host-facing export is wrapped, so this cannot regress | `packages/core` + tooling | 2–3d |
+| 2.1 | ✅ **DONE** — **One shared `neverThrow` boundary helper** in core, applied at EVERY host-facing entry point. All four targets this plan named are resolved: `core`'s `runFilter` was already contained; the OTel `onEnd`, the vercel-edge `waitUntil`/catch, and the browser window listeners are fixed. | `packages/core` + applied across ~15 packages | 5–8d |
+| 2.2 | ✅ **DONE** (13 adapter packages) — **Enforce it** — a `host-boundary.test.ts` per package with two halves: CONTAINMENT (every entry driven with a throwing client AND a throwing app-supplied `getClient`) and COMPLETENESS (the exported surface enumerated, so a new export with no containment test fails the file BY NAME — teeth-checked). | `packages/*` | 2–3d |
 | 2.3 | ✅ **DONE** (corrected in review round 1) — **Chain, never clobber, the host's error handler**. The first pass marked this done while express and koa were still unguarded: both build their request `info`, including the app-supplied `user` callback, OUTSIDE the engine. Fixed in `9d11417`, with real-framework tests. | the 5 frontend + 7 backend adapters | 4–6d |
 | 2.4 | ✅ **DONE** — **`launch()` must not pin the host process** — `unref` the ANR watchdog worker's MessagePort (it re-refs after `unref` today) | `packages/node` | 1–2d |
 | 2.5 | ✅ **DONE** — **`unhandledRejection` must not convert host crashes into `exit 0`** — preserve Node's default behaviour, re-throw after capture | `packages/node` | 1–2d |
@@ -220,7 +220,7 @@ silently.
 
 | # | Fix | Notes | Est |
 |---|---|---|---|
-| 3a.1 | **Run the e2e suites in CI** — `turbo run test:coverage` currently resolves to `<NONEXISTENT>` for all four harnesses | Cheap and urgent. Do this first, before any fix, so the rest is gated. | 0.5–1d |
+| 3a.1 | ✅ **DONE** — **Run the e2e suites in CI** — `.github/workflows/ci.yml` has a dedicated `e2e` job (node · bun · deno · real frameworks) with a runtime-matrix check so a missing runtime fails loudly instead of silently skipping. | Cheap and urgent. Done first, so the rest is gated. | 0.5–1d |
 | 3b.1 | **Harnesses must install the way customers do** — import `@bugsee/bugsee` (the umbrella), not the platform packages directly | This single gap is why the Bun/Deno bypass and the umbrella-condition defect were invisible. | 2–3d |
 | 3b.2 | **Assert bundle CONTENTS, not arrival** — manifest correctness, entry payloads, wire field names/types, redaction actually applied | Would have caught `logLevelToWire`. | 3–5d |
 | 3b.3 | **Schema-validate the mock collector** against the real backend contract | A permissive mock is how wire defects survive e2e. | 2–3d |
@@ -331,6 +331,25 @@ Everything else: the ~190 SEV3s, dead exports (15/24 in `@bugsee/util` have no c
 `bundler-plugin-core` recursive `*.map` unlink and `dryRun` build-abort, the Vite `build.sourcemap`
 default-off setup failure, the mutual-mocking test blind spots, and the missing `.tsx`/TypeScript coverage in
 the component-annotate plugins.
+
+---
+
+## Status verification (2026-08-05)
+
+Three items in the tables above were marked open while already being **built and tested**: `0.1`,
+`0.2` and `3a.1`. They are corrected in place. The lesson is worth keeping rather than just the
+correction — this plan is the shared source of truth, and a stale "open" costs whoever picks it up a
+full investigation before they can start. Each status above was re-verified by running the code or
+reading the committed test, not by trusting a label.
+
+**Wave 2 is complete.** 2.1's four named targets are resolved and 2.2 is applied to all 13 adapter
+packages. The enforcement found **24 real containment defects across 15 packages**, all one shape:
+the inner call was guarded and the SEAM was not. Frontend adapters guarded the callee and missed the
+public export; backend adapters guarded the request path and missed BOOTSTRAP (every `setup*` could
+stop the app starting); OTel and vercel-edge guarded neither of their two host inputs.
+
+**Still genuinely open:** `0.3` (gated on the Android receiver, D1), `1.5` (gated on the rrweb fork),
+Wave 3b, Waves 4–7, and Wave V.
 
 ---
 
