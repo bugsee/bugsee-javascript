@@ -79,6 +79,7 @@ import {
   markOwnHandler,
   nodeTerminatesOnRejection,
   printFatal,
+  releaseSignalToDefault,
   type UnhandledRejectionMode,
 } from './process-policy';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
@@ -132,6 +133,15 @@ const NODE_OPTION_DEFINITIONS = [
   { friendly: 'hangMediumMs', key: BugseeOption.DetectHangMediumMs, default: 5000 },
   { friendly: 'hangSevereMs', key: BugseeOption.DetectHangSevereMs, default: 10_000 },
 ];
+
+/**
+ * Signals that mean "shut down" and therefore have to flush (Wave 6.1).
+ *
+ * SIGTERM is the orchestrator's stop (Kubernetes, Docker, systemd), SIGINT is Ctrl-C in a terminal, SIGHUP
+ * is a closed terminal or a supervisor reload. SIGKILL is deliberately absent — it cannot be caught, which
+ * is precisely why the durable store appends every entry as captured rather than relying on a flush.
+ */
+const FLUSH_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
 
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
 export interface NodeRuntime extends ProcessEvents {
@@ -847,9 +857,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // fires on a drained event loop, an explicit process.exit(), and after the crash handler's exit. Flush the
   // batched writer's buffers here so a graceful/clean shutdown reaches the page cache and loses nothing
   // (bounding the un-flushed window the 1 s timer otherwise covers to ~0). Non-intrusive: it only does sync
-  // work DURING exit and never alters exit behavior (unlike installing a SIGTERM handler, which would swallow
-  // the signal). Installed only when the batched writer is in use; removed on stop().
-  const onProcessExit = (): void => {
+  // work DURING exit and never alters exit behavior. Installed only when the batched writer is in use;
+  // removed on stop().
+  const flushBuffers = (): void => {
     try {
       chunkStorage?.flushSync?.();
     } catch (error) {
@@ -858,7 +868,27 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   };
   const flushesOnExit = chunkStorage?.flushSync !== undefined;
   if (flushesOnExit) {
-    proc.on('exit', onProcessExit);
+    proc.on('exit', flushBuffers);
+  }
+
+  // …and on a SIGNAL (Wave 6.1). `'exit'` covers a drained loop and an explicit process.exit(), but it does
+  // NOT fire on a signal — measured against a real process: `kill -TERM` exits 143 with the handler never
+  // called. SIGTERM is how Kubernetes, Docker and systemd stop a service, so the hook above was installed
+  // for the rarest shutdown and missing from the normal one, and every graceful shutdown lost the buffer.
+  //
+  // The reason this was avoided until now — a signal listener SUPPRESSES Node's default termination — is
+  // real, and it is what `releaseSignalToDefault` exists to undo: flush, remove self, and re-raise only if
+  // no listener remains, so the process still dies with the right code and a host handler still wins.
+  const signalFlushHandlers = new Map<string, () => void>();
+  if (flushesOnExit) {
+    for (const signal of FLUSH_SIGNALS) {
+      const handler = markOwnHandler((): void => {
+        flushBuffers();
+        releaseSignalToDefault(proc, signal, handler);
+      });
+      signalFlushHandlers.set(signal, handler);
+      proc.on(signal, handler);
+    }
   }
 
   // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out —
@@ -907,7 +937,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         proc.off('unhandledRejection', onUnhandledRejection);
       }
       if (flushesOnExit) {
-        proc.off('exit', onProcessExit); // the dispose() below already flushes + closes
+        proc.off('exit', flushBuffers); // the dispose() below already flushes + closes
+        for (const [signal, handler] of signalFlushHandlers) {
+          proc.off(signal, handler); // …and leave the host's signal disposition exactly as we found it
+        }
+        signalFlushHandlers.clear();
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
       heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)

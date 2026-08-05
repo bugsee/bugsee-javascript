@@ -114,3 +114,52 @@ export function printFatal(label: string, value: unknown, write: (text: string) 
     value instanceof Error ? (value.stack ?? `${value.name}: ${value.message}`) : String(value);
   write(`${label} ${detail}\n`);
 }
+
+/**
+ * Hand a termination signal back to Node's default disposition after Bugsee observed it (Wave 6.1).
+ *
+ * Registering ANY listener for SIGTERM/SIGINT/SIGHUP suppresses the default — the process no longer dies.
+ * So every Bugsee signal listener has to restore it, and the rule has to hold when SEVERAL are installed
+ * (the system-event source observes signals; the flush hook writes buffers out) and when the HOST installed
+ * one too.
+ *
+ * One rule covers all three cases: **remove yourself, then re-raise only if NO listener remains.**
+ *
+ *  - Bugsee alone → the last of ours to run finds an empty list and re-raises; the default kills the process
+ *    with the right code (143 for SIGTERM). Because it is the LAST one, every other Bugsee handler — the
+ *    flush included — has already finished.
+ *  - Several Bugsee handlers → all but the last see a non-empty list and stand down. Exactly one re-raise.
+ *  - The host has its own handler → a listener always remains, so Bugsee never re-raises. The host
+ *    suppressed the default itself and owns the shutdown; killing its process because Bugsee is installed
+ *    would be the Wave 2.5 defect in another costume.
+ *
+ * Supersedes the earlier `listenerCount(signal) === 1` gate, which read "sole handler" from a RAW count and
+ * therefore stopped re-raising — hanging the process — as soon as Bugsee installed a second listener.
+ *
+ * Returns whether the signal was re-raised (so callers can assert the disposition, not just the flush).
+ */
+export function releaseSignalToDefault(
+  proc: ListenerSource,
+  signal: string,
+  handler: (...args: never[]) => unknown,
+): boolean {
+  const p = proc as {
+    off?: (event: string, listener: (...args: never[]) => unknown) => unknown;
+    listeners?: (event: string) => unknown[];
+    kill?: (pid: number, signal: string) => unknown;
+    pid?: number;
+  };
+  p.off?.(signal, handler);
+  // No `listeners` to consult (an injected double, or a non-Node process-like) → stand down. Re-raising
+  // blind could kill a process whose host handler we simply cannot see.
+  if (typeof p.listeners !== 'function' || p.listeners.call(p, signal).length > 0) {
+    return false;
+  }
+  // Both are required, and neither is defaulted: `kill(0, sig)` signals the whole PROCESS GROUP on POSIX,
+  // so a missing pid must mean "do nothing", never "guess".
+  if (typeof p.kill !== 'function' || typeof p.pid !== 'number') {
+    return false;
+  }
+  p.kill.call(p, p.pid, signal);
+  return true;
+}

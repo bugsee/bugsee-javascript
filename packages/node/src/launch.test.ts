@@ -70,6 +70,7 @@ const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 function fakeProcess(onExit?: (code?: number) => void) {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const exit = vi.fn(onExit);
+  const kill = vi.fn();
   const written: string[] = [];
   const proc: NodeRuntime = {
     on(event: string, listener: (...args: unknown[]) => void) {
@@ -91,10 +92,13 @@ function fakeProcess(onExit?: (code?: number) => void) {
     listeners: (event: string) => [...(listeners.get(event) ?? [])],
     stderr: { write: (text: string) => written.push(text) },
     exit,
+    kill,
+    pid: process.pid,
   } as unknown as NodeRuntime;
   return {
     proc,
     exit,
+    kill,
     stderr: written,
     /** Register a listener the SDK does NOT own, standing in for the host app's own handler. */
     addHostListener: (event: string) => {
@@ -991,6 +995,113 @@ describe('launch', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // WAVE 6.1 — `'exit'` NEVER FIRES ON A SIGNAL, so every graceful container shutdown lost the buffer.
+  //
+  // Measured against a real node process: `kill -TERM` gives exit code 143 and the `'exit'` handler does
+  // not run at all. SIGTERM is how Kubernetes, Docker and systemd stop a process, so the flush hook was
+  // installed for the one path that matters least (a drained event loop) and absent from the normal one.
+  //
+  // The original comment rejected a signal handler because it "would swallow the signal" — correct, and
+  // the reason this is done the way it is: flush, remove our own listener, then RE-RAISE, so the default
+  // disposition still applies and the exit code is still 143. And, like the crash policy, only when Bugsee
+  // is the SOLE handler: a host with its own SIGTERM handler has taken responsibility for the outcome.
+  describe('flush on SIGTERM/SIGINT/SIGHUP (Wave 6.1)', () => {
+    const withDataDir = (
+      run: (dir: string, proc: ReturnType<typeof fakeProcess>) => void,
+    ): void => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-signal-'));
+      const proc = fakeProcess();
+      try {
+        run(dir, proc);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it.each(['SIGTERM', 'SIGINT', 'SIGHUP'])('flushes on %s', (signal) => {
+      withDataDir((dir, proc) => {
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+        const flushed = vi.fn();
+        cs.flushSync = flushed;
+        proc.fire(signal);
+        expect(flushed).toHaveBeenCalled();
+      });
+    });
+
+    it('RE-RAISES the signal so the process still dies with the right code', () => {
+      // The whole reason a signal handler was avoided. Installing one suppresses Node's default, so it has
+      // to be handed back: remove our listener, then re-raise.
+      withDataDir((dir, proc) => {
+        launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        expect(proc.count('SIGTERM')).toBe(1);
+        proc.fire('SIGTERM');
+        expect(proc.count('SIGTERM')).toBe(0); // listener removed…
+        expect(proc.kill).toHaveBeenCalledWith(process.pid, 'SIGTERM'); // …and the signal re-raised
+      });
+    });
+
+    it('does NOT re-raise when the HOST has its own handler', () => {
+      // The host suppressed Node's default itself and owns the outcome; killing its process because Bugsee
+      // is installed is the Wave 2.5 defect in another costume. Still flushes.
+      withDataDir((dir, proc) => {
+        proc.addHostListener('SIGTERM');
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+        const flushed = vi.fn();
+        cs.flushSync = flushed;
+        proc.fire('SIGTERM');
+        expect(flushed).toHaveBeenCalled();
+        expect(proc.kill).not.toHaveBeenCalled();
+      });
+    });
+
+    it('removes the signal listeners on stop()', () => {
+      withDataDir((dir, proc) => {
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        expect(proc.count('SIGTERM')).toBe(1);
+        void client.stop();
+        expect(proc.count('SIGTERM')).toBe(0);
+      });
+    });
   });
 
   it('swallows a flush failure on exit, routing it to onError (never throws out of the exit hook)', () => {

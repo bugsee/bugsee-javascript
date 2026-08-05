@@ -5,6 +5,7 @@ import {
   markOwnHandler,
   nodeTerminatesOnRejection,
   printFatal,
+  releaseSignalToDefault,
 } from './process-policy';
 
 const procWith = (listeners: Record<string, unknown[]>): ListenerSource =>
@@ -131,5 +132,58 @@ describe('nodeTerminatesOnRejection', () => {
         env: { NODE_OPTIONS: '--unhandled-rejections=warn' },
       }),
     ).toBe(false);
+  });
+});
+
+describe('releaseSignalToDefault', () => {
+  const withListeners = (over: Record<string, unknown> = {}) => {
+    const off = vi.fn();
+    const kill = vi.fn();
+    return { off, kill, listeners: () => [], pid: 99, ...over };
+  };
+
+  it('re-raises with the process own pid when no listener remains', () => {
+    const proc = withListeners();
+    expect(releaseSignalToDefault(proc, 'SIGTERM', () => {})).toBe(true);
+    expect(proc.kill).toHaveBeenCalledWith(99, 'SIGTERM');
+  });
+
+  it('removes the handler before re-raising, so the re-raise cannot re-enter it', () => {
+    const handler = () => {};
+    const proc = withListeners();
+    releaseSignalToDefault(proc, 'SIGTERM', handler);
+    expect(proc.off).toHaveBeenCalledWith('SIGTERM', handler);
+  });
+
+  it('stands down when ANY listener remains — the host owns the shutdown', () => {
+    const proc = withListeners({ listeners: () => [() => {}] });
+    expect(releaseSignalToDefault(proc, 'SIGTERM', () => {})).toBe(false);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+
+  it('stands down when the process cannot enumerate listeners at all', () => {
+    // An injected double or a non-Node process-like. Re-raising blind could kill a process whose host
+    // handler we simply cannot see, so "unknown" has to mean "do nothing".
+    const proc = withListeners({ listeners: undefined });
+    expect(releaseSignalToDefault(proc, 'SIGTERM', () => {})).toBe(false);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+
+  it('never guesses a pid — a process-like without one is left alone', () => {
+    // `kill(0, sig)` signals the entire PROCESS GROUP on POSIX. Defaulting the pid would turn a missing
+    // field into a signal delivered to every sibling process in the group.
+    const proc = withListeners({ pid: undefined });
+    expect(releaseSignalToDefault(proc, 'SIGTERM', () => {})).toBe(false);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a process-like with no kill at all', () => {
+    const proc = withListeners({ kill: undefined });
+    expect(releaseSignalToDefault(proc, 'SIGTERM', () => {})).toBe(false);
+  });
+
+  it('tolerates a process-like with no off at all', () => {
+    const proc = withListeners({ off: undefined });
+    expect(() => releaseSignalToDefault(proc, 'SIGTERM', () => {})).not.toThrow();
   });
 });
