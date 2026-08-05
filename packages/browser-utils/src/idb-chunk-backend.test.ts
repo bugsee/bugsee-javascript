@@ -459,3 +459,89 @@ describe('flush (Wave 6.2)', () => {
     await expect(store.flush?.()).resolves.toBeUndefined();
   });
 });
+
+// WAVE 6.5 — one corrupt record must not destroy the whole generation's recovery.
+//
+// This is the exact failure class CORE explicitly designed against, and the IDB port dropped the guard:
+//   · packages/core/src/capture-drain.ts:24-30 — "Skip it; NEVER let one bad record poison the whole
+//     generation's recovery (which would keep the marker + chunks and repeat the failure on every launch —
+//     a permanent loss)".
+//   · packages/core/src/file-chunk-backend.ts:66-69 falls back to a derived meta; :128/:133 `continue` past
+//     a torn line.
+// Here both `dec<StoredMeta>` and `dec<StoredData>` were bare `JSON.parse` inside a loop, so ONE bad value
+// rejected `listParts()` / `drainAll()` for everything.
+//
+// The loss is PERMANENT, which is what makes it worse than a dropped record: capture-recovery catches per
+// generation, does NOT remove the marker, so the generation stays pending, the sweep keeps it, and the next
+// launch fails identically. Forever — and the poisoned data is never freed either.
+describe('torn-record tolerance (Wave 6.5)', () => {
+  const torn = new TextEncoder().encode('{"t":0,"s":"trunc');
+
+  it('keeps the intact records either side of a corrupt DATA envelope', async () => {
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 5 });
+    b.openPart(ref(5, 0), 1000);
+    b.appendEntry(ref(5, 0), rec('good-0'));
+    b.appendEntry(ref(5, 0), rec('torn-1'));
+    b.appendEntry(ref(5, 0), rec('good-2'));
+    await b.flush?.();
+    // Overwrite the middle envelope with a truncated one, the way a killed write leaves it.
+    const keys = (await store.readPrefix('d/')).map(([k]) => k).sort();
+    await store.put(keys[1] as string, torn);
+    expect(await collect(b.snapshot([{ ref: ref(5, 0), count: 3 }]))).toEqual(['good-0', 'good-2']);
+  });
+
+  it('keeps the other chunks’ metadata when ONE chunk’s meta is corrupt', async () => {
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 6 });
+    b.openPart(ref(6, 0), 1000);
+    b.closePart(ref(6, 0), 2000, 10);
+    b.openPart(ref(6, 1), 2000);
+    await b.flush?.();
+    const metaKeys = (await store.readPrefix('m/')).map(([k]) => k).sort();
+    await store.put(metaKeys[0] as string, new TextEncoder().encode('{oops'));
+    const parts = await b.listParts(6);
+    expect(parts.map((p) => p.number)).toEqual([0, 1]); // chunk 1 survives…
+    expect(parts[1]).toMatchObject({ start: 2000 }); // …with its real metadata intact
+  });
+
+  it('derives a usable default for the corrupt meta rather than dropping the chunk', async () => {
+    // Core does the same (file-chunk-backend.ts:66-69): a chunk whose meta is unreadable still has DATA,
+    // and dropping the meta would orphan those records where nothing ever reads or frees them.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 7 });
+    b.openPart(ref(7, 0), 1000);
+    await b.flush?.();
+    const metaKeys = (await store.readPrefix('m/')).map(([k]) => k);
+    await store.put(metaKeys[0] as string, new TextEncoder().encode('not json at all'));
+    const parts = await b.listParts(7);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ generation: 7, number: 0, byteSize: 0 });
+  });
+
+  it('survives an EMPTY value — the shape a missing getAll slot decodes to', async () => {
+    // `values[index] as Uint8Array` casts away a hole; `TextDecoder().decode(undefined)` yields '' and
+    // `JSON.parse('')` throws. Same total loss, from a different trigger.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 8 });
+    b.openPart(ref(8, 0), 1000);
+    b.appendEntry(ref(8, 0), rec('kept'));
+    b.appendEntry(ref(8, 0), rec('empty-next'));
+    await b.flush?.();
+    const keys = (await store.readPrefix('d/')).map(([k]) => k).sort();
+    await store.put(keys[1] as string, new Uint8Array());
+    expect(await collect(b.snapshot([{ ref: ref(8, 0), count: 2 }]))).toEqual(['kept']);
+  });
+
+  it('still reads a fully intact generation — the canary', async () => {
+    // Without this, "tolerates corruption" would also be satisfied by a backend that returns nothing.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 9 });
+    b.openPart(ref(9, 0), 1000);
+    b.appendEntry(ref(9, 0), rec('a'));
+    b.appendEntry(ref(9, 0), rec('b'));
+    await b.flush?.();
+    expect(await collect(b.snapshot([{ ref: ref(9, 0), count: 2 }]))).toEqual(['a', 'b']);
+    expect(await b.listParts(9)).toHaveLength(1);
+  });
+});

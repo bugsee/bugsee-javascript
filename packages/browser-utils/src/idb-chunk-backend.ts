@@ -42,6 +42,12 @@ const dataKey = (gen: number, chunk: number, seq: number): string =>
 // The generation embedded in a meta key `m/<gen>/<chunk>` — parsed by separator (not a fixed width),
 // so a generation wider than GEN_PAD (≥1e13 ms / an injected large id) is not truncated.
 const genOfMetaKey = (key: string): number => Number(key.slice(2, key.indexOf('/', 2)));
+// The chunk number embedded in a meta key `m/<gen>/<chunk>`. The KEY survives a corrupt VALUE, so this is
+// how a chunk whose meta failed to parse keeps its identity (Wave 6.5).
+const numberOfMetaKey = (key: string): number | undefined => {
+  const n = Number(key.slice(key.indexOf('/', 2) + 1));
+  return Number.isInteger(n) ? n : undefined;
+};
 
 interface StoredMeta {
   readonly n: number;
@@ -57,7 +63,30 @@ interface StoredData {
 
 const enc = (value: StoredMeta | StoredData): Uint8Array =>
   new TextEncoder().encode(JSON.stringify(value));
-const dec = <T>(bytes: Uint8Array): T => JSON.parse(new TextDecoder().decode(bytes)) as T;
+/**
+ * Decode one stored record, or `undefined` if it is unreadable (Wave 6.5).
+ *
+ * A bare `JSON.parse` here made ONE corrupt value reject `listParts()` / `drainAll()` for the whole
+ * generation, taking every intact record with it — and permanently: capture-recovery catches per
+ * generation and does NOT remove the marker, so the generation stays pending, the sweep keeps it, and the
+ * next launch fails identically, forever, with the poisoned data never freed.
+ *
+ * Core designed against exactly this and the IDB port dropped the guard. `capture-drain.ts:24-30`: "Skip
+ * it; NEVER let one bad record poison the whole generation's recovery". `file-chunk-backend.ts:66-69`
+ * falls back to a derived meta; `:128`/`:133` skip a torn line. This restores the same contract.
+ *
+ * Triggers are not exotic: a `getAll`/`getAllKeys` length mismatch (the `as Uint8Array` cast hides the
+ * hole, and `TextDecoder().decode(undefined)` yields `''`, which `JSON.parse` rejects), storage-layer
+ * corruption, and envelope-schema drift on the dead-sibling path — which by construction reads data a
+ * DIFFERENT build wrote.
+ */
+const dec = <T>(bytes: Uint8Array | undefined): T | undefined => {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
+  } catch {
+    return undefined;
+  }
+};
 
 const groupByType = (records: readonly StoredEntry[]): Map<FileType, StoredEntry[]> => {
   const grouped = new Map<FileType, StoredEntry[]>();
@@ -145,8 +174,20 @@ export function createIdbChunkBackend(
       .then(() => store.readPrefix(metaGenPrefix(gen)))
       .then((entries) =>
         entries
-          .map(([, bytes]) => {
+          .map(([key, bytes], index) => {
             const m = dec<StoredMeta>(bytes);
+            if (m === undefined) {
+              // The chunk is KEPT with a derived default, not dropped — it still has data, and dropping
+              // its meta would orphan those records where nothing reads or frees them. Same choice core
+              // makes at file-chunk-backend.ts:66-69. The number comes from the key, which is intact.
+              return {
+                generation: gen,
+                number: numberOfMetaKey(key) ?? index,
+                start: 0,
+                end: undefined,
+                byteSize: 0,
+              };
+            }
             return {
               generation: gen,
               number: m.n,
@@ -214,6 +255,9 @@ export function createIdbChunkBackend(
           const records = await store.readPrefix(dataPrefix(ref.generation, ref.number));
           for (let i = 0; i < count && i < records.length; i += 1) {
             const d = dec<StoredData>((records[i] as [string, Uint8Array])[1]);
+            if (d === undefined) {
+              continue; // one torn envelope loses ONE record, never the generation
+            }
             out.push({ type: d.ty, timestamp: d.t, serialized: d.s });
           }
         }
