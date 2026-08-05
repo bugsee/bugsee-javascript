@@ -1,4 +1,4 @@
-import { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 // The @bugsee/solid ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On a
 // navigation, @solidjs/router's matched routes carry the parameterized pattern (`/users/:id`); the deepest
@@ -22,9 +22,14 @@ export interface SolidRouteMatchLike {
 export function routePatternFromSolidMatches(
   matches: readonly SolidRouteMatchLike[] | null | undefined,
 ): string | undefined {
-  if (!matches || matches.length === 0) return undefined;
-  const pattern = matches[matches.length - 1]?.route?.pattern;
-  return typeof pattern === 'string' && pattern !== '' ? pattern : undefined;
+  // CONTAINED. The argument is HOST-supplied — a framework navigation/match object, or whatever an app
+  // passes to this public export — and any property read on it can throw (measured against a proxied one).
+  // Failing to name a route must never cost the report, let alone the app.
+  return neverThrow(() => {
+    if (!matches || matches.length === 0) return undefined;
+    const pattern = matches[matches.length - 1]?.route?.pattern;
+    return typeof pattern === 'string' && pattern !== '' ? pattern : undefined;
+  });
 }
 
 /** Refine the active transaction to the matched route PATTERN (D5 phase-2). Call (in a reactive effect) with

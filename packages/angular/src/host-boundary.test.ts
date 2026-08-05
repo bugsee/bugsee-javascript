@@ -1,5 +1,9 @@
+import type { Bugsee } from '@bugsee/bugsee';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as errorMod from './error';
 import { BugseeErrorHandler, createAngularErrorHandler } from './error';
+import * as renderTracker from './render-tracker';
+import * as routerMod from './router';
 
 // Wave 2.1/2.3 — docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #1 + #2.
 const throwingClient = () =>
@@ -68,5 +72,87 @@ describe('BugseeErrorHandler does not silently delete the app’s error surfacin
     };
     expect(() => new BugseeErrorHandler().handleError(new Error('e'))).not.toThrow();
     expect(consoleError).toHaveBeenCalled();
+  });
+});
+
+// WAVE 2.2 — the enforcement half. The tests above cover the ErrorHandler seam the review named; nothing
+// covered the rest, and nothing failed when a new export arrived without a containment test.
+describe('the host-boundary contract (Wave 2.2)', () => {
+  const hostileClient = (): Bugsee =>
+    new Proxy({} as Bugsee, {
+      get() {
+        return () => {
+          throw new Error('SDK internal failure');
+        };
+      },
+    });
+  // APPLICATION-supplied, and it runs before any guard the SDK applies to the client itself.
+  const hostileResolver = (): Bugsee => {
+    throw new Error('app resolver failed');
+  };
+
+  it.each([
+    ['hostile client', () => hostileClient()],
+    ['hostile resolver', hostileResolver],
+  ])('contains every other host seam under a %s', (_label, getClient) => {
+    expect(() => errorMod.reportAngularError(new Error('boom'), { getClient })).not.toThrow();
+
+    // Angular's Router is host-supplied; this reads a snapshot tree straight off it.
+    expect(() =>
+      routerMod.setRouteNameFromRouter(
+        {
+          routerState: {
+            snapshot: { root: { routeConfig: { path: 'users/:id' }, firstChild: null } },
+          },
+        } as never,
+        { getClient },
+      ),
+    ).not.toThrow();
+
+    // start()/end() are called from component lifecycle hooks — a throw there takes the view down.
+    expect(() => {
+      const tracker = renderTracker.createBugseeRenderTracker('UserProfile', { getClient });
+      tracker.start();
+      tracker.end();
+    }).not.toThrow();
+  });
+
+  it('contains a hostile Router object entirely', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('hostile router');
+        },
+      },
+    );
+    expect(() => routerMod.setRouteNameFromRouter(hostile as never, {})).not.toThrow();
+  });
+
+  it('contains a hostile snapshot tree in the pure reader', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('hostile snapshot');
+        },
+      },
+    );
+    expect(() => routerMod.routePatternFromSnapshot(hostile as never)).not.toThrow();
+  });
+
+  it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
+    const owned: Record<string, unknown> = { ...errorMod, ...renderTracker, ...routerMod };
+    const functions = Object.keys(owned).filter((n) => typeof owned[n] === 'function');
+    const covered = new Set([
+      'createAngularErrorHandler',
+      'BugseeErrorHandler',
+      'reportAngularError',
+      'setRouteNameFromRouter',
+      'routePatternFromSnapshot',
+      'createBugseeRenderTracker',
+      'setRouteName',
+    ]);
+    expect(functions.filter((n) => !covered.has(n)).sort()).toEqual([]);
   });
 });
