@@ -1,4 +1,4 @@
-import { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 // The @bugsee/vue ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On a
 // navigation, vue-router knows the matched route PATTERN (`/users/:id` — the matcher rewrites a
@@ -25,18 +25,32 @@ export interface VueRouterLike {
  *  pattern — the matcher assembles `matched` child-last + rewrites relative children to absolute). Returns
  *  undefined when there is no matched record or no usable path. */
 export function routePatternFromVueRoute(route: VueRouteLike): string | undefined {
-  const matched = route.matched;
-  const deepest =
-    matched !== undefined && matched.length > 0 ? matched[matched.length - 1] : undefined;
-  const pattern = deepest?.path;
-  return typeof pattern === 'string' && pattern !== '' ? pattern : undefined;
+  // CONTAINED. `route` is host-supplied — a vue-router location, or whatever an app passes to this public
+  // export — and every property read here can throw on an exotic or proxied object.
+  return neverThrow(() => {
+    const matched = route.matched;
+    const deepest =
+      matched !== undefined && matched.length > 0 ? matched[matched.length - 1] : undefined;
+    const pattern = deepest?.path;
+    return typeof pattern === 'string' && pattern !== '' ? pattern : undefined;
+  });
 }
 
 /** Instrument a vue-router instance: on each navigation, refine the active transaction to the matched route
  *  PATTERN (D5 phase-2). Call once after `createRouter(...)`. A no-op for a navigation with no usable pattern. */
 export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingOptions = {}): void {
-  router.afterEach((to) => {
+  // CONTAINED at BOTH boundaries. `router.afterEach` is host-supplied and runs during app setup, where a
+  // throw takes the whole mount down rather than costing one report; the callback registered with it is
+  // invoked by vue-router on EVERY navigation, long after this returned, where a throw would fail the app's
+  // route change.
+  //
+  // The callback guard is REDUNDANT TODAY — verified, not assumed: a mutation removing it survives, because
+  // `routePatternFromVueRoute` and `setRouteName` now contain themselves, so nothing inside can throw. It
+  // stays because Wave 2.1's rule is enforced by construction at every host callback rather than re-derived
+  // from what the callees currently happen to do. Identical situation to @bugsee/react's `apply`.
+  const onNavigation = guarded((to: VueRouteLike): void => {
     const pattern = routePatternFromVueRoute(to);
     if (pattern !== undefined) setRouteName(pattern, options);
-  });
+  }, options.onError);
+  neverThrow(() => router.afterEach(onNavigation), options.onError);
 }
