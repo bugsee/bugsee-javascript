@@ -1199,3 +1199,82 @@ describe('launchCore — triggerPipeline seam', () => {
     await client.stop();
   });
 });
+
+// WAVE 6.2 — the page-lifecycle flush, wired.
+//
+// `installPageHideFlush` is unit-tested on its own; these assert launch actually CONNECTS it to something,
+// because the failure this fixes was precisely that the SDK listened to `pagehide` and then did nothing
+// with it. Each test observes a real consequence — a store flushed, a listener removed — not the mere
+// presence of a listener.
+describe('flush on page hide (Wave 6.2)', () => {
+  /** A capture store that records whether its pending durable writes were committed. */
+  const flushableStore = () => {
+    const store = memStore();
+    store.flush = vi.fn(() => Promise.resolve());
+    return store;
+  };
+
+  it('commits the capture store’s pending writes when the page hides', () => {
+    const win = fakeWindow();
+    const captureStore = flushableStore();
+    launchTracked('tok', baseOptions({ window: win.win, captureStore }));
+    win.emit('pagehide', {});
+    expect(captureStore.flush).toHaveBeenCalled();
+  });
+
+  it('flushes the CLIENT too, draining a report that is still assembling', () => {
+    // Committing the capture store is only half of it. A report can be mid-assembly when the page hides,
+    // and an assembling report has not reached the durable queue yet — `client.flush()` is what awaits it
+    // (packages/core/src/client.ts: uploadPipeline.flush alone misses reports with no upload enqueued).
+    // Without this leg, the last crash before a tab is backgrounded is the one most likely to be lost.
+    const win = fakeWindow();
+    const client = launchTracked('tok', baseOptions({ window: win.win, captureStore: memStore() }));
+    const flush = vi.spyOn(client, 'flush').mockResolvedValue(true);
+    win.emit('pagehide', {});
+    expect(flush).toHaveBeenCalled();
+  });
+
+  it('does not flush on a visibilitychange back to VISIBLE', () => {
+    const win = fakeWindow();
+    const doc = fakeWindow();
+    const captureStore = flushableStore();
+    launchTracked(
+      'tok',
+      baseOptions({
+        window: win.win,
+        document: Object.assign(doc.win, { visibilityState: 'visible' }) as unknown as Document,
+        captureStore,
+      }),
+    );
+    doc.emit('visibilitychange', {});
+    expect(captureStore.flush).not.toHaveBeenCalled();
+  });
+
+  it('removes the page-hide listener on stop()', async () => {
+    const win = fakeWindow();
+    const captureStore = flushableStore();
+    // System events off, so the only `pagehide` listener in play is the flush hook's — the system-event
+    // SOURCE also listens for one, and counting both would hide a leak in either.
+    const client = launchTracked(
+      'tok',
+      baseOptions({ window: win.win, captureStore, captureSystemEvents: false }),
+    );
+    expect(win.count('pagehide')).toBe(1);
+    await client.stop();
+    expect(win.count('pagehide')).toBe(0);
+    win.emit('pagehide', {});
+    expect(captureStore.flush).not.toHaveBeenCalled(); // …and it is genuinely disconnected
+  });
+
+  it('a failing flush never throws back into the browser’s dispatch', () => {
+    const win = fakeWindow();
+    const onError = vi.fn();
+    const captureStore = memStore();
+    captureStore.flush = () => {
+      throw new Error('commit failed');
+    };
+    launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
+    expect(() => win.emit('pagehide', {})).not.toThrow();
+    expect(onError).toHaveBeenCalled();
+  });
+});

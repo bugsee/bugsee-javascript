@@ -111,5 +111,9 @@ export function createChunkCaptureStore(
       totalBytes = 0;
       openNewPart(clock.wallNow());
     },
+
+    // Forwarded only when the backend HAS one, so `'flush' in store` stays an honest test for "this store
+    // can commit pending writes" rather than always true and sometimes meaningless.
+    ...(backend.flush !== undefined ? { flush: (): Promise<void> => backend.flush!() } : {}),
   };
 }

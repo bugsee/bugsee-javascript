@@ -123,6 +123,15 @@ export interface CaptureStore {
   snapshot(options?: { owner?: string }): CaptureSnapshot;
   /** Discard all live records. */
   clear(): void;
+  /**
+   * Commit everything captured so far (Wave 6.2). Optional, and present only on stores whose backing
+   * write is DEFERRED — an in-memory store has nothing pending, and a store that advertised a no-op flush
+   * would turn `store.flush?.()` from a real question into a meaningless one.
+   *
+   * Called by a platform at the last moment it is reliably alive: Node's `'exit'`/signal hooks, the
+   * browser's `pagehide`/`visibilitychange`→hidden.
+   */
+  flush?(): Promise<void>;
 }
 
 // Service token for the capture store: core owns the contract; the platform supplies the impl (in-memory

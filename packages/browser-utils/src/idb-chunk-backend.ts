@@ -259,6 +259,17 @@ export function createIdbChunkBackend(
       return readMetas(gen);
     },
 
+    // Wave 6.2 — the commit seam the page-hide hook awaits. Chaining on `queue` is the whole
+    // implementation: every write is already a link in it, so waiting for the tail waits for all of them.
+    // It resolves rather than rejects — each link already routes its own failure to `onError`, and a page
+    // that is going away can do nothing with a rejection anyway.
+    flush(): Promise<void> {
+      return queue.then(
+        () => undefined,
+        () => undefined,
+      );
+    },
+
     listGenerations(): Promise<number[]> {
       return queue
         .then(() => store.readPrefix('m/'))

@@ -59,4 +59,13 @@ export interface ChunkBackend {
   listParts(generation: number): PartMeta[] | Promise<PartMeta[]>;
   /** Every generation with persisted parts (recovery). */
   listGenerations(): number[] | Promise<number[]>;
+  /**
+   * Commit everything captured so far (Wave 6.2). Optional: only a backend that DEFERS physical writes has
+   * anything to commit, and one that writes synchronously must not advertise a guarantee it does not add.
+   *
+   * A durable backend keeps `appendEntry` non-blocking by queueing the write, so at any instant some
+   * records are captured but not yet on disk. This is what a platform calls at the last moment it is alive
+   * — Node's `'exit'`/signal hooks, the browser's `pagehide`/`visibilitychange`.
+   */
+  flush?(): Promise<void>;
 }

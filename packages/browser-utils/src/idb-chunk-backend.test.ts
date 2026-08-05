@@ -380,3 +380,82 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
     expect(await collect(snap)).toContain('before-reload');
   });
 });
+
+// WAVE 6.2 — commit-on-demand, for the moment the page is going away.
+//
+// `appendEntry` returns immediately and queues the physical IndexedDB write; that is what keeps capture
+// off the critical path, and it is also exactly what a killed tab discards. `flush()` is the seam the
+// browser's `pagehide`/`visibilitychange` hook awaits so the window shrinks to what was queued in the last
+// instant instead of everything since the previous commit.
+describe('flush (Wave 6.2)', () => {
+  it('resolves only AFTER queued writes have landed', async () => {
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 3 });
+    b.openPart(ref(3, 0), 1000);
+    b.appendEntry(ref(3, 0), rec('captured-but-not-yet-committed'));
+    await b.flush?.();
+    // Read through a SECOND backend over the same store, so nothing in the first one's queue can be
+    // mistaken for durability: this is what a fresh page load would see.
+    const reader = createIdbChunkBackend(store, { generation: 3, cleanOtherGenerations: false });
+    const parts = await reader.listParts(3);
+    expect(parts).toHaveLength(1);
+    expect(await collect(reader.snapshot([{ ref: ref(3, 0), count: 1 }]))).toEqual([
+      'captured-but-not-yet-committed',
+    ]);
+  });
+
+  it('is not yet durable BEFORE the flush — the canary that the wait is real', async () => {
+    // Without this, the test above would pass against a `flush()` that returns an already-resolved
+    // promise, because fake-indexeddb settles quickly enough on its own.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 4 });
+    b.openPart(ref(4, 0), 1000);
+    b.appendEntry(ref(4, 0), rec('pending'));
+    const reader = createIdbChunkBackend(store, { generation: 4, cleanOtherGenerations: false });
+    expect(await reader.listParts(4)).toEqual([]); // queued, not committed
+    await b.flush?.();
+    expect(await reader.listParts(4)).toHaveLength(1);
+  });
+
+  it('resolves rather than rejecting when a queued write failed', async () => {
+    // The queue routes failures to onError and continues. Flush must report "there is nothing left
+    // pending", not re-raise a failure the caller cannot act on — it runs as the page dies.
+    const failing: AsyncKeyedStore = {
+      ...keyed(),
+      put: () => Promise.reject(new Error('quota exceeded')),
+    };
+    const errors: unknown[] = [];
+    const b = createIdbChunkBackend(failing, {
+      generation: 6,
+      onError: (e) => errors.push(e),
+      cleanOtherGenerations: false,
+    });
+    b.openPart(ref(6, 0), 1000);
+    await expect(b.flush?.()).resolves.toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it('resolves even when the app’s own onError throws', () => {
+    // `onError` is application-supplied. When it throws, the queue's own `.catch` rejects, and a flush
+    // that propagated that would reject at page-hide — inside the browser's event dispatch, with nobody
+    // left to handle it. The failure sink failing must not become the caller's problem.
+    const failing: AsyncKeyedStore = {
+      ...keyed(),
+      put: () => Promise.reject(new Error('quota exceeded')),
+    };
+    const b = createIdbChunkBackend(failing, {
+      generation: 9,
+      cleanOtherGenerations: false,
+      onError: () => {
+        throw new Error('the error sink is broken too');
+      },
+    });
+    b.openPart(ref(9, 0), 1000);
+    return expect(b.flush?.()).resolves.toBeUndefined();
+  });
+
+  it('the capture store exposes it too — the page-hide hook holds a CaptureStore, not a backend', async () => {
+    const store = createIdbChunkCaptureStore(keyed(), { generation: 8, clock: clockAt(1000) });
+    await expect(store.flush?.()).resolves.toBeUndefined();
+  });
+});
