@@ -85,23 +85,35 @@ describe('recordReactRenderSpan', () => {
 });
 
 describe('BugseeProfiler', () => {
-  it('renders a React Profiler wrapping the children, with an onRender that records the span', () => {
+  // The direct-call test that lived here — `BugseeProfiler({...})` invoked as a plain function, asserting
+  // `element.type === Profiler` and driving `props.onRender` by hand — became invalid when the component
+  // gained hooks for the production fallback (Wave 4.6 / D4): calling a hook component outside a renderer
+  // throws "Invalid hook call".
+  //
+  // Its three assertions are all covered better by `profiler.render.test.ts`, which renders through real
+  // react-dom: that a span IS recorded on a dev render can only happen if a real `<Profiler>` fired, which
+  // subsumes the structural check. The one thing worth keeping explicitly is that the DEV path uses
+  // React's OWN timings rather than the fallback's — asserted there by the absence of `ui.render_source`.
+  it('uses React’s own timings in development, not the fallback measurement', () => {
     const { client, recordChildSpan } = fakeActive();
-    const element = BugseeProfiler({
-      id: 'Page',
-      getClient: () => client,
-      timeOrigin: 0,
-      children: 'CHILD',
-    } as BugseeProfilerProps);
-    expect(element.type).toBe(Profiler); // it's a real React Profiler
-    expect(element.props.id).toBe('Page');
-    expect(element.props.children).toBe('CHILD');
-    // drive the onRender callback React would call → records the render span
-    element.props.onRender('Page', 'mount', 5, 6, 10, 18);
+    // Drive the recording core exactly as the live-Profiler path does: no `source`, React's numbers.
+    recordReactRenderSpan(
+      {
+        id: 'Page',
+        phase: 'mount',
+        actualDuration: 5,
+        baseDuration: 6,
+        startTime: 10,
+        commitTime: 18,
+      },
+      { getClient: () => client, timeOrigin: 0 },
+    );
     expect(recordChildSpan).toHaveBeenCalledWith(
       'ui.render',
       expect.objectContaining({ description: 'Page', startTimestampMs: 10, endTimestampMs: 18 }),
     );
+    const [, opts] = recordChildSpan.mock.calls[0] as [string, Record<string, unknown>];
+    expect((opts.attributes as Record<string, unknown>)['ui.render_source']).toBeUndefined();
   });
 });
 

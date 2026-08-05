@@ -2,9 +2,12 @@ import { type AdapterClientOptions, recordRenderSpan } from '@bugsee/web-adapter
 import {
   type ComponentType,
   createElement,
+  Fragment,
   Profiler,
   type ReactElement,
   type ReactNode,
+  useLayoutEffect,
+  useRef,
 } from 'react';
 
 // React render-span profiling (frontend-adapters depth pass D4). `<BugseeProfiler id>` wraps a subtree in
@@ -27,6 +30,10 @@ import {
 //      React-free and takes plain numbers, so it needs no Profiler and no special build.
 
 const ATTR_BASE_DURATION = 'ui.render_base_duration_ms';
+/** Marks a span measured by the component's own post-commit fallback rather than by React's Profiler. The
+ *  fallback spans render-start → post-commit, which INCLUDES commit work React excludes from
+ *  `actualDuration`, so a consumer comparing the two must be able to tell them apart. */
+const ATTR_SOURCE = 'ui.render_source';
 
 /** React's `<Profiler onRender>` payload (the timing of one commit). `startTime`/`commitTime` are
  *  `performance.now()`-relative; epoch = `timeOrigin + …`. */
@@ -42,7 +49,13 @@ export interface ReactRenderProfile {
 export interface RecordRenderOptions extends AdapterClientOptions {
   /** `performance.timeOrigin` (injectable for tests). Default the real global. */
   timeOrigin?: number;
+  /** Who measured this commit. `'fallback'` marks the component's own post-commit measurement, used when
+   *  React's Profiler is inert (a production build). Omitted when React reported the timings itself. */
+  source?: 'fallback';
 }
+
+const now = (): number =>
+  (globalThis as { performance?: { now?: () => number } }).performance?.now?.() ?? 0;
 
 const realTimeOrigin = (): number =>
   (globalThis as { performance?: { timeOrigin?: number } }).performance?.timeOrigin ?? 0;
@@ -64,7 +77,10 @@ export function recordReactRenderSpan(
       endTimestampMs: timeOrigin + profile.commitTime,
       phase: profile.phase,
       durationMs: profile.actualDuration,
-      attributes: { [ATTR_BASE_DURATION]: profile.baseDuration },
+      attributes: {
+        [ATTR_BASE_DURATION]: profile.baseDuration,
+        ...(options.source !== undefined ? { [ATTR_SOURCE]: options.source } : {}),
+      },
     },
     { getClient: options.getClient },
   );
@@ -75,6 +91,9 @@ export interface BugseeProfilerProps extends RecordRenderOptions {
    *  build never calls `onRender`, so no span carries this id in a shipped app — see the file header. */
   id: string;
   children?: ReactNode;
+  /** TEST-ONLY: render without React's `<Profiler>`, reproducing a production build (children render,
+   *  `onRender` never fires). Not part of the supported API. */
+  __profilerInert?: boolean;
 }
 
 /**
@@ -85,26 +104,61 @@ export interface BugseeProfilerProps extends RecordRenderOptions {
  * render spans from a shipped app. See the file header.
  */
 export function BugseeProfiler(props: BugseeProfilerProps): ReactElement {
-  const { id, children, ...options } = props;
-  return createElement(
-    Profiler,
-    {
-      id,
-      onRender: (
-        profilerId: string,
-        phase: string,
-        actualDuration: number,
-        baseDuration: number,
-        startTime: number,
-        commitTime: number,
-      ) =>
-        recordReactRenderSpan(
-          { id: profilerId, phase, actualDuration, baseDuration, startTime, commitTime },
-          options,
-        ),
-    },
-    children,
-  );
+  const { id, children, __profilerInert, ...options } = props;
+  // React's Profiler is inert in a production build: children render, `onRender` NEVER fires. So the
+  // component measures the commit itself and reports only when React did not — self-detecting, with no
+  // build flag to read and nothing to configure. `reportedRef` is set by `onRender` and consumed by the
+  // layout effect that runs immediately after the same commit.
+  const reportedRef = useRef(false);
+  const startRef = useRef(0);
+  const mountedRef = useRef(false);
+  startRef.current = now(); // render body — the start of THIS commit's work
+
+  useLayoutEffect(() => {
+    const wasMounted = mountedRef.current;
+    mountedRef.current = true;
+    if (reportedRef.current) {
+      reportedRef.current = false; // React already reported this commit, with better numbers
+      return;
+    }
+    const commitTime = now();
+    const startTime = startRef.current;
+    recordReactRenderSpan(
+      {
+        id,
+        phase: wasMounted ? 'update' : 'mount',
+        actualDuration: commitTime - startTime,
+        // React's `baseDuration` (cost without memoization) is an internal it does not expose here.
+        // Reporting the measured duration keeps the field meaningful rather than inventing a number.
+        baseDuration: commitTime - startTime,
+        startTime,
+        commitTime,
+      },
+      { ...options, source: 'fallback' },
+    );
+  });
+
+  const onRender = (
+    profilerId: string,
+    phase: string,
+    actualDuration: number,
+    baseDuration: number,
+    startTime: number,
+    commitTime: number,
+  ): void => {
+    reportedRef.current = true;
+    recordReactRenderSpan(
+      { id: profilerId, phase, actualDuration, baseDuration, startTime, commitTime },
+      options,
+    );
+  };
+
+  // `__profilerInert` renders WITHOUT React's Profiler, reproducing a production build exactly (children
+  // render, onRender never fires). Test-only, and the only way to exercise the production path in a suite
+  // that necessarily runs a development React.
+  return __profilerInert === true
+    ? createElement(Fragment, null, children)
+    : createElement(Profiler, { id, onRender }, children);
 }
 
 /** HOC form: profile a component's renders. The Profiler id defaults to the component's name.
