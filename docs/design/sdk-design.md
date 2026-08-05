@@ -801,6 +801,8 @@ JS `source.type` enum (to coordinate with backend, §18): `programmatic`, `uncau
 
 ### 8.7 Network event (canonical wire shape — corrected)
 
+> **Viewer compatibility:** the dashboard tolerates today’s as-built divergences (bare arrays, string log levels, `direction` instead of `event`, ungzipped recovery `replay.bin`). Recommended emit fixes for the parallel SDK stream — without requiring viewer thrash — are in [`viewer-wire-compatibility.md`](./viewer-wire-compatibility.md).
+
 ```ts
 {
   "timestamp": 1709990000123,
@@ -1195,7 +1197,7 @@ Opting out (e.g. `maskAllText: false`) requires explicit `replay: { maskAllText:
 
 ### 11.3 Wire path
 
-**Decision (v3):** new file type `replay`, content `replay.bin` (gzipped rrweb event stream). **The web dashboard renders it natively via an rrweb player** — rrweb is a serialized DOM-snapshot + incremental-mutation stream, not pixels, so there is **no server-side MP4 transcode**; mobile's `video` path is unchanged. §18.1#5 becomes a backend task (accept/store the `replay` file type) + a frontend task (integrate the rrweb player). Manifest entry:
+**Decision (v3):** new file type `replay`, content `replay.bin` (gzipped rrweb event stream). **The web dashboard renders it natively via an rrweb player** — rrweb is a serialized DOM-snapshot + incremental-mutation stream, not pixels, so there is **no server-side MP4 transcode**; mobile's `video` path is unchanged. §18.1#5 becomes a backend task (accept/store the `replay` file type) + a frontend task (integrate the rrweb player). Dashboard ingest tolerances + SDK emit recommendations: [`viewer-wire-compatibility.md`](./viewer-wire-compatibility.md). Manifest entry:
 ```json
 { "type": "replay", "filename": "replay.bin", "name": "rrweb", "attrs": { "format": "rrweb-v2-gzipped", "duration_ms": 60000, "events": 5421 } }
 ```
