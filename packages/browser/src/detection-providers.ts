@@ -4,6 +4,7 @@ import {
   buildCrashJson,
   DetectionProviderBase,
   formatStack,
+  neverThrow,
   parseLocation,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
@@ -62,7 +63,15 @@ function describeErrorEvent(event: ErrorEvent): { summary: string; description?:
 abstract class BrowserWindowDetectionProvider extends DetectionProviderBase {
   protected abstract readonly event: 'error' | 'unhandledrejection';
   readonly #win: WindowEvents;
-  readonly #handler = (event: Event): void => this.onDetected(event);
+  // CONTAINED at the listener itself, which is where the browser calls in. `error` and
+  // `unhandledrejection` fire exactly when the page is already in trouble, and the event is entirely
+  // page-supplied — `ErrorEvent.error` is whatever the app threw (commonly not an Error), and a getter on
+  // it can throw. An escape here does not cost one report: the browser turns a throwing listener into
+  // ANOTHER `error` event, which this same listener handles, which can throw again — a loop at the page's
+  // worst moment. Subclasses stay free of try/catch, so the guarantee cannot be forgotten by a new one.
+  readonly #handler = (event: Event): void => {
+    neverThrow(() => this.onDetected(event));
+  };
 
   constructor(win: WindowEvents) {
     super();
