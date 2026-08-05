@@ -41,7 +41,9 @@ type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
 
 interface LogEntry {
   message: string;
-  level: string;
+  /** NUMERIC on the wire (design §8.9, mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
+   *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
+  level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
   context_id?: string;
 }
@@ -159,9 +161,12 @@ describe.each(
 
       const logs = parseJson<LogEntry[]>(bundle.files['logs.json']);
       expect(logs.some((l) => l.message.includes('hello from the instrumented app'))).toBe(true);
-      expect(
-        logs.some((l) => l.level === 'error' && l.message.includes('something noteworthy')),
-      ).toBe(true);
+      // 1 = LogLevel.Error. Asserted as the NUMBER the viewer actually reads, and typed as one, so a
+      // regression to the string form fails here rather than reaching the backend.
+      expect(logs.some((l) => l.level === 1 && l.message.includes('something noteworthy'))).toBe(
+        true,
+      );
+      expect(logs.every((l) => typeof l.level === 'number')).toBe(true);
 
       const net = parseJson<NetworkEntry[]>(bundle.files['network.json']);
       expect(net.some((n) => typeof n.url === 'string' && n.url.includes('/echo'))).toBe(true);

@@ -66,7 +66,9 @@ describe('createLogCaptureProvider', () => {
     expect(entries).toHaveLength(1);
     expect(entries?.[0]?.type).toBe('log');
     expect(entries?.[0]?.timestamp).toBe(5);
-    expect(entries?.[0]?.data).toEqual(event);
+    // The entry carries the NUMERIC wire level (Wave 5.1) while the emitted event keeps its friendly
+    // name, so this compares against the encoded form rather than the raw event.
+    expect(entries?.[0]?.data).toEqual({ ...event, level: 2 });
   });
 
   it('applies a user log filter (mutate) and drops on null', async () => {
@@ -129,5 +131,80 @@ describe('createLogCaptureProvider', () => {
     offCoordinator.start(options, () => false);
     offSource.emit('log', logEvent(1, 'off'));
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
+  });
+});
+
+// WAVE 5.1 — `logs.json` shipped STRING levels where the viewer expects numerics.
+//
+// `logLevelToWire` has existed in @bugsee/protocol, exported and unit-tested, with ZERO callers outside its
+// own test. `LogEvent.level` is typed `LogLevelName | LogLevel`, the console interceptor emits names, and
+// nothing converted before upload — so every console-captured line reached the backend as "error" rather
+// than 1. Mobile SDKs send the numeric, so this is also an Android-parity break on the wire.
+//
+// Converted at the PROVIDER, which is the single point every log entry passes through, and AFTER the user
+// filter so a `logFilter` still sees the friendly name it was written against.
+describe('log level reaches the wire as a NUMERIC (Wave 5.1)', () => {
+  const named = (level: string): LogEvent =>
+    ({ timestamp: 1, level, source: 'console', message: 'm' }) as LogEvent;
+
+  it.each([
+    ['error', 1],
+    ['warning', 2],
+    ['info', 3],
+    ['debug', 4],
+    ['verbose', 5],
+  ])('encodes %s as %d', async (name, wire) => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('log', named(name));
+    const entry = (await drainLog(store))?.[0]?.data as { level: unknown };
+    expect(entry.level).toBe(wire);
+  });
+
+  it('leaves an ALREADY-numeric level alone', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('log', { timestamp: 1, level: 3, source: 'api', message: 'm' } as LogEvent);
+    const entry = (await drainLog(store))?.[0]?.data as { level: unknown };
+    expect(entry.level).toBe(3);
+  });
+
+  it('shows the user filter the NAME, and still ships the numeric', async () => {
+    // A `logFilter` is user code written against the documented string levels. Converting before the
+    // filter would silently break every filter that matches on 'error'.
+    const store = mkStore();
+    const source = mkSource();
+    const seen: unknown[] = [];
+    const filters = createFilterStore(() => {});
+    filters.log = (e) => {
+      seen.push(e.level);
+      return e;
+    };
+    publishFilters(filters);
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('log', named('error'));
+    expect(seen).toEqual(['error']);
+    const entry = (await drainLog(store))?.[0]?.data as { level: unknown };
+    expect(entry.level).toBe(1);
+  });
+
+  it('does not mutate the caller’s event object', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createLogCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    const event = named('warning');
+    source.emit('log', event);
+    await drainLog(store);
+    expect(event.level).toBe('warning'); // the hub event other subscribers see stays as emitted
   });
 });
