@@ -1,6 +1,10 @@
 import { type BugseeClient, setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type AstroMiddlewareContext, createBugseeMiddleware } from './middleware';
+import {
+  type AstroMiddlewareContext,
+  createBugseeMiddleware,
+  injectTraceIntoResponse,
+} from './middleware';
 
 function fakeClient() {
   return {
@@ -149,5 +153,47 @@ describe('createBugseeMiddleware — trace injection', () => {
     const next = vi.fn(async () => htmlResponse('<head></head>'));
     const res = await createBugseeMiddleware()(ctx(), next);
     expect(await res.text()).toBe('<head><meta name="traceparent" content="00-t-s-01"></head>');
+  });
+});
+
+// WAVE 4.5 — a cached page must not become a 500 because Bugsee is installed.
+//
+// `injectTraceIntoResponse` reconstructs the response to insert the trace <meta>. The fetch spec forbids a
+// body on a NULL-BODY status (101/204/205/304), so `new Response('', { status: 304 })` throws TypeError —
+// measured, not assumed. A 304 legally echoes the cached entity's `Content-Type: text/html`, so an ordinary
+// conditional GET reached the reconstruct, threw out of the middleware, and Astro rendered its 500 page.
+// The browser's cached-page path is about as hot as a route gets.
+describe('null-body responses survive trace injection (Wave 4.5)', () => {
+  // A client whose context provider reports an ACTIVE trace, so `traceMetaTag` really produces a tag.
+  // Without this every case takes the `tag === ''` early return and the whole block passes vacuously —
+  // which is exactly what my first fixture did, caught by the 200 canary below.
+  const traced = {
+    getClient: () => ({
+      getServiceProvider: () => ({
+        getImmediate: () => ({
+          getCurrent: () => ({
+            trace: { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), sampled: true },
+          }),
+        }),
+      }),
+    }),
+  };
+
+  it.each([204, 205, 304])('returns a %d untouched instead of throwing', async (status) => {
+    const response = new Response(null, {
+      status,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    });
+    const out = await injectTraceIntoResponse(response, traced as never);
+    expect(out.status).toBe(status);
+  });
+
+  it('still injects into a 200 HTML response — the guard must not disable injection', async () => {
+    const response = new Response('<html><head></head><body>hi</body></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    });
+    const out = await injectTraceIntoResponse(response, traced as never);
+    expect(await out.text()).toContain('<meta');
   });
 });
