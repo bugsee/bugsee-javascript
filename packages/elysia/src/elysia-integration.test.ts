@@ -1,4 +1,6 @@
+import { SchedulerToken } from '@bugsee/core';
 import { type Bugsee, launch, type NodeRuntime } from '@bugsee/node';
+import { wirePerformance } from '@bugsee/performance';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { Elysia } from 'elysia';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -64,7 +66,7 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-function boot(): { app: Elysia; client: Bugsee; bundles: Uint8Array[] } {
+function boot(monitoring = false): { app: Elysia; client: Bugsee; bundles: Uint8Array[] } {
   const { transport, bundles } = recordingTransport();
   const client = launch('tok', {
     endpoint: 'https://api.test',
@@ -76,6 +78,20 @@ function boot(): { app: Elysia; client: Bugsee; bundles: Uint8Array[] } {
     recover: false,
   });
   clients.push(client);
+  // APM is an EXTENSION (the umbrella wires it; bare @bugsee/node does not), so without this there are no
+  // transactions at all — which is the reason the 404 leak was invisible to this suite.
+  if (monitoring) {
+    wirePerformance({
+      client: client as never,
+      monitoring: true,
+      pageload: false,
+      pageName: 'test',
+      sampleRate: 1,
+      flushIntervalMs: 60_000,
+      scheduler: client.getService(SchedulerToken),
+      send: () => Promise.resolve(), // the continuous /v2 uploader is irrelevant here — we assert lifecycle
+    });
+  }
   const app = new Elysia();
   // Elysia's hook methods are deeply generic; the structural ElysiaAppLike doesn't unify with them, so a
   // cast is needed (the app DOES have onRequest/onError/mapResponse). See the README note.
@@ -138,5 +154,64 @@ describe('@bugsee/elysia — real Elysia app (e2e)', () => {
       const own = p.logs.find((l) => l.context_id === p.request.context_id);
       expect(own?.message).toBe(`processing ${p.request.email}`);
     }
+  });
+});
+
+// WAVE 6.8 — the 404 transaction, asserted through the REAL framework.
+//
+// The unit suite missed this because it called `mapResponse` by hand; real Elysia short-circuits a
+// NOT_FOUND and never calls it. So the assertion has to come from `app.handle` driving the real pipeline.
+describe('@bugsee/elysia — a 404 finishes its transaction (Wave 6.8)', () => {
+  /** Count transactions started vs finished by watching the performance extension. */
+  const countingClient = (client: Bugsee) => {
+    const perf = client.ext('performance') as unknown as {
+      startTransaction: (...args: never[]) => { finish: (...args: never[]) => void };
+    };
+    const started: Array<{ finished: boolean }> = [];
+    const original = perf.startTransaction.bind(perf);
+    perf.startTransaction = ((...args: never[]) => {
+      const txn = original(...args);
+      const record = { finished: false };
+      started.push(record);
+      const finishOriginal = txn.finish.bind(txn);
+      txn.finish = ((...f: never[]) => {
+        record.finished = true;
+        return finishOriginal(...f);
+      }) as typeof txn.finish;
+      return txn;
+    }) as typeof perf.startTransaction;
+    return {
+      unfinished: () => started.filter((s) => !s.finished).length,
+      total: () => started.length,
+    };
+  };
+
+  it('leaves NO unfinished transaction after a burst of 404s', async () => {
+    const { app, client } = boot(true);
+    const counter = countingClient(client);
+    for (let i = 0; i < 10; i += 1) {
+      await app.handle(new Request(`http://localhost/missing-${i}`)).then((r) => r.text());
+    }
+    expect(counter.total()).toBe(10); // the 404s ARE instrumented…
+    expect(counter.unfinished()).toBe(0); // …and every one of them finished
+  });
+
+  it('a wrong-METHOD 404 finishes too — it is the same NOT_FOUND code', async () => {
+    const { app, client } = boot(true);
+    const counter = countingClient(client);
+    await app
+      .handle(new Request('http://localhost/ok', { method: 'DELETE' }))
+      .then((r) => r.text());
+    expect(counter.unfinished()).toBe(0);
+  });
+
+  it('matched routes and thrown errors still finish exactly once', async () => {
+    // The canary: the NOT_FOUND finish must not double-finish anything that already reached mapResponse.
+    const { app, client } = boot(true);
+    const counter = countingClient(client);
+    await app.handle(new Request('http://localhost/ok')).then((r) => r.text());
+    await app.handle(new Request('http://localhost/handler-error')).then((r) => r.text());
+    expect(counter.total()).toBe(2);
+    expect(counter.unfinished()).toBe(0);
   });
 });
