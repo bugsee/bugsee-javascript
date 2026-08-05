@@ -6,6 +6,7 @@ import {
   deserializeBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
+import { BugseeError } from './errors';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 
 const environment: EnvironmentEnvelope = {
@@ -243,5 +244,182 @@ describe('createDurableUploadPipeline', () => {
     durable.drop('reason', 'issue');
     expect(flush).toHaveBeenCalledWith(42);
     expect(drop).toHaveBeenCalledWith('reason', 'issue');
+  });
+});
+
+// WAVE 6.4 — the durable queue had no retention bound of ANY kind: no attempt limit, no size cap, no TTL.
+//
+// A bundle the collector permanently refuses (400/413) was kept, re-uploaded at the next launch, refused
+// again, kept again — forever. That is a self-DoS against our own collector, and on a long-lived server the
+// pending directory grows without limit: `sweep-instances` only reaps subtrees whose OWNING PROCESS IS
+// DEAD, so a server's own live subtree is never swept. The rate limiter admits 100 reports/minute and
+// `maxDataSize` is MB-scale, so a crash storm writes GB/hour that nothing would ever remove.
+//
+// Android is the parity target and answers the policy question directly (measured, not assumed):
+//   · CommunicationErrorClassifier.java:14-33 — 401 → AUTH_EXPIRED, 408/425/429 → TRANSIENT, every OTHER
+//     4xx (400 and 413 included) → PERMANENT; 5xx → TRANSIENT.
+//   · ReportUploadExecutor.java:182-199 — a PERMANENT result DELETES the bundle immediately.
+//   · IssueReportingTaskUpload.java:27 — MAX_RETRIES = 60, then delete.
+// Android's report queue has no count/size/TTL cap, but its sibling queues do and that is the idiom to
+// follow: NotificationRelayStorage.java:47-49 (1 MB / 500 entries / 72 h), PerformanceUploadStorage.java:35
+// (5 MB).
+describe('retention (Wave 6.4)', () => {
+  const permanent = (status: number): UploadResult => ({
+    ok: false,
+    permanent: true,
+    error: new BugseeError(`bundle upload failed (status ${status})`, status),
+  });
+  const transient = (status: number): UploadResult => ({
+    ok: false,
+    error: new BugseeError(`bundle upload failed (status ${status})`, status),
+  });
+
+  it('DELETES a permanently-rejected bundle instead of retrying it forever', async () => {
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(permanent(400));
+    const durable = createDurableUploadPipeline({ store, pipeline });
+    await durable.enqueue(bundle());
+    expect(map.size).toBe(0);
+  });
+
+  it('KEEPS a transiently-failed bundle so the next launch retries it', async () => {
+    // The other half of the rule. Deleting on any failure would throw away exactly the bundles the durable
+    // queue exists to protect — the ones that failed because the network was down.
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({ store, pipeline });
+    await durable.enqueue(bundle());
+    expect(map.size).toBe(1);
+  });
+
+  it('deletes a recovered bundle that is permanently rejected on replay', async () => {
+    // The path that actually loops: recover() re-enqueues, the collector refuses again. Without this the
+    // bundle is re-uploaded on every launch for the life of the installation.
+    const { store, map } = memStore();
+    map.set('old', serializeBundle(bundle()));
+    const { pipeline, enqueue } = fakePipeline(permanent(413));
+    createDurableUploadPipeline({ store, pipeline }).recover();
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalled());
+    await vi.waitFor(() => expect(map.size).toBe(0));
+  });
+
+  it('drops bundles older than the retention TTL without uploading them', async () => {
+    let now = 1_000_000;
+    const { store, map } = memStore();
+    // A TRANSIENT failure, so the bundle is genuinely still on disk when the TTL is applied. With the
+    // default ok:true fake it would have been removed by SUCCESS, and this test would pass against no
+    // implementation at all.
+    const { pipeline, enqueue } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => now,
+      retention: { maxAgeMs: 1000 },
+    });
+    await durable.enqueue(bundle());
+    now += 1001;
+    durable.recover();
+    expect(enqueue).toHaveBeenCalledTimes(1); // only the original enqueue — the stale one was not replayed
+    expect(map.size).toBe(0);
+  });
+
+  it('keeps a bundle that is still inside the TTL', async () => {
+    let now = 1_000_000;
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => now,
+      retention: { maxAgeMs: 10_000 },
+    });
+    await durable.enqueue(bundle());
+    now += 5000;
+    durable.recover();
+    await vi.waitFor(() => expect(map.size).toBe(1));
+  });
+
+  it('evicts the OLDEST bundles beyond the count cap', async () => {
+    let now = 1000;
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => now,
+      retention: { maxBundles: 2 },
+    });
+    for (const summary of ['first', 'second', 'third']) {
+      await durable.enqueue(bundle({ request: request(summary) }));
+      now += 1000;
+    }
+    durable.recover();
+    const kept = [...map.values()].map((b) => deserializeBundle(b).request.summary);
+    expect(kept).toEqual(['second', 'third']); // the oldest went; the newest are the ones worth keeping
+  });
+
+  it('evicts the oldest beyond the BYTE cap', async () => {
+    let now = 1000;
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => now,
+      retention: { maxBytes: 900 },
+    });
+    for (const summary of ['first', 'second']) {
+      await durable.enqueue(bundle({ request: request(summary), body: new Uint8Array(400) }));
+      now += 1000;
+    }
+    durable.recover();
+    const kept = [...map.values()].map((b) => deserializeBundle(b).request.summary);
+    expect(kept).toEqual(['second']);
+  });
+
+  it('reports every retention drop through the pipeline’s outcome channel', async () => {
+    // A silently vanishing bundle is indistinguishable from one that was delivered. Wave 4 is about
+    // features that quietly do nothing; a retention policy that drops without saying so is the same shape.
+    let now = 1_000_000;
+    const { store } = memStore();
+    const { pipeline, drop } = fakePipeline(transient(503));
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => now,
+      retention: { maxAgeMs: 1000 },
+    });
+    await durable.enqueue(bundle());
+    now += 5000;
+    durable.recover();
+    expect(drop).toHaveBeenCalledWith('retention_expired', 'issue');
+  });
+
+  it('still replays everything when nothing exceeds the bounds — the canary', async () => {
+    const { store, map } = memStore();
+    map.set('a', serializeBundle(bundle({ request: request('a') })));
+    map.set('b', serializeBundle(bundle({ request: request('b') })));
+    const { pipeline, enqueue } = fakePipeline(transient(503));
+    createDurableUploadPipeline({ store, pipeline }).recover();
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2));
+    expect(map.size).toBe(2); // transient → all kept
+  });
+
+  it('gives a legacy blob with no timestamp a fresh TTL rather than evicting it on sight', async () => {
+    // Bundles written before this existed have no `firstSeenMs`. Treating "unknown" as "epoch" would
+    // delete every pending bundle on the upgrade launch — losing exactly the crash reports a user upgraded
+    // to get. They fall under the count and byte caps like anything else.
+    const { store, map } = memStore();
+    const legacy = serializeBundle(bundle());
+    map.set('legacy', legacy);
+    const { pipeline, enqueue } = fakePipeline(transient(503));
+    createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => 9_999_999,
+      retention: { maxAgeMs: 1000 },
+    }).recover();
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(map.size).toBe(1);
   });
 });

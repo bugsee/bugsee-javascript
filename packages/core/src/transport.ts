@@ -113,6 +113,19 @@ export interface UploadResult {
   issueId?: IssueId;
   recordingId?: RecordingId;
   error?: BugseeError;
+  /**
+   * The failure will not succeed on a retry — the collector REFUSED this bundle (Wave 6.4).
+   *
+   * Distinguishes "the network was down" from "this payload is not acceptable", which the caller cannot
+   * otherwise tell apart: both arrive as `{ok:false}` with a status. The durable queue uses it to delete
+   * a bundle instead of retrying it at every launch forever (Android parity —
+   * `CommunicationErrorClassifier.java:14-33` classifies non-401/408/425/429 4xx as PERMANENT, and
+   * `ReportUploadExecutor.java:182-199` deletes on that outcome).
+   *
+   * Absent on a `queue_overflow` drop: that bundle was never ATTEMPTED, so nothing is known about whether
+   * the collector would take it.
+   */
+  permanent?: boolean;
 }
 
 /** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes (§7.5/§7.8). */

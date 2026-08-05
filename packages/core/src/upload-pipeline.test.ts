@@ -186,6 +186,37 @@ describe('createUploadPipeline — retries', () => {
     expect(put).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
 
+  // WAVE 6.4 — `permanent` is what lets the DURABLE queue tell a refusal from an outage. Getting it wrong
+  // in either direction is a data-loss bug: too eager and the SDK deletes the reports collected while the
+  // network was down (the case the durable queue exists for); too lax and a refused bundle is re-uploaded
+  // at every launch forever. Android draws the same line — CommunicationErrorClassifier.java:14-33 treats
+  // every non-401/408/425/429 4xx as PERMANENT and 5xx as TRANSIENT.
+  it('marks a NON-RETRYABLE status permanent', async () => {
+    const put = vi.fn(async () => ({ ok: false, status: 400, retryable: false }) as PutResult);
+    const result = await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue(
+      bundle,
+    );
+    expect(result.permanent).toBe(true);
+  });
+
+  it('does NOT mark an exhausted retry budget permanent — those bundles must survive to the next launch', async () => {
+    const put = vi.fn(async () => ({ ok: false, status: 503, retryable: true }) as PutResult);
+    const result = await createUploadPipeline(
+      deps({ uploader: fakeUploader(put), maxRetries: 2 }),
+    ).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.permanent).toBeFalsy();
+  });
+
+  it('does NOT mark a queue_overflow drop permanent — that bundle was never attempted', async () => {
+    const put = vi.fn(async () => new Promise<PutResult>(() => {})); // hangs, filling the buffer
+    const pipeline = createUploadPipeline(deps({ uploader: fakeUploader(put), bufferSize: 1 }));
+    void pipeline.enqueue(bundle);
+    const overflow = await pipeline.enqueue(bundle);
+    expect(overflow.ok).toBe(false);
+    expect(overflow.permanent).toBeFalsy();
+  });
+
   it('does not retry a non-retryable PUT failure', async () => {
     const put = vi.fn(async () => ({ ok: false, status: 400, retryable: false }) as PutResult);
     const result = await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue(

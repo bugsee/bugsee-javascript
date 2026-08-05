@@ -63,9 +63,13 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     error: BugseeError,
     category: OutcomeCategory,
     reason: DropReason = 'upload_failed',
+    permanent = false,
   ): UploadResult => {
     onOutcome?.({ kind: 'drop', category, reason });
-    return { ok: false, error };
+    // `permanent` is what lets the DURABLE queue tell "the network was down" from "the collector refused
+    // this payload" (Wave 6.4). Without it both arrive as {ok:false} and a refused bundle is retried at
+    // every launch, forever.
+    return permanent ? { ok: false, error, permanent } : { ok: false, error };
   };
 
   // Phase 1: ensure session + create the issue, retried as a unit (invalidate before each retry).
@@ -124,6 +128,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     let endpoint = issue.endpoint;
     let lastStatus = 0;
     let renewed = false;
+    let nonRetryable = false;
 
     // Phase 2: signed PUT, bounded by maxRetries; 403 → renew (once), retryable → backoff.
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -165,12 +170,17 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
         continue;
       }
       if (!put.retryable) {
+        nonRetryable = true;
         break;
       }
     }
     return fail(
       new BugseeError(`bundle upload failed (status ${lastStatus})`, lastStatus),
       category,
+      'upload_failed',
+      // Only a NON-RETRYABLE status is permanent. Exhausting the retry budget against 5xx/network errors
+      // is not: those are exactly the bundles the durable queue exists to carry to the next launch.
+      nonRetryable,
     );
   };
 
