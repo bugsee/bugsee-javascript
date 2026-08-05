@@ -108,7 +108,33 @@ export interface IdbChunkBackendOptions {
   cleanOtherGenerations?: boolean;
   /** Failure sink for the async write queue. Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * Max writes allowed to wait for a stalled store before the OLDEST are given up (Wave 6.3). Default 2048.
+   *
+   * A stalled IndexedDB used to accept everything: one write in flight, the rest retained live in the
+   * pending chain (measured: 20,000 entries × 10 KB → ~200 MB, with `add()` still returning success). This
+   * is the depth at which the SDK stops growing and starts choosing.
+   */
+  maxPendingWrites?: number;
+  /**
+   * Max BYTES of payload allowed to wait for a stalled store before the oldest are given up. Default 8 MiB.
+   *
+   * The depth cap alone bounds the count, not the memory: 2048 pending writes of a large network body is
+   * still hundreds of MB. This is the bound that actually answers the measured "~200 MB retained".
+   */
+  maxPendingBytes?: number;
+  /**
+   * Consecutive write failures after which the backend stops ATTEMPTING (Wave 6.3). Default 16.
+   *
+   * A store rejecting every put otherwise costs one transaction, one rejected promise and one `onError`
+   * per captured entry — measured at 5001 for 5001 entries. It re-probes periodically, so a transient
+   * quota blip does not become permanent silent loss.
+   */
+  failureThreshold?: number;
 }
+
+// How often a tripped circuit lets one write through to see whether the store recovered.
+const PROBE_INTERVAL = 64;
 
 export function createIdbChunkBackend(
   store: AsyncKeyedStore,
@@ -117,12 +143,113 @@ export function createIdbChunkBackend(
   const generation = options.generation;
   const onError = options.onError ?? ((): void => {});
 
-  // The in-order async write queue. Each op runs after the previous settles; a failure routes to onError
-  // and the chain continues (capture never blocks or throws).
-  let queue: Promise<unknown> = Promise.resolve();
-  const enqueue = (op: () => Promise<unknown>): void => {
-    queue = queue.then(op).catch(onError);
+  // The in-order async write queue (Wave 6.3). An explicit array rather than a promise chain, because a
+  // chain can only be APPENDED to: with `queue = queue.then(op)` there is no way to count what is waiting,
+  // and no way to give up the oldest work when the store stops draining. Both are required here.
+  //
+  // Behaviour under stall: bounded at `maxPendingWrites`, dropping the OLDEST — the same direction the
+  // capture ring evicts, because the moments before a crash are the ones worth keeping.
+  // Behaviour under failure: after `failureThreshold` consecutive rejections the circuit opens and writes
+  // stop being attempted, with one report rather than one per entry; every PROBE_INTERVAL-th write is let
+  // through so a recovered store closes it again.
+  const maxPending = options.maxPendingWrites ?? 2048;
+  const maxPendingBytes = options.maxPendingBytes ?? 8 * 1024 * 1024;
+  const failureThreshold = options.failureThreshold ?? 16;
+  const pending: Array<{ run: () => Promise<unknown>; bytes: number }> = [];
+  let pendingBytes = 0;
+  let draining = false;
+  let idle: Promise<void> = Promise.resolve();
+  let resolveIdle: (() => void) | undefined;
+  let consecutiveFailures = 0;
+  let sinceProbe = 0;
+  let dropped = 0;
+
+  // `onError` is the HOST's sink and can itself throw. If that escaped the drain loop, `draining` would
+  // stay true and `resolveIdle` would never run — every later flush() would hang forever.
+  const safeOnError = (error: unknown): void => {
+    try {
+      onError(error);
+    } catch {
+      // nothing left to report it to
+    }
   };
+
+  /** Report a batch of dropped/failed writes ONCE, not once per entry. */
+  const reportDrops = (): void => {
+    if (dropped > 0) {
+      const count = dropped;
+      dropped = 0;
+      safeOnError(
+        new Error(`bugsee: dropped ${count} capture write(s) — IndexedDB is not keeping up`),
+      );
+    }
+  };
+
+  const drain = async (): Promise<void> => {
+    if (draining) {
+      return;
+    }
+    draining = true;
+    // The first op of every drain cycle is a probe. The circuit is checked HERE rather than at enqueue
+    // time because that is where failures are observed: `enqueue` is synchronous and `drain` is not, so a
+    // burst of captures in one turn is fully enqueued before a single write has had the chance to fail.
+    let probe = true;
+    while (pending.length > 0) {
+      const item = pending.shift() as { run: () => Promise<unknown>; bytes: number };
+      pendingBytes -= item.bytes;
+      if (consecutiveFailures >= failureThreshold && !probe) {
+        sinceProbe += 1;
+        if (sinceProbe < PROBE_INTERVAL) {
+          dropped += 1;
+          continue; // circuit open — do not attempt
+        }
+        sinceProbe = 0;
+      }
+      probe = false;
+      try {
+        await item.run();
+        consecutiveFailures = 0; // the store is working again; close the circuit
+      } catch (error) {
+        consecutiveFailures += 1;
+        // The FIRST failure of an episode is reported in full — that is the diagnosis. Everything after it
+        // is counted and summarised, so a failing store cannot spam the host's sink (and cannot close the
+        // capture→console→capture livelock a `console.error` sink would otherwise sustain).
+        if (consecutiveFailures === 1) {
+          safeOnError(error);
+        } else {
+          dropped += 1;
+        }
+      }
+    }
+    draining = false;
+    reportDrops();
+    resolveIdle?.();
+    resolveIdle = undefined;
+  };
+
+  const enqueue = (run: () => Promise<unknown>, bytes = 0): void => {
+    while (
+      pending.length > 0 &&
+      (pending.length >= maxPending || pendingBytes + bytes > maxPendingBytes)
+    ) {
+      // Give up the OLDEST waiting write, matching the ring's eviction direction: the moments before a
+      // crash are the ones worth keeping.
+      const evicted = pending.shift() as { bytes: number };
+      pendingBytes -= evicted.bytes;
+      dropped += 1;
+    }
+    pending.push({ run, bytes });
+    pendingBytes += bytes;
+    if (resolveIdle === undefined) {
+      idle = new Promise<void>((resolve) => {
+        resolveIdle = resolve;
+      });
+    }
+    void drain();
+  };
+
+  /** Resolves when the queue has drained (never rejects — each op already routes its own failure). */
+  const settled = (): Promise<void> => idle;
 
   const chunkKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
@@ -170,7 +297,7 @@ export function createIdbChunkBackend(
   // Read a generation's durable part metadata. The PartMeta is tagged with the QUERIED gen (this is the
   // recovery seam — it reads any generation, not only this backend's own).
   const readMetas = (gen: number): Promise<PartMeta[]> =>
-    queue
+    settled()
       .then(() => store.readPrefix(metaGenPrefix(gen)))
       .then((entries) =>
         entries
@@ -213,7 +340,10 @@ export function createIdbChunkBackend(
       const seq = seqByChunk.get(key) ?? 0;
       seqByChunk.set(key, seq + 1);
       const data: StoredData = { t: record.timestamp, s: record.serialized, ty: record.type };
-      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), enc(data)));
+      const bytes = enc(data);
+      // The payload is encoded here rather than inside the closure, so its size is known to the queue's
+      // byte bound — a closure that encodes lazily hides exactly the memory this is meant to cap.
+      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), bytes), bytes.length);
       return utf8ByteLength(record.serialized);
     },
 
@@ -242,7 +372,7 @@ export function createIdbChunkBackend(
 
     snapshot(parts: readonly FrozenPart[]): CaptureSnapshot {
       const frozen = [...parts];
-      const frozenQueue = queue; // every write up to now must land before the read
+      const frozenQueue = settled(); // every write up to now must land before the read
       for (const { ref } of frozen) {
         const key = chunkKey(ref);
         pins.set(key, (pins.get(key) ?? 0) + 1);
@@ -308,14 +438,11 @@ export function createIdbChunkBackend(
     // It resolves rather than rejects — each link already routes its own failure to `onError`, and a page
     // that is going away can do nothing with a rejection anyway.
     flush(): Promise<void> {
-      return queue.then(
-        () => undefined,
-        () => undefined,
-      );
+      return settled();
     },
 
     listGenerations(): Promise<number[]> {
-      return queue
+      return settled()
         .then(() => store.readPrefix('m/'))
         .then((entries) => {
           const gens = new Set<number>();

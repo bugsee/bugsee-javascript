@@ -14,6 +14,10 @@ const rec = (serialized: string, type: FileType = 'log', timestamp = 0): StoredE
   serialized,
 });
 const clockAt = (now: number): Clock => ({ wallNow: () => now, monotonicNow: () => 0 });
+// The data-key prefix for a chunk, mirroring the backend's own scheme, so a test can read back exactly
+// what physically landed rather than trusting the backend's own view of it.
+const dataPrefixFor = (gen: number, chunk: number): string =>
+  `d/${String(gen).padStart(13, '0')}/${String(chunk).padStart(12, '0')}/`;
 
 const collect = async (snap: CaptureSnapshot): Promise<string[]> => {
   const out: string[] = [];
@@ -543,5 +547,203 @@ describe('torn-record tolerance (Wave 6.5)', () => {
     await b.flush?.();
     expect(await collect(b.snapshot([{ ref: ref(9, 0), count: 2 }]))).toEqual(['a', 'b']);
     expect(await b.listParts(9)).toHaveLength(1);
+  });
+});
+
+// WAVE 6.3 — the write queue had ZERO back-pressure.
+//
+// `appendEntry` is sync-issue / async-complete: every captured entry allocates a closure retaining its
+// serialized payload and chains it onto one serial promise queue, with no depth counter, no cap and no
+// signal back to the capture path. Reproduced in the review: a stalled store + 20,000 entries × 10 KB →
+// ONE write actually started and ~200 MB retained live in the pending chain, while `add()` returned
+// success to every caller. Core's ring eviction cannot rescue it either, because `removePart` enqueues its
+// delete at the TAIL of the same queue — eviction can never run ahead of the backlog.
+//
+// Quota pressure, private/incognito storage and a busy IDB thread all produce exactly this stall.
+describe('write-queue back-pressure (Wave 6.3)', () => {
+  /** A store whose writes hang until released, so a backlog can be built deterministically. */
+  const stalledStore = () => {
+    const inner = keyed();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started = 0;
+    return {
+      store: {
+        ...inner,
+        put: async (key: string, bytes: Uint8Array) => {
+          started += 1;
+          await gate;
+          return inner.put(key, bytes);
+        },
+      } as AsyncKeyedStore,
+      release,
+      started: () => started,
+      inner,
+    };
+  };
+
+  it('bounds what it retains while the store is stalled — it does not accept everything', async () => {
+    const s = stalledStore();
+    const b = createIdbChunkBackend(s.store, { generation: 1, cleanOtherGenerations: false });
+    b.openPart(ref(1, 0), 1000);
+    for (let i = 0; i < 5000; i += 1) {
+      b.appendEntry(ref(1, 0), rec(`entry-${i}`));
+    }
+    s.release();
+    await b.flush?.();
+    const landed = await s.inner.readPrefix(dataPrefixFor(1, 0));
+    expect(landed.length).toBeLessThan(5000); // the queue refused to grow without limit…
+    expect(landed.length).toBeGreaterThan(0); // …while still writing what it could
+  });
+
+  it('keeps the NEWEST entries when it has to drop — matching the capture ring', async () => {
+    // The ring evicts oldest and keeps most-recent, because the moments before a crash are the ones worth
+    // having. A queue that dropped the newest instead would inverte that at exactly the wrong time.
+    const s = stalledStore();
+    const b = createIdbChunkBackend(s.store, {
+      generation: 2,
+      cleanOtherGenerations: false,
+      maxPendingWrites: 8,
+    });
+    b.openPart(ref(2, 0), 1000);
+    for (let i = 0; i < 40; i += 1) {
+      b.appendEntry(ref(2, 0), rec(`entry-${i}`));
+    }
+    s.release();
+    await b.flush?.();
+    const landed = (await s.inner.readPrefix(dataPrefixFor(2, 0))).map(
+      ([, v]) => (JSON.parse(new TextDecoder().decode(v)) as { s: string }).s,
+    );
+    expect(landed).toContain('entry-39'); // the last thing before the crash survived
+    expect(landed).not.toContain('entry-0'); // the oldest was the one given up
+  });
+
+  it('reports a FAILING store a bounded number of times, not once per entry', async () => {
+    // The review measured 5001 puts → 5001 onError calls. `onError` is the HOST's sink: the obvious
+    // implementation is `console.error`, which the console interceptor then captures, which appends, which
+    // fails, which calls onError… a self-sustaining livelock for the life of the page. The console
+    // interceptor's re-entrancy guard does not stop it — that flag is synchronous, and onError arrives in
+    // a later microtask with the flag already cleared.
+    const errors: unknown[] = [];
+    const failing: AsyncKeyedStore = {
+      ...keyed(),
+      put: () => Promise.reject(new Error('QuotaExceededError')),
+    };
+    const b = createIdbChunkBackend(failing, {
+      generation: 3,
+      cleanOtherGenerations: false,
+      onError: (e) => errors.push(e),
+    });
+    b.openPart(ref(3, 0), 1000);
+    for (let i = 0; i < 2000; i += 1) {
+      b.appendEntry(ref(3, 0), rec(`entry-${i}`));
+    }
+    await b.flush?.();
+    // The exact contract, not a loose ceiling: the FIRST failure is reported in full — that is the
+    // diagnosis — and everything after it is coalesced into ONE summary when the queue drains. A
+    // ceiling of "under 100" was satisfied by reporting every single attempt, because the circuit
+    // breaker had already bounded the attempts; it did not test the coalescing at all.
+    expect(errors).toHaveLength(2);
+    expect((errors[0] as Error).message).toBe('QuotaExceededError');
+    expect((errors[1] as Error).message).toMatch(/dropped \d+ capture write\(s\)/);
+  });
+
+  it('stops ATTEMPTING writes once the store is persistently failing', async () => {
+    // Not just quieter reporting — a store that rejects every put should stop being hammered. Otherwise
+    // every captured entry still costs an IDB transaction and a rejected promise.
+    let attempts = 0;
+    const failing: AsyncKeyedStore = {
+      ...keyed(),
+      put: () => {
+        attempts += 1;
+        return Promise.reject(new Error('QuotaExceededError'));
+      },
+    };
+    const b = createIdbChunkBackend(failing, { generation: 4, cleanOtherGenerations: false });
+    b.openPart(ref(4, 0), 1000);
+    for (let i = 0; i < 2000; i += 1) {
+      b.appendEntry(ref(4, 0), rec(`entry-${i}`));
+    }
+    await b.flush?.();
+    expect(attempts).toBeLessThan(200);
+  });
+
+  it('RECOVERS when the store starts working again', async () => {
+    // A circuit that never re-closes turns a transient quota blip into permanent silent data loss for the
+    // rest of the page's life.
+    let failing = true;
+    const inner = keyed();
+    const flaky: AsyncKeyedStore = {
+      ...inner,
+      put: (key: string, bytes: Uint8Array) =>
+        failing ? Promise.reject(new Error('QuotaExceededError')) : inner.put(key, bytes),
+    };
+    const b = createIdbChunkBackend(flaky, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1000);
+    for (let i = 0; i < 500; i += 1) {
+      b.appendEntry(ref(5, 0), rec(`fail-${i}`));
+    }
+    await b.flush?.();
+    failing = false;
+    for (let i = 0; i < 20; i += 1) {
+      b.appendEntry(ref(5, 0), rec(`ok-${i}`));
+    }
+    await b.flush?.();
+    const landed = await inner.readPrefix(dataPrefixFor(5, 0));
+    // EVERY post-recovery entry, not just the probe. `> 0` was satisfied by a circuit that lets one write
+    // through and then re-closes on the caller — which is indistinguishable from staying broken.
+    expect(landed).toHaveLength(20);
+  });
+
+  it('bounds retained BYTES, not just the number of pending writes', async () => {
+    // The depth cap alone does not answer the measured failure: 2048 pending writes of a large network
+    // body is still hundreds of MB. Big entries, small count — only a byte bound catches this.
+    const s = stalledStore();
+    const b = createIdbChunkBackend(s.store, {
+      generation: 7,
+      cleanOtherGenerations: false,
+      maxPendingWrites: 1_000_000, // deliberately no depth pressure — isolate the byte bound
+      maxPendingBytes: 50_000,
+    });
+    b.openPart(ref(7, 0), 1000);
+    const big = 'x'.repeat(10_000);
+    for (let i = 0; i < 100; i += 1) {
+      b.appendEntry(ref(7, 0), rec(`${i}:${big}`));
+    }
+    s.release();
+    await b.flush?.();
+    const landed = await s.inner.readPrefix(dataPrefixFor(7, 0));
+    // ~1 MB offered, 50 KB allowed to wait: only a handful can have been retained and written.
+    expect(landed.length).toBeLessThan(15);
+    expect(landed.length).toBeGreaterThan(0);
+  });
+
+  it('never drops the ONLY pending write, however large', async () => {
+    // The eviction loop must not empty the queue to satisfy a bound a single entry already exceeds — that
+    // would silently discard every oversized entry rather than storing it.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, {
+      generation: 8,
+      cleanOtherGenerations: false,
+      maxPendingBytes: 10,
+    });
+    b.openPart(ref(8, 0), 1000);
+    b.appendEntry(ref(8, 0), rec('a-record-far-larger-than-the-byte-bound'));
+    await b.flush?.();
+    expect(await store.readPrefix(dataPrefixFor(8, 0))).toHaveLength(1);
+  });
+
+  it('a HEALTHY store still writes every entry — the canary', async () => {
+    // Without this, every bound above is satisfied by a backend that writes nothing at all.
+    const store = keyed();
+    const b = createIdbChunkBackend(store, { generation: 6, cleanOtherGenerations: false });
+    b.openPart(ref(6, 0), 1000);
+    for (let i = 0; i < 200; i += 1) {
+      b.appendEntry(ref(6, 0), rec(`entry-${i}`));
+    }
+    await b.flush?.();
+    expect(await store.readPrefix(dataPrefixFor(6, 0))).toHaveLength(200);
   });
 });
