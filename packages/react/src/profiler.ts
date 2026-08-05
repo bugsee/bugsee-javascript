@@ -12,6 +12,19 @@ import {
 // commit — component render performance (mount/update durations) the foundation can't otherwise see. The
 // recording core (`recordReactRenderSpan`) is React-FREE + injection-tested; the component is a thin shell.
 // A no-op when the SDK / performance ext / an active transaction is absent.
+//
+// ⚠ PRODUCTION: React DISABLES `<Profiler>` in a standard production build — `onRender` is never called, so
+// this component records ZERO spans in the build customers actually ship. That is React's behaviour, not
+// something this SDK can switch on: it depends on which `react-dom` the APP bundles. A developer wires this,
+// sees spans in development, ships, and gets silence — which is why it is called out here, on the props, and
+// on the HOC rather than left to be discovered (Wave 4.6).
+//
+// Two supported ways to get production render spans:
+//   1. Bundle React's profiling build — alias `react-dom` to `react-dom/profiling` (and
+//      `scheduler/tracing-profiling`) in your bundler. `<BugseeProfiler>` then works unchanged, at React's
+//      documented profiling overhead.
+//   2. Call `recordReactRenderSpan(profile, options)` yourself from any timing you already collect. It is
+//      React-free and takes plain numbers, so it needs no Profiler and no special build.
 
 const ATTR_BASE_DURATION = 'ui.render_base_duration_ms';
 
@@ -58,12 +71,19 @@ export function recordReactRenderSpan(
 }
 
 export interface BugseeProfilerProps extends RecordRenderOptions {
-  /** The Profiler id — the label for the recorded `ui.render` spans. */
+  /** The Profiler id — the label for the recorded `ui.render` spans. NOTE: a standard production React
+   *  build never calls `onRender`, so no span carries this id in a shipped app — see the file header. */
   id: string;
   children?: ReactNode;
 }
 
-/** Wrap a subtree in a React `<Profiler>` that records a `ui.render` span per commit. */
+/**
+ * Wrap a subtree in a React `<Profiler>` that records a `ui.render` span per commit.
+ *
+ * ⚠ Records NOTHING in a standard production React build — React disables `<Profiler>` there and never
+ * calls `onRender`. Bundle `react-dom/profiling`, or call {@link recordReactRenderSpan} directly, to get
+ * render spans from a shipped app. See the file header.
+ */
 export function BugseeProfiler(props: BugseeProfilerProps): ReactElement {
   const { id, children, ...options } = props;
   return createElement(
@@ -87,7 +107,10 @@ export function BugseeProfiler(props: BugseeProfilerProps): ReactElement {
   );
 }
 
-/** HOC form: profile a component's renders. The Profiler id defaults to the component's name. */
+/** HOC form: profile a component's renders. The Profiler id defaults to the component's name.
+ *
+ *  ⚠ Same production caveat as {@link BugseeProfiler}: a standard production React build never calls
+ *  `onRender`, so this records nothing in a shipped app. See the file header. */
 export function withBugseeProfiler<P extends object>(
   Wrapped: ComponentType<P>,
   id?: string,

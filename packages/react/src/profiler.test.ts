@@ -142,3 +142,49 @@ describe('withBugseeProfiler', () => {
     expect((el.props.children as ReactElement).props).toEqual({ label: 'z' });
   });
 });
+
+// WAVE 4.6 — the production caveat, pinned as a contract rather than left in prose.
+//
+// React disables `<Profiler>` in a standard production build, so `<BugseeProfiler>` records ZERO spans in
+// the build customers ship. The SDK cannot change that — it depends on which `react-dom` the APP bundles —
+// so the resolution is an honest, discoverable escape hatch: `recordReactRenderSpan` is React-free and
+// takes plain numbers, so an app can feed it from `react-dom/profiling` or from timings it already has.
+// These tests exist so that escape hatch cannot be removed or made React-dependent without failing.
+describe('the production escape hatch (Wave 4.6)', () => {
+  it('recordReactRenderSpan works with NO React involved at all', () => {
+    const recordChildSpan = vi.fn();
+    const client = {
+      ext: () => ({ getActiveSpan: () => ({ recordChildSpan }) }),
+    } as unknown as Bugsee;
+    recordReactRenderSpan(
+      {
+        id: 'Checkout',
+        phase: 'update',
+        actualDuration: 12,
+        baseDuration: 9,
+        startTime: 100,
+        commitTime: 112,
+      },
+      { getClient: () => client, timeOrigin: 0 },
+    );
+    expect(recordChildSpan).toHaveBeenCalled();
+  });
+
+  it('takes plain numbers — no Profiler payload object required', () => {
+    // The property that makes the escape hatch usable from a non-React timing source.
+    expect(recordReactRenderSpan.length).toBeGreaterThanOrEqual(1);
+    expect(() =>
+      recordReactRenderSpan(
+        {
+          id: 'X',
+          phase: 'mount',
+          actualDuration: 1,
+          baseDuration: 1,
+          startTime: 0,
+          commitTime: 1,
+        },
+        { getClient: () => undefined },
+      ),
+    ).not.toThrow();
+  });
+});
