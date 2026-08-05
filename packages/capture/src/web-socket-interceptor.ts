@@ -101,25 +101,36 @@ class WebSocketInterceptor extends InterceptorBase<Record<NetworkStage, NetworkE
     // `state` is captured by the listeners + the send wrap below — one id+url per connection.
     const state: WsState = { id: this.#newId(), url };
     this.emit('before', this.#event(state, 'before'));
-    socket.addEventListener('open', () => this.emit('open', this.#event(state, 'open')));
+    socket.addEventListener('open', () =>
+      this.emit('open', { ...this.#event(state, 'open'), event: 'open' }),
+    );
     socket.addEventListener('message', () =>
-      this.emit('message', { ...this.#event(state, 'message'), direction: 'in' }),
+      this.emit('message', { ...this.#event(state, 'message'), direction: 'in', event: 'message' }),
     );
     socket.addEventListener('close', (event) => {
-      const e = event as { code?: number; reason?: string };
+      // Null-safe: the browser always supplies a CloseEvent, but this runs inside the browser's own event
+      // dispatch, where a throw would surface in the page rather than costing one entry.
+      const e = (event ?? {}) as { code?: number; reason?: string };
       this.emit('close', {
         ...this.#event(state, 'close'),
+        event: 'close',
         ...(e.code !== undefined ? { code: e.code } : {}),
         ...(e.reason !== undefined ? { reason: e.reason } : {}),
       });
     });
     socket.addEventListener('error', () =>
-      this.emit('error', { ...this.#event(state, 'error'), customError: 'websocket error' }),
+      this.emit('error', {
+        ...this.#event(state, 'error'),
+        customError: 'websocket error',
+        event: 'error',
+      }),
     );
-    // Wrap outbound send on this instance (no prototype mutation): emit a 'message' (direction out).
+    // Wrap outbound send on this instance (no prototype mutation): emit a 'message' frame, tagged
+    // `event: 'send'` — Android's vocabulary, and the field the viewer reads to tell an outbound frame
+    // from an inbound one. Without it every outbound frame rendered as incoming (Wave 5.2).
     const originalSend = socket.send.bind(socket);
     socket.send = (data: unknown): void => {
-      this.emit('message', { ...this.#event(state, 'message'), direction: 'out' });
+      this.emit('message', { ...this.#event(state, 'message'), direction: 'out', event: 'send' });
       originalSend(data);
     };
   }
