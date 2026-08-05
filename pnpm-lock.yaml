@@ -145,9 +145,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/integration-shims':
-        specifier: workspace:*
-        version: link:../integration-shims
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -663,9 +660,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/integration-shims':
-        specifier: workspace:*
-        version: link:../integration-shims
       '@bugsee/node-utils':
         specifier: workspace:*
         version: link:../node-utils
@@ -993,9 +987,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/integration-shims':
-        specifier: workspace:*
-        version: link:../integration-shims
       '@bugsee/logger':
         specifier: workspace:*
         version: link:../logger

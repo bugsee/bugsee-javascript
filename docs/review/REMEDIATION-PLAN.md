@@ -456,6 +456,31 @@ direct-to-master. Land appserver first, then re-run a real JS crash end-to-end t
   implementations, so "fix" here means: establish what job it uniquely does, make it do that job, and make a
   test prove it — otherwise this decision should be revisited.
 
+  > **INVESTIGATED 2026-08-05 — this decision needs revisiting, and the finding is not "someone forgot to
+  > wire it".** The shims' stated job is that "user code that references e.g. `viewHierarchyProvider` still
+  > type-checks" and gets a friendly warn-once instead of an opaque crash (§372). That premise does not
+  > hold: **`viewHierarchyProvider`, `breadcrumbsProvider` and `xhrInterceptor` are exported by NO platform
+  > package — not even the browser.** The names exist only inside `integration-shims` itself, so there is
+  > nothing on any runtime for user code to reference, and wiring the shims would mean publishing an API
+  > that is a no-op *everywhere*, advertising a capability that does not exist.
+  >
+  > The reason is architectural, not an oversight. All three capabilities shipped as OPTION-DRIVEN and are
+  > wired internally by `launch()`: breadcrumbs via `createUserEventsProvider(createBrowserInputSource(…))`,
+  > XHR via `createXhrInterceptor` inside `installNetworkCapture` (which already self-skips when XHR is
+  > absent), and the DOM snapshot via `@bugsee/replay`. The §372 model — the user constructs an integration
+  > object and passes it in — was never built. The shim file already applies exactly this reasoning to
+  > `replay` ("option-driven, not a user-constructed integration … not via a no-op export"); by its own
+  > principle, none of the three should be a shim either.
+  >
+  > **Done now (safe either way):** `@bugsee/browser`, `@bugsee/node` and `@bugsee/vercel-edge` declared
+  > `@bugsee/integration-shims` as a runtime DEPENDENCY while importing it in zero files — dead weight
+  > shipped to every customer. Removed.
+  >
+  > **Open decision (needs a human):** delete the package, or build the §372 integration-object API it
+  > presupposes. Deleting is the smaller change and matches where the architecture actually went; building
+  > the API is a design commitment well beyond Wave 4. Not actioned unilaterally — D4 currently says do not
+  > delete, and a package removal is outward-facing.
+
 ### D5. Verification — **required, via a sample/test app per package**
 
 Accepted as a first-class workstream: **Wave V** below. Every fix must be verified by an app that exercises the
