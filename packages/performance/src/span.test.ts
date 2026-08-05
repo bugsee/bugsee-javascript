@@ -261,6 +261,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
 
     expect(serializeTransaction(txn)).toEqual({
       traceId: 'tr',
+      spanId: 's0', // the root's own id now travels on the wire (Wave 5.3)
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',
@@ -293,6 +294,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
     const wire = serializeTransaction(txn);
     expect(wire).toEqual({
       traceId: 'trace-1',
+      spanId: 'span-0', // the root's own id — required on the wire since Wave 5.3
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',
@@ -316,6 +318,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
       'name',
       'operation',
       'sampled',
+      'spanId',
       'spans',
       'startTimestampMs',
       'status',

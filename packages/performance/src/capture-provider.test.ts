@@ -29,6 +29,7 @@ const opts: OptionsContainer = { get: (_k, fallback) => fallback, has: () => fal
 
 const wire = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   traceId: 't',
+  spanId: 's0',
   name: 'n',
   operation: 'o',
   status: 'OK',

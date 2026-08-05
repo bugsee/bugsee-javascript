@@ -64,6 +64,16 @@ export interface SpanWire {
 /** The §8.8 performance transaction wire. */
 export interface TransactionWire {
   traceId: string;
+  /**
+   * The root span's OWN id — the same value `getSpanId()` returns and `traceparent` propagates.
+   *
+   * It was omitted here, so the OTLP converter fabricated one as `traceId.slice(0, 16)`. That broke a
+   * distributed trace at every service boundary: the downstream root's `parentSpanId` is the id the
+   * upstream PROPAGATED (the real one), while the upstream emitted its root under the derived one — so the
+   * downstream pointed at a span nobody emitted. It also gave every service in a trace the same root id
+   * (Wave 5.3).
+   */
+  spanId: string;
   name: string;
   operation: string;
   /** The upstream parent span id when this transaction CONTINUES an inbound trace (else absent — a root). */
@@ -324,6 +334,7 @@ class TransactionImpl extends SpanImpl implements Transaction {
     const root = this.toSpanWire(); // root span's own fields (spanId/operation/status/timestamps/...)
     const wire: TransactionWire = {
       traceId: this.getTraceId(),
+      spanId: root.spanId, // the real id — propagated in `traceparent` and referenced by every child
       name: this.getName(),
       operation: root.operation,
       status: root.status,

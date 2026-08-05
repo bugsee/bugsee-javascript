@@ -136,6 +136,7 @@ describe('wirePerformance', () => {
     const wired = wirePerformance(base({ client, scheduler, send, flushIntervalMs: 5000 }));
     const wire = {
       traceId: 't',
+      spanId: 's0',
       name: 'consumed',
       operation: 'consumed',
       status: 'OK',

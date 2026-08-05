@@ -69,6 +69,9 @@ export function consumedRootToTransaction(root: ConsumedSpan, spans: SpanWire[])
   const attributes = consumedAttributes(root);
   return {
     traceId: root.traceId,
+    // The consumed root's OWN span id, preserved. Fabricating one here would break the join in the other
+    // direction: a downstream service continuing this trace references THIS id (Wave 5.3).
+    spanId: root.spanId,
     name: root.name,
     operation: root.name, // OTel has no separate transaction name vs operation
     status: fromOtlpStatus(root.status),
