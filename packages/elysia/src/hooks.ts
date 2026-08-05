@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  neverThrow,
   openServerRequest,
   type RequestContextStore,
   RequestContextStoreToken,
@@ -61,6 +62,13 @@ export interface ElysiaAdapterOptions {
    * skip framework control flow (NOT_FOUND, VALIDATION, a 4xx status, …).
    */
   shouldReport?: (err: unknown) => boolean;
+  /**
+   * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
+   * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
+   * silent, which is why this exists — the other five backend adapters inherit it from
+   * `ServerInstrumentOptions` and these two did not.
+   */
+  onError?: (error: unknown) => void;
 }
 
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
@@ -117,7 +125,20 @@ interface RequestState {
 }
 
 /** Register the Bugsee Elysia hooks. Call on the instance that owns your routes. */
+/**
+ * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
+ * registration methods. An unguarded throw here does not cost one report — it stops the application
+ * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ *
+ * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
+ * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * app alive AND tells anyone who wired a sink that instrumentation did not install.
+ */
 export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
+  neverThrow(() => setupElysiaUnsafe(app, options), options.onError);
+}
+
+function setupElysiaUnsafe(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
   const opts = toOptions(options);
   const getClient = options.getClient ?? defaultGetClient;
   // Per-request span + outcome, keyed by the request object (GC'd with it; no context mutation).

@@ -42,6 +42,12 @@ export interface NestAdapterOptions {
    * HttpExceptions (control flow), report genuine unhandled errors.
    */
   shouldReport?: (err: unknown) => boolean;
+  /**
+   * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
+   * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
+   * silent, which is why this exists.
+   */
+  onError?: (error: unknown) => void;
 }
 
 export const headerValue = (

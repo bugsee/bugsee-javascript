@@ -1,3 +1,4 @@
+import { neverThrow } from '@bugsee/node';
 import {
   type ErrorMiddleware,
   type ExpressAdapterOptions,
@@ -37,7 +38,20 @@ export interface SetupExpressOptions extends ExpressAdapterOptions {
  * One-call Express setup: installs the request middleware immediately and (by default) the error handler
  * after your routes. Call once at startup, before you register routes.
  */
+/**
+ * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
+ * registration methods. An unguarded throw here does not cost one report — it stops the application
+ * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ *
+ * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
+ * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * app alive AND tells anyone who wired a sink that instrumentation did not install.
+ */
 export function setupExpress(app: ExpressApp, options: SetupExpressOptions = {}): void {
+  neverThrow(() => setupExpressUnsafe(app, options), options.onError);
+}
+
+function setupExpressUnsafe(app: ExpressApp, options: SetupExpressOptions = {}): void {
   const { autoErrorHandler = true, ...adapter } = options;
   if (autoErrorHandler) {
     let installed = false;
@@ -76,5 +90,6 @@ export function setupExpressErrorHandler(
   app: ExpressApp,
   options: ExpressAdapterOptions = {},
 ): void {
-  app.use(errorHandler(options));
+  // CONTAINED for the same reason as setupExpress — see its doc comment. Registration runs at bootstrap.
+  neverThrow(() => app.use(errorHandler(options)), options.onError);
 }

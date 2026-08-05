@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  neverThrow,
   openServerRequest,
   type RequestContextStore,
   RequestContextStoreToken,
@@ -49,6 +50,12 @@ export interface FastifyAdapterOptions {
   getClient?: () => Bugsee | undefined;
   /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
+  /**
+   * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
+   * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
+   * silent, which is why this exists.
+   */
+  onError?: (error: unknown) => void;
 }
 
 const headerValue = (
@@ -79,7 +86,20 @@ const toOptions = (options: FastifyAdapterOptions): ServerInstrumentOptions => (
  * its child plugins, NOT a parent/sibling scope. Hook-vs-route ordering does NOT matter (Fastify binds
  * hooks at ready time), so it may be called before or after your routes — just register it on the root.
  */
+/**
+ * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
+ * registration methods. An unguarded throw here does not cost one report — it stops the application
+ * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ *
+ * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
+ * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * app alive AND tells anyone who wired a sink that instrumentation did not install.
+ */
 export function setupFastify(app: FastifyInstance, options: FastifyAdapterOptions = {}): void {
+  neverThrow(() => setupFastifyUnsafe(app, options), options.onError);
+}
+
+function setupFastifyUnsafe(app: FastifyInstance, options: FastifyAdapterOptions = {}): void {
   const opts = toOptions(options);
   // Per-request span, keyed by the request object (GC'd with it — no decorator, no request mutation).
   const spans = new WeakMap<object, ServerRequestSpan>();
