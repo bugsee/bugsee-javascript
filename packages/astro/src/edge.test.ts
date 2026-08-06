@@ -100,6 +100,20 @@ describe('createEdgeMiddleware', () => {
     expect((runInEdgeContext.mock.calls[0]?.[1] as { attributes: unknown }).attributes).toEqual({});
   });
 
+  it('redacts secrets in the request URL before they reach http.url (Wave 1.1)', async () => {
+    // Astro hands us the FULL request URL, query included — unlike vercel-edge, which reduces it to a
+    // pathname. So this is the one edge adapter where a `?token=` reaches the attribute intact.
+    await createEdgeMiddleware({ getClient: () => ({ id: 'c' }) as never })(
+      req({ url: 'https://x.test/cb?code=A&id_token=SECRET' }),
+      vi.fn(async () => new Response('x')),
+    );
+    expect(
+      (runInEdgeContext.mock.calls[0]?.[1] as { attributes: Record<string, string> }).attributes[
+        'http.url'
+      ],
+    ).toBe('https://x.test/cb?code=A&id_token=%3Credacted%3E');
+  });
+
   it('passes ctx undefined on Vercel Edge (no locals.runtime)', async () => {
     await createEdgeMiddleware({ getClient: () => ({ id: 'c' }) as never })(
       req(),

@@ -29,7 +29,6 @@
   "dependencies": {
     "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/integration-shims": "workspace:*",
     "@bugsee/node-utils": "workspace:*",
     "@bugsee/performance": "workspace:*",
     "@bugsee/protocol": "workspace:*"

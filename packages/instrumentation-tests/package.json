@@ -6,20 +6,24 @@
   "type": "module",
   "scripts": {
     "test:e2e": "vitest run",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
+    "@bugsee/bugsee": "workspace:*",
     "@bugsee/bun": "workspace:*",
-    "@bugsee/vite-plugin": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/deno": "workspace:*",
+    "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*",
+    "@bugsee/protocol": "workspace:*",
     "@bugsee/replay": "workspace:*",
     "@bugsee/util": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
+    "@bugsee/vite-plugin": "workspace:*",
     "@bugsee/webview": "workspace:*"
   },
   "devDependencies": {
@@ -30,6 +34,7 @@
     "esbuild": "^0.27.0",
     "fflate": "^0.8.2",
     "jsdom": "^25.0.1",
+    "miniflare": "^4.20260722.0",
     "tsx": "^4.19.0"
   }
 }

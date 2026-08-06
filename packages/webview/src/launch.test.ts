@@ -8,6 +8,7 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWebViewLaunchOptions, launch } from './launch';
+import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
   BatchMessage,
   ByeMessage,
@@ -67,8 +68,7 @@ function fakeDomDocument(
 const secureEl = (top: number) => ({
   getBoundingClientRect: () => ({ top, left: top + 1, bottom: top + 2, right: top + 3 }),
 });
-const SECURE_INPUT =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 
 const inertScheduler: Scheduler = {
   setInterval: () => 0 as unknown as ReturnType<Scheduler['setInterval']>,
@@ -373,6 +373,72 @@ describe('launch (webview)', () => {
       expect(hello.caps).toContain('obscuring'); // tells native to drop its legacy masking script
     });
 
+    it('does NOT declare `obscuring` when collection is already failing (Wave 1.4)', () => {
+      // Declaring the capability is what makes native stand its own masking down, and the protocol has no
+      // way to retract it. On a page where rect collection throws — one line of script is enough — staying
+      // silent keeps native's legacy masking in place instead of leaving the frame unmasked all session.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const broken = {
+        ...(dom.document as unknown as Record<string, unknown>),
+        querySelectorAll: () => {
+          throw new Error('page broke the DOM');
+        },
+      };
+      const onError = vi.fn();
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: broken as unknown as Document, onError }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
+      expect(onError).toHaveBeenCalled(); // and it is not silent
+      // …and it must not POST either. Withholding the capability but still starting the channel sends
+      // `secure` frames native never negotiated — under a protocol with no retraction message, on the exact
+      // page whose collection we just declared broken. "Staying silent" has to mean silent on the wire.
+      expect(fake.msgs().some((m) => (m as { k?: string }).k === 'secure')).toBe(false);
+    });
+
+    it('stays silent on the native `snapshot` COMMAND too when the probe failed', () => {
+      // The `start()` path was gated; its sibling was not. `obscuring?.emit()` on the snapshot command ran
+      // unconditionally, so native asking for a frame still got a `secure` message it had never negotiated
+      // — on the page whose collection was just declared broken. "Silent on the wire" has to mean every
+      // path that can reach the wire, not the one the fix happened to be looking at.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument();
+      const broken = {
+        ...(dom.document as unknown as Record<string, unknown>),
+        querySelectorAll: () => {
+          throw new Error('page broke the DOM');
+        },
+      };
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: broken as unknown as Document,
+          onError: vi.fn(),
+        }),
+      );
+      sendControl(fake.global, { command: 'snapshot' });
+      expect(fake.msgs().some((m) => (m as { k?: string }).k === 'secure')).toBe(false);
+    });
+
+    it('DOES post on the native `snapshot` command when the probe succeeded', () => {
+      // The canary for the test above. Without this, "no secure message" would also be satisfied by a
+      // control channel that never routes `snapshot` at all, and the assertion would prove nothing.
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(5)] });
+      track(
+        'tok',
+        baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+      );
+      const before = fake.msgs().filter((m) => (m as { k?: string }).k === 'secure').length;
+      sendControl(fake.global, { command: 'snapshot' });
+      expect(fake.msgs().filter((m) => (m as { k?: string }).k === 'secure').length).toBe(
+        before + 1,
+      );
+    });
+
     it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global })); // no document
@@ -476,7 +542,10 @@ describe('launch (webview)', () => {
         .msgs()
         .filter((m): m is EntryMessage => m.k === 'entry' && m.t === 'log')
         .find((e) => JSON.stringify(e.p).includes('seq-before-secure'));
-      const secure = fake.msgs().find((m): m is SecureMessage => m.k === 'secure');
+      // The LAST secure message: [0] is now the initial push emitted at start(), which precedes the log line
+      // — the seq claim is about the post driven by the focus event after it.
+      const secures = fake.msgs().filter((m): m is SecureMessage => m.k === 'secure');
+      const secure = secures[secures.length - 1];
       expect(log).toBeDefined();
       expect(secure).toBeDefined();
       // A SHARED counter ⇒ the secure seq is strictly greater than the prior log entry's; a private obscuring
@@ -699,5 +768,70 @@ describe('launch (webview)', () => {
       expect(logs.find((e) => JSON.stringify(e.p).includes('redact-before-set'))?.red).toBe(false);
       expect(logs.find((e) => JSON.stringify(e.p).includes('redact-after-set'))?.red).toBe(true);
     });
+  });
+});
+
+describe('sub-frame obscuring failures never escape launch()', () => {
+  // The original single test made BOTH `addEventListener` and `parent.postMessage` hostile. The listener
+  // throws first, so the `parent.postMessage` path the comment named — the [Replaceable] `window.parent`
+  // that motivated the guard — was never reached. Split, so each failure source is actually exercised.
+  const subFrameWin = (hostile: 'listener' | 'parent') => ({
+    top: {},
+    self: {},
+    addEventListener:
+      hostile === 'listener'
+        ? () => {
+            throw new Error('hostile page');
+          }
+        : () => {},
+    removeEventListener: () => {},
+    parent: {
+      postMessage:
+        hostile === 'parent'
+          ? () => {
+              throw new Error('hostile parent');
+            }
+          : () => {},
+    },
+  });
+
+  it('launch() survives a sub-frame whose `parent.postMessage` throws', () => {
+    // `window.parent` is [Replaceable]; one line of page script makes postMessage throw. The channel guards
+    // only the TOP frame, so the sub-frame path escaped launch() entirely (onError never fired).
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument();
+    const onError = vi.fn();
+    const win = subFrameWin('parent');
+    expect(() =>
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win as never,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('launch() survives a child composer whose start throws', () => {
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument();
+    const onError = vi.fn();
+    const win = subFrameWin('listener');
+    expect(() =>
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          window: win as never,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalled();
   });
 });

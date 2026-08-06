@@ -1,8 +1,8 @@
 # Incoming-server auto-instrumentation (`node:http` + native `Bun.serve`/`Deno.serve`) — DESIGN
 
-**Status:** DESIGN — revised after **multi-agent review rounds 1 & 2** (round 1: 5 agents; round 2: 2
+**Status:** BUILT + on `main` — revised after **multi-agent review rounds 1 & 2** (round 1: 5 agents; round 2: 2
 agents — convergence check). Findings tracked in §11 (round 1) and §12 (round 2). Decisions D1–D12 in §2.
-Build-ready: slice plan in §3.1. Not yet built. Supersedes & absorbs
+Supersedes & absorbs
 `docs/design/generic-server-adapter.md` (the `@bugsee/server-adapters` engine is rehomed into
 `@bugsee/node`; the package is retired — §9).
 

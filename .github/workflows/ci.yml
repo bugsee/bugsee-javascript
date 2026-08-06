@@ -52,3 +52,60 @@ jobs:
       # stub packages would drag below 100%.
       - name: Test + per-package coverage gate (vitest)
         run: pnpm exec turbo run test:coverage
+
+      # Harness-owned unit tests (e.g. the bundle-assertion library's negative suite). These live in a
+      # package with no test:coverage script, so `turbo run test:coverage` skipped them silently — the same
+      # <NONEXISTENT> hole the e2e job exists to close.
+      - name: Harness unit tests (vitest)
+        run: pnpm exec turbo run test:unit
+
+  # End-to-end harnesses: the REAL SDK booted in real node/bun/deno processes against a
+  # mock collector, plus the real-framework suites (nuxt / sveltekit / astro / next).
+  #
+  # These existed but were OUTSIDE the gate until 2026-07-27: the `check` job runs
+  # `turbo run test:coverage`, and the four harness packages define only `test:e2e`, so
+  # turbo reported `<NONEXISTENT>` and skipped them silently. The adversarial review
+  # (docs/review/e2e-harnesses.md, SEV1 #1) identified that as the root cause of most of
+  # its ~90 SEV1 findings surviving ~100% unit coverage.
+  #
+  # Separate job so it runs in parallel with `check` and so its extra runtime setup
+  # (bun, deno) is isolated. Bun and Deno are installed deliberately: the harness SKIPS
+  # a runtime whose binary is absent (packages/instrumentation-tests/test/runtimes.ts),
+  # so without them CI would go green while testing strictly less.
+  e2e:
+    name: E2E (node · bun · deno · real frameworks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fail loudly if a runtime the harness expects is missing, rather than letting
+      # runtimes.ts silently skip it and report green.
+      - name: Verify the runtime matrix is complete
+        run: |
+          node --version
+          bun --version
+          deno --version
+
+      - name: E2E suites (turbo run test:e2e)
+        run: pnpm exec turbo run test:e2e

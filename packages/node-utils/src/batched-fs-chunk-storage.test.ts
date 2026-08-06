@@ -405,3 +405,193 @@ describe('createBatchedFsChunkStorage', () => {
     s.dispose?.();
   });
 });
+
+// WAVE 6.3 — a full disk was answered with unbounded memory instead of back-pressure.
+//
+// The retry-without-duplication design is correct: on a failed `writev` the still-unwritten tail stays
+// buffered so a later retry never duplicates an already-written prefix. What was missing is a CEILING on
+// that tail. Once `writev` fails persistently (ENOSPC / EROFS / EIO / a vanished dataDir), every captured
+// entry grew the buffer, issued another doomed syscall, and invoked `onError`. Measured in the review:
+//
+//   appends: 20000 x 425B = 8.1 MiB · writev attempts: 19998 · onError invocations: 19998 · heap: 12.2 MiB
+//
+// This is the DEFAULT node/bun/deno write path, and the design doc binds it the other way —
+// docs/design/server-disk-capture-write-path.md:120 (D2): "fixed ring, drop-oldest under overload (no
+// elastic growth)". The Phase-2 ring honours that; the shipped Phase-1 default did not. An SDK that OOMs
+// its host on a full disk alters host behaviour, which this repo treats as a binding prohibition.
+describe('back-pressure on a failing disk (Wave 6.3)', () => {
+  const enospc = (): WritevFn => () => {
+    const error = new Error('ENOSPC: no space left on device') as Error & { code: string };
+    error.code = 'ENOSPC';
+    throw error;
+  };
+
+  it('bounds the buffered tail instead of growing it for every capture', () => {
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(mkRoot(), {
+      highWaterMark: 64,
+      writev: enospc(),
+      onError: (e) => errors.push(e),
+      maxBufferedBytes: 4096,
+    });
+    for (let i = 0; i < 5000; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\tentry-${i}\n`);
+    }
+    expect(s.bufferedBytes?.()).toBeLessThanOrEqual(4096);
+  });
+
+  it('drops the OLDEST buffered records, keeping the most recent — the ring’s direction', () => {
+    // "drop-oldest under overload" is the design's own words. The moments before a crash are the ones
+    // worth having, so a bound that shed the newest would discard exactly the wrong end.
+    const root = mkRoot();
+    let fail = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 64,
+      maxBufferedBytes: 512,
+      writev: ((fd, batch) => {
+        if (fail) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return writevSync(fd, batch);
+      }) as WritevFn,
+    });
+    for (let i = 0; i < 200; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\tentry-${i}\n`);
+    }
+    fail = false; // the disk frees up
+    s.flushSync?.();
+    const written = readFileSync(
+      join(root, ...['0000000000001', '000000000000', 'log.json']),
+      'utf8',
+    );
+    expect(written).toContain('entry-199'); // the newest survived
+    expect(written).not.toContain('entry-0'); // the oldest was shed
+  });
+
+  it('stops issuing doomed syscalls once the disk is persistently failing', () => {
+    let attempts = 0;
+    const s = createBatchedFsChunkStorage(mkRoot(), {
+      highWaterMark: 8,
+      writev: (() => {
+        attempts += 1;
+        throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      }) as WritevFn,
+    });
+    for (let i = 0; i < 5000; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\te\n`);
+    }
+    expect(attempts).toBeLessThan(200); // not one per captured entry
+  });
+
+  it('reports the failure once, not once per captured entry', () => {
+    // `onError` is caller-supplied and a natural implementation logs — which re-enters capture. 19998
+    // invocations is not a diagnostic, it is a second failure mode.
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(mkRoot(), {
+      highWaterMark: 8,
+      writev: enospc(),
+      onError: (e) => errors.push(e),
+    });
+    for (let i = 0; i < 5000; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\te\n`);
+    }
+    expect(errors.length).toBeLessThan(20);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('RESUMES writing when the disk recovers', () => {
+    const root = mkRoot();
+    let fail = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 8,
+      writev: ((fd, batch) => {
+        if (fail) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return writevSync(fd, batch);
+      }) as WritevFn,
+    });
+    for (let i = 0; i < 2000; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\tfail\n`);
+    }
+    fail = false;
+    for (let i = 0; i < 10; i += 1) {
+      s.append(1, 0, 'log.json', `ok-${i}\tgood\n`);
+    }
+    s.flushSync?.();
+    const written = readFileSync(
+      join(root, ...['0000000000001', '000000000000', 'log.json']),
+      'utf8',
+    );
+    expect(written).toContain('ok-9');
+  });
+
+  it('closes the circuit on its OWN once the disk recovers, with no forced flush', () => {
+    // The `RESUMES` test above calls flushSync(), which deliberately forces past the circuit — so it also
+    // passes against a circuit that never closes. This one recovers through ordinary appends alone: the
+    // periodic probe has to succeed AND reset the failure count, or writing never resumes.
+    const root = mkRoot();
+    let fail = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 8,
+      writev: ((fd, batch) => {
+        if (fail) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return writevSync(fd, batch);
+      }) as WritevFn,
+    });
+    for (let i = 0; i < 500; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\tfail\n`);
+    }
+    fail = false;
+    for (let i = 0; i < 400; i += 1) {
+      s.append(1, 0, 'log.json', `ok-${i}\tgood\n`);
+    }
+    // No flushSync — reading the file is the assertion that appends alone got through.
+    const written = readFileSync(
+      join(root, ...['0000000000001', '000000000000', 'log.json']),
+      'utf8',
+    );
+    expect(written).toContain('ok-399');
+  });
+
+  it('never sheds the LAST record, so an oversized one is still written when the disk returns', () => {
+    // The shed loop must leave at least one segment. Otherwise any record bigger than the ceiling is
+    // silently discarded — and on a failing disk it is discarded before it was ever written.
+    const root = mkRoot();
+    let fail = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 8,
+      maxBufferedBytes: 64,
+      writev: ((fd, batch) => {
+        if (fail) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return writevSync(fd, batch);
+      }) as WritevFn,
+    });
+    s.append(1, 0, 'log.json', `1\t${'x'.repeat(500)}\n`); // one record, far over the ceiling
+    fail = false;
+    s.flushSync?.();
+    const written = readFileSync(
+      join(root, ...['0000000000001', '000000000000', 'log.json']),
+      'utf8',
+    );
+    expect(written).toContain('x'.repeat(500));
+  });
+
+  it('a HEALTHY disk still writes everything — the canary', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { highWaterMark: 64 });
+    for (let i = 0; i < 500; i += 1) {
+      s.append(1, 0, 'log.json', `${i}\tentry-${i}\n`);
+    }
+    s.flushSync?.();
+    const written = readFileSync(
+      join(root, ...['0000000000001', '000000000000', 'log.json']),
+      'utf8',
+    );
+    expect(written.split('\n').filter(Boolean)).toHaveLength(500);
+  });
+});

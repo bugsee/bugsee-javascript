@@ -12,8 +12,16 @@ pnpm test:e2e                                   # from the repo root, or:
 pnpm --filter @bugsee/instrumentation-tests test:e2e
 ```
 
-It is **not** part of `pnpm test` (the root globs `*.test.ts`; these are `*.e2e.ts`) and has no coverage
-gate — it spawns processes and is run on demand.
+The `*.e2e.ts` suites are **not** part of `pnpm test` (the root globs `*.test.ts`) and have no coverage
+gate — they spawn real processes. Since 2026-07-27 they **do run in CI**, in their own `e2e` job with
+`bun` and `deno` installed (`.github/workflows/ci.yml`). Before that they were outside the gate
+entirely, which the adversarial review root-caused as the reason most of its ~90 SEV1 findings survived
+~100% unit coverage (`docs/review/e2e-harnesses.md`).
+
+The one exception is `test/bundle.test.ts` — the unit tests for the shared assertion library below. Those
+are `*.test.ts` on purpose and run via the `test:unit` script (`vitest.unit.config.ts`), which CI executes in
+the `check` job. They ran in NO CI job until 2026-07-28: this package had no `test:coverage` script, so
+`turbo run test:coverage` skipped it silently — the same `<NONEXISTENT>` hole the e2e job exists to close.
 
 ## What runs
 
@@ -45,6 +53,22 @@ deliver a bundle: `POST /v2/sessions` → access token, `POST /v2/issues` → a 
 `PUT /upload/*` → captures the bundle (zip) bytes, and `GET /echo` → the app's captured outgoing
 request. It runs in the runner process; the app reaches it over loopback HTTP, so the captured uploads
 *are* the assertion channel (no IPC).
+
+## The shared bundle-assertion library (`test/bundle.ts`)
+
+Wave V0 of `docs/review/REMEDIATION-PLAN.md`. The review's central finding about this harness layer was
+that it asserted a bundle **arrived** rather than what was **in** it. These helpers exist to close
+specific, confirmed defect classes, and each has a **negative** unit test proving it fails on the real
+defect — an assertion library that cannot fail is the exact theater being removed.
+
+| Helper | Closes |
+| --- | --- |
+| `parseBundles(source)` | shared unzip + parse of `request.json`/`manifest.json` (was duplicated per suite) |
+| `readJson(bundle, name)` | throws, naming what IS present, so asserting on a never-emitted file fails loudly instead of reading `undefined` |
+| `assertBundleIntegrity(bundle)` | manifest ↔ zip agreement. Catches the confirmed core Pass D defect: a recovered crash bundle declared `profile.json` while the zip held only the directory-shaped entry `profile.json/` |
+| `assertNoSecrets(bundle, secrets)` | scans **every** entry, binary included, for values that must never ship. Catches the confirmed URL-query-string / body credential leaks. Exempts only the assembler's STRUCTURAL `apptoken` (an undeclared root entry) — an attachment merely named `apptoken` is still scanned |
+
+New suites and the sample apps of Wave V should use these rather than hand-rolling per-file parsing.
 
 ## Maintenance
 

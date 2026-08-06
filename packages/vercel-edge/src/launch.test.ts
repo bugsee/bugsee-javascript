@@ -9,6 +9,7 @@ import {
 } from '@bugsee/core';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveEdgeStore } from './edge-context';
 import { type BugseeEdgeLaunchOptions, EdgeContextStoreToken, launchEdge } from './launch';
 
 const jsonBody = (o: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(o));
@@ -280,5 +281,245 @@ describe('launchEdge', () => {
     expect(second).toBe(first); // same client
     expect(onError).toHaveBeenCalledTimes(1);
     expect(String((onError.mock.calls[0]?.[0] as Error).message)).toMatch(/more than once/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Wave 0.1a (docs/review/REMEDIATION-PLAN.md): supplying AsyncLocalStorage explicitly.
+//
+// The adversarial review proved on real workerd 1.20260722.1 that `globalThis.AsyncLocalStorage` does NOT
+// exist on Cloudflare under ANY compatibility flag — it is reachable only as an export of
+// `node:async_hooks` (docs/review/cloudflare.md SEV1 #3). The probe therefore always misses there, so
+// per-request context is permanently degraded to the single-slot fallback and reports carry no
+// contextId. The edge tier cannot import `node:async_hooks` itself without breaking the bundle for
+// deployments that lack the flag, so the store must be INJECTABLE: the user imports AsyncLocalStorage in
+// their own worker (where their compat flags apply) and hands it to launch().
+describe('launchEdge — asyncLocalStorage injection', () => {
+  it('uses an explicitly supplied store instead of probing the global', async () => {
+    const seen: string[] = [];
+    // A minimal run()-scoped store standing in for a real AsyncLocalStorage.
+    let slot: unknown;
+    const injected = {
+      getStore: () => slot,
+      run: <R>(store: unknown, fn: () => R): R => {
+        const prev = slot;
+        slot = store;
+        seen.push('run');
+        try {
+          return fn();
+        } finally {
+          slot = prev;
+        }
+      },
+    };
+    const client = launchEdge('token', {
+      asyncLocalStorage: injected,
+    } as Parameters<typeof launchEdge>[1]);
+    // The decisive assertion: running a context goes through OUR store, not the probed global.
+    const store = resolveEdgeStore(client);
+    expect(store).toBeDefined();
+    store?.run({ contextId: 'c1' }, () => {
+      expect(store?.getCurrent()?.contextId).toBe('c1');
+    });
+    expect(seen).toContain('run');
+    await client.stop?.();
+  });
+});
+
+// S4.5 (docs/design/cloudflare-tenant-isolation.md): the partitioned store must actually be WIRED IN.
+//
+// S1-S4 built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
+// selected the partitioned store, so the whole chain was inert. This is the switch.
+describe('launchEdge — partitionCaptureByTenant', () => {
+  it('keeps tenants apart in the capture store when enabled', async () => {
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: true,
+      carrier: {},
+    } as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as {
+      add: (r: { type: string; timestamp: number; serialized: string; owner?: string }) => void;
+      snapshot: (o?: { owner?: string }) => {
+        stream: () => AsyncIterableIterator<{ serialized: string }>;
+      };
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'SECRET-A', owner: 'A' });
+    store.add({ type: 'log', timestamp: 2, serialized: 'SECRET-B', owner: 'B' });
+    const seen: string[] = [];
+    for await (const r of store.snapshot({ owner: 'B' }).stream()) seen.push(r.serialized);
+    expect(seen).toEqual(['SECRET-B']);
+    await client.stop?.();
+  });
+
+  it('uses the plain single-tenant store by default (unchanged for Vercel Edge)', async () => {
+    const client = launchEdge('tok', { carrier: {} } as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeUndefined(); // not a PartitionedCaptureStore
+    await client.stop?.();
+  });
+});
+
+// Fixes for the adversarial review of this session's changes (docs/review/session-changes-review.md).
+describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
+  it('divides the byte budget across partitions instead of replicating it', async () => {
+    // SEV1 #2: giving each partition the full maxDataSize put 9 x 10 MB against a 128 MB isolate
+    // (measured 116 MB heap). The total must stay within maxDataSize however many tenants appear.
+    const sizes: Array<number | undefined> = [];
+    const core = await import('@bugsee/core');
+    const spy = vi.spyOn(core, 'createMemoryCaptureStore').mockImplementation((o) => {
+      sizes.push(o?.maxDataSizeBytes);
+      return {
+        add: () => {},
+        tick: () => {},
+        clear: () => {},
+        snapshot: () => ({
+          stream: async function* () {},
+          drainAll: async () => new Map(),
+          release: () => {},
+        }),
+      };
+    });
+    launchTracked('tok', baseOptions({ partitionCaptureByTenant: true, maxTenantPartitions: 3 }));
+    // Force partitions to be created.
+    const store = clients.at(-1)?.getService(core.CaptureStoreToken) as unknown as {
+      add: (r: unknown) => void;
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'x', owner: 'a' });
+    store.add({ type: 'log', timestamp: 1, serialized: 'y', owner: 'b' });
+    const perPartition = sizes.filter((n): n is number => n !== undefined);
+    expect(perPartition.length).toBeGreaterThan(0);
+    // 10 MB default / (3 + 1) partitions.
+    const expected = Math.floor((10 * 1024 * 1024) / 4);
+    for (const size of perPartition) expect(size).toBe(expected);
+    // And the total across the maximum number of rings stays within the configured budget.
+    expect(expected * 4).toBeLessThanOrEqual(10 * 1024 * 1024);
+    spy.mockRestore();
+  });
+
+  it('reports through onError when an explicit captureStore silently disables isolation', () => {
+    // SEV2 #6: the override wins over the switch, reinstating the cross-tenant leak with no diagnostic.
+    const errors: unknown[] = [];
+    const inert = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release: () => {},
+      }),
+    };
+    launchTracked(
+      'tok',
+      baseOptions({
+        partitionCaptureByTenant: true,
+        captureStore: inert as never,
+        onError: (e) => errors.push(e),
+      }),
+    );
+    expect(String(errors[0])).toContain('per-tenant isolation is NOT active');
+  });
+});
+
+describe('launchEdge — reused non-partitioned client diagnostic', () => {
+  it('names the isolation loss when a partitioning launch reuses a non-partitioned client', () => {
+    // Review pass 2 SEV3 #3: `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
+    // then a Durable Object's lazy launcher reuses that carrier client — which does not partition. The
+    // only signal was the generic "called more than once", which does not mention the leak.
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier })); // first: NOT partitioned
+    launchTracked(
+      'tok',
+      baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+    );
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
+    expect(errors.map(String).join('\n')).toContain("another tenant's capture");
+  });
+
+  it('stays quiet when the reused client DOES partition', () => {
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier, partitionCaptureByTenant: true }));
+    launchTracked(
+      'tok',
+      baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+    );
+    expect(errors.map(String).join('\n')).not.toContain('per-tenant isolation');
+  });
+});
+
+describe('launchEdge — the partition bound and the budget divisor cannot disagree', () => {
+  // Review pass 2-fixes SEV2 #1: the store coerced maxPartitions but launchEdge's divisor used the RAW
+  // value, so `0` restored a full budget per partition (the 90 MB blow-up) and `NaN` produced a NaN budget
+  // that disabled the byte cap outright. Both now route through the one exported coercion.
+  const budgetsFor = async (maxTenantPartitions: unknown): Promise<number[]> => {
+    const sizes: number[] = [];
+    const core = await import('@bugsee/core');
+    const spy = vi.spyOn(core, 'createMemoryCaptureStore').mockImplementation((o) => {
+      if (o?.maxDataSizeBytes !== undefined) sizes.push(o.maxDataSizeBytes);
+      return {
+        add: () => {},
+        tick: () => {},
+        clear: () => {},
+        snapshot: () => ({
+          stream: async function* () {},
+          drainAll: async () => new Map(),
+          release: () => {},
+        }),
+      };
+    });
+    launchTracked(
+      'tok',
+      baseOptions({
+        partitionCaptureByTenant: true,
+        maxTenantPartitions: maxTenantPartitions as number,
+      }),
+    );
+    const store = clients.at(-1)?.getService(core.CaptureStoreToken) as unknown as {
+      add: (r: unknown) => void;
+    };
+    store.add({ type: 'log', timestamp: 1, serialized: 'x', owner: 'a' });
+    spy.mockRestore();
+    return sizes;
+  };
+
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2.7, 'eight']) {
+    it(`derives a finite, bounded per-partition budget for ${String(bad)}`, async () => {
+      const sizes = await budgetsFor(bad);
+      expect(sizes.length).toBeGreaterThan(0);
+      for (const size of sizes) {
+        expect(Number.isFinite(size)).toBe(true);
+        expect(size).toBeGreaterThan(0);
+        // Never the whole budget: that is the blow-up the division exists to prevent.
+        expect(size).toBeLessThan(10 * 1024 * 1024);
+      }
+    });
+  }
+});
+
+describe('launchEdge — the reuse diagnostic never breaks launch()', () => {
+  it('survives an already-launched client whose getService throws', () => {
+    // Launch a REAL client onto the carrier first, so getCarrierClient actually returns something and the
+    // diagnostic path is genuinely entered — then make its getService hostile. An earlier version of this
+    // test used a hand-built carrier shape that getCarrierClient never resolved, so it passed while
+    // exercising nothing.
+    const carrier = {};
+    const first = launchTracked('tok', baseOptions({ carrier }));
+    (first as unknown as { getService: () => unknown }).getService = () => {
+      throw new Error('hostile');
+    };
+    const errors: unknown[] = [];
+    expect(() =>
+      launchEdge(
+        'tok',
+        baseOptions({ carrier, partitionCaptureByTenant: true, onError: (e) => errors.push(e) }),
+      ),
+    ).not.toThrow();
+    // And it still warns — a store it cannot inspect is treated as "not partitioning", the safe direction.
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
   });
 });

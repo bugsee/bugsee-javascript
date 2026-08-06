@@ -85,6 +85,15 @@ export interface StoredEntry {
   timestamp: number;
   /** The entry's serialized string form. */
   serialized: string;
+  /**
+   * Tenant/owner key for store partitioning, kept out-of-band for the same reason as `timestamp` — a store
+   * must route on it without deserializing. Set from the active `RequestContext.owner`; `undefined` on the
+   * single-tenant path, where partitioning is a no-op.
+   *
+   * Exists because Durable Objects for different tenants share one isolate, one client and one capture ring
+   * (docs/design/cloudflare-tenant-isolation.md).
+   */
+  owner?: string;
 }
 
 /**
@@ -104,10 +113,25 @@ export interface CaptureStore {
    * ~every second with the current wall-clock ms (driven by the Client; edge/lambda may skip it).
    */
   tick(nowMs: number): void;
-  /** Freeze the current in-window records into a snapshot for export; the live store keeps rolling. */
-  snapshot(): CaptureSnapshot;
+  /**
+   * Freeze the current in-window records into a snapshot for export; the live store keeps rolling.
+   *
+   * `options.owner` scopes the snapshot to ONE tenant. Stores that do not partition may ignore it; the
+   * partitioned store uses it to keep one Durable Object's incident bundle free of every other tenant's
+   * capture (docs/design/cloudflare-tenant-isolation.md).
+   */
+  snapshot(options?: { owner?: string }): CaptureSnapshot;
   /** Discard all live records. */
   clear(): void;
+  /**
+   * Commit everything captured so far (Wave 6.2). Optional, and present only on stores whose backing
+   * write is DEFERRED — an in-memory store has nothing pending, and a store that advertised a no-op flush
+   * would turn `store.flush?.()` from a real question into a meaningless one.
+   *
+   * Called by a platform at the last moment it is reliably alive: Node's `'exit'`/signal hooks, the
+   * browser's `pagehide`/`visibilitychange`→hidden.
+   */
+  flush?(): Promise<void>;
 }
 
 // Service token for the capture store: core owns the contract; the platform supplies the impl (in-memory
@@ -149,10 +173,12 @@ export interface CaptureAggregator {
  * snapshot — the live store keeps rolling throughout (no drain-on-read).
  */
 export interface CaptureExporter {
-  /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot. */
-  stream(): AsyncIterableIterator<CaptureDataEntry>;
-  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7). */
-  drain(): Promise<Map<FileType, CaptureDataEntry[]>>;
+  /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot.
+   *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
+  stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry>;
+  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7).
+   *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
+  drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>>;
 }
 
 /**

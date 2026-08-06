@@ -14,6 +14,15 @@ import type { AttributeValue } from '@bugsee/types';
 export interface RequestContext {
   /** Stable id for this context; stamped onto every capture entry recorded within it, and onto the report. */
   readonly contextId: string;
+  /**
+   * Tenant key for capture-store partitioning. Unlike `contextId` (per-invocation) this identifies the
+   * TENANT, so a rolling window stays per-tenant: on Cloudflare it is the Durable Object id.
+   *
+   * Routing-only — it is passed out-of-band to the store and never written onto the wire payload. Absent on
+   * single-tenant runtimes, where partitioning is a no-op and behaviour is unchanged
+   * (docs/design/cloudflare-tenant-isolation.md §4.1).
+   */
+  readonly owner?: string;
   /** End-user identity for reports produced in this context (wire `email`); overrides the global user. */
   user?: string;
   /** Custom attributes merged into reports produced in this context (over the global attributes). */

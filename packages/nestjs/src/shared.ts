@@ -1,6 +1,7 @@
 import { getCarrierClient, type RequestContext } from '@bugsee/core';
 import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 import type { PerformanceApi } from '@bugsee/performance';
+import { sanitizeUrl } from '@bugsee/protocol';
 
 // Shared foundation for the @bugsee/nestjs seams (context middleware + interceptor + filter), over the
 // per-request context foundation (design: docs/design/framework-adapters.md). NestJS is a PEER; these
@@ -41,6 +42,12 @@ export interface NestAdapterOptions {
    * HttpExceptions (control flow), report genuine unhandled errors.
    */
   shouldReport?: (err: unknown) => boolean;
+  /**
+   * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
+   * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
+   * silent, which is why this exists.
+   */
+  onError?: (error: unknown) => void;
 }
 
 export const headerValue = (
@@ -69,7 +76,9 @@ export const buildContext = (
   user: string | undefined,
 ): RequestContext => {
   const method = req.method ?? 'GET';
-  const url = req.originalUrl ?? req.url ?? '';
+  // Redacted here rather than by @bugsee/node's server-instrument core: Nest builds its own context, so
+  // the raw query would otherwise reach `http.url` in reports and the manifest (Wave 1.1).
+  const url = sanitizeUrl(req.originalUrl ?? req.url ?? '');
   return {
     contextId: newContextId(),
     attributes: { 'http.method': method, 'http.url': url },

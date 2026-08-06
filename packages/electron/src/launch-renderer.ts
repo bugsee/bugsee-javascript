@@ -12,6 +12,7 @@ import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
 import { createRendererControlHandler } from './renderer-control';
+import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 
 /** The browser `launchCore` shape, injectable for tests. */
 type BrowserLaunch = typeof launchCore;
@@ -65,11 +66,31 @@ export function launchRenderer(appToken: string, options: LaunchRendererOptions 
   // Mutable pause flag flipped by main→renderer control (backgrounding). While paused the streaming store
   // drops entries — the UP stream stops — but incidents still report via the separate report path.
   let paused = false;
+  // Flipped by the main→renderer `session` control reply: until then there is no converged session id.
+  let handshaken = false;
   const captureStore = createElectronRendererCaptureStore({
     post: post ?? ((raw: string): void => resolved.post(raw)),
     paused: () => paused,
   });
-  const client = (launch ?? launchCore)(appToken, { ...browserOptions, captureStore }).client;
+  // Incidents are FORWARDED to main, never uploaded here: this renderer's capture lives in the main store,
+  // so a locally-assembled bundle would be empty and land under a foreign session id
+  // (docs/review/electron.md SEV1 #2). `handshaken` gates delivery — before the session handshake there is
+  // no main session to attribute an incident to, so the pipeline reports failure rather than posting into
+  // the void. A caller cannot override this: ours is spread AFTER the caller's options, so an override —
+  // which would silently restore the broken local-upload path — is simply ignored. (An earlier version also
+  // destructured the caller's value away; that was redundant, and a mutation proved it: removing the strip
+  // changed nothing, because the ordering already decides.)
+  const triggerPipeline = createElectronRendererReportPipeline({
+    post: post ?? ((raw: string): void => resolved.post(raw)),
+    canDeliver: () => handshaken,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
+  const client = (launch ?? launchCore)(appToken, {
+    ...browserOptions,
+    captureStore,
+    // AFTER the caller's options, deliberately — see above.
+    triggerPipeline,
+  } as never).client;
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.
   resolved.onControl(
@@ -83,7 +104,10 @@ export function launchRenderer(appToken: string, options: LaunchRendererOptions 
       flush: (): void => {
         void client.flush();
       },
-      onSession: onSessionId,
+      onSession: (id: string): void => {
+        handshaken = true;
+        onSessionId?.(id);
+      },
     }),
   );
   resolved.sendHello(encodeHello());

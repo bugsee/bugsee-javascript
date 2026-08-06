@@ -13,6 +13,19 @@ import {
   getCrashDumpsDirectory,
   installNativeCrashReporter,
 } from './crash-reporter';
+/** The subset of Electron's `app` R4 needs. */
+export interface ElectronAppLike {
+  on(
+    event: 'render-process-gone',
+    listener: (
+      event: unknown,
+      contents: { id?: number },
+      details: { reason: string; exitCode?: number },
+    ) => void,
+  ): unknown;
+}
+
+import type { CrashpadSessionMarker } from '@bugsee/core';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
@@ -21,6 +34,8 @@ import {
   encodePixelVideo,
   type PixelVideoController,
 } from './pixel-video-controller';
+import { createRendererGoneHandler } from './renderer-gone';
+import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
 import type { VideoCaptureSource } from './video-capture';
 
 /** The node `launchCore` shape, injectable for tests. */
@@ -40,6 +55,12 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   /** Electron's `ipcMain` (the app passes `require('electron').ipcMain`). Drives both the inbound capture
    *  receiver (renderer→main) and the outbound control channel (main→renderer). */
   ipcMain: IpcMainLike & IpcMainControlLike;
+  /**
+   * Electron's `app` — when provided, `render-process-gone` is watched so a renderer killed before it could
+   * forward anything (OOM, native crash) still produces an incident on this session (R4). Injected like
+   * `ipcMain`, so @bugsee/electron keeps no electron dependency.
+   */
+  app?: ElectronAppLike;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated (E5). */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
@@ -52,7 +73,8 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
-  const { ipcMain, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } = options;
+  const { ipcMain, app, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } =
+    options;
 
   // Opt-in pixel video (D8): build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -75,13 +97,16 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // directory into the node launch so it persists a crashpad-session marker at START and, on the NEXT
   // launch, harvests + session-stitches a dead run's `.dmp`s (see electron-native-crashes.md §6.1). The
   // reporter itself is started (uploadToServer:false) AFTER launch, below.
+  // Hoisted so R4's render-process-gone handler can claim dumps through the SAME seam the next-launch
+  // recovery uses — a claim here is what stops recovery re-reporting the crash.
+  let nativeCrashSource: ReturnType<typeof createElectronNativeCrashSource> | undefined;
+  let nativeDumpDir: string | undefined;
   if (crashReporter !== undefined) {
     const dumpDir = getCrashDumpsDirectory(crashReporter);
     if (dumpDir !== undefined) {
-      nodeOptions.nativeCrash = {
-        source: createElectronNativeCrashSource({ fs: createNodeCrashDumpFs() }),
-        dumpDir,
-      };
+      nativeCrashSource = createElectronNativeCrashSource({ fs: createNodeCrashDumpFs() });
+      nativeDumpDir = dumpDir;
+      nodeOptions.nativeCrash = { source: nativeCrashSource, dumpDir };
     }
   }
 
@@ -98,8 +123,47 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
   const store = client.getService(CaptureStoreToken);
-  const receiver = createElectronMainReceiver({ ipcMain, store });
+
+  // R3/R4 — the main-side submit path for renderer incidents. Registering this is what makes the feature
+  // LIVE: R2 stopped renderers uploading, so without a join here every renderer incident is silently
+  // destroyed while the app is told it was delivered — strictly worse than the defect
+  // (docs/review/electron-convergence-code-review.md SEV1-1).
+  const incidents = new RendererIncidentProvider({
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
+  client.addDetectionProvider(incidents);
+
+  const receiver = createElectronMainReceiver({
+    ipcMain,
+    store,
+    onReport: (report, windowId) => incidents.submitForwarded(report, windowId),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
   receiver.start();
+
+  // R4 — a renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
+  // minidump so the LIVE incident carries it; falls back to capture + reason when none arrives.
+  if (app !== undefined) {
+    const marker =
+      nativeCrashSource !== undefined && nativeDumpDir !== undefined
+        ? ({
+            session: internals.api.sessionId,
+            dumpDir: nativeDumpDir,
+          } as unknown as CrashpadSessionMarker)
+        : undefined;
+    const goneHandler = createRendererGoneHandler({
+      marker: () => marker,
+      // Omitted when there is no crashReporter: no dump dir means nothing to claim, and the handler then
+      // reports capture + reason. (A literal empty-source fallback here was dead code — `marker` is
+      // undefined in exactly the same case, so it could never be consulted.)
+      ...(nativeCrashSource !== undefined ? { source: nativeCrashSource } : {}),
+      submit: (incident: RendererGoneIncident) => incidents.submitGone(incident),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+    app.on('render-process-gone', (_event, contents, details) => {
+      void goneHandler.handle(contents?.id ?? -1, details);
+    });
+  }
 
   // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
   // and propagate pause/resume/flush/stop to every renderer.

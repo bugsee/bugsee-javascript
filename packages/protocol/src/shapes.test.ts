@@ -116,3 +116,170 @@ describe('redactShapes', () => {
     });
   });
 });
+
+describe('the length bound is scoped to the JWT pattern alone', () => {
+  const big = (secret: string) => `${'x'.repeat(40_000)} ${secret}`;
+
+  it('still redacts non-JWT shapes in a very large value', () => {
+    // Bounding the whole set threw away real coverage to contain one regex: 7 of 7 probed >32 KB secrets
+    // stopped being redacted, AWS keys and Stripe tokens among them.
+    expect(redactShapes(big('AKIAIOSFODNN7EXAMPLE'))).toContain('<redacted>');
+    expect(redactShapes(big('sk_live_abc123'))).toContain('<redacted>');
+    expect(redactShapes(big(`ghp_${'a'.repeat(36)}`))).toContain('<redacted>');
+    expect(redactShapes(big('whsec_abc123'))).toContain('<redacted>');
+  });
+
+  it('skips only the JWT scan above the bound, and stays fast', () => {
+    const hostile = 'eyJ'.repeat(30_000); // ~90 KB, the shape that backtracks
+    const started = Date.now();
+    expect(() => redactShapes(hostile)).not.toThrow();
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('still redacts a JWT below the bound', () => {
+    expect(redactShapes('t eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig')).toBe('t <redacted>');
+  });
+});
+
+describe('the JWT scan is linear, so size no longer costs coverage', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N';
+
+  it('redacts a JWT in a value far above the bound', () => {
+    // THE REGRESSION THIS FIXES. The bound was moved from `sanitizeUrl` into this function, where it
+    // silently came to gate `sanitizeBody`/`sanitizeJson`/`sanitizeHeaders`/`sanitizeParams` too — all of
+    // which called `redactShapes` UNBOUNDED before. Bodies capture at 20480 bytes by default, so every JWT
+    // in an 8193–20480 byte body shipped in the clear.
+    expect(redactShapes(`${'x'.repeat(40_000)} ${jwt}`)).toContain(R);
+    expect(redactShapes(`{"a":"${'y'.repeat(20_000)}","jwt":"${jwt}"}`)).toContain(R);
+  });
+
+  it('redacts EVERY JWT in a value, not just the first', () => {
+    // `/g` became load-bearing on a brand-new line when the pattern was lifted out of SHAPE_PATTERNS into
+    // its own `.replace()`. Every other JWT test uses exactly one JWT, so dropping the flag was invisible.
+    const two = `a=${jwt}&b=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIyIn0.sigB`;
+    expect(redactShapes(two)).toBe(`a=${R}&b=${R}`);
+  });
+
+  it('redacts every JWT ABOVE the bound too, where only the anchored pass runs', () => {
+    // Below the bound the two passes mask each other: dropping `/g` from the anchored pattern still passed
+    // every test, because the unanchored pass caught the second JWT with its own `/g`. Only above the bound
+    // is the anchored pattern's `/g` observable on its own.
+    const pad = 'x'.repeat(9000);
+    expect(redactShapes(`${pad} ${jwt} mid ${jwt}`)).toBe(`${pad} ${R} mid ${R}`);
+  });
+
+  it('does not treat `_` or `-` as a token boundary before `eyJ`', () => {
+    // They are IN the base64url class, so admitting them as leading delimiters puts a candidate start at
+    // every `_eyJ` and restores the quadratic blow-up the anchor exists to remove: 1915 ms at 128 KB.
+    const hostile = '_eyJ'.repeat(32_768); // 128 KB
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('stays fast on a huge hostile value — the pattern cannot backtrack', () => {
+    // 512 KB of `eyJ` cost 41.9 SECONDS before the pattern was anchored. Anchoring removes the overlapping
+    // start positions. (An earlier draft of this line also credited an atomic-group emulation
+    // `(?=(x+))\1` — which the SAME commit had already deleted as provably redundant. The comment
+    // outlived the code it described by one file.)
+    const hostile = 'eyJ'.repeat(170_000); // ~512 KB
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  it('still matches a JWT glued mid-identifier, below the bound', () => {
+    // This is the ONLY class the anchored pattern gives up, and the bounded superset pass is what keeps it.
+    // Without a test here that pass is untested weight and would be deleted as dead code.
+    expect(redactShapes(`sometoken_${jwt}`)).toBe(`sometoken_${R}`);
+    expect(redactShapes(`XXX${jwt}`)).toBe(`XXX${R}`);
+  });
+
+  it('matches a JWT after a PERCENT-ENCODED delimiter, at any size', () => {
+    // THE GAP THIS CLOSES. Every percent-escape ends in a hex character, and every hex character is inside
+    // `[A-Za-z0-9_-]` — so `%3D`, `%20`, `%2F`, `%3A` all looked like token characters and the anchor
+    // rejected them. Only the BOUNDED superset pass caught those, which made the bound a COVERAGE gate
+    // (the comment claimed it was cost-only) and left the 8193–20480 window open for exactly the shape a
+    // JWT usually arrives in: `id_token%3DeyJ…`, the OAuth implicit-flow redirect.
+    for (const enc of ['%3D', '%20', '%2F', '%3A', '%22', '%26']) {
+      const small = `redirect_uri=%2Fcb%3Fid_token${enc}${jwt}`;
+      expect(redactShapes(small), `${enc} small`).not.toContain(jwt);
+      const large = `${'x'.repeat(20_000)}\nredirect_uri=%2Fcb%3Fid_token${enc}${jwt}`;
+      expect(redactShapes(large), `${enc} above the bound`).not.toContain(jwt);
+    }
+  });
+
+  it('does not read a hex-looking run that is not an escape as a delimiter', () => {
+    // `FFeyJ…` must stay mid-identifier (superset pass only); `%ZZ` and a truncated `%3` are not escapes.
+    const pad = 'x'.repeat(20_000);
+    expect(redactShapes(`${pad} abc%ZZ${jwt}`)).toContain(jwt);
+    expect(redactShapes(`${pad} x%3${jwt}`)).toContain(jwt);
+  });
+
+  it('redacts EVERY mid-identifier JWT, not just the first', () => {
+    // The superset pass's own `/g` was untested: below the bound the anchored pass consumes every
+    // delimiter-preceded JWT first, so the superset pass only ever sees mid-identifier ones — and every
+    // test that reached it placed exactly one. Dropping its `/g` leaked the second silently.
+    const second = jwt.replace('IjEi', 'IjJi');
+    expect(redactShapes(`a_${jwt} b_${second}`)).toBe(`a_${R} b_${R}`);
+  });
+
+  it('runs the superset pass AT the bound, not just below it', () => {
+    // The bound's inclusivity was unpinned: `<=` vs `<` differed only at exactly 8192 bytes, a one-byte
+    // window no test covered.
+    const tail = `_${jwt}`; // mid-identifier, so ONLY the superset pass can catch it
+    const atBound = 'x'.repeat(8192 - tail.length) + tail;
+    expect(atBound).toHaveLength(8192);
+    expect(redactShapes(atBound)).toContain(R);
+  });
+
+  it('still matches a JWT after every delimiter a real payload uses', () => {
+    for (const lead of ['', ' ', 'Bearer ', '"', ':', '=', '/', ',', '\n', '{"t":"', '?tok=']) {
+      expect(redactShapes(`${lead}${jwt}`)).toBe(`${lead}${R}`);
+    }
+  });
+});
+
+describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
+  it('does not run the unanchored superset pass above 8 KB', () => {
+    // Pins the bound from ABOVE. Without this, `MAX_UNANCHORED_SCAN = 16_384` passed all 302 tests — the
+    // two existing tests only bracket it to [8042, 16499], a 2× window costing 43–53 ms/request. 8.4 KB is
+    // just above the intended bound: cheap at 8192, ~13 ms at any larger value.
+    // Asserted as a RATIO, not a wall-clock budget. The 5 ms form measured 0–1 ms clean and 12–13 ms
+    // broken: 5× headroom below and only 2.4× above, so a CI runner ~2.5× slower than a dev machine puts
+    // the clean and broken bands on top of each other and the test starts flaking. A ratio has no such
+    // scale dependence — the quadratic pass costs ~1000× the linear one whatever the hardware.
+    const above = 'eyJ'.repeat(2_800); // 8400 bytes — just above the bound
+    const below = 'eyJ'.repeat(2_600); // 7800 bytes — just below it, so the superset pass DOES run
+    // `Date.now()`, not `performance.now()` — this package compiles without the DOM or Node libs, so
+    // `performance` is not a declared global here. 5 iterations puts the slow side at ~60 ms, well clear
+    // of the 1 ms resolution.
+    const time = (value: string): number => {
+      const started = Date.now();
+      for (let i = 0; i < 5; i += 1) {
+        redactShapes(value);
+      }
+      return Date.now() - started;
+    };
+    time(above); // warm up, so JIT state is not attributed to the measurement
+    time(below);
+    // Same input size to within 8%, so any difference is the skipped pass rather than the length. The
+    // `+ 1` keeps the comparison meaningful when the fast side rounds to 0 ms.
+    expect(time(above) + 1).toBeLessThan(time(below) / 10);
+  });
+
+  it('is fast in the 8–32 KB window Node’s default header size lands in', () => {
+    // Moving the bound into this function silently raised it from 8192 to 32768, widening the reachable
+    // DoS window 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread CPU, and Node's default
+    // maxHeaderSize is 16384 — reachable by default via server-instrument on every inbound request.
+    const hostile = 'eyJ'.repeat(5_500); // ~16.5 KB, the exact worst case
+    const started = Date.now();
+    redactShapes(hostile);
+    expect(Date.now() - started).toBeLessThan(5);
+  });
+
+  it('still redacts a JWT just under the bound', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig';
+    expect(redactShapes(`${'x'.repeat(8000)} ${jwt}`)).toContain('<redacted>');
+  });
+});

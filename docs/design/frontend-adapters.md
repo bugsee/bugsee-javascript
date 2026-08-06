@@ -1,7 +1,9 @@
 # Frontend adapters — design (Draft v1, 2026-06-23)
 
-Status: **IN PROGRESS.** F0 (backend CORS) + F1 (navigation foundation) BUILT + reviewed-to-convergence on
-`master`; F2–F7+ pending. Supersedes the brief "Frontend hooks" stub in
+Status: **BUILT + on `main`.** The foundation (F0–F5) plus all six adapters — `react`, `vue`, `svelte`,
+`solid`, `angular`, and preact-compat — and the shared depth pass (D1 web-adapter plumbing, D2/D3 component
+attribution incl. the Vue mixin + Svelte preprocessor, D4/D5 React Profiler + handlers + auto-router,
+per-framework render spans) are built and reviewed-to-convergence. Supersedes the brief "Frontend hooks" stub in
 `docs/design/cross-project-tracing.md` (§"Frontend hooks"). Builds on the completed cross-project tracing
 backend (X0–X5/Y1/X3b/X4) and the existing `@bugsee/performance` (web-vitals + pageload) + `@bugsee/browser`.
 
@@ -201,7 +203,7 @@ Same write sites as X4 (node:http `setHeader` at open; native-serve append/set).
 matter once a cross-origin FE consumes them); on when the FE return-path is in use. Test-first + the same
 mutator/review discipline.
 
-> **STATUS — F0 BUILT (2026-06-23, on `master`).** The X4 `traceResponse` option gained `timingAllowOrigin?:
+> **STATUS — F0 BUILT (2026-06-23, on `main`).** The X4 `traceResponse` option gained `timingAllowOrigin?:
 > string | readonly string[]` (emits `Timing-Allow-Origin` alongside `Server-Timing`, list-joined) and
 > `exposeTraceresponse?: boolean` (appends `traceresponse` to `Access-Control-Expose-Headers`). Each is gated
 > on its trace header being on (only expose what we emit). The native-fetch path APPENDS the CORS list headers

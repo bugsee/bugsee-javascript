@@ -1,7 +1,9 @@
 # Edge-runtime support (Vercel Edge + Cloudflare Workers) — design
 
-Status: **IN PROGRESS (2026-06-25).** Vercel Edge env builder built (`@bugsee/vercel-edge`, master `54df653`).
-Prerequisite for `@bugsee/nextjs` (its Edge runtime resolves `edge-light`). Grounds the scattered edge notes in
+Status: **COMPLETE + on `main`.** Both edge platforms shipped — `@bugsee/vercel-edge` (E1–E6, 2026-06-25,
+5-round reviewed) and `@bugsee/cloudflare` (C1–C3 incl. the C2d Durable-Object / `WorkerEntrypoint` class
+instrumentation, 2026-06-28). Unblocked `@bugsee/nextjs` (its Edge runtime resolves `edge-light`), which is
+also built. Design captured 2026-06-25. Grounds the scattered edge notes in
 `docs/design/sdk-design.md` (§3.x/§7.7/§12.5) with the competitive technique sweep + the full implementation
 plan. **All gap-sweep findings are in scope** (user, 2026-06-25).
 
@@ -110,7 +112,7 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 ## 4. Implementation plan (slices)
 
 **Shared edge core (built in `@bugsee/vercel-edge` first; extracted to a shared location when Cloudflare lands):**
-- [x] **E1. Edge environment builder** — `buildEdgeEnvironment` (master `54df653`).
+- [x] **E1. Edge environment builder** — `buildEdgeEnvironment` (main `54df653`).
 - [ ] **E2. Portable ALS context store** — `run()`-only, `globalThis.AsyncLocalStorage` probe, no-op fallback +
   one-time warn, never throw, NO `enterWith`. Extracted so node + edge share the builder. (was task #153)
 - [x] **E3. Edge transport** — RESOLVED BY ANALYSIS (no new code): reuse `fetchTransport` (drains the body via
@@ -123,13 +125,13 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
 - [ ] **E6. `@bugsee/vercel-edge` wiring** — runtime identity (`isVercelEdge`), exports, README, e2e smoke.
 
 **Cloudflare (`@bugsee/cloudflare`, second):**
-- [x] **C1. Composition** — DONE (master `8ced7ac`). `export *` the vercel-edge core + a `launch` that defaults
+- [x] **C1. Composition** — DONE (main `8ced7ac`). `export *` the vercel-edge core + a `launch` that defaults
   `platformType: 'workers'`; `ctx`-param `waitUntil` + `nodejs_compat` ALS handled generically; README documents
   the compat flag + degrade.
-- [x] **C2. Handler-type coverage** — DONE. (a) Handler-OBJECT types (master `e6e51f4`): `withBugsee(config,
+- [x] **C2. Handler-type coverage** — DONE. (a) Handler-OBJECT types (main `e6e51f4`): `withBugsee(config,
   handler)` wraps `fetch` + `scheduled`/`queue`/`email`/`tail` (each its own context + faas.* attributes + flush
   via `ctx.waitUntil`), on the shared `runInEdgeContext` core (C2a, `2ef680b`). Lazy env-secret launch (config is
-  a `(env)=>token` callback — `env` isn't at module scope). (b) **CLASS types (C2d, master `a249653`):**
+  a `(env)=>token` callback — `env` isn't at module scope). (b) **CLASS types (C2d, main `a249653`):**
   `instrumentDurableObject(config, DOClass, {instrumentRpcMethods?})` for Durable Objects (lifecycle fetch/alarm +
   opt-in RPC), and `withBugsee` ALSO accepts a `WorkerEntrypoint` class (folded in, like Sentry's `withSentry`).
   Class ctx/env come from the CONSTRUCTOR → a shared class-mixin core (subclass + own-property shadowing, NOT a
@@ -137,17 +139,17 @@ Our node-free-kernel rule clears exactly the bar Bugsnag fails.
   off, matching Sentry's `instrumentPrototypeMethods`; Sentry hasn't finished plain-Worker RPC either).
   **N/A:** the `fetch` OPTIONS/HEAD "skip" is an APM-span concern — the incident-driven model creates no span, so
   a no-incident OPTIONS/HEAD uploads nothing already (revisit if/when edge APM lands, D11).
-- [x] **C3. `request.cf` enrichment** — DONE (master `e6e51f4`). `cfAttributes` stamps a curated low-PII subset
+- [x] **C3. `request.cf` enrichment** — DONE (main `e6e51f4`). `cfAttributes` stamps a curated low-PII subset
   onto fetch incidents (`cf.colo`/`country`/`city`/`timezone`/`asn`/`as_organization` + `http.protocol`/
   `tls.version`; NOT lat/long).
 
 **Cross-cutting (tracked; sequenced after the edge runtime):**
 - [ ] **X1. Source-map upload tooling** (`@bugsee/vite-plugin` / `@bugsee/webpack-plugin`) — build-time upload +
   `fs`-free runtime stack parser; all platforms, acute for edge.
-- [x] **X2. Edge bundle-size check** (Workers 3MB/10MB) — DONE (master). esbuild-bundle each edge package
+- [x] **X2. Edge bundle-size check** (Workers 3MB/10MB) — DONE (main). esbuild-bundle each edge package
   (node:* external), assert zero static node:* imports + gzip under a 150 KB regression budget (actuals
   ~21 KB). In `@bugsee/instrumentation-tests` (`test/edge.e2e.ts`).
-- [x] **X3. Edge runtime smoke harnesses** — DONE (master). Lives in `@bugsee/instrumentation-tests` (not a
+- [x] **X3. Edge runtime smoke harnesses** — DONE (main). Lives in `@bugsee/instrumentation-tests` (not a
   new `dev-packages/` dir — the as-built e2e home): evaluate the bundled SDK in `@edge-runtime/vm` (a real
   WinterCG isolate) + fire an incident from withBugseeFetch / withBugsee / a Durable Object against the mock
   collector. (A workerd/miniflare-accurate Cloudflare harness is a possible later upgrade.)
@@ -156,7 +158,7 @@ Then **`@bugsee/nextjs`** (its Edge runtime now unblocked).
 
 ---
 
-## 5. Status of the foundation (already on `master`)
+## 5. Status of the foundation (already on `main`)
 - Verified `node:*`-free kernel (core/capture/protocol/util/performance) — clears the Bugsnag bar.
 - `fetchTransport` (`@bugsee/browser-utils`), `createMemoryCaptureStore`/`createMemoryChunkBackend` (core),
   `wrapFetchHandler` (`@bugsee/node`, "future-edge-ready"), `@bugsee/integration-shims` no-op providers,

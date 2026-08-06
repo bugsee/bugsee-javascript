@@ -1,9 +1,9 @@
 # OpenTelemetry integration — design & roadmap note
 
-**Status:** agreed direction (2026-06-10), validated via a brainstorming session + competitor research.
-Supersedes the bare "v1.x bridge" mentions in `sdk-design.md` (§73/§103/§1529/§1630/§1646). This is a
-**design + sequencing** note — the workstream is slotted *after* the current `@bugsee/performance`
-follow-ups (node-perf wiring, bundle `performance.json`); nothing is built yet. Read with the memory
+**Status:** **BUILT + on `main`** (designed 2026-06-10, validated via a brainstorming session + competitor
+research). `@bugsee/opentelemetry` ships the full two-way integration — Produce (OTLP-JSON export) + Consume
+(SpanProcessor) + W3C propagation — live on both browser and node, wired through the umbrella.
+Supersedes the bare "v1.x bridge" mentions in `sdk-design.md` (§73/§103/§1529/§1630/§1646). Read with the memory
 `performance-apm-extension-plan` and `interceptors-must-not-alter-app-behavior`.
 
 ---

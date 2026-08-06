@@ -27,9 +27,9 @@ These are the structural decisions changed by v2; everything else inherits from 
 10. **Replay defaults fail-closed**: `maskAllText: true`, `maskAllInputs: true`, `blockAllMedia: true`; `<input type="password">` and `autocomplete="cc-*"` always masked; iframes & shadow DOM excluded by default. Resolves **[R:sec C2]**.
 11. **Error-message + stack scrubbing** with `denyUrls`/`allowUrls`/`ignoreErrors` + shape regex; default on. Resolves **[R:sec C3]**.
 12. **`__BUGSEE_DEBUG__` default is `false` in npm builds** (off by default, opt-in). Resolves **[R:sec MINOR-13]**.
-13. **GDPR API added**: `grantConsent()`, `revokeConsent()`, `deleteCollectedData()`, `isCapturing()`. Resolves **[R:sec MAJOR-10]**.
+13. ~~**GDPR API added**: `grantConsent()`, `revokeConsent()`, `deleteCollectedData()`, `isCapturing()`.~~ **SUPERSEDED by v3 §0.5 decision 5 — the consent API was REMOVED** (no Android equivalent; redundant with `launch`/`stop` and `startBlackout`/`endBlackout`). GDPR erasure remains via `deleteCollectedDataOnDevice()`. **Not implemented in the SDK** (verified 2026-07-26: no `grantConsent`/`revokeConsent`/`isCapturing` exists in any package). Originally resolved **[R:sec MAJOR-10]**.
 14. **Mobile-parity methods added** to public API: `createReport(listener) → upload(report)`, `setReportHandler({before, after})`, `setLifecycleListener`, `setNetworkEventFilter`/`setLogEventFilter`/`setBreadcrumbFilter`, `setAttachments`, `captureViewHierarchy()` method, `isLaunched()`, `testCrash()`, `logUnhandledException()`, `snapshot()`, `clearUser()`, `clearEmail()`, `setUserIdentifier()`. Resolves **[R:dx MAJOR-5]**.
-15. **`@bugsee/electron` deferred to v1.1.** v1 ships an empty package stub with a clear "not yet supported" warning. Resolves **[R:multi MAJOR-5]**.
+15. **`@bugsee/electron` originally planned for v1.1; shipped in v1.** Implements main (Node) + renderer (Chromium) + native (crashReporter minidumps) convergence into one session (E0–E8, convergent-reviewed). Resolves **[R:multi MAJOR-5]**.
 16. **Manifest schema version is committed in v1.** `manifest.json.version: 2` (JS SDK) — coordinate with backend to ensure forward-compat with mobile's `version: 1`. Resolves **[R:arch MINOR #7]** + **[R:arch Gap #2]**.
 
 Open questions that must be resolved before code starts are consolidated in §18.
@@ -101,7 +101,7 @@ Principle (user review 2026-05-25): **Sentry weaves APM/tracing through its core
 - **End-to-end encryption** (`e2e_encrypted` flag). Explicitly deferred; flag never set by JS v1.
 - **Cross-tab session sharing.** Each tab is independent in v1.
 - **OpenTelemetry auto-instrumentation.** Add as `@bugsee/opentelemetry` later.
-- **`@bugsee/electron`** beyond a stub package. Slated for v1.1.
+- **`@bugsee/electron`** originally slated for v1.1; shipped in v1 (E0–E8, convergent-reviewed).
 
 ---
 
@@ -129,7 +129,7 @@ Architecture follows from these.
 | **1** | Node.js ≥18 | bundle | `node:fs` under `os.tmpdir()` | Ships v1 |
 | **1** | Bun ≥1.1.13 | bundle | `node:fs` | Ships v1 |
 | **1** | Deno ≥1.36 (with `--allow-net`, `--allow-write`) | bundle | `Deno.makeTempDir` | Ships v1 |
-| **1.5** | Electron main + renderer | bundle | main: `node:fs`+`app.getPath('userData')`; renderer: IndexedDB | **v1.1** (stub package in v1) |
+| **1.5** | Electron main + renderer | bundle | main: `node:fs`+`app.getPath('userData')`; renderer: IndexedDB | **Ships v1** (originally planned v1.1; delivered early, E0–E8) |
 | **2** | Cloudflare Workers | **streaming** | none (in-memory only) | Ships v1 |
 | **2** | Vercel Edge | **streaming** | none | Ships v1 |
 | **2** | Web Workers | bundle (in-memory cap) | IndexedDB | Ships v1 |
@@ -342,7 +342,7 @@ Three mechanisms, applied in this priority order:
 
 1. **Separate packages per runtime.** `@bugsee/cloudflare` IS the Workers build; `@bugsee/deno` IS the Deno build. Their `package.json` declares no runtime conditions (only `import`/`require`). This matches what Sentry and Firebase actually ship **[R:mod C1]**: `packages/cloudflare/package.json` has only `import`+`require`; `packages/deno/package.json` has only `import`. Conditions like `bun`/`deno`/`workerd` are runtime-resolver conventions, not bundler conventions, and putting them on every package adds noise without coverage.
 
-2. **Conditional exports only on the umbrella `bugsee` package.** This is where multi-runtime resolution actually matters — a user does `import { launch } from 'bugsee'` and the umbrella's `exports` map routes to `@bugsee/browser` or `@bugsee/node` or `@bugsee/cloudflare` based on the consumer's bundler conditions:
+2. **Conditional exports only on the umbrella `@bugsee/bugsee` package.** This is where multi-runtime resolution actually matters — a user does `import { launch } from '@bugsee/bugsee'` and the umbrella's `exports` map routes to `@bugsee/browser` or `@bugsee/node` or `@bugsee/cloudflare` based on the consumer's bundler conditions:
    ```json
    "exports": {
      ".": {
@@ -801,6 +801,8 @@ JS `source.type` enum (to coordinate with backend, §18): `programmatic`, `uncau
 
 ### 8.7 Network event (canonical wire shape — corrected)
 
+> **Viewer compatibility:** the dashboard tolerates today’s as-built divergences (bare arrays, string log levels, `direction` instead of `event`, ungzipped recovery `replay.bin`). Recommended emit fixes for the parallel SDK stream — without requiring viewer thrash — are in [`viewer-wire-compatibility.md`](./viewer-wire-compatibility.md).
+
 ```ts
 {
   "timestamp": 1709990000123,
@@ -1195,7 +1197,7 @@ Opting out (e.g. `maskAllText: false`) requires explicit `replay: { maskAllText:
 
 ### 11.3 Wire path
 
-**Decision (v3):** new file type `replay`, content `replay.bin` (gzipped rrweb event stream). **The web dashboard renders it natively via an rrweb player** — rrweb is a serialized DOM-snapshot + incremental-mutation stream, not pixels, so there is **no server-side MP4 transcode**; mobile's `video` path is unchanged. §18.1#5 becomes a backend task (accept/store the `replay` file type) + a frontend task (integrate the rrweb player). Manifest entry:
+**Decision (v3):** new file type `replay`, content `replay.bin` (gzipped rrweb event stream). **The web dashboard renders it natively via an rrweb player** — rrweb is a serialized DOM-snapshot + incremental-mutation stream, not pixels, so there is **no server-side MP4 transcode**; mobile's `video` path is unchanged. §18.1#5 becomes a backend task (accept/store the `replay` file type) + a frontend task (integrate the rrweb player). Dashboard ingest tolerances + SDK emit recommendations: [`viewer-wire-compatibility.md`](./viewer-wire-compatibility.md). Manifest entry:
 ```json
 { "type": "replay", "filename": "replay.bin", "name": "rrweb", "attrs": { "format": "rrweb-v2-gzipped", "duration_ms": 60000, "events": 5421 } }
 ```
@@ -1249,7 +1251,7 @@ Replay works only on browser + Electron renderer. It is enabled via the **`repla
 
 **Other platform packages** (`@bugsee/node`, `@bugsee/cloudflare`, etc.): plain `import` + `require`. Platform identity = package name.
 
-**Umbrella `bugsee`** is the ONE place with multi-runtime conditions. See §6.
+**Umbrella `@bugsee/bugsee`** is the ONE place with multi-runtime conditions. See §6.
 
 `sideEffects: false` on every package. Files that ARE side-effecting (`debug-build.ts`) are explicitly excluded by the Rollup config (Sentry pattern **[S §5.1]**). The §5.1 normative rule (no import-time registration) is the policy that makes this safe.
 
@@ -1328,17 +1330,18 @@ The loader reads `data-*` attributes, lazily fetches `bugsee.min.js`, and calls 
 
 ### 12.8 Umbrella subpath strategy
 
-The umbrella `bugsee` package keeps subpath count ≤7 at v1 to avoid Firebase's hand-maintained-225-line `exports` wart **[R:mod MAJOR-7]**:
+The umbrella `@bugsee/bugsee` package keeps subpath count minimal to avoid Firebase's hand-maintained-225-line `exports` wart **[R:mod MAJOR-7]**.
 
-- `bugsee` (default — runtime-resolved)
-- `bugsee/react`
-- `bugsee/vue`
-- `bugsee/next`
-- `bugsee/express`
-- `bugsee/types`
-- `bugsee/protocol` (escape hatch for advanced consumers)
+**As built** (supersedes the per-framework-subpath sketch this section originally carried): the umbrella ships
+exactly **two** entries —
 
-Framework adapters beyond these stay published as `@bugsee/<framework>` direct packages. A subpath generator is a v1.x consideration.
+- `@bugsee/bugsee` (default — runtime-resolved via `browser`/`node` export conditions)
+- `@bugsee/bugsee/node` (explicit node entry; backend adapters must use this, since `tsc` resolves the default
+  condition to `browser`)
+
+Framework adapters are published as `@bugsee/<framework>` direct packages and are **single-install**: each leaf
+re-exports the umbrella's public surface (`export * from '@bugsee/bugsee'` for frontend adapters,
+`'@bugsee/bugsee/node'` for backend ones), so a consumer installs one package, not two.
 
 ### 12.9 Distribution security
 
@@ -1762,7 +1765,7 @@ When the extension isn't loaded: zero hub subscribers, zero provider, zero `perf
 - **`X-Bugsee-Internal: 1`** sentinel on all SDK outbound (SDK never captures itself).
 - **`__BUGSEE_DEBUG__` default `false`** in published npm artifacts (was `true` in v1 draft).
 - **User callbacks wrapped**: try/catch + 2s timeout + shape validation.
-- **GDPR API**: `grantConsent()`, `revokeConsent()`, `deleteCollectedData()`, `isCapturing()`, `requireConsent` option.
+- ~~**GDPR API**: `grantConsent()`, `revokeConsent()`, `deleteCollectedData()`, `isCapturing()`, `requireConsent` option.~~ **SUPERSEDED / NOT BUILT** — consent API removed by v3 §0.5 decision 5; erasure is `deleteCollectedDataOnDevice()`. See §0.5 item 13.
 - **`access_token` in `sessionStorage`** by default; key prefix `__bugsee_`.
 - **TLS-only endpoints** enforced at launch.
 - **401 rate-limited** to max 3 consecutive retries (auth-oracle prevention).
@@ -1824,7 +1827,7 @@ Driven by user review against the Bugsee Android SDK. Full rationale in §0.5.
 - **APM fully decoupled** into the opt-in `@bugsee/performance` extension: removed `BugseeApi.uploadPerformance`, `Integration.processSpan`, `spanStart`/`spanEnd` from core `HookName`, `Span`/`Transaction`/`SpanStatus`/`SpanOptions` from core protocol, the `/v2/performance/transactions` ownership, and `performance*` from core `BugseeOptions`. Reached via `ext('performance')`. Zero core footprint when unused.
 - **JS adaptations**: cyclic buffers = in-memory ring buffers (persisted via Storage where available); adapters fed by build-plugin injection + framework middleware (no bytecode rewriting).
 - `setAttachments` → `setAdditionalDataCapture` (Android parity).
-- **Electron deferred to v1.1**; v1 ships stub package.
+- **Electron originally deferred to v1.1; shipped in v1** (E0–E8, convergent-reviewed — main+renderer+native convergence).
 - **Bun ≥1.1.13** and **Deno ≥1.36** version pins.
 
 ### Build / packaging

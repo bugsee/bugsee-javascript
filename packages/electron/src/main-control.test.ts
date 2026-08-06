@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type ControlSenderLike,
   createElectronMainControl,
   type IpcMainControlEventLike,
   type IpcMainControlListener,
@@ -183,5 +184,119 @@ describe('createElectronMainControl', () => {
     const r = fakeSender();
     ipc.emit('hi', { sender: r.sender }, encodeHello());
     expect(r.sent[0]?.channel).toBe('ctl');
+  });
+});
+
+// The renderer registry must SHRINK (docs/review/electron.md SEV2 #7).
+//
+// Every window that ever said hello was retained for the process lifetime, pinning destroyed `webContents`
+// objects — and whatever they retain — in the main process. An app that opens and closes windows in a loop
+// leaks monotonically; `rendererCount`, documented as the window count, is wrong after the first close; and
+// every pause/resume/flush/stop iterates a growing set of corpses.
+//
+// The fix hangs off the same lifecycle signal `render-process-gone` already uses for R2: a renderer that is
+// gone is no longer a renderer.
+describe('the renderer registry shrinks (SEV2 #7)', () => {
+  /** A sender that can be destroyed, the way a real `webContents` is. */
+  function destroyableSender(id: number) {
+    const sent: Array<{ channel: string; raw: string }> = [];
+    const listeners: Array<() => void> = [];
+    let destroyed = false;
+    return {
+      sent,
+      /** How many `destroyed` listeners were installed — one per reload would be a listener leak. */
+      destroyedSubscriptions: () => listeners.length,
+      destroy: () => {
+        destroyed = true;
+        for (const l of listeners.splice(0)) l();
+      },
+      sender: {
+        id,
+        send: vi.fn((channel: string, raw: string) => {
+          if (destroyed) throw new Error('Object has been destroyed');
+          sent.push({ channel, raw });
+        }),
+        once: (event: string, listener: () => void) => {
+          if (event === 'destroyed') listeners.push(listener);
+        },
+        isDestroyed: () => destroyed,
+      },
+    };
+  }
+
+  const helloFrom = (ipc: ReturnType<typeof fakeIpcMain>, sender: ControlSenderLike): void => {
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+  };
+
+  it('drops a renderer from the count when its webContents is destroyed', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = destroyableSender(1);
+    const b = destroyableSender(2);
+    helloFrom(ipc, a.sender);
+    helloFrom(ipc, b.sender);
+    expect(control.rendererCount).toBe(2);
+    a.destroy();
+    expect(control.rendererCount).toBe(1); // …the documented window count is right again
+  });
+
+  it('stops broadcasting to a destroyed renderer', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = destroyableSender(1);
+    const b = destroyableSender(2);
+    helloFrom(ipc, a.sender);
+    helloFrom(ipc, b.sender);
+    a.sent.length = 0;
+    b.sent.length = 0;
+    a.destroy();
+    control.pause();
+    expect(a.sent).toEqual([]); // the corpse is not addressed…
+    expect(b.sent).toHaveLength(1); // …and the live renderer still is
+  });
+
+  it('prunes a renderer that reports itself destroyed without emitting the event', () => {
+    // Belt and braces: `isDestroyed()` is the state Electron exposes, and a missed event would otherwise
+    // keep the corpse forever. Broadcasting is where we notice.
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = destroyableSender(1);
+    helloFrom(ipc, a.sender);
+    // Destroy WITHOUT firing the listener, as a missed/absent event would leave it.
+    (a.sender as unknown as { isDestroyed: () => boolean }).isDestroyed = () => true;
+    control.pause();
+    expect(control.rendererCount).toBe(0);
+  });
+
+  it('registers a plain sender with no lifecycle surface at all — the canary', () => {
+    // The Electron object is host-supplied; a test double, an older Electron, or a proxy may expose neither
+    // `once` nor `isDestroyed`. Such a sender must still be registered and still receive broadcasts.
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const plain = fakeSender(9);
+    helloFrom(ipc, plain.sender);
+    expect(control.rendererCount).toBe(1);
+    plain.sent.length = 0;
+    control.pause();
+    expect(plain.sent).toHaveLength(1);
+  });
+
+  it('does not stack `destroyed` listeners on a reload’s repeat hello', () => {
+    // `rendererCount` alone does not test this: the registry is a Set, so it dedupes whatever we do. What
+    // a repeat subscription actually costs is a listener per reload on the real webContents — Electron
+    // warns past ten of them — so the subscription count is the assertion that has teeth.
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = destroyableSender(1);
+    helloFrom(ipc, a.sender);
+    helloFrom(ipc, a.sender);
+    helloFrom(ipc, a.sender);
+    expect(control.rendererCount).toBe(1);
+    expect(a.destroyedSubscriptions()).toBe(1);
   });
 });

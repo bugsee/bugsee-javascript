@@ -7,5 +7,13 @@ import { baseConfig } from '../../tsup.config.base';
 // matching dist artifact. See docs/design/packaging-dual-module.md §D5.
 export default defineConfig({
   ...baseConfig,
-  entry: ['src/index.ts', 'src/index.node.ts'],
+  entry: [
+    'src/index.ts',
+    'src/index.node.ts',
+    'src/index.bun.ts',
+    'src/index.deno.ts',
+    'src/index.workerd.ts',
+    'src/index.edge-light.ts',
+    'src/index.worker.ts',
+  ],
 });

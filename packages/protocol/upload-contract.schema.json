@@ -1,0 +1,416 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bugsee.com/schemas/upload-contract.schema.json",
+  "title": "Bugsee JS SDK upload contract",
+  "description": "Machine-checkable schema for what the SDK PUTs at the collector: the /v2/sessions environment envelope, the /v2/issues report envelope (also embedded in the bundle as request.json), and the bundle's manifest.json. Shipped from @bugsee/protocol \u2014 the wire-contract package \u2014 so the e2e harness validates against the SAME file the types live beside and the two cannot drift. Mirrors packages/protocol/src/wire.ts; keep them in step.",
+  "definitions": {
+    "platformType": {
+      "description": "environment.platform.type (wire.ts PlatformType). A runtime missing here means the SDK reported an identity the backend does not know.",
+      "enum": [
+        "web",
+        "node",
+        "bun",
+        "deno",
+        "workers",
+        "edge-light",
+        "service-worker",
+        "web-worker",
+        "electron-main",
+        "electron-renderer"
+      ]
+    },
+    "mechanism": {
+      "description": "source.mechanism (wire.ts Mechanism).",
+      "enum": [
+        "programmatic",
+        "uncaught",
+        "unhandledrejection",
+        "console-error",
+        "http-error",
+        "hang",
+        "snapshot",
+        "manual-dialog"
+      ]
+    },
+    "environmentEnvelope": {
+      "type": "object",
+      "required": ["platform", "sdk"],
+      "properties": {
+        "platform": {
+          "type": "object",
+          "required": ["type", "version"],
+          "properties": {
+            "type": {
+              "$ref": "#/definitions/platformType"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "sdk": {
+          "type": "object",
+          "required": ["version", "type"],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "type": {
+              "description": "The backend's JS discriminator. worker/jobs/bundle.py routes on this; see docs/review/protocol.md finding 3.",
+              "const": "javascript"
+            },
+            "build": {
+              "type": "string"
+            },
+            "options": {
+              "type": "object"
+            }
+          }
+        },
+        "hardware": {
+          "type": "object"
+        },
+        "app": {
+          "type": "object"
+        },
+        "wrapper": {
+          "type": "null"
+        }
+      }
+    },
+    "requestJson": {
+      "description": "The /v2/issues body, embedded verbatim in the bundle as request.json (wire.ts RequestJson).",
+      "type": "object",
+      "required": ["type", "summary", "severity", "source", "created_on", "environment"],
+      "properties": {
+        "type": {
+          "enum": ["bug", "crash", "error"]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "severity": {
+          "description": "Numeric on the wire (levels.ts Severity 1..5). A STRING here is the class of defect docs/review/protocol.md found for log levels.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "email": {
+          "type": "string"
+        },
+        "signatures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "type": "object",
+          "required": ["mechanism"],
+          "properties": {
+            "mechanism": {
+              "$ref": "#/definitions/mechanism"
+            },
+            "origin": {
+              "type": "string"
+            }
+          }
+        },
+        "created_on": {
+          "description": "ISO-8601 with Z.",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+        },
+        "environment": {
+          "$ref": "#/definitions/environmentEnvelope"
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "description": "W3C trace id \u2014 32 lowercase hex, never all-zero.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "not": {
+            "const": "00000000000000000000000000000000"
+          }
+        },
+        "span_id": {
+          "description": "W3C span id \u2014 16 lowercase hex, never all-zero.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "not": {
+            "const": "0000000000000000"
+          }
+        }
+      }
+    },
+    "manifestJson": {
+      "description": "manifest.json (wire.ts ManifestJson).",
+      "type": "object",
+      "required": ["version", "time", "files", "attrs"],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "time": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "start": {
+              "type": "number"
+            },
+            "end": {
+              "type": "number"
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["filename", "type"],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "description": "FileType (constants.ts). Kept in step with the TS union by a drift test in wire.test-d.ts's runtime sibling \u2014 see upload-contract.test.ts.",
+                "enum": [
+                  "attachment",
+                  "replay",
+                  "screenshot",
+                  "video",
+                  "traces.system",
+                  "traces.user",
+                  "events.system",
+                  "events.user",
+                  "viewtree",
+                  "log",
+                  "log.internal",
+                  "network",
+                  "breadcrumbs",
+                  "performance",
+                  "profile",
+                  "crash"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "attrs": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "attrs": {
+          "type": "object"
+        }
+      }
+    },
+    "logEntry": {
+      "description": "One entry of logs.json. `level` is NUMERIC on the wire (design \u00a78.9, mobile parity: 1=Error \u2026 5=Verbose) \u2014 it shipped as the string name until Wave 5.1 because logLevelToWire had no callers, and nothing in the contract said otherwise. Naming the type here is what makes that a contract break rather than a silent one.",
+      "type": "object",
+      "required": ["timestamp", "level", "message"],
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "message": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        },
+        "red": {
+          "type": "boolean"
+        }
+      }
+    },
+    "logsJson": {
+      "description": "logs.json \u2014 an array of log entries.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/logEntry"
+      }
+    },
+    "networkEntry": {
+      "description": "One entry of network.json (wire.ts NetworkEvent). `event` is the WebSocket sub-type the viewer reads to tell an outbound `send` from an inbound `message`; `type` is the request STAGE.",
+      "type": "object",
+      "required": ["timestamp", "id", "mechanism", "url", "method", "type"],
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "string"
+        },
+        "mechanism": {
+          "type": "string",
+          "enum": ["fetch", "xhr", "ws", "sse", "webtransport", "beacon", "http"]
+        },
+        "url": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "before",
+            "after",
+            "error",
+            "create",
+            "open",
+            "message",
+            "close",
+            "complete",
+            "cancel"
+          ]
+        },
+        "size": {
+          "type": "number"
+        },
+        "status": {
+          "type": "number"
+        },
+        "statusText": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["in", "out"]
+        },
+        "event": {
+          "type": "string",
+          "enum": ["create", "open", "send", "message", "close", "error"]
+        },
+        "code": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "redirect": {
+          "type": "boolean"
+        },
+        "override": {
+          "type": "boolean"
+        },
+        "customError": {
+          "type": ["string", "null"]
+        },
+        "custom": {
+          "type": "object"
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        },
+        "red": {
+          "type": "boolean"
+        }
+      }
+    },
+    "networkJson": {
+      "description": "network.json \u2014 an array of network events.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/networkEntry"
+      }
+    },
+    "eventEntry": {
+      "description": "One entry of events.json (a system event: name + optional params).",
+      "type": "object",
+      "required": ["timestamp", "name"],
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        }
+      }
+    },
+    "eventsJson": {
+      "description": "events.json \u2014 an array of system events.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/eventEntry"
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/definitions/environmentEnvelope"
+    },
+    {
+      "$ref": "#/definitions/requestJson"
+    },
+    {
+      "$ref": "#/definitions/manifestJson"
+    },
+    {
+      "$ref": "#/definitions/logsJson"
+    },
+    {
+      "$ref": "#/definitions/networkJson"
+    },
+    {
+      "$ref": "#/definitions/eventsJson"
+    }
+  ]
+}

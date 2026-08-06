@@ -675,3 +675,81 @@ describe('launch (webworker)', () => {
     expect(String((onError.mock.calls[0]?.[0] as Error).message)).toMatch(/more than once/);
   });
 });
+
+// WAVE 4.2 — a Service Worker must not have to be TOLD it is a Service Worker.
+//
+// `platformType` defaulted to 'web-worker', and `persist` derives from it. So a developer who installs the
+// SDK in a Service Worker the documented way — and has no reason to know the option exists — silently got
+// memory-only capture, losing everything each time the worker is terminated for idleness. That is precisely
+// the "feature that silently does nothing" class: nothing errors, nothing warns, the data is just gone.
+//
+// `isServiceWorker()` has existed in @bugsee/util the whole time and had ZERO callers.
+describe('Service Worker detection (Wave 4.2)', () => {
+  const withGlobal = async (present: boolean, run: () => Promise<void>): Promise<void> => {
+    const g = globalThis as { ServiceWorkerGlobalScope?: unknown };
+    const had = 'ServiceWorkerGlobalScope' in g;
+    const prev = g.ServiceWorkerGlobalScope;
+    if (present) {
+      g.ServiceWorkerGlobalScope = class {};
+    } else {
+      delete g.ServiceWorkerGlobalScope;
+    }
+    try {
+      await run();
+    } finally {
+      if (had) {
+        g.ServiceWorkerGlobalScope = prev;
+      } else {
+        delete g.ServiceWorkerGlobalScope;
+      }
+    }
+  };
+
+  it('reports platform.type `service-worker` without being told', async () => {
+    await withGlobal(true, async () => {
+      const transport = uploadTransport();
+      const client = track('tok', baseOptions({ transport }));
+      await client.logException(new Error('x'));
+      await client.flush();
+      expect(issueJson(transport).environment.platform.type).toBe('service-worker');
+    });
+  });
+
+  it('still reports `web-worker` in a plain Web Worker', async () => {
+    await withGlobal(false, async () => {
+      const transport = uploadTransport();
+      const client = track('tok', baseOptions({ transport }));
+      await client.logException(new Error('x'));
+      await client.flush();
+      expect(issueJson(transport).environment.platform.type).toBe('web-worker');
+    });
+  });
+
+  it('turns PERSISTENCE on for a detected Service Worker — the half that actually matters', async () => {
+    // Reporting `platform.type: 'service-worker'` is cosmetic on its own. `persist` is what makes the
+    // worker durable, and it must derive from the DETECTED type: deriving it from the raw option instead
+    // leaves a detected Service Worker still running memory-only, which is the whole defect. A mutation
+    // doing exactly that passed every other test in this block.
+    await withGlobal(true, async () => {
+      const client = track('tok', baseOptions({ clock: recoveryClock }));
+      expect(client.getService(ReportMarkerStoreToken)).toBeDefined();
+    });
+  });
+
+  it('leaves persistence OFF in a plain Web Worker', async () => {
+    await withGlobal(false, async () => {
+      const client = track('tok', baseOptions({ clock: recoveryClock }));
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+  });
+
+  it('an EXPLICIT platformType still wins over detection', async () => {
+    await withGlobal(true, async () => {
+      const transport = uploadTransport();
+      const client = track('tok', baseOptions({ transport, platformType: 'web-worker' }));
+      await client.logException(new Error('x'));
+      await client.flush();
+      expect(issueJson(transport).environment.platform.type).toBe('web-worker');
+    });
+  });
+});

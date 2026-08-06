@@ -14,6 +14,12 @@ import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;
 const DEFAULT_HIGH_WATER_MARK = 64 * 1024;
+// A tripped circuit lets one flush through every this-many attempts, to see whether the disk recovered.
+const PROBE_INTERVAL = 128;
+// Ceiling on the unwritten tail held per file (Wave 6.3). 1 MiB × the ~8 capture file types is the
+// worst-case hold, which is bounded and small next to the 50 MB default capture budget.
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+
 const IOV_MAX = 1024; // writev caps its iovec count; split a larger flush into multiple calls
 const FILE_MODE = 0o600;
 
@@ -38,6 +44,23 @@ export interface BatchedFsChunkStorageOptions {
   highWaterMark?: number;
   /** Failure sink for a flush/close error (a broken disk must never throw into the capture path). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * Ceiling on the unwritten tail held per file before the OLDEST records are shed (Wave 6.3). Default 1 MiB.
+   *
+   * The retry-without-duplication design keeps the still-unwritten tail buffered so a later retry cannot
+   * duplicate an already-written prefix — correct, but it had no ceiling, so a persistently failing disk
+   * (ENOSPC / EROFS / EIO / a vanished dataDir) turned every captured entry into permanent memory growth.
+   * `docs/design/server-disk-capture-write-path.md:120` (D2) binds this path to "fixed ring, drop-oldest
+   * under overload (no elastic growth)"; this is what makes the shipped default honour it.
+   */
+  maxBufferedBytes?: number;
+  /**
+   * Consecutive flush failures after which `writev` stops being attempted (Wave 6.3). Default 8.
+   *
+   * A full disk otherwise costs one doomed syscall AND one `onError` per captured entry — measured at
+   * 19,998 of each for 20,000 appends. It re-probes, so a disk that frees up is written to again.
+   */
+  failureThreshold?: number;
   /** `writev` primitive; injectable for tests (short-write simulation). Default node:fs `writevSync`. */
   writev?: WritevFn;
   /** `close` primitive; injectable for tests (close-failure simulation). Default node:fs `closeSync`. */
@@ -98,7 +121,33 @@ export function createBatchedFsChunkStorage(
   options: BatchedFsChunkStorageOptions = {},
 ): ChunkStorage {
   const highWaterMark = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
-  const onError = options.onError ?? ((): void => {});
+  const onErrorRaw = options.onError ?? ((): void => {});
+  // `onError` is caller-supplied and a natural implementation logs — which re-enters capture. A sink that
+  // throws must not take the capture path with it either.
+  const onError = (error: unknown): void => {
+    try {
+      onErrorRaw(error);
+    } catch {
+      // nothing left to report it to
+    }
+  };
+  const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+  const failureThreshold = options.failureThreshold ?? 8;
+  // Circuit state. `consecutiveFailures` counts flushes that threw in a row; once it reaches the threshold
+  // the writer stops attempting, letting one probe through every PROBE_INTERVAL flushes so a recovered
+  // disk closes it again. `shed` counts records given up, reported as ONE summary rather than one each.
+  let consecutiveFailures = 0;
+  let sinceProbe = 0;
+  let shed = 0;
+  let reportedEpisode = false;
+
+  const reportShed = (): void => {
+    if (shed > 0) {
+      const count = shed;
+      shed = 0;
+      onError(new Error(`bugsee: shed ${count} capture record(s) — the disk is not keeping up`));
+    }
+  };
   const writev = options.writev ?? writevSync;
   const close = options.close ?? closeSync;
   const openFile = options.open ?? ((path: string): number => openSync(path, 'a', FILE_MODE));
@@ -115,19 +164,36 @@ export function createBatchedFsChunkStorage(
   // path → its open fd + pending segments. Only the active chunk's files are present (sealed on closePart).
   const open = new Map<string, OpenFile>();
 
-  const flushPath = (path: string): void => {
+  const flushPath = (path: string, force = false): void => {
     const entry = open.get(path);
     if (entry === undefined || entry.segments.length === 0) {
       return;
+    }
+    if (!force && consecutiveFailures >= failureThreshold) {
+      sinceProbe += 1;
+      if (sinceProbe < PROBE_INTERVAL) {
+        return; // circuit open — do not issue another doomed syscall
+      }
+      sinceProbe = 0;
     }
     try {
       // writeAll consumes entry.segments in place — on success it empties them; on a mid-drain throw it
       // leaves only the still-unwritten tail.
       writeAll(entry, writev);
+      consecutiveFailures = 0;
+      reportedEpisode = false;
+      reportShed();
     } catch (error) {
       // A broken/full disk must never throw into the capture path. Route it out; the unwritten tail stays
-      // buffered for a later retry (never duplicating an already-written prefix, never dropping data).
-      onError(error);
+      // buffered for a later retry (never duplicating an already-written prefix), bounded by
+      // `maxBufferedBytes` so the retry cannot become unbounded memory growth.
+      consecutiveFailures += 1;
+      // The FIRST failure of an episode is the diagnosis; the rest are counted and summarised, because a
+      // report per captured entry is not a diagnostic — it is a second failure mode.
+      if (!reportedEpisode) {
+        reportedEpisode = true;
+        onError(error);
+      }
     }
     entry.bytes = entry.segments.reduce((sum, b) => sum + b.length, 0); // 0 on success, the remainder on error
   };
@@ -179,6 +245,15 @@ export function createBatchedFsChunkStorage(
       entry.bytes += bytes.length;
       if (entry.bytes >= highWaterMark) {
         flushPath(path); // high-water mark, or a single oversized entry → its own write
+      }
+      // Shed the OLDEST unwritten records once the tail exceeds its ceiling — the design's own
+      // "drop-oldest under overload", and the right end to give up: the moments before a crash are the
+      // ones worth keeping. Never sheds the last segment, so a single record larger than the ceiling is
+      // still written rather than silently discarded.
+      while (entry.segments.length > 1 && entry.bytes > maxBufferedBytes) {
+        const dropped = entry.segments.shift() as Uint8Array;
+        entry.bytes -= dropped.length;
+        shed += 1;
       }
     },
 
@@ -233,9 +308,21 @@ export function createBatchedFsChunkStorage(
     },
 
     flushSync(): void {
+      // FORCED past the circuit: this is the explicit "write now" seam (the periodic timer, exit, a
+      // signal), so it is also the moment to find out whether the disk recovered.
       for (const path of open.keys()) {
-        flushPath(path);
+        flushPath(path, true);
       }
+      reportShed();
+    },
+
+    /** Bytes currently held unwritten across every open file — the quantity `maxBufferedBytes` bounds. */
+    bufferedBytes(): number {
+      let total = 0;
+      for (const entry of open.values()) {
+        total += entry.bytes;
+      }
+      return total;
     },
 
     sealChunk(generation, chunk): void {

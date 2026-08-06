@@ -165,3 +165,65 @@ describe('createWebSocketInterceptor — activation', () => {
     }
   });
 });
+
+// WAVE 5.2 — outbound WebSocket frames rendered as INCOMING.
+//
+// Android encodes the WebSocket sub-type in its own field and the viewer reads THAT, not our `direction`:
+//
+//     serializer.putKeyValue("event", webSocketEventType.getValue(), true);
+//     enum WebSocketEventType { Create("create"), Open("open"), Send("send"),
+//                               Message("message"), Close("close"), Error("error") }
+//
+// `Send` is an outbound frame and `Message` an inbound one — the direction IS the event name. This SDK
+// emitted no `event` field at all, so every frame arrived indistinguishable and outbound traffic rendered
+// as inbound. `direction` stays (it is the more explicit form and the JS side reads it); `event` is what
+// makes the wire match every other Bugsee SDK.
+describe('WebSocket frames carry Android’s `event` sub-type (Wave 5.2)', () => {
+  const frameOf = (events: Array<[NetworkStage, NetworkEvent]>, dir: string) =>
+    events
+      .filter(([st]) => st === 'message')
+      .map(([, e]) => e)
+      .find((e) => e.direction === dir);
+
+  it('an OUTBOUND frame is `send`, not `message`', () => {
+    const { events, open } = setup();
+    const ws = open('wss://h/s');
+    ws.send('hello');
+    const frame = frameOf(events, 'out');
+    expect(frame?.event).toBe('send');
+  });
+
+  it('an INBOUND frame is `message`', () => {
+    const { events, open } = setup();
+    const ws = open('wss://h/s');
+    ws.fire('message');
+    const frame = frameOf(events, 'in');
+    expect(frame?.event).toBe('message');
+  });
+
+  it.each([
+    ['open', 'open'],
+    ['close', 'close'],
+    ['error', 'error'],
+  ])('the %s lifecycle event carries event=%s', (fire, expected) => {
+    const { events, open } = setup();
+    const ws = open('wss://h/s');
+    ws.fire(fire, fire === 'close' ? { code: 1000, reason: 'bye' } : undefined);
+    const e = events.find(([st]) => st === fire)?.[1];
+    expect(e?.event).toBe(expected);
+  });
+
+  it('uses ONLY Android’s vocabulary', () => {
+    // A value outside create|open|send|message|close|error is one the viewer cannot render.
+    const ANDROID = new Set(['create', 'open', 'send', 'message', 'close', 'error']);
+    const { events, open } = setup();
+    const ws = open('wss://h/s');
+    ws.fire('open');
+    ws.send('x');
+    ws.fire('message');
+    ws.fire('close', { code: 1000, reason: 'bye' });
+    for (const [, e] of events) {
+      if (e.event !== undefined) expect(ANDROID.has(e.event)).toBe(true);
+    }
+  });
+});

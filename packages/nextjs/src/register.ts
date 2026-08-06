@@ -14,12 +14,6 @@ import type { NextjsServerOptions } from './server';
 /** Options accepted by `register()` — the node or edge composition options (whichever runtime runs). */
 export type NextjsRegisterOptions = NextjsServerOptions | NextjsEdgeOptions;
 
-/** Read `NEXT_RUNTIME` portably (on edge, `process` is a Next-provided shim; on browser it is absent). */
-function nextRuntime(): string | undefined {
-  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ?.NEXT_RUNTIME;
-}
-
 /**
  * Start Bugsee from `instrumentation.ts`'s `register()`. Dispatches by `NEXT_RUNTIME` and `await import`s
  * only the matching runtime's composition: `nodejs` → the node server (`./server`), `edge` → the Vercel
@@ -36,11 +30,24 @@ export async function register(
   appToken: string,
   options: NextjsRegisterOptions = {},
 ): Promise<void> {
-  const runtime = nextRuntime();
-  if (runtime === 'nodejs') {
+  // The branch is written INLINE against the literal `process.env.NEXT_RUNTIME` on purpose (Wave 3b.5).
+  //
+  // Next replaces that exact expression with a string constant in EACH compilation, and webpack folds the
+  // comparison AT PARSE TIME — which is the only point at which the dead branch's `import()` can be kept
+  // out of the module graph. Reading the value through a helper defeats it twice over: the substitution
+  // never happens (`globalThis.process?.env?.NEXT_RUNTIME` is not the pattern Next rewrites), and even
+  // with the substitution webpack cannot fold a condition across a function call, so the dependency is
+  // added before any optimizer runs.
+  //
+  // The consequence was total, not cosmetic: `next build` FAILED. Reproduced on real Next 15.5, the edge
+  // compilation followed
+  //   nextjs/register.ts → nextjs/server.ts → bugsee/index.node.ts → node/index.ts → node/cpu-profiler.ts
+  // and hit `node:inspector` — one of a dozen `node:*` builtins dragged into a graph that has no
+  // `node_modules` resolution at all. Both symptoms are asserted by @bugsee/nextjs-e2e against a real build.
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
     const { registerServer } = await import('@bugsee/nextjs/server');
     registerServer(appToken, options as NextjsServerOptions);
-  } else if (runtime === 'edge') {
+  } else if (process.env.NEXT_RUNTIME === 'edge') {
     const { registerEdge } = await import('@bugsee/nextjs/edge');
     registerEdge(appToken, options as NextjsEdgeOptions);
   }

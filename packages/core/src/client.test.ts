@@ -17,6 +17,7 @@ import { BugseeError } from './errors';
 import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
+import { createPartitionedCaptureStore } from './partitioned-capture-store';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
@@ -370,28 +371,56 @@ describe('createClient — capture entry points', () => {
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  it('log pushes a log entry with default level info and clock timestamp', async () => {
+  // The wire level is NUMERIC (design §8.9, mobile parity: 1=Error … 5=Verbose). Wave 5.1 fixed the
+  // console-CAPTURE path and left `client.log()` — the manual API users are told to call — shipping the
+  // string name. These two tests asserted `level: 'info'` and `level: 'error'`, so they pinned the defect
+  // in place; the e2e upload contract added in Wave 3b.2 is what finally named it.
+  it('log pushes a log entry whose level is the NUMERIC wire value', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('hello');
     expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 1000,
-      level: 'info',
+      level: 3, // 'info' (1=Error, 2=Warning, 3=Info, 4=Debug, 5=Verbose)
       source: 'logger',
       message: 'hello',
     });
   });
 
-  it('log honors an explicit level and timestamp', async () => {
+  it('log honors an explicit level and timestamp, still encoding the level', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('boom', 'error', 7);
     expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 7,
-      level: 'error',
+      level: 1, // 'error'
       source: 'logger',
       message: 'boom',
     });
+  });
+
+  it('passes an ALREADY-numeric level through unchanged', async () => {
+    // The API accepts both, so the encoder must be idempotent — re-encoding a number would corrupt it.
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+    client.log('n', 2);
+    expect((await firstEntry(store, 'log'))?.data).toMatchObject({ level: 2 });
+  });
+
+  it('shows the LOG FILTER the friendly name, not the wire number', async () => {
+    // A user's filter is application code written against the documented API, where levels are names.
+    // Encoding before the filter would silently break every `level === 'error'` check ever written.
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const seen: unknown[] = [];
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+    const filters = client.getService(FiltersToken);
+    filters.log = (e) => {
+      seen.push(e.level);
+      return e;
+    };
+    client.log('boom', 'error');
+    expect(seen).toEqual(['error']);
+    expect((await firstEntry(store, 'log'))?.data).toMatchObject({ level: 1 });
   });
 
   it('event pushes an events.user entry with params', async () => {
@@ -1457,5 +1486,67 @@ describe('createClient — capture-store tick timer', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// S3 (docs/design/cloudflare-tenant-isolation.md §4.3): an incident drains only the faulting TENANT.
+//
+// The client-level statement of the leak proven on real workerd, where tenant C's bundle carried tenant
+// A's and B's secrets (docs/review/cloudflare.md SEV1 #2). Store, aggregator and exporter are all REAL
+// here — only the context provider is driven, standing in for per-DO contexts in one isolate.
+describe('createClient — per-tenant capture isolation', () => {
+  it('an incident in one tenant enqueues that tenant only', async () => {
+    let current: RequestContext | undefined;
+    const store = createPartitionedCaptureStore({
+      createPartition: () => createMemoryCaptureStore(),
+    });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+      contextProvider: { getCurrent: () => current },
+    });
+
+    current = { contextId: 'ca', owner: 'tenant-A' };
+    client.log('SECRET-OF-A');
+    current = { contextId: 'cb', owner: 'tenant-B' };
+    client.log('SECRET-OF-B');
+    current = { contextId: 'cc', owner: 'tenant-C' };
+    client.log('INCIDENT-IN-C');
+    await client.logException(new Error('boom in C'));
+
+    const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const text = Object.values(files)
+      .map((b) => strFromU8(b))
+      .join('\n');
+    expect(text).toContain('INCIDENT-IN-C');
+    expect(text).not.toContain('SECRET-OF-A');
+    expect(text).not.toContain('SECRET-OF-B');
+  });
+
+  it('with no owners in play, the bundle still carries everything (single-tenant unchanged)', async () => {
+    const store = createPartitionedCaptureStore({
+      createPartition: () => createMemoryCaptureStore(),
+    });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+    });
+    client.log('FIRST');
+    client.log('SECOND');
+    await client.logException(new Error('boom'));
+    const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const text = Object.values(files)
+      .map((b) => strFromU8(b))
+      .join('\n');
+    expect(text).toContain('FIRST');
+    expect(text).toContain('SECOND');
   });
 });

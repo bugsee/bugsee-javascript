@@ -25,15 +25,17 @@
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
-    "@bugsee/web-adapter": "workspace:*",
-    "@bugsee/bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*",
+    "@bugsee/web-adapter": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
-    "react": "^18.3.1"
+    "@types/react-dom": "^18.3.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

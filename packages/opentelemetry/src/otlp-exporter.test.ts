@@ -7,6 +7,7 @@ const ok: HttpResponse = { status: 200, headers: {}, body: new Uint8Array() };
 
 const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   traceId: '0123456789abcdef0123456789abcdef',
+  spanId: 'fedcba9876543210',
   name: '/checkout',
   operation: 'ui.load',
   status: 'OK',

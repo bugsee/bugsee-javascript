@@ -146,6 +146,7 @@ export {
   type RecoverNativeCrashesOptions,
   recoverNativeCrashes,
 } from './native-crash-recovery';
+export { guarded, neverThrow } from './never-throw';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   COMMON_OPTION_DEFINITIONS,
@@ -154,6 +155,12 @@ export {
   type ResolvedLaunchOptions,
   resolveLaunchOptions,
 } from './options';
+export {
+  createPartitionedCaptureStore,
+  type PartitionedCaptureStore,
+  type PartitionedCaptureStoreOptions,
+  resolveMaxPartitions,
+} from './partitioned-capture-store';
 export {
   createRateLimiter,
   type RateLimiter,

@@ -13,7 +13,9 @@ import {
   type NetworkEvent,
   type NetworkStage,
   sanitizeBody,
+  sanitizeErrorMessage,
   sanitizeHeaders,
+  sanitizeUrl,
 } from '@bugsee/protocol';
 
 // Runtime-agnostic network capture CONSUMER (design §16.1): subscribes to one or more network SOURCES
@@ -25,23 +27,79 @@ import {
 /** A network source — any emitter exposing NetworkStage channels (e.g. the fetch interceptor). */
 export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>>;
 
-// Per-event default PII redaction (§8.10, [R:wire m9]): redact sensitive request/response headers and
-// scrub the captured body by Content-Type (JSON key denylist, else a shape pass). Non-mutating (the hub
+// Per-event default PII redaction (§8.10, [R:wire m9]): redact the URL (sensitive query/fragment params
+// and any `user:pass@` credential), the sensitive request/response headers, and the captured body by
+// Content-Type (JSON key denylist, else form/colon key redaction plus a shape pass). Non-mutating (the hub
 // event other subscribers see stays raw); returns the same event when there is nothing to redact.
+//
+// The URL is handled FIRST and OUTSIDE the `custom` guard: ws/sse/webtransport events carry no headers or
+// body, so an early return on `custom === undefined` would ship `wss://…?token=…` verbatim. This provider
+// is the single redaction point for every transport — including node:http, which folds in through
+// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere
+// (docs/review/capture.md SEV1 #4, docs/review/node-B-http-server.md SEV1 #3).
+/** Optional free text: sanitized when present, passed through untouched (and identity-preserving) when not,
+ *  so the unchanged-checks below still short-circuit on an event that carried none of these fields. */
+const sanitizeText = (value: string | undefined): string | undefined =>
+  typeof value === 'string' ? sanitizeErrorMessage(value) : value;
+
 const sanitize = (event: NetworkEvent): NetworkEvent => {
+  // Guarded like its three siblings (`customError`, `custom.body`, `custom.error`). `url` was the one
+  // field with no `typeof` check, so a producer emitting a non-string would throw here and the emitter
+  // would silently delete the entry. No producer does today — every interceptor coerces — but discovering
+  // that through a vanished report is the wrong way to find out.
+  const url = typeof event.url === 'string' ? sanitizeUrl(event.url) : event.url;
+  // The three free-text fields the SERVER fills in. `statusText` is the HTTP reason phrase, `reason` is the
+  // WebSocket/WebTransport close reason (`close(4001, 'invalid token …')` is idiomatic), `channel` is the
+  // SSE event name. All three were copied through untouched — under a comment calling this the single
+  // redaction point for every transport — because the field list was written from the fields that HAD
+  // secrets in the review that prompted it, not from the event shape.
+  const statusText = sanitizeText(event.statusText);
+  const reason = sanitizeText(event.reason);
+  const channel = sanitizeText(event.channel);
+  // The failure message quotes the URL back on most transports, so redacting `url` alone leaves the same
+  // secret one field over — proven by the privacy e2e with the url fix already in place.
+  const customError =
+    typeof event.customError === 'string'
+      ? sanitizeErrorMessage(event.customError)
+      : event.customError;
+  const topUnchanged =
+    url === event.url &&
+    customError === event.customError &&
+    statusText === event.statusText &&
+    reason === event.reason &&
+    channel === event.channel;
   const custom = event.custom;
   if (custom === undefined) {
-    return event;
+    return topUnchanged ? event : { ...event, url, customError, statusText, reason, channel };
   }
   const headers = custom.headers === undefined ? custom.headers : sanitizeHeaders(custom.headers);
+  // The content type is read off the SANITIZED headers, whose values are coerced to strings. Reading it
+  // off `custom.headers` meant a `Content-Type: 42` reached `sanitizeBody` as a number and threw on
+  // `.toLowerCase()` — the emitter swallowed it and the entire entry vanished. That is precisely the
+  // failure the header coercion was added to eliminate, re-entered one line later by the raw accessor.
   const body =
     typeof custom.body === 'string'
-      ? sanitizeBody(custom.body, contentTypeOf(custom.headers))
+      ? sanitizeBody(custom.body, contentTypeOf(headers))
       : custom.body;
-  if (headers === custom.headers && body === custom.body) {
+  const error =
+    typeof custom.error === 'string' ? sanitizeErrorMessage(custom.error) : custom.error;
+  if (
+    topUnchanged &&
+    headers === custom.headers &&
+    body === custom.body &&
+    error === custom.error
+  ) {
     return event;
   }
-  return { ...event, custom: { ...custom, headers, body } };
+  return {
+    ...event,
+    url,
+    customError,
+    statusText,
+    reason,
+    channel,
+    custom: { ...custom, headers, body, error },
+  };
 };
 
 class NetworkCaptureProvider extends CaptureProviderBase {

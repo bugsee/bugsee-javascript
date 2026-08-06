@@ -132,3 +132,40 @@ describe('resolveEdgeStore', () => {
     expect(resolveEdgeStore(client)).toBeUndefined();
   });
 });
+
+// S4 (docs/design/cloudflare-tenant-isolation.md §4.1): the per-invocation context carries the TENANT.
+//
+// `contextId` is per-invocation; `owner` is the tenant, so a Durable Object's rolling window stays
+// per-tenant and its incident bundle cannot pick up another DO's capture (docs/review/cloudflare.md SEV1
+// #2, proven on real workerd).
+describe('runInEdgeContext — owner (tenant key)', () => {
+  it('puts the supplied owner on the context the handler runs in', async () => {
+    const { client, store } = fakeClient();
+    let owner: string | undefined;
+    await runInEdgeContext(client, { owner: 'do-tenant-A' }, () => {
+      owner = store.getCurrent()?.owner;
+    });
+    expect(owner).toBe('do-tenant-A');
+  });
+
+  it('leaves owner undefined when none is supplied (fetch handlers are single-tenant)', async () => {
+    const { client, store } = fakeClient();
+    let owner: string | undefined = 'sentinel';
+    await runInEdgeContext(client, {}, () => {
+      owner = store.getCurrent()?.owner;
+    });
+    expect(owner).toBeUndefined();
+  });
+
+  it('keeps contextId per-invocation while owner stays constant across them', async () => {
+    const { client, store } = fakeClient();
+    const seen: Array<{ id?: string; owner?: string }> = [];
+    const record = () =>
+      seen.push({ id: store.getCurrent()?.contextId, owner: store.getCurrent()?.owner });
+    await runInEdgeContext(client, { owner: 'do-tenant-A' }, record);
+    await runInEdgeContext(client, { owner: 'do-tenant-A' }, record);
+    expect(seen[0]?.owner).toBe('do-tenant-A');
+    expect(seen[1]?.owner).toBe('do-tenant-A');
+    expect(seen[0]?.id).not.toBe(seen[1]?.id); // per-invocation, as before
+  });
+});

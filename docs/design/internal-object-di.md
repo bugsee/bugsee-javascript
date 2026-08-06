@@ -1,6 +1,7 @@
 # Internal object & DI/IoC — realization note
 
-**Status:** agreed direction (2026-05-30). Spec lives in `sdk-design.md` §4.2/§4.4/§7.4 (§198, §210,
+**Status:** **BUILT + on `main`** — the internal DI `ServiceContainer` lives in `@bugsee/core` and every
+platform composes through it (agreed direction 2026-05-30). Spec lives in `sdk-design.md` §4.2/§4.4/§7.4 (§198, §210,
 §238, §294, §302); this note is the concrete as-built plan + phasing for the JS monorepo. Read with
 the memory `sdk-di-ioc-architecture-vision`.
 

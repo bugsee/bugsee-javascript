@@ -14,6 +14,7 @@ import {
 } from '@bugsee/opentelemetry';
 import {
   createPerformanceSend,
+  defaultSpanId,
   defaultTraceId,
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
@@ -229,6 +230,7 @@ export function wireUmbrella(
     const endTimestampMs = client.getService(ClockToken).wallNow();
     wired.recordTransaction({
       traceId: defaultTraceId(),
+      spanId: defaultSpanId(), // a real root id — see TransactionWire.spanId (Wave 5.3)
       name: 'app.start',
       operation: 'app.start',
       status: 'OK',

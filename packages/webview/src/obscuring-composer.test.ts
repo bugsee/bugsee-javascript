@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createObscuringComposer } from './obscuring-composer';
+import { FAIL_CLOSED_AREA, SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type { SecureArea } from './protocol';
 
 const secureEl = (top: number) => ({
@@ -10,8 +11,7 @@ const iframeEl = (contentWindow: unknown, top: number, left: number) => ({
   getBoundingClientRect: () => ({ top, left, bottom: top + 100, right: left + 100 }),
 });
 
-const SECURE_INPUT =
-  'input[type=password]:not(.bugsee-show), input[autocomplete*="cc-"]:not(.bugsee-show)';
+const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 const HIDE = '.bugsee-hide';
 
 // A fake DOM document: querySelectorAll by selector (secure selectors + 'iframe') + an event registry + body.
@@ -77,7 +77,7 @@ describe('createObscuringComposer — top frame', () => {
     expect(c.snapshot()).toEqual([{ type: 'hidden', top: 9, left: 6, bottom: 11, right: 8 }]);
   });
 
-  it('does NOT post on start (native pulls the initial; pushes only on change)', () => {
+  it('POSTS the initial rects on start — native masks from the push, not the pull', () => {
     const doc = fakeDoc({ [HIDE]: [secureEl(0)] });
     const onCompose = vi.fn();
     const c = createObscuringComposer({
@@ -88,7 +88,48 @@ describe('createObscuringComposer — top frame', () => {
       mutationObserver: undefined,
     });
     c.start();
-    expect(onCompose).not.toHaveBeenCalled();
+    // Previously this asserted the opposite. It was wrong about the product: the Android receiver masks from
+    // the PUSHED `secure` messages (`BridgeSecureSink.setSecureAreas`), and the pull (`requestSnapshot`) has
+    // no production caller. With no initial push, native stood its legacy masking down and then masked
+    // NOTHING until the first mutation/scroll/focus — and a static page injected after `load` never pushed.
+    expect(onCompose).toHaveBeenCalledTimes(1);
+    expect(onCompose.mock.calls[0]?.[0]).toHaveLength(1);
+    c.stop();
+  });
+
+  it('fails CLOSED when composing a child frame throws — never posts an empty set', () => {
+    // compose() reads every child iframe's LIVE rect on each emit, so a detached or hostile iframe throws
+    // here — below the source's own guard. Posting [] would CLEAR native's mask (setSecureAreas replaces).
+    const childWin = {};
+    let broken = false;
+    const iframe = {
+      contentWindow: childWin,
+      getBoundingClientRect: () => {
+        if (broken) throw new Error('iframe detached mid-compose');
+        return { top: 30, left: 40, bottom: 31, right: 41 };
+      },
+    };
+    const doc = fakeDoc({ iframe: [iframe] });
+    const win = fakeWin({ scrollX: 0, scrollY: 0 });
+    const onCompose = vi.fn();
+    const onError = vi.fn();
+    const c = createObscuringComposer({
+      document: doc,
+      window: win,
+      isTopFrame: true,
+      onCompose,
+      onError,
+      mutationObserver: undefined,
+    });
+    c.start();
+    win.fire('message', {
+      data: BUBBLE([{ type: 'text', top: 5, left: 6, bottom: 7, right: 8 }]),
+      source: childWin,
+    });
+    broken = true;
+    c.refresh();
+    expect(onCompose).toHaveBeenLastCalledWith([FAIL_CLOSED_AREA]);
+    expect(onError).toHaveBeenCalled();
     c.stop();
   });
 
@@ -205,7 +246,7 @@ describe('createObscuringComposer — top frame', () => {
       data: BUBBLE([{ type: 'text', top: 1, left: 1, bottom: 2, right: 2 }]),
       source: {}, // a foreign window, not the known iframe's contentWindow
     });
-    expect(onCompose).not.toHaveBeenCalled(); // foreign bubble ignored
+    expect(onCompose).toHaveBeenCalledTimes(1); // only start()'s initial push — the foreign bubble was ignored
     c.stop();
   });
 
@@ -226,7 +267,7 @@ describe('createObscuringComposer — top frame', () => {
     win.fire('message', { data: { foo: 1 }, source: childWin });
     win.fire('message', { data: { __bugsee_secure_bubble: 99, areas: [] }, source: childWin }); // wrong version
     win.fire('message', { data: null, source: childWin });
-    expect(onCompose).not.toHaveBeenCalled();
+    expect(onCompose).toHaveBeenCalledTimes(1); // only start()'s initial push
     c.stop();
   });
 
@@ -430,6 +471,6 @@ describe('createObscuringComposer — lifecycle', () => {
       source: childWin,
     });
     doc.fire('focus');
-    expect(onCompose).not.toHaveBeenCalled();
+    expect(onCompose).toHaveBeenCalledTimes(1); // only start()'s initial push
   });
 });

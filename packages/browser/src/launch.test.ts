@@ -1090,6 +1090,15 @@ describe('launch — session replay (lazy)', () => {
     expect(call[2]).toEqual({ maskAllText: false, checkoutEveryNms: 5000 }); // options forwarded
   });
 
+  it('forwards the launch onError so a dropped masking selector is actually reported', async () => {
+    // Wave 1.4. @bugsee/replay reports an invalid selector it had to drop; that report needs a sink on the
+    // production path, or the fix is only reachable from replay's own tests.
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ replay: { blockSelector: 'div[' }, onError }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect((registerReplay.mock.calls[0]?.[2] as { onError?: unknown }).onError).toBe(onError);
+  });
+
   it('enables replay with default options when replay is `true`', async () => {
     launchTracked('tok', baseOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
@@ -1150,5 +1159,122 @@ describe('launch — session replay (lazy)', () => {
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const opts = registerReplay.mock.calls[0]?.[2] as { blockAllCanvas?: boolean };
     expect(opts.blockAllCanvas).toBe(true); // not stripped by the canvas destructure; flows to masking
+  });
+});
+
+// R1 (docs/design/electron-renderer-incident-convergence.md §4.2): an injectable trigger pipeline.
+//
+// Symmetric with the `captureStore` seam that already exists. @bugsee/electron needs it because a renderer
+// must FORWARD its incidents to the main process rather than assembling a bundle from its streaming store —
+// which yields nothing — and uploading under a foreign session id (docs/review/electron.md SEV1 #2).
+// @bugsee/webview solves the same problem, but only because it composes its client directly via
+// createClient; a full browser SDK cannot do that without duplicating this entire module.
+describe('launchCore — triggerPipeline seam', () => {
+  it('routes reports through an injected pipeline instead of assembling + uploading', async () => {
+    const reported: unknown[] = [];
+    const client = launchCore(
+      'tok',
+      baseOptions({
+        triggerPipeline: {
+          report: async (request: unknown) => {
+            reported.push(request);
+            return { ok: true };
+          },
+        },
+      } as Partial<BugseeLaunchOptions>),
+    ).client;
+    await client.logException(new Error('renderer boom'));
+    expect(reported).toHaveLength(1);
+    expect(JSON.stringify(reported[0])).toContain('renderer boom');
+    await client.stop();
+  });
+
+  it('falls back to the built-in assemble+upload pipeline when none is injected', async () => {
+    // The compatibility guarantee: every existing consumer is untouched.
+    const transport = uploadTransport();
+    const client = launchCore('tok', baseOptions({ transport })).client;
+    await client.logException(new Error('boom'));
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => String(url).includes('/v2/issues'))).toBe(true);
+    await client.stop();
+  });
+});
+
+// WAVE 6.2 — the page-lifecycle flush, wired.
+//
+// `installPageHideFlush` is unit-tested on its own; these assert launch actually CONNECTS it to something,
+// because the failure this fixes was precisely that the SDK listened to `pagehide` and then did nothing
+// with it. Each test observes a real consequence — a store flushed, a listener removed — not the mere
+// presence of a listener.
+describe('flush on page hide (Wave 6.2)', () => {
+  /** A capture store that records whether its pending durable writes were committed. */
+  const flushableStore = () => {
+    const store = memStore();
+    store.flush = vi.fn(() => Promise.resolve());
+    return store;
+  };
+
+  it('commits the capture store’s pending writes when the page hides', () => {
+    const win = fakeWindow();
+    const captureStore = flushableStore();
+    launchTracked('tok', baseOptions({ window: win.win, captureStore }));
+    win.emit('pagehide', {});
+    expect(captureStore.flush).toHaveBeenCalled();
+  });
+
+  it('flushes the CLIENT too, draining a report that is still assembling', () => {
+    // Committing the capture store is only half of it. A report can be mid-assembly when the page hides,
+    // and an assembling report has not reached the durable queue yet — `client.flush()` is what awaits it
+    // (packages/core/src/client.ts: uploadPipeline.flush alone misses reports with no upload enqueued).
+    // Without this leg, the last crash before a tab is backgrounded is the one most likely to be lost.
+    const win = fakeWindow();
+    const client = launchTracked('tok', baseOptions({ window: win.win, captureStore: memStore() }));
+    const flush = vi.spyOn(client, 'flush').mockResolvedValue(true);
+    win.emit('pagehide', {});
+    expect(flush).toHaveBeenCalled();
+  });
+
+  it('does not flush on a visibilitychange back to VISIBLE', () => {
+    const win = fakeWindow();
+    const doc = fakeWindow();
+    const captureStore = flushableStore();
+    launchTracked(
+      'tok',
+      baseOptions({
+        window: win.win,
+        document: Object.assign(doc.win, { visibilityState: 'visible' }) as unknown as Document,
+        captureStore,
+      }),
+    );
+    doc.emit('visibilitychange', {});
+    expect(captureStore.flush).not.toHaveBeenCalled();
+  });
+
+  it('removes the page-hide listener on stop()', async () => {
+    const win = fakeWindow();
+    const captureStore = flushableStore();
+    // System events off, so the only `pagehide` listener in play is the flush hook's — the system-event
+    // SOURCE also listens for one, and counting both would hide a leak in either.
+    const client = launchTracked(
+      'tok',
+      baseOptions({ window: win.win, captureStore, captureSystemEvents: false }),
+    );
+    expect(win.count('pagehide')).toBe(1);
+    await client.stop();
+    expect(win.count('pagehide')).toBe(0);
+    win.emit('pagehide', {});
+    expect(captureStore.flush).not.toHaveBeenCalled(); // …and it is genuinely disconnected
+  });
+
+  it('a failing flush never throws back into the browser’s dispatch', () => {
+    const win = fakeWindow();
+    const onError = vi.fn();
+    const captureStore = memStore();
+    captureStore.flush = () => {
+      throw new Error('commit failed');
+    };
+    launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
+    expect(() => win.emit('pagehide', {})).not.toThrow();
+    expect(onError).toHaveBeenCalled();
   });
 });

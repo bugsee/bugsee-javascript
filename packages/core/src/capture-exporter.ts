@@ -27,8 +27,8 @@ export function createCaptureExporter(
   onError: (error: unknown) => void = (): void => {},
 ): CaptureExporter {
   return {
-    stream(): AsyncIterableIterator<CaptureDataEntry> {
-      const snapshot = store.snapshot();
+    stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry> {
+      const snapshot = store.snapshot(options);
       const records = snapshot.stream();
       return (async function* (): AsyncIterableIterator<CaptureDataEntry> {
         try {
@@ -50,8 +50,8 @@ export function createCaptureExporter(
       })();
     },
 
-    async drain(): Promise<Map<FileType, CaptureDataEntry[]>> {
-      const snapshot = store.snapshot();
+    async drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>> {
+      const snapshot = store.snapshot(options);
       try {
         const raw = await snapshot.drainAll();
         const result = new Map<FileType, CaptureDataEntry[]>();

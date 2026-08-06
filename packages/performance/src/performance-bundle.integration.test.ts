@@ -101,6 +101,7 @@ describe('performance → capture ring → bundle (cross-package integration)', 
 
     const external: TransactionWire = {
       traceId: '0123456789abcdef0123456789abcdef',
+      spanId: 'fedcba9876543210',
       name: 'app.start',
       operation: 'startup',
       status: 'OK',

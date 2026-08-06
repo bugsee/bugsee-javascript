@@ -102,6 +102,20 @@ describe('buildContext', () => {
     const ctx = buildContext(req(), () => 'cid', 'alice@example.com');
     expect(ctx.user).toBe('alice@example.com');
   });
+
+  it('redacts secrets in the request URL before they reach http.url (Wave 1.1)', () => {
+    // Nest builds its own context rather than riding @bugsee/node's server-instrument core, so the fix
+    // there does not reach it — `originalUrl` carries the raw query into reports and the manifest.
+    const ctx = buildContext(
+      req({ originalUrl: '/pay?api_key=SECRET&page=2' }),
+      () => 'c',
+      undefined,
+    );
+    expect(ctx.attributes).toEqual({
+      'http.method': 'GET',
+      'http.url': '/pay?api_key=%3Credacted%3E&page=2',
+    });
+  });
   it('defaults method to GET and url from url then empty', () => {
     expect(buildContext(req({ url: '/x' }), () => 'c', undefined).attributes).toEqual({
       'http.method': 'GET',

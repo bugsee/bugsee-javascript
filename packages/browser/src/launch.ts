@@ -45,6 +45,7 @@ import {
   type Scheduler,
   setCarrierClient,
   TransportToken,
+  type TriggerPipeline,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import type { WindowEvents } from './detection-providers';
@@ -56,6 +57,7 @@ import {
   realBrowserProbe,
 } from './environment';
 import { createBrowserInputSource } from './input-source';
+import { installPageHideFlush } from './page-lifecycle';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
@@ -70,10 +72,15 @@ import { createViewtreeSnapshotSource } from './viewtree';
 //   providers: console→log · network (fetch/xhr/ws/sse/webtransport) · system traces (performance.memory)
 //              · system events (process_started + pagehide)
 //   detection: window error (crash) · unhandledrejection (error)
-// Unlike node there is no process.exit window — the browser flushes via the pipeline / pagehide. The
+// Unlike node there is no process.exit window and no signal, so the last reliable moment is a page-hide:
+// `pagehide` / `visibilitychange`→hidden commit the capture store and drain the client (Wave 6.2). The
 // returned client IS the public surface.
 
 const SDK_VERSION = '0.0.0';
+// How long the page-hide flush waits for the client to drain (Wave 6.2). Short on purpose: a hiding page
+// has no guaranteed time at all, so this bounds the attempt rather than promising it completes — what makes
+// the data safe is that it becomes DURABLE, and the next page load recovers it.
+const PAGE_HIDE_FLUSH_MS = 1000;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Browser/edge capture buffer ceiling (design §966: 10 MB on browser, 50 MB on Node).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
@@ -189,6 +196,18 @@ export interface BugseeLaunchOptions {
   scheduler?: Scheduler;
   /** Capture store override. Default in-memory. */
   captureStore?: CaptureStore;
+  /**
+   * Replace the report path: every detected incident and explicit `logException` is routed here INSTEAD of
+   * being assembled into a bundle and uploaded. Default: the built-in assemble + upload.
+   *
+   * Exists for hosts where this process is not the uploader. `@bugsee/electron` renderers stream their
+   * capture UP to the main process, so a renderer that assembled locally would produce a bundle from a
+   * streaming store that yields nothing, under its own session id, while the main session holding all the
+   * capture recorded no incident (docs/design/electron-renderer-incident-convergence.md §4.2).
+   *
+   * Symmetric with `captureStore` above — the same shape of seam, for the read side of the same problem.
+   */
+  triggerPipeline?: TriggerPipeline;
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
   /** System-traces sampler. Default the performance.memory sampler. */
@@ -395,6 +414,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appToken,
     getEnvironment,
     captureStore,
+    ...(options.triggerPipeline !== undefined ? { triggerPipeline: options.triggerPipeline } : {}),
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
@@ -464,6 +484,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         m.registerReplay(client, fileEncoders, {
           ...replayMasking,
           ...(canvas !== undefined ? { canvas } : {}),
+          // Give replay's masking resolver a sink: it drops an invalid caller selector rather than letting
+          // it disable privacy page-wide, and that downgrade must not be silent (Wave 1.4).
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
         });
       })
       .catch((error) => options.onError?.(error));
@@ -514,16 +537,41 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       : {}),
   });
 
-  // The public client. stop() clears the process Carrier slot so a later launch() starts fresh. (No
-  // process.exit handler to remove — the browser has none; the core client cleans up its providers.)
+  // Flush on page hide (Wave 6.2). The browser is the one runtime with no shutdown hook at all — no
+  // `'exit'`, no signal — and a mobile browser kills a backgrounded tab with no further callbacks. Until
+  // now the SDK listened to `pagehide` only to RECORD a `process_exiting` event; nothing consumed it, so
+  // "the browser flushes via the pipeline / pagehide" was an intention rather than a code path.
+  //
+  // Two legs, because they lose different things:
+  //   · the capture store commits whatever it still has queued for IndexedDB (the async write queue is
+  //     what makes `add()` non-blocking, and it is exactly what a kill discards);
+  //   · `client.flush()` drains a report still ASSEMBLING, which has not reached the durable queue yet —
+  //     the last crash before a tab is backgrounded is the one most likely to be lost.
+  //
+  // Neither races the kill: what they buy is that the data is DURABLE, so the next page load recovers and
+  // uploads it. A page-hide window is far too short to rely on the network.
+  const uninstallPageHideFlush = installPageHideFlush(
+    () => {
+      void captureStore.flush?.();
+      void publicClient.flush(PAGE_HIDE_FLUSH_MS);
+    },
+    {
+      ...(win !== undefined ? { window: win } : {}),
+      ...(domDocument !== undefined ? { document: domDocument } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    },
+  );
+  // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       setCarrierClient(undefined, carrier);
+      uninstallPageHideFlush();
       return stopCore(timeout);
     },
   };
+
   setCarrierClient(publicClient, carrier);
 
   // The internal wiring the umbrella needs (everything not already a DI service). The clock/scheduler

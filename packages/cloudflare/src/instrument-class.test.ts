@@ -169,9 +169,15 @@ describe('instrumentEdgeClass', () => {
       true,
     );
     const instance = new Instrumented(ctxStub(), {});
-    expect(Object.hasOwn(instance, 'fetch')).toBe(true); // inherited lifecycle IS wrapped (this[name] up the chain)
-    expect(Object.hasOwn(instance, 'ownRpc')).toBe(true); // own RPC method enumerated + wrapped
-    expect(Object.hasOwn(instance, 'inheritedRpc')).toBe(false); // inherited RPC NOT enumerated (own-prototype only)
+    // Wrapped on the SUBCLASS PROTOTYPE, never as an own property of the instance. These three lines used
+    // to assert `Object.hasOwn(instance, …) === true`, i.e. they pinned the defect: an own property shadows
+    // the prototype method out of Cloudflare's RPC surface, which made every instrumented method uncallable
+    // over RPC (docs/review/cloudflare.md SEV1 #1, reproduced on real workerd).
+    const proto = Object.getPrototypeOf(instance) as object;
+    expect(Object.hasOwn(instance, 'fetch')).toBe(false); // NOT an own property…
+    expect(Object.hasOwn(proto, 'fetch')).toBe(true); // …wrapped on the prototype instead
+    expect(Object.hasOwn(proto, 'ownRpc')).toBe(true); // own RPC method enumerated + wrapped
+    expect(Object.hasOwn(proto, 'inheritedRpc')).toBe(false); // inherited RPC NOT enumerated (own-prototype only)
   });
 
   it('does not wrap the reserved RPC names (dup / connect) under rpc=true', () => {
@@ -201,9 +207,10 @@ describe('instrumentEdgeClass', () => {
       true,
     );
     const instance = new Instrumented(ctxStub(), {});
-    expect(Object.hasOwn(instance, 'real')).toBe(true); // a real RPC method is wrapped
-    expect(Object.hasOwn(instance, 'connect')).toBe(false); // reserved (WorkerEntrypoint) → not wrapped
-    expect(Object.hasOwn(instance, 'dup')).toBe(false); // reserved (all RPC) → not wrapped
+    const proto = Object.getPrototypeOf(instance) as object;
+    expect(Object.hasOwn(proto, 'real')).toBe(true); // a real RPC method is wrapped, on the prototype
+    expect(Object.hasOwn(proto, 'connect')).toBe(false); // reserved (WorkerEntrypoint) → not wrapped
+    expect(Object.hasOwn(proto, 'dup')).toBe(false); // reserved (all RPC) → not wrapped
   });
 
   it('captures + RETHROWS a thrown wrapped method (mechanism uncaught)', async () => {
@@ -218,5 +225,95 @@ describe('instrumentEdgeClass', () => {
     await expect(instance.boom()).rejects.toThrow('rpc-boom');
     expect(logException).toHaveBeenCalledTimes(1);
     expect((logException.mock.calls[0]?.[1] as { mechanism?: string })?.mechanism).toBe('uncaught');
+  });
+});
+
+// The RPC surface (docs/review/cloudflare.md SEV1 #1), pinned structurally.
+//
+// `instrumentRpcMethods` is a documented opt-in that DELETED the customer's RPC surface: Cloudflare
+// dispatches RPC by looking methods up on the PROTOTYPE, and the wrapper was assigned as an own property
+// of the instance, shadowing the prototype method out of existence as far as RPC is concerned. Verified on
+// real workerd in @bugsee/instrumentation-tests (`durable-object-rpc.e2e.ts`), with an uninstrumented
+// method on the same instance as the control; these are the fast structural equivalents.
+describe('instrumented methods stay on the prototype (Wave: cloudflare SEV1 #1)', () => {
+  class Counter {
+    constructor(
+      public ctx: unknown,
+      public env: unknown,
+    ) {}
+    #count = 0;
+    async fetch(_request: Request): Promise<Response> {
+      return new Response('ok');
+    }
+    increment(by: number): number {
+      this.#count += by;
+      return this.#count;
+    }
+  }
+
+  const build = () => {
+    const { client } = fakeClient();
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      Counter,
+      [{ name: 'fetch', attributes: () => ({}) }],
+      ['increment'],
+    );
+    return new Instrumented(ctxStub(), {});
+  };
+
+  it('adds NO own property to the instance', () => {
+    const instance = build();
+    expect(Object.getOwnPropertyNames(instance)).not.toContain('increment');
+    expect(Object.getOwnPropertyNames(instance)).not.toContain('fetch');
+  });
+
+  it('the wrapped method is reachable through the prototype chain', () => {
+    const instance = build();
+    expect(typeof (instance as unknown as { increment: unknown }).increment).toBe('function');
+    expect(Object.hasOwn(Object.getPrototypeOf(instance) as object, 'increment')).toBe(true);
+  });
+
+  it('keeps the wrapper NON-ENUMERABLE, like the class method it replaces', () => {
+    // Class methods are non-enumerable by spec. An enumerable one changes the customer's object: it starts
+    // appearing in `for…in` over instances, and in anything built on that.
+    const instance = build();
+    const keys: string[] = [];
+    for (const key in instance) keys.push(key);
+    expect(keys).not.toContain('increment');
+    expect(keys).not.toContain('fetch');
+  });
+
+  it('runs an instance NOT constructed through us untouched, rather than throwing', () => {
+    // The wrapper lives on the prototype, so it can be reached by an object that never went through our
+    // constructor — `Object.create(proto)`, a deserialized instance, a subclass that skips `super()`. With
+    // no per-instance state there is no client to open a context with; running the original is the only
+    // answer that does not break the caller.
+    // A class with no private fields, so `Object.create` yields an object the original method can actually
+    // run on — otherwise the test would fail on the FIXTURE's `#count`, not on anything the SDK does.
+    class Plain {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      double(n: number): number {
+        return n * 2;
+      }
+    }
+    const { client } = fakeClient();
+    const Instrumented = instrumentEdgeClass(() => client, Plain, [], ['double']);
+    const proto = Instrumented.prototype as object;
+    const orphan = Object.create(proto) as { double: (n: number) => unknown };
+    expect(orphan.double(4)).toBe(8); // the real method ran, synchronously — no context wrapper
+  });
+
+  it('still WRAPS — the method runs inside the edge context, not merely unchanged', async () => {
+    // The canary. "No own property" is trivially satisfied by not instrumenting at all.
+    //
+    // The wrapper returns `runInEdgeContext(...)`, a promise, even for a synchronous method — unchanged by
+    // this fix, and fine for RPC, which awaits whatever a method returns.
+    const instance = build() as unknown as { increment: (by: number) => Promise<number> };
+    expect(await instance.increment(2)).toBe(2);
+    expect(await instance.increment(3)).toBe(5); // …and `this` (a private #field) still resolves
   });
 });

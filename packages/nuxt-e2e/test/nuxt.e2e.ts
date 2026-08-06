@@ -11,6 +11,7 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertNoContractViolations } from '@bugsee/e2e-kit';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type MockCollector, startMockCollector } from './collector';
@@ -131,5 +132,27 @@ describe('@bugsee/nuxt — real Nuxt boot e2e', () => {
     // The collector minted a session + issue for it (full control-plane round trip).
     expect(collector.sessions.length).toBeGreaterThan(0);
     expect(collector.issues.length).toBeGreaterThan(0);
+  });
+
+  // WAVE V0 — the collector VALIDATES every upload against the shipped wire contract, and this is what
+  // makes it count. Until the shared kit landed, this harness carried its own collector copy that did no
+  // validation at all, so the entry-payload contract added in Wave 3b.2 (logs.json / network.json /
+  // events.json — the files that carry the actual captured data) covered exactly one of the five suites.
+  //
+  // A violation the collector records but nobody asserts is the same false assurance as no check at all.
+  it('emits nothing that violates the upload contract', () => {
+    assertNoContractViolations(collector);
+  });
+
+  it('the contract check is NOT vacuous — the bundle carries files the schema covers', () => {
+    // A recorded-but-unasserted violation is false assurance; so is an assertion over an empty set. This
+    // names which schema-covered files this harness actually produces, so the coverage claim is honest.
+    const files = Object.keys(parseBundles(collector)[0]?.files ?? {});
+    expect(files, 'no bundle reached the collector at all').not.toEqual([]);
+    expect(files).toContain('request.json');
+    expect(files).toContain('manifest.json');
+    // Measured on this fixture: request.json, manifest.json, apptoken, performance.json, logs.json,
+    // events.user.json, crash.json — so the entry-payload schemas (logs/network/events) genuinely apply.
+    expect(files).toContain('logs.json');
   });
 });

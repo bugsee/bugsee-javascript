@@ -1,4 +1,9 @@
-import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
+import {
+  type AdapterMechanism,
+  neverThrow,
+  type ReportErrorOptions,
+  reportError,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/angular ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Angular). Angular
 // reports uncaught errors through its injectable `ErrorHandler` (`handleError(error)`); the app replaces it
@@ -45,16 +50,38 @@ export function createAngularErrorHandler(options: AngularErrorHandlerOptions = 
 } {
   return {
     handleError(error) {
-      reportAngularError(error, options);
+      // Contained (Wave 2.1): unguarded, an SDK failure escaped into Angular's error pipeline AND skipped
+      // the delegate below — so the app lost both its error handling and its own handler.
+      neverThrow(() => reportAngularError(error, options), options.onError);
       options.delegate?.handleError(error); // keep a chained handler (e.g. the default ErrorHandler)
     },
   };
 }
 
+/**
+ * Angular's OWN default `ErrorHandler` behaviour, reproduced.
+ *
+ * `{ provide: ErrorHandler, useClass: BugseeErrorHandler }` — the wiring this adapter documents as its
+ * primary one — REPLACES whatever handler the application had. With nothing chained, an app that provided a
+ * custom `ErrorHandler` lost it silently, and an app that provided none lost Angular's default, which is the
+ * only thing that surfaces an uncaught error in the console. Measured against real `@angular/core`: the
+ * default prints one `console.error('ERROR', error)`; resolving `BugseeErrorHandler` printed none
+ * (docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #2).
+ *
+ * Angular is a structural peer here — never imported — so its default is reproduced rather than delegated to.
+ */
+const angularDefaultErrorHandler = {
+  handleError(error: unknown): void {
+    console.error('ERROR', error);
+  },
+};
+
 /** A parameterless `ErrorHandler` (duck-typed) reporting via the carrier client — for the simple wiring
- *  `{ provide: ErrorHandler, useClass: BugseeErrorHandler }`. (For a delegate/options use the factory above.) */
+ *  `{ provide: ErrorHandler, useClass: BugseeErrorHandler }`. Chains to Angular's DEFAULT behaviour, so the
+ *  documented one-liner adds Bugsee instead of silently removing the app's error surfacing. An app with its
+ *  own custom `ErrorHandler` should use {@link createAngularErrorHandler} with an explicit `delegate`. */
 export class BugseeErrorHandler {
-  readonly #handler = createAngularErrorHandler();
+  readonly #handler = createAngularErrorHandler({ delegate: angularDefaultErrorHandler });
   handleError(error: unknown): void {
     this.#handler.handleError(error);
   }

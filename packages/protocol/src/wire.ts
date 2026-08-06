@@ -124,6 +124,17 @@ export type NetworkMechanism =
   | 'http';
 /** Direction of a streamed frame / event / datagram (ws/sse/webtransport): client→server or back. */
 export type NetworkDirection = 'in' | 'out';
+/**
+ * WebSocket event sub-type — Android's `WebSocketEventType`, serialized under the `event` key.
+ *
+ * The direction of a frame IS the event name in this vocabulary: `send` is outbound, `message` inbound.
+ * The viewer reads this rather than {@link NetworkDirection}, so a JS entry without it rendered every
+ * outbound frame as incoming (Wave 5.2). Android:
+ *   `serializer.putKeyValue("event", webSocketEventType.getValue(), true)`
+ *   `enum WebSocketEventType { Create("create"), Open("open"), Send("send"),
+ *                              Message("message"), Close("close"), Error("error") }`
+ */
+export type WebSocketEventType = 'create' | 'open' | 'send' | 'message' | 'close' | 'error';
 export type NoBodyReason =
   | 'size_too_large'
   | 'no_content_type'
@@ -152,6 +163,9 @@ export interface NetworkEvent {
   customError?: string | null;
   /** Inbound vs outbound for a streamed frame / event / datagram (ws/sse/webtransport `message`). */
   direction?: NetworkDirection;
+  /** WebSocket sub-type (Android parity, wire key `event`). `send` = outbound frame, `message` = inbound —
+   *  this is what the viewer reads to tell the two apart. */
+  event?: WebSocketEventType;
   /** Connection/session close code (ws/webtransport). */
   code?: number;
   /** Connection/session close or abort reason (ws/webtransport). */

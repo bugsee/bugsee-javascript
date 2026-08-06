@@ -58,6 +58,9 @@ function reportAstroError(
   });
 }
 
+/** Statuses the fetch spec forbids a body on — reconstructing a Response with one throws TypeError. */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 103, 204, 205, 304]);
+
 /** Inject the trace `<meta>` into an HTML response before `</head>`; return the ORIGINAL response untouched
  *  when it is not HTML, has no active trace, or has no `</head>`. Rewriting buffers the body (Astro's
  *  response is not streamed here) + drops the now-stale `content-length`. Exported so the edge middleware
@@ -66,6 +69,12 @@ export async function injectTraceIntoResponse(
   response: Response,
   options: TraceDataOptions,
 ): Promise<Response> {
+  // A NULL-BODY status forbids a body per the fetch spec, so RECONSTRUCTING one throws:
+  // `new Response('', { status: 304 })` is a TypeError (measured). A 304 legally echoes the cached
+  // entity's `Content-Type: text/html`, so an ordinary conditional GET — the browser's cached-page path —
+  // reached the reconstruct below, threw out of the middleware, and Astro rendered its 500 page. There is
+  // nothing to inject into a bodyless response anyway.
+  if (NULL_BODY_STATUSES.has(response.status)) return response;
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.includes('text/html')) return response;
   const tag = traceMetaTag(options);

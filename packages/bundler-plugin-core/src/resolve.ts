@@ -24,6 +24,16 @@ export interface BugseePluginOptions {
   dryRun?: boolean;
   /** Disable the plugin entirely (e.g. dev builds). */
   disabled?: boolean;
+  /**
+   * FAIL the build when the source-map upload fails. Default `false` (Wave 7).
+   *
+   * A telemetry side effect must not be able to break a production deploy: before this, an expired token,
+   * a transient network error or a `bugsee-cli` missing from PATH aborted the user's build with no escape
+   * hatch. Teams that would rather stop on a failed upload opt in.
+   */
+  failOnError?: boolean;
+  /** Where a contained failure is reported. Default: a console warning naming the plugin. */
+  onError?: (error: unknown) => void;
 }
 
 export interface ResolvedPluginOptions {
@@ -35,9 +45,16 @@ export interface ResolvedPluginOptions {
   endpoint: string | undefined;
   deleteMaps: boolean;
   dryRun: boolean;
+  /** Whether a failed upload should abort the build. Default false. */
+  failOnError: boolean;
+  /** Failure sink for the contained path. */
+  onError?: (error: unknown) => void;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
+/** In-flight uploads, keyed by output directory (Wave 7.5). Entries are removed as each run settles. */
+const runsByDir = new Map<string, Promise<UploadSourcemapsResult | undefined>>();
+
 export function resolvePluginOptions(
   options: BugseePluginOptions,
   env: EnvRecord,
@@ -51,6 +68,8 @@ export function resolvePluginOptions(
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,
+    failOnError: options.failOnError ?? false,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   };
 }
 
@@ -63,8 +82,17 @@ export async function runPluginUpload(
   if (!resolved.enabled) {
     return undefined;
   }
+  // One pipeline per output DIRECTORY (Wave 7.5). `writeBundle` fires once per OUTPUT, so a multi-output
+  // config whose entries resolve to the same directory — `[{ dir: 'dist' }, { file: 'dist/legacy.js' }]`,
+  // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps (step 3)
+  // while the other was still reading them (steps 1-2). A concurrent caller JOINS the in-flight run and
+  // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
+  const inFlight = runsByDir.get(outDir);
+  if (inFlight !== undefined) {
+    return inFlight;
+  }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
-  return uploadSourcemaps({
+  const run = uploadSourcemaps({
     outDir,
     appToken: resolved.appToken,
     appVersion: resolved.appVersion,
@@ -72,5 +100,20 @@ export async function runPluginUpload(
     endpoint: resolved.endpoint,
     deleteMaps: resolved.deleteMaps,
     dryRun: resolved.dryRun,
+    failOnError: resolved.failOnError,
+    ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
   });
+  // The ORIGINAL promise is stored, so a joiner sees the same outcome — including the same failure. The
+  // cleanup rides a separate, already-handled chain: storing `run.finally(…)` instead would create a
+  // DERIVED promise that nobody awaits, and a failed run would surface as an unhandled rejection.
+  //
+  // `finally`, not `then`: a failed run must free the slot too, or every later build of that directory
+  // would be blocked by a corpse.
+  runsByDir.set(outDir, run);
+  void run
+    .catch(() => undefined)
+    .finally(() => {
+      runsByDir.delete(outDir);
+    });
+  return run;
 }

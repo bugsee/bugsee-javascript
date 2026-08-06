@@ -203,3 +203,99 @@ describe('instrumentDurableObject', () => {
     expect(launchSpy).toHaveBeenCalledWith('from-env', {});
   });
 });
+
+// S4: each Durable Object instance stamps its OWN id as the tenant owner.
+//
+// Different DO instances share one isolate, one client and one capture ring. The owner is what lets the
+// partitioned store keep tenant C's incident bundle free of tenant A's and B's secrets — the leak proven
+// on real workerd (docs/review/cloudflare.md SEV1 #2).
+describe('instrumentDurableObject — tenant owner', () => {
+  it('runs each instance in a context owned by that instance id', async () => {
+    const owners: Array<string | undefined> = [];
+    const edge = await import('@bugsee/vercel-edge');
+    const spy = vi
+      .spyOn(edge, 'runInEdgeContext')
+      .mockImplementation(async (_c: unknown, options: { owner?: string }, fn: () => unknown) => {
+        owners.push(options.owner);
+        return fn();
+      });
+
+    class DO {
+      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
+      constructor(..._args: any[]) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Wrapped = instrumentDurableObject('tok', DO);
+    const state = (id: string) => ({ id: { toString: () => id }, waitUntil: () => {} });
+
+    await new Wrapped(state('tenant-A'), {}).fetch(new Request('https://x/'));
+    await new Wrapped(state('tenant-B'), {}).fetch(new Request('https://x/'));
+
+    expect(owners).toEqual(['tenant-A', 'tenant-B']);
+    spy.mockRestore();
+  });
+
+  it('omits the owner when the state carries no id, rather than inventing one', async () => {
+    const owners: Array<string | undefined> = [];
+    const edge = await import('@bugsee/vercel-edge');
+    const spy = vi
+      .spyOn(edge, 'runInEdgeContext')
+      .mockImplementation(async (_c: unknown, options: { owner?: string }, fn: () => unknown) => {
+        owners.push(options.owner);
+        return fn();
+      });
+    class DO {
+      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
+      constructor(..._args: any[]) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Wrapped = instrumentDurableObject('tok', DO);
+    await new Wrapped({ waitUntil: () => {} }, {}).fetch(new Request('https://x/'));
+    expect(owners).toEqual([undefined]);
+    spy.mockRestore();
+  });
+});
+
+// The owner probe must never break CONSTRUCTION.
+//
+// `durableObjectOwner` reads `ctx.id.toString()`, which is host-supplied: a Durable Object's state comes
+// from workerd, and on a stub, a mock, or a future runtime shape that getter can throw. The catch there was
+// the one uncovered line in this package — a guard nothing exercised, protecting the path where a throw
+// would take down every DO construction rather than costing one capture partition.
+describe('a hostile DurableObjectState', () => {
+  it('yields no owner instead of throwing out of the constructor', async () => {
+    const owners: Array<string | undefined> = [];
+    const edge = await import('@bugsee/vercel-edge');
+    const spy = vi
+      .spyOn(edge, 'runInEdgeContext')
+      .mockImplementation(async (_c: unknown, options: { owner?: string }, fn: () => unknown) => {
+        owners.push(options.owner);
+        return fn();
+      });
+    class DO {
+      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
+      constructor(..._args: any[]) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Wrapped = instrumentDurableObject('tok', DO);
+    const hostile = {
+      get id(): { toString(): string } {
+        throw new Error('hostile DurableObjectState');
+      },
+      waitUntil: () => {},
+    };
+    let instance: InstanceType<typeof Wrapped> | undefined;
+    expect(() => {
+      instance = new Wrapped(hostile as never, {});
+    }).not.toThrow();
+    await (instance as unknown as DO).fetch(new Request('https://x/'));
+    expect(owners).toEqual([undefined]); // no owner → no partitioning, but the DO still works
+    spy.mockRestore();
+  });
+});

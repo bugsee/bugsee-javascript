@@ -4,7 +4,11 @@ import {
   type ComposerWindow,
   createObscuringComposer,
 } from './obscuring-composer';
-import type { MutationObserverCtor } from './obscuring-source';
+import {
+  collectSecureAreas,
+  FAIL_CLOSED_AREA,
+  type MutationObserverCtor,
+} from './obscuring-source';
 import { encode, type SecureArea, secureMessage } from './protocol';
 
 // The obscuring CHANNEL (docs/design/webview-bridge.md D10) — the TOP frame's native I/O for obscuring. It owns
@@ -23,8 +27,19 @@ export interface ObscuringChannel {
   stop(): void;
   /** Post the current secure-area rects (the native `snapshot` control command path). */
   emit(): void;
-  /** The serialized current rects, returned synchronously to native via `__bugsee_bridge.snapshot()`. */
+  /** The serialized current rects, returned synchronously to native via `__bugsee_bridge.snapshot()`.
+   *  NEVER throws — an exception here would surface inside native's `evaluateJavascript` at frame-capture
+   *  time, on a page where native has already stood its legacy masking down. */
   snapshot(): string;
+  /**
+   * Whether obscuring can actually collect rects right now.
+   *
+   * Gates the `obscuring` capability in the hello: declaring it is precisely what tells native to skip its
+   * own masking script (D10), and the protocol has no way to retract it afterwards (docs/review/webview.md
+   * SEV1 #2). On a page where collection already fails, not declaring it leaves native's legacy masking in
+   * place — which is the fail-closed answer.
+   */
+  probe(): boolean;
 }
 
 export interface ObscuringChannelOptions {
@@ -44,6 +59,8 @@ export interface ObscuringChannelOptions {
   timeOrigin?: number;
   /** MutationObserver constructor; injectable for tests. Default `globalThis.MutationObserver`. */
   mutationObserver?: MutationObserverCtor;
+  /** Where an obscuring failure is reported. Without it the fail-closed downgrade is silent. */
+  onError?: (error: unknown) => void;
 }
 
 /** Build the obscuring channel that streams secure-area rects to native. */
@@ -74,12 +91,40 @@ export function createObscuringChannel(opts: ObscuringChannelOptions): Obscuring
     isTopFrame: true,
     onCompose: post,
     ...(opts.mutationObserver !== undefined ? { mutationObserver: opts.mutationObserver } : {}),
+    ...(opts.onError !== undefined ? { onError: opts.onError } : {}),
   });
 
+  // Every method here is a boundary the host (or native) calls directly, so none may throw outward. The
+  // composer already fails closed on collection; this guards the remaining surface — serialization, and the
+  // start/stop/emit lifecycle — so an obscuring fault can never become an application-visible exception.
+  //
+  // The `snapshot` guard is deliberate defense-in-depth and is NOT observable from a test: the composer
+  // beneath it already answers a failure with the fail-closed rect, and `JSON.stringify` of a rect array
+  // cannot throw. It stays because this is the one function whose exception would land inside native's
+  // `evaluateJavascript` at frame-capture time — a mutation removing it surviving is expected, not a gap.
+  const guard = <T>(fn: () => T, fallback: T): T => {
+    try {
+      return fn();
+    } catch (error) {
+      opts.onError?.(error);
+      return fallback;
+    }
+  };
+
   return {
-    start: () => composer.start(),
-    stop: () => composer.stop(),
-    emit: () => composer.refresh(), // the native `snapshot` command re-posts the current composed rects
-    snapshot: () => JSON.stringify(composer.snapshot()),
+    start: () => guard(() => composer.start(), undefined),
+    stop: () => guard(() => composer.stop(), undefined),
+    emit: () => guard(() => composer.refresh(), undefined), // the native `snapshot` command re-posts rects
+    snapshot: () =>
+      guard(() => JSON.stringify(composer.snapshot()), JSON.stringify([FAIL_CLOSED_AREA])),
+    probe: () =>
+      guard(() => {
+        collectSecureAreas(opts.document, {
+          onError: (error) => {
+            throw error; // surface it here so `guard` answers false rather than swallowing it
+          },
+        });
+        return true;
+      }, false),
   };
 }

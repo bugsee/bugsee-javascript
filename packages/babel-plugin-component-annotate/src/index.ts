@@ -1,4 +1,4 @@
-import type { types as BabelTypes, NodePath, PluginObj } from '@babel/core';
+import type { types as BabelTypes, NodePath, PluginObj, PluginPass } from '@babel/core';
 
 // @bugsee/babel-plugin-component-annotate (frontend-adapters depth pass D3). Annotates each HOST (lowercase-
 // tag) JSX element with `data-bugsee-component="<ComponentName>"` — the name of the enclosing framework
@@ -58,33 +58,52 @@ function hasAttribute(node: BabelTypes.JSXOpeningElement): boolean {
   );
 }
 
+/** The per-transform state this plugin keeps — babel's own `PluginPass` (one per `transformSync`), plus
+ *  our stack. Intersecting rather than redeclaring keeps the visitor signatures assignable to babel's. */
+type AnnotateState = PluginPass & { bugseeComponentStack?: string[] };
+
 export default function componentAnnotatePlugin(babel: { types: typeof BabelTypes }): PluginObj {
   const t = babel.types;
-  // The enclosing-component name stack — a closure reset per file in `pre()` (babel transforms sequentially
-  // per plugin instance, so a single closure is safe).
-  let componentStack: string[] = [];
+
+  /**
+   * The enclosing-component name stack, held on the per-transform STATE rather than in a closure.
+   *
+   * It used to be a closure on the plugin INSTANCE, reset in `pre()`. Babel calls `pre()` per File, but the
+   * instance is shared — so a peer plugin that runs a nested `transformSync` mid-traversal (the
+   * `babel-plugin-macros` / `preval` / `codegen` family) re-entered `pre()` and wiped the OUTER file's
+   * stack, silently dropping every remaining annotation in it. Measured in the review: 2 expected
+   * annotations became 0.
+   *
+   * Babel creates one `PluginPass` per transform, including a nested one, so keying on the state makes the
+   * stacks independent by construction — the inner transform can no longer reach the outer one's.
+   */
+  const stackOf = (state: AnnotateState): string[] => {
+    state.bugseeComponentStack ??= [];
+    return state.bugseeComponentStack;
+  };
+
   const componentVisit = {
-    enter(path: FnOrClassPath): void {
+    enter(path: FnOrClassPath, state: AnnotateState): void {
       const name = componentNameOf(t, path);
-      if (name !== undefined) componentStack.push(name);
+      if (name !== undefined) stackOf(state).push(name);
     },
-    exit(path: FnOrClassPath): void {
-      if (componentNameOf(t, path) !== undefined) componentStack.pop();
+    exit(path: FnOrClassPath, state: AnnotateState): void {
+      // POP, not shift: the innermost component is the one that closed.
+      if (componentNameOf(t, path) !== undefined) stackOf(state).pop();
     },
   };
   return {
     name: 'bugsee-component-annotate',
-    pre(): void {
-      componentStack = [];
-    },
     visitor: {
       FunctionDeclaration: componentVisit,
       FunctionExpression: componentVisit,
       ArrowFunctionExpression: componentVisit,
       ClassDeclaration: componentVisit,
       ClassExpression: componentVisit,
-      JSXOpeningElement(path): void {
-        const current = componentStack[componentStack.length - 1];
+      JSXOpeningElement(path, state: AnnotateState): void {
+        // The INNERMOST enclosing component owns the element — the last entry, not the first.
+        const stack = stackOf(state);
+        const current = stack[stack.length - 1];
         if (current === undefined) return; // not inside a component
         const name = path.node.name;
         if (name.type !== 'JSXIdentifier' || !isHostTag(name.name)) return; // member/namespaced/component → skip

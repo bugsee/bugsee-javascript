@@ -1,5 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createChunkCaptureStore } from './chunk-capture-store';
 import type { Clock } from './clock';
 import type { StoredEntry } from './contracts';
@@ -69,5 +69,27 @@ describe('createChunkCaptureStore — backend protocol', () => {
     expect(parts[0]?.end).toBeUndefined();
     expect(parts[0]?.byteSize).toBe(0);
     expect(parts[0]?.start).toBe(5000); // reopened at the clock time
+  });
+});
+
+// WAVE 6.2 — the flush seam a page-hide needs.
+//
+// A durable backend keeps `add()` non-blocking by queueing the physical write, which means at any instant
+// some records are captured but not yet committed. Node closes that window on `'exit'` and on a signal;
+// the browser had nothing at all. The store forwards the backend's flush so a platform can commit at the
+// last moment it is alive, and omits it entirely when the backend has no such notion (a memory backend
+// has nothing pending, and advertising a flush that does nothing would read as a guarantee).
+describe('flush (Wave 6.2)', () => {
+  it('delegates to the backend’s flush', async () => {
+    const flush = vi.fn(() => Promise.resolve());
+    const backend = Object.assign(createMemoryChunkBackend(), { flush });
+    const store = createChunkCaptureStore(backend, { clock: clockAt(1000) });
+    await store.flush?.();
+    expect(flush).toHaveBeenCalled();
+  });
+
+  it('is ABSENT when the backend has no flush — no false guarantee', () => {
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), { clock: clockAt(1000) });
+    expect(store.flush).toBeUndefined();
   });
 });

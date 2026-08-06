@@ -1,4 +1,4 @@
-import { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 // The @bugsee/angular ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam).
 // Angular's activated-route snapshot tree carries the matched route config; walk it to build the
@@ -33,6 +33,15 @@ const MAX_ROUTE_DEPTH = 64; // a safety bound against a malformed/cyclic snapsho
 export function routePatternFromSnapshot(
   root: RouteSnapshotLike | null | undefined,
 ): string | undefined {
+  // CONTAINED. The snapshot tree is HOST-supplied and this WALKS it — every `routeConfig` / `firstChild`
+  // read is a chance for an exotic or proxied node to throw. Failing to name a route must never cost the
+  // report, let alone the app.
+  return neverThrow(() => routePatternFromSnapshotUnsafe(root));
+}
+
+function routePatternFromSnapshotUnsafe(
+  root: RouteSnapshotLike | null | undefined,
+): string | undefined {
   const segments: string[] = [];
   let node: RouteSnapshotLike | null | undefined = root;
   for (let depth = 0; node && depth < MAX_ROUTE_DEPTH; depth++) {
@@ -49,6 +58,10 @@ export function setRouteNameFromRouter(
   router: AngularRouterLike,
   options: RouteNamingOptions = {},
 ): void {
-  const pattern = routePatternFromSnapshot(router.routerState.snapshot.root);
-  if (pattern !== undefined) setRouteName(pattern, options);
+  // CONTAINED. `router` is Angular's own Router instance, handed in by the app, and reaching the snapshot
+  // walks three host-controlled properties before any inner guard can help.
+  neverThrow(() => {
+    const pattern = routePatternFromSnapshot(router.routerState.snapshot.root);
+    if (pattern !== undefined) setRouteName(pattern, options);
+  }, options.onError);
 }

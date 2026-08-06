@@ -68,11 +68,11 @@ const DEAD_PID = 999_999; // ESRCH → the owner process is gone
 const LIVE_PID = process.pid; // a real, alive pid
 
 /** Write a subtree's owner.json with the given pid (defines whether the liveness gate sees it as dead). */
-const writeOwner = (dataDir: string, sub: string, pid: number): void => {
+const writeOwner = (dataDir: string, sub: string, pid: number, threadId = 0): void => {
   ensureDir(join(dataDir, sub));
   writeFileSecure(
     join(dataDir, sub, 'owner.json'),
-    JSON.stringify({ instanceId: sub, pid, threadId: 0, startedAt: 1, version: '0' }),
+    JSON.stringify({ instanceId: sub, pid, threadId, startedAt: 1, version: '0' }),
   );
 };
 
@@ -533,13 +533,17 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-dead'))).toBe(true);
   });
 
-  it('recovers a sibling whose pid is alive but heartbeat is stale beyond the patient window', async () => {
+  // WAVE 6.6 — this used to be ONE test asserting that any alive-pid + stale-heartbeat sibling is
+  // recovered, with a subtree NAMED `9-9-…` (pid 9, thread 9) but an owner.json that said `threadId: 0`.
+  // So it asserted the worker-thread case while describing the main-thread one, and the main-thread case is
+  // exactly the SIGSTOP data-loss bug: a frozen-but-alive process having its capture deleted underneath it.
+  it('recovers a stale WORKER-thread sibling — the thread died inside a live process', async () => {
     const dir = mkDir();
     seedPendingBundle(dir, '9-9-stale', 'b1', aBundle('stale'));
-    writeOwner(dir, '9-9-stale', LIVE_PID); // alive pid …
+    writeOwner(dir, '9-9-stale', LIVE_PID, 9); // alive pid, WORKER thread …
     const liveFile = join(dir, '9-9-stale', '.live');
     writeFileSecure(liveFile, '');
-    utimesSync(liveFile, 1000, 1000); // … but an ancient heartbeat (mtime = 1_000_000 ms)
+    utimesSync(liveFile, 1000, 1000); // … and an ancient heartbeat (mtime = 1_000_000 ms)
     const pipe = fakePipeline();
 
     await recoverInstances({
@@ -553,6 +557,28 @@ describe('recoverInstances', () => {
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(1); // stale beyond patient → dead → recovered
     expect(existsSync(join(dir, '9-9-stale'))).toBe(false);
+  });
+
+  it('does NOT touch a stale MAIN-thread sibling — its process is alive and can still write', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-0-frozen', 'b1', aBundle('frozen'));
+    writeOwner(dir, '9-0-frozen', LIVE_PID, 0); // alive pid, MAIN thread
+    const liveFile = join(dir, '9-0-frozen', '.live');
+    writeFileSecure(liveFile, '');
+    utimesSync(liveFile, 1000, 1000);
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      now: () => 1_000_000 + 200_000,
+      patientMs: 120_000,
+    });
+
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // not recovered…
+    expect(existsSync(join(dir, '9-0-frozen'))).toBe(true); // …and above all, NOT deleted
   });
 
   it('routes a missing/unreadable dataDir to onError and never throws', async () => {

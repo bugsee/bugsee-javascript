@@ -59,11 +59,26 @@ describe('collectHttpSpans', () => {
         opts: {
           startTimestampMs: 1000,
           endTimestampMs: 1080,
-          description: 'POST https://x/a', // query (with the token) stripped
+          description: 'POST https://x/a', // query (with the token) stripped — see the userinfo test below
           attributes: { 'http.method': 'POST', 'http.mechanism': 'fetch', 'http.status_code': 201 },
         },
       },
     ]);
+  });
+
+  it('redacts URL userinfo credentials from the span description (Wave 1.1)', () => {
+    // Stripping `?…` removes query secrets but leaves `user:pass@` completely intact, and the span
+    // description is uploaded like any other attribute. node:http supports userinfo and it is routine for
+    // private registries and service-to-service calls (docs/review/node-B-http-server.md SEV1 #3).
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit(
+      'before',
+      netEvent({ id: 'r1', timestamp: 10, method: 'GET', url: 'http://alice:PWSECRET@reg/pkg' }),
+    );
+    emit('complete', netEvent({ id: 'r1', timestamp: 50, status: 200 }));
+    expect(calls[0]?.opts.description).toBe('GET http://alice:%3Credacted%3E@reg/pkg');
   });
 
   it('F3: stamps the backend http.server span id read from the response `traceresponse` header', () => {
@@ -272,5 +287,109 @@ describe('collectHttpSpans', () => {
     expect(count('before') + count('complete') + count('error') + count('abort')).toBe(4);
     off();
     expect(count('before') + count('complete') + count('error') + count('abort')).toBe(0);
+  });
+});
+
+// WAVE 3b.4 — an outgoing call belongs to the request that MADE it.
+//
+// The parent transaction was resolved at COMPLETION time, from a module-scoped single slot that always
+// holds the most-recently-started transaction. On the browser that slot is the design (D12: "the single
+// active slot follows the MOST RECENT"). On Node it is not: `perf.startTransaction` runs once per INCOMING
+// request and a server serves them concurrently, so the slot is "whichever request arrived last" and every
+// outgoing call was parented to it regardless of who made it.
+//
+// That is misattribution, not absence — the worse category. Request A's database call appears in request
+// B's trace, under B's traceId and B's root, while A ships with zero children, and nothing signals it. The
+// child also starts BEFORE its own parent, which is structurally invalid. A long-poll or SSE request that
+// happens to start last holds the slot for its entire lifetime, so every outgoing call from every other
+// request during that window lands on it.
+//
+// The repo already knows this hazard and guards it one line away: `bugsee/src/wire.ts:255-259` gates the
+// trace-propagation decorator on `platform.pageload` because the same single slot "would leak the ambient
+// transaction's trace across concurrent server requests". The gate was simply missing here.
+describe('concurrent requests (Wave 3b.4)', () => {
+  it('parents each http.client span to the transaction that was active when the call STARTED', () => {
+    const { source, emit } = fakeNetworkSource();
+    const a = fakeActive();
+    const b = fakeActive();
+    let active = a.span;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+
+    // Request A starts its outgoing call…
+    emit(
+      'before',
+      netEvent({ id: 'req-a', timestamp: 1_000_000, url: 'https://db/a', method: 'GET' }),
+    );
+    // …then request B arrives and takes the slot (this is what a concurrent server does)…
+    active = b.span;
+    emit(
+      'before',
+      netEvent({ id: 'req-b', timestamp: 1_000_010, url: 'https://db/b', method: 'GET' }),
+    );
+    // …and A's call completes last.
+    emit(
+      'complete',
+      netEvent({ id: 'req-a', timestamp: 1_000_020, type: 'complete', status: 200 }),
+    );
+
+    expect(a.calls.map((c) => c.opts.description)).toEqual(['GET https://db/a']);
+    expect(b.calls).toEqual([]); // B did not make that call and must not be credited with it
+  });
+
+  it('never produces a child that starts before its own parent', () => {
+    // The structural consequence: a waterfall renderer draws a negative offset. Measured on the broken
+    // code — B start 1000010, child start 1000000.
+    const { source, emit } = fakeNetworkSource();
+    const a = fakeActive();
+    const b = fakeActive();
+    let active = a.span;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+    emit('before', netEvent({ id: 'x', timestamp: 1_000_000, url: 'https://db/a' }));
+    active = b.span;
+    emit('complete', netEvent({ id: 'x', timestamp: 1_000_020, type: 'complete' }));
+    expect(b.calls).toEqual([]);
+    expect(a.calls[0]?.opts.startTimestampMs).toBe(1_000_000);
+  });
+
+  it('drops a call that had no transaction when it started', () => {
+    // Binding at start also means a call issued outside any transaction stays outside one, rather than
+    // being adopted by whichever transaction happens to be running when it finishes.
+    const { source, emit } = fakeNetworkSource();
+    const b = fakeActive();
+    let active: { recordChildSpan: unknown } | undefined;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+    emit('before', netEvent({ id: 'orphan', timestamp: 1_000_000, url: 'https://db/x' }));
+    active = b.span;
+    emit('complete', netEvent({ id: 'orphan', timestamp: 1_000_020, type: 'complete' }));
+    expect(b.calls).toEqual([]);
+  });
+
+  it('still records a call whose transaction stayed active throughout — the canary', () => {
+    // Without this, "no misattribution" is satisfied by recording nothing at all.
+    const { source, emit } = fakeNetworkSource();
+    const { span, calls } = fakeActive();
+    collectHttpSpans({ source, getActiveSpan: () => span as never });
+    emit('before', netEvent({ id: 'ok', timestamp: 1000, url: 'https://db/ok', method: 'POST' }));
+    emit('complete', netEvent({ id: 'ok', timestamp: 1200, type: 'complete', status: 201 }));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.opts.description).toBe('POST https://db/ok');
+  });
+
+  it('keeps each transaction’s own span budget when several are interleaved', () => {
+    // The cap is per-transaction. Binding at start must not collapse two transactions' budgets into one.
+    const { source, emit } = fakeNetworkSource();
+    const a = fakeActive();
+    const b = fakeActive();
+    let active = a.span;
+    collectHttpSpans({ source, getActiveSpan: () => active as never });
+    for (let i = 0; i < 120; i += 1) {
+      emit('before', netEvent({ id: `a${i}`, timestamp: 1000 + i, url: 'https://db/a' }));
+      emit('complete', netEvent({ id: `a${i}`, timestamp: 1100 + i, type: 'complete' }));
+    }
+    active = b.span;
+    emit('before', netEvent({ id: 'b1', timestamp: 2000, url: 'https://db/b' }));
+    emit('complete', netEvent({ id: 'b1', timestamp: 2100, type: 'complete' }));
+    expect(a.calls).toHaveLength(100); // A hit its own cap…
+    expect(b.calls).toHaveLength(1); // …and B still has its own budget
   });
 });

@@ -74,6 +74,14 @@ import { createHttpServerInterceptor, type ServerInstallable } from './http-serv
 import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
 import { startLivenessHeartbeat } from './liveness-heartbeat';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+import {
+  foreignListenerCount,
+  markOwnHandler,
+  nodeTerminatesOnRejection,
+  printFatal,
+  releaseSignalToDefault,
+  type UnhandledRejectionMode,
+} from './process-policy';
 import { createProfilingController, type ProfilingController } from './profiling-controller';
 import { recoverInstances } from './recover-instances';
 import {
@@ -126,6 +134,15 @@ const NODE_OPTION_DEFINITIONS = [
   { friendly: 'hangSevereMs', key: BugseeOption.DetectHangSevereMs, default: 10_000 },
 ];
 
+/**
+ * Signals that mean "shut down" and therefore have to flush (Wave 6.1).
+ *
+ * SIGTERM is the orchestrator's stop (Kubernetes, Docker, systemd), SIGINT is Ctrl-C in a terminal, SIGHUP
+ * is a closed terminal or a supervisor reload. SIGKILL is deliberately absent — it cannot be caught, which
+ * is precisely why the durable store appends every entry as captured rather than relying on a flush.
+ */
+const FLUSH_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+
 /** The Node runtime surface launch needs: process lifecycle events + a way to exit on crash. */
 export interface NodeRuntime extends ProcessEvents {
   exit(code?: number): void;
@@ -147,6 +164,12 @@ export interface BugseeLaunchOptions {
   captureLogs?: boolean;
   /** Capture network (fetch/xhr/ws/sse/webtransport + node:http). Default true. */
   captureNetwork?: boolean;
+  /**
+   * How an unhandled promise rejection is disposed of (decision D2). Default `'preserve'`: capture it, then
+   * reproduce Node's own outcome (print + exit 1). `'warn'` captures and prints but stays alive (Sentry's
+   * default); `'none'` installs no listener, leaving Node's behaviour completely untouched.
+   */
+  unhandledRejections?: UnhandledRejectionMode;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
@@ -214,7 +237,14 @@ export interface BugseeLaunchOptions {
   captureWriter?: 'inline' | 'worker';
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
   shutdownTimeoutMs?: number;
-  /** Call process.exit(1) after flushing an uncaught exception. Default true. */
+  /**
+   * Call process.exit(1) after flushing an uncaught EXCEPTION. Default true.
+   *
+   * Governs the `uncaughtException` path only. The unhandled-REJECTION path is governed by
+   * {@link NodeLaunchOptions.unhandledRejections}: set it to `'warn'` to keep the process alive there.
+   * Setting this to `false` does not affect rejections — it used to, which silently downgraded the
+   * `preserve` default and turned a crashing service into one reporting exit 0.
+   */
   exitOnUncaught?: boolean;
   /**
    * Durably persist each bundle before upload and re-upload any left behind by a crashed/killed run
@@ -232,7 +262,9 @@ export interface BugseeLaunchOptions {
   process?: NodeRuntime;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
-  /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
+  /** Scheduler for the capture-store tick + system-traces sampling. Its timers MUST be `unref`'d (or
+   *  otherwise not hold the loop open) — several SDK timers rely on it, and a plain `setInterval`
+   *  implementation stops the host process from ever exiting. Default global timers. */
   scheduler?: Scheduler;
   /** Capture store override; wins over dataDir/capturedDataStore. Default file-backed on disk (D3); 'memory' opts out. */
   captureStore?: CaptureStore;
@@ -633,7 +665,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // (Android BugseeDetectionHang). Each is gated by its controllingOption (the coordinator skips it when
   // disabled), so they are added unconditionally.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc));
-  client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+  if ((options.unhandledRejections ?? 'preserve') !== 'none') {
+    client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+  }
   client.addDetectionProvider(
     createHangDetectionProvider({
       thresholds: {
@@ -738,7 +772,22 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const detectCrash = resolved.isEnabled(BugseeOption.DetectCrash);
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const exitOnUncaught = options.exitOnUncaught ?? true;
-  const onUncaughtException = (): void => {
+  const rejectionMode = options.unhandledRejections ?? 'preserve';
+  // Write where Node's own default handler would have written. Installing a listener SUPPRESSES that
+  // default, so without this the operator loses the stack from their stdout/stderr pipeline — the first
+  // artifact they reach for (docs/review/node-A-launch.md SEV1 #4).
+  const writeStderr = (text: string): void => {
+    const stderr = (proc as { stderr?: { write?: (text: string) => void } }).stderr;
+    if (typeof stderr?.write === 'function') {
+      stderr.write(text);
+    }
+  };
+  /** True when Bugsee is the ONLY handler for `event`, i.e. Node's default disposition would have applied.
+   *  If the host installed its own handler it intends to survive (or to print/exit its own way), and acting
+   *  here would change the outcome purely because the SDK is installed (decision D2). */
+  const bugseeIsSoleHandler = (event: string): boolean => foreignListenerCount(proc, event) === 0;
+
+  const onUncaughtException = markOwnHandler((error: unknown): void => {
     // Synchronously flush the batched capture writer FIRST, so the crash report (assembled from capture)
     // and the rolling buffer are durable before we exit — a catchable crash loses nothing.
     try {
@@ -746,23 +795,71 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     } catch {
       // a flush failure must never replace the crash's own handling
     }
+    const sole = bugseeIsSoleHandler('uncaughtException');
+    if (sole) {
+      printFatal('[bugsee] uncaught exception:', error, writeStderr);
+    }
     void client.flush(shutdownTimeoutMs).finally(() => {
-      if (exitOnUncaught) {
+      // Exit only when Node would have exited anyway. A host that registered its own handler has taken
+      // responsibility for the outcome; killing its process because Bugsee happens to be installed is the
+      // same class of defect as the rejection suppression below, in the opposite direction.
+      if (exitOnUncaught && sole) {
         proc.exit(1);
       }
     });
-  };
+  });
   if (detectCrash) {
     proc.on('uncaughtException', onUncaughtException);
+  }
+
+  // Unhandled rejections (decision D2). Registering ANY listener disables Node's default disposition —
+  // since Node 15, throw-and-exit-1 — so a passive reporting listener silently converts a crashing service
+  // into one that keeps running and reports exit 0 to systemd/k8s/CI (SEV1 #1). `preserve` reproduces the
+  // outcome the host would have had; `warn` is Sentry's default (alive, but visible); `none` installs
+  // nothing at all, leaving Node entirely untouched.
+  const onUnhandledRejection = markOwnHandler((reason: unknown): void => {
+    if (!bugseeIsSoleHandler('unhandledRejection')) {
+      return; // the host already handles rejections — Node's default was never in play
+    }
+    printFatal('[bugsee] unhandled promise rejection:', reason, writeStderr);
+    if (rejectionMode !== 'preserve') {
+      return;
+    }
+    try {
+      chunkStorage?.flushSync?.();
+    } catch {
+      // a flush failure must never replace the rejection's own handling
+    }
+    void client.flush(shutdownTimeoutMs).finally(() => {
+      // `exitOnUncaught` is NOT consulted here: it is named for uncaught EXCEPTIONS, and `unhandledRejections`
+      // is the authority for this path. Composing them looked reasonable — both read as "do not end my
+      // process on the SDK's account" — but it let an exception option silently downgrade `preserve`, which
+      // is the DEFAULT and the only thing keeping a crashing service crashing. Since Node 15 an unhandled
+      // rejection terminates the process, so suppressing the exit here reports 0 to systemd/k8s/CI purely
+      // because the SDK is installed. (The comment that stood here claimed "the uninstrumented equivalent
+      // stays alive" — it does not; it dies.) A host that wants neither path to exit sets
+      // `unhandledRejections:'warn'`, which is exactly what that mode is for.
+      //
+      // …but "Node's outcome" is not a constant. A host running `--unhandled-rejections=warn` (or `none`,
+      // or via NODE_OPTIONS) keeps its process alive, and exiting here would kill a process Node would have
+      // kept — the exact inversion of the bug this mode prevents, with the previous workaround
+      // (`exitOnUncaught:false`) no longer gating this path. So `preserve` asks.
+      if (nodeTerminatesOnRejection(proc as { execArgv?: readonly string[] })) {
+        proc.exit(1);
+      }
+    });
+  });
+  if (detectCrash && rejectionMode !== 'none') {
+    proc.on('unhandledRejection', onUnhandledRejection);
   }
 
   // Flush-on-exit (P1.4): node's `'exit'` event is the LAST synchronous hook before the process goes — it
   // fires on a drained event loop, an explicit process.exit(), and after the crash handler's exit. Flush the
   // batched writer's buffers here so a graceful/clean shutdown reaches the page cache and loses nothing
   // (bounding the un-flushed window the 1 s timer otherwise covers to ~0). Non-intrusive: it only does sync
-  // work DURING exit and never alters exit behavior (unlike installing a SIGTERM handler, which would swallow
-  // the signal). Installed only when the batched writer is in use; removed on stop().
-  const onProcessExit = (): void => {
+  // work DURING exit and never alters exit behavior. Installed only when the batched writer is in use;
+  // removed on stop().
+  const flushBuffers = (): void => {
     try {
       chunkStorage?.flushSync?.();
     } catch (error) {
@@ -771,7 +868,27 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   };
   const flushesOnExit = chunkStorage?.flushSync !== undefined;
   if (flushesOnExit) {
-    proc.on('exit', onProcessExit);
+    proc.on('exit', flushBuffers);
+  }
+
+  // …and on a SIGNAL (Wave 6.1). `'exit'` covers a drained loop and an explicit process.exit(), but it does
+  // NOT fire on a signal — measured against a real process: `kill -TERM` exits 143 with the handler never
+  // called. SIGTERM is how Kubernetes, Docker and systemd stop a service, so the hook above was installed
+  // for the rarest shutdown and missing from the normal one, and every graceful shutdown lost the buffer.
+  //
+  // The reason this was avoided until now — a signal listener SUPPRESSES Node's default termination — is
+  // real, and it is what `releaseSignalToDefault` exists to undo: flush, remove self, and re-raise only if
+  // no listener remains, so the process still dies with the right code and a host handler still wins.
+  const signalFlushHandlers = new Map<string, () => void>();
+  if (flushesOnExit) {
+    for (const signal of FLUSH_SIGNALS) {
+      const handler = markOwnHandler((): void => {
+        flushBuffers();
+        releaseSignalToDefault(proc, signal, handler);
+      });
+      signalFlushHandlers.set(signal, handler);
+      proc.on(signal, handler);
+    }
   }
 
   // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out —
@@ -813,9 +930,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     stop(timeout?: number): Promise<boolean> {
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
+        // …and the rejection policy listener. Leaving it behind meant a STOPPED SDK still suppressed
+        // Node's default disposition: `warn` + stop() + a rejection kept the process alive (control exits
+        // 1), and `preserve` + stop() called flushSync on a disposed store and exit(1) from a stopped
+        // client. launch→stop→launch accumulated listeners: 3 after two cycles, two prints, two exits.
+        proc.off('unhandledRejection', onUnhandledRejection);
       }
       if (flushesOnExit) {
-        proc.off('exit', onProcessExit); // the dispose() below already flushes + closes
+        proc.off('exit', flushBuffers); // the dispose() below already flushes + closes
+        for (const [signal, handler] of signalFlushHandlers) {
+          proc.off(signal, handler); // …and leave the host's signal disposition exactly as we found it
+        }
+        signalFlushHandlers.clear();
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
       heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)

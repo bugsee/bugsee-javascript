@@ -34,6 +34,14 @@ export interface ChunkStorage {
   sealChunk?(generation: number, chunk: number): void;
   /** Flush everything + close all handles (on stop()). */
   dispose?(): void;
+  /**
+   * Bytes currently held UNWRITTEN by a batched writer (Wave 6.3), or absent where nothing is buffered.
+   *
+   * This is the quantity a back-pressure bound exists to cap: a storage that defers physical writes holds
+   * captured records in memory until they land, and a persistently failing disk otherwise turns that hold
+   * into unbounded growth in the host process.
+   */
+  bufferedBytes?(): number;
 }
 
 // Service token for the chunk-storage medium. Present only in file-backed mode (a dataDir, no captureStore

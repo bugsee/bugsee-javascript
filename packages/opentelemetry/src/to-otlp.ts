@@ -91,9 +91,14 @@ export function spanKindFor(operation: string, attributes?: Record<string, unkno
 }
 
 /**
- * A stable 8-byte (16-hex) span id for the implicit root, derived from the 16-byte trace id. Assumes the
- * trace id is random (WebCrypto/Math.random in @bugsee/performance), so collision with a child span id —
- * or the all-zero invalid id — is ~2^-64, negligible.
+ * LEGACY FALLBACK ONLY — a span id derived from the trace id, for a `TransactionWire` that predates the
+ * `spanId` field. Do not use for new payloads.
+ *
+ * This used to produce EVERY root span id, and the reasoning above it ("collision … is ~2^-64") answered
+ * the wrong question. Collision with a sibling child was never the risk; determinism was. The id it
+ * returns is a pure function of the trace id, so every service in a distributed trace produced the SAME
+ * root id — and, worse, `traceparent` propagates the transaction's REAL span id, so a downstream root's
+ * parent pointed at a span that was never emitted. The trace broke at every boundary (Wave 5.3).
  */
 export function deriveRootSpanId(traceId: string): string {
   return traceId.slice(0, 16).toLowerCase();
@@ -101,7 +106,9 @@ export function deriveRootSpanId(traceId: string): string {
 
 /** Map one transaction to its OTLP spans: the derived root span followed by its (tree-linked) children. */
 export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
-  const rootSpanId = deriveRootSpanId(txn.traceId);
+  // The transaction's REAL span id — the one `traceparent` propagates, so an upstream root and a
+  // downstream `parentSpanId` actually meet. Falls back to the derived form only for a legacy wire.
+  const rootSpanId = txn.spanId ?? deriveRootSpanId(txn.traceId);
   const childIds = new Set(txn.spans.map((s) => s.spanId));
   // Profile v1 §8: the OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
   // Every span shares that one decision (the Bugsee §8.8 transaction wire carries a single root-level

@@ -12,6 +12,7 @@
 import { fileURLToPath } from 'node:url';
 import { EdgeVM } from '@edge-runtime/vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { assertNoContractViolations } from './bundle';
 import { type MockCollector, startMockCollector } from './collector';
 import { bundleEdgeEntry, bundleEdgePackage } from './edge-bundle';
 
@@ -22,12 +23,25 @@ const GZIP_BUDGET = 150 * KB;
 const WORKERS_FREE_LIMIT = 3 * KB * KB;
 
 describe('X2 — edge bundle-size guard', () => {
+  // The node:* builtins each package is ALLOWED to import statically.
+  //
+  // @bugsee/vercel-edge: none. It must run on any WinterCG isolate.
+  //
+  // @bugsee/cloudflare: exactly `node:async_hooks`, and nothing else. globalThis.AsyncLocalStorage does not
+  // exist on workerd under ANY compatibility flag, so this is the only route to per-request context there —
+  // which is why `nodejs_compat` is a documented REQUIREMENT of the package (Wave 0.1 S0,
+  // docs/design/cloudflare-tenant-isolation.md §7). The allowlist is deliberately EXACT rather than relaxed
+  // to "any node import": a second builtin creeping in would still fail here.
+  const ALLOWED_NODE_IMPORTS: Record<string, string[]> = {
+    '@bugsee/vercel-edge': [],
+    '@bugsee/cloudflare': ['node:async_hooks'],
+  };
+
   for (const pkg of ['@bugsee/vercel-edge', '@bugsee/cloudflare']) {
-    it(`${pkg} bundles node-free and well under the size budget`, async () => {
+    it(`${pkg} imports only its allowed node builtins and stays well under the size budget`, async () => {
       const bundle = await bundleEdgePackage(pkg);
-      // No STATIC node:* import — only the guarded dynamic `import("node:crypto")` (which never runs on edge).
-      const staticNodeImports = bundle.code.match(/(?<!\()import\s*["']node:[a-z_/]+["']/g) ?? [];
-      expect(staticNodeImports).toEqual([]);
+      // STATIC node:* imports only — the guarded dynamic `import("node:crypto")` never runs on edge.
+      expect(bundle.nodeImports).toEqual(ALLOWED_NODE_IMPORTS[pkg]);
       console.info(
         `[bundle] ${pkg}: ${(bundle.bytes / KB).toFixed(1)} KB raw / ${(bundle.gzipBytes / KB).toFixed(1)} KB gzip`,
       );
@@ -86,5 +100,14 @@ describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () 
     await runSmoke('__runDurableObject');
     expect(incidentIssue('durable-object vm incident')).toBeDefined();
     expect(collector.uploads.length).toBeGreaterThan(before);
+  });
+
+  // Runs last, so it covers every upload the three smokes above produced. The collector schema-validates
+  // each session/issue/manifest/request.json and RECORDS failures; that recording is inert unless a suite
+  // reads it, and until now only the node/bun/deno suite did. A wire break on the EDGE assembler — a
+  // different assembler from the node one — would have been recorded and silently discarded
+  // (docs/review/session-integration-review.md SEV2 #1).
+  it('none of the edge upload paths violate the upload contract', () => {
+    assertNoContractViolations(collector);
   });
 });

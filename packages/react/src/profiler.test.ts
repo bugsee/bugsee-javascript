@@ -85,23 +85,35 @@ describe('recordReactRenderSpan', () => {
 });
 
 describe('BugseeProfiler', () => {
-  it('renders a React Profiler wrapping the children, with an onRender that records the span', () => {
+  // The direct-call test that lived here — `BugseeProfiler({...})` invoked as a plain function, asserting
+  // `element.type === Profiler` and driving `props.onRender` by hand — became invalid when the component
+  // gained hooks for the production fallback (Wave 4.6 / D4): calling a hook component outside a renderer
+  // throws "Invalid hook call".
+  //
+  // Its three assertions are all covered better by `profiler.render.test.ts`, which renders through real
+  // react-dom: that a span IS recorded on a dev render can only happen if a real `<Profiler>` fired, which
+  // subsumes the structural check. The one thing worth keeping explicitly is that the DEV path uses
+  // React's OWN timings rather than the fallback's — asserted there by the absence of `ui.render_source`.
+  it('uses React’s own timings in development, not the fallback measurement', () => {
     const { client, recordChildSpan } = fakeActive();
-    const element = BugseeProfiler({
-      id: 'Page',
-      getClient: () => client,
-      timeOrigin: 0,
-      children: 'CHILD',
-    } as BugseeProfilerProps);
-    expect(element.type).toBe(Profiler); // it's a real React Profiler
-    expect(element.props.id).toBe('Page');
-    expect(element.props.children).toBe('CHILD');
-    // drive the onRender callback React would call → records the render span
-    element.props.onRender('Page', 'mount', 5, 6, 10, 18);
+    // Drive the recording core exactly as the live-Profiler path does: no `source`, React's numbers.
+    recordReactRenderSpan(
+      {
+        id: 'Page',
+        phase: 'mount',
+        actualDuration: 5,
+        baseDuration: 6,
+        startTime: 10,
+        commitTime: 18,
+      },
+      { getClient: () => client, timeOrigin: 0 },
+    );
     expect(recordChildSpan).toHaveBeenCalledWith(
       'ui.render',
       expect.objectContaining({ description: 'Page', startTimestampMs: 10, endTimestampMs: 18 }),
     );
+    const [, opts] = recordChildSpan.mock.calls[0] as [string, Record<string, unknown>];
+    expect((opts.attributes as Record<string, unknown>)['ui.render_source']).toBeUndefined();
   });
 });
 
@@ -140,5 +152,51 @@ describe('withBugseeProfiler', () => {
     const Hoc = withBugseeProfiler(Wrapped, 'X');
     const el = (Hoc as (p: { label: string }) => ReactElement)({ label: 'z' });
     expect((el.props.children as ReactElement).props).toEqual({ label: 'z' });
+  });
+});
+
+// WAVE 4.6 — the production caveat, pinned as a contract rather than left in prose.
+//
+// React disables `<Profiler>` in a standard production build, so `<BugseeProfiler>` records ZERO spans in
+// the build customers ship. The SDK cannot change that — it depends on which `react-dom` the APP bundles —
+// so the resolution is an honest, discoverable escape hatch: `recordReactRenderSpan` is React-free and
+// takes plain numbers, so an app can feed it from `react-dom/profiling` or from timings it already has.
+// These tests exist so that escape hatch cannot be removed or made React-dependent without failing.
+describe('the production escape hatch (Wave 4.6)', () => {
+  it('recordReactRenderSpan works with NO React involved at all', () => {
+    const recordChildSpan = vi.fn();
+    const client = {
+      ext: () => ({ getActiveSpan: () => ({ recordChildSpan }) }),
+    } as unknown as Bugsee;
+    recordReactRenderSpan(
+      {
+        id: 'Checkout',
+        phase: 'update',
+        actualDuration: 12,
+        baseDuration: 9,
+        startTime: 100,
+        commitTime: 112,
+      },
+      { getClient: () => client, timeOrigin: 0 },
+    );
+    expect(recordChildSpan).toHaveBeenCalled();
+  });
+
+  it('takes plain numbers — no Profiler payload object required', () => {
+    // The property that makes the escape hatch usable from a non-React timing source.
+    expect(recordReactRenderSpan.length).toBeGreaterThanOrEqual(1);
+    expect(() =>
+      recordReactRenderSpan(
+        {
+          id: 'X',
+          phase: 'mount',
+          actualDuration: 1,
+          baseDuration: 1,
+          startTime: 0,
+          commitTime: 1,
+        },
+        { getClient: () => undefined },
+      ),
+    ).not.toThrow();
   });
 });

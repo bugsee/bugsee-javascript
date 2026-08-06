@@ -176,7 +176,11 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     document.body.appendChild(input);
     document.dispatchEvent(new window.Event('focus')); // a tracked change recomputes the secure areas
 
-    const secure = rx.byKind('secure')[0];
+    // The LAST secure message: [0] is the initial push emitted at start(), which precedes this password
+    // input existing. Native masks from the pushed stream, so an initial push is required — see
+    // packages/webview/src/obscuring-composer.ts start().
+    const secures = rx.byKind('secure');
+    const secure = secures[secures.length - 1];
     expect(secure).toBeDefined();
     const areas = secure?.p as unknown as Array<{ type: string }>;
     expect(areas.some((a) => a.type === 'text')).toBe(true); // the password input is a secure 'text' area

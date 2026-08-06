@@ -1,10 +1,16 @@
 # Server-tier disk capture: default-on, non-blocking batched writes — DESIGN
 
-**Status:** DESIGN — approach + all forks accepted (durability contract relaxed for servers; never stall the
-host; `capturedDataStore` option; **zero-copy/zero-alloc shared-ring** write path). Not yet built. Touches a
-BINDING rule ([[persistent-capture-durable-as-captured]]) and the capture hot path → warrants a multi-agent
-design review + a benchmark before implementation. Scope: `@bugsee/node` (+ bun/deno, which reuse it);
-browser unchanged.
+**Status:** **BUILT + on `main`.** Phase 1 complete (2026-06-17): batched `writev` writer, flat tab-frame,
+disk-by-default (`capturedDataStore`, `os.tmpdir()/bugsee`), 7-day TTL sweep, flush-on-exit. **Phase 2 (worker
++ SharedArrayBuffer ring) is ALSO built** as an **opt-in** path — `packages/node-utils/src/capture-ring.ts`,
+`capture-ring-writer.ts`, `capture-ring-drainer.ts`, `worker-ring-worker.ts`. Approach + all forks accepted
+(durability contract relaxed for servers; never stall the host; **zero-copy/zero-alloc shared-ring** write
+path). Scope: `@bugsee/node` (+ bun/deno, which reuse it); browser unchanged.
+
+> **Known defects (adversarial review 2026-07-26, `docs/review/node-utils.md`):** the Phase-2 ring producer
+> corrupts HEAD on an empty ring (measured ~1.9 GiB overshoot → permanently silent capture loss), and the
+> Phase-1 default writer answers `ENOSPC` with unbounded memory growth rather than back-pressure. The
+> "zero loss on SIGTERM" guarantee below is **not** delivered — `process.on('exit')` does not run on SIGTERM.
 
 ## 1. Problem
 

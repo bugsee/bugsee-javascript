@@ -1,4 +1,9 @@
-import { type AdapterMechanism, type ReportErrorOptions, reportError } from '@bugsee/web-adapter';
+import {
+  type AdapterMechanism,
+  neverThrow,
+  type ReportErrorOptions,
+  reportError,
+} from '@bugsee/web-adapter';
 import { vueComponentName } from './component-name';
 
 // The @bugsee/vue ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Vue 3). Hooks Vue's
@@ -38,12 +43,32 @@ export function reportVueError(error: unknown, options: ReportVueErrorOptions = 
   reportError(error, { ...options, ...(labels.length > 0 ? { labels } : {}) });
 }
 
+/**
+ * Vue's OWN default behaviour when no `app.config.errorHandler` is set, reproduced.
+ *
+ * Installing a handler REPLACES Vue's default. Without this, an app that had no handler of its own lost the
+ * only thing that surfaces an uncaught error: measured on real vue 3.5.38, the production build went from 1
+ * `console.error` to 0, and the dev build from a thrown `app.mount()` + a `[Vue warn]` to silence. Identical
+ * to the Angular defect fixed in e17f389 — this is its sibling, one package over. Vue is a structural peer
+ * here (never imported), so the default is reproduced rather than delegated to.
+ */
+const vueDefaultErrorHandler = (err: unknown): void => {
+  console.error(err);
+};
+
 /** Install Bugsee on a Vue app's global error handler, CHAINING any pre-existing handler (the app keeps its
- *  own). Call once after `createApp(...)`. */
+ *  own) or Vue's own default when there is none. Call once after `createApp(...)`. */
 export function installBugseeErrorHandler(app: VueAppLike, options: VueErrorOptions = {}): void {
   const previous = app.config.errorHandler;
   app.config.errorHandler = (err, instance, info) => {
-    reportVueError(err, { ...options, info, instance });
-    if (typeof previous === 'function') previous(err, instance, info); // preserve the app's own handler
+    // Contained (Wave 2.1): the component-name lookup and label building run here too, and a throw from any
+    // of it would skip the app's own handler below — turning a recoverable error into an unrecoverable one
+    // at exactly the moment the app needs its handler most.
+    neverThrow(() => reportVueError(err, { ...options, info, instance }), options.onError);
+    if (typeof previous === 'function') {
+      previous(err, instance, info); // preserve the app's own handler
+    } else {
+      vueDefaultErrorHandler(err); // …and Vue's own when the app had none
+    }
   };
 }

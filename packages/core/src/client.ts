@@ -1,4 +1,9 @@
-import type { EnvironmentEnvelope, LogLevel, Mechanism } from '@bugsee/protocol';
+import {
+  type EnvironmentEnvelope,
+  type LogLevel,
+  logLevelToWire,
+  type Mechanism,
+} from '@bugsee/protocol';
 import {
   createServiceContainer,
   defineService,
@@ -342,7 +347,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
     const assemble = async (request: ReportingRequest): Promise<Bundle> => {
-      const capturedByType = await captureExporter.drain();
+      // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
+      // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
+      // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
+      // where the partitioned store is a no-op and this is byte-identical to an unscoped drain.
+      const reportContext = reportContexts.get(request);
+      const capturedByType = await captureExporter.drain(
+        reportContext?.owner !== undefined ? { owner: reportContext.owner } : undefined,
+      );
       // Merge report-time snapshots (e.g. the DOM viewtree) into the drained map. Each source is
       // isolated: a throw goes to onError and the report still uploads (a missing snapshot must never
       // block delivery).
@@ -363,7 +375,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           }
         }
       }
-      const captured = reportContexts.get(request);
+      const captured = reportContext;
       return assembleBundle(request, capturedByType, {
         appToken,
         environment: getEnvironment(),
@@ -551,7 +563,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       if (filtered === null) {
         return; // dropped by the log filter
       }
-      captureAggregator.addEntry(new CaptureDataEntryBase('log', filtered.timestamp, filtered));
+      // The wire level is NUMERIC (design §8.9, mobile parity). Encoded AFTER the filter so a user's
+      // `logFilter` still sees the friendly name it was written against — the same ordering the capture
+      // provider uses. Wave 5.1 fixed that provider and left this path, the MANUAL API, shipping the string.
+      const wire: LogEvent =
+        typeof filtered.level === 'string'
+          ? { ...filtered, level: logLevelToWire(filtered.level) }
+          : filtered;
+      captureAggregator.addEntry(new CaptureDataEntryBase('log', wire.timestamp, wire));
     },
 
     event(name: string, params?: Record<string, unknown>): void {

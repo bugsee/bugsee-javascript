@@ -46,6 +46,7 @@ import {
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
+import { isServiceWorker } from '@bugsee/util';
 import {
   buildWorkerEnvironment,
   realWorkerProbe,
@@ -119,7 +120,9 @@ export interface BugseeWorkerLaunchOptions {
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
 
-  /** environment.platform.type. Default 'web-worker' (pass 'service-worker' from a Service Worker). */
+  /** environment.platform.type. DETECTED from the runtime (`ServiceWorkerGlobalScope`); pass this only to
+   *  override that. It also decides the `persist` default, so detection is what makes a Service Worker
+   *  durable without the developer knowing this option exists. */
   platformType?: WorkerPlatformType;
   /** Durable bundle store override (crash recovery across restarts). Default: IndexedDB when `persist`. */
   bundleStore?: BundleStore;
@@ -185,7 +188,13 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
 
   // Persistence defaults ON for a Service Worker (terminated when idle) and OFF for a long-lived Web Worker.
-  const persist = options.persist ?? options.platformType === 'service-worker';
+  // DETECTED, not declared. `platformType` defaulted to 'web-worker' and `persist` derives from it, so a
+  // Service Worker installed the documented way silently ran memory-only and lost everything each time the
+  // worker was terminated for idleness — nothing errored, nothing warned. `isServiceWorker()` has been in
+  // @bugsee/util the whole time with zero callers (Wave 4.2). An explicit option still wins.
+  const platformType: WorkerPlatformType =
+    options.platformType ?? (isServiceWorker() ? 'service-worker' : 'web-worker');
+  const persist = options.persist ?? platformType === 'service-worker';
   // Persist the ROLLING capture buffer too (durable IDB chunk store + marker recovery) when persisting and no
   // capture-store override — so a Service Worker killed BEFORE its incident bundle is assembled still delivers
   // the report, rebuilt from its preserved capture chunks, on the next activation. `recoverEnabled` additionally
@@ -226,7 +235,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     buildWorkerEnvironment(
       {
         sdkVersion,
-        platformType: options.platformType ?? 'web-worker',
+        platformType,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),

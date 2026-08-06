@@ -6,7 +6,7 @@ import {
   type LogEvent,
   runFilter,
 } from '@bugsee/core';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, logLevelToWire } from '@bugsee/protocol';
 
 // Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to a log SOURCE and routes each
 // LogEvent to the aggregator as a `log` capture entry. The source is any emitter with a 'log' stage —
@@ -16,6 +16,22 @@ import { BugseeOption } from '@bugsee/protocol';
 
 /** A source of log events — any emitter exposing a `log` stage (e.g. the console interceptor). */
 export type LogSource = EventSubscribable<{ log: LogEvent }>;
+
+/**
+ * Encode the log level to its NUMERIC wire value (design §8.9, mobile parity).
+ *
+ * `LogEvent.level` is `LogLevelName | LogLevel`, sources emit the friendly NAME, and nothing converted — so
+ * every console-captured line reached the backend as `"error"` where the viewer expects `1`.
+ * `logLevelToWire` had existed in @bugsee/protocol, exported and unit-tested, with zero callers outside its
+ * own test (Wave 5.1).
+ *
+ * Applied HERE because the provider is the single point every log entry passes through, and AFTER the user
+ * filter: a `logFilter` is customer code written against the documented string levels, so converting first
+ * would silently break every filter matching on `'error'`. Returns a COPY — the hub event other subscribers
+ * observe stays exactly as it was emitted.
+ */
+const toWire = (event: LogEvent): LogEvent =>
+  typeof event.level === 'string' ? { ...event, level: logLevelToWire(event.level) } : event;
 
 class LogCaptureProvider extends CaptureProviderBase {
   readonly name = 'log';
@@ -35,10 +51,10 @@ class LogCaptureProvider extends CaptureProviderBase {
       if (filters?.log) {
         const out = runFilter(filters.log, event, filters.onError);
         if (out !== null) {
-          this.capture('log', out.timestamp, out);
+          this.capture('log', out.timestamp, toWire(out));
         }
       } else {
-        this.capture('log', event.timestamp, event);
+        this.capture('log', event.timestamp, toWire(event));
       }
     });
   }

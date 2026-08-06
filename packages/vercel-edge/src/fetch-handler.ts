@@ -1,4 +1,5 @@
 import type { AttributeValue } from '@bugsee/core';
+import { sanitizeUrl } from '@bugsee/protocol';
 import { runInEdgeContext } from './edge-context';
 import type { Bugsee } from './launch';
 import type { EdgeExecutionContext } from './wait-until';
@@ -35,7 +36,9 @@ export function requestAttributes(request: Request): Record<string, AttributeVal
     } catch {
       // a relative / malformed URL → keep the raw value
     }
-    attributes['http.url'] = target;
+    // The pathname reduction above already drops the query and any userinfo; the fallback does not, so
+    // scrub before stamping. A no-op on the happy path (Wave 1.1).
+    attributes['http.url'] = sanitizeUrl(target);
   }
   return attributes;
 }

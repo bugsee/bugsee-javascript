@@ -77,6 +77,18 @@ describe('withBugseeFetch', () => {
     expect('http.method' in (malformed ?? {})).toBe(false);
   });
 
+  it('redacts secrets on the malformed-URL fallback, where the query is NOT dropped (Wave 1.1)', async () => {
+    // The happy path reduces the URL to `new URL(...).pathname`, which discards the query and any
+    // userinfo. The fallback keeps the value raw — so it is the one branch here that can carry a secret.
+    const { client, store } = fakeClient();
+    let attrs: Record<string, unknown> | undefined;
+    await withBugseeFetch(client, async (..._a: unknown[]) => {
+      attrs = store.getCurrent()?.attributes;
+      return new Response('ok');
+    })({ url: '/cb?id_token=SECRET' } as unknown as Request, {}, { waitUntil: vi.fn() });
+    expect(attrs?.['http.url']).toBe('/cb?id_token=%3Credacted%3E');
+  });
+
   it('returns the handler Response on the no-store SUCCESS path (degraded, no context)', async () => {
     const { client } = fakeClient({ withStore: false });
     const waitUntil = vi.fn();

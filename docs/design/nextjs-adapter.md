@@ -1,7 +1,12 @@
 # @bugsee/nextjs — design (research-enhanced)
 
-**Status:** DESIGN (2026-07-03). Informed by competitor + Next.js-platform research (three sourced reports;
-see the Decision Log). Not yet built.
+**Status:** **PARTIALLY BUILT + on `main`** (2026-07-03 design; subsequently implemented). Slices N1–N5/N7
+are built. **Slice N6 (the tunnel + the `next.config` wrapper) is DESIGNED BUT NOT BUILT** — verified
+2026-07-27 by adversarial review (`docs/review/nextjs.md`): no tunnel route and no config wrapper exist in
+`packages/nextjs`. Also unbuilt/unverified: no real `next` dependency exists anywhere in the monorepo, so
+no Next.js semantics are exercised by any test, and the **Edge build does not compile** (`register.ts`'s
+literal dynamic import pulls all of `@bugsee/node` into the edge graph). Informed by competitor + Next.js-platform research (three sourced reports;
+see the Decision Log).
 
 ## 1. The key finding: the Next.js instrumentation pattern is SETTLED and Next.js-NATIVE
 

@@ -1,5 +1,10 @@
 import { getCarrierClient } from '@bugsee/core';
-import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
+import {
+  type Bugsee,
+  neverThrow,
+  runServerRequest,
+  type ServerInstrumentOptions,
+} from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
 // The Koa adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
@@ -32,7 +37,10 @@ export interface KoaAdapterOptions {
   /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
   /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx. */
-  shouldReport?: (err: unknown) => boolean;
+  shouldReport?: (
+    err: unknown,
+  ) => boolean /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */;
+  onError?: (error: unknown) => void;
 }
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
@@ -87,15 +95,18 @@ const toOptions = (options: KoaAdapterOptions): ServerInstrumentOptions => ({
 export function bugseeKoa(options: KoaAdapterOptions = {}): KoaMiddleware {
   const opts = toOptions(options);
   return async (ctx, next) => {
-    const traceparent = headerValue(ctx.headers, 'traceparent');
-    const user = options.user?.(ctx);
-    const info = {
-      method: ctx.method,
-      url: ctx.url,
-      route: matchedRoute(ctx), // _matchedRoute || path — refined again at finish once routing has run
-      ...(traceparent !== undefined ? { traceparent } : {}),
-      ...(user !== undefined ? { user } : {}),
-    };
+    // Built INSIDE a guard — see the note in @bugsee/express. Unguarded this 500'd the request on real koa 2.
+    const info = neverThrow(() => {
+      const traceparent = headerValue(ctx.headers, 'traceparent');
+      const user = options.user?.(ctx);
+      return {
+        method: ctx.method,
+        url: ctx.url,
+        route: matchedRoute(ctx), // _matchedRoute || path — refined again at finish once routing has run
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+    }, options.onError) ?? { method: 'GET', url: '' };
     await runServerRequest(info, opts, async (span) => {
       let errorStatus: number | undefined;
       try {

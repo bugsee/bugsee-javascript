@@ -145,6 +145,228 @@ describe('createNetworkCaptureProvider', () => {
     expect(event.custom?.headers).toEqual({ authorization: 'secret-token', accept: 'json' });
   });
 
+  // Wave 1.1. Every network source writes `event.url` verbatim and the provider is the ONE place that
+  // redacts — so a secret in the URL reached disk on every transport, and on node:http too (it folds into
+  // this same provider via `additionalSources`). Reproduced end-to-end in docs/review/capture.md SEV1 #4
+  // and docs/review/node-B-http-server.md SEV1 #3.
+  it('redacts a sensitive query value in the captured URL (non-mutating)', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    const event = netEvent({ url: 'https://api/x?api_key=QUERYAPIKEYSECRET&plain=v' });
+    source.emit('complete', event);
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('https://api/x?api_key=%3Credacted%3E&plain=v');
+    expect(event.url).toBe('https://api/x?api_key=QUERYAPIKEYSECRET&plain=v'); // input untouched
+  });
+
+  it('redacts URL userinfo credentials in the captured URL', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ url: 'http://alice:URLUSERINFOSECRET@127.0.0.1/secure' }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('http://alice:%3Credacted%3E@127.0.0.1/secure');
+  });
+
+  it('redacts the URL even when the event carries NO custom payload', async () => {
+    // ws/sse/webtransport events have no headers or body. Skipping such events entirely — the shape the
+    // sanitizer had before the URL was part of its job — would leave `wss://…?token=…` in the clear.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ url: 'wss://rt/socket?token=WSSECRET', custom: undefined }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('wss://rt/socket?token=%3Credacted%3E');
+  });
+
+  it('redacts the URL on an event that ALSO carries headers and a body', async () => {
+    // The fetch/xhr path always has a `custom` payload, so it takes a different branch from the ws/sse
+    // case above. Testing only the no-custom shape leaves the branch that serves MOST traffic unproven.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({
+        url: 'https://api/x?api_key=QUERYAPIKEYSECRET',
+        custom: { headers: { 'content-type': 'application/json' }, body: '{"password":"x"}' },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('https://api/x?api_key=%3Credacted%3E');
+    expect(captured.custom?.body).toBe('{"password":"<redacted>"}');
+  });
+
+  it('redacts the URL when the custom payload has nothing of its own to redact', async () => {
+    // headers and body both absent → the header/body comparison finds no change, and an early return
+    // keyed on that alone would hand back the event with its raw URL.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ url: 'https://api/x?token=T', custom: {} }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('https://api/x?token=%3Credacted%3E');
+  });
+
+  it('redacts a URL embedded in the ERROR MESSAGE, on both error fields', async () => {
+    // Found by the privacy e2e AFTER the url fix was in: undici reports "Request cannot be constructed
+    // from a URL that includes credentials: <the whole URL>", so the credential shipped in `customError`
+    // and `custom.error` while `url` itself was correctly redacted.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    const message = 'failed: http://alice:PWSECRET@127.0.0.1/secure?api_key=QSECRET';
+    source.emit(
+      'error',
+      netEvent({ type: 'error', customError: message, custom: { error: message } }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    const expected = 'failed: http://alice:%3Credacted%3E@127.0.0.1/secure?api_key=%3Credacted%3E';
+    expect(captured.customError).toBe(expected);
+    expect(captured.custom?.error).toBe(expected);
+  });
+
+  it.each([
+    ['statusText', 'Unauthorized: token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'],
+    ['reason', 'closing: password=hunter2'],
+    ['channel', 'refresh eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'],
+  ])('redacts the free-text field `%s`, which is remote-controlled', async (field, raw) => {
+    // These three carry text chosen by the SERVER, not the app: the HTTP reason phrase, the WebSocket
+    // CloseEvent reason (up to 123 bytes, and `close(4001, 'invalid token …')` is the idiomatic use), and
+    // the SSE event name. All three were copied through untouched while the comment above `sanitize()`
+    // called this "the single redaction point for every transport".
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ type: 'complete', [field]: raw }));
+    const captured = (await drainNetwork(store))?.[0]?.data as unknown as Record<string, string>;
+    expect(captured[field]).not.toContain('hunter2');
+    expect(captured[field]).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(captured[field]).toContain('redacted');
+  });
+
+  it('leaves an ordinary status phrase byte-for-byte alone', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({ type: 'complete', statusText: 'Not Found', reason: 'going away' }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.statusText).toBe('Not Found');
+    expect(captured.reason).toBe('going away');
+  });
+
+  it('survives a non-string Content-Type and still redacts the body', async () => {
+    // The XHR coercion fix built a sanitized header copy — and then the very next line read the CONTENT
+    // TYPE off the RAW headers. `contentTypeOf({'Content-Type': 42})` returns the number, and
+    // `sanitizeBody(body, 42)` throws on `.toLowerCase()`. The throw is swallowed by the emitter dispatch
+    // and the whole entry disappears: the exact failure mode the coercion was written to eliminate,
+    // reproduced one line later through the sibling accessor.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({
+        type: 'complete',
+        custom: {
+          headers: { 'Content-Type': 42 as unknown as string },
+          body: 'password=hunter2',
+        },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured).toBeDefined(); // the entry must still exist at all
+    expect(captured.custom?.body).not.toContain('hunter2');
+  });
+
+  it('survives a non-string url without dropping the entry', async () => {
+    // `sanitizeUrl(event.url)` is the one field with no `typeof` guard, where customError/body/error all
+    // have one. No producer emits a non-string today; a sanitizer that deletes the data it was asked to
+    // sanitize is the wrong way to find that out.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ type: 'complete', url: undefined as unknown as string }));
+    expect((await drainNetwork(store))?.[0]?.data).toBeDefined();
+  });
+
+  it('redacts customError even when it is the ONLY field that changes', async () => {
+    // With a clean url, no headers and no body, an unchanged-check that ignores customError returns the
+    // raw event — so the redaction above would run and then be thrown away.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'error',
+      netEvent({ type: 'error', customError: 'failed http://u:PWSECRET@h/x', custom: {} }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.customError).toBe('failed http://u:%3Credacted%3E@h/x');
+  });
+
+  it('leaves a null/absent error field alone', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('error', netEvent({ type: 'error', customError: null, custom: { error: null } }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.customError).toBeNull();
+    expect(captured.custom?.error).toBeNull();
+  });
+
+  it('leaves the URL raw when the default sanitizer is disabled', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(createOptionsContainer({ [BugseeOption.CaptureNetworkDefaultSanitizer]: false }));
+    source.emit('complete', netEvent({ url: 'https://api/x?token=T' }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('https://api/x?token=T');
+  });
+
+  it('does not redact the URL when a user network filter supersedes the sanitizer (XOR)', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    filters.network = (e) => e; // identity: the user owns redaction from here on
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ url: 'https://api/x?token=T' }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.url).toBe('https://api/x?token=T');
+  });
+
   it('sanitizes a JSON request/response body (key redaction) on the default path', async () => {
     const store = mkStore();
     const source = mkSource();
@@ -362,5 +584,27 @@ describe('createNetworkCaptureProvider', () => {
     offCoordinator.start(options, () => false);
     offSource.emit('complete', netEvent());
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
+  });
+});
+
+describe('network sanitize — custom.error as the ONLY dirty field', () => {
+  it('redacts it even when url, headers and body are all clean', async () => {
+    // Review finding: no test covered `custom.error` being the sole field needing redaction, and the
+    // unchanged-check could have returned the raw event. A probe emitted `u:PWSECRET@h/x` verbatim.
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'error',
+      netEvent({
+        type: 'error',
+        url: 'https://api/clean',
+        custom: { error: 'failed http://u:PWSECRET@h/x' },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.custom?.error).toBe('failed http://u:%3Credacted%3E@h/x');
   });
 });

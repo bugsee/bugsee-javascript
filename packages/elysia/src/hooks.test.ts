@@ -215,7 +215,16 @@ describe('setupElysia hooks', () => {
     expect(store.setAttribute).toHaveBeenCalledWith('http.route', '/raw');
   });
 
-  it('onError skips a framework error (NOT_FOUND) and finishes OK', () => {
+  it('onError skips a framework error (NOT_FOUND) and finishes OK — WITHOUT mapResponse', () => {
+    // WAVE 6.8. This test used to call `cap.mapResponse?.(c)` by hand, and that is what hid the defect:
+    // real Elysia short-circuits a NOT_FOUND and NEVER calls mapResponse. Probed on Elysia 1.4 via
+    // `app.handle`, hook order per request:
+    //   matched route      → onRequest | mapResponse
+    //   UNMATCHED (404)    → onRequest | onError NOT_FOUND            ← no mapResponse
+    //   wrong METHOD (404) → onRequest | onError NOT_FOUND            ← no mapResponse
+    //   VALIDATION (422)   → onRequest | onError VALIDATION | mapResponse
+    //   PARSE (400)        → onRequest | onError PARSE | mapResponse
+    // So NOT_FOUND is the one code that has to be finished from onError, and the only one.
     const txn = fakeTxn();
     const logException = vi.fn(() => Promise.resolve());
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) }, logException });
@@ -224,8 +233,66 @@ describe('setupElysia hooks', () => {
     cap.onRequest?.(c);
     cap.onError?.(c);
     expect(logException).not.toHaveBeenCalled();
+    expect(txn.finish).toHaveBeenCalledWith('OK'); // finished by onError alone
+  });
+
+  it('records 404 as the status of an unmatched route', () => {
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const cap = wire({ getClient: () => client });
+    const c = errCtx({ code: 'NOT_FOUND', error: new Error('nf') });
+    cap.onRequest?.(c);
+    cap.onError?.(c);
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 404);
+  });
+
+  it('finishes a NOT_FOUND exactly ONCE even if mapResponse does run', () => {
+    // Defensive against an Elysia version that stops short-circuiting: the finish is idempotent because
+    // the state is removed first, so mapResponse takes its `state === undefined` early return.
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const cap = wire({ getClient: () => client });
+    const c = errCtx({ code: 'NOT_FOUND', error: new Error('nf') });
+    cap.onRequest?.(c);
+    cap.onError?.(c);
     cap.mapResponse?.(c);
-    expect(txn.finish).toHaveBeenCalledWith('OK');
+    expect(txn.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('a MAPPED error still finishes once, from mapResponse — not twice', () => {
+    // VALIDATION/PARSE/UNKNOWN all reach mapResponse (probed above), and mapResponse is where the real
+    // response status is known. Finishing those from onError as well would double-count every 5xx.
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const cap = wire({ getClient: () => client });
+    const c = errCtx({ code: 'UNKNOWN', error: new Error('boom'), status: 500 });
+    cap.onRequest?.(c);
+    cap.onError?.(c);
+    cap.mapResponse?.(c);
+    expect(txn.finish).toHaveBeenCalledTimes(1);
+    expect(txn.finish).toHaveBeenCalledWith('ERROR');
+  });
+
+  it('pins the PARAMETRIZED route name on the finished transaction', () => {
+    // Review #7: deleting `setRoute(nameRoute(c))` survived the entire suite. It is not behaviour-neutral
+    // — without it the transaction is named `GET /users/42` instead of `GET /users/:id`, which is both the
+    // cardinality control and the PII control for span names.
+    //
+    // The route ARRIVES LATE, and modelling that is the whole point. Probed on Elysia 1.4:
+    //   GET /users/42 → onRequest   c.route = undefined   (routing has not run yet)
+    //                 → mapResponse c.route = /users/:id
+    // A test that hands the route to `onRequest` — as this one first did — makes the name correct from the
+    // start, so deleting `setRoute` changes nothing and the mutant survives. That is exactly how review #7
+    // slipped through 30 tests.
+    const txn = fakeTxn();
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const cap = wire({ getClient: () => client });
+    const c = ctx({ method: 'GET', url: 'http://x/users/42', status: 200 });
+    cap.onRequest?.(c); // no route yet → the span opens named from the raw PATH
+    (c as { route?: string }).route = '/users/:id'; // …routing runs…
+    cap.mapResponse?.(c);
+    expect(txn.setName).toHaveBeenCalledWith('GET /users/:id');
+    expect(txn.setName).not.toHaveBeenCalledWith('GET /users/42'); // never the id-bearing name
   });
 
   it('reports a numeric 5xx status code and skips a numeric 4xx', () => {

@@ -27,6 +27,17 @@ export interface UploadSourcemapsOptions {
   run?: RunFn;
   /** Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). */
   deleteMapFiles?: (dir: string) => Promise<string[]>;
+  /**
+   * FAIL the build when `bugsee-cli` fails. Default `false` (Wave 7).
+   *
+   * A telemetry side effect must not be able to break a production deploy: an expired token, a transient
+   * network error, a Bugsee outage or a binary missing from PATH used to reject `writeBundle` and abort the
+   * user's build, with no escape hatch at all. `@sentry/webpack-plugin` ships `errorHandler` for exactly
+   * this reason. Teams that WANT a hard failure opt in.
+   */
+  failOnError?: boolean;
+  /** Where a contained failure is reported. Default: a console warning naming the plugin. */
+  onError?: (error: unknown) => void;
 }
 
 export interface UploadSourcemapsResult {
@@ -35,14 +46,49 @@ export interface UploadSourcemapsResult {
   deletedMaps: string[];
 }
 
-/** Recursively delete every `*.map` under `dir`; returns the deleted paths. */
-export async function defaultDeleteMapFiles(dir: string): Promise<string[]> {
+/**
+ * Directories never descended into when deleting `.map` files (Wave 7).
+ *
+ * A relative `output.file` resolves the output dir to `'.'` — `path.dirname('bundle.js') === '.'`, an
+ * entirely ordinary Rollup library config — so the walk started at the PROJECT ROOT. With no exclusions it
+ * unlinked dependency source maps under `node_modules/` (breaking debugging until a reinstall) and a
+ * developer's own authored maps under `src/`. Silent, unrecoverable loss in the working tree, on by default.
+ */
+const NEVER_WALK = new Set([
+  'node_modules',
+  'src',
+  '.git',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.cache',
+  'test',
+  'tests',
+  '__tests__',
+]);
+
+/**
+ * Depth limit for the walk. Build output is shallow (`dist/assets/chunk.js.map` is 2); an unbounded walk
+ * from a mis-resolved root could traverse an entire disk.
+ */
+const MAX_DELETE_DEPTH = 6;
+
+/** Recursively delete every build `*.map` under `dir`; returns the deleted paths. */
+export async function defaultDeleteMapFiles(dir: string, depth = 0): Promise<string[]> {
+  if (depth > MAX_DELETE_DEPTH) {
+    return [];
+  }
   const deleted: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      deleted.push(...(await defaultDeleteMapFiles(full)));
+      // Skipped by NAME at every level, not just the root: a mis-resolved out dir puts these one level
+      // down, which is exactly the case that caused the loss.
+      if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
+        continue;
+      }
+      deleted.push(...(await defaultDeleteMapFiles(full, depth + 1)));
     } else if (entry.isFile() && entry.name.endsWith('.map')) {
       await unlink(full);
       deleted.push(full);
@@ -63,32 +109,54 @@ export async function uploadSourcemaps(
   const deleteMaps = options.deleteMaps ?? true;
   const dryFlag = dryRun ? ['--dry-run'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
+  const onError =
+    options.onError ??
+    ((error: unknown): void => {
+      console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
+    });
 
-  // 1. Inject debug-IDs (rewrites the built .js + .map in place).
-  await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+  try {
+    // 1. Inject debug-IDs (rewrites the built .js + .map in place).
+    await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
 
-  // 2. Upload the maps, keyed by the injected debug-ID (+ version/build metadata).
-  await run(
-    [
-      'debug-files',
-      'upload',
-      outDir,
-      '--type',
-      'sourcemaps',
-      '--version',
-      appVersion,
-      '--build',
-      appBuild,
-      ...dryFlag,
-    ],
-    cliOptions,
-  );
+    // 2. Upload the maps, keyed by the injected debug-ID (+ version/build metadata).
+    //
+    // SKIPPED entirely on a dry run (Wave 7). `sourcemaps inject --dry-run` writes nothing by design, so
+    // the maps still carry no debug_id and `debug-files upload --dry-run` then hard-fails — measured
+    // against the real bugsee-cli v0.7.2: exit 11, "source map has no debug_id … run 'sourcemaps inject'
+    // first". That failure aborted the user's build, on every freshly-built output directory, from the one
+    // option documented as the SAFE diagnostic.
+    if (dryRun) {
+      return { injected: true, uploaded: false, deletedMaps: [] };
+    }
+    await run(
+      [
+        'debug-files',
+        'upload',
+        outDir,
+        '--type',
+        'sourcemaps',
+        '--version',
+        appVersion,
+        '--build',
+        appBuild,
+      ],
+      cliOptions,
+    );
 
-  // 3. Delete the client .map files (privacy) — never on a dry run.
-  let deletedMaps: string[] = [];
-  if (deleteMaps && !dryRun) {
-    deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir);
+    // 3. Delete the client .map files (privacy) — only after a CONFIRMED upload. Deleting after a failure
+    //    would destroy the only copy of the mapping while the symbols were never delivered.
+    const deletedMaps = deleteMaps
+      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir)
+      : [];
+    return { injected: true, uploaded: true, deletedMaps };
+  } catch (error) {
+    // A telemetry side effect must not break a production deploy (Wave 7). Reported, never swallowed;
+    // `failOnError` is there for teams that would rather the build stopped.
+    if (options.failOnError === true) {
+      throw error;
+    }
+    onError(error);
+    return { injected: false, uploaded: false, deletedMaps: [] };
   }
-
-  return { injected: true, uploaded: true, deletedMaps };
 }

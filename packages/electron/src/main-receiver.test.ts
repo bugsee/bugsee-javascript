@@ -104,3 +104,84 @@ describe('createElectronMainReceiver', () => {
     expect(s.added).toEqual([]);
   });
 });
+
+describe('createElectronMainReceiver — report routing + listener containment', () => {
+  const ipc = () => {
+    const listeners: Array<(e: unknown, raw: string) => void> = [];
+    return {
+      ipcMain: {
+        on: (_c: string, l: (e: unknown, raw: string) => void) => listeners.push(l),
+        removeListener: () => {},
+      } as never,
+      send: (raw: string) => {
+        for (const l of listeners) l({ sender: { id: 3 } }, raw);
+      },
+    };
+  };
+  const inertStore = { add: () => {} };
+
+  it('routes a report to onReport WITHOUT storing it as capture', () => {
+    const { ipcMain, send } = ipc();
+    const added: unknown[] = [];
+    const reports: unknown[] = [];
+    createElectronMainReceiver({
+      ipcMain,
+      store: { add: (e) => added.push(e) },
+      onReport: (r) => reports.push(r),
+    }).start();
+    send(
+      JSON.stringify({ k: 'report', p: { source: { mechanism: 'uncaught' }, report: {} }, ts: 1 }),
+    );
+    expect(reports).toHaveLength(1);
+    expect(added).toHaveLength(0); // the store must not see an incident
+  });
+
+  it('passes the originating window id to onReport', () => {
+    const { ipcMain, send } = ipc();
+    let windowId = -99;
+    createElectronMainReceiver({
+      ipcMain,
+      store: inertStore,
+      onReport: (_r, id) => {
+        windowId = id;
+      },
+    }).start();
+    send(JSON.stringify({ k: 'report', p: { source: {}, report: {} }, ts: 1 }));
+    expect(windowId).toBe(3);
+  });
+
+  it('R5: a throwing store never escapes the ipcMain listener', () => {
+    // The listener runs inside Electron's IPC dispatch; a throw escapes into the host app's machinery and
+    // can take the channel — and with it ALL renderer capture — down.
+    const { ipcMain, send } = ipc();
+    const errors: unknown[] = [];
+    createElectronMainReceiver({
+      ipcMain,
+      store: {
+        add: () => {
+          throw new Error('store boom');
+        },
+      },
+      onError: (e) => errors.push(e),
+    }).start();
+    expect(() => send(JSON.stringify({ k: 'entry', t: 'log', p: {} }))).not.toThrow();
+    expect(String(errors[0])).toContain('store boom');
+  });
+
+  it('R5: a throwing onReport callback never escapes either', () => {
+    const { ipcMain, send } = ipc();
+    const errors: unknown[] = [];
+    createElectronMainReceiver({
+      ipcMain,
+      store: inertStore,
+      onReport: () => {
+        throw new Error('join boom');
+      },
+      onError: (e) => errors.push(e),
+    }).start();
+    expect(() =>
+      send(JSON.stringify({ k: 'report', p: { source: {}, report: {} }, ts: 1 })),
+    ).not.toThrow();
+    expect(String(errors[0])).toContain('join boom');
+  });
+});

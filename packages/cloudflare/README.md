@@ -82,13 +82,44 @@ endpoint, no new backend.
 `ctx.waitUntil` from it to flush an incident's upload after the response returns (an edge isolate freezes the
 instant it responds).
 
-**AsyncLocalStorage requires `nodejs_compat`.** Per-request context isolation uses
-`globalThis.AsyncLocalStorage`, which Cloudflare exposes only when the **`nodejs_compat`** (or the narrower
-**`nodejs_als`**) compatibility flag is enabled. Add it to `wrangler.toml`:
+**`nodejs_compat` is REQUIRED.** Add it to `wrangler.toml` and you are done — there is no SDK code to write:
 
 ```toml
+# wrangler.toml
 compatibility_flags = ["nodejs_compat"]
 ```
 
-Without it the SDK still runs but degrades to a single-slot context store (no isolation across `await`
-boundaries between concurrent requests in one isolate) and logs a one-time warning — it never throws. Tier 2.
+```ts
+import { launch } from '@bugsee/cloudflare';
+
+launch(env.BUGSEE_APP_TOKEN); // AsyncLocalStorage is wired for you
+```
+
+Per-request context isolation needs a run()-scoped async store. On Cloudflare, `globalThis.AsyncLocalStorage`
+**does not exist under any compatibility flag** — it is reachable only as an export of `node:async_hooks`.
+(Verified on real `workerd` 1.20260722.1 across the flag × compatibility-date matrix; see
+`docs/review/cloudflare.md` SEV1 #3. Earlier revisions of this README told you to add the flag and expect the
+global to appear — that was wrong, and the SDK silently ran without context isolation as a result.)
+
+The SDK therefore imports `node:async_hooks` itself, which is why the flag is required rather than merely
+recommended. **Without it your Worker fails to start**, with workerd unable to resolve the builtin — deliberately, so the
+problem is visible immediately instead of surfacing as silently missing context, route attribution and
+per-tenant isolation in production. (A wrangler-shaped bundle still *builds*, since `node:*` is external; the
+failure is at worker load.) `@sentry/cloudflare` requires the flag for the same reason.
+
+**Per-tenant capture isolation.** Durable Objects for different customers share one isolate, so their
+capture is partitioned per DO id and an incident uploads only the faulting tenant's data. This is on by
+default; `partitionCaptureByTenant: false` disables it.
+
+The `maxDataSize` budget is **divided** across `maxTenantPartitions + 1` rings (default 8 + 1) so total
+capture memory stays within the cap however many tenants appear — the alternative, a full budget per
+partition, measured 116 MB against a 128 MB isolate. The trade-off is per-tenant headroom: with the 10 MB
+default each tenant gets ~1.16 MB of rolling window. If your Workers host few tenants per isolate, raise
+headroom with `maxDataSize`, or lower `maxTenantPartitions` to divide the budget fewer ways:
+
+```ts
+launch(env.BUGSEE_APP_TOKEN, { maxTenantPartitions: 3 }); // 10 MB / 4 ≈ 2.5 MB per tenant
+```
+
+Advanced: `launch(token, { asyncLocalStorage })` accepts an explicit store, for tests or a runtime that
+provides its own. Callers' options win over the default. Tier 2.

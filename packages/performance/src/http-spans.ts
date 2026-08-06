@@ -1,5 +1,5 @@
 import type { EventSubscribable } from '@bugsee/core';
-import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
+import { type NetworkEvent, type NetworkStage, sanitizeUrl } from '@bugsee/protocol';
 import type { Span } from './span';
 
 // Active-APM http instrumentation: subscribe to the network interceptor (the cross-runtime
@@ -89,13 +89,38 @@ function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): 
 const MAX_HTTP_SPANS = 100;
 
 export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
-  const pending = new Map<string, { startTimestampMs: number; method: string; url: string }>();
+  // WAVE 3b.4 — the OWNER is bound when the call starts, not looked up when it finishes.
+  //
+  // `getActiveSpan()` is a single slot holding the most-recently-started transaction. On the browser that
+  // is the design (D12). On Node, `startTransaction` runs once per INCOMING request and a server serves
+  // them concurrently, so resolving the parent at completion attributed request A's outgoing call to
+  // whichever request happened to arrive last — A's database call in B's trace, under B's traceId, with A
+  // shipping zero children and nothing signalling it. The child also started before its own parent. A
+  // long-poll that starts last holds the slot for its whole lifetime, collecting everyone else's calls.
+  //
+  // Binding at the `before` stage is causally right in both worlds: a call belongs to the transaction that
+  // was running when it was ISSUED. The repo already guards the identical hazard one line away —
+  // `bugsee/src/wire.ts:255-259` gates the trace-propagation decorator on `platform.pageload` for exactly
+  // this reason — and that gate was simply missing here.
+  const pending = new Map<
+    string,
+    { startTimestampMs: number; method: string; url: string; owner: Span }
+  >();
   // Per-active-transaction recorded count (each transaction gets its own MAX_HTTP_SPANS budget). A
   // WeakMap so finished transactions are GC'd, never leaking entries over a long SPA session.
   const recordedByTxn = new WeakMap<Span, number>();
   const offs: Array<() => void> = [
     deps.source.on('before', (e) => {
-      pending.set(e.id, { startTimestampMs: e.timestamp, method: e.method, url: e.url });
+      const owner = deps.getActiveSpan();
+      // No transaction when the call was issued → it is not part of any trace. Adopting it at completion
+      // would attach it to a transaction that did not make it.
+      if (owner === undefined) return;
+      pending.set(e.id, {
+        startTimestampMs: e.timestamp,
+        method: e.method,
+        url: e.url,
+        owner,
+      });
     }),
   ];
 
@@ -103,8 +128,7 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     const start = pending.get(e.id);
     if (start === undefined) return; // no matching start (e.g. started before we subscribed)
     pending.delete(e.id);
-    const active = deps.getActiveSpan();
-    if (active === undefined) return; // no transaction in flight → not part of a trace
+    const active = start.owner; // the transaction that was running when THIS call was issued
     const recorded = recordedByTxn.get(active) ?? 0;
     if (recorded >= MAX_HTTP_SPANS) return; // this transaction's cap reached → drop the overflow
     recordedByTxn.set(active, recorded + 1);
@@ -114,7 +138,9 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     active.recordChildSpan('http.client', {
       startTimestampMs: start.startTimestampMs,
       endTimestampMs: e.timestamp,
-      description: `${start.method} ${start.url.replace(/[?#].*$/, '')}`,
+      // Dropping `?…` removes query secrets but NOT a `user:pass@` credential, which node:http fully
+      // supports; the description is uploaded like any other attribute (Wave 1.1).
+      description: `${start.method} ${sanitizeUrl(start.url.replace(/[?#].*$/, ''))}`,
       attributes: {
         'http.method': start.method,
         'http.mechanism': e.mechanism,

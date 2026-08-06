@@ -30,6 +30,7 @@ import {
   getServiceManifests,
   type LogEventFilter,
   type NetworkEventFilter,
+  neverThrow,
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
@@ -184,6 +185,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   let paused = false;
   let publicClient: Bugsee;
   let obscuring: ObscuringChannel | undefined; // TOP frame: the native I/O channel
+  // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
+  let obscuringWorks = false;
   let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
   const control = createBridgeControl({
     reportTrigger: options.reportTrigger ?? false,
@@ -198,7 +201,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
         void publicClient.flush();
       } else if (command === 'stop') {
         void publicClient.stop();
-      } else if (command === 'snapshot') {
+      } else if (command === 'snapshot' && obscuringWorks) {
+        // Gated on the same probe as `start()`. Ungated, native asking for a frame got a `secure` message
+        // it had never negotiated — on the page whose collection was just declared broken. "Silent on the
+        // wire" has to cover every path that reaches the wire, not the one the fix was looking at.
         obscuring?.emit();
       }
       // unknown → ignored.
@@ -320,19 +326,37 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
   const obscuringDoc = domDocument as unknown as ComposerDocument;
   const obscuringWin = win !== undefined ? { window: win as unknown as ComposerWindow } : {};
+  const obscuringErr = options.onError !== undefined ? { onError: options.onError } : {};
   if ((options.captureObscuring ?? true) && domDocument !== undefined) {
     if (isTopFrame) {
-      obscuring = createObscuringChannel({ bridge, document: obscuringDoc, ...obscuringWin, seq });
+      obscuring = createObscuringChannel({
+        bridge,
+        document: obscuringDoc,
+        ...obscuringWin,
+        ...obscuringErr,
+        seq,
+      });
     } else {
       childComposer = createObscuringComposer({
         document: obscuringDoc,
         ...obscuringWin,
+        ...obscuringErr,
         isTopFrame: false,
       });
     }
   }
-  // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native).
-  const caps = obscuring !== undefined ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
+  // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native), and
+  // only once a collection has been PROVEN to work. Declaring the capability is what makes native stand its
+  // legacy masking script down (D10), and the protocol has no retraction message — so on a page where
+  // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
+  // answer (docs/review/webview.md SEV1 #2).
+  //
+  // The probe result gates the CHANNEL as well as the capability. Declaring nothing but starting anyway
+  // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
+  // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
+  // from `caps`.
+  obscuringWorks = obscuring?.probe() === true;
+  const caps = obscuringWorks ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
@@ -348,8 +372,14 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
-  obscuring?.start();
-  childComposer?.start();
+  // Only when the probe proved collection works — see `obscuringWorks` above.
+  if (obscuringWorks) {
+    obscuring?.start();
+  }
+  // The channel guards the TOP frame; a SUB-frame composer is called directly, so its failures escaped
+  // launch() itself — and `window.parent` is [Replaceable], so one line of page script was enough
+  // (measured: `launch()` threw `hostile parent`, onError never fired).
+  neverThrow(() => childComposer?.start(), options.onError);
 
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
@@ -358,7 +388,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       obscuring?.stop(); // detach the secure-area observers/listeners
-      childComposer?.stop();
+      neverThrow(() => childComposer?.stop(), options.onError);
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       global.__bugsee_bridge = undefined;

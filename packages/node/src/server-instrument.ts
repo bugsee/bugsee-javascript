@@ -1,6 +1,7 @@
 import { parseTraceparent } from '@bugsee/capture';
 import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
+import { sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
@@ -18,8 +19,8 @@ import { type RequestContextStore, RequestContextStoreToken } from './request-co
 /** Plain request facts the caller extracts from its framework (no framework objects). */
 export interface ServerRequestInfo {
   method: string;
-  /** The request URL/path → `http.url` (raw; the redaction pipeline scrubs query secrets). The
-   * query-stripped path is the route-name fallback. */
+  /** The request URL/path. Pass it RAW — `buildContext` scrubs it with `sanitizeUrl` before it becomes
+   * `http.url`, so callers must not pre-redact. The query-stripped path is the route-name fallback. */
   url: string;
   /** The matched route pattern (`/users/:id`) → `http.route` + span name; refine later via `setRoute`. */
   route?: string;
@@ -62,6 +63,8 @@ export interface ServerInstrumentOptions {
   shouldReport?: (err: unknown) => boolean;
   /** BE→FE return headers (default both off, T9). The caller writes {@link ServerRequestSpan.responseHeaders}. */
   traceResponse?: TraceResponseConfig;
+  /** Where an SDK-internal failure in the request path is reported. It is never thrown into the request. */
+  onError?: (error: unknown) => void;
 }
 
 /** A handle over the in-flight request. All methods are safe no-ops when no client is launched. */
@@ -133,9 +136,18 @@ const defaultGetClient = (): BugseeClient | undefined => getCarrierClient<Bugsee
 // Portable id (NOT the global `crypto`, undefined on Node 18; NOT `node:crypto`, absent on edge runtimes).
 const defaultNewContextId = (): string => randomId();
 
+/**
+ * The path, with the query stripped AND the path itself sanitized.
+ *
+ * Stripping the query is not enough: a matrix parameter lives IN the path (`/app;jsessionid=…`, canonical
+ * Java servlet URL rewriting), so this value carried a session id into the transaction name and
+ * `http.route` while `http.url` — derived from the same `info.url` two lines away — was redacted. The same
+ * "redacting one field leaves the secret one field over" shape that the network provider's
+ * statusText/reason/channel fix closed.
+ */
 const urlPath = (url: string): string => {
   const q = url.indexOf('?');
-  return q === -1 ? url : url.slice(0, q);
+  return sanitizeUrl(q === -1 ? url : url.slice(0, q));
 };
 
 const spanName = (info: ServerRequestInfo, route: string | undefined): string =>
@@ -239,9 +251,12 @@ const safeGetClient = (getClient: () => BugseeClient | undefined): BugseeClient 
   }
 };
 
+// `http.url` is the inbound request target and rides into reports and the `http.server` span. It carries
+// whatever the client sent — including `?api_key=…` — so it is redacted here, at the one point every
+// server path (node/bun/deno http, and the express/fastify/koa/hapi/elysia adapters) funnels through.
 const buildContext = (info: ServerRequestInfo, newContextId: () => string): RequestContext => ({
   contextId: newContextId(),
-  attributes: { 'http.method': info.method, 'http.url': info.url },
+  attributes: { 'http.method': info.method, 'http.url': sanitizeUrl(info.url) },
   ...(info.user !== undefined ? { user: info.user } : {}),
 });
 
@@ -334,20 +349,50 @@ export function runServerRequest<T>(
   options: ServerInstrumentOptions,
   dispatch: (span: ServerRequestSpan) => T,
 ): T {
-  const client = safeGetClient(options.getClient ?? defaultGetClient);
-  if (client === undefined) {
-    return dispatch(NOOP_SPAN);
+  // Wave 2.1/2.3 — THE REQUEST PATH IS INERT. `dispatch` is where the framework calls `next()` / the route
+  // handler, so if the SDK throws before invoking it, the customer's handler never runs and the SDK's own
+  // error becomes the request's outcome: a 500 on a request that would have succeeded, with the app's error
+  // middleware handed a Bugsee-internal Error as if it were their bug
+  // (docs/review/backend-express-fastify-koa.md SEV1 #1, docs/review/backend-hono-hapi-elysia.md SEV1 #1 —
+  // both reproduced against real servers). Any SDK-side failure degrades to running the request
+  // UNINSTRUMENTED, which loses telemetry and nothing else.
+  //
+  // `dispatched` is what keeps that from swallowing the application's OWN error: once dispatch has been
+  // entered, anything thrown belongs to the host and is rethrown untouched.
+  let dispatched = false;
+  const run = (span: ServerRequestSpan): T => {
+    dispatched = true;
+    return dispatch(span);
+  };
+  try {
+    const client = safeGetClient(options.getClient ?? defaultGetClient);
+    if (client === undefined) {
+      return run(NOOP_SPAN);
+    }
+    const store = resolveStore(client);
+    const existing = refinableSpan(store?.getCurrent());
+    if (existing !== undefined) {
+      return run(refiningHandle(existing, info, store, options));
+    }
+    if (store === undefined) {
+      return run(makeSpan(client, info, options, true));
+    }
+    const context = buildContext(info, options.newContextId ?? defaultNewContextId);
+    return store.run(context, () => run(makeSpan(client, info, options, true))); // run-scoped → refinable
+  } catch (error) {
+    if (dispatched) {
+      throw error; // the HOST's error — never ours to swallow
+    }
+    // The sink itself is host-supplied and may throw. Unguarded it re-opened the exact hole this function
+    // exists to close: the throw escaped into the request AND `dispatch` below never ran. Reproduced
+    // through the public `wrapFetchHandler` (Bun/Deno): `handlerRan=0`.
+    try {
+      options.onError?.(error);
+    } catch {
+      // a broken sink must never become the request's outcome
+    }
+    return dispatch(NOOP_SPAN); // the SDK failed before the request ran: run it uninstrumented
   }
-  const store = resolveStore(client);
-  const existing = refinableSpan(store?.getCurrent());
-  if (existing !== undefined) {
-    return dispatch(refiningHandle(existing, info, store, options));
-  }
-  if (store === undefined) {
-    return dispatch(makeSpan(client, info, options, true));
-  }
-  const context = buildContext(info, options.newContextId ?? defaultNewContextId);
-  return store.run(context, () => dispatch(makeSpan(client, info, options, true))); // run-scoped → refinable
 }
 
 /** A refining handle over the owner's span: setRoute / captureError act on the owner; finish/cancel are

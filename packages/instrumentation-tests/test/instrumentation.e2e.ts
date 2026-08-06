@@ -16,6 +16,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  assertBundleIntegrity,
+  assertNoContractViolations,
+  assertNoSecrets,
+  type ParsedBundle as SharedParsedBundle,
+  parseBundles as sharedParseBundles,
+} from './bundle';
 import { type MockCollector, startMockCollector } from './collector';
 import { type RuntimeTarget, runScenarioProcess, runtimeTargets } from './runtimes';
 
@@ -29,14 +36,14 @@ interface ReportEnvelope {
   /** The W3C trace id the report fired in — the cross-project join key (T8). */
   trace_id?: string;
 }
-interface ParsedBundle {
-  issueId: string;
-  files: Record<string, Uint8Array>;
-  request: ReportEnvelope;
-}
+/** The shared ParsedBundle, narrowed to this suite's report envelope. */
+type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
+
 interface LogEntry {
   message: string;
-  level: string;
+  /** NUMERIC on the wire (design §8.9, mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
+   *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
+  level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
   context_id?: string;
 }
@@ -47,11 +54,9 @@ interface NetworkEntry {
 const parseJson = <T>(bytes: Uint8Array | undefined): T =>
   JSON.parse(strFromU8(bytes as Uint8Array)) as T;
 
+/** Shared parser (test/bundle.ts), typed to this suite's envelope. */
 const parseBundles = (collector: MockCollector): ParsedBundle[] =>
-  collector.uploads.map((u) => {
-    const files = unzipSync(u.body) as Record<string, Uint8Array>;
-    return { issueId: u.issueId, files, request: parseJson<ReportEnvelope>(files['request.json']) };
-  });
+  sharedParseBundles(collector) as ParsedBundle[];
 
 const targets = runtimeTargets();
 for (const t of targets) {
@@ -87,6 +92,33 @@ describe.each(
 
     it('the app process exits cleanly', () => {
       expect(exitCode, stderr).toBe(0);
+    });
+
+    // Every uploaded bundle must be internally consistent: manifest ↔ zip agreement, no declared-but-
+    // missing file, no directory-shaped stand-in, no undeclared payload, no empty declared file. Added
+    // in Wave V0 — the review found a recovered crash bundle that declared `profile.json` while the zip
+    // held only `profile.json/`, and no harness assertion could see it
+    // (docs/review/core-D-bundle-upload-recovery.md).
+    it('every uploaded bundle is internally consistent (manifest ↔ zip)', () => {
+      expect(bundles.length).toBeGreaterThan(0);
+      for (const bundle of bundles) assertBundleIntegrity(bundle);
+    });
+
+    // The app token is written to the `apptoken` file by design; it must appear NOWHERE else — not in
+    // logs, not in a captured network entry, not in request.json. assertNoSecrets exempts `apptoken`
+    // and scans every other entry (binary included), which is the shape of check that would have caught
+    // the confirmed URL-credential leaks (docs/review/capture.md, docs/review/node-B-http-server.md).
+    it('never leaks the app token outside the apptoken file', () => {
+      expect(bundles.length).toBeGreaterThan(0);
+      for (const bundle of bundles) assertNoSecrets(bundle, ['e2e-app-token']);
+    });
+
+    // Every session envelope, issue envelope and bundle manifest/request.json is validated by the mock
+    // collector against packages/protocol/upload-contract.schema.json as it arrives. Without this
+    // assertion those violations would be recorded and ignored — the review found the collector
+    // "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1 #7).
+    it('emits nothing that violates the upload contract', () => {
+      assertNoContractViolations(collector);
     });
 
     it('opens exactly one session carrying the runtime platform identity', () => {
@@ -129,9 +161,12 @@ describe.each(
 
       const logs = parseJson<LogEntry[]>(bundle.files['logs.json']);
       expect(logs.some((l) => l.message.includes('hello from the instrumented app'))).toBe(true);
-      expect(
-        logs.some((l) => l.level === 'error' && l.message.includes('something noteworthy')),
-      ).toBe(true);
+      // 1 = LogLevel.Error. Asserted as the NUMBER the viewer actually reads, and typed as one, so a
+      // regression to the string form fails here rather than reaching the backend.
+      expect(logs.some((l) => l.level === 1 && l.message.includes('something noteworthy'))).toBe(
+        true,
+      );
+      expect(logs.every((l) => typeof l.level === 'number')).toBe(true);
 
       const net = parseJson<NetworkEntry[]>(bundle.files['network.json']);
       expect(net.some((n) => typeof n.url === 'string' && n.url.includes('/echo'))).toBe(true);
@@ -166,11 +201,32 @@ describe.each(
         bundle.files['profile.json'],
         'the AppHang bundle carries no profile.json',
       ).toBeDefined();
-      const profile = parseJson<{ nodes: Array<{ callFrame: { functionName: string } }> }>(
-        bundle.files['profile.json'],
-      );
+      const profile = parseJson<{
+        nodes: Array<{ id?: number; hitCount?: number; callFrame: { functionName: string } }>;
+        startTime?: number;
+        endTime?: number;
+        samples?: number[];
+      }>(bundle.files['profile.json']);
       const blocking = profile.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin');
-      expect(blocking, 'the blocking frame e2eHangSpin is not in the AppHang profile').toBe(true);
+      // This assertion has failed 3 times in ~13 FULL parallel `pnpm test:e2e` runs and never once in
+      // isolation — 10/10 present there, including under synthetic CPU saturation, and the spin keeps its
+      // CPU time under load (measured: 394 ms of CPU in a 400 ms wall-clock spin), so starvation is ruled
+      // out. Rather than ship a fix for a condition that cannot be reproduced, the failure now carries the
+      // evidence needed to diagnose it in ONE more occurrence: whether the profile covers the hang at all,
+      // how many samples it holds, and what the busiest frames actually were.
+      const busiest = [...profile.nodes]
+        .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
+        .slice(0, 8)
+        .map((n) => `${n.callFrame.functionName || '(anonymous)'}:${n.hitCount ?? 0}`);
+      expect(
+        blocking,
+        [
+          'the blocking frame e2eHangSpin is not in the AppHang profile',
+          `  profile window: ${profile.startTime ?? '?'} → ${profile.endTime ?? '?'} (µs)`,
+          `  nodes: ${profile.nodes.length}, samples: ${profile.samples?.length ?? '?'}`,
+          `  busiest frames: ${busiest.join(', ')}`,
+        ].join('\n'),
+      ).toBe(true);
     });
   });
 
@@ -413,6 +469,66 @@ describe.each(
       // (3) …and the bugsee= vendor tracestate (X1) rode along with the session-correlation id.
       expect(typeof echo?.tracestate).toBe('string');
       expect(echo?.tracestate as string).toContain('bugsee=');
+    });
+  });
+
+  describe('privacy: URL and body secrets never reach the uploaded bundle', () => {
+    // The regression gate for Wave 1.1/1.2. The original finding was proven by reading the SDK's own
+    // dataDir off disk and grepping for markers; this does the same against the delivered bundle, so a
+    // future change that unwires any sanitizer fails here even if every unit test still passes.
+    let collector: MockCollector;
+    let exitCode: number | null;
+    let stderr: string;
+    let bundles: ParsedBundle[];
+
+    beforeAll(async () => {
+      collector = await startMockCollector();
+      const result = await runScenarioProcess(target, collector.url, 'privacy');
+      exitCode = result.exitCode;
+      stderr = result.stderr;
+      bundles = parseBundles(collector);
+    }, 60_000);
+
+    afterAll(async () => {
+      await collector.close();
+    });
+
+    it('the app process exits cleanly', () => {
+      expect(exitCode, stderr).toBe(0);
+    });
+
+    it('delivered a bundle that actually captured the probe traffic', () => {
+      // Guards the whole block against passing vacuously: markers cannot leak from a bundle that holds
+      // no network entries, so the absence assertions below are only meaningful once this holds.
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe');
+      expect(probe, 'no privacy probe bundle was delivered').toBeDefined();
+      const network = (probe as ParsedBundle).files['network.json'];
+      expect(
+        network,
+        'no network.json — nothing was captured, so the scan below proves nothing',
+      ).toBeDefined();
+      expect(strFromU8(network as Uint8Array)).toContain('/echo');
+    });
+
+    it('leaks no URL query secret, no URL userinfo credential, and no form-body password', () => {
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
+      assertNoSecrets(probe, [
+        'QUERYAPIKEYSECRET', // ?api_key=   — leaked to disk before Wave 1.1
+        'URLUSERINFOSECRET', // user:pass@  — leaked to disk before Wave 1.1 (node-only)
+        'FORMPASSWORDSECRET', // urlencoded body — leaked before Wave 1.2
+        'AKIAIOSFODNN7EXAMPLE', // shape-matched: no key name to match, only the pattern pass catches it
+        'HEADERAUTHSECRET', // control: already redacted
+        'JSONBODYSECRET', // control: already redacted
+      ]);
+    });
+
+    it('redacts rather than DROPS — the non-secret query value still rides', () => {
+      // A sanitizer that deleted the URL, or the whole entry, would also pass the scan above while
+      // destroying the diagnostic value the capture exists for.
+      const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
+      const network = strFromU8(probe.files['network.json'] as Uint8Array);
+      expect(network).toContain('QUERYPLAINVALUE'); // the non-sensitive param survived
+      expect(network).toContain('api_key=%3Credacted%3E'); // and the sensitive one was replaced in place
     });
   });
 

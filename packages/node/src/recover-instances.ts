@@ -178,7 +178,13 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       continue;
     }
     if (
-      !isSiblingDead(pidAlive(owner.pid), readLiveMtimeMs(join(sub, '.live')), now(), patientMs)
+      !isSiblingDead(
+        pidAlive(owner.pid),
+        readLiveMtimeMs(join(sub, '.live')),
+        now(),
+        patientMs,
+        owner.threadId,
+      )
     ) {
       continue;
     }

@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { getCarrierClient, neverThrow } from '@bugsee/core';
 import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
@@ -43,6 +43,8 @@ export interface HonoAdapterOptions {
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default: skip Hono HTTPExceptions, report genuine errors. */
   shouldReport?: (err: unknown) => boolean;
+  /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */
+  onError?: (error: unknown) => void;
 }
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
@@ -79,25 +81,40 @@ const toOptions = (options: HonoAdapterOptions): ServerInstrumentOptions => ({
 export function bugseeHono(options: HonoAdapterOptions = {}): HonoMiddleware {
   const opts = toOptions(options);
   return async (c, next) => {
-    const traceparent = c.req.header('traceparent');
-    const user = options.user?.(c);
-    const info = {
-      method: c.req.method,
-      url: c.req.path, // Hono uses the path (no query) as http.url
-      route: routeOf(c),
-      ...(traceparent !== undefined ? { traceparent } : {}),
-      ...(user !== undefined ? { user } : {}),
-    };
+    // Wave 2.1/2.3 — the request path is inert. Hono's `compose` catches whatever a middleware throws,
+    // assigns it to `c.error` and routes it to `app.onError`, so an SDK fault was laundered into an
+    // APPLICATION error and returned as 500. Two of these sites need no SDK bug at all to fire: `user` is an
+    // application-supplied callback (`(c) => c.req.header('authorization').split(' ')[1]` throws a TypeError
+    // on every unauthenticated request), and header/route reads touch framework internals. Measured against
+    // real Hono 4.12.25: a route returning `APP-OK` became `500 Internal Server Error`, and with the app's
+    // own `onError` installed it was handed the SDK's internal error while the app's handler never ran
+    // (docs/review/backend-hono-hapi-elysia.md SEV1 #1). Its structural peers hapi and elysia already guard
+    // exactly these operations and returned 200 under the same probes.
+    const info = neverThrow(() => {
+      const traceparent = c.req.header('traceparent');
+      const user = options.user?.(c);
+      return {
+        method: c.req.method,
+        url: c.req.path, // Hono uses the path (no query) as http.url
+        route: routeOf(c),
+        ...(traceparent !== undefined ? { traceparent } : {}),
+        ...(user !== undefined ? { user } : {}),
+      };
+    }, options.onError) ?? { method: 'GET', url: '' }; // unreadable request → instrument it minimally
     await runServerRequest(info, opts, async (span) => {
       try {
         await next();
       } finally {
-        span.setRoute(routeOf(c)); // route is parametrized by here; refines the txn name
-        const err = c.error;
-        if (err !== undefined && err !== null) {
-          span.captureError(err); // reports per Hono's shouldReport (skips HTTPException); sets http.route
-        }
-        span.finish(c.res?.status ?? 0);
+        // The finally body is SDK work running after the app's; a throw here would replace the app's own
+        // outcome (or its error) with ours.
+        neverThrow(() => {
+          span.setRoute(routeOf(c)); // route is parametrized by here; refines the txn name
+          const err = c.error;
+          if (err !== undefined && err !== null) {
+            span.captureError(err); // per Hono's shouldReport (skips HTTPException); sets http.route
+          }
+          span.finish(c.res?.status ?? 0);
+        }, options.onError);
       }
     });
   };

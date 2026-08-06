@@ -96,6 +96,7 @@ describe('deriveRootSpanId', () => {
 
 const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   traceId: '0123456789abcdef0123456789abcdef',
+  spanId: 'fedcba9876543210',
   name: '/checkout',
   operation: 'ui.load',
   status: 'OK',
@@ -129,14 +130,14 @@ const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
 });
 
 describe('transactionToOtlpSpans', () => {
-  it('emits a root span (derived id, no parent) plus the children, linking the tree', () => {
+  it('emits a root span (its OWN id, no parent) plus the children, linking the tree', () => {
     const spans = transactionToOtlpSpans(txn());
     expect(spans).toHaveLength(3);
     const [root, c1, c2] = spans;
     // Root: id derived from traceId, no parentSpanId, name = transaction name, INTERNAL.
     expect(root).toMatchObject({
       traceId: '0123456789abcdef0123456789abcdef',
-      spanId: '0123456789abcdef',
+      spanId: 'fedcba9876543210',
       name: '/checkout',
       kind: OtlpSpanKind.INTERNAL,
       startTimeUnixNano: '1000000000', // 1000 ms → ns
@@ -147,7 +148,7 @@ describe('transactionToOtlpSpans', () => {
     // Dangling child parent (pointed at the dropped root id) is remapped to the derived root id.
     expect(c1).toMatchObject({
       spanId: 'aaaaaaaaaaaaaaaa',
-      parentSpanId: '0123456789abcdef',
+      parentSpanId: 'fedcba9876543210',
       name: 'GET https://x/a', // description preferred over operation for the name
       kind: OtlpSpanKind.CLIENT,
     });
@@ -182,7 +183,7 @@ describe('transactionToOtlpSpans', () => {
     expect(spans[1]).toEqual({
       traceId: '0123456789abcdef0123456789abcdef',
       spanId: 'aaaaaaaaaaaaaaaa',
-      parentSpanId: '0123456789abcdef',
+      parentSpanId: 'fedcba9876543210',
       name: 'GET https://x/a',
       kind: OtlpSpanKind.CLIENT,
       startTimeUnixNano: '1010000000',
@@ -315,7 +316,7 @@ describe('transactionToOtlpSpans', () => {
         ],
       }),
     );
-    expect(spans[1]?.parentSpanId).toBe('0123456789abcdef');
+    expect(spans[1]?.parentSpanId).toBe('fedcba9876543210');
   });
 });
 
@@ -358,5 +359,76 @@ describe('toOtlpExportRequest', () => {
 
   it('returns no resourceSpans for an empty transaction list', () => {
     expect(toOtlpExportRequest([])).toEqual({ resourceSpans: [] });
+  });
+});
+
+// WAVE 5.3 — the OTLP root span id was FABRICATED from the trace id, so a distributed trace never joined.
+//
+// `deriveRootSpanId(traceId) = traceId.slice(0, 16)` is deterministic, and two independent things break:
+//
+//  1. THE JOIN. `traceparent` carries `transaction.getSpanId()` — the transaction's REAL span id. A
+//     downstream service records that as its `parentSpanId` and emits it. But the upstream service emitted
+//     its own root under `traceId[0:16]` instead, so the downstream root points at a span id that was
+//     never emitted by anyone. The trace breaks at every service boundary.
+//  2. COLLISION. Every service sharing a trace derives the SAME root id, so a two-hop trace contains two
+//     different root spans claiming one id.
+//
+// The real id existed the whole time — minted by `env.newSpanId()`, used as every child's `parentSpanId`,
+// and returned by `getSpanId()` for propagation. `toTransactionWire()` simply dropped it.
+describe('the OTLP root uses the transaction’s REAL span id (Wave 5.3)', () => {
+  const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
+    traceId: 'a'.repeat(32),
+    spanId: 'feedfacecafebeef',
+    name: 'GET /users',
+    operation: 'http.server',
+    status: 'OK',
+    sampled: true,
+    startTimestampMs: 1000,
+    endTimestampMs: 1010,
+    isSnapshot: false,
+    spans: [],
+    ...over,
+  });
+
+  it('emits the root with the transaction’s own span id, not a slice of the trace id', () => {
+    const [root] = transactionToOtlpSpans(txn());
+    expect(root?.spanId).toBe('feedfacecafebeef');
+    expect(root?.spanId).not.toBe('a'.repeat(16));
+  });
+
+  it('two services in ONE trace emit DIFFERENT root span ids', () => {
+    // The collision case: same traceId, different transactions.
+    const [a] = transactionToOtlpSpans(txn({ spanId: '1111111111111111' }));
+    const [b] = transactionToOtlpSpans(txn({ spanId: '2222222222222222' }));
+    expect(a?.spanId).not.toBe(b?.spanId);
+  });
+
+  it('a downstream root’s parent is the id the upstream actually EMITTED', () => {
+    // The join. Upstream emits its root; downstream continues from the propagated id. The two must meet.
+    const upstream = txn({ spanId: 'aaaaaaaaaaaaaaa1' });
+    const [upstreamRoot] = transactionToOtlpSpans(upstream);
+    // `traceparent` propagates `getSpanId()`, which is the same value the wire now carries.
+    const downstream = txn({ spanId: 'bbbbbbbbbbbbbbb2', parentSpanId: upstream.spanId });
+    const [downstreamRoot] = transactionToOtlpSpans(downstream);
+    expect(downstreamRoot?.parentSpanId).toBe(upstreamRoot?.spanId);
+  });
+
+  it('children still hang off the root — the remap must keep working', () => {
+    const t = txn({
+      spanId: 'feedfacecafebeef',
+      spans: [
+        { spanId: 'c1', operation: 'db.query', status: 'OK', startTimestampMs: 1001 },
+        {
+          spanId: 'c2',
+          parentSpanId: 'c1',
+          operation: 'db.row',
+          status: 'ok',
+          startTimestampMs: 1002,
+        },
+      ] as TransactionWire['spans'],
+    });
+    const [root, first, second] = transactionToOtlpSpans(t);
+    expect(first?.parentSpanId).toBe(root?.spanId); // dangling parent → the root
+    expect(second?.parentSpanId).toBe('c1'); // a real child parent survives
   });
 });

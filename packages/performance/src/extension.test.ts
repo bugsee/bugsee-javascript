@@ -16,6 +16,7 @@ import { createTransactionStore } from './transaction-store';
 
 const externalWire = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   traceId: 'ext',
+  spanId: 's0',
   name: 'app.start',
   operation: 'startup',
   status: 'OK',

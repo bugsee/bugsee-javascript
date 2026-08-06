@@ -1,6 +1,9 @@
 # Session Replay — design (`@bugsee/replay` + `@bugsee/replay-canvas`)
 
-Status: **Draft v1** (2026-07-07). Author hand-off doc for the replay build. Read alongside `docs/design/sdk-design.md`
+Status: **BUILT + on `main`** — slices RP0–RP6 complete, with the rrweb fork wired as a git dependency
+(`github:bugsee/rrweb#bugsee-dist`, ~56KB record-only). Option-driven + lazy-loaded, incident-buffered ring,
+fail-closed masking, `replay.bin` FileType. The canvas add-on is a separate package
+(`docs/design/replay-canvas.md`). Design captured 2026-07-07. Read alongside `docs/design/sdk-design.md`
 (the settled replay decisions: §0.5#6, §11/§60, §16 §204, §27#10, §51, §90/§92) and `docs/PROGRESS.md`.
 
 ---
@@ -130,7 +133,7 @@ the existing per-report file assembly — no new upload path.
 
 ## 6. Slice plan (each: design → red test → green → per-entity mutator loop → multi-agent review → commit)
 
-**As-built status (2026-07-08): RP0–RP6 DONE + on master. `@bugsee/replay` records a real rrweb `replay.bin`
+**As-built status (2026-07-08): RP0–RP6 DONE + on main. `@bugsee/replay` records a real rrweb `replay.bin`
 end-to-end.** As-built deltas from the plan are noted per slice.
 
 - **RP0 — `@bugsee/rrweb` wrapper** ✅ (`635b531`) — npm-backed re-export (`record` + `eventWithTime`/`recordOptions`/

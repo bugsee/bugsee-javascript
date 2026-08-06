@@ -364,3 +364,82 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 });
+
+// WAVE 6.7 (the aggravating half) — an out-of-range pathId must not wedge the drainer forever.
+//
+// The review's finding: with a corrupted pathId, `pathForId` indexes `fileTypes[...]` out of range and
+// calls `join(..., undefined)`, which throws a TypeError inside `RingDrainer.drain`'s try. The frame is
+// then never consumed and READING stays pinned, so the producer's drop-oldest also bails and EVERY later
+// append is counted as dropped. One bad frame permanently stops capture.
+//
+// (The worker_threads twin instead concatenates `undefined` into the filename, creating a file literally
+// named `undefined` — the same unvalidated index, a different symptom.)
+describe('a corrupt pathId does not wedge the drainer (Wave 6.7)', () => {
+  /** A sync ring worker over a fresh root, plus its producer — the real drainer, no mocks. */
+  const ringWorker = (onError = vi.fn()) => {
+    const root = mkRoot();
+    const { data, control } = allocCaptureRing(4096);
+    const worker = createSyncRingWorker({
+      data,
+      control,
+      flags: new SharedArrayBuffer(16),
+      captureDir: root,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError,
+    });
+    const producer = new RingProducer(data, control);
+    return { root, worker, producer, onError };
+  };
+
+  const pushFrame = (p: RingProducer, pathId: number, text: string): void => {
+    const bytes = new TextEncoder().encode(text);
+    const view = p.reserve(bytes.length) as Uint8Array;
+    view.set(bytes);
+    p.commit(pathId, bytes.length);
+  };
+
+  // A type index past the end of `fileTypes` — what a corrupted frame header decodes to.
+  const BAD = encodePathId(0, FILE_TYPES.length + 5);
+
+  it('skips the bad frame and keeps draining the rest', () => {
+    const { root, worker, producer } = ringWorker();
+    pushFrame(producer, BAD, 'poison\n');
+    pushFrame(producer, encodePathId(0, 0), 'good-after\n');
+    expect(() => worker.flushAndWait(1000)).not.toThrow();
+    expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toBe('good-after\n');
+    worker.stop();
+  });
+
+  it('reports the bad frame rather than discarding it silently', () => {
+    const { worker, producer, onError } = ringWorker();
+    pushFrame(producer, BAD, 'poison\n');
+    worker.flushAndWait(1000);
+    expect(onError).toHaveBeenCalled();
+    worker.stop();
+  });
+
+  it('leaves the ring unpinned, so later appends are not all counted as dropped', () => {
+    // The permanence: a frame that never gets consumed pins READING, so the producer's drop-oldest bails
+    // and EVERY later append is counted as a drop — one bad frame stopping capture for good.
+    const { root, worker, producer } = ringWorker();
+    pushFrame(producer, BAD, 'poison\n');
+    worker.flushAndWait(1000);
+    const before = producer.dropped;
+    for (let i = 0; i < 50; i += 1) {
+      pushFrame(producer, encodePathId(0, 0), `later-${i}\n`);
+    }
+    worker.flushAndWait(1000);
+    expect(producer.dropped).toBe(before); // nothing shed — the ring drained normally
+    expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toContain('later-49');
+    worker.stop();
+  });
+
+  it('never creates a file named after a missing type', () => {
+    const { root, worker, producer } = ringWorker();
+    pushFrame(producer, BAD, 'poison\n');
+    worker.flushAndWait(1000);
+    expect(existsSync(join(root, 'undefined'))).toBe(false);
+    worker.stop();
+  });
+});

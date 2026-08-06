@@ -335,6 +335,229 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
   await client.stop(20_000);
 }
 
+/**
+ * Privacy battery (Wave 1.1 / 1.2). A direct re-run of the probe that FOUND the leaks
+ * (docs/review/node-B-http-server.md SEV1 #3, docs/review/capture.md SEV1 #4/#5): drive real traffic whose
+ * every secret-bearing position is filled with a distinctive marker, then let the e2e scan the uploaded
+ * bytes for those markers. The original probe recovered QUERY_APIKEY, QUERY_PLAIN and URL_USERINFO from the
+ * SDK's own dataDir while headers and JSON bodies were correctly redacted — so the markers are placed to
+ * distinguish "redaction ran" from "redaction ran on this field".
+ *
+ * Deliberately end-to-end rather than unit: the unit suites for these paths were at ~100% coverage while
+ * every one of these leaks was live. Only the emitted bytes settle it. Exits 0.
+ */
+async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  // 1. Query-string secrets on a real captured outgoing request.
+  const q = await fetch(`${collectorUrl}/echo?api_key=QUERYAPIKEYSECRET&plain=QUERYPLAINVALUE`);
+  await q.text();
+
+  // 2. URL userinfo — node:http fully supports `user:pass@`, and this is the node-exclusive half of the
+  //    finding. Routed at the collector's own host so the request really is made and really is captured.
+  const withoutScheme = collectorUrl.replace(/^https?:\/\//, '');
+  const u = await fetch(`http://alice:URLUSERINFOSECRET@${withoutScheme}/echo`).catch(
+    () => undefined, // some runtimes reject userinfo in fetch(); the capture still happened
+  );
+  await u?.text();
+
+  // 3. The canonical form login POST. The SDK itself stamps the urlencoded Content-Type when the caller
+  //    sets none, which is what keeps the body past the capture gate — so this must be sent WITHOUT one.
+  const f = await fetch(`${collectorUrl}/echo`, {
+    method: 'POST',
+    body: new URLSearchParams({ username: 'bob', password: 'FORMPASSWORDSECRET' }),
+  });
+  await f.text();
+
+  // 4. A SHAPE-matched secret — one with no key name to match, caught only by the pattern pass. Round-3
+  //    review found this path had zero e2e coverage: neutering `redactShapes` entirely left the whole
+  //    privacy scenario green.
+  const s = await fetch(`${collectorUrl}/echo?ref=AKIAIOSFODNN7EXAMPLE`);
+  await s.text();
+
+  // 5. Controls: a header and a JSON body secret. These were ALREADY redacted before this wave; if a
+  //    marker of theirs ever appears, the regression is in the pre-existing sanitizer, not the new code.
+  const j = await fetch(`${collectorUrl}/echo`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer HEADERAUTHSECRET', 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'JSONBODYSECRET' }),
+  });
+  await j.text();
+
+  // An incident drains the capture window, so every entry above rides into this bundle.
+  await client.logException(new Error('e2e privacy probe'));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
+/**
+ * Process-lifecycle battery (Wave 2.4 / 2.5). Two claims that can ONLY be made about a real process:
+ *
+ *  exit-clean — launch with the DEFAULTS (hang detection on) and then simply return. The process must exit
+ *    on its own. It did not: the watchdog worker is unref'd at spawn, but attaching its `message` listener
+ *    re-refs the MessagePort, so every CLI / migration / CI job / cron task that called launch() hung
+ *    forever. A unit test cannot see this — the pin is real Node MessagePort behaviour, not SDK logic.
+ *
+ *  reject — raise an unhandled rejection and let the process do what it will. Node's default since v15 is
+ *    to crash with exit 1; merely REGISTERING a listener disables that, so the SDK silently turned a
+ *    crashing service into exit 0. The assertion is the exit code, which is exactly what a supervisor sees.
+ */
+async function runExitCleanScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    recover: false,
+    onError: noteOnError,
+    // detectHangs and profiling left at their DEFAULTS — the defect is in the default configuration.
+  });
+  console.log('e2e exit-clean launched');
+  // Do a little work first. Returning immediately would let the process exit before the watchdog worker has
+  // even spawned — the test would then pass whether or not the pin exists, which is exactly how a
+  // verification test becomes theatre. 300 ms is comfortably past worker startup.
+  await sleep(300);
+  console.log('e2e exit-clean work done');
+  // Deliberately no stop() and no flush(): a short-lived program just ends, and the SDK must not keep the
+  // event loop alive on its own account.
+}
+
+async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+    // unhandledRejections left at its DEFAULT ('preserve').
+  });
+  console.log('e2e reject armed');
+  // A genuine unhandled rejection: no catch, nothing awaiting it.
+  void Promise.reject(new Error('e2e unhandled rejection'));
+  await sleep(10_000); // stay alive; the SDK's policy is what must end this process
+}
+
+/**
+ * The NATIVE server path — `Bun.serve` / `Deno.serve` (Wave 3b.1/3b.5).
+ *
+ * Every other server scenario goes through `node:http.createServer`, which is exactly the path idiomatic
+ * Bun and Deno apps do NOT take: `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, which
+ * is why `@bugsee/bun` and `@bugsee/deno` ship interceptors for them. Nothing in the suite exercised those
+ * interceptors, so an umbrella that resolved to `@bugsee/node` — losing them completely — was invisible.
+ *
+ * On node there is no native serve to instrument, so the scenario reports that and exits cleanly rather
+ * than pretending to have covered something.
+ */
+async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const g = globalThis as {
+    Bun?: { serve(o: unknown): { port: number; stop(): void } };
+    Deno?: {
+      serve(o: unknown, h?: unknown): { addr: { port: number }; shutdown(): Promise<void> };
+    };
+  };
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  const handler = (req: Request): Response => {
+    // Inside the handler → the request's run-scoped context, so this entry carries its context_id.
+    client.log(`native handling ${req.method} ${new URL(req.url).pathname}`);
+    void client.logException(new Error('e2e native server handler failure'));
+    return new Response('ok');
+  };
+
+  let port = 0;
+  let stop: () => Promise<void> | void = () => {};
+  if (g.Bun !== undefined) {
+    const server = g.Bun.serve({ port: 0, fetch: handler });
+    port = server.port;
+    stop = () => server.stop();
+  } else if (g.Deno !== undefined) {
+    const server = g.Deno.serve({ port: 0, onListen: () => {} }, handler);
+    port = server.addr.port;
+    stop = () => server.shutdown();
+  } else {
+    console.log('[e2e] no native serve on this runtime — nothing to instrument');
+    await client.flush(20_000);
+    await client.stop(20_000);
+    return;
+  }
+
+  const res = await fetch(`http://127.0.0.1:${port}/native/42`);
+  await res.text();
+  await stop();
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
+
+/**
+ * OVERLAPPING requests with distinct identities (Wave 3b.4).
+ *
+ * The `server` scenario issues ONE request, so every per-request mechanism it exercises — the context, the
+ * transaction, the outgoing-call attribution — is trivially correct: there is nothing to confuse it with.
+ * A server's actual job is concurrency, and that is where two SEV1s lived: an outgoing `http.client` span
+ * parented to whichever request started LAST (so A's database call shipped inside B's trace), and the
+ * cross-request identity bleed the same single-slot shape produces.
+ *
+ * Three requests are held open with staggered delays so their lifetimes genuinely overlap, each carrying
+ * its own user and issuing its own outgoing call. Every assertion is per-request: the report, the handler's
+ * log and the outgoing call must all agree on ONE identity.
+ */
+async function runConcurrentServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  const http = await import('node:http');
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    const who = url.searchParams.get('who') ?? 'anon';
+    const holdMs = Number(url.searchParams.get('hold') ?? 0);
+    client.log(`concurrent handling ${who}`);
+    // An OUTGOING call from inside this request, while the other requests are mid-flight. Its span must be
+    // parented to THIS request's transaction, not to whichever one started most recently.
+    await fetch(`${collectorUrl}/echo?who=${who}`).then((r) => r.text());
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+    void client.logException(new Error(`concurrent failure ${who}`));
+    res.statusCode = 200;
+    res.end(who);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+  // Staggered holds so the three lifetimes overlap rather than merely queueing: alice is still open when
+  // carol arrives, which is precisely the window that produced the misattribution.
+  await Promise.all(
+    [
+      { who: 'alice', hold: 120 },
+      { who: 'bob', hold: 60 },
+      { who: 'carol', hold: 10 },
+    ].map(({ who, hold }) =>
+      fetch(`http://127.0.0.1:${port}/work?who=${who}&hold=${hold}`).then((r) => r.text()),
+    ),
+  );
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -344,9 +567,15 @@ export async function runScenario(
     await runCrashScenario(launch, opts.collectorUrl);
     return;
   }
+  if (opts.scenario === 'concurrent-server') {
+    return runConcurrentServerScenario(launch, opts.collectorUrl);
+  }
   if (opts.scenario === 'server') {
     await runServerScenario(launch, opts.collectorUrl);
     return;
+  }
+  if (opts.scenario === 'native-server') {
+    return runNativeServerScenario(launch, opts.collectorUrl);
   }
   if (opts.scenario === 'multi-instance') {
     await runMultiInstanceScenario(launch, opts.collectorUrl);
@@ -362,6 +591,18 @@ export async function runScenario(
   }
   if (opts.scenario === 'propagation') {
     await runPropagationScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'exit-clean') {
+    await runExitCleanScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'reject') {
+    await runRejectScenario(launch, opts.collectorUrl);
+    return;
+  }
+  if (opts.scenario === 'privacy') {
+    await runPrivacyScenario(launch, opts.collectorUrl);
     return;
   }
   await runMainScenario(launch, opts.collectorUrl);

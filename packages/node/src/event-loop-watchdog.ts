@@ -180,6 +180,13 @@ export function createEventLoopWatchdog(deps: EventLoopWatchdogDeps): EventLoopW
           onHang(level, msg.durationMs);
         }
       });
+      // RE-unref AFTER attaching the listener. `spawnWatchdogWorker` already unref'd the worker, but in Node
+      // attaching a `message` listener starts and re-refs its public MessagePort — silently undoing it. The
+      // order is unconditional, so the pin was always installed: with `detectHangs` on by default, every
+      // short-lived program that called launch() (a CLI, a migration, a CI job, a cron task) hung forever
+      // instead of exiting. This is the same invariant the spawn-time unref documents; it just has to be
+      // restated once the port exists (docs/review/node-C-diagnostics-multiinstance.md SEV1 #1).
+      worker.unref();
       timer = scheduler.setInterval(() => {
         Atomics.store(view, 0, BigInt(now()));
       }, heartbeatIntervalMs);
@@ -198,7 +205,17 @@ export function createEventLoopWatchdog(deps: EventLoopWatchdogDeps): EventLoopW
 }
 
 const globalScheduler: Scheduler = {
-  setInterval: (cb, ms) =>
-    (globalThis as { setInterval(cb: () => void, ms: number): unknown }).setInterval(cb, ms),
+  setInterval: (cb, ms) => {
+    const handle = (globalThis as { setInterval(cb: () => void, ms: number): unknown }).setInterval(
+      cb,
+      ms,
+    );
+    // UNREF: the heartbeat must never hold the host process open. The worker's MessagePort pin was fixed
+    // in 95b3aef, but this timer re-installed the same defect through the default scheduler — measured
+    // NEVER_EXITED with the plain global timer versus exit 0 in 439 ms with an unref'ing one. The same
+    // applies to a caller-injected `scheduler`, which is why that option now documents the requirement.
+    (handle as { unref?: () => void }).unref?.();
+    return handle;
+  },
   clearInterval: (h) => (globalThis as { clearInterval(h: unknown): void }).clearInterval(h),
 };

@@ -70,25 +70,42 @@ const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 function fakeProcess(onExit?: (code?: number) => void) {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const exit = vi.fn(onExit);
+  const kill = vi.fn();
+  const written: string[] = [];
   const proc: NodeRuntime = {
-    on(event, listener) {
+    on(event: string, listener: (...args: unknown[]) => void) {
       const list = listeners.get(event) ?? [];
       list.push(listener);
       listeners.set(event, list);
       return proc;
     },
-    off(event, listener) {
+    off(event: string, listener: (...args: unknown[]) => void) {
       listeners.set(
         event,
         (listeners.get(event) ?? []).filter((l) => l !== listener),
       );
       return proc;
     },
+    // Modelled because the process POLICY depends on both: `listeners` is how the SDK tells the host's
+    // handlers from its own (so it never exits a process the host meant to keep alive), and `stderr` is
+    // where Node's suppressed default output has to be reproduced.
+    listeners: (event: string) => [...(listeners.get(event) ?? [])],
+    stderr: { write: (text: string) => written.push(text) },
     exit,
-  };
+    kill,
+    pid: process.pid,
+  } as unknown as NodeRuntime;
   return {
     proc,
     exit,
+    kill,
+    stderr: written,
+    /** Register a listener the SDK does NOT own, standing in for the host app's own handler. */
+    addHostListener: (event: string) => {
+      const list = listeners.get(event) ?? [];
+      list.push(() => {});
+      listeners.set(event, list);
+    },
     fire: (event: string, ...args: unknown[]) => {
       for (const l of [...(listeners.get(event) ?? [])]) {
         l(...args);
@@ -566,6 +583,166 @@ describe('launch', () => {
     expect(fp.exit).not.toHaveBeenCalled();
   });
 
+  // Wave 2.5 / decision D2 — the SDK must not change how the host process lives and dies.
+  it('reproduces Node’s crash for an unhandled rejection: prints and exits 1', async () => {
+    // Registering ANY unhandledRejection listener disables Node's default (throw, exit 1) — so a passive
+    // reporting listener turned a crashing service into one that kept running and reported SUCCESS to
+    // systemd/k8s/CI (docs/review/node-A-launch.md SEV1 #1).
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('stays alive on `warn`, printing but not exiting (Sentry’s default)', async () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), unhandledRejections: 'warn' }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('installs NO rejection listener at all on `none`, leaving Node untouched', () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), unhandledRejections: 'none' }),
+    );
+    expect(fp.count('unhandledRejection')).toBe(0); // neither the reporter nor the policy
+  });
+
+  it('does NOT exit when the HOST also handles unhandled rejections', async () => {
+    // The host's own listener already disabled Node's default, so the process was never going to die.
+    // Exiting here would break the app purely because Bugsee is installed — the same defect inverted.
+    const fp = fakeProcess();
+    fp.addHostListener('unhandledRejection');
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toBe(''); // and it does not print over the host's own handling
+  });
+
+  it('does NOT exit on an uncaught exception when the HOST installed its own handler', async () => {
+    const fp = fakeProcess();
+    fp.addHostListener('uncaughtException');
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('uncaughtException', new Error('boom'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+  });
+
+  it('re-prints an uncaught exception to stderr, which installing a listener suppressed', async () => {
+    // Operators lose the stack from their log pipeline otherwise — the first artifact they reach for
+    // (SEV1 #4).
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('uncaughtException', new Error('boom'));
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
+    expect(fp.stderr.join('')).toContain('boom');
+    expect(fp.stderr.join('')).toContain('launch.test'); // the real stack, not just the message
+  });
+
+  it('still exits cleanly when the runtime exposes no stderr to print to', async () => {
+    // A non-Node process-like (or an injected double) may have no `stderr`. Losing the printed artifact is
+    // acceptable; throwing while handling a crash is not.
+    const fp = fakeProcess();
+    (fp.proc as unknown as { stderr?: unknown }).stderr = undefined;
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    expect(() => fp.fire('uncaughtException', new Error('boom'))).not.toThrow();
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
+  });
+
+  it('removes the rejection policy listener on stop() — a stopped SDK owns nothing', async () => {
+    // stop() removed the uncaughtException listener and forgot the rejection listener added alongside it.
+    // Measured: after stop(), `warn` + a rejection kept the process alive where the control exits 1, and
+    // launch→stop→launch accumulated listeners (3), producing two prints and two exits per rejection.
+    const fp = fakeProcess();
+    const client = launch('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    expect(fp.count('unhandledRejection')).toBe(2); // detection provider + policy
+    await client.stop();
+    expect(fp.count('unhandledRejection')).toBe(0);
+    fp.fire('unhandledRejection', new Error('after stop'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fp.exit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT let exitOnUncaught:false silently defeat `preserve` on the rejection path', async () => {
+    // REVERSED, deliberately. This asserted that `exitOnUncaught:false` also suppressed the rejection exit,
+    // on the reading that both options mean "do not end my process on the SDK's account".
+    //
+    // That reading reintroduces the exact SEV1 `preserve` exists to prevent. Since Node 15 an unhandled
+    // rejection terminates the process, so `preserve` — the DEFAULT — is what keeps a crashing service
+    // crashing. Letting an option named for uncaught EXCEPTIONS silently downgrade it turns the service
+    // into one that survives and reports exit 0 to systemd/k8s/CI, purely because the SDK is installed.
+    // That is the "interceptors must not alter app behavior" principle inverted.
+    //
+    // Each option now governs the event it is named for. A host that wants neither path to exit sets
+    // `unhandledRejections:'warn'`, which is precisely what that mode is for.
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({ process: fp.proc, captureStore: memStore(), exitOnUncaught: false }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1); // Node's own outcome, preserved
+    expect(fp.stderr.join('')).toContain('rejected');
+  });
+
+  it('lets `warn` opt out of the rejection exit, independently of exitOnUncaught', async () => {
+    const fp = fakeProcess();
+    launchTracked(
+      'tok',
+      baseOptions({
+        process: fp.proc,
+        captureStore: memStore(),
+        exitOnUncaught: false,
+        unhandledRejections: 'warn',
+      }),
+    );
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected'); // still reported and printed
+  });
+
+  it('does NOT exit under `preserve` when the HOST configured --unhandled-rejections=warn', async () => {
+    // `preserve` means "reproduce Node's own outcome", and Node's outcome is not a constant: with this
+    // flag a real process survives and exits 0 (verified). Exiting anyway kills a process Node would have
+    // kept alive — the inversion of the very bug `preserve` prevents — and the previous escape hatch
+    // (`exitOnUncaught:false`) no longer gates this path, so `preserve` has to ask rather than assume.
+    const fp = fakeProcess();
+    (fp.proc as unknown as { execArgv: string[] }).execArgv = ['--unhandled-rejections=warn'];
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).not.toHaveBeenCalled();
+    expect(fp.stderr.join('')).toContain('rejected'); // still captured and printed
+  });
+
+  it('still exits under `preserve` when the host flag says throw', async () => {
+    const fp = fakeProcess();
+    (fp.proc as unknown as { execArgv: string[] }).execArgv = ['--unhandled-rejections=throw'];
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('still exits on a rejection under `preserve` with exitOnUncaught left at its default', async () => {
+    const fp = fakeProcess();
+    launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
+    fp.fire('unhandledRejection', new Error('rejected'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fp.exit).toHaveBeenCalledWith(1);
+  });
+
   it('installs no uncaughtException handler when detectCrashes is false', () => {
     const fp = fakeProcess();
     launchTracked(
@@ -818,6 +995,113 @@ describe('launch', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // WAVE 6.1 — `'exit'` NEVER FIRES ON A SIGNAL, so every graceful container shutdown lost the buffer.
+  //
+  // Measured against a real node process: `kill -TERM` gives exit code 143 and the `'exit'` handler does
+  // not run at all. SIGTERM is how Kubernetes, Docker and systemd stop a process, so the flush hook was
+  // installed for the one path that matters least (a drained event loop) and absent from the normal one.
+  //
+  // The original comment rejected a signal handler because it "would swallow the signal" — correct, and
+  // the reason this is done the way it is: flush, remove our own listener, then RE-RAISE, so the default
+  // disposition still applies and the exit code is still 143. And, like the crash policy, only when Bugsee
+  // is the SOLE handler: a host with its own SIGTERM handler has taken responsibility for the outcome.
+  describe('flush on SIGTERM/SIGINT/SIGHUP (Wave 6.1)', () => {
+    const withDataDir = (
+      run: (dir: string, proc: ReturnType<typeof fakeProcess>) => void,
+    ): void => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-signal-'));
+      const proc = fakeProcess();
+      try {
+        run(dir, proc);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it.each(['SIGTERM', 'SIGINT', 'SIGHUP'])('flushes on %s', (signal) => {
+      withDataDir((dir, proc) => {
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+        const flushed = vi.fn();
+        cs.flushSync = flushed;
+        proc.fire(signal);
+        expect(flushed).toHaveBeenCalled();
+      });
+    });
+
+    it('RE-RAISES the signal so the process still dies with the right code', () => {
+      // The whole reason a signal handler was avoided. Installing one suppresses Node's default, so it has
+      // to be handed back: remove our listener, then re-raise.
+      withDataDir((dir, proc) => {
+        launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        expect(proc.count('SIGTERM')).toBe(1);
+        proc.fire('SIGTERM');
+        expect(proc.count('SIGTERM')).toBe(0); // listener removed…
+        expect(proc.kill).toHaveBeenCalledWith(process.pid, 'SIGTERM'); // …and the signal re-raised
+      });
+    });
+
+    it('does NOT re-raise when the HOST has its own handler', () => {
+      // The host suppressed Node's default itself and owns the outcome; killing its process because Bugsee
+      // is installed is the Wave 2.5 defect in another costume. Still flushes.
+      withDataDir((dir, proc) => {
+        proc.addHostListener('SIGTERM');
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        const cs = client.getService(ChunkStorageToken) as { flushSync: () => void };
+        const flushed = vi.fn();
+        cs.flushSync = flushed;
+        proc.fire('SIGTERM');
+        expect(flushed).toHaveBeenCalled();
+        expect(proc.kill).not.toHaveBeenCalled();
+      });
+    });
+
+    it('removes the signal listeners on stop()', () => {
+      withDataDir((dir, proc) => {
+        const client = launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            clock: fixedClock,
+            process: proc.proc,
+            instanceIdentity: FIXED_INSTANCE,
+            captureSystemEvents: false,
+          }),
+        );
+        expect(proc.count('SIGTERM')).toBe(1);
+        void client.stop();
+        expect(proc.count('SIGTERM')).toBe(0);
+      });
+    });
   });
 
   it('swallows a flush failure on exit, routing it to onError (never throws out of the exit hook)', () => {

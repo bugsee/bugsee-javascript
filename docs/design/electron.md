@@ -1,6 +1,9 @@
 # @bugsee/electron — the Electron SDK
 
-Status: **Draft v1** (2026-07-10). Author hand-off doc for the Electron build. Read alongside `docs/design/sdk-design.md`,
+Status: **BUILT + on `main`** — slices E0–E8 complete and convergent-reviewed. (Design captured 2026-07-10 as
+the author hand-off doc; kept as the architecture reference.) **Delta since:** E5's crashReporter
+*direct-upload* was DROPPED in favour of the harvest-and-bundle path in `docs/design/electron-native-crashes.md`
+(NM1–NM5, also built). Read alongside `docs/design/sdk-design.md`,
 `docs/design/webview-bridge.md` (the capture-streaming precedent this reuses), and `docs/design/multi-instance-disk-coexistence.md`.
 
 ## 1. Problem

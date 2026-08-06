@@ -138,3 +138,85 @@ describe('the module default export', () => {
     expect(def.setup).toBe(setupBugseeModule); // the module delegates to the tested core
   });
 });
+
+// WAVE 4.4 — the preset is not known when modules run.
+//
+// `nuxt.options.nitro?.preset` is only populated when the user writes `nitro: { preset }` or passes an
+// explicit override. Nitro's AUTO-DETECTION — the zero-config path Nuxt's own deployment docs advertise —
+// resolves it inside `createNitro()`, long after modules have run. Measured on a real `nuxi build` of the
+// e2e fixture with CF_PAGES=1 and no preset set:
+//
+//   PROBE SETUP      nuxt.options.nitro?.preset = undefined
+//   PROBE NITRO:INIT nitro.options.preset       = "cloudflare-pages"
+//
+// So every zero-config Cloudflare deploy got `@bugsee/bugsee/node` — fs storage, the worker-thread ANR
+// watchdog and `process.uptime()` — bundled into workerd.
+describe('the Nitro plugin follows the RESOLVED preset (Wave 4.4)', () => {
+  const fakeNitro = (preset: string | undefined, plugins: string[] = []) => ({
+    options: { preset, plugins },
+  });
+
+  /** A Nuxt that records `nitro:init` subscribers so a test can fire them the way Nuxt does. */
+  function hookableNuxt(): NuxtLike & { fire: (nitro: unknown) => void } {
+    const hooks: Array<(nitro: unknown) => void> = [];
+    return {
+      options: { runtimeConfig: { public: {} } },
+      hook: (name: string, fn: (nitro: unknown) => void) => {
+        if (name === 'nitro:init') hooks.push(fn);
+      },
+      fire: (nitro: unknown) => {
+        for (const h of hooks) h(nitro);
+      },
+    } as NuxtLike & { fire: (nitro: unknown) => void };
+  }
+
+  it('swaps in the EDGE plugin when the preset is only resolved at nitro:init', () => {
+    const nuxt = hookableNuxt();
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    const nitro = fakeNitro('cloudflare-pages', ['RESOLVED:./runtime/nitro-plugin']);
+    nuxt.fire(nitro);
+    expect(nitro.options.plugins).toEqual(['RESOLVED:./runtime/nitro-plugin.edge']);
+  });
+
+  it('leaves the NODE plugin in place for a resolved node preset', () => {
+    const nuxt = hookableNuxt();
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    const nitro = fakeNitro('node-server', ['RESOLVED:./runtime/nitro-plugin']);
+    nuxt.fire(nitro);
+    expect(nitro.options.plugins).toEqual(['RESOLVED:./runtime/nitro-plugin']);
+  });
+
+  it('does not disturb a user’s own Nitro plugins', () => {
+    // The hook mutates a shared array that the app and other modules also write to.
+    const nuxt = hookableNuxt();
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    const nitro = fakeNitro('cloudflare-pages', [
+      'user/before',
+      'RESOLVED:./runtime/nitro-plugin',
+      'user/after',
+    ]);
+    nuxt.fire(nitro);
+    expect(nitro.options.plugins).toEqual([
+      'user/before',
+      'user/after',
+      'RESOLVED:./runtime/nitro-plugin.edge',
+    ]);
+  });
+
+  it('is idempotent if nitro:init fires twice', () => {
+    const nuxt = hookableNuxt();
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    const nitro = fakeNitro('cloudflare-pages', ['RESOLVED:./runtime/nitro-plugin']);
+    nuxt.fire(nitro);
+    nuxt.fire(nitro);
+    expect(nitro.options.plugins).toEqual(['RESOLVED:./runtime/nitro-plugin.edge']);
+  });
+
+  it('still registers at setup time when there is no hook seam — the canary', () => {
+    // A Nuxt without `hook` (or a version whose nitro:init never fires) must be no worse than before, not
+    // left with no server plugin at all.
+    const nuxt = fakeNuxt();
+    setupBugseeModule({ appToken: 'tok' }, nuxt);
+    expect(addServerPlugin).toHaveBeenCalledWith('RESOLVED:./runtime/nitro-plugin');
+  });
+});

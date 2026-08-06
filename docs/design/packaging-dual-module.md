@@ -1,6 +1,9 @@
 # Packaging: ESM + CJS dual-module publishing
 
-**Status:** Design (pre-implementation), 2026-06-15. Refines `sdk-design.md` §6/§12.5 with the
+**Status:** **BUILT + on `main`** (2026-06-15, commits `7db1e87` + `a696f31`) — every implementation package
+ships dual ESM+CJS via tsup with externalized deps; dev stays source-based via `publishConfig.exports`; the
+umbrella is a multi-entry build. Proven end-to-end (`require` + `import('@bugsee/node')` → `launch()`).
+Refines `sdk-design.md` §6/§12.5 with the
 implementation details + reconciles two original calls against the as-built reality. The goal of this
 milestone: make every consumer-facing package installable and usable from **both `import` (ESM) and
 `require` (CJS)** on Node ≥ 18 (and ESM for bundlers/browsers/edge), without losing the "no build step for
@@ -113,6 +116,6 @@ its siblings via the normal module graph.
 4. **Platform** (`node`/`node-utils`/`browser`/`browser-utils`/`bun`/`deno`) — dual; the real CJS+ESM
    `launch()` smoke on `@bugsee/node` (verification #2–4).
 5. **Capture/performance/opentelemetry + adapters** (`express`/`fastify`) — dual.
-6. **Umbrella** (`@bugsee/bugsee`) — runtime conditions × import/require (D5); verify `require('bugsee')`.
+6. **Umbrella** (`@bugsee/bugsee`) — runtime conditions × import/require (D5); verify `require('@bugsee/bugsee')`.
 
 Reconcile `sdk-design.md` §12.5 (tier-0 now dual, per D1) when this lands.

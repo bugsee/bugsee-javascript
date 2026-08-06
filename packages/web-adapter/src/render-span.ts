@@ -1,4 +1,4 @@
-import { type AdapterClientOptions, getPerformanceApi } from './adapter';
+import { type AdapterClientOptions, getPerformanceApi, neverThrow } from './adapter';
 
 // Shared `ui.render` recorder for the framework render-span integrations (React Profiler / Vue render mixin /
 // Angular [bugseeRender] directive / Svelte init-span injection). Each framework supplies a component name +
@@ -31,19 +31,24 @@ export interface RenderSpanInput {
 /** Record one `ui.render` child span on the active transaction. A no-op when no transaction is active (the
  *  render is not part of a captured trace), or when the SDK / performance extension is absent. */
 export function recordRenderSpan(span: RenderSpanInput, options: AdapterClientOptions = {}): void {
-  const active = getPerformanceApi(options.getClient)?.getActiveSpan();
-  if (active === undefined) return;
-  const duration = span.durationMs ?? span.endTimestampMs - span.startTimestampMs;
-  active.recordChildSpan(RENDER_SPAN_OP, {
-    startTimestampMs: span.startTimestampMs,
-    endTimestampMs: span.endTimestampMs,
-    description: span.name,
-    attributes: {
-      // Extras first → the dedicated `durationMs`/`phase` fields stay AUTHORITATIVE (a framework's extra
-      // attribute can't accidentally clobber the canonical duration/phase).
-      ...span.attributes,
-      [RENDER_DURATION_ATTRIBUTE]: duration,
-      ...(span.phase !== undefined ? { [RENDER_PHASE_ATTRIBUTE]: span.phase } : {}),
-    },
-  });
+  // Contained (Wave 2.1): called from React's <Profiler onRender>, Angular view hooks and Svelte onMount —
+  // host render paths, where a throw takes the component tree down with it. `getClient` is a public option
+  // that can throw, and so can the perf API. This seam was missed in the first pass.
+  neverThrow(() => {
+    const active = getPerformanceApi(options.getClient)?.getActiveSpan();
+    if (active === undefined) return;
+    const duration = span.durationMs ?? span.endTimestampMs - span.startTimestampMs;
+    active.recordChildSpan(RENDER_SPAN_OP, {
+      startTimestampMs: span.startTimestampMs,
+      endTimestampMs: span.endTimestampMs,
+      description: span.name,
+      attributes: {
+        // Extras first → the dedicated `durationMs`/`phase` fields stay AUTHORITATIVE (a framework's extra
+        // attribute can't accidentally clobber the canonical duration/phase).
+        ...span.attributes,
+        [RENDER_DURATION_ATTRIBUTE]: duration,
+        ...(span.phase !== undefined ? { [RENDER_PHASE_ATTRIBUTE]: span.phase } : {}),
+      },
+    });
+  }, options.onError);
 }

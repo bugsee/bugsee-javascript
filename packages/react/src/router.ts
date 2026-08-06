@@ -1,4 +1,4 @@
-import { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 // The @bugsee/react ROUTER NAMING integration (frontend-adapters D8 + the F5/D5 two-phase naming seam).
 // On a navigation, react-router knows the matched route PATTERN (`/users/:id`); read it from the
@@ -67,10 +67,25 @@ export function instrumentReactRouter(
   router: ReactDataRouterLike,
   options: RouteNamingOptions = {},
 ): () => void {
-  const apply = (state: { matches?: readonly RouteMatchLike[] }): void => {
-    const pattern = routePatternFromMatches(state.matches);
+  // CONTAINED. Everything this touches is HOST-supplied — `router.state` and `router.subscribe` — and it
+  // runs during app setup, where a throw takes the whole mount down rather than costing one report.
+  //
+  // `apply` is guarded separately because the router calls it back on every navigation, long after this
+  // function returned. That guard is REDUNDANT TODAY and is kept deliberately: `setRouteName` already
+  // contains itself and `routePatternFromMatches` is pure, so a mutation removing this `guarded` survives
+  // the suite — verified, not assumed. It stays because Wave 2.1's rule is enforced by construction at every
+  // host callback rather than re-derived from what the current callee happens to do (the same reasoning
+  // recorded for Solid's seam guard). Anything added to `apply` that is not itself contained needs it.
+  const apply = guarded((state: { matches?: readonly RouteMatchLike[] }): void => {
+    const pattern = routePatternFromMatches(state?.matches);
     if (pattern !== undefined) setRouteName(pattern, options);
-  };
-  apply(router.state); // name the current/initial route immediately (refines the active pageload transaction)
-  return router.subscribe(apply);
+  }, options.onError);
+  // Always return a callable unsubscribe: React calls it as an effect cleanup, so handing back `undefined`
+  // would turn an SDK failure into a "destroy is not a function" crash on the NEXT unmount.
+  return (
+    neverThrow(() => {
+      apply(router.state); // name the current route now (refines the active pageload transaction)
+      return router.subscribe(apply);
+    }, options.onError) ?? (() => {})
+  );
 }

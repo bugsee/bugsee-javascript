@@ -1,3 +1,4 @@
+import { neverThrow } from '@bugsee/core';
 import type { TransactionWire } from '@bugsee/performance';
 import type { ConsumedSpan } from './from-otlp';
 import { createTraceAssembler } from './trace-assembler';
@@ -73,6 +74,12 @@ export interface BugseeSpanProcessorOptions {
   maxAgeMs?: number;
   /** Cap on concurrently-buffered traces. Default 1000. */
   maxTraces?: number;
+  /**
+   * Where an SDK-internal failure is reported. It is never thrown into the host: `onEnd` is called BY the
+   * application's own tracing SDK inside `span.end()`, so a throw would surface in the customer's request
+   * path because Bugsee is installed.
+   */
+  onError?: (error: unknown) => void;
 }
 
 /** Structurally assignable to OTel's `SpanProcessor`. */
@@ -96,7 +103,11 @@ export function createBugseeSpanProcessor(
   return {
     onStart() {}, // we assemble on span end, not start
     onEnd(span) {
-      assembler.add(readableSpanToConsumed(span));
+      // CONTAINED. Two independent host inputs meet here and BOTH can throw: the `span` (whatever OTel
+      // version and exporter chain the app configured — every property read is a chance) and, downstream of
+      // the assembler, the application's own `onTransaction` sink. Either one escaping lands inside the
+      // customer's `span.end()` call.
+      neverThrow(() => assembler.add(readableSpanToConsumed(span)), options.onError);
     },
     forceFlush() {
       return Promise.resolve();

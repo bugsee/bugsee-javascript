@@ -97,13 +97,18 @@ describe('recordRenderSpan', () => {
       ext: () => ({ getActiveSpan: () => undefined }),
     } as unknown as Bugsee;
     const recordChildSpan = vi.fn();
+    // `onError` must stay silent. Deleting `if (active === undefined) return` calls `recordChildSpan` on
+    // undefined, which throws into `neverThrow` — so the suite still saw "no throw, no span recorded" and
+    // passed, while every render without an active transaction reported an SDK-internal error.
+    const onError = vi.fn();
     expect(() =>
       recordRenderSpan(
         { name: 'X', startTimestampMs: 0, endTimestampMs: 1 },
-        { getClient: () => client },
+        { getClient: () => client, onError },
       ),
     ).not.toThrow();
     expect(recordChildSpan).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('is a no-op when no SDK / performance ext is available', () => {

@@ -167,7 +167,11 @@ class XhrInterceptor
     return function (this: XhrInstance, name: string, value: string): unknown {
       const state = self.#state.get(this);
       if (state !== undefined) {
-        state.headers[name] = value;
+        // Coerced, as the fetch and node:http interceptors already do. XHR was the outlier: it stored the
+        // argument raw, so `setRequestHeader('X-Count', 42)` put a number into the captured headers and the
+        // sanitizer threw on it, silently dropping the request half of the entry. The header sent on the
+        // wire is unaffected — `original` still receives the caller's own value.
+        state.headers[name] = String(value);
       }
       return original.apply(this, [name, value]);
     };

@@ -32,6 +32,9 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
   record?: ReplayRecordFn;
   /** Opt-in canvas recording (from `@bugsee/replay-canvas`); absent ⇒ DOM-only replay (unchanged). */
   canvas?: CanvasRecordConfig;
+  /** Internal-error sink. Today: an invalid masking selector that was dropped and escalated (Wave 1.4) —
+   *  without it the downgrade is silent, which is precisely how the original fail-open survived. */
+  onError?: (error: unknown) => void;
 }
 
 /**
@@ -45,7 +48,7 @@ export function registerReplay(
 ): ReplayRecorder {
   const provider = createReplayCaptureProvider({
     record: options.record ?? rrwebRecord,
-    masking: resolveReplayMaskingOptions(options),
+    masking: resolveReplayMaskingOptions(options, { onError: options.onError }),
     ...(options.checkoutEveryNms !== undefined
       ? { checkoutEveryNms: options.checkoutEveryNms }
       : {}),

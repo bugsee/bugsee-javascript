@@ -14,8 +14,36 @@ export interface SpawnResult {
 export type SpawnFn = (
   command: string,
   args: string[],
-  options: { cwd?: string; env?: EnvRecord },
+  options: { cwd?: string; env?: EnvRecord; signal?: AbortSignal },
 ) => Promise<SpawnResult>;
+
+/** Default wall-clock budget for one `bugsee-cli` invocation (Wave 7.4). */
+const DEFAULT_TIMEOUT_MS = 120_000;
+
+/**
+ * The options handed to `node:child_process.spawn` — a pure function so they can be ASSERTED.
+ *
+ * They are this package's security surface, and they used to be an inline literal inside a
+ * `/* v8 ignore *\/`'d adapter, which is how the review's `shell: true` mutation survived the whole suite.
+ * `shell: true` on a command line carrying user-supplied paths is the single most dangerous change
+ * possible here, so it is now something a test can see.
+ */
+export function spawnOptionsFor(options: { cwd?: string; env?: EnvRecord; signal?: AbortSignal }): {
+  cwd?: string;
+  env?: EnvRecord;
+  signal?: AbortSignal;
+  stdio: [string, string, string];
+} {
+  return {
+    cwd: options.cwd,
+    env: options.env,
+    // NEVER a shell: the argv carries user-supplied output paths.
+    // stdin is `ignore` so the child can never consume the build's input; both output streams are captured
+    // for the error message.
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  };
+}
 
 export interface RunBugseeCliOptions {
   /** Sent as `BUGSEE_APP_TOKEN` (the CLI reads it as `--app-token`). */
@@ -30,6 +58,14 @@ export interface RunBugseeCliOptions {
   resolveBinary?: (env: EnvRecord) => string;
   /** Base environment (defaults to `process.env`). */
   env?: EnvRecord;
+  /**
+   * Wall-clock budget for the child, in ms. Default 120 000 (Wave 7.4).
+   *
+   * Without one, the promise settled only on the child's `close`/`error`, so a CLI blocked on a hanging TCP
+   * connect — reachable purely through a misconfigured `endpoint` on a firewalled CI network — left the
+   * build pending until the CI job's own global timeout, with no diagnostic.
+   */
+  timeoutMs?: number;
 }
 
 /** A non-zero `bugsee-cli` exit; carries the exit code + captured stderr. */
@@ -62,11 +98,7 @@ export function resolveBugseeCli(env: EnvRecord = process.env): string {
 /* v8 ignore start -- thin node:child_process adapter; the injectable SpawnFn seam is what tests exercise. */
 const defaultSpawn: SpawnFn = (command, args, options) =>
   new Promise<SpawnResult>((resolve, reject) => {
-    const child = nodeSpawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const child = nodeSpawn(command, args, spawnOptionsFor(options) as never);
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (chunk) => {
@@ -97,7 +129,32 @@ export async function runBugseeCli(
     childEnv.BUGSEE_ENDPOINT = options.endpoint;
   }
 
-  const result = await spawn(binary, args, { cwd: options.cwd, env: childEnv });
+  // The watchdog lives HERE rather than in the spawn adapter, so it is in the layer tests can drive. The
+  // signal is what actually kills the child — rejecting alone would leave an orphan holding its handles.
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timer.unref?.(); // never keep the build's process alive on our account
+
+  let result: SpawnResult;
+  try {
+    result = await spawn(binary, args, {
+      cwd: options.cwd,
+      env: childEnv,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw timedOut
+      ? new Error(`bugsee-cli ${args.join(' ')} timed out after ${timeoutMs}ms`)
+      : error;
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (result.code !== 0) {
     throw new BugseeCliError(
       `bugsee-cli ${args.join(' ')} failed (exit ${result.code})`,

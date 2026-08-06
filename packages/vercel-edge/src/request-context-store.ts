@@ -35,7 +35,9 @@ export interface EdgeRequestContextStore extends ContextProvider {
 
 const ALS_UNAVAILABLE_WARNING =
   'AsyncLocalStorage unavailable; per-request context isolation across awaits will not work. ' +
-  'On Cloudflare add the "nodejs_compat" (or "nodejs_als") compatibility flag to wrangler.toml.';
+  'Pass one explicitly: launch(token, { asyncLocalStorage: new AsyncLocalStorage() }) — on Cloudflare ' +
+  'import it from "node:async_hooks" (with the "nodejs_compat" flag); globalThis.AsyncLocalStorage does ' +
+  'NOT exist on workerd under any flag.';
 
 /** A single-slot fallback: a plain variable with save/restore around `run`. No cross-await isolation (a
  *  concurrent request can transiently observe another's context between awaits) — hence the one-time warning. */

@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  neverThrow,
   openServerRequest,
   type RequestContextStore,
   RequestContextStoreToken,
@@ -61,6 +62,13 @@ export interface ElysiaAdapterOptions {
    * skip framework control flow (NOT_FOUND, VALIDATION, a 4xx status, …).
    */
   shouldReport?: (err: unknown) => boolean;
+  /**
+   * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
+   * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
+   * silent, which is why this exists — the other five backend adapters inherit it from
+   * `ServerInstrumentOptions` and these two did not.
+   */
+  onError?: (error: unknown) => void;
 }
 
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
@@ -109,6 +117,9 @@ const toOptions = (options: ElysiaAdapterOptions): ServerInstrumentOptions => ({
     : { newContextId: newRandomId }),
 });
 
+/** The status an unmatched route resolves to; `codeToStatus` leaves named framework codes undefined. */
+const NOT_FOUND_STATUS = 404;
+
 interface RequestState {
   span: ServerRequestSpan;
   outcome: 'OK' | 'ERROR';
@@ -117,7 +128,20 @@ interface RequestState {
 }
 
 /** Register the Bugsee Elysia hooks. Call on the instance that owns your routes. */
+/**
+ * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
+ * registration methods. An unguarded throw here does not cost one report — it stops the application
+ * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ *
+ * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
+ * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * app alive AND tells anyone who wired a sink that instrumentation did not install.
+ */
 export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
+  neverThrow(() => setupElysiaUnsafe(app, options), options.onError);
+}
+
+function setupElysiaUnsafe(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
   const opts = toOptions(options);
   const getClient = options.getClient ?? defaultGetClient;
   // Per-request span + outcome, keyed by the request object (GC'd with it; no context mutation).
@@ -157,6 +181,24 @@ export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = 
         resolveStore(client)?.setAttribute('http.route', c.route ?? requestPath(c));
         void client.logException(c.error, { mechanism: 'http-error' });
       }
+      // WAVE 6.8 — a NOT_FOUND is the ONE code Elysia short-circuits, so mapResponse never runs and the
+      // transaction was left open forever. Probed on Elysia 1.4 (`app.handle`), per-request hook order:
+      //   matched route      → onRequest | mapResponse
+      //   UNMATCHED (404)    → onRequest | onError NOT_FOUND            ← no mapResponse
+      //   wrong METHOD (404) → onRequest | onError NOT_FOUND            ← no mapResponse
+      //   VALIDATION (422)   → onRequest | onError VALIDATION | mapResponse
+      //   PARSE (400)        → onRequest | onError PARSE | mapResponse
+      // Everything except NOT_FOUND reaches mapResponse, which is where the real response status is known,
+      // so only this code is finished here — finishing the others too would double-count every 5xx.
+      //
+      // The consequences were bounded but real: nothing accumulated (states is a WeakMap keyed by the
+      // Request, and the perf controller holds a single `active` slot), but 404 traffic produced NO
+      // transaction at all, and the `active` slot was left pointing at a dead request until the next
+      // startTransaction — so any span created in that window attached to a transaction that would never
+      // be finished, and was silently dropped.
+      if (state !== undefined && c.code === 'NOT_FOUND') {
+        finish(state, c, NOT_FOUND_STATUS);
+      }
     } catch {
       // never break Elysia's error handling
     }
@@ -166,16 +208,26 @@ export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = 
     try {
       const state = states.get(c.request);
       if (state === undefined) {
-        return;
+        return; // already finished (a short-circuited NOT_FOUND), or never opened
       }
-      states.delete(c.request);
-      state.span.setRoute(nameRoute(c)); // route now parametrized; refines the txn name
       // Prefer a numeric c.set.status, then the code-derived status (e.g. 503), then 200. The OUTCOME is
       // explicit (D10): a server error finishes ERROR even when the recorded status is not >= 500.
-      const status = typeof c.set.status === 'number' ? c.set.status : (state.status ?? 200);
-      state.span.finish(status, state.outcome);
+      finish(state, c, typeof c.set.status === 'number' ? c.set.status : (state.status ?? 200));
     } catch {
       // never break the response lifecycle
     }
   });
+
+  /**
+   * Finish a request's transaction, exactly once.
+   *
+   * Removing the state FIRST is what makes it idempotent: whichever hook gets there first wins, and the
+   * other takes its `state === undefined` early return. That keeps the NOT_FOUND finish above safe against
+   * an Elysia version that stops short-circuiting and starts calling mapResponse for a 404 too.
+   */
+  function finish(state: RequestState, c: ElysiaContextLike, status: number): void {
+    states.delete(c.request);
+    state.span.setRoute(nameRoute(c)); // route now parametrized; refines the txn name
+    state.span.finish(status, state.outcome);
+  }
 }

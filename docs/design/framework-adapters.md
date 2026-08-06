@@ -1,7 +1,7 @@
 # Framework adapters + the per-request context foundation
 
 **Status:** Foundation (S1–S5) + **Express (S6) + e2e (S7) + Fastify + NestJS + Hono + Elysia + Hapi + Koa
-BUILT** on `master` (2026-06-15). Design approved 2026-06-15; author dialogue + decision log below. Build
+BUILT** on `main` (2026-06-15). Design approved 2026-06-15; author dialogue + decision log below. Build
 order: the portable foundation first, then **Express** as its first consumer; every later backend adapter
 is a thin re-binding of the same foundation. (As-built deltas reconciled into S1/S2/S6 below; the **NestJS**
 adapter — with the empirically-grounded seam decision — is in §N; the four more server adapters in §N+1.

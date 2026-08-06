@@ -224,3 +224,74 @@ describe('createCaptureAggregator (exporter round-trip)', () => {
     expect((await exporter.drain()).get('log')).toHaveLength(1);
   });
 });
+
+// S1 (docs/design/cloudflare-tenant-isolation.md §4.2): the tenant OWNER travels out-of-band.
+//
+// Durable Objects for different tenants share one isolate, one client and one capture ring, so an incident
+// in one DO uploads every other DO's data (docs/review/cloudflare.md SEV1 #2, proven on real workerd).
+// Partitioning the store needs an owner key AT WRITE TIME. It cannot be recovered from `context_id`: that is
+// stamped INSIDE entry.data and then serialized, and StoredEntry deliberately keeps queryable fields
+// out-of-band "so ordering/time-bounds need no deserialize" (contracts.ts). So `owner` rides alongside
+// `type`/`timestamp`, never inside the payload.
+describe('createCaptureAggregator — owner (tenant partitioning key)', () => {
+  const ctx = (c: Partial<RequestContext> & { owner?: string }): RequestContext =>
+    ({ contextId: 'c1', ...c }) as RequestContext;
+
+  it('passes the active context owner to the store out-of-band', () => {
+    const { store, added } = fakeStore();
+    const aggregator = createCaptureAggregator(store, {
+      getContext: () => ctx({ owner: 'tenant-A' }),
+    });
+    aggregator.addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(added[0]?.owner).toBe('tenant-A');
+  });
+
+  it('leaves owner undefined when the context carries none (single-tenant path unchanged)', () => {
+    const { store, added } = fakeStore();
+    const aggregator = createCaptureAggregator(store, { getContext: () => ctx({}) });
+    aggregator.addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(added[0]?.owner).toBeUndefined();
+  });
+
+  it('leaves owner undefined when there is no context at all', () => {
+    const { store, added } = fakeStore();
+    createCaptureAggregator(store).addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(added[0]?.owner).toBeUndefined();
+  });
+
+  it('does NOT leak the owner into the serialized payload', () => {
+    // The payload is the wire; the owner is an internal routing key. Same reasoning that keeps interceptor
+    // bookkeeping off the entry data.
+    const { store, added } = fakeStore();
+    const aggregator = createCaptureAggregator(store, {
+      getContext: () => ctx({ owner: 'tenant-A' }),
+    });
+    aggregator.addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(added[0]?.serialized).not.toContain('tenant-A');
+    expect(added[0]?.serialized).toContain('c1'); // context_id still rides inside, as before
+  });
+
+  it('does NOT leak the owner into the payload when a trace is also active', () => {
+    // Covers the trace-present branch of the stamp. Without this case a mutation that wrote the owner into
+    // the payload alongside trace_id SURVIVED, because the trace-less context above never runs that branch.
+    const { store, added } = fakeStore();
+    const aggregator = createCaptureAggregator(store, {
+      getContext: () =>
+        ctx({
+          owner: 'tenant-A',
+          trace: { traceId: 't'.repeat(32), spanId: 's'.repeat(16), sampled: true },
+        }),
+    });
+    aggregator.addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(added[0]?.serialized).not.toContain('tenant-A');
+    expect(added[0]?.serialized).toContain('trace_id'); // the trace branch really did run
+    expect(added[0]?.owner).toBe('tenant-A'); // still routed out-of-band
+  });
+
+  it('omits the owner KEY entirely when there is none, rather than setting it undefined', () => {
+    // `{owner: undefined}` and `{}` read alike, so this pins the shape a persisting store would serialize.
+    const { store, added } = fakeStore();
+    createCaptureAggregator(store).addEntry(new CaptureDataEntryBase('log', 1, { message: 'hi' }));
+    expect(Object.hasOwn(added[0] as object, 'owner')).toBe(false);
+  });
+});

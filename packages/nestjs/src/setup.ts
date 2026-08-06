@@ -1,3 +1,4 @@
+import { neverThrow } from '@bugsee/node';
 import type { BaseExceptionFilter } from '@nestjs/core';
 import { BugseeExceptionFilter } from './filter';
 import { BugseeInterceptor } from './interceptor';
@@ -35,7 +36,20 @@ export interface NestApp {
   getHttpAdapter(): unknown;
 }
 
+/**
+ * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
+ * registration methods. An unguarded throw here does not cost one report — it stops the application
+ * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ *
+ * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
+ * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * app alive AND tells anyone who wired a sink that instrumentation did not install.
+ */
 export function setupNest(app: NestApp, options: SetupNestOptions = {}): void {
+  neverThrow(() => setupNestUnsafe(app, options), options.onError);
+}
+
+function setupNestUnsafe(app: NestApp, options: SetupNestOptions = {}): void {
   const { errorCapture = 'interceptor', ...adapter } = options;
 
   // 1) Context middleware — registered first so it opens the per-request context before guards run.
