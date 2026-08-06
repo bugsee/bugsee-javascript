@@ -201,11 +201,32 @@ describe.each(
         bundle.files['profile.json'],
         'the AppHang bundle carries no profile.json',
       ).toBeDefined();
-      const profile = parseJson<{ nodes: Array<{ callFrame: { functionName: string } }> }>(
-        bundle.files['profile.json'],
-      );
+      const profile = parseJson<{
+        nodes: Array<{ id?: number; hitCount?: number; callFrame: { functionName: string } }>;
+        startTime?: number;
+        endTime?: number;
+        samples?: number[];
+      }>(bundle.files['profile.json']);
       const blocking = profile.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin');
-      expect(blocking, 'the blocking frame e2eHangSpin is not in the AppHang profile').toBe(true);
+      // This assertion has failed 3 times in ~13 FULL parallel `pnpm test:e2e` runs and never once in
+      // isolation — 10/10 present there, including under synthetic CPU saturation, and the spin keeps its
+      // CPU time under load (measured: 394 ms of CPU in a 400 ms wall-clock spin), so starvation is ruled
+      // out. Rather than ship a fix for a condition that cannot be reproduced, the failure now carries the
+      // evidence needed to diagnose it in ONE more occurrence: whether the profile covers the hang at all,
+      // how many samples it holds, and what the busiest frames actually were.
+      const busiest = [...profile.nodes]
+        .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
+        .slice(0, 8)
+        .map((n) => `${n.callFrame.functionName || '(anonymous)'}:${n.hitCount ?? 0}`);
+      expect(
+        blocking,
+        [
+          'the blocking frame e2eHangSpin is not in the AppHang profile',
+          `  profile window: ${profile.startTime ?? '?'} → ${profile.endTime ?? '?'} (µs)`,
+          `  nodes: ${profile.nodes.length}, samples: ${profile.samples?.length ?? '?'}`,
+          `  busiest frames: ${busiest.join(', ')}`,
+        ].join('\n'),
+      ).toBe(true);
     });
   });
 

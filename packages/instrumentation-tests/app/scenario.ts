@@ -500,6 +500,64 @@ async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): 
   await client.flush(20_000);
   await client.stop(20_000);
 }
+
+/**
+ * OVERLAPPING requests with distinct identities (Wave 3b.4).
+ *
+ * The `server` scenario issues ONE request, so every per-request mechanism it exercises — the context, the
+ * transaction, the outgoing-call attribution — is trivially correct: there is nothing to confuse it with.
+ * A server's actual job is concurrency, and that is where two SEV1s lived: an outgoing `http.client` span
+ * parented to whichever request started LAST (so A's database call shipped inside B's trace), and the
+ * cross-request identity bleed the same single-slot shape produces.
+ *
+ * Three requests are held open with staggered delays so their lifetimes genuinely overlap, each carrying
+ * its own user and issuing its own outgoing call. Every assertion is per-request: the report, the handler's
+ * log and the outgoing call must all agree on ONE identity.
+ */
+async function runConcurrentServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  const http = await import('node:http');
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    const who = url.searchParams.get('who') ?? 'anon';
+    const holdMs = Number(url.searchParams.get('hold') ?? 0);
+    client.log(`concurrent handling ${who}`);
+    // An OUTGOING call from inside this request, while the other requests are mid-flight. Its span must be
+    // parented to THIS request's transaction, not to whichever one started most recently.
+    await fetch(`${collectorUrl}/echo?who=${who}`).then((r) => r.text());
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+    void client.logException(new Error(`concurrent failure ${who}`));
+    res.statusCode = 200;
+    res.end(who);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+  // Staggered holds so the three lifetimes overlap rather than merely queueing: alice is still open when
+  // carol arrives, which is precisely the window that produced the misattribution.
+  await Promise.all(
+    [
+      { who: 'alice', hold: 120 },
+      { who: 'bob', hold: 60 },
+      { who: 'carol', hold: 10 },
+    ].map(({ who, hold }) =>
+      fetch(`http://127.0.0.1:${port}/work?who=${who}&hold=${hold}`).then((r) => r.text()),
+    ),
+  );
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -508,6 +566,9 @@ export async function runScenario(
   if (opts.scenario === 'crash') {
     await runCrashScenario(launch, opts.collectorUrl);
     return;
+  }
+  if (opts.scenario === 'concurrent-server') {
+    return runConcurrentServerScenario(launch, opts.collectorUrl);
   }
   if (opts.scenario === 'server') {
     await runServerScenario(launch, opts.collectorUrl);

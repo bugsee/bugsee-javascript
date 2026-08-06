@@ -371,28 +371,56 @@ describe('createClient — capture entry points', () => {
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  it('log pushes a log entry with default level info and clock timestamp', async () => {
+  // The wire level is NUMERIC (design §8.9, mobile parity: 1=Error … 5=Verbose). Wave 5.1 fixed the
+  // console-CAPTURE path and left `client.log()` — the manual API users are told to call — shipping the
+  // string name. These two tests asserted `level: 'info'` and `level: 'error'`, so they pinned the defect
+  // in place; the e2e upload contract added in Wave 3b.2 is what finally named it.
+  it('log pushes a log entry whose level is the NUMERIC wire value', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('hello');
     expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 1000,
-      level: 'info',
+      level: 3, // 'info' (1=Error, 2=Warning, 3=Info, 4=Debug, 5=Verbose)
       source: 'logger',
       message: 'hello',
     });
   });
 
-  it('log honors an explicit level and timestamp', async () => {
+  it('log honors an explicit level and timestamp, still encoding the level', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
     client.log('boom', 'error', 7);
     expect((await firstEntry(store, 'log'))?.data).toEqual({
       timestamp: 7,
-      level: 'error',
+      level: 1, // 'error'
       source: 'logger',
       message: 'boom',
     });
+  });
+
+  it('passes an ALREADY-numeric level through unchanged', async () => {
+    // The API accepts both, so the encoder must be idempotent — re-encoding a number would corrupt it.
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+    client.log('n', 2);
+    expect((await firstEntry(store, 'log'))?.data).toMatchObject({ level: 2 });
+  });
+
+  it('shows the LOG FILTER the friendly name, not the wire number', async () => {
+    // A user's filter is application code written against the documented API, where levels are names.
+    // Encoding before the filter would silently break every `level === 'error'` check ever written.
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const seen: unknown[] = [];
+    const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+    const filters = client.getService(FiltersToken);
+    filters.log = (e) => {
+      seen.push(e.level);
+      return e;
+    };
+    client.log('boom', 'error');
+    expect(seen).toEqual(['error']);
+    expect((await firstEntry(store, 'log'))?.data).toMatchObject({ level: 1 });
   });
 
   it('event pushes an events.user entry with params', async () => {

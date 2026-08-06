@@ -120,7 +120,8 @@ export function runScenarioProcess(
     | 'privacy'
     | 'exit-clean'
     | 'reject'
-    | 'native-server',
+    | 'native-server'
+    | 'concurrent-server',
   extraEnv: Record<string, string> = {},
   /** Kill the child and report `timedOut` if it has not exited by then. Used by the process-lifecycle
    *  scenarios, where "exits on its own" IS the assertion — without it a pinned process just stalls. */
