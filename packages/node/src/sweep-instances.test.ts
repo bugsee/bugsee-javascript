@@ -247,3 +247,78 @@ describe('sweepAgedInstances', () => {
     expect(existsSync(sub)).toBe(true); // fresh under the 7-day default → kept
   });
 });
+
+// WAVE 6.6 — the sweep is now the ONLY reclaimer for one class of subtree, so it has to cover it.
+//
+// Making the liveness rule patient with an alive-pid MAIN-thread owner (so a frozen process no longer has
+// its capture deleted underneath it) leaves a gap: a genuinely abandoned subtree whose pid was RECYCLED by
+// an unrelated process looks alive forever, and recovery will never reclaim it. This sweep skipped live
+// pids too, so nothing would ever have freed it.
+//
+// Age closes it without reintroducing the hazard: a live instance heartbeats every 10 s, so a subtree with
+// NO heartbeat for the whole TTL is not one anybody is using — whatever its pid says. The data given up is
+// a week old, well outside any rolling capture window.
+describe('aged + heartbeat-silent subtrees with a LIVE pid (Wave 6.6)', () => {
+  const NOW = 1_000_000_000_000;
+  const TTL = 10_000;
+  const roots: string[] = [];
+  const mkRoot = (): string => {
+    const r = mkdtempSync(join(tmpdir(), 'bugsee-sweep66-'));
+    roots.push(r);
+    return r;
+  };
+  afterEach(() => {
+    for (const r of roots.splice(0)) {
+      rmSync(r, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a subtree that has not beaten for the whole TTL, even though its pid is alive', () => {
+    const root = mkRoot();
+    const sub = seed(root, '777-0-reused', {
+      owner: { pid: 777, startedAt: NOW - TTL - 1 },
+      live: true,
+    });
+    const beatAt = (NOW - TTL - 1) / 1000;
+    utimesSync(join(sub, '.live'), beatAt, beatAt);
+    sweepAgedInstances({
+      dataDir: root,
+      ownInstanceId: 'own',
+      ttlMs: TTL,
+      now: () => NOW,
+      kill: killOver(new Set([777])), // the pid resolves as ALIVE
+    });
+    expect(existsSync(sub)).toBe(false);
+  });
+
+  it('KEEPS a live-pid subtree that is still beating, however old the instance is', () => {
+    // The canary, and the whole point of 6.6: a long-running process must never lose its capture to the
+    // hygiene sweep. Age alone is not the signal — age WITHOUT a heartbeat is.
+    const root = mkRoot();
+    const sub = seed(root, '778-0-running', { owner: { pid: 778, startedAt: 1 }, live: true });
+    utimesSync(join(sub, '.live'), NOW / 1000, NOW / 1000); // beating right now
+    sweepAgedInstances({
+      dataDir: root,
+      ownInstanceId: 'own',
+      ttlMs: TTL,
+      now: () => NOW,
+      kill: killOver(new Set([778])),
+    });
+    expect(existsSync(sub)).toBe(true);
+  });
+
+  it('keeps a live-pid subtree inside the TTL even with no heartbeat file at all', () => {
+    // A just-launched instance that has not written its first beat yet — reclaiming it would delete a
+    // starting instance's directory out from under it.
+    const root = mkRoot();
+    const sub = seed(root, '779-0-arming', { owner: { pid: 779, startedAt: NOW - 5 } });
+    sweepAgedInstances({
+      dataDir: root,
+      ownInstanceId: 'own',
+      ttlMs: TTL,
+      now: () => NOW,
+      kill: killOver(new Set([779])),
+    });
+    expect(existsSync(sub)).toBe(true);
+  });
+});

@@ -51,20 +51,40 @@ export function readLiveMtimeMs(liveFile: string): number | undefined {
 }
 
 /**
- * Pure liveness verdict (D2). A subtree is DEAD iff its owning process is gone (reclaim INSTANTLY), OR the
- * process is alive but its heartbeat has been stale beyond the PATIENT window (a dead worker_thread in a
- * live process, or a reused pid). An alive pid with no heartbeat yet is a still-arming instance — KEPT.
+ * Pure liveness verdict (D2, revised by Wave 6.6).
+ *
+ * DEAD iff the owning PROCESS is gone (reclaim instantly), or a WORKER-thread owner's heartbeat has been
+ * stale beyond the patient window. An alive pid with no heartbeat yet is a still-arming instance — KEPT.
+ *
+ * A MAIN-thread owner with an alive pid is never declared dead by heartbeat staleness, however old. That
+ * was the previous rule and it deleted live instances' data: reproduced with a real child process and a
+ * real SIGSTOP (the shape of a `docker pause`, a VM suspend, a debugger break, a death-spiral GC, or a
+ * genuinely blocked event loop — the exact condition this SDK ships ANR detection for). The child was
+ * alive; its whole capture subtree was removed underneath it; on resume every write failed ENOENT forever,
+ * with nothing recreating the tree. The heartbeat cannot tell "frozen" from "gone" — but `kill(pid,0)` can,
+ * and it already says the process exists.
+ *
+ * A WORKER-thread owner stays reclaimable, because a live pid says nothing about whether THAT THREAD lives,
+ * and its heartbeat now runs on a worker of its own that dies with it (verified against real
+ * worker_threads). PID reuse and a frozen-then-abandoned process are handled by the age-based sweep
+ * (`sweep-instances.ts`), which is the backstop for everything this rule now keeps.
  */
 export function isSiblingDead(
   ownerPidAlive: boolean,
   liveMtimeMs: number | undefined,
   nowMs: number,
   patientMs: number,
+  ownerThreadId?: number,
 ): boolean {
   if (!ownerPidAlive) {
     return true;
   }
   if (liveMtimeMs === undefined) {
+    return false;
+  }
+  // An absent threadId (an owner.json from an older build) is read as the main thread: guessing "worker"
+  // would delete a live instance's data, while guessing "main" only defers reclamation to the sweep.
+  if ((ownerThreadId ?? 0) === 0) {
     return false;
   }
   return nowMs - liveMtimeMs > patientMs;
