@@ -255,18 +255,70 @@ silently.
 
 ---
 
-## Wave 6 — Durability, lifecycle, resource bounds
+## Wave 6 — Durability, lifecycle, resource bounds — ✅ **COMPLETE** (2026-08-06)
 
-| # | Fix | Where | Est |
-|---|---|---|---|
-| 6.1 | Flush-on-exit never fires on SIGTERM/SIGINT/SIGHUP (bound to `'exit'`) | `packages/node`, `node-utils` | 2–3d |
-| 6.2 | No page-lifecycle flush in the browser at all (no `pagehide`, no keepalive/sendBeacon) — a backgrounded-then-killed mobile tab loses everything | `packages/browser` | 3–4d |
-| 6.3 | `ENOSPC` → unbounded memory growth instead of back-pressure; IDB write queue has zero back-pressure (~200MB retained) | `node-utils`, `browser-utils` | 3–5d |
-| 6.4 | Durable bundle queue has no retention bound — permanent poison retry + persisted overflow drops | `packages/core` | 2–3d |
-| 6.5 | Torn-record intolerance in the IDB port — one bad record permanently kills a generation | `browser-utils` | 2–3d |
-| 6.6 | A live-but-stalled instance has its capture subtree deleted by a sibling coordinator (proven via SIGSTOP) | `packages/node` | 3–4d |
-| 6.7 | Phase-2 SAB ring corrupts HEAD on an empty ring (~1.9 GiB overshoot) — opt-in path | `node-utils` | 2–3d |
-| 6.8 | Elysia never finishes 404 transactions (context leak) | `packages/elysia` | 1d |
+All eight fixed test-first, each with its mutator loop and each committed against green
+lint / typecheck / cycles / per-package coverage / `pnpm test` / `pnpm test:e2e`.
+
+| # | Fix | Where | Est | Status |
+|---|---|---|---|---|
+| 6.1 | Flush-on-exit never fires on SIGTERM/SIGINT/SIGHUP (bound to `'exit'`) | `packages/node`, `node-utils` | 2–3d | ✅ `119637b` |
+| 6.2 | No page-lifecycle flush in the browser at all (no `pagehide`, no keepalive/sendBeacon) — a backgrounded-then-killed mobile tab loses everything | `packages/browser` | 3–4d | ✅ `b52d869` |
+| 6.3 | `ENOSPC` → unbounded memory growth instead of back-pressure; IDB write queue has zero back-pressure (~200MB retained) | `node-utils`, `browser-utils` | 3–5d | ✅ `19d7ed9` |
+| 6.4 | Durable bundle queue has no retention bound — permanent poison retry + persisted overflow drops | `packages/core` | 2–3d | ✅ `1c71cc7` |
+| 6.5 | Torn-record intolerance in the IDB port — one bad record permanently kills a generation | `browser-utils` | 2–3d | ✅ `9d41a26` |
+| 6.6 | A live-but-stalled instance has its capture subtree deleted by a sibling coordinator (proven via SIGSTOP) | `packages/node` | 3–4d | ✅ `0ff2235` |
+| 6.7 | Phase-2 SAB ring corrupts HEAD on an empty ring (~1.9 GiB overshoot) — opt-in path | `node-utils` | 2–3d | ✅ `6f8ab33` |
+| 6.8 | Elysia never finishes 404 transactions (context leak) | `packages/elysia` | 1d | ✅ `ab1d41a` |
+
+### Measurements taken during the wave
+
+Each fix was verified against the behaviour, not only the tests:
+
+| # | Before | After |
+|---|---|---|
+| 6.1 | `kill -TERM` → exit 143, `'exit'` handler never ran, marker **lost** | exit 143 unchanged, marker **on disk** |
+| 6.3 | 20,000 writes / 191 MB held by a stalled IndexedDB; 19,998 doomed syscalls + 19,998 `onError` on a full disk | 835 writes / 8 MB (the byte bound); syscalls and reports both bounded and coalesced |
+| 6.6 | real SIGSTOP: alive `true`, subtree on disk **`false`**, writes failing after resume **`true`** | alive `true`, subtree **`true`**, writes failing **`false`** |
+| 6.7 | empty 64 KiB ring: `dropped` 0 → **3299**, **2446** phantom frames drained from stale bytes | `dropped` 0, exactly **1** frame |
+
+### Decisions taken (and why)
+
+- **6.4 retention policy is Android's, read from Android's code** — `CommunicationErrorClassifier.java:14-33`
+  treats every non-401/408/425/429 4xx as PERMANENT and `ReportUploadExecutor.java:182-199` deletes on that
+  outcome. The count/byte/TTL caps follow the idiom of Android's *sibling* queues
+  (`NotificationRelayStorage.java:47-49`, `PerformanceUploadStorage.java:35`), since its report queue has no
+  such bound either.
+- **6.6 keeps an alive-pid MAIN-thread sibling forever**, and the age-based sweep became the sole reclaimer
+  for a recycled pid. A stale heartbeat *file* — not age alone — is what distinguishes an abandoned subtree
+  from a live instance whose heartbeat is failing.
+- **6.7's `TAIL` store in the reposition is an equivalent mutant** (byte-identical over a 38-point sweep). It
+  is kept for the `HEAD <= TAIL` invariant and documented, rather than pinned by an invented assertion.
+
+### Test defects found and fixed along the way
+
+Four tests asserted the defect they existed to prevent, all the same shape — a fixture the runtime never
+produces:
+
+- **elysia** called `mapResponse` by hand, the one hook Elysia skips for a 404.
+- **elysia** (review #7's surviving mutant) handed the route to `onRequest`; real Elysia populates
+  `c.route` only at `mapResponse`, so the span name was already correct and deleting `setRoute` changed
+  nothing. It survived my *first* replacement test too.
+- **node recovery** named a subtree `9-9-…` (pid 9, thread 9) while its `owner.json` said `threadId: 0`, so
+  it asserted the worker-thread case while describing the main-thread one — the SIGSTOP data-loss bug.
+- **node watchdog** (already noted at 2.4) asserted `unref()` was *called* on a fake, never that the process
+  could still exit.
+
+Two of my own first cuts were caught only by the mutator loop: the IDB circuit breaker checked at enqueue
+time, where a synchronous burst is fully queued before any write can fail; and two assertions were loose
+enough to pass against the very mutation they existed to catch.
+
+### Known open
+
+`pnpm test:e2e` failed twice with `1 failed | 108 passed` in `@bugsee/instrumentation-tests`, both times
+during the **full parallel** run and never in eight isolated runs of that package. The failing test name was
+not captured before the output scrolled. Not attributable to any Wave 6 change on the evidence available;
+worth a `--reporter=verbose` capture next time it appears.
 
 ---
 
