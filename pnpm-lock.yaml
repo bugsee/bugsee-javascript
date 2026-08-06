@@ -183,12 +183,18 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bun':
+        specifier: workspace:*
+        version: link:../bun
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/deno':
+        specifier: workspace:*
+        version: link:../deno
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
@@ -465,6 +471,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../bugsee
       '@bugsee/bun':
         specifier: workspace:*
         version: link:../bun

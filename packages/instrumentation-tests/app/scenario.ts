@@ -443,6 +443,63 @@ async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promis
   await sleep(10_000); // stay alive; the SDK's policy is what must end this process
 }
 
+/**
+ * The NATIVE server path — `Bun.serve` / `Deno.serve` (Wave 3b.1/3b.5).
+ *
+ * Every other server scenario goes through `node:http.createServer`, which is exactly the path idiomatic
+ * Bun and Deno apps do NOT take: `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, which
+ * is why `@bugsee/bun` and `@bugsee/deno` ship interceptors for them. Nothing in the suite exercised those
+ * interceptors, so an umbrella that resolved to `@bugsee/node` — losing them completely — was invisible.
+ *
+ * On node there is no native serve to instrument, so the scenario reports that and exits cleanly rather
+ * than pretending to have covered something.
+ */
+async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  const g = globalThis as {
+    Bun?: { serve(o: unknown): { port: number; stop(): void } };
+    Deno?: {
+      serve(o: unknown, h?: unknown): { addr: { port: number }; shutdown(): Promise<void> };
+    };
+  };
+  const client = launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    onError: noteOnError,
+  });
+
+  const handler = (req: Request): Response => {
+    // Inside the handler → the request's run-scoped context, so this entry carries its context_id.
+    client.log(`native handling ${req.method} ${new URL(req.url).pathname}`);
+    void client.logException(new Error('e2e native server handler failure'));
+    return new Response('ok');
+  };
+
+  let port = 0;
+  let stop: () => Promise<void> | void = () => {};
+  if (g.Bun !== undefined) {
+    const server = g.Bun.serve({ port: 0, fetch: handler });
+    port = server.port;
+    stop = () => server.stop();
+  } else if (g.Deno !== undefined) {
+    const server = g.Deno.serve({ port: 0, onListen: () => {} }, handler);
+    port = server.addr.port;
+    stop = () => server.shutdown();
+  } else {
+    console.log('[e2e] no native serve on this runtime — nothing to instrument');
+    await client.flush(20_000);
+    await client.stop(20_000);
+    return;
+  }
+
+  const res = await fetch(`http://127.0.0.1:${port}/native/42`);
+  await res.text();
+  await stop();
+  await client.flush(20_000);
+  await client.stop(20_000);
+}
 /** Dispatch by the BUGSEE_E2E_SCENARIO the runner sets when spawning. */
 export async function runScenario(
   launch: LaunchFn,
@@ -455,6 +512,9 @@ export async function runScenario(
   if (opts.scenario === 'server') {
     await runServerScenario(launch, opts.collectorUrl);
     return;
+  }
+  if (opts.scenario === 'native-server') {
+    return runNativeServerScenario(launch, opts.collectorUrl);
   }
   if (opts.scenario === 'multi-instance') {
     await runMultiInstanceScenario(launch, opts.collectorUrl);

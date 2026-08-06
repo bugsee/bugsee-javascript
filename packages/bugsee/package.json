@@ -9,6 +9,14 @@
   "types": "./src/index.ts",
   "exports": {
     ".": {
+      "bun": {
+        "types": "./src/index.bun.ts",
+        "import": "./src/index.bun.ts"
+      },
+      "deno": {
+        "types": "./src/index.deno.ts",
+        "import": "./src/index.deno.ts"
+      },
       "browser": {
         "types": "./src/index.ts",
         "import": "./src/index.ts"
@@ -25,6 +33,14 @@
     "./node": {
       "types": "./src/index.node.ts",
       "import": "./src/index.node.ts"
+    },
+    "./bun": {
+      "types": "./src/index.bun.ts",
+      "import": "./src/index.bun.ts"
+    },
+    "./deno": {
+      "types": "./src/index.deno.ts",
+      "import": "./src/index.deno.ts"
     }
   },
   "files": [
@@ -43,6 +59,26 @@
     "types": "./dist/index.d.ts",
     "exports": {
       ".": {
+        "bun": {
+          "import": {
+            "types": "./dist/index.bun.d.ts",
+            "default": "./dist/index.bun.js"
+          },
+          "require": {
+            "types": "./dist/index.bun.d.cts",
+            "default": "./dist/index.bun.cjs"
+          }
+        },
+        "deno": {
+          "import": {
+            "types": "./dist/index.deno.d.ts",
+            "default": "./dist/index.deno.js"
+          },
+          "require": {
+            "types": "./dist/index.deno.d.cts",
+            "default": "./dist/index.deno.cjs"
+          }
+        },
         "browser": {
           "import": {
             "types": "./dist/index.d.ts",
@@ -83,13 +119,35 @@
           "types": "./dist/index.node.d.cts",
           "default": "./dist/index.node.cjs"
         }
+      },
+      "./bun": {
+        "import": {
+          "types": "./dist/index.bun.d.ts",
+          "default": "./dist/index.bun.js"
+        },
+        "require": {
+          "types": "./dist/index.bun.d.cts",
+          "default": "./dist/index.bun.cjs"
+        }
+      },
+      "./deno": {
+        "import": {
+          "types": "./dist/index.deno.d.ts",
+          "default": "./dist/index.deno.js"
+        },
+        "require": {
+          "types": "./dist/index.deno.d.cts",
+          "default": "./dist/index.deno.cjs"
+        }
       }
     }
   },
   "dependencies": {
-    "@bugsee/core": "workspace:*",
     "@bugsee/browser": "workspace:*",
+    "@bugsee/bun": "workspace:*",
     "@bugsee/capture": "workspace:*",
+    "@bugsee/core": "workspace:*",
+    "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*",
