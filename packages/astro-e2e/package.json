@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@bugsee/astro": "workspace:*",
+    "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/util": "workspace:*"
   },
   "devDependencies": {

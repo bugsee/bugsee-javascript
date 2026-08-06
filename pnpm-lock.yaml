@@ -108,6 +108,9 @@ importers:
       '@bugsee/astro':
         specifier: workspace:*
         version: link:../astro
+      '@bugsee/e2e-kit':
+        specifier: workspace:*
+        version: link:../e2e-kit
       '@bugsee/util':
         specifier: workspace:*
         version: link:../util
@@ -310,6 +313,22 @@ importers:
         specifier: ^25.9.1
         version: 25.9.1
 
+  packages/e2e-kit:
+    dependencies:
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../util
+      ajv:
+        specifier: ^8.17.1
+        version: 8.18.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+
   packages/electron:
     dependencies:
       '@bugsee/browser':
@@ -495,6 +514,9 @@ importers:
       '@bugsee/deno':
         specifier: workspace:*
         version: link:../deno
+      '@bugsee/e2e-kit':
+        specifier: workspace:*
+        version: link:../e2e-kit
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
@@ -672,6 +694,9 @@ importers:
 
   packages/nextjs-e2e:
     dependencies:
+      '@bugsee/e2e-kit':
+        specifier: workspace:*
+        version: link:../e2e-kit
       '@bugsee/nextjs':
         specifier: workspace:*
         version: link:../nextjs
@@ -754,6 +779,9 @@ importers:
 
   packages/nuxt-e2e:
     dependencies:
+      '@bugsee/e2e-kit':
+        specifier: workspace:*
+        version: link:../e2e-kit
       '@bugsee/nuxt':
         specifier: workspace:*
         version: link:../nuxt
@@ -979,6 +1007,9 @@ importers:
 
   packages/sveltekit-e2e:
     dependencies:
+      '@bugsee/e2e-kit':
+        specifier: workspace:*
+        version: link:../e2e-kit
       '@bugsee/sveltekit':
         specifier: workspace:*
         version: link:../sveltekit

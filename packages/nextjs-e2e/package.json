@@ -8,6 +8,7 @@
     "test:e2e": "vitest run"
   },
   "dependencies": {
+    "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/nextjs": "workspace:*"
   },
   "devDependencies": {

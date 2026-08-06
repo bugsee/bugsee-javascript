@@ -16,6 +16,7 @@
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/deno": "workspace:*",
+    "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/performance": "workspace:*",
     "@bugsee/protocol": "workspace:*",

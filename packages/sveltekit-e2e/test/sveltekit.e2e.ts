@@ -9,6 +9,7 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertNoContractViolations } from '@bugsee/e2e-kit';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type MockCollector, startMockCollector } from './collector';
@@ -117,5 +118,21 @@ describe('@bugsee/sveltekit — real SvelteKit boot e2e', () => {
     expect(allText).toContain('e2e sveltekit boom');
     expect(collector.sessions.length).toBeGreaterThan(0);
     expect(collector.issues.length).toBeGreaterThan(0);
+  });
+
+  // WAVE V0 — the collector VALIDATES every upload against the shipped wire contract, and this is what
+  // makes it count. Until the shared kit landed, this harness carried its own collector copy that did no
+  // validation at all, so the entry-payload contract added in Wave 3b.2 (logs.json / network.json /
+  // events.json — the files that carry the actual captured data) covered exactly one of the five suites.
+  //
+  // A violation the collector records but nobody asserts is the same false assurance as no check at all.
+  it('emits nothing that violates the upload contract', () => {
+    assertNoContractViolations(collector);
+  });
+
+  it('the contract check is NOT vacuous — a bundle really did arrive', () => {
+    // An assertion over an empty set is the same false assurance as no assertion. Naming what arrived
+    // keeps the coverage claim honest.
+    expect(collector.uploads.length, 'no bundle reached the collector at all').toBeGreaterThan(0);
   });
 });
