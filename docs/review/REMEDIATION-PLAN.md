@@ -251,7 +251,7 @@ revisiting 4.1; recorded here so they are not lost again.
 | 4.4 | ✅ **DONE** (`6c868c6`) — **Nuxt ships the Node SDK into Cloudflare Workers bundles**. The preset was read at MODULE-SETUP time; Nitro auto-detects it inside `createNitro()`, long after modules run. Measured on a real build with `CF_PAGES=1`: setup sees `undefined`, `nitro:init` sees `"cloudflare-pages"`. Corrected at `nitro:init` (a correction, not a replacement, so a Nuxt without the hook is left as it was). The existing edge e2e passed only because it SET `NITRO_PRESET` — the one path where the bug cannot appear; the new suite lets Nitro detect it. | `packages/nuxt` | 2–3d |
 | 4.5 | **Astro turns a 304/204 HTML response into a 500** | `packages/astro` | 1–2d |
 | 4.6 | **`<BugseeProfiler>` records zero spans in production React** — either make it work or document it as dev-only | `packages/react` | 1–2d |
-| 4.7 | **Electron renderer incidents never converge** — empty-capture bundle under a foreign session id; renderer crashes undetected | `packages/electron` | 4–6d |
+| 4.7 | ✅ **DONE** — **Electron renderer incidents never converge**. SEV1 #2 (renderer incidents forwarded to main instead of uploading a capture-less bundle under a foreign session id) and #3 (`render-process-gone` synthesising an incident in the owner session, with minidump claiming) were built as **R0–R5** (`86a3f7b`, `4bc3045`, `046300e`, `9aa1983`) and the plan row was simply never updated. The remaining piece — the renderer registry never shrinking, which hangs off the same lifecycle signal — is fixed in `f198962`. | `packages/electron` | 4–6d |
 | 4.8 | **`@bugsee/integration-shims` is entirely dead code** — delete it, or wire it where the docs claim | repo-wide | 1d |
 
 ---
