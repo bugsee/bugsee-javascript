@@ -32,6 +32,16 @@ export interface NuxtLike {
     /** The Nitro config — its `preset` chooses node vs edge server delivery. */
     nitro?: { preset?: string };
   };
+  /**
+   * Nuxt's hook bus. `nitro:init` is the first point at which the RESOLVED Nitro preset exists (Wave 4.4);
+   * optional so a structural Nuxt without it still works, just without the late correction.
+   */
+  hook?: (name: string, fn: (nitro: NitroLike) => void) => void;
+}
+
+/** The slice of Nitro the preset correction needs: the resolved preset and the plugin list to amend. */
+export interface NitroLike {
+  options: { preset?: string; plugins: string[] };
 }
 
 /** Is the resolved Nitro `preset` an EDGE target (Vercel Edge / Cloudflare / Netlify Edge / workerd)? Those
@@ -80,10 +90,35 @@ export function setupBugseeModule(options: ModuleOptions, nuxt: NuxtLike): void 
   // Nitro server plugin — the shipped runtime file, resolved relative to this module. On an edge preset we
   // ship the EDGE plugin (launches the edge SDK, not `bugsee/node`) so only the right SDK is bundled.
   const resolver = createResolver(import.meta.url);
-  const runtimePlugin = isEdgePreset(nuxt.options.nitro?.preset)
-    ? './runtime/nitro-plugin.edge'
-    : './runtime/nitro-plugin';
-  addServerPlugin(resolver.resolve(runtimePlugin));
+  const nodePlugin = resolver.resolve('./runtime/nitro-plugin');
+  const edgePlugin = resolver.resolve('./runtime/nitro-plugin.edge');
+
+  // Registered here from whatever the preset looks like NOW, which is only populated when the user wrote
+  // `nitro: { preset }` or passed an explicit override.
+  addServerPlugin(isEdgePreset(nuxt.options.nitro?.preset) ? edgePlugin : nodePlugin);
+
+  // …and CORRECTED once the preset is actually resolved (Wave 4.4). Nitro auto-detects it inside
+  // `createNitro()`, long after modules run — the zero-config path Nuxt's own deployment docs advertise —
+  // so on Cloudflare Pages/Workers the check above saw `undefined`, concluded "not edge", and shipped
+  // `@bugsee/bugsee/node` into a workerd bundle: fs storage, the worker-thread ANR watchdog and
+  // `process.uptime()`, none of which exist there. Measured on a real build: setup sees `undefined`,
+  // `nitro:init` sees `"cloudflare-pages"`.
+  //
+  // A correction rather than a replacement, so a Nuxt without the hook — or one whose `nitro:init` never
+  // fires — is left exactly as it was before, never with no server plugin at all.
+  nuxt.hook?.('nitro:init', (nitro) => {
+    const wantEdge = isEdgePreset(nitro.options.preset);
+    const want = wantEdge ? edgePlugin : nodePlugin;
+    const drop = wantEdge ? nodePlugin : edgePlugin;
+    const plugins = nitro.options.plugins;
+    const stale = plugins.indexOf(drop);
+    if (stale !== -1) {
+      plugins.splice(stale, 1);
+    }
+    if (!plugins.includes(want)) {
+      plugins.push(want);
+    }
+  });
 }
 
 export default defineNuxtModule<ModuleOptions>({
