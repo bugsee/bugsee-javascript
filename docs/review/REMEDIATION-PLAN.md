@@ -263,7 +263,7 @@ revisiting 4.1; recorded here so they are not lost again.
 | 5.1 | `logLevelToWire` is never called — `logs.json` ships string levels where the viewer expects numerics | `packages/protocol` + emit path | 1–2d | ✅ `b75f1c3` |
 | 5.2 | `NetworkStage` dropped Android's websocket/event encoding — outbound WS frames render as incoming | `packages/protocol` | 1–2d | ✅ `cffe5cb` |
 | 5.3 | OTel root span ids fabricated as `traceId.slice(0,16)` — every service in one trace emits an identical root span id | `packages/opentelemetry` | 2–3d | ✅ `80366b2` |
-| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | **`packages/core`** + appserver | 1d here, 1 line there | ⛔ **OPEN — but no longer blocked.** Revalidated 2026-08-06 (D3): the strip is now confirmed **by executing** Mongoose, and the worker has since made `crash.json`'s `source_sdk` authoritative. Rust emits it; JS does not. Emitting it here fixes routing without touching the backend. |
+| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | `packages/core` + appserver | — | ✅ **DONE** — both halves. (a) `crash.json` now carries `source_sdk`/`source_platform` (`b41b4bd`); (b) the appserver declares `sdk.type` (`566b06d3`). Proven against the worker's own `_crash_source_sdk`: routing now succeeds in all three scenarios, including the two (a) alone can reach. See D3. |
 
 Notes on the three that landed:
 
@@ -486,7 +486,7 @@ by anything. **Update the row in the fix's own commit.**
 | `0.3` WebView bridge auth | Gated on the Android receiver (D1) | Android team |
 | `1.5` Canvas privacy | Gated on the rrweb fork's `unblockSelector` | after D1 |
 | `4.8` `integration-shims` | **Needs a human decision**: delete it, or build the §372 integration-object API it presupposes | product/architecture |
-| `5.4` `environment.sdk.type` | **Actionable HERE** — emit `crash.source_sdk` as Rust does; the appserver one-liner is then a robustness follow-up, not a blocker (revalidated 2026-08-06, see D3) | us |
+| ~~`5.4` `environment.sdk.type`~~ | ✅ **CLOSED 2026-08-06** — both halves done and verified against the worker's own routing function (see D3) | — |
 | Wave V | ~30 sample apps; V0 substrate done, the generalised scaffold is not | ~6–18 eng-weeks |
 | ~190 SEV3s | Long tail; never individually enumerated | — |
 | AppHang e2e flake | Identified, not reproduced; see *Known open* above | one more occurrence settles it |
@@ -621,7 +621,7 @@ no such field. So JS is the one SDK still riding the stripped fallback.
 
 | # | Gap | Repo | Status |
 |---|---|---|---|
-| a | `crash.json` carries no `source_sdk` | **javascript** | **OPEN** — one field on `CrashJson` + `NativeCrashJson`; 4 call sites already funnel through `buildCrashJson` |
+| a | `crash.json` carries no `source_sdk` | **javascript** | ✅ **DONE** (`b41b4bd`) — stamped in the bundle assembler, the one place holding both the crash and the environment |
 | b | `sdk.type` stripped at persist | appserver | ✅ **DONE** (`566b06d3`, awaiting Gerrit) — `type: { type: String }`, the same keyword escape hatch `platform.type`/`wrapper.type` use. 5 tests, full suite 1508 passing |
 
 **On (b)'s mutator loop, because one result is reusable.** Removing the declaration fails 4 tests; the bare
@@ -640,6 +640,18 @@ never matches — invisible so far only because iOS routes on `platform.type` in
 and is strictly more robust — it survives the resym path where the environment is absent, which (b) cannot.
 Do (b) as well, because the fallback should be correct for any SDK that never adopts `source_sdk`, but it is
 no longer the blocking dependency this row was filed as.
+
+#### CLOSED 2026-08-06 — both halves, verified against the worker's own routing function
+
+`_crash_source_sdk` was lifted verbatim out of `worker/jobs/bundle.py` and executed against the documents
+the SDK emits before and after. The middle row is what (b) fixes; the bottom row is the one **only (a)**
+can reach, and it is the reason both were worth doing:
+
+| scenario | before | after |
+|---|---|---|
+| environment intact | `javascript` | `javascript` |
+| `sdk.type` stripped at persist | `None` → managed processor | `javascript` |
+| resym path, no environment at all | `None` → managed processor | `javascript` |
 
 Scope check on (b): the only other reader of `sdk.type` is `appserver/code/utils.js:1128` (per-runtime SDK
 version floor), which reads **pre-persist** and is therefore unaffected. The viewer does not read it.
