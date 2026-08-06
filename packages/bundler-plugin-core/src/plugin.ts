@@ -45,7 +45,33 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   return {
     name,
     // rollup/vite hand us the output options; upload after the bundle is on disk.
-    vite: { writeBundle: (output: OutputLike) => uploadForOutput(output) },
+    vite: {
+      /**
+       * Ensure the build actually EMITS the maps this plugin exists to upload (Wave 7.6).
+       *
+       * Vite's `build.sourcemap` defaults to `false`, and nothing here inspected it — so the documented
+       * setup (`plugins: [bugseeVitePlugin({ appToken })]` on an ordinary config) drove `bugsee-cli`
+       * against a `dist` with no `.map` files at all. Real bugsee-cli v0.7.2 exits 10 on that input, "no
+       * .map source-map files found", which used to abort the build and now (Wave 7.3) merely means the
+       * feature silently does nothing.
+       *
+       * Returning a PARTIAL config is Vite's own merge protocol — it is deep-merged over the user's, so
+       * everything else they set is untouched. Only the default and an explicit `false` are overridden:
+       * `'hidden'` and `'inline'` are deliberate production choices, and replacing them would change what
+       * ships to the user's own users.
+       */
+      config(config: { build?: { sourcemap?: boolean | string } }) {
+        if (!resolved.enabled) {
+          return undefined; // a disabled plugin must not alter the build at all
+        }
+        const current = config.build?.sourcemap;
+        if (current === undefined || current === false) {
+          return { build: { sourcemap: true } };
+        }
+        return undefined;
+      },
+      writeBundle: (output: OutputLike) => uploadForOutput(output),
+    },
     rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output) },
     /* v8 ignore start -- webpack afterEmit glue; exercised by the real-webpack e2e (SM-C). */
     webpack(compiler: WebpackCompilerLike) {
