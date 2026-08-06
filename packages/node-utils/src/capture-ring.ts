@@ -120,6 +120,33 @@ export class RingProducer extends RingBase {
         const h = this.#pendingHeader;
         return this.bytes.subarray(h + HEADER, h + HEADER + maxPayload);
       }
+      // WAVE 6.7 — an EMPTY ring has no oldest frame to drop.
+      //
+      // `need > this.cap` is not the only unplaceability: a frame that fits the ring is still unplaceable
+      // when it would straddle the end and `pad + need > cap`, which on an empty ring (`free == cap`)
+      // happens whenever `need > cap/2` and TAIL sits too close to the boundary. The code's only answer to
+      // "doesn't fit" was drop-oldest — so it parsed whatever bytes happened to sit at `phys(HEAD)` (zeros
+      // on a fresh ring, a PREVIOUS LAP'S frame header afterwards) and CAS-advanced HEAD by that bogus
+      // length. Measured on the broken code at cap=64 KiB: `dropped` 0 → 3299 with nothing in the ring, and
+      // 2446 phantom frames drained out of stale bytes; the review's stale layout instead sent HEAD ~1.9
+      // GiB past TAIL, after which `peek()` reports "empty" for the life of the process.
+      //
+      // Nothing is lost by repositioning: the ring is empty, so the bytes being skipped are dead. Move HEAD
+      // first and TAIL after — a consumer that observes the intermediate state sees `head >= tail`, i.e.
+      // "empty", which is exactly what it is.
+      if (head === tail) {
+        const base = tail + BigInt(this.cap - physTail);
+        if (Atomics.compareExchange(this.ctl, HEAD, head, base) === head) {
+          // Moving TAIL too is deliberately belt-and-braces: measured over a 38-point sweep, omitting it
+          // produces byte-identical results, because the retry's pad path re-derives this same base and
+          // stores TAIL there anyway. It stays because it keeps `HEAD <= TAIL` true at every instant, which
+          // is what every other reader of these cursors assumes — without it `free` transiently computes
+          // as greater than the capacity, which is only harmless by accident.
+          Atomics.store(this.ctl, TAIL, base);
+        }
+        continue; // retry from the boundary, where a frame up to `cap` always fits
+      }
+
       // Not enough free → drop the oldest committed frame, unless the consumer is mid-read on it.
       const reading = Atomics.load(this.ctl, READING);
       if (reading >= 0n && head === reading) {

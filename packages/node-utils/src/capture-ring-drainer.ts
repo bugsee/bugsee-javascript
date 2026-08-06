@@ -12,6 +12,15 @@ import type { RingConsumer } from './capture-ring';
 const TYPE_BASE = 256; // pathId = chunk * 256 + typeIndex (typeIndex < 256; ≤ 256 file types)
 
 /** Pack a (chunk, file-type index) into the ring frame's `pathId`. */
+/**
+ * A frame that can never be written, however many times it is retried — e.g. a `pathId` whose type index is
+ * out of range, which is what a corrupted frame header decodes to (Wave 6.7).
+ *
+ * Distinct from a write failure precisely because the drainer's response has to differ: a failed write is
+ * retried next pass (no loss), while an unusable frame is dropped so it cannot wedge the ring forever.
+ */
+export class UnusableFrameError extends Error {}
+
 export function encodePathId(chunk: number, typeIndex: number): number {
   return chunk * TYPE_BASE + typeIndex;
 }
@@ -84,6 +93,14 @@ export class RingDrainer {
         writevAll(this.#fdFor(frame.pathId), frame.payload, this.#ops.writev);
       } catch (error) {
         this.#ops.onError(error);
+        // WAVE 6.7 — retry-without-consuming is right for a WRITE that failed, and wrong for a frame that
+        // can never be written. An unusable frame kept in the ring is retried forever: it pins READING, so
+        // the producer's drop-oldest bails, and every later append is counted as a drop. One corrupt frame
+        // stopped capture permanently. Give up on THIS frame and keep draining the rest.
+        if (error instanceof UnusableFrameError) {
+          this.#consumer.consume();
+          continue;
+        }
         return; // leave the frame in the ring for the next pass
       }
       this.#consumer.consume(); // only after the bytes are durably on the fd

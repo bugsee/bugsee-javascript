@@ -8,6 +8,7 @@ import {
   encodePathId,
   RingDrainer,
   typeIndexOfPathId,
+  UnusableFrameError,
 } from './capture-ring-drainer';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
@@ -87,7 +88,13 @@ function pathForId(
   pathId: number,
 ): string {
   const chunk = chunkOfPathId(pathId);
-  const name = fileTypes[typeIndexOfPathId(pathId)] as string;
+  const name = fileTypes[typeIndexOfPathId(pathId)];
+  // A corrupted frame header decodes to a type index past the end of `fileTypes`. Unguarded, this called
+  // `join(..., undefined)` — a TypeError thrown inside the drainer's write path, which then retried the
+  // same frame forever and pinned the ring (Wave 6.7). Naming it makes the drainer drop the frame instead.
+  if (name === undefined) {
+    throw new UnusableFrameError(`unknown capture file type for pathId ${pathId}`);
+  }
   return join(captureDir, pad(generation, GEN_PAD), pad(chunk, CHUNK_PAD), name);
 }
 

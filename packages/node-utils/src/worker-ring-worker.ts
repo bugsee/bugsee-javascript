@@ -56,6 +56,14 @@ const start = (wt, fs) => {
       if (Atomics.load(ctl, HEAD) !== head) continue; // VERIFY — dropped under us → retry from new HEAD
       const len = view.getUint32(p+4, true), size = HEADER + len;
       const payload = bytes.subarray(p+HEADER, p+HEADER+len);
+      // WAVE 6.7 — a corrupted header decodes to a type index past the end of fileTypes. Unguarded, the
+      // filename became the string 'undefined', creating a junk file; and any throw here left the frame in
+      // the ring to be retried forever, pinning READING so the producer could never shed. Drop the frame.
+      if (fileTypes[view.getUint32(p, true) % 256] === undefined) {
+        Atomics.store(ctl, HEAD, Atomics.load(ctl, READING) + BigInt(size));
+        Atomics.store(ctl, READING, NO_READ);
+        continue;
+      }
       try {
         let off = 0;
         while (off < payload.length) {
