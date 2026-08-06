@@ -386,8 +386,22 @@ conditions, and the `platform.type` mis-report on day one.
 **Sequencing — do NOT build all 30 before fixing anything.** That would delay the Wave 0 security fixes by
 months. Instead:
 
-- **V0 (first, ~1–2 wks):** the shared substrate — app scaffold, the mock collector with schema validation,
-  and a reusable bundle-assertion library. Everything else builds on this.
+- **V0 — ✅ DONE (`abc0b9c`).** The shared substrate is `@bugsee/e2e-kit`: the schema-validating mock
+  collector + the bundle-assertion library, imported by every harness.
+
+  It had accreted the wrong way round. The collector and assertions existed in ONE harness while the other
+  four carried diverged copies (81 differing lines) with **no schema validation and no bundle assertions at
+  all** — so the entry-payload contract from Wave 3b.2 covered one suite in five, and the meta-framework
+  harnesses asserted only that a bundle *arrived*. Sharing it closed a real blind spot immediately:
+  injecting the original `logLevelToWire` defect is now caught by the **nuxt** suite
+  (`"instancePath": "/0/level"`), where it was previously invisible.
+
+  Each suite also gained a non-vacuity check — an assertion over an empty set is the same false assurance
+  as no assertion.
+
+  **Still outstanding for Wave V:** the ~30 sample apps themselves. The app SCAFFOLD half of V0 is served
+  today by `instrumentation-tests/app` + `runtimes.ts` (node/bun/deno, platform-direct AND umbrella entries)
+  and the four real-framework harnesses; a generalised per-package scaffold has not been built.
 - **Then: each wave's fixes ship with their app.** The app is the fix's acceptance test. This front-loads apps
   for the packages where defects were actually found.
 - **Backfill** the remaining apps in Wave 7.
