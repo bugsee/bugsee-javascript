@@ -127,3 +127,75 @@ describe('failOnError / onError plumbing (Wave 7)', () => {
     expect(seen[0]).toMatchObject({ failOnError: true, onError });
   });
 });
+
+// WAVE 7.5 — two pipelines over one directory.
+//
+// `writeBundle` fires once per OUTPUT. A multi-output config whose entries resolve to the same directory —
+// `output: [{ dir: 'dist' }, { file: 'dist/legacy.js' }]`, both `dist` — starts two concurrent pipelines
+// over one tree: one can be deleting maps (step 3) while the other is still reading them (steps 1-2).
+describe('one pipeline per output directory (Wave 7.5)', () => {
+  /** An upload we can hold open, so overlap is observable rather than a race. */
+  const held = () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const uploadSourcemaps = async (opts: { outDir: string }) => {
+      started.push(opts.outDir);
+      await gate;
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    return { started, release, uploadSourcemaps };
+  };
+
+  const resolved = resolvePluginOptions({ appToken: 'tok' }, {});
+
+  it('joins a concurrent run for the SAME directory instead of starting a second', async () => {
+    const h = held();
+    const a = runPluginUpload(resolved, 'dist', { uploadSourcemaps: h.uploadSourcemaps as never });
+    const b = runPluginUpload(resolved, 'dist', { uploadSourcemaps: h.uploadSourcemaps as never });
+    expect(h.started).toEqual(['dist']);
+    h.release();
+    expect(await a).toEqual(await b); // …and the joiner gets the same result, not `undefined`
+  });
+
+  it('still runs a second pipeline for a DIFFERENT directory — the canary', async () => {
+    const h = held();
+    const a = runPluginUpload(resolved, 'dist-a', {
+      uploadSourcemaps: h.uploadSourcemaps as never,
+    });
+    const b = runPluginUpload(resolved, 'dist-b', {
+      uploadSourcemaps: h.uploadSourcemaps as never,
+    });
+    expect(h.started).toEqual(['dist-a', 'dist-b']);
+    h.release();
+    await Promise.all([a, b]);
+  });
+
+  it('runs again for the same directory on a LATER build (watch mode)', async () => {
+    // Per-run, not permanent: `vite build --watch` legitimately rebuilds the same directory, and a
+    // once-only guard would silently stop uploading after the first rebuild.
+    const h = held();
+    const first = runPluginUpload(resolved, 'dist-w', {
+      uploadSourcemaps: h.uploadSourcemaps as never,
+    });
+    h.release();
+    await first;
+    await runPluginUpload(resolved, 'dist-w', { uploadSourcemaps: h.uploadSourcemaps as never });
+    expect(h.started).toEqual(['dist-w', 'dist-w']);
+  });
+
+  it('releases the slot even when the run FAILS', async () => {
+    // A guard that leaks its entry on failure would block every later build of that directory.
+    const failing = async () => {
+      throw new Error('boom');
+    };
+    await expect(
+      runPluginUpload(resolved, 'dist-f', { uploadSourcemaps: failing as never }),
+    ).rejects.toThrow();
+    const ok = vi.fn(async () => ({ injected: true, uploaded: true, deletedMaps: [] }));
+    await runPluginUpload(resolved, 'dist-f', { uploadSourcemaps: ok as never });
+    expect(ok).toHaveBeenCalled();
+  });
+});
