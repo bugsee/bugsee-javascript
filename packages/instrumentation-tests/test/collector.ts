@@ -28,8 +28,15 @@ export interface CapturedUpload {
 
 /** A contract violation observed by the collector: which envelope, and what ajv said. */
 export interface ContractViolation {
-  /** Which envelope failed: the /v2/sessions body, the /v2/issues body, or a bundle's manifest.json. */
-  where: 'session' | 'issue' | 'manifest' | 'request.json';
+  /** Which payload failed: an API envelope, or one of the bundle's own files. */
+  where:
+    | 'session'
+    | 'issue'
+    | 'manifest'
+    | 'request.json'
+    | 'logs.json'
+    | 'network.json'
+    | 'events.json';
   errors: string;
 }
 
@@ -138,6 +145,20 @@ export async function startMockCollector(): Promise<MockCollector> {
             if (manifest !== undefined) check('manifest', 'manifestJson', manifest);
             const request = parse('request.json');
             if (request !== undefined) check('request.json', 'requestJson', request);
+            // WAVE 3b.2 — the ENTRY payloads, not just the envelopes.
+            //
+            // Validating only manifest.json + request.json is how `logs.json` shipped `"level":"error"`
+            // where the viewer reads a number: every envelope was well-formed, every bundle arrived, and
+            // the one field that mattered was never described by any contract. These are the files that
+            // carry the actual captured data, so they are the ones a permissive mock hides defects in.
+            for (const [file, definition] of [
+              ['logs.json', 'logsJson'],
+              ['network.json', 'networkJson'],
+              ['events.json', 'eventsJson'],
+            ] as const) {
+              const payload = parse(file);
+              if (payload !== undefined) check(file, definition, payload);
+            }
           } catch (err) {
             violations.push({ where: 'manifest', errors: `unreadable bundle: ${String(err)}` });
           }
