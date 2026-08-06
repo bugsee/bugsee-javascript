@@ -95,7 +95,8 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    external: ['node:*'], // guarded dynamic imports — never run on edge
+    //  modules are provided by workerd itself (e.g. the DurableObject RPC base class).
+    external: ['node:*', 'cloudflare:*'], // guarded dynamic imports — never run on edge
     legalComments: 'none',
     metafile: true,
     write: false,
@@ -119,7 +120,8 @@ export async function bundleEdgeEntry(
     format,
     platform: 'browser',
     target: 'es2022',
-    external: ['node:*'],
+    //  modules are provided by workerd itself (e.g. the DurableObject RPC base class).
+    external: ['node:*', 'cloudflare:*'],
     // The VM smoke runs in a bare WinterCG isolate; shim node:async_hooks so it models a
     // nodejs_compat-enabled Worker (what @bugsee/cloudflare actually requires).
     plugins: [nodejsCompatPlugin],
@@ -151,7 +153,8 @@ export async function bundleWorkerEntry(entryFile: string): Promise<string> {
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    external: ['node:*'],
+    //  modules are provided by workerd itself (e.g. the DurableObject RPC base class).
+    external: ['node:*', 'cloudflare:*'],
     legalComments: 'none',
     write: false,
   });

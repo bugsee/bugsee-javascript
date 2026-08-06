@@ -78,32 +78,67 @@ export function instrumentEdgeClass<C extends AnyClass>(
     }
   }
 
-  return class extends TargetClass {
+  // Per-instance invocation state, keyed by the instance rather than stored ON it.
+  //
+  // The wrappers below live on the PROTOTYPE, so they cannot close over per-instance values; a WeakMap is
+  // how each call recovers the client/ctx/owner its instance was constructed with, without adding any own
+  // property to the object (and without retaining instances once workerd drops them).
+  const instances = new WeakMap<
+    object,
+    { client: Bugsee; ctx: EdgeExecutionContext | undefined; owner: string | undefined }
+  >();
+
+  const Instrumented = class extends TargetClass {
     // biome-ignore lint/suspicious/noExplicitAny: ditto — constructor args are the base's (ctx, env, …).
     constructor(...args: any[]) {
       super(...args);
-      const client = ensureClient(args[1]); // env
-      const ctx = args[0] as EdgeExecutionContext | undefined; // DurableObjectState / ExecutionContext
-      // Resolved ONCE per instance: the tenant is a property of the DO, not of an invocation.
-      const owner = resolveOwner?.(args[0]);
-      for (const { name, attributes } of specs) {
-        const original = (this as Record<string, unknown>)[name];
-        if (typeof original !== 'function') {
-          continue; // the method isn't defined on this class (e.g. no `alarm`) → nothing to wrap
-        }
-        const method = original as (...methodArgs: unknown[]) => unknown;
-        (this as Record<string, unknown>)[name] = (...methodArgs: unknown[]): unknown =>
-          runInEdgeContext(
-            client,
-            {
-              attributes: attributes(methodArgs),
-              ctx,
-              awaitFlush,
-              ...(owner !== undefined ? { owner } : {}),
-            },
-            () => method.apply(this, methodArgs),
-          );
-      }
+      instances.set(this, {
+        client: ensureClient(args[1]), // env
+        ctx: args[0] as EdgeExecutionContext | undefined, // DurableObjectState / ExecutionContext
+        // Resolved ONCE per instance: the tenant is a property of the DO, not of an invocation.
+        owner: resolveOwner?.(args[0]),
+      });
     }
-  } as C;
+  };
+
+  // The wrappers are installed on the SUBCLASS PROTOTYPE, never as own properties of the instance.
+  //
+  // This is the whole fix for docs/review/cloudflare.md SEV1 #1. Cloudflare's RPC dispatch exposes methods
+  // it finds on the PROTOTYPE; assigning a wrapper to `this[name]` in the constructor shadows the prototype
+  // method with an own property, which removes it from the RPC surface entirely. `instrumentRpcMethods` —
+  // a documented, advertised opt-in — therefore did not merely fail to instrument, it made the customer's
+  // own methods uncallable: `stub.increment()` threw "The RPC receiver does not implement the method".
+  // Verified on real workerd, with an uninstrumented method on the same instance as the control.
+  for (const { name, attributes } of specs) {
+    const original = (TargetClass.prototype as Record<string, unknown>)[name];
+    if (typeof original !== 'function') {
+      continue; // the method isn't defined on this class (e.g. no `alarm`) → nothing to wrap
+    }
+    const method = original as (...methodArgs: unknown[]) => unknown;
+    Object.defineProperty(Instrumented.prototype, name, {
+      // A function expression, not an arrow: `this` must be the instance the call was dispatched on.
+      value: function instrumentedMethod(this: object, ...methodArgs: unknown[]): unknown {
+        const state = instances.get(this);
+        if (state === undefined) {
+          return method.apply(this, methodArgs); // never constructed through us → run it untouched
+        }
+        return runInEdgeContext(
+          state.client,
+          {
+            attributes: attributes(methodArgs),
+            ctx: state.ctx,
+            awaitFlush,
+            ...(state.owner !== undefined ? { owner: state.owner } : {}),
+          },
+          () => method.apply(this, methodArgs),
+        );
+      },
+      // Matches how a class method is defined: non-enumerable, writable, configurable.
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+
+  return Instrumented as C;
 }
