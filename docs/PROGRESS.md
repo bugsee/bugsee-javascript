@@ -898,6 +898,57 @@ The SSR meta-frameworks are the shipped `@bugsee/nextjs` adapter with different 
 
 ---
 
+## 7b. Adversarial-review remediation — Waves 0–7 + V0 COMPLETE (2026-08-06, on `main`)
+
+The 53-package adversarial review (`docs/review/`, ~90 SEV1s) was remediated wave by wave. The plan, every
+status, and the reasoning behind each decision live in **`docs/review/REMEDIATION-PLAN.md`** — read that
+before picking anything up here; this is only the summary.
+
+**Root cause of most of the review's findings: no e2e suite ran in CI.** That was fixed first (3a.1), and
+the rest of the harness work (Wave 3b) is what surfaced the worst remaining defects.
+
+**Closed:** Waves 0 (security), 1 (privacy), 2 (host-boundary containment), 3a/3b (harness depth),
+4 (features that silently do nothing), 5 (wire correctness), 6 (durability), 7 (hygiene, 7.1–7.9), the two
+Cloudflare SEV1s that appeared in no wave table, and **V0** (the shared verification substrate).
+
+A representative slice, each verified against the real runtime rather than a fake:
+
+| Defect | Measured |
+|---|---|
+| `'exit'` never fires on a signal | `kill -TERM` → exit 143, handler never ran; every graceful container shutdown lost the buffer |
+| No page-lifecycle flush in the browser | `pagehide` was recorded as an event and consumed by nothing — the comment claiming a flush described an intention |
+| No write back-pressure | stalled IndexedDB held 20 000 writes / **191 MB**; a full disk gave 19 998 doomed syscalls + 19 998 `onError` |
+| No durable-queue retention | a bundle the collector REFUSED was re-uploaded at every launch, forever |
+| IDB torn-record intolerance | one corrupt record destroyed a whole generation's recovery, permanently |
+| Liveness misread a frozen process | real SIGSTOP: subtree deleted underneath a LIVE instance; writes then failed ENOENT forever |
+| Umbrella had 3 `exports` conditions | Bun 1.3.14 reported as `node` 24.3.0 and lost `Bun.serve` instrumentation entirely |
+| `next build` | **FAILED outright** — twice over, the second time from tier-0 `@bugsee/util` pulling `node:crypto` into every edge graph |
+| Nuxt zero-config Cloudflare | shipped the NODE SDK into a workerd bundle (preset resolved after modules run) |
+| `instrumentRpcMethods` | DELETED the customer's Durable Object RPC surface — own-property shadowing vs prototype dispatch |
+| Source-map plugin | could unlink `.map` files under `node_modules/` and `src/`; `dryRun` aborted the build |
+
+**The recurring lesson, worth more than any individual fix.** Six tests were found asserting the very defect
+they existed to prevent — elysia calling the hook Elysia skips, node recovery naming a subtree `9-9-…` while
+its owner said `threadId: 0`, cloudflare requiring `Object.hasOwn(instance, 'fetch') === true`, core pinning
+`level: 'info'`, the bundler pinning `--dry-run` on both commands, and a "nested components" fixture
+containing siblings. A green suite is not evidence; a suite whose mutations die is. **Run the mutator loop
+against the assertion itself, not only against the implementation.**
+
+**Still open (unchanged by this work):**
+- **Wave V's ~30 sample apps.** V0's substrate is `@bugsee/e2e-kit`; the app scaffold half is partly served
+  by `instrumentation-tests/app` + `runtimes.ts` and the four real-framework harnesses. A generalised
+  per-package scaffold does not exist.
+- **~190 SEV3s** — a long tail, not individually enumerated.
+- **Externally gated:** 0.3 (Android WebView receiver), 1.5 (rrweb fork), 5.4 (backend wire coordination).
+- **4.8 — a decision, not a task:** delete `@bugsee/integration-shims` or build the §372 integration-object
+  API it presupposes.
+- **Known flake:** `instrumentation.e2e.ts > 'node' > the AppHang bundle carries a CPU profile whose samples
+  include the blocking frame` — 3 of ~13 FULL parallel runs, never in isolation. CPU starvation and
+  rolling-window rotation are both ruled out by measurement. No fix was shipped because it could not be
+  reproduced; the assertion now prints the profile window, sample count and busiest frames on failure.
+
+---
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.
@@ -905,4 +956,5 @@ The SSR meta-frameworks are the shipped `@bugsee/nextjs` adapter with different 
 - **Tooling & commands** — `docs/dev-environment.md`.
 - **Per-session distilled rules** — `CLAUDE.md`.
 - **Android parity reference** — `/Users/alexeykarimov/Projects/Bugsee/android/sdk` (API + architecture target; Sentry/Firebase are *internal design references only*, never migration sources).
+- **Adversarial review + remediation** — `docs/review/` (the per-package reports) and `docs/review/REMEDIATION-PLAN.md` (the wave plan, every status, and the reasoning behind each decision — including items closed as NOT-a-defect with the measurement behind them).
 - **Memory (cross-session, my notes)** — `~/.claude/projects/.../memory/` (notable: `node-build-state.md`, `launch-options-scheme.md`, `core-package-complete-feat-core.md`, `capture-shared-package.md`, `git-remote-is-gerrit.md`, `core-typecheck-gotcha.md`).
