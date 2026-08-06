@@ -11,6 +11,13 @@ import { encodeControl, isHello } from './protocol';
 export interface ControlSenderLike {
   id?: number;
   send?(channel: string, raw: string): void;
+  /**
+   * Electron `webContents` lifecycle, used to unregister a renderer that is gone (SEV2 #7). Both optional:
+   * the object is host-supplied, and a test double, an older Electron or a proxy may expose neither — such
+   * a sender is still registered and still broadcast to, just never pruned early.
+   */
+  once?(event: string, listener: () => void): void;
+  isDestroyed?(): boolean;
 }
 /** An Electron `ipcMain` event carrying the originating renderer's sender. */
 export interface IpcMainControlEventLike {
@@ -61,9 +68,20 @@ export function createElectronMainControl(
     }
   };
 
+  /** Drop a renderer that is gone. Idempotent — `destroyed` and a later `isDestroyed()` both land here. */
+  const forget = (sender: ControlSenderLike): void => {
+    renderers.delete(sender);
+  };
+
   const broadcast = (command: 'pause' | 'resume' | 'flush' | 'stop'): void => {
     const raw = encodeControl({ command });
-    for (const sender of renderers) {
+    for (const sender of [...renderers]) {
+      // Prune on the way past. `destroyed` is the primary signal, but it is an EVENT — a missed or absent
+      // one would keep the corpse forever, and broadcasting is where we would notice anyway.
+      if (sender.isDestroyed?.() === true) {
+        forget(sender);
+        continue;
+      }
       sendTo(sender, raw);
     }
   };
@@ -77,7 +95,17 @@ export function createElectronMainControl(
     if (sender === undefined) {
       return;
     }
-    renderers.add(sender); // dedupes a reload's repeat hello
+    // SEV2 #7 — the registry has to SHRINK. Every window that ever said hello used to be retained for the
+    // process lifetime, pinning destroyed `webContents` (and whatever they retain) in the main process:
+    // an app that opens and closes windows leaked monotonically, `rendererCount` was wrong after the first
+    // close, and every broadcast walked a growing set of corpses.
+    //
+    // Subscribed only on FIRST registration, so a reload's repeat hello does not stack listeners on the
+    // same webContents.
+    if (!renderers.has(sender)) {
+      renderers.add(sender);
+      sender.once?.('destroyed', () => forget(sender));
+    }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(sender, encodeControl({ command: 'session', sessionId: options.sessionId }));
   };
