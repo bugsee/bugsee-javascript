@@ -224,7 +224,7 @@ silently.
 | 3b.1 | ✅ **DONE** (`18c7757`) — **Harnesses must install the way customers do** — a single umbrella entry, identical for node/bun/deno, so the only variable is which condition each runtime resolves. Found the defect immediately: **Bun 1.3.14 reported as `node` 24.3.0 and Deno 2.8.3 as `node` 24.15.0**, because the umbrella had 3 conditions and both runtimes set `node`. The label was the least of it — `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, so those customers had **no incoming-request instrumentation at all**. Also added a `native-server` scenario: the first coverage `Bun.serve`/`Deno.serve` have ever had. | This single gap is why the Bun/Deno bypass and the umbrella-condition defect were invisible. | 2–3d |
 | 3b.2 | ✅ **DONE** (`f1ecde7`) — **Assert bundle CONTENTS, not arrival** — `logs.json`, `network.json` and `events.json` are now in `upload-contract.schema.json` and validated on every upload. Verified by re-injecting the original defect: reverting `logLevelToWire` is caught on all three runtimes, naming the field (`"instancePath": "/0/level"`). | Would have caught `logLevelToWire`. | 3–5d |
 | 3b.3 | ✅ **DONE** (`f1ecde7`) — **Schema-validate the mock collector** — the mechanism already existed for the envelopes; 3b.2 extended it to the entry payloads, which is where the wire defects actually were. | A permissive mock is how wire defects survive e2e. | 2–3d |
-| 3b.4 | **Concurrency scenarios** — overlapping requests with distinct identities | Would have caught the cross-request user bleed and the tenant leak. | 2–3d |
+| 3b.4 | ✅ **DONE** (`84bd879`) — **Concurrency scenarios** — a `concurrent-server` scenario (three overlapping requests, staggered holds, distinct identities) on every runtime. Found **two live defects**: (a) `collectHttpSpans` resolved the parent transaction at COMPLETION from a single slot, so on Node — where a transaction is per incoming request — request A's outgoing call shipped inside request B's trace, with A shipping zero children (fixed: bind the owner at the `before` stage); and (b) via the 3b.2 contract checks, **`client.log()` still shipped a STRING level** — Wave 5.1 fixed only the console-capture path, and the two core tests covering it asserted `level: 'info'`. | Would have caught the cross-request user bleed and the tenant leak. | 2–3d |
 | 3b.5 | **Real-runtime coverage for the gaps** — workerd/miniflare, and a real `next` install (there is none anywhere in the monorepo) | The review had to install these itself to find the worst bugs. | 4–6d |
 
 ---
@@ -315,14 +315,25 @@ enough to pass against the very mutation they existed to catch.
 
 ### Known open
 
-`pnpm test:e2e` has failed with exactly `1 failed` in `test/instrumentation.e2e.ts` on **3 of ~12** full
-runs, and **never** in ten isolated runs of that package. It only appears in the full parallel run, where
-four e2e packages and their real dev servers compete for CPU — which points at a timing-sensitive
-assertion rather than at any of the changes made alongside it. The individual test name has still not been
-captured: the run that fails scrolls, and every attempt to reproduce it deliberately has come back green.
+**IDENTIFIED** (2026-08-06). The intermittent e2e failure is:
 
-Next step when it recurs: capture the whole run to a file (`pnpm test:e2e > out.txt 2>&1`) and read the
-`Failed Tests` block, rather than grepping a live pipe.
+    instrumentation.e2e.ts > 'node' > main scenario
+      > the AppHang bundle carries a CPU profile whose samples include the blocking frame
+    AssertionError: the blocking frame e2eHangSpin is not in the AppHang profile
+
+3 of ~13 **full parallel** `pnpm test:e2e` runs; never once in isolation. What is established:
+
+- **10/10 present** running that package alone, including under synthetic CPU saturation (10 busy cores).
+- **Starvation is ruled out**: measured, the spin keeps its CPU under contention — 394 ms of CPU in a
+  400 ms wall-clock spin, with only the iteration count dropping (16.8M → 0.9M).
+- Rolling-window rotation is ruled out: the window is `maxRecordingTime` = 60 s, far longer than the spin.
+- Remaining hypothesis, unverified: a profiler blind spot. `client.logException()` immediately before the
+  spin triggers report assembly, which calls `profiler.collect()` — a stop+restart of the V8 session. If
+  that overlaps the spin, no samples of `e2eHangSpin` are taken at all.
+
+No fix was shipped, because the condition could not be reproduced and an unverifiable fix is worse than a
+known flake. Instead the assertion now **reports the profile window, sample count and busiest frames on
+failure**, so one more occurrence settles it.
 
 ---
 
