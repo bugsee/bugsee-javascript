@@ -619,10 +619,22 @@ no such field. So JS is the one SDK still riding the stripped fallback.
 
 **Two independent gaps; EITHER one alone restores routing:**
 
-| # | Gap | Repo | Cost |
+| # | Gap | Repo | Status |
 |---|---|---|---|
-| a | `crash.json` carries no `source_sdk` | **javascript** | one field on `CrashJson` + `NativeCrashJson`; 4 call sites already funnel through `buildCrashJson` |
-| b | `sdk.type` stripped at persist | appserver | one line, `type: { type: String }`, exactly as `wrapper.type` does it |
+| a | `crash.json` carries no `source_sdk` | **javascript** | **OPEN** — one field on `CrashJson` + `NativeCrashJson`; 4 call sites already funnel through `buildCrashJson` |
+| b | `sdk.type` stripped at persist | appserver | ✅ **DONE** (`566b06d3`, awaiting Gerrit) — `type: { type: String }`, the same keyword escape hatch `platform.type`/`wrapper.type` use. 5 tests, full suite 1508 passing |
+
+**On (b)'s mutator loop, because one result is reusable.** Removing the declaration fails 4 tests; the bare
+`type: String` form fails 6 (it casts the whole subdocument to a String and takes `version`/`build` with it);
+`type: Number` fails 4. Injecting `strict: false` changed **nothing** — measured, it does not reach nested
+paths — so the declaration is genuinely load-bearing and "just loosen strict" was never an alternative fix.
+The one mutation all four behavioural tests survive is declaring `sdk` as `Mixed`, which is the plausible
+lazy fix and admits every typo'd field forever; that is what the fifth test exists to catch, and it does.
+
+**Documented in `report-bundle-structure`** (`8678ee3`): the `sdk` sub-object never listed `type`, even
+though `crash.md` already told consumers to fall back to it. Writing the per-SDK values down surfaced that
+**iOS emits `IOS` in upper case** while every other producer is lower case, so `sdk.type == "ios"` silently
+never matches — invisible so far only because iOS routes on `platform.type` instead.
 
 **Do (a) first.** It is entirely in this repo, needs no Gerrit round-trip, matches what Rust already ships,
 and is strictly more robust — it survives the resym path where the environment is absent, which (b) cannot.
