@@ -221,9 +221,9 @@ silently.
 | # | Fix | Notes | Est |
 |---|---|---|---|
 | 3a.1 | ✅ **DONE** — **Run the e2e suites in CI** — `.github/workflows/ci.yml` has a dedicated `e2e` job (node · bun · deno · real frameworks) with a runtime-matrix check so a missing runtime fails loudly instead of silently skipping. | Cheap and urgent. Done first, so the rest is gated. | 0.5–1d |
-| 3b.1 | **Harnesses must install the way customers do** — import `@bugsee/bugsee` (the umbrella), not the platform packages directly | This single gap is why the Bun/Deno bypass and the umbrella-condition defect were invisible. | 2–3d |
-| 3b.2 | **Assert bundle CONTENTS, not arrival** — manifest correctness, entry payloads, wire field names/types, redaction actually applied | Would have caught `logLevelToWire`. | 3–5d |
-| 3b.3 | **Schema-validate the mock collector** against the real backend contract | A permissive mock is how wire defects survive e2e. | 2–3d |
+| 3b.1 | ✅ **DONE** (`18c7757`) — **Harnesses must install the way customers do** — a single umbrella entry, identical for node/bun/deno, so the only variable is which condition each runtime resolves. Found the defect immediately: **Bun 1.3.14 reported as `node` 24.3.0 and Deno 2.8.3 as `node` 24.15.0**, because the umbrella had 3 conditions and both runtimes set `node`. The label was the least of it — `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, so those customers had **no incoming-request instrumentation at all**. Also added a `native-server` scenario: the first coverage `Bun.serve`/`Deno.serve` have ever had. | This single gap is why the Bun/Deno bypass and the umbrella-condition defect were invisible. | 2–3d |
+| 3b.2 | ✅ **DONE** (`f1ecde7`) — **Assert bundle CONTENTS, not arrival** — `logs.json`, `network.json` and `events.json` are now in `upload-contract.schema.json` and validated on every upload. Verified by re-injecting the original defect: reverting `logLevelToWire` is caught on all three runtimes, naming the field (`"instancePath": "/0/level"`). | Would have caught `logLevelToWire`. | 3–5d |
+| 3b.3 | ✅ **DONE** (`f1ecde7`) — **Schema-validate the mock collector** — the mechanism already existed for the envelopes; 3b.2 extended it to the entry payloads, which is where the wire defects actually were. | A permissive mock is how wire defects survive e2e. | 2–3d |
 | 3b.4 | **Concurrency scenarios** — overlapping requests with distinct identities | Would have caught the cross-request user bleed and the tenant leak. | 2–3d |
 | 3b.5 | **Real-runtime coverage for the gaps** — workerd/miniflare, and a real `next` install (there is none anywhere in the monorepo) | The review had to install these itself to find the worst bugs. | 4–6d |
 
@@ -233,7 +233,7 @@ silently.
 
 | # | Fix | Where | Est |
 |---|---|---|---|
-| 4.1 | **Umbrella `exports`: 3 conditions → 7** (add `bun`, `deno`, `workerd`, `edge-light`, `worker`) | `packages/bugsee` | 2–3d |
+| 4.1 | 🟡 **PARTIAL** (`18c7757`) — **Umbrella `exports`: 3 conditions → 7**. `bun` and `deno` are **done** and verified end-to-end on the real runtimes (listed BEFORE `node`, since both set it and resolution takes the first match). `workerd`, `edge-light` and `worker` are **deliberately deferred**: adding an `exports` entry that no harness resolves is the exact failure mode 3b.1 just fixed, and `workerd`/`edge-light` would route customers into `@bugsee/cloudflare`'s open SEV1s. Unblocked by 3b.5. | `packages/bugsee` | 2–3d |
 | 4.2 | **Service Worker detection** — `isServiceWorker()` already exists in `@bugsee/util` and is simply not used; SW currently runs memory-only and loses everything on each idle termination | `packages/webworker` | 2–4d |
 | 4.3 | **Next.js edge build** — `register()`'s literal dynamic import drags all of `@bugsee/node` into the edge graph (42 resolution errors) | `packages/nextjs` | 2–3d |
 | 4.4 | **Nuxt ships the Node SDK into Cloudflare Workers bundles** on the auto-detected preset path | `packages/nuxt` | 2–3d |
@@ -315,10 +315,14 @@ enough to pass against the very mutation they existed to catch.
 
 ### Known open
 
-`pnpm test:e2e` failed twice with `1 failed | 108 passed` in `@bugsee/instrumentation-tests`, both times
-during the **full parallel** run and never in eight isolated runs of that package. The failing test name was
-not captured before the output scrolled. Not attributable to any Wave 6 change on the evidence available;
-worth a `--reporter=verbose` capture next time it appears.
+`pnpm test:e2e` has failed with exactly `1 failed` in `test/instrumentation.e2e.ts` on **3 of ~12** full
+runs, and **never** in ten isolated runs of that package. It only appears in the full parallel run, where
+four e2e packages and their real dev servers compete for CPU — which points at a timing-sensitive
+assertion rather than at any of the changes made alongside it. The individual test name has still not been
+captured: the run that fails scrolls, and every attempt to reproduce it deliberately has come back green.
+
+Next step when it recurs: capture the whole run to a file (`pnpm test:e2e > out.txt 2>&1`) and read the
+`Failed Tests` block, rather than grepping a live pipe.
 
 ---
 
