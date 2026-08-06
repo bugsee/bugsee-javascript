@@ -95,7 +95,7 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    //  modules are provided by workerd itself (e.g. the DurableObject RPC base class).
+    // The cloudflare: modules are provided by workerd itself (e.g. the DurableObject RPC base class).
     external: ['node:*', 'cloudflare:*'], // guarded dynamic imports — never run on edge
     legalComments: 'none',
     metafile: true,

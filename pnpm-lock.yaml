@@ -189,6 +189,9 @@ importers:
       '@bugsee/capture':
         specifier: workspace:*
         version: link:../capture
+      '@bugsee/cloudflare':
+        specifier: workspace:*
+        version: link:../cloudflare
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -207,6 +210,12 @@ importers:
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@bugsee/vercel-edge':
+        specifier: workspace:*
+        version: link:../vercel-edge
+      '@bugsee/webworker':
+        specifier: workspace:*
+        version: link:../webworker
 
   packages/bun:
     dependencies:

@@ -9,6 +9,14 @@
   "types": "./src/index.ts",
   "exports": {
     ".": {
+      "workerd": {
+        "types": "./src/index.workerd.ts",
+        "import": "./src/index.workerd.ts"
+      },
+      "edge-light": {
+        "types": "./src/index.edge-light.ts",
+        "import": "./src/index.edge-light.ts"
+      },
       "bun": {
         "types": "./src/index.bun.ts",
         "import": "./src/index.bun.ts"
@@ -16,6 +24,10 @@
       "deno": {
         "types": "./src/index.deno.ts",
         "import": "./src/index.deno.ts"
+      },
+      "worker": {
+        "types": "./src/index.worker.ts",
+        "import": "./src/index.worker.ts"
       },
       "browser": {
         "types": "./src/index.ts",
@@ -41,6 +53,18 @@
     "./deno": {
       "types": "./src/index.deno.ts",
       "import": "./src/index.deno.ts"
+    },
+    "./workerd": {
+      "types": "./src/index.workerd.ts",
+      "import": "./src/index.workerd.ts"
+    },
+    "./edge-light": {
+      "types": "./src/index.edge-light.ts",
+      "import": "./src/index.edge-light.ts"
+    },
+    "./worker": {
+      "types": "./src/index.worker.ts",
+      "import": "./src/index.worker.ts"
     }
   },
   "files": [
@@ -59,6 +83,26 @@
     "types": "./dist/index.d.ts",
     "exports": {
       ".": {
+        "workerd": {
+          "import": {
+            "types": "./dist/index.workerd.d.ts",
+            "default": "./dist/index.workerd.js"
+          },
+          "require": {
+            "types": "./dist/index.workerd.d.cts",
+            "default": "./dist/index.workerd.cjs"
+          }
+        },
+        "edge-light": {
+          "import": {
+            "types": "./dist/index.edge-light.d.ts",
+            "default": "./dist/index.edge-light.js"
+          },
+          "require": {
+            "types": "./dist/index.edge-light.d.cts",
+            "default": "./dist/index.edge-light.cjs"
+          }
+        },
         "bun": {
           "import": {
             "types": "./dist/index.bun.d.ts",
@@ -77,6 +121,16 @@
           "require": {
             "types": "./dist/index.deno.d.cts",
             "default": "./dist/index.deno.cjs"
+          }
+        },
+        "worker": {
+          "import": {
+            "types": "./dist/index.worker.d.ts",
+            "default": "./dist/index.worker.js"
+          },
+          "require": {
+            "types": "./dist/index.worker.d.cts",
+            "default": "./dist/index.worker.cjs"
           }
         },
         "browser": {
@@ -139,6 +193,36 @@
           "types": "./dist/index.deno.d.cts",
           "default": "./dist/index.deno.cjs"
         }
+      },
+      "./workerd": {
+        "import": {
+          "types": "./dist/index.workerd.d.ts",
+          "default": "./dist/index.workerd.js"
+        },
+        "require": {
+          "types": "./dist/index.workerd.d.cts",
+          "default": "./dist/index.workerd.cjs"
+        }
+      },
+      "./edge-light": {
+        "import": {
+          "types": "./dist/index.edge-light.d.ts",
+          "default": "./dist/index.edge-light.js"
+        },
+        "require": {
+          "types": "./dist/index.edge-light.d.cts",
+          "default": "./dist/index.edge-light.cjs"
+        }
+      },
+      "./worker": {
+        "import": {
+          "types": "./dist/index.worker.d.ts",
+          "default": "./dist/index.worker.js"
+        },
+        "require": {
+          "types": "./dist/index.worker.d.cts",
+          "default": "./dist/index.worker.cjs"
+        }
       }
     }
   },
@@ -146,11 +230,14 @@
     "@bugsee/browser": "workspace:*",
     "@bugsee/bun": "workspace:*",
     "@bugsee/capture": "workspace:*",
+    "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*",
-    "@bugsee/protocol": "workspace:*"
+    "@bugsee/protocol": "workspace:*",
+    "@bugsee/vercel-edge": "workspace:*",
+    "@bugsee/webworker": "workspace:*"
   }
 }
