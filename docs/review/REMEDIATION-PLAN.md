@@ -241,29 +241,43 @@ revisiting 4.1; recorded here so they are not lost again.
 
 ---
 
-## Wave 4 — Features that silently do nothing
+## Wave 4 — Features that silently do nothing — ✅ **4.1–4.7 COMPLETE**; 4.8 is a decision
 
 | # | Fix | Where | Est |
 |---|---|---|---|
 | 4.1 | ✅ **DONE** (`18c7757` + `9924998`) — **Umbrella `exports`: 3 conditions → 7**. `bun`/`deno` first (verified end-to-end on the real runtimes), then `workerd`/`edge-light`/`worker`, each resolving its own composition instead of falling through to the BROWSER entry. ORDER is the contract — every one of these runtimes sets several conditions and resolution takes the first match — and `umbrella-conditions.e2e.ts` pins it by asking a REAL resolver (esbuild `conditions`, read from the metafile) which entry it selected. | `packages/bugsee` | 2–3d |
-| 4.2 | **Service Worker detection** — `isServiceWorker()` already exists in `@bugsee/util` and is simply not used; SW currently runs memory-only and loses everything on each idle termination | `packages/webworker` | 2–4d |
+| 4.2 | ✅ **DONE** (`ed63f6e`) — **Service Worker detection**. `isServiceWorker()` had been exported and unit-tested in `@bugsee/util` with zero callers, so a Service Worker ran as a plain web worker: memory-only, losing everything on each idle termination. `launch.ts` now derives `platformType` from it (still overridable). | `packages/webworker` | 2–4d |
 | 4.3 | ✅ **DONE** (`59b9251`) — **Next.js edge build**. Confirmed on real Next 15.5 and fixed at BOTH layers. (a) `register()` read `NEXT_RUNTIME` through a helper, defeating Next's compile-time constant replacement — and webpack cannot fold across a function call, so the dependency was added at PARSE time. Now inline against the literal `process.env.NEXT_RUNTIME`. (b) Underneath it, **`@bugsee/util` (tier-0) pulled `node:crypto` into every edge graph** via `core/bugsee-api` — its comment reasoned about the LOAD being dynamic, which says nothing about bundling. Now ignore-marked for webpack/turbopack/vite. | `packages/nextjs` | 2–3d |
 | 4.4 | ✅ **DONE** (`6c868c6`) — **Nuxt ships the Node SDK into Cloudflare Workers bundles**. The preset was read at MODULE-SETUP time; Nitro auto-detects it inside `createNitro()`, long after modules run. Measured on a real build with `CF_PAGES=1`: setup sees `undefined`, `nitro:init` sees `"cloudflare-pages"`. Corrected at `nitro:init` (a correction, not a replacement, so a Nuxt without the hook is left as it was). The existing edge e2e passed only because it SET `NITRO_PRESET` — the one path where the bug cannot appear; the new suite lets Nitro detect it. | `packages/nuxt` | 2–3d |
-| 4.5 | **Astro turns a 304/204 HTML response into a 500** | `packages/astro` | 1–2d |
-| 4.6 | **`<BugseeProfiler>` records zero spans in production React** — either make it work or document it as dev-only | `packages/react` | 1–2d |
+| 4.5 | ✅ **DONE** (`5164585`) — **Astro turned a 304/204 into a 500**. Measured, not assumed: the fetch spec forbids a body on a null-body status, so the middleware's `new Response('', { status: 304 })` is a `TypeError` — and a 304 legally echoes the cached entity's `Content-Type: text/html`, which is what steered it onto the body path. Null-body statuses (101/103/204/205/304) now pass through untouched. | `packages/astro` | 1–2d |
+| 4.6 | ✅ **DONE** (`7df747c` + `d5d2514`) — **`<BugseeProfiler>` recorded zero spans in production React**. Documented first, then made to work: React's `<Profiler>` is inert in a production build, so the component now falls back to its own post-commit measurement there and uses React's accurate timings in development. Verified by rendering a subtree whose Profiler is genuinely neutralised, rather than by mocking our own code. | `packages/react` | 1–2d |
 | 4.7 | ✅ **DONE** — **Electron renderer incidents never converge**. SEV1 #2 (renderer incidents forwarded to main instead of uploading a capture-less bundle under a foreign session id) and #3 (`render-process-gone` synthesising an incident in the owner session, with minidump claiming) were built as **R0–R5** (`86a3f7b`, `4bc3045`, `046300e`, `9aa1983`) and the plan row was simply never updated. The remaining piece — the renderer registry never shrinking, which hangs off the same lifecycle signal — is fixed in `f198962`. | `packages/electron` | 4–6d |
 | 4.8 | **`@bugsee/integration-shims` is entirely dead code** — delete it, or wire it where the docs claim | repo-wide | 1d |
 
 ---
 
-## Wave 5 — Wire correctness
+## Wave 5 — Wire correctness — ✅ **5.1–5.3 COMPLETE**; 5.4 blocked on the backend
 
-| # | Fix | Where | Est |
-|---|---|---|---|
-| 5.1 | `logLevelToWire` is never called — `logs.json` ships string levels where the viewer expects numerics | `packages/protocol` + emit path | 1–2d |
-| 5.2 | `NetworkStage` dropped Android's websocket/event encoding — outbound WS frames render as incoming | `packages/protocol` | 1–2d |
-| 5.3 | OTel root span ids fabricated as `traceId.slice(0,16)` — every service in one trace emits an identical root span id | `packages/opentelemetry` | 2–3d |
-| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | cross-repo (appserver/worker) | needs backend coordination |
+| # | Fix | Where | Est | Status |
+|---|---|---|---|---|
+| 5.1 | `logLevelToWire` is never called — `logs.json` ships string levels where the viewer expects numerics | `packages/protocol` + emit path | 1–2d | ✅ `b75f1c3` |
+| 5.2 | `NetworkStage` dropped Android's websocket/event encoding — outbound WS frames render as incoming | `packages/protocol` | 1–2d | ✅ `cffe5cb` |
+| 5.3 | OTel root span ids fabricated as `traceId.slice(0,16)` — every service in one trace emits an identical root span id | `packages/opentelemetry` | 2–3d | ✅ `80366b2` |
+| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | cross-repo (appserver/worker) | needs backend coordination | ⛔ **OPEN** — blocked |
+
+Notes on the three that landed:
+
+- **5.1** was fixed at BOTH emit paths, not just the reported one: `client.log` encodes the wire level
+  *after* the user's filter runs (so a filter still sees the friendly name), and `log-provider` does the
+  same for captured console output. The e2e assertion that should have caught this had itself encoded the
+  defect — it asserted `level: 'info'`.
+- **5.2** was not only a stage-encoding gap: `send` vs `message` is what distinguishes an outbound frame
+  from an inbound one, so every frame the app SENT rendered in the viewer as one it received.
+- **5.3** turned out not to need a new id at all. The transaction's real span id existed the whole time —
+  minted by `env.newSpanId()`, used as every child's `parentSpanId`, and propagated in `traceparent`;
+  `toTransactionWire()` simply dropped it. `deriveRootSpanId` survives as a legacy-wire fallback only.
+  The bug was worse than a collision: a downstream root's `parentSpanId` pointed at a span **no service
+  ever emitted**, so the trace broke at every boundary.
 
 ---
 
@@ -452,6 +466,33 @@ stop the app starting); OTel and vercel-edge guarded neither of their two host i
 
 **Still genuinely open:** `0.3` (gated on the Android receiver, D1), `1.5` (gated on the rrweb fork),
 Wave 3b, Waves 4–7, and Wave V.
+
+### Re-verified 2026-08-06 — and the same staleness had recurred
+
+Waves 3b, 4, 6 and 7 are now complete, and 5.1–5.3 with them. Six rows were **already fixed, tested and
+committed while still reading as open**: `4.2` (`ed63f6e`), `4.5` (`5164585`), `4.6` (`d5d2514`),
+`5.1` (`b75f1c3`), `5.2` (`cffe5cb`), `5.3` (`80366b2`). Each was re-verified the way the note above
+prescribes — by reading the committed code and its test, not by trusting a label — and the rows are
+corrected in place.
+
+That this happened a second time, after being called out the first, says the failure is structural rather
+than an oversight: the fix commit and the plan row are two separate edits, and only one of them is enforced
+by anything. **Update the row in the fix's own commit.**
+
+**The complete open set — nothing else in this plan is outstanding:**
+
+| Item | Why it is open | Who unblocks it |
+|---|---|---|
+| `0.3` WebView bridge auth | Gated on the Android receiver (D1) | Android team |
+| `1.5` Canvas privacy | Gated on the rrweb fork's `unblockSelector` | after D1 |
+| `4.8` `integration-shims` | **Needs a human decision**: delete it, or build the §372 integration-object API it presupposes | product/architecture |
+| `5.4` `environment.sdk.type` | No path in the appserver schema the worker's JS-crash routing reads | backend (appserver/worker) |
+| Wave V | ~30 sample apps; V0 substrate done, the generalised scaffold is not | ~6–18 eng-weeks |
+| ~190 SEV3s | Long tail; never individually enumerated | — |
+| AppHang e2e flake | Identified, not reproduced; see *Known open* above | one more occurrence settles it |
+
+Three of the seven are gated on other repos or teams, and one is a decision. Of what this repo can act on
+alone, only Wave V and the SEV3 tail remain.
 
 ---
 
