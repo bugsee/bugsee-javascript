@@ -229,6 +229,18 @@ silently.
 
 ---
 
+## Cloudflare SEV1s (were absent from every wave table)
+
+Two `@bugsee/cloudflare` SEV1s from `docs/review/cloudflare.md` appeared in **no** wave. Found while
+revisiting 4.1; recorded here so they are not lost again.
+
+| # | Fix | Where | Status |
+|---|---|---|---|
+| CF.1 | **`instrumentRpcMethods` deleted the customer's RPC surface** — the wrapper was assigned as an OWN property, and Cloudflare dispatches RPC via the PROTOTYPE, so every instrumented method threw "The RPC receiver does not implement the method". Not degraded telemetry — a broken Worker. | `packages/cloudflare` | ✅ **DONE** (`8460edd`), reproduced and verified on real workerd |
+| CF.2 | **`globalThis.AsyncLocalStorage` is undefined on workerd under every flag** → per-request isolation permanently inert | `packages/cloudflare` | ✅ Already fixed in Wave 0.1 S0 (reads `node:async_hooks`; the miniflare harness documents the required `nodejs_compat` flag) |
+
+---
+
 ## Wave 4 — Features that silently do nothing
 
 | # | Fix | Where | Est |
@@ -236,7 +248,7 @@ silently.
 | 4.1 | 🟡 **PARTIAL** (`18c7757`) — **Umbrella `exports`: 3 conditions → 7**. `bun` and `deno` are **done** and verified end-to-end on the real runtimes (listed BEFORE `node`, since both set it and resolution takes the first match). `workerd`, `edge-light` and `worker` are **deliberately deferred**: adding an `exports` entry that no harness resolves is the exact failure mode 3b.1 just fixed, and `workerd`/`edge-light` would route customers into `@bugsee/cloudflare`'s open SEV1s. Unblocked by 3b.5. | `packages/bugsee` | 2–3d |
 | 4.2 | **Service Worker detection** — `isServiceWorker()` already exists in `@bugsee/util` and is simply not used; SW currently runs memory-only and loses everything on each idle termination | `packages/webworker` | 2–4d |
 | 4.3 | ✅ **DONE** (`59b9251`) — **Next.js edge build**. Confirmed on real Next 15.5 and fixed at BOTH layers. (a) `register()` read `NEXT_RUNTIME` through a helper, defeating Next's compile-time constant replacement — and webpack cannot fold across a function call, so the dependency was added at PARSE time. Now inline against the literal `process.env.NEXT_RUNTIME`. (b) Underneath it, **`@bugsee/util` (tier-0) pulled `node:crypto` into every edge graph** via `core/bugsee-api` — its comment reasoned about the LOAD being dynamic, which says nothing about bundling. Now ignore-marked for webpack/turbopack/vite. | `packages/nextjs` | 2–3d |
-| 4.4 | **Nuxt ships the Node SDK into Cloudflare Workers bundles** on the auto-detected preset path | `packages/nuxt` | 2–3d |
+| 4.4 | ✅ **DONE** (`6c868c6`) — **Nuxt ships the Node SDK into Cloudflare Workers bundles**. The preset was read at MODULE-SETUP time; Nitro auto-detects it inside `createNitro()`, long after modules run. Measured on a real build with `CF_PAGES=1`: setup sees `undefined`, `nitro:init` sees `"cloudflare-pages"`. Corrected at `nitro:init` (a correction, not a replacement, so a Nuxt without the hook is left as it was). The existing edge e2e passed only because it SET `NITRO_PRESET` — the one path where the bug cannot appear; the new suite lets Nitro detect it. | `packages/nuxt` | 2–3d |
 | 4.5 | **Astro turns a 304/204 HTML response into a 500** | `packages/astro` | 1–2d |
 | 4.6 | **`<BugseeProfiler>` records zero spans in production React** — either make it work or document it as dev-only | `packages/react` | 1–2d |
 | 4.7 | **Electron renderer incidents never converge** — empty-capture bundle under a foreign session id; renderer crashes undetected | `packages/electron` | 4–6d |
