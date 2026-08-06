@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
+
+import type { CaptureProvider } from '@bugsee/core';
 import { record } from '@bugsee/rrweb';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type ReplayMaskingOptions, resolveReplayMaskingOptions } from './masking';
+import { type ReplayClientLike, type ReplayFileEncoders, registerReplay } from './register';
 
 // Wave 1.3/1.4 — the masking guarantees asserted against REAL rrweb over a REAL DOM.
 //
@@ -481,5 +484,86 @@ describe('masking cannot be downgraded by prototype pollution or a non-boolean',
       maskAllText: 0 as unknown as boolean,
     });
     expect(json).not.toContain('VISIBLESECRET');
+  });
+});
+
+// THE MUTUAL-MOCKING BLIND SPOT (docs/review/ADVERSARIAL-REVIEW.md, adjudication row).
+//
+// Mutating `register.ts` to call `resolveReplayMaskingOptions({})` — i.e. DISCARDING every masking option
+// the caller passed — was undetectable across @bugsee/browser's 208 tests, @bugsee/replay-canvas's 12, AND
+// the RP6 e2e. Not because any suite is weak individually, but because each mocks the other side of this
+// exact seam: `browser` mocks `@bugsee/replay`, and `replay` mocks `record`. Nothing ran the whole path.
+//
+// The consequence would be a PRIVACY failure of the worst kind — a customer sets `maskTextSelector` and the
+// SDK records the text anyway, with every test green.
+//
+// These tests close it by running the real path end to end: `registerReplay` → the capture provider → the
+// real rrweb → the bytes. No mock on either side.
+describe('registerReplay carries the caller’s masking all the way to rrweb', () => {
+  /** Drive `registerReplay` itself, capture what the provider hands rrweb, and record for real. */
+  async function driveThroughRegister(
+    html: string,
+    options: Parameters<typeof registerReplay>[2] = {},
+  ): Promise<string> {
+    document.body.innerHTML = html;
+    const events: unknown[] = [];
+    let provider: CaptureProvider | undefined;
+    const client: ReplayClientLike = {
+      addCaptureProvider: (p) => {
+        provider = p;
+      },
+    };
+    const encoders: ReplayFileEncoders = {};
+    // The REAL rrweb, injected only so the emitted events are observable — the masking options it receives
+    // are whatever `registerReplay` decided, which is the thing under test.
+    registerReplay(client, encoders, {
+      ...options,
+      record: ((config: Record<string, unknown>) =>
+        record({ ...config, emit: (e: unknown) => events.push(e) } as never)) as never,
+    });
+    (provider as unknown as { start: (c: unknown, r: unknown) => void }).start(
+      {} as never,
+      () => {},
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    (provider as unknown as { stop: () => void }).stop();
+    const json = JSON.stringify(events);
+    // The same anti-vacuity guard the harness above applies: an empty payload satisfies every
+    // `not.toContain` assertion perfectly.
+    expect(json.includes('"tagName"'), 'snapshot serialized no elements').toBe(true);
+    return json;
+  }
+
+  it('honours a caller’s unmaskTextSelector — the option the mutation discarded', async () => {
+    // The discriminator had to be MEASURED rather than assumed. The default is fail-closed: all text is
+    // masked and `data-*` attributes are stripped, so a caller's `maskTextSelector` or `blockSelector`
+    // changes nothing observable — everything they would hide is hidden already. Probed on real rrweb:
+    //   DEFAULT   ZONEMARK=false TEXT=false KEEPME=true
+    //   BLOCKED   ZONEMARK=false TEXT=false KEEPME=true   ← indistinguishable from default
+    //   UNMASKED  ZONEMARK=false TEXT=true  KEEPME=true   ← the one that differs
+    // So the option that proves the caller's choices SURVIVE the journey is the one that loosens: if
+    // `registerReplay` discards them, the text stays masked.
+    const json = await driveThroughRegister('<div class="zone"><span>ZONE-TEXT</span></div>', {
+      unmaskTextSelector: '.zone',
+    });
+    expect(json).toContain('ZONE-TEXT');
+  });
+
+  it('masks that same text when the caller asks for nothing — the control', () => {
+    // The pair is the test. Without this, "contains ZONE-TEXT" would also pass against a pipeline that
+    // masks nothing at all, which is the privacy failure rather than the functional one.
+    return driveThroughRegister('<div class="zone"><span>ZONE-TEXT</span></div>').then((json) => {
+      expect(json).not.toContain('ZONE-TEXT');
+    });
+  });
+
+  it('still applies the default fail-closed masking through the real path — the canary', async () => {
+    // A password is masked and a `.bugsee-unmask` element survives: the pipeline is alive and masking
+    // correctly, so the two assertions above are about the CALLER'S options and nothing else.
+    const json = await driveThroughRegister(
+      '<input type="password" value="HUNTER2" /><p class="bugsee-unmask">KEEPME</p>',
+    );
+    expect(json).not.toContain('HUNTER2');
+    expect(json).toContain('KEEPME');
   });
 });
