@@ -263,7 +263,7 @@ revisiting 4.1; recorded here so they are not lost again.
 | 5.1 | `logLevelToWire` is never called — `logs.json` ships string levels where the viewer expects numerics | `packages/protocol` + emit path | 1–2d | ✅ `b75f1c3` |
 | 5.2 | `NetworkStage` dropped Android's websocket/event encoding — outbound WS frames render as incoming | `packages/protocol` | 1–2d | ✅ `cffe5cb` |
 | 5.3 | OTel root span ids fabricated as `traceId.slice(0,16)` — every service in one trace emits an identical root span id | `packages/opentelemetry` | 2–3d | ✅ `80366b2` |
-| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | cross-repo (appserver/worker) | needs backend coordination | ⛔ **OPEN** — blocked |
+| 5.4 | `environment.sdk.type` has no path in the appserver schema the worker's JS-crash routing reads | **`packages/core`** + appserver | 1d here, 1 line there | ⛔ **OPEN — but no longer blocked.** Revalidated 2026-08-06 (D3): the strip is now confirmed **by executing** Mongoose, and the worker has since made `crash.json`'s `source_sdk` authoritative. Rust emits it; JS does not. Emitting it here fixes routing without touching the backend. |
 
 Notes on the three that landed:
 
@@ -486,13 +486,13 @@ by anything. **Update the row in the fix's own commit.**
 | `0.3` WebView bridge auth | Gated on the Android receiver (D1) | Android team |
 | `1.5` Canvas privacy | Gated on the rrweb fork's `unblockSelector` | after D1 |
 | `4.8` `integration-shims` | **Needs a human decision**: delete it, or build the §372 integration-object API it presupposes | product/architecture |
-| `5.4` `environment.sdk.type` | No path in the appserver schema the worker's JS-crash routing reads | backend (appserver/worker) |
+| `5.4` `environment.sdk.type` | **Actionable HERE** — emit `crash.source_sdk` as Rust does; the appserver one-liner is then a robustness follow-up, not a blocker (revalidated 2026-08-06, see D3) | us |
 | Wave V | ~30 sample apps; V0 substrate done, the generalised scaffold is not | ~6–18 eng-weeks |
 | ~190 SEV3s | Long tail; never individually enumerated | — |
 | AppHang e2e flake | Identified, not reproduced; see *Known open* above | one more occurrence settles it |
 
-Three of the seven are gated on other repos or teams, and one is a decision. Of what this repo can act on
-alone, only Wave V and the SEV3 tail remain.
+Two of the seven are gated on other repos or teams, and one is a decision. `5.4` was re-checked on
+2026-08-06 and is **no longer** among the blocked — see D3.
 
 ---
 
@@ -590,6 +590,47 @@ Mongoose to observe the strip. Reproduce it first, then fix.
 
 Flow (per repo conventions): appserver goes through Gerrit review (`refs/for/master`); worker is
 direct-to-master. Land appserver first, then re-run a real JS crash end-to-end through the worker.
+
+#### REVALIDATED 2026-08-06 — still open, but the cheapest fix is now **in this repo**
+
+**The strip is confirmed by execution, not by reading.** Ran the appserver's real `EnvironmentSchema`
+through its own Mongoose 6.12.0, no DB needed (`strict` applies at document construction):
+
+| emitted | persisted |
+|---|---|
+| `sdk.type: 'javascript'` | **`undefined`** ← stripped |
+| `sdk.version: '1.0.0'` | `'1.0.0'` |
+| `platform.type: 'node'` | `'node'` (declared via the keyword escape hatch) |
+| `wrapper.type: 'electron'` | `'electron'` (same escape hatch) |
+
+→ `is_javascript = false`. The reviewer's inference was right, and the caveat is now discharged.
+
+**What changed since the review: the worker no longer treats `sdk.type` as authoritative.**
+`jobs/bundle.py:143` `_crash_source_sdk()` now prefers **`crash.json`'s own `source_sdk`**, keeping
+`environment.sdk.type` only as a fallback "for SDKs that do not emit `source_sdk` yet". The reason given is
+exactly the failure mode that matters here — the two fields do not travel together: on the resymbolicate
+path `crash.json` comes from S3 while `environment` comes from a separate `api.get_recording`, so an absent
+or partial environment leaves the crash unroutable.
+
+**The Rust SDK already emits it** (`bugsee-core/src/model/crash.rs:141`, set at all five crash-construction
+sites, with a conformance test asserting every crash.json variant identifies its source). **The JS SDK emits
+it nowhere** — `source_sdk` has zero occurrences in this repo, and `CrashJson` (`core/src/crash.ts:28`) has
+no such field. So JS is the one SDK still riding the stripped fallback.
+
+**Two independent gaps; EITHER one alone restores routing:**
+
+| # | Gap | Repo | Cost |
+|---|---|---|---|
+| a | `crash.json` carries no `source_sdk` | **javascript** | one field on `CrashJson` + `NativeCrashJson`; 4 call sites already funnel through `buildCrashJson` |
+| b | `sdk.type` stripped at persist | appserver | one line, `type: { type: String }`, exactly as `wrapper.type` does it |
+
+**Do (a) first.** It is entirely in this repo, needs no Gerrit round-trip, matches what Rust already ships,
+and is strictly more robust — it survives the resym path where the environment is absent, which (b) cannot.
+Do (b) as well, because the fallback should be correct for any SDK that never adopts `source_sdk`, but it is
+no longer the blocking dependency this row was filed as.
+
+Scope check on (b): the only other reader of `sdk.type` is `appserver/code/utils.js:1128` (per-runtime SDK
+version floor), which reads **pre-persist** and is therefore unaffected. The viewer does not read it.
 
 ### D4. `BugseeProfiler` and `integration-shims` — **FIX, do not delete**
 
