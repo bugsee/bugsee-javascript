@@ -406,9 +406,8 @@ least one (the `sdk.type` Mongoose strip) says so explicitly.
 
 ## Wave 7 — Hygiene
 
-Everything else: the ~190 SEV3s, dead exports (15/24 in `@bugsee/util` have no consumers), the
-mutual-mocking test blind spots, and the missing `.tsx`/TypeScript coverage in the component-annotate
-plugins.
+Everything else: the ~190 SEV3s, dead exports (15/24 in `@bugsee/util` have no consumers), and the
+mutual-mocking test blind spots.
 
 | # | Fix | Where | Status |
 |---|---|---|---|
@@ -418,6 +417,7 @@ plugins.
 | 7.4 | **No timeout on the spawned `bugsee-cli`** — a hung child hung the build until CI's global timeout. Now a 120 s budget + an AbortSignal so the child is killed, not abandoned. Also made the spawn OPTIONS a pure, assertable function: they were inside a `v8 ignore`'d adapter, which is how the review's `shell: true` mutation survived. | `bundler-plugin-core` | ✅ **DONE** (`98118f0`) |
 | 7.5 | **No re-entrancy guard** — outputs resolving to one dir ran two pipelines over one tree, one deleting maps while the other read them. A concurrent caller now joins the in-flight run; the slot frees on `finally` so watch mode keeps working. | `bundler-plugin-core` | ✅ **DONE** (`98118f0`) |
 | 7.6 | **Vite's `build.sourcemap` defaults to `false`** and nothing enabled it, so the documented setup produced a map-free `dist` and then failed the build (bugsee-cli exit 10). Verified on real Vite 8.0.14: before → build FAILED, `dist = [main.js]`; after → build OK, `dist = [main.js, main.js.map]`. `'hidden'`/`'inline'` are left alone; a disabled plugin alters nothing. | `bundler-plugin-core` | ✅ **DONE** (`e6b3980`) |
+| 7.7 | **`babel-plugin-component-annotate`: a peer's nested `transformSync` wiped the shared stack**, dropping every remaining annotation in the outer file. Stack moved onto babel's per-transform `PluginPass`. Also closed the test theater the review measured — 5/5 targeted mutations survived because the "nested components" fixture contained SIBLINGS, so the stack never exceeded depth 1 and innermost/outermost were indistinguishable. Genuine nesting + `.tsx` now covered. | `babel-plugin-component-annotate` | ✅ **DONE** (`994dcfe`) |
 
 ---
 
