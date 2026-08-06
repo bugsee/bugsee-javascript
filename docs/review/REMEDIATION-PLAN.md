@@ -406,10 +406,17 @@ least one (the `sdk.type` Mongoose strip) says so explicitly.
 
 ## Wave 7 — Hygiene
 
-Everything else: the ~190 SEV3s, dead exports (15/24 in `@bugsee/util` have no consumers), the
-`bundler-plugin-core` recursive `*.map` unlink and `dryRun` build-abort, the Vite `build.sourcemap`
-default-off setup failure, the mutual-mocking test blind spots, and the missing `.tsx`/TypeScript coverage in
-the component-annotate plugins.
+Everything else: the ~190 SEV3s, dead exports (15/24 in `@bugsee/util` have no consumers), the Vite
+`build.sourcemap` default-off setup failure, the mutual-mocking test blind spots, and the missing
+`.tsx`/TypeScript coverage in the component-annotate plugins.
+
+| # | Fix | Where | Status |
+|---|---|---|---|
+| 7.1 | **`bundler-plugin-core` could delete a developer's files** — a relative `output.file` resolves the out dir to `'.'`, and the `.map` cleanup then walked the PROJECT ROOT with no exclusions and no depth limit, unlinking maps under `node_modules/` and authored maps under `src/`. On by default. | `bundler-plugin-core` | ✅ **DONE** (`42b5406`) |
+| 7.2 | **`dryRun` aborted the build** — `--dry-run` went to both commands, but inject-dry writes nothing, so the upload then exits 11 ("no debug_id"). Measured on the real bugsee-cli v0.7.2. The safe diagnostic broke every freshly-built output dir. | `bundler-plugin-core` | ✅ **DONE** (`42b5406`) |
+| 7.3 | **Any CLI failure broke the build, with no opt-out** — an expired token or a Bugsee outage aborted a production deploy. Now contained + reported by default, with `failOnError` to opt in; maps deleted only after a CONFIRMED upload. | `bundler-plugin-core` | ✅ **DONE** (`42b5406`) |
+| 7.4 | No timeout on the spawned `bugsee-cli` — a hung child hangs CI until the job's global timeout | `bundler-plugin-core` | ◻ open (SEV2 #4) |
+| 7.5 | No re-entrancy guard — a multi-output config whose outputs resolve to one dir runs two pipelines over one tree | `bundler-plugin-core` | ◻ open (SEV2 #6) |
 
 ---
 
