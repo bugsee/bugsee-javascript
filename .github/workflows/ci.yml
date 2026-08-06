@@ -60,7 +60,7 @@ jobs:
         run: pnpm exec turbo run test:unit
 
   # End-to-end harnesses: the REAL SDK booted in real node/bun/deno processes against a
-  # mock collector, plus the real-framework suites (nuxt / sveltekit / astro).
+  # mock collector, plus the real-framework suites (nuxt / sveltekit / astro / next).
   #
   # These existed but were OUTSIDE the gate until 2026-07-27: the `check` job runs
   # `turbo run test:coverage`, and the four harness packages define only `test:e2e`, so

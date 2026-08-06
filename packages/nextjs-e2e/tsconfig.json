@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true,
+    "types": ["node"],
+    "allowJs": true,
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": ["app", "instrumentation.ts", "next.config.mjs", "test", ".next/types/**/*.ts"]
+}

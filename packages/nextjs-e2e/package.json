@@ -1,0 +1,19 @@
+{
+  "name": "@bugsee/nextjs-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Real-Next build e2e: compiles a fixture app using @bugsee/nextjs and asserts the EDGE compilation does not drag the Node SDK into its graph. Not in `pnpm test`.",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "vitest run"
+  },
+  "dependencies": {
+    "@bugsee/nextjs": "workspace:*"
+  },
+  "devDependencies": {
+    "next": "^15.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vitest": "^4.0.0"
+  }
+}

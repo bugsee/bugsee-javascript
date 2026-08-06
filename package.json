@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Bugsee JavaScript SDK — monorepo root (see docs/design/sdk-design.md)",
+  "description": "Bugsee JavaScript SDK \u2014 monorepo root (see docs/design/sdk-design.md)",
   "license": "UNLICENSED",
   "packageManager": "pnpm@11.3.0",
   "engines": {
@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "pnpm --filter @bugsee/instrumentation-tests --filter @bugsee/nuxt-e2e --filter @bugsee/sveltekit-e2e --filter @bugsee/astro-e2e test:e2e",
+    "test:e2e": "pnpm --filter @bugsee/instrumentation-tests --filter @bugsee/nuxt-e2e --filter @bugsee/sveltekit-e2e --filter @bugsee/astro-e2e --filter @bugsee/nextjs-e2e test:e2e",
     "test:matrix": "bash scripts/test-matrix.sh",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
