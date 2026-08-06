@@ -71,14 +71,20 @@ describe('uploadSourcemaps', () => {
     expect(result.deletedMaps).toEqual([]);
   });
 
-  it('dry-run: passes --dry-run to both commands and skips deletion', async () => {
+  it('dry-run: injects dry, skips the upload that cannot succeed, and deletes nothing', async () => {
+    // This used to assert `--dry-run` reached BOTH commands — i.e. it pinned the defect. Measured against
+    // the real bugsee-cli v0.7.2: `sourcemaps inject --dry-run` exits 0 and writes nothing, so the maps
+    // still carry no debug_id, and `debug-files upload --dry-run` then exits 11 with "source map has no
+    // debug_id … run 'sourcemaps inject' first" — aborting the build from the one option documented as the
+    // safe diagnostic, on every freshly-built output directory.
     const { run, calls } = fakeRun();
     const deleteMapFiles = vi.fn(async () => ['x']);
     const result = await uploadSourcemaps({ ...base, run, deleteMapFiles, dryRun: true });
+    expect(calls).toHaveLength(1);
     expect(calls[0]?.args).toContain('--dry-run');
-    expect(calls[1]?.args).toContain('--dry-run');
+    expect(calls[0]?.args.slice(0, 2)).toEqual(['sourcemaps', 'inject']);
     expect(deleteMapFiles).not.toHaveBeenCalled();
-    expect(result.deletedMaps).toEqual([]);
+    expect(result).toMatchObject({ injected: true, uploaded: false, deletedMaps: [] });
   });
 
   it('throws when appToken is missing', async () => {
@@ -118,5 +124,143 @@ describe('defaultDeleteMapFiles', () => {
   it('returns an empty list when there are no maps', async () => {
     await writeFile(join(dir, 'app.js'), 'x');
     expect(await defaultDeleteMapFiles(dir)).toEqual([]);
+  });
+});
+
+// WAVE 7 — a telemetry side effect must not harm the user's build.
+//
+// All four defects below share that shape, and together they mean the plugin could delete a developer's
+// files, break a production deploy, or hang CI — for a source-map upload.
+describe('the plugin cannot harm the build (Wave 7)', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'bugsee-harm-'));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (rel: string): Promise<string> => {
+    const full = join(root, rel);
+    await mkdir(join(full, '..'), { recursive: true });
+    await writeFile(full, 'x');
+    return full;
+  };
+
+  describe('SEV1 #3 — recursive *.map deletion in the working tree', () => {
+    it('never descends into node_modules', async () => {
+      // A relative `output.file` resolves the out dir to '.', so the walk starts at the project root.
+      // `path.dirname('bundle.js') === '.'` — an entirely ordinary Rollup library config.
+      await write('node_modules/left-pad/index.js.map');
+      await write('bundle.js.map');
+      const deleted = await defaultDeleteMapFiles(root);
+      expect(deleted.map((p) => p.slice(root.length + 1))).toEqual(['bundle.js.map']);
+    });
+
+    it('never deletes AUTHORED maps under src/', async () => {
+      await write('src/authored.ts.map');
+      await write('dist/app.js.map');
+      const deleted = await defaultDeleteMapFiles(root);
+      expect(deleted.map((p) => p.slice(root.length + 1))).toEqual([join('dist', 'app.js.map')]);
+    });
+
+    it('is bounded in depth rather than walking an arbitrary tree', async () => {
+      // No depth limit meant a stray out-dir could walk an entire disk. Build output is shallow.
+      await write('a/b/c/d/e/f/g/h/deep.js.map');
+      const deleted = await defaultDeleteMapFiles(root);
+      expect(deleted).toEqual([]);
+    });
+
+    it('still deletes real build maps — the canary', async () => {
+      // Without this, "deletes nothing dangerous" is satisfied by deleting nothing at all.
+      await write('assets/app.js.map');
+      await write('chunk-abc.js.map');
+      const deleted = await defaultDeleteMapFiles(root);
+      expect(deleted).toHaveLength(2);
+    });
+  });
+
+  describe('SEV1 #1 — dryRun aborted the build', () => {
+    it('runs INJECT dry, but does not run the upload that cannot succeed', async () => {
+      // Measured against the real bugsee-cli v0.7.2: `sourcemaps inject --dry-run` exits 0 and writes
+      // nothing, so the maps still carry no debug_id — and `debug-files upload --dry-run` then exits 11
+      // ("source map has no debug_id … run 'sourcemaps inject' first"), which aborted the build. dryRun is
+      // documented as the SAFE diagnostic; it failed on every freshly-built output directory.
+      const calls: string[][] = [];
+      const run = vi.fn(async (args: string[]) => {
+        calls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      const result = await uploadSourcemaps({
+        outDir: root,
+        appToken: 'tok',
+        appVersion: '1.0.0',
+        appBuild: '7',
+        dryRun: true,
+        run: run as never,
+      });
+      expect(calls.map((c) => c.slice(0, 2))).toEqual([['sourcemaps', 'inject']]);
+      expect(result.uploaded).toBe(false); // …and it says so, rather than claiming an upload
+    });
+  });
+
+  describe('SEV1 #2 — a CLI failure aborted the build', () => {
+    const failing = vi.fn(async () => {
+      throw new Error('bugsee-cli exited 20');
+    });
+
+    it('does not reject by default — the build survives a failed upload', async () => {
+      const onError = vi.fn();
+      const result = await uploadSourcemaps({
+        outDir: root,
+        appToken: 'tok',
+        appVersion: '1',
+        appBuild: '1',
+        run: failing as never,
+        onError,
+      });
+      expect(result.uploaded).toBe(false);
+      expect(onError).toHaveBeenCalled(); // reported, never swallowed
+    });
+
+    it('does not delete the maps when the upload failed', async () => {
+      // Deleting after a failed upload destroys the only copy of the mapping — the maps are gone AND the
+      // symbols were never delivered.
+      await write('app.js.map');
+      const result = await uploadSourcemaps({
+        outDir: root,
+        appToken: 'tok',
+        appVersion: '1',
+        appBuild: '1',
+        run: failing as never,
+      });
+      expect(result.deletedMaps).toEqual([]);
+      expect((await readdir(root)).length).toBe(1);
+    });
+
+    it('CAN be made strict, for a team that wants the build to fail', async () => {
+      await expect(
+        uploadSourcemaps({
+          outDir: root,
+          appToken: 'tok',
+          appVersion: '1',
+          appBuild: '1',
+          run: failing as never,
+          failOnError: true,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('still reports success on a clean run — the canary', async () => {
+      const ok = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+      const result = await uploadSourcemaps({
+        outDir: root,
+        appToken: 'tok',
+        appVersion: '1',
+        appBuild: '1',
+        run: ok as never,
+      });
+      expect(result).toMatchObject({ injected: true, uploaded: true });
+    });
   });
 });

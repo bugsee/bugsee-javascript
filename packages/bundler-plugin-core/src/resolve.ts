@@ -24,6 +24,16 @@ export interface BugseePluginOptions {
   dryRun?: boolean;
   /** Disable the plugin entirely (e.g. dev builds). */
   disabled?: boolean;
+  /**
+   * FAIL the build when the source-map upload fails. Default `false` (Wave 7).
+   *
+   * A telemetry side effect must not be able to break a production deploy: before this, an expired token,
+   * a transient network error or a `bugsee-cli` missing from PATH aborted the user's build with no escape
+   * hatch. Teams that would rather stop on a failed upload opt in.
+   */
+  failOnError?: boolean;
+  /** Where a contained failure is reported. Default: a console warning naming the plugin. */
+  onError?: (error: unknown) => void;
 }
 
 export interface ResolvedPluginOptions {
@@ -35,6 +45,10 @@ export interface ResolvedPluginOptions {
   endpoint: string | undefined;
   deleteMaps: boolean;
   dryRun: boolean;
+  /** Whether a failed upload should abort the build. Default false. */
+  failOnError: boolean;
+  /** Failure sink for the contained path. */
+  onError?: (error: unknown) => void;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
@@ -51,6 +65,8 @@ export function resolvePluginOptions(
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,
+    failOnError: options.failOnError ?? false,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   };
 }
 
@@ -72,5 +88,7 @@ export async function runPluginUpload(
     endpoint: resolved.endpoint,
     deleteMaps: resolved.deleteMaps,
     dryRun: resolved.dryRun,
+    failOnError: resolved.failOnError,
+    ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
   });
 }

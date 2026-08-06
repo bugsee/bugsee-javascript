@@ -73,6 +73,8 @@ describe('runPluginUpload', () => {
       {},
     );
     await runPluginUpload(resolved, '/out', { uploadSourcemaps });
+    // An EXACT match, deliberately: this is the whole contract handed to the orchestrator, and a field
+    // silently dropped on the way through is exactly how `failOnError` would become inert.
     expect(uploadSourcemaps).toHaveBeenCalledWith({
       outDir: '/out',
       appToken: 't',
@@ -81,6 +83,7 @@ describe('runPluginUpload', () => {
       endpoint: 'https://e.test',
       deleteMaps: false,
       dryRun: false,
+      failOnError: false,
     });
   });
 
@@ -93,5 +96,34 @@ describe('runPluginUpload', () => {
     const resolved = resolvePluginOptions({}, {}); // no token → disabled
     await runPluginUpload(resolved, '/out', { uploadSourcemaps });
     expect(uploadSourcemaps).not.toHaveBeenCalled();
+  });
+});
+
+// WAVE 7 — the failure policy has to be reachable from the PUBLIC option bag.
+//
+// `failOnError` existing on the internal orchestrator is worth nothing if a user cannot set it: the whole
+// point is that a team decides whether a source-map upload may break their deploy.
+describe('failOnError / onError plumbing (Wave 7)', () => {
+  it('defaults to NOT failing the build', () => {
+    expect(resolvePluginOptions({ appToken: 'tok' }, {}).failOnError).toBe(false);
+  });
+
+  it('carries an explicit failOnError through', () => {
+    expect(resolvePluginOptions({ appToken: 'tok', failOnError: true }, {}).failOnError).toBe(true);
+  });
+
+  it('hands both down to the orchestrator', async () => {
+    const onError = vi.fn();
+    const seen: Array<Record<string, unknown>> = [];
+    const uploadSourcemaps = async (opts: Record<string, unknown>) => {
+      seen.push(opts);
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    await runPluginUpload(
+      resolvePluginOptions({ appToken: 'tok', failOnError: true, onError }, {}),
+      'dist',
+      { uploadSourcemaps: uploadSourcemaps as never },
+    );
+    expect(seen[0]).toMatchObject({ failOnError: true, onError });
   });
 });
