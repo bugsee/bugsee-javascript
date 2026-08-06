@@ -84,7 +84,9 @@ export {
   type CrashException,
   type CrashFrame,
   type CrashJson,
+  type CrashProvenance,
   type NativeCrashJson,
+  stampCrashProvenance,
 } from './crash';
 export {
   applyDebugIds,

@@ -1,5 +1,11 @@
+import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
-import { buildCrashJson } from './crash';
+import {
+  buildCrashJson,
+  type CrashJson,
+  type NativeCrashJson,
+  stampCrashProvenance,
+} from './crash';
 import { parseV8Stack, type StackFrame } from './stack';
 
 function errorWith(name: string, message: string, stack: string | undefined): Error {
@@ -107,5 +113,107 @@ describe('buildCrashJson', () => {
     expect(f?.data).toBeUndefined();
     expect(f?.trace).toBe('at <anonymous> (<unknown>)');
     expect(f?.user).toBe(true);
+  });
+});
+
+// WAVE 5.4(a) — the `source_*` provenance triple, so a crash.json is SELF-DESCRIBING.
+//
+// The backend picks a per-SDK crash processor. It used to read `environment.sdk.type` back out of the
+// PERSISTED recording, which made JS routing depend on a field the appserver's schema silently dropped —
+// every JS crash reached the generic `managed` processor instead. The appserver schema is now fixed, but
+// the deeper problem is structural and the fallback cannot solve it: `crash.json` and `environment` do not
+// travel together. On the resymbolication path the crash is read from object storage while the environment
+// comes from a separate database read, so a crash that carries no provenance of its own is unroutable
+// whenever that environment is missing or partial.
+//
+// Rust already emits the triple; this is the JS adoption. Per report-bundle-structure:
+//   - `source_sdk`      — the routing key. Consumers branch on it BEFORE looking at platform.type.
+//   - `source_platform` — the platform fallback when the fetched environment carries none.
+//   - `source_arch`     — OMITTED here. The MIRROR RULE says a producer emits only what its environment
+//                         already states, and the JS SDK reports no `hardware.arch` at all. Inventing one
+//                         would reintroduce exactly the drift the triple exists to eliminate.
+//
+// The mirror rule is also why this is a stamping step over the built environment rather than a probe:
+// both values are COPIES of what `request.json` emits, so the two cannot disagree by construction.
+describe('stampCrashProvenance', () => {
+  const env: EnvironmentEnvelope = {
+    platform: { type: 'node', version: '22.1.0' },
+    sdk: { version: '1.2.3', type: 'javascript' },
+  };
+  const crash: CrashJson = {
+    exception_type: 'error',
+    ndkCrash: false,
+    handled: false,
+    exception: { name: 'TypeError', frames: [] },
+  };
+
+  it('emits source_sdk javascript for the SDK’s own environment', () => {
+    expect(stampCrashProvenance(crash, env).source_sdk).toBe('javascript');
+  });
+
+  it('COPIES source_sdk out of the environment rather than hard-coding the literal', () => {
+    // `EnvironmentEnvelope.sdk.type` is typed as the literal 'javascript', so no honest fixture can hold a
+    // different value and the assertion above passes just as happily against `source_sdk: 'javascript'`
+    // written inline — verified by injecting exactly that, which survived every other test in this file.
+    //
+    // The cast is the point: it forces the one question the type system hides. If the family string ever
+    // gains a second value (an Electron-specific tag, a wrapper SDK identifying itself), a hard-coded stamp
+    // silently keeps claiming 'javascript' and the crash routes to the wrong processor — the exact class of
+    // failure the mirror rule exists to prevent.
+    const future = {
+      ...env,
+      sdk: { ...env.sdk, type: 'javascript-next' },
+    } as unknown as EnvironmentEnvelope;
+    expect(stampCrashProvenance(crash, future).source_sdk).toBe('javascript-next');
+  });
+
+  it('copies source_platform from the environment', () => {
+    expect(stampCrashProvenance(crash, env).source_platform).toBe('node');
+  });
+
+  it('tracks the platform per runtime instead of assuming one', () => {
+    // The value is a copy, so every runtime the SDK supports must come through as ITSELF. A constant here
+    // would satisfy the two assertions above while making the field useless as a platform fallback.
+    const platforms = ['web', 'electron-renderer', 'workers', 'service-worker'] as const;
+    for (const type of platforms) {
+      const scoped: EnvironmentEnvelope = { ...env, platform: { type, version: '1' } };
+      expect(stampCrashProvenance(crash, scoped).source_platform).toBe(type);
+    }
+  });
+
+  it('omits source_arch — the JS SDK reports no hardware.arch to mirror', () => {
+    expect(stampCrashProvenance(crash, env)).not.toHaveProperty('source_arch');
+  });
+
+  it('preserves every field of the crash it stamps', () => {
+    // Provenance is ADDITIVE. Dropping the exception while adding the markers would produce a document
+    // that routes perfectly and symbolicates nothing.
+    expect(stampCrashProvenance(crash, env)).toMatchObject(crash);
+  });
+
+  it('does not mutate the crash it was given', () => {
+    // The Report holds this object, and a report can be assembled more than once (recovery re-assembles a
+    // drained capture). Stamping in place would make the second assembly read a mutated input.
+    // JSON round-trip rather than structuredClone: core compiles with no DOM/Node lib.
+    const original = JSON.parse(JSON.stringify(crash)) as CrashJson;
+    stampCrashProvenance(crash, env);
+    expect(crash).toEqual(original);
+  });
+
+  it('stamps a NATIVE crash the same way, keeping its minidump reference', () => {
+    // The native variant is a different shape (no `exception`, carries `minidumpFile`) and routes through
+    // the same branch — a JS/Electron Crashpad dump is claimed by `javascript.process_crash_report`.
+    const native: NativeCrashJson = {
+      exception_type: 'native',
+      ndkCrash: true,
+      minidumpFile: 'dump-1.dmp',
+    };
+    const stamped = stampCrashProvenance(native, {
+      ...env,
+      platform: { type: 'electron-main', version: '30' },
+    });
+    expect(stamped.source_sdk).toBe('javascript');
+    expect(stamped.source_platform).toBe('electron-main');
+    expect(stamped.minidumpFile).toBe('dump-1.dmp');
   });
 });

@@ -422,7 +422,12 @@ describe('assembleBundle — crash.json', () => {
     const request = createReportingRequest({ source: { type: 'error' }, id: 'r1', crash });
     const z = unzip(assembleBundle(request, new Map(), context()).body);
     expect(z.names).toContain('crash.json');
-    expect(JSON.parse(z.text('crash.json'))).toEqual(crash);
+    // The written document is the report's crash PLUS the provenance the assembler stamps (Wave 5.4a).
+    expect(JSON.parse(z.text('crash.json'))).toEqual({
+      ...crash,
+      source_sdk: 'javascript',
+      source_platform: 'web',
+    });
     expect(z.manifest.files).toContainEqual({ filename: 'crash.json', type: 'crash' });
   });
 
@@ -431,6 +436,41 @@ describe('assembleBundle — crash.json', () => {
     const z = unzip(assembleBundle(request, new Map(), context()).body);
     expect(z.names).not.toContain('crash.json');
     expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'crash' }));
+  });
+
+  // WAVE 5.4(a) — the assembler is where provenance is stamped, because it is the ONE place that holds
+  // both the crash and the environment being emitted. These assert the MIRROR RULE on the real artifact:
+  // whatever request.json says, crash.json must say the same, in the same bundle.
+  it('mirrors request.json’s environment into crash.json — the two cannot disagree', () => {
+    const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1', crash });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    const written = JSON.parse(z.text('crash.json'));
+    // Compared against the OTHER FILE rather than against literals: a literal would still pass if both
+    // sides drifted together to the same wrong value, which is exactly what the mirror rule forbids.
+    expect(written.source_sdk).toBe(z.request.environment.sdk.type);
+    expect(written.source_platform).toBe(z.request.environment.platform.type);
+  });
+
+  it('follows the environment to a different runtime instead of emitting a constant', () => {
+    // The canary for the assertion above. With a hard-coded 'web'/'javascript' pair, the mirror test
+    // passes on the default fixture and this one fails — the platform must track its environment.
+    const edge: EnvironmentEnvelope = {
+      platform: { type: 'edge-light', version: '1' },
+      sdk: { version: '1.0.0', type: 'javascript' },
+    };
+    const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1', crash });
+    const z = unzip(assembleBundle(request, new Map(), context({ environment: edge })).body);
+    expect(JSON.parse(z.text('crash.json')).source_platform).toBe('edge-light');
+  });
+
+  it('leaves the report’s own crash object unmutated across two assemblies', () => {
+    // Capture recovery re-assembles a drained session, so the same Report can be assembled twice. If the
+    // stamp mutated in place the second pass would read its own output — harmless here, but it would make
+    // the crash object silently environment-dependent for every other reader that holds it.
+    const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1', crash });
+    assembleBundle(request, new Map(), context());
+    expect(request.report.crash).toEqual(crash);
+    expect(request.report.crash).not.toHaveProperty('source_sdk');
   });
 });
 
@@ -451,7 +491,13 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
     });
     const bundle = assembleBundle(request, new Map(), context());
     const z = unzip(bundle.body);
-    expect(JSON.parse(z.text('crash.json'))).toEqual(nativeCrash); // native shape (minidumpFile)
+    // Native shape (minidumpFile) + the stamped provenance — a JS/Electron Crashpad dump has to route to
+    // the javascript processor exactly like a managed one (Wave 5.4a).
+    expect(JSON.parse(z.text('crash.json'))).toEqual({
+      ...nativeCrash,
+      source_sdk: 'javascript',
+      source_platform: 'web',
+    });
     expect(unzipSync(bundle.body)['dump-1.dmp']).toEqual(dmp); // the .dmp is embedded raw
     expect(z.manifest.files).toContainEqual({ filename: 'crash.json', type: 'crash' });
     expect(z.manifest.files).toContainEqual({ filename: 'dump-1.dmp', type: 'attachment' });

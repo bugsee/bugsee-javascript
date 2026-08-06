@@ -16,6 +16,7 @@ import type { AttributeValue, IssueType } from '@bugsee/types';
 import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
+import { stampCrashProvenance } from './crash';
 import type { ReportingRequest } from './reporting';
 import type { RequestContext } from './request-context';
 import type { Bundle } from './transport';
@@ -160,10 +161,17 @@ export function assembleBundle(
 
   // Structured crash detail (§8.4 `crash.json`) — a per-report file (not a rolling capture stream) built
   // from the thrown Error at report time. The backend crash pipeline reads it for stack symbolication.
+  //
+  // The `source_*` provenance is stamped HERE rather than in `buildCrashJson`, because this is the one
+  // place that holds both the crash and the environment this bundle emits — which is what the mirror rule
+  // requires (the values must be copies of `request.json`'s, taken in the same code path, so they cannot
+  // drift). It also means every crash path gets it for free: handled `logException`, each platform's
+  // uncaught detection provider, and the recovered native minidump all converge on this line.
   if (report.crash !== undefined) {
     const crashFilename = fileNameForType('crash');
     files.push({ filename: crashFilename, type: 'crash' });
-    typedFiles.push({ name: crashFilename, data: JSON.stringify(report.crash) });
+    const crash = stampCrashProvenance(report.crash, context.environment);
+    typedFiles.push({ name: crashFilename, data: JSON.stringify(crash) });
   }
 
   // Report-level attachments (§8.4 `attachment`) — extra binary/text files written verbatim (e.g. a

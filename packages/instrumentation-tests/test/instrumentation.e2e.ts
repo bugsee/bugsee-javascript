@@ -181,6 +181,36 @@ describe.each(
       expect(typeof profile.startTime).toBe('number');
     });
 
+    it('the crash.json is self-describing — source_sdk routes it without the environment', () => {
+      // WAVE 5.4(a). The backend picks a per-SDK crash processor. It reads `environment.sdk.type` back
+      // out of the PERSISTED recording, which is a field a schema can silently drop (it did: every JS
+      // crash reached the generic `managed` processor until the appserver declared the path). Worse, the
+      // two documents do not travel together — on the resymbolication path crash.json comes from object
+      // storage while the environment comes from a separate database read — so a crash carrying no
+      // provenance of its own is unroutable whenever that environment is missing.
+      //
+      // Asserted on the REAL uploaded artifact, per runtime, because the value is only useful if it
+      // survives assembly, zipping and upload intact.
+      const err = bundles.find((b) => b.request.source.mechanism === 'programmatic');
+      const bundle = err as ParsedBundle;
+      expect(bundle.files['crash.json'], 'no crash.json in the bundle').toBeDefined();
+      const crash = parseJson<{
+        source_sdk?: string;
+        source_platform?: string;
+        source_arch?: string;
+      }>(bundle.files['crash.json']);
+
+      expect(crash.source_sdk).toBe('javascript');
+      // The MIRROR RULE, checked across the two files in one bundle rather than against a literal: a
+      // literal would still pass if both sides drifted to the same wrong value. `target.name` is the real
+      // runtime this process is, so this also pins the per-runtime value end-to-end.
+      expect(crash.source_platform).toBe(bundle.request.environment.platform.type);
+      expect(crash.source_platform).toBe(target.name);
+      // `source_arch` is omitted deliberately — the JS SDK reports no `hardware.arch` to mirror, and the
+      // rule is that a producer emits only what its environment already states.
+      expect(crash).not.toHaveProperty('source_arch');
+    });
+
     it('delivered an AppHang report fired by the real event-loop watchdog', () => {
       const hang = bundles.find((b) => b.request.source.mechanism === 'hang');
       expect(hang, 'no AppHang bundle was delivered').toBeDefined();

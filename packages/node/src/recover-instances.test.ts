@@ -322,10 +322,16 @@ describe('recoverInstances', () => {
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     const bundle = pipe.bundles[0] as Bundle;
     expect(bundle.request.type).toBe('crash');
+    // Native shape + the provenance the assembler stamps (Wave 5.4a). This is the path that needs it
+    // most: the incident is SYNTHESIZED at the next launch from a dead sibling's harvested dump, so the
+    // routing key cannot come from the crashed process — it comes from the recovered session's own
+    // environment, which is what the stamp copies.
     expect(crashJsonOf(bundle)).toEqual({
       exception_type: 'native',
       ndkCrash: true,
       minidumpFile: 'main.dmp',
+      source_sdk: 'javascript',
+      source_platform: 'node',
     });
     // The .dmp rides as an attachment and the crashed session's capture is stitched in.
     expect(Array.from(unzipSync(bundle.body)['main.dmp'] as Uint8Array)).toEqual([7, 8, 9]);

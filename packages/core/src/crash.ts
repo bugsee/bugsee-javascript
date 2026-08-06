@@ -4,6 +4,7 @@
 // `debug_id` (each bundle/chunk its own source-map). This composes the existing `parseV8Stack` +
 // `applyDebugIds` primitives into that container. Runtime-portable: the runtime-specific stack parser +
 // debug-id registration global are injected seams (browser passes its multi-engine parser).
+import type { EnvironmentEnvelope, PlatformType } from '@bugsee/protocol';
 import { applyDebugIds } from './debug-id';
 import { parseV8Stack, type StackFrame } from './stack';
 
@@ -16,6 +17,25 @@ export interface CrashFrame {
   debug_id?: string;
 }
 
+/**
+ * The `source_*` provenance triple (report-bundle-structure §crash.json common header), which makes a
+ * crash.json SELF-DESCRIBING — routable from the document alone, without the `request.json` environment.
+ *
+ * This matters because the two do not travel together: on the backend's resymbolication path `crash.json`
+ * is read from object storage while the environment comes from a separate database read, so a crash with
+ * no provenance of its own is unroutable whenever that environment is missing or partial.
+ *
+ * `source_arch` is deliberately absent. The MIRROR RULE says each key is a copy of the corresponding
+ * `environment` value taken from the same source of truth — never an independent probe — and a producer
+ * omits any key it has no environment counterpart for. The JS SDK reports no `hardware.arch`.
+ */
+export interface CrashProvenance {
+  /** The SDK family — the backend's routing key, read BEFORE `platform.type`. Mirrors `environment.sdk.type`. */
+  source_sdk?: 'javascript';
+  /** The originating platform. Mirrors `environment.platform.type`; used as the platform fallback. */
+  source_platform?: PlatformType;
+}
+
 /** A crash.json exception (Android managed-exception parity; recursive `cause` chain). */
 export interface CrashException {
   name: string;
@@ -25,7 +45,7 @@ export interface CrashException {
 }
 
 /** The crash.json bundle file — the Android managed-exception container the worker reads. */
-export interface CrashJson {
+export interface CrashJson extends CrashProvenance {
   exception_type: 'error';
   ndkCrash: false;
   handled: boolean;
@@ -35,7 +55,7 @@ export interface CrashJson {
 /** The NATIVE crash.json — a Crashpad/native segfault (Electron/Node native addon). The worker keys off
  *  `minidumpFile` (present) and stackwalks the attached `.dmp`; the exception + signal are derived there.
  *  See `docs/design/electron-native-crashes.md`. */
-export interface NativeCrashJson {
+export interface NativeCrashJson extends CrashProvenance {
   exception_type: 'native';
   ndkCrash: true;
   /** The name of the minidump file attached to the bundle (the worker downloads + stackwalks it). */
@@ -133,5 +153,28 @@ export function buildCrashJson(
     ndkCrash: false,
     handled: options.handled ?? false,
     exception: buildException(error, parseStack, globalObject, new Set<unknown>([error]), 0),
+  };
+}
+
+/**
+ * Stamp the {@link CrashProvenance} triple onto a crash document, COPYING both values out of the
+ * environment envelope that the same bundle emits as `request.json.environment`.
+ *
+ * Copying is the point. report-bundle-structure's mirror rule forbids an independent probe here: a
+ * consumer substitutes `source_platform` for `environment.platform.type`, so two probes that could drift
+ * would reintroduce the very disagreement the triple exists to eliminate. Taking both from the assembled
+ * environment makes them incapable of disagreeing.
+ *
+ * Returns a new object — the {@link Report} holds the original, and a report can be assembled more than
+ * once (capture recovery re-assembles a drained session).
+ */
+export function stampCrashProvenance<T extends CrashJson | NativeCrashJson>(
+  crash: T,
+  environment: EnvironmentEnvelope,
+): T {
+  return {
+    ...crash,
+    source_sdk: environment.sdk.type,
+    source_platform: environment.platform.type,
   };
 }

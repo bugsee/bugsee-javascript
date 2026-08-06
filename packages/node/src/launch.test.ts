@@ -1652,10 +1652,14 @@ describe('launch — native-crash recovery', () => {
 
     await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
     const files = unzipSync(puts[0] as Uint8Array);
+    // Native shape + the stamped provenance (Wave 5.4a) — asserted through the REAL launch path, so the
+    // routing key is proven to survive assembly and upload, not just the assembler unit test.
     expect(JSON.parse(strFromU8(files['crash.json'] as Uint8Array))).toEqual({
       exception_type: 'native',
       ndkCrash: true,
       minidumpFile: 'main.dmp',
+      source_sdk: 'javascript',
+      source_platform: 'node',
     });
     expect(Array.from(files['main.dmp'] as Uint8Array)).toEqual([4, 5, 6]); // the .dmp attachment
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([
