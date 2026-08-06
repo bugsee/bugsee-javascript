@@ -10,7 +10,7 @@ Design implication: runtime-portable code is the default. Anything runtime-speci
 
 ## Current state
 
-Runnable SDKs exist for **Node, Browser, Bun, Deno, Electron, Cloudflare/Vercel edge, and Web/Service Workers**, plus frontend/meta-framework/backend adapters. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`. The repo is on **GitHub** (`github.com/bugsee/bugsee-javascript`, default branch `main`) with a **GitHub Actions CI gate** (`.github/workflows/ci.yml`: lint → typecheck → cycles → per-package coverage).
+Runnable SDKs exist for **Node, Browser, Bun, Deno, Electron, Cloudflare/Vercel edge, and Web/Service Workers**, plus frontend/meta-framework/backend adapters. Implementation is tracked in **`docs/PROGRESS.md`** (the hand-off doc — read it first); architecture spec is `docs/design/sdk-design.md` (Draft v3); toolchain + commands are `docs/dev-environment.md`. The repo is on **GitHub** (`github.com/bugsee/bugsee-javascript`, default branch `main`) with a **GitHub Actions CI gate** (`.github/workflows/ci.yml`: lint → typecheck → cycles → per-package coverage → e2e). **Work directly on `main`** — the SDK is unpublished and in active development, so feature branches and PRs are unnecessary overhead; commit and push to `main`. The gates still apply in full before every commit (see §Implementation standards).
 
 **Implemented (test-first, reviewed, on `main`):**
 - Tier-0: `@bugsee/types`, `@bugsee/util`, `@bugsee/logger`, `@bugsee/protocol`, `@bugsee/service`.
