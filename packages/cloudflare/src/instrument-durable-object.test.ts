@@ -221,8 +221,11 @@ describe('instrumentDurableObject — tenant owner', () => {
       });
 
     class DO {
-      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
-      constructor(..._args: any[]) {}
+      // NOT a useless constructor, though biome reads it as one: `instrumentDurableObject`'s generic
+      // propagates the class's constructor ARITY to the wrapper, so removing this makes every
+      // `new Wrapped(state, env)` below a "Expected 0 arguments" type error. Verified by deleting it.
+      // biome-ignore lint/complexity/noUselessConstructor: declares the DO constructor arity (see above)
+      constructor(..._args: unknown[]) {}
       async fetch(_request: Request): Promise<Response> {
         return new Response('ok');
       }
@@ -247,8 +250,11 @@ describe('instrumentDurableObject — tenant owner', () => {
         return fn();
       });
     class DO {
-      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
-      constructor(..._args: any[]) {}
+      // NOT a useless constructor, though biome reads it as one: `instrumentDurableObject`'s generic
+      // propagates the class's constructor ARITY to the wrapper, so removing this makes every
+      // `new Wrapped(state, env)` below a "Expected 0 arguments" type error. Verified by deleting it.
+      // biome-ignore lint/complexity/noUselessConstructor: declares the DO constructor arity (see above)
+      constructor(..._args: unknown[]) {}
       async fetch(_request: Request): Promise<Response> {
         return new Response('ok');
       }
@@ -277,8 +283,11 @@ describe('a hostile DurableObjectState', () => {
         return fn();
       });
     class DO {
-      // biome-ignore lint/suspicious/noExplicitAny: mirrors the real DO constructor shape
-      constructor(..._args: any[]) {}
+      // NOT a useless constructor, though biome reads it as one: `instrumentDurableObject`'s generic
+      // propagates the class's constructor ARITY to the wrapper, so removing this makes every
+      // `new Wrapped(state, env)` below a "Expected 0 arguments" type error. Verified by deleting it.
+      // biome-ignore lint/complexity/noUselessConstructor: declares the DO constructor arity (see above)
+      constructor(..._args: unknown[]) {}
       async fetch(_request: Request): Promise<Response> {
         return new Response('ok');
       }

@@ -28,7 +28,6 @@ describe('neverThrow — synchronous containment', () => {
   it('contains a non-Error throw', () => {
     const onError = vi.fn();
     neverThrow(() => {
-      // biome-ignore lint/complexity/noUselessLoneBlockStatements: explicit non-Error throw
       throw 'a string';
     }, onError);
     expect(onError).toHaveBeenCalledWith('a string');

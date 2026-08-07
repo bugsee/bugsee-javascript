@@ -14,7 +14,9 @@ import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 const matches = (html: string): boolean => {
   document.body.innerHTML = html;
   const el = document.querySelector('input');
-  return el !== null && el.matches(SECURE_INPUT_SELECTOR);
+  // `?? false` keeps this FAIL-CLOSED: a fixture whose input never parsed reports "not secure" and fails
+  // its case loudly, rather than being read as a pass.
+  return el?.matches(SECURE_INPUT_SELECTOR) ?? false;
 };
 
 describe('the WebView secure-input floor', () => {

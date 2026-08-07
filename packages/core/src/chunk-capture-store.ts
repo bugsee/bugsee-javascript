@@ -70,6 +70,9 @@ export function createChunkCaptureStore(
 
   openNewPart(clock.wallNow());
 
+  // Captured once, pre-bound, so the "does this backend support flush?" narrowing holds inside the closure.
+  const backendFlush = backend.flush?.bind(backend);
+
   return {
     add(record: StoredEntry): void {
       const part = currentPart();
@@ -113,7 +116,8 @@ export function createChunkCaptureStore(
     },
 
     // Forwarded only when the backend HAS one, so `'flush' in store` stays an honest test for "this store
-    // can commit pending writes" rather than always true and sometimes meaningless.
-    ...(backend.flush !== undefined ? { flush: (): Promise<void> => backend.flush!() } : {}),
+    // can commit pending writes" rather than always true and sometimes meaningless. Bound to a local so the
+    // narrowing survives into the closure — TS re-widens `backend.flush` when it is called later.
+    ...(backendFlush !== undefined ? { flush: (): Promise<void> => backendFlush() } : {}),
   };
 }

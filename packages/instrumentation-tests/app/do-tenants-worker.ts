@@ -35,10 +35,9 @@ interface Env {
 // A minimal DO: log this tenant's secret, then optionally fault. The SDK is launched from the constructor
 // env, exactly as a real integrator would (the app token is a Worker secret, unavailable at module scope).
 class TenantObject {
-  #env: Env;
-  constructor(_state: DurableObjectState, env: Env) {
-    this.#env = env;
-  }
+  // No stored env: `instrumentDurableObject` below is what receives it and launches from it, which is the
+  // integration being exercised. The class only needs the constructor SHAPE a real DO is called with.
+  constructor(_state: DurableObjectState, _env: Env) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);

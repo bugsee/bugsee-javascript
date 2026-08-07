@@ -293,10 +293,14 @@ function redactXml(body: string): string | undefined {
   // output instead would destroy every tag in the document.
   const marker = REDACTED.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let changed = false;
-  const out = body.replace(XML_ELEMENT, (match, tag: string, attrs: string, text: string) => {
+  // `_match` is the whole-match placeholder every `String.replace` callback receives first; the capture
+  // groups after it are what this rebuilds from.
+  const out = body.replace(XML_ELEMENT, (_match, tag: string, attrs: string, text: string) => {
     const scrubbed = attrs.replace(
       XML_ATTRIBUTE,
-      (attrMatch, space: string, name: string, eq: string, dq?: string, sq?: string) => {
+      // `_sq` is named but unread: which quote style to re-emit is decided by whether the DOUBLE-quoted
+      // group matched, so the single-quoted group is only ever a positional placeholder here.
+      (attrMatch, space: string, name: string, eq: string, dq?: string, _sq?: string) => {
         if (!isSensitiveKey(name)) {
           return attrMatch;
         }

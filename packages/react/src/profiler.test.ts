@@ -1,12 +1,7 @@
 import type { Bugsee } from '@bugsee/web-adapter';
-import { type ComponentType, Profiler, type ReactElement, type ReactNode } from 'react';
+import { type ComponentType, type ReactElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  BugseeProfiler,
-  type BugseeProfilerProps,
-  recordReactRenderSpan,
-  withBugseeProfiler,
-} from './profiler';
+import { BugseeProfiler, recordReactRenderSpan, withBugseeProfiler } from './profiler';
 
 // A fake client whose ext('performance').getActiveSpan() returns a span recording child spans.
 function fakeActive() {

@@ -74,7 +74,15 @@ const NODEJS_COMPAT_SHIM = `
 
 const nodejsCompatPlugin = {
   name: 'nodejs-compat-shim',
-  setup(build: { onResolve: Function; onLoad: Function }) {
+  // Typed to the two esbuild hooks this plugin actually calls, rather than the bare `Function` that was
+  // here — which accepted any arity and any return, so a mistyped hook would have failed at build time.
+  setup(build: {
+    onResolve(options: { filter: RegExp }, cb: () => { path: string; namespace: string }): void;
+    onLoad(
+      options: { filter: RegExp; namespace: string },
+      cb: () => { contents: string; loader: 'ts' },
+    ): void;
+  }) {
     build.onResolve({ filter: /^node:async_hooks$/ }, () => ({
       path: 'node:async_hooks',
       namespace: 'nodejs-compat',

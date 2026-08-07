@@ -55,8 +55,9 @@ const SDK_VERSION = '0.0.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Edge capture buffer ceiling (design §966: 10 MB on browser/edge).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
-// Mirrors the partitioned store's own default; kept here so the per-partition budget can be derived.
-const DEFAULT_MAX_TENANT_PARTITIONS = 8;
+// NOTE: there is deliberately no local partition-count default. `resolveMaxPartitions` (core) owns it, and
+// a second copy here could drift from the one that actually applies — which is what the doc comment on
+// `maxTenantPartitions` promises callers.
 
 const EDGE_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
