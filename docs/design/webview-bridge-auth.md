@@ -64,19 +64,41 @@ handshake"). Making it pass one would change the injection contract for every ho
 
 JS minting needs no injection change:
 
-1. `launch()` mints a 128-bit random `tok` and keeps it in closure — unreachable from the page.
-2. `tok` travels **once**, on the `hello` message.
+1. `launch()` mints a 128-bit `tok` from `crypto.getRandomValues` and keeps it in closure.
+2. `tok` travels **once**, on the `hello` message — and only when a native sink is already attached.
 3. Native echoes it on every `control` message.
 4. JS rejects any `control` whose token does not match.
 
-The token crosses the outbound channel exactly once, in the first message. A script that taps the bridge
-*later* — the actual SEV1-3 threat, an ad tag loading after the SDK — sees only post-`hello` traffic and
-never learns it. A script that had already replaced `BugseeBridge` before document-start injection would see
-it, but such a script has won the race outright and controls the page regardless.
+**Not `randomId()`** (corrected after review round 1). That helper's own header says "Context/correlation
+ids are NOT security tokens, so the fallback is safe" — true of a correlation id, false here. Its fallback
+is `Math.random()`, and it is reached far more often than its Node-framing suggests: `crypto.randomUUID` is
+**secure-context-only**, while Android WebViews routinely host `http://` and `content://` pages. The
+attacker is a script in the *same realm*, so it can sample `Math.random()` and recover V8's state.
+`crypto.getRandomValues` carries no secure-context gate. **No CSPRNG means no token at all** — a forgeable
+token is worse than none, because forging it arms the latch and locks native out of its own channel.
+
+**Withheld when no sink is attached** (also round 1). `hello` is the first message, so with no sink it sits
+in the host bridge's backlog and is delivered to whichever sink turns up later — which can be exactly the
+late-loading page script SEV1-3 is about. That is the one path by which "sent once, outbound" could still
+hand the token to an attacker, so the token is simply not published there. The cost is an unauthenticated
+session in the late-attach case, which is the pre-upgrade state the design already accepts.
+
+The token crosses the outbound channel exactly once, in the first message, and only to a sink that is
+already attached. A script that taps the bridge *later* — the actual SEV1-3 threat, an ad tag loading after
+the SDK — sees only post-`hello` traffic and never learns it. A script that was already there before the SDK
+sees it, and controls the page regardless (see *What this does NOT close* — that case is the **default**
+configuration today, not a rare race).
 
 **`tok` is never repeated on outbound messages after `hello`.** That is the whole reason a later tap cannot
 forge control, and it is the constraint most likely to be "optimised" away by someone adding a convenience
 field. It must not be.
+
+**The outbound direction is not the only one that can leak it** (round 1). `parseControl` reads native's
+echoed `tok` with `JSON.parse`; while that resolved the *live* global, a page could patch `JSON.parse` and
+read the token out of native's own message. The guarantee above is stated outbound-only and was defeated
+inbound. The JSON intrinsics are now captured at module load, and every parsed control message has its
+prototype cut before any field is read — otherwise `Object.prototype.command = 'stop'` forges a command by
+riding native's legitimately-tokened message, needing no token at all.
 
 ## D-A2. Enforcement is a **one-way upgrade**, not a flag
 
@@ -91,9 +113,21 @@ The control channel therefore starts in `unauthenticated` mode and upgrades **ir
 - A page script cannot force the upgrade (it needs the token) and cannot undo it (one-way).
 - It self-activates the moment native adopts, with no coordinated release.
 
+**"One-way" means per GLOBAL, not per launch** (corrected after round 1). The latch first lived in the
+`launch()` closure — but `launch` is itself a page global (`BugseeWebView.launch`) and the singleton guard
+reads a mutable carrier field, so a page script could clear the carrier, relaunch, and get a fresh
+un-latched channel. The latch now lives on the per-global bridge slot, which a relaunch inherits.
+
 **Stated limit:** the pre-upgrade window is unprotected. Against a legacy native receiver that never sends a
 token, the channel stays unauthenticated forever and SEV1-4(a) is unchanged. This closes the defect for
 adopting receivers and is a no-op for the rest; it is not a substitute for native adopting.
+
+**Reconsider this trade once both sides ship.** Round 1 pointed out that the compatibility class D-A2 pays
+for is currently empty — `@bugsee/webview` is unpublished (`0.0.0`, `private: true`) and the native bridge
+is not released either — so "no shipped receiver echoes a token" describes hosts that do not yet exist. The
+fail-open default is kept for now because the *native* side ships on its own cadence and a receiver built
+from an older doc would otherwise be locked out; but once both are released together, requiring `tok`
+unconditionally (dropping the `!authenticated` fall-through) is the stronger position and should be taken.
 
 ## D-A3. The binding is closed, and `stop()` makes the object inert
 
@@ -152,9 +186,21 @@ Being explicit, because the review's finding was that this boundary had been ass
   call `window.BugseeBridge.post(…)` and forge `entry`/`report` messages. The MessagePort closes it on API
   26+; below that it stands. Adding the token to outbound messages would close it and would break D-A1, so
   it is deliberately not done.
-- **A page script that wins the document-start race.** It sees `hello`, learns the token, and can do
-  anything the SDK can. No in-page mechanism defends against this; it is native's injection ordering that
-  does.
+- **A page script that runs before the SDK.** It sees `hello`, learns the token, and can do anything the
+  SDK can. No in-page mechanism defends against this.
+
+  > **This is the DEFAULT configuration, not an exotic race** — corrected after review round 1, where it
+  > was filed under "wins the document-start race" and treated as unlikely. It is not: with an empty
+  > `WebViewDomainAllowlist` (the D9 default) `maybeRegisterDocumentStartScript` returns immediately, and
+  > the only remaining path is `injectTopFrameScript`, an `evaluateJavascript` fired from
+  > `onPageCommitVisible`/`onPageFinished` — **after** the page's own scripts have run.
+  >
+  > Everything in this section is therefore load-bearing for ordinary pages, not just hostile ones, and the
+  > in-page defences below are a second line rather than the first. Making the advanced bundle a
+  > document-start script unconditionally — as the *legacy* path already is — is native-side work tracked
+  > separately; it is the single highest-value change to this threat model.
+
 - **`event.ports` is delivered to every `message` listener.** A page listener registered before the SDK can
-  capture the same transferred port. Document-start injection is what makes the SDK first, so the port is a
-  defence against *later* scripts — which is precisely the SEV1-3 threat — not against a racing one.
+  capture the same transferred port. Document-start injection is what would make the SDK first, so the port
+  defends against *later* scripts — which is the SEV1-3 threat — and not against an earlier one. See the
+  caveat above: today the SDK is generally not first.

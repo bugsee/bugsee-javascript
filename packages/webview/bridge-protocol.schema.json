@@ -142,7 +142,7 @@
         "tok": {
           "type": "string",
           "minLength": 1,
-          "description": "Echo of the token native received on `hello`. Proves the message came from native rather than from a script in the page, which can also reach `__bugsee_bridge.control(...)`. Optional on the wire for compatibility with receivers that predate it, but a receiver that omits it leaves the control channel unauthenticated and a page script can pause/stop the SDK."
+          "description": "Echo of the token native received on `hello`. Proves the message came from native rather than from a script in the page, which can also reach `__bugsee_bridge.control(...)`. Optional on the wire for compatibility with receivers that predate it, but a receiver that omits it leaves the control channel unauthenticated and a page script can pause/stop the SDK. MUST be omitted entirely rather than sent empty: JS treats a present-but-wrong token as an attack and rejects the message."
         }
       },
       "required": ["b", "k"],

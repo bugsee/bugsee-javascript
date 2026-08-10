@@ -126,9 +126,12 @@ the wrong `k`.
 ### 6.2 Kinds
 
 - **`hello`** (JS→native, once per page/handshake) — `{k:"hello", b, sdk:"<version>", caps:[<FileTypes + features
-  e.g. "obscuring">], session:"<jsSessionId>"}`. Opens capability negotiation.
+  e.g. "obscuring">], session:"<jsSessionId>", tok?:"<controlToken>"}`. Opens capability negotiation.
+  `tok` is the per-session CONTROL TOKEN (`webview-bridge-auth.md` D-A1): native MUST retain it per-WebView
+  and echo it on every `control` message, or the control channel stays open to any script in the page.
+  Sent here and **nowhere else** — repeating it on later JS→native messages would expose it to a tap.
 - **`control`** (native→JS, via `evaluateJavascript` → `__bugsee_bridge.control(msg)`) — the handshake reply +
-  ongoing control (§7).
+  ongoing control (§7). Carries `tok` (the echo) once native has adopted it.
 - **`entry`** — one streamed `CaptureDataEntry`, routed by `t` (§6.4).
 - **`batch`** — `{k:"batch","e":[<entry>,…]}` coalescing many entries into one crossing (logs/network can be
   high-volume; one bridge hop beats N). **`batch` carries `entry` messages ONLY** — never `report`s (reports are
@@ -155,8 +158,15 @@ the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE 
 
 1. Native injects bootstrap + bundle (gated by D8/D9) + a seed config.
 2. JS auto-launches → posts `hello` with `caps` (declares `obscuring` if present — D10) + protocol version.
-3. Native replies via `__bugsee_bridge.control({ k:"control", accept:<version>, session:"<nativeSessionId>",
-   timeBase:{…}, config:{ enabledTypes:[…], bodyLimits:{…}, sampling:{…}, redaction:{…}, reportTrigger:false } })`.
+3. Native replies via `__bugsee_bridge.control({ k:"control", b, accept:<version>, tok:"<echo of hello.tok>",
+   session:"<nativeSessionId>", config:{ reportTrigger:false } })`.
+
+   > **As-built vs aspirational.** Only the keys above are implemented and accepted. The `timeBase`,
+   > `bodyLimits`, `sampling`, `redaction` and `config.skip` keys this step used to show are NOT built:
+   > `bridge-protocol.schema.json` sets `additionalProperties:false` on `control` and `control.config`, so a
+   > receiver written from the old text emits a message that FAILS the shipped schema, and JS silently drops
+   > the extra config (it reads only `reportTrigger` and `session`). `config.enabledTypes` is accepted by the
+   > schema but likewise not applied — see the SEV2 list in `docs/review/webview.md`.
 4. Native uses `caps` to decide legacy coexistence (D10): `obscuring` present → suppress legacy; absent → also
    load legacy + set `config.skip:["network","obscuring"…]` so advanced doesn't double-capture.
 5. Version skew: native accepts the highest protocol version it speaks ≤ JS's; unknown `t` types are ignored
