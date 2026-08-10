@@ -21,10 +21,13 @@ serious hole, and none blocks anything else.
 |---|---|---|---|---|
 | 0.1 | ✅ **DONE** — **Cross-tenant capture-ring sharing in Durable Objects** — each DO instance gets its own partition. Built as `createPartitionedCaptureStore` in `@bugsee/core` (`partitioned-capture-store.ts`), with the tenant `owner` threaded from `instrument-durable-object.ts` / `instrument-class.ts`. Design: `docs/design/cloudflare-tenant-isolation.md`. Tested in `partitioned-capture-store.test.ts` + the cloudflare suites. | `packages/cloudflare`, `packages/core` | 2–3d |
 | 0.2 | ✅ **DONE** — **Renderer-controlled `type` reaches `path.join` in main** — `t` is validated against a closed `KNOWN_FILE_TYPES` set and `ts` against a finite-number check, in `packages/electron/src/protocol.ts`. A failing message is DROPPED, not sanitised. `protocol.test.ts` asserts the proven exploit string (`'../../../../victim/pwned.txt'`) and seven sibling shapes are all rejected. | `packages/electron` | 2–3d |
-| 0.3 | **Unauthenticated, page-replaceable bridge globals** — mint a per-session token at injection, verify on every inbound message, resolve the native sink ONCE and capture it | `packages/webview` | Any later-loading script on the page taps the whole un-redacted capture stream, or suppresses capture entirely. | 3–4d |
+| 0.3 | ✅ **JS SIDE DONE** (`b861387`) — **Unauthenticated, page-replaceable bridge globals.** Sink PINNED on first resolve (SEV1-3); the `__bugsee_bridge` binding is now `writable:false, configurable:false` with `stop()` making the session INERT instead of deleting it (SEV1-4b); a per-session token minted in JS and published once on `hello` authenticates inbound control, enforced by a ONE-WAY UPGRADE so no shipped receiver breaks (SEV1-4a). Design + cross-repo contract: `docs/design/webview-bridge-auth.md`. **Native remaining:** echo `hello.tok` on control (activates the whole thing), then point the existing `WebViewMessageChannel` at the advanced bridge for API 26+. | `packages/webview` | Any later-loading script on the page taps the whole un-redacted capture stream, or suppresses capture entirely. | 3–4d |
 
-**Decision needed on 0.3:** hardening the bridge is a wire-protocol change and the Android receiver
-(separate repo, slice 8) must move in step. Confirm the cross-repo sequencing before starting.
+**0.3 sequencing, revised 2026-08-10.** D1 assumed the Android receiver gated this. It has since landed on
+Android master (`BridgeReceiver`/`BridgeMessageParser`/`BridgeHandshake` + fuzz tests), and the JS side was
+built to need **no** coordinated release: the token is additive and optional on the wire, and enforcement
+self-activates the first time native echoes it. Two defects (SEV1-3, SEV1-4b) needed no protocol change at
+all and are closed outright.
 
 ---
 
@@ -483,7 +486,7 @@ by anything. **Update the row in the fix's own commit.**
 
 | Item | Why it is open | Who unblocks it |
 |---|---|---|
-| `0.3` WebView bridge auth | Gated on the Android receiver (D1) | Android team |
+| `0.3` WebView bridge auth | ✅ **JS side done** (`b861387`). SEV1-3 + SEV1-4(b) closed outright. SEV1-4(a) ships enforced-on-adoption: native echoing `hello.tok` activates it, no coordinated release. **SEV2-5 (forged JS→native below API 26) stays open** until the MessagePort is pointed at the advanced bridge | Android team, un-gated |
 | `1.5` Canvas privacy | Gated on the rrweb fork's `unblockSelector` | after D1 |
 | `4.8` `integration-shims` | **Needs a human decision**: delete it, or build the §372 integration-object API it presupposes | product/architecture |
 | ~~`5.4` `environment.sdk.type`~~ | ✅ **CLOSED 2026-08-06** — both halves done and verified against the worker's own routing function (see D3) | — |
@@ -491,8 +494,13 @@ by anything. **Update the row in the fix's own commit.**
 | ~190 SEV3s | Long tail; never individually enumerated | — |
 | AppHang e2e flake | Identified, not reproduced; see *Known open* above | one more occurrence settles it |
 
-Two of the seven are gated on other repos or teams, and one is a decision. `5.4` was re-checked on
-2026-08-06 and is **no longer** among the blocked — see D3.
+Re-checked as items closed: `5.4` on 2026-08-06 (see D3) and `0.3`'s JS side on 2026-08-10. Both had been
+filed as blocked on another repo, and in both cases the block had either dissolved or was avoidable by
+building the JS side to activate on adoption rather than in lockstep. **Before treating a cross-repo row as
+blocked, re-verify the block still exists** — two of them did not.
+
+What genuinely remains: `1.5` (rrweb fork), `4.8` (a decision), Wave V, the SEV3 tail, the AppHang flake,
+and the native halves of `0.3`.
 
 ---
 
