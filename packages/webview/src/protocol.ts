@@ -40,6 +40,15 @@ export interface HelloMessage {
   readonly caps: readonly string[];
   /** The JS-side session id (until native supplies its own via the control reply). */
   readonly session: string;
+  /**
+   * The per-session control token (Wave 0.3 / D-A1, docs/design/webview-bridge-auth.md). Native stores it
+   * per-WebView and echoes it on every `control` message; JS rejects control that does not carry it.
+   *
+   * Sent HERE and nowhere else. Repeating it on later outbound messages would hand it to any script that
+   * taps the bridge after launch, which is exactly the attacker this defends against — so no convenience
+   * field may ever carry it again.
+   */
+  readonly tok?: string;
 }
 
 /** JS→native: one streamed capture entry. `p` is the entry's serialized form (type-specific; per-FileType
@@ -142,6 +151,8 @@ export interface ControlMessage {
   readonly config?: ControlConfig;
   /** A one-shot command (pause/resume/flush/stop/snapshot — handled in slice 3). */
   readonly command?: 'pause' | 'resume' | 'flush' | 'stop' | 'snapshot';
+  /** Echo of the `hello` token (Wave 0.3 / D-A1) — proves this message came from native, not the page. */
+  readonly tok?: string;
 }
 
 /** Build a `hello` handshake message. */
@@ -149,8 +160,17 @@ export function helloMessage(opts: {
   sdk: string;
   caps: readonly string[];
   session: string;
+  /** The per-session control token (Wave 0.3 / D-A1). Omitted → no `tok` field, i.e. the pre-token wire. */
+  token?: string;
 }): HelloMessage {
-  return { b: PROTOCOL_VERSION, k: 'hello', sdk: opts.sdk, caps: opts.caps, session: opts.session };
+  return {
+    b: PROTOCOL_VERSION,
+    k: 'hello',
+    sdk: opts.sdk,
+    caps: opts.caps,
+    session: opts.session,
+    ...(opts.token !== undefined ? { tok: opts.token } : {}),
+  };
 }
 
 /** Build an `entry` message from a serialized capture record + its time/seq/redaction context. */

@@ -142,6 +142,66 @@ export interface BugseeWebViewLaunchOptions {
   carrier?: object;
 }
 
+/** What `__bugsee_bridge` forwards to for the CURRENT session (swapped on launch/stop). */
+interface BridgeSession {
+  control(raw: string): void;
+  snapshot(): string;
+}
+
+/** The stopped state. `snapshot()` must still answer `'[]'` rather than throw: native pulls it synchronously
+ *  at frame-capture time, and an exception there propagates into `evaluateJavascript` — the fail-open shape
+ *  fixed as SEV1-1. A stopped SDK legitimately has no rects. */
+const INERT_SESSION: BridgeSession = {
+  control: (): void => {},
+  snapshot: (): string => '[]',
+};
+
+/** Per-global session slot, so the immutable binding installed below can be re-pointed across launches. */
+const BRIDGE_SLOTS = new WeakMap<object, { session: BridgeSession }>();
+
+/**
+ * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
+ * (Wave 0.3 / D-A3, docs/design/webview-bridge-auth.md).
+ *
+ * `Object.freeze(obj)` — what this used to do — protects the object and leaves the binding
+ * `{writable: true, configurable: true}`, so a page script could swap the whole thing: `snapshot()` then
+ * returned `[]` while real secure areas existed, and native had already dropped its own masking script.
+ * `writable: false, configurable: false` is what actually closes it.
+ *
+ * The cost is that teardown can no longer delete the property, so the object is permanent and the SESSION
+ * behind it is what changes — inert after `stop()`, live again after a later `launch()`.
+ */
+function bridgeSlotFor(
+  global: object,
+  onError: ((error: unknown) => void) | undefined,
+): { session: BridgeSession } {
+  const existing = BRIDGE_SLOTS.get(global);
+  if (existing !== undefined) {
+    return existing; // a previous launch already closed the binding on this global
+  }
+  const slot = { session: INERT_SESSION };
+  const api = Object.freeze({
+    control: (raw: string): void => slot.session.control(raw),
+    snapshot: (): string => slot.session.snapshot(),
+  });
+  try {
+    Object.defineProperty(global, '__bugsee_bridge', {
+      value: api,
+      writable: false,
+      configurable: false,
+      enumerable: true,
+    });
+  } catch (error) {
+    // Something already owns the name on a non-configurable binding — a hostile page that ran first, or a
+    // host that pre-defined it. Nothing can be reclaimed here, so report and let the session run WITHOUT a
+    // control entry rather than throwing out of launch().
+    onError?.(error);
+    return slot;
+  }
+  BRIDGE_SLOTS.set(global, slot);
+  return slot;
+}
+
 /** The launched WebView client — the public SDK surface. */
 export type Bugsee = BugseeClient;
 
@@ -150,6 +210,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
+
+  const bridgeSlot = bridgeSlotFor(global, options.onError);
 
   const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
   if (alreadyLaunched !== undefined) {
@@ -188,7 +250,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
   let obscuringWorks = false;
   let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
+  // The per-session control token (Wave 0.3 / D-A1). Minted here, held in this closure — unreachable from
+  // the page — and published exactly once, on `hello` below.
+  const controlToken = randomId();
   const control = createBridgeControl({
+    token: controlToken,
+    onError: options.onError,
     reportTrigger: options.reportTrigger ?? false,
     onCommand: (command) => {
       if (command === 'pause') {
@@ -361,14 +428,17 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
   // time via `__bugsee_bridge.snapshot()` (serialized rects; `[]` when obscuring is off).
-  global.__bugsee_bridge = Object.freeze({
+  // The binding itself is immutable (D-A3); what a launch swaps is the SESSION behind it.
+  bridgeSlot.session = {
     control: control.control,
     snapshot: (): string => obscuring?.snapshot() ?? '[]',
-  });
+  };
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // lets native decide legacy coexistence (D10).
-  bridge.post(encode(helloMessage({ sdk: sdkVersion, caps, session: randomId() })));
+  bridge.post(
+    encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
+  );
 
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
@@ -391,7 +461,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       neverThrow(() => childComposer?.stop(), options.onError);
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
-      global.__bugsee_bridge = undefined;
+      // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
+      // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
+      bridgeSlot.session = INERT_SESSION;
       return stopCore(timeout);
     },
   };

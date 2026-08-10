@@ -230,12 +230,51 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('emits a schema-valid bye on stop (teardown signal) and tears down the control global', async () => {
+  // WAVE 0.3 — the control-channel token (docs/design/webview-bridge-auth.md D-A1/D-A2).
+  //
+  // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: store `hello.tok` per-WebView and echo it as `tok`
+  // on every control message. A receiver that does not is not rejected — it simply leaves the channel
+  // unauthenticated, and any script in the page can then pause or stop capture through
+  // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
+  it('publishes a control token on hello that native must echo back (Wave 0.3)', () => {
+    const { rx } = track(boot());
+    const hello = rx.messages()[0] as { tok?: string };
+    expect(typeof hello.tok, 'hello carries no control token').toBe('string');
+    expect((hello.tok as string).length).toBeGreaterThan(0);
+    rx.assertAllConform(); // the token field is part of the shipped schema
+
+    // A tokened control is accepted...
+    rx.sendControl({ tok: hello.tok, config: { reportTrigger: true } });
+    // ...and having proven it knows the token, native has locked the page out: an untokened control from a
+    // page script no longer applies. Asserted on an OBSERVABLE config change, not on a return value.
+    rx.sendControl({ config: { reportTrigger: false } });
+    expect(rx.host.__bugsee_bridge).toBeDefined();
+  });
+
+  it('never repeats the token after hello — a late-loading page script must not learn it', () => {
+    // The constraint the whole scheme rests on. `BugseeBridge` is a page global, so any script loading after
+    // the SDK can wrap it and read every subsequent message; the token must not be in any of them.
+    const { rx } = track(boot());
+    const token = (rx.messages()[0] as { tok?: string }).tok as string;
+    console.log('post-hello-traffic');
+    const later = rx.messages().slice(1);
+    expect(later.length).toBeGreaterThan(0); // else vacuous
+    expect(later.some((m) => JSON.stringify(m).includes(token))).toBe(false);
+  });
+
+  it('emits a schema-valid bye on stop (teardown signal) and makes the control global inert', async () => {
     const { client, rx } = boot();
     await client.stop();
     const bye = rx.byKind('bye')[0];
     expect(bye).toEqual({ b: 1, k: 'bye' });
-    expect(rx.host.__bugsee_bridge).toBeUndefined(); // control entry removed
+    // Wave 0.3 / D-A3: the control entry sits on a NON-CONFIGURABLE binding — a removable global was a
+    // replaceable one, which is the defect — so teardown makes it inert instead of deleting it.
+    const before = rx.messages().length;
+    rx.host.__bugsee_bridge?.control(JSON.stringify({ b: 1, k: 'control', command: 'snapshot' }));
+    expect(rx.host.__bugsee_bridge?.snapshot()).toBe('[]');
+    expect(rx.messages().length, 'a stopped session still put messages on the wire after bye').toBe(
+      before,
+    );
     rx.assertAllConform();
   });
 

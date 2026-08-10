@@ -32,11 +32,32 @@ export function createHostBridge(opts?: {
   const onError = opts?.onError ?? ((): void => {});
   const buffer: string[] = [];
 
-  // Re-resolve on every post: native may register the interface after the script starts, and a Java
-  // @JavascriptInterface is a host object (call `.post` with it as receiver).
+  // PINNED on first resolve (Wave 0.3 / D-A4, docs/design/webview-bridge-auth.md).
+  //
+  // This used to re-read `global.BugseeBridge` on every post, so any script loading after the SDK could
+  // assign its own `{post}` and receive the whole capture stream — logs, request URLs, bodies — while the
+  // SDK kept working. JS-side redaction is off by default (native re-redacts on receipt), so what a tap
+  // reads is un-redacted.
+  //
+  // Resolution stays LAZY because the original reason for it is real: native may register the interface
+  // after this script starts. So we look until we find one, pin it, and never look again — a later swap of
+  // the page global is simply not observed, and traffic keeps flowing to the real native sink.
+  //
+  // Deliberately NOT reported when a swap happens: detecting it costs a global read per post to surface an
+  // event the SDK cannot act on, and a page could trigger it at will to flood `onError`.
+  let pinned: { post(raw: string): void } | undefined;
   const resolve = (): { post(raw: string): void } | undefined => {
+    if (pinned !== undefined) {
+      return pinned;
+    }
     const b = global.BugseeBridge;
-    return typeof b?.post === 'function' ? (b as { post(raw: string): void }) : undefined;
+    // Only a usable sink is pinned. Pinning a malformed one would be worse than re-resolving: the SDK could
+    // never reach a bridge that attached correctly afterwards.
+    if (typeof b?.post !== 'function') {
+      return undefined;
+    }
+    pinned = b as { post(raw: string): void };
+    return pinned;
   };
 
   const send = (sink: { post(raw: string): void }, raw: string): void => {

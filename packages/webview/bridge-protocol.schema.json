@@ -40,7 +40,12 @@
         "k": { "const": "hello" },
         "sdk": { "type": "string" },
         "caps": { "type": "array", "items": { "type": "string" } },
-        "session": { "type": "string", "minLength": 1 }
+        "session": { "type": "string", "minLength": 1 },
+        "tok": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Per-session control token. Native MUST store it per-WebView and echo it as `tok` on every `control` message; JS rejects control that omits or mismatches it once it has seen one valid tokened message. Sent ONLY here — never repeated on later JS->native messages, because that would expose it to any script tapping the bridge after launch."
+        }
       },
       "required": ["b", "k", "sdk", "caps", "session"],
       "additionalProperties": false
@@ -133,7 +138,12 @@
           },
           "additionalProperties": false
         },
-        "command": { "enum": ["pause", "resume", "flush", "stop", "snapshot"] }
+        "command": { "enum": ["pause", "resume", "flush", "stop", "snapshot"] },
+        "tok": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Echo of the token native received on `hello`. Proves the message came from native rather than from a script in the page, which can also reach `__bugsee_bridge.control(...)`. Optional on the wire for compatibility with receivers that predate it, but a receiver that omits it leaves the control channel unauthenticated and a page script can pause/stop the SDK."
+        }
       },
       "required": ["b", "k"],
       "additionalProperties": false

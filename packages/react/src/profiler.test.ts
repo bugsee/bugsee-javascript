@@ -1,5 +1,5 @@
 import type { Bugsee } from '@bugsee/web-adapter';
-import { type ComponentType, type ReactElement, type ReactNode } from 'react';
+import type { ComponentType, ReactElement, ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { BugseeProfiler, recordReactRenderSpan, withBugseeProfiler } from './profiler';
 

@@ -28,14 +28,56 @@ export function createBridgeControl(opts?: {
   reportTrigger?: boolean;
   /** Seam for native commands (slice 3 wires pause/resume/flush/snapshot/stop). */
   onCommand?: (command: NonNullable<ControlMessage['command']>) => void;
+  /**
+   * The per-session token published once on `hello` (Wave 0.3 / D-A1). Native echoes it on every control
+   * message. Omitted → the channel can never authenticate and stays open, which is the pre-token behaviour.
+   */
+  token?: string;
+  /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
+  onError?: (error: unknown) => void;
 }): BridgeControl {
   const config: BridgeControlConfig = { reportTrigger: opts?.reportTrigger ?? false };
+  const token = opts?.token;
+  // The one-way upgrade (D-A2). No shipped native receiver echoes a token yet, so requiring one immediately
+  // would break every existing host. Instead the channel starts open and latches CLOSED the first time a
+  // correctly-tokened message proves native speaks the new protocol. A page script cannot force the latch
+  // (it needs the secret) and cannot release it (there is no path back to false).
+  let authenticated = false;
+
+  /** Whether this message may act on the SDK. */
+  const admits = (msg: ControlMessage): boolean => {
+    // No secret was minted, so nothing can be authenticated against — and rejecting a token we cannot
+    // verify would lock out a MODERN native rather than an old one. Stay open; the latch never arms.
+    if (token === undefined) {
+      return true;
+    }
+    const tok = (msg as { tok?: unknown }).tok;
+    if (tok === token) {
+      authenticated = true; // latch
+      return true;
+    }
+    // A present-but-wrong token is an attack, never a legacy receiver — the whole point of the
+    // `tok === undefined` allowance is that OLD natives send no token at all.
+    if (tok !== undefined) {
+      return false;
+    }
+    return !authenticated;
+  };
+
   return {
     config,
     control(raw: string): void {
       const msg = parseControl(raw);
       if (msg === undefined) {
         return; // foreign / malformed message on a shared channel — ignore
+      }
+      if (!admits(msg)) {
+        // Rejected wholesale: config as well as commands. Flipping `reportTrigger` from the page is the
+        // quiet half of this attack (the WebView opens native bug reports at will, past the D5 gate).
+        opts?.onError?.(
+          new Error('Bugsee: rejected an unauthenticated control message on the WebView bridge'),
+        );
+        return;
       }
       if (msg.session !== undefined) {
         config.session = msg.session;

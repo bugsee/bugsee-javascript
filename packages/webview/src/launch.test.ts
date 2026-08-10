@@ -113,8 +113,9 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
-  // The default-global test sets globalThis.__bugsee_bridge; fully remove it so no own-property leaks.
-  delete (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge;
+  // The default-global test installs globalThis.__bugsee_bridge on a NON-CONFIGURABLE binding (Wave 0.3 /
+  // D-A3), so it cannot be deleted — `delete` here used to be the cleanup and now throws. It does not need
+  // to be: `stop()` above puts the session inert, which is the state a fresh launch starts from anyway.
 });
 
 const track = (token: string, options: BugseeWebViewLaunchOptions) => {
@@ -670,13 +671,15 @@ describe('launch (webview)', () => {
     expect(typeof (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge).toBe('object');
   });
 
-  it('stop() posts a bye, clears the carrier + removes __bugsee_bridge so a later launch starts fresh', async () => {
+  it('stop() posts a bye, clears the carrier + makes __bugsee_bridge inert so a later launch starts fresh', async () => {
     const fake = fakeGlobal();
     const carrier = {};
     const client = launch('tok', baseOptions({ global: fake.global, carrier }));
     await client.stop();
     expect(fake.msgs().some((m) => m.k === 'bye')).toBe(true); // teardown signalled to native
-    expect(fake.global.__bugsee_bridge).toBeUndefined(); // control global removed
+    // The binding is non-configurable (Wave 0.3 / D-A3) so it cannot be removed; INERT is the teardown
+    // state instead — which is the stronger property anyway, since a removable global was replaceable.
+    expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]');
     const again = track('tok', baseOptions({ global: fake.global, carrier }));
     expect(again).not.toBe(client); // a fresh client (carrier slot was cleared)
     expect(again.isLaunched()).toBe(true);
@@ -833,5 +836,220 @@ describe('sub-frame obscuring failures never escape launch()', () => {
       ),
     ).not.toThrow();
     expect(onError).toHaveBeenCalled();
+  });
+});
+
+// WAVE 0.3 / D-A3 — the control global's BINDING is closed, not just its object.
+//
+// SEV1-4(b): `global.__bugsee_bridge = Object.freeze({…})` froze the OBJECT while leaving the BINDING
+// `{writable:true, configurable:true}`. A page script replaced the whole binding with
+// `{control(){}, snapshot(){return '[]'}}`; native's frame-capture pull then returned no rects while real
+// secure areas existed, so password / cc-* fields rendered legibly in the captured video — and native had
+// already stood its own masking script down, because declaring the `obscuring` capability is what tells it
+// to. SEV1-4(a) is the same binding used the other way: any script could call `control('{…"command":
+// "stop"}')` and tear the SDK down silently.
+//
+// Closing the binding needs NO protocol change, which is why it ships ahead of the token work.
+describe('the __bugsee_bridge binding is not replaceable (Wave 0.3)', () => {
+  /** Attempt a page-script takeover. Assignment to a non-writable property throws in strict mode and is a
+   *  silent no-op in sloppy mode, so the ATTEMPT is swallowed and the OUTCOME is what gets asserted. */
+  const tryHijack = (global: Record<string, unknown>, replacement: unknown): void => {
+    try {
+      global.__bugsee_bridge = replacement;
+    } catch {
+      /* strict-mode TypeError — the defence working */
+    }
+  };
+
+  it('survives a page script assigning over it', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    const real = fake.global.__bugsee_bridge;
+
+    tryHijack(fake.global as unknown as Record<string, unknown>, {
+      control: () => {},
+      snapshot: () => '[]',
+    });
+
+    expect(fake.global.__bugsee_bridge, 'the page replaced the bridge global').toBe(real);
+  });
+
+  it('survives `delete`', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    try {
+      delete (fake.global as { __bugsee_bridge?: unknown }).__bugsee_bridge;
+    } catch {
+      /* strict-mode TypeError — also the defence working */
+    }
+    expect(typeof fake.global.__bugsee_bridge?.control).toBe('function');
+  });
+
+  it('keeps answering native’s snapshot pull with the REAL rects after a hijack attempt', () => {
+    // The spoof this closes, asserted on the observable native actually reads rather than on the binding.
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    track(
+      'tok',
+      baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+    );
+    tryHijack(fake.global as unknown as Record<string, unknown>, { snapshot: () => '[]' });
+    expect(fake.global.__bugsee_bridge?.snapshot()).toBe(
+      JSON.stringify([{ type: 'text', top: 2, left: 3, bottom: 4, right: 5 }]),
+    );
+  });
+
+  it('goes INERT on stop() rather than disappearing, and a later launch works through it', async () => {
+    // A non-configurable binding cannot be deleted, so teardown switches the object to an inert state and a
+    // later launch reuses the same binding. `'[]'` is the right inert snapshot: native pulls it at
+    // frame-capture time, and returning nothing would throw into evaluateJavascript — the fail-open shape
+    // already fixed once as SEV1-1.
+    const fake = fakeGlobal();
+    const carrier = {};
+    // A document WITH a secure element, so "inert" is distinguishable from "nothing to report". Without it
+    // `snapshot()` answers '[]' whether the session went inert or merely stopped, and the assertion is
+    // vacuous — verified by deleting the inert assignment, which this test then failed to catch.
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    const client = launch(
+      'tok',
+      baseOptions({ global: fake.global, carrier, document: dom.document as unknown as Document }),
+    );
+    expect(fake.global.__bugsee_bridge?.snapshot()).not.toBe('[]'); // live: real rects
+    await client.stop();
+
+    expect(typeof fake.global.__bugsee_bridge?.control).toBe('function'); // still there
+    expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // but inert — no rects from a dead session
+    // A stopped SDK must also not be drivable: `bye` has been sent, and a page-issued command that reached
+    // the old session could put messages on the wire AFTER native was told the stream ended.
+    const afterStop = fake.msgs().length;
+    fake.global.__bugsee_bridge?.control('{"b":1,"k":"control","command":"snapshot"}');
+    expect(fake.msgs().length, 'a stopped session still posted on command').toBe(afterStop);
+
+    const again = track('tok', baseOptions({ global: fake.global, carrier }));
+    expect(again).not.toBe(client);
+    expect(again.isLaunched()).toBe(true);
+
+    // The relaunched session must be reachable THROUGH the original binding — otherwise "inert" would mean
+    // "permanently dead" and native could never drive a second launch. Proven by an OBSERVABLE effect of a
+    // control message (the D5 report gate flipping on), not by the call not throwing: an inert no-op also
+    // does not throw, so that would assert nothing.
+    await again.logException(new Error('while-gated'));
+    expect(fake.msgs().some((m) => m.k === 'report')).toBe(false);
+    sendControl(fake.global, { config: { reportTrigger: true } });
+    await again.logException(new Error('after-ungating'));
+    expect(fake.msgs().filter((m) => m.k === 'report')).toHaveLength(1);
+  });
+});
+
+// WAVE 0.3 / D-A1 + D-A2, end to end through the real launch: the token is published on `hello`, and once
+// native proves it knows it, the page can no longer drive the SDK. The unit tests in
+// host-bridge-control.test.ts cover the state machine; these assert the WIRING, which is what a page script
+// actually meets.
+describe('the control channel authenticates end to end (Wave 0.3)', () => {
+  const tokenOf = (fake: ReturnType<typeof fakeGlobal>): string => {
+    const hello = fake.msgs().find((m): m is HelloMessage => m.k === 'hello');
+    return (hello as unknown as { tok: string }).tok;
+  };
+
+  it('publishes a token on hello, exactly once and nowhere else', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    console.log('some-traffic'); // produce post-hello messages to check
+
+    expect(tokenOf(fake)).toMatch(/\S/);
+    // The constraint the whole scheme rests on: a script that taps the bridge AFTER launch must never see
+    // the token. If any later message carried it, a late-loading ad tag would learn it and could forge
+    // control — which is the attack this exists to stop.
+    const afterHello = fake.msgs().filter((m) => m.k !== 'hello');
+    expect(afterHello.length).toBeGreaterThan(0); // else the assertion below is vacuous
+    expect(afterHello.some((m) => JSON.stringify(m).includes(tokenOf(fake)))).toBe(false);
+  });
+
+  it('mints a DIFFERENT token per launch', () => {
+    const a = fakeGlobal();
+    const b = fakeGlobal();
+    track('tok', baseOptions({ global: a.global, carrier: {} }));
+    track('tok', baseOptions({ global: b.global, carrier: {} }));
+    expect(tokenOf(a)).not.toBe(tokenOf(b));
+  });
+
+  it('lets the page stop the SDK while the channel is still unauthenticated (today’s behaviour)', () => {
+    // Recorded deliberately: the pre-upgrade window is NOT protected, and pretending otherwise would be the
+    // more dangerous documentation. Against a receiver that never sends a token this is the steady state.
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    sendControl(fake.global, { command: 'pause' });
+    console.log('while-paused');
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) => JSON.stringify(e.p).includes('while-paused')),
+    ).toBe(false);
+  });
+
+  it('locks the page out once native has proven it knows the token', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    // Native speaks: a correctly-tokened control latches the channel closed.
+    sendControl(fake.global, { tok: tokenOf(fake), command: 'resume' });
+    // The page now tries the same suppression that worked above.
+    sendControl(fake.global, { command: 'pause' });
+    console.log('after-lockout');
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) => JSON.stringify(e.p).includes('after-lockout')),
+      'a page script paused capture after the channel was authenticated',
+    ).toBe(true);
+  });
+
+  it('surfaces the rejected attempt through onError', () => {
+    const onError = vi.fn();
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global, onError }));
+    sendControl(fake.global, { tok: tokenOf(fake), command: 'resume' });
+    onError.mockClear();
+    sendControl(fake.global, { command: 'stop' });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the control global when the page got there first (Wave 0.3)', () => {
+  it('reports and keeps capturing when __bugsee_bridge is already locked by someone else', () => {
+    // A page script that ran BEFORE document-start injection can pre-define the name non-configurably, so
+    // `defineProperty` throws. Nothing can be reclaimed at that point — the page has already won — but
+    // launch() must not throw out into the host app (capture must never alter app behaviour), and capture
+    // itself is independent of the control entry, so it continues.
+    const onError = vi.fn();
+    const fake = fakeGlobal();
+    Object.defineProperty(fake.global, '__bugsee_bridge', {
+      value: { control: () => {}, snapshot: () => '[]' },
+      writable: false,
+      configurable: false,
+    });
+
+    const client = track('tok', baseOptions({ global: fake.global, onError }));
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(client.isLaunched()).toBe(true);
+    // Capture still crosses the bridge — losing the control entry must not lose the session.
+    console.log('still-capturing');
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) =>
+        JSON.stringify(e.p).includes('still-capturing'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not throw out of launch() when no onError is supplied', () => {
+    const fake = fakeGlobal();
+    Object.defineProperty(fake.global, '__bugsee_bridge', {
+      value: { control: () => {}, snapshot: () => '[]' },
+      configurable: false,
+    });
+    expect(() =>
+      track('tok', {
+        global: fake.global,
+        scheduler: inertScheduler,
+        captureNetwork: false,
+        carrier: {},
+      }),
+    ).not.toThrow();
   });
 });

@@ -16,9 +16,9 @@ import { CaptureStoreToken } from '@bugsee/core';
 interface DurableObjectId {
   toString(): string;
 }
-interface DurableObjectState {
-  id: DurableObjectId;
-}
+// NOTE: no `DurableObjectState` shape is declared here. This fixture never constructs a DO itself —
+// workerd does, and `instrumentDurableObject` is what reads the state to derive the tenant key — so
+// declaring one would be an unused shape claiming to document a dependency the fixture does not have.
 interface DurableObjectStub {
   fetch(request: Request): Promise<Response>;
 }
@@ -32,13 +32,10 @@ interface Env {
   TENANT: DurableObjectNamespace;
 }
 
-// A minimal DO: log this tenant's secret, then optionally fault. The SDK is launched from the constructor
-// env, exactly as a real integrator would (the app token is a Worker secret, unavailable at module scope).
+// A minimal DO: log this tenant's secret, then optionally fault. It declares no constructor — the SDK is
+// launched from the constructor env by `instrumentDurableObject` below, which is where a real integrator
+// puts it too (the app token is a Worker secret, unavailable at module scope).
 class TenantObject {
-  // No stored env: `instrumentDurableObject` below is what receives it and launches from it, which is the
-  // integration being exercised. The class only needs the constructor SHAPE a real DO is called with.
-  constructor(_state: DurableObjectState, _env: Env) {}
-
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const secret = url.searchParams.get('secret') ?? 'none';
