@@ -665,7 +665,8 @@ describe('launch (webview)', () => {
 
   it('defaults the global to globalThis and the scheduler to global timers', () => {
     // No `global` and no `scheduler` injected → exercises both defaults. stop() (afterEach) clears the
-    // real tick timer + globalThis.__bugsee_bridge.
+    // real tick timer; globalThis.__bugsee_bridge is NOT cleared — the binding is non-configurable by
+    // design (Wave 0.3 / D-A3), so it persists and goes inert instead.
     const client = track('tok', { captureNetwork: false, carrier: {} });
     expect(client.isLaunched()).toBe(true);
     expect(typeof (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge).toBe('object');
@@ -965,6 +966,34 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
     expect(afterHello.some((m) => JSON.stringify(m).includes(tokenOf(fake)))).toBe(false);
   });
 
+  it('mints a token with CSPRNG shape, not a guessable one', () => {
+    // Round 1, SEV1: the only assertions here were "non-empty string" and "different per launch", both of
+    // which a module-level counter (`bugsee-1`, `bugsee-2`, …) satisfies. Nothing stands between the page
+    // and the control channel except the token being unguessable, and `admits` has no attempt limit — so
+    // the FORMAT is pinned, and control-token.test.ts pins the source of the bytes.
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    expect(tokenOf(fake)).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('withholds the token when no native sink is attached yet', () => {
+    // Round 1, SEV1: with no sink, `hello` goes into the host bridge's backlog and is delivered to
+    // whichever sink turns up later — which can be a page script. Publishing the token there would hand
+    // the attacker an authenticated channel AND let it arm the latch, locking real native out.
+    const global: {
+      BugseeBridge?: { post(raw: string): void };
+      __bugsee_bridge?: BridgeGlobalApi;
+    } = {};
+    track('tok', baseOptions({ global }));
+
+    const posted: string[] = [];
+    global.BugseeBridge = { post: (r) => posted.push(r) }; // a late arrival drains the backlog
+    console.log('flushes-the-backlog');
+    const hello = posted.map((r) => JSON.parse(r) as AnyMsg).find((m) => m.k === 'hello');
+    expect(hello, 'no hello reached the late sink').toBeDefined();
+    expect(hello as unknown as { tok?: string }).not.toHaveProperty('tok');
+  });
+
   it('mints a DIFFERENT token per launch', () => {
     const a = fakeGlobal();
     const b = fakeGlobal();
@@ -1002,11 +1031,14 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
   it('surfaces the rejected attempt through onError', () => {
     const onError = vi.fn();
     const fake = fakeGlobal();
-    track('tok', baseOptions({ global: fake.global, onError }));
+    const client = track('tok', baseOptions({ global: fake.global, onError }));
     sendControl(fake.global, { tok: tokenOf(fake), command: 'resume' });
     onError.mockClear();
     sendControl(fake.global, { command: 'stop' });
     expect(onError).toHaveBeenCalledTimes(1);
+    // The report is not the point — the REJECTION is. Asserting only the count let a version that
+    // reported and then applied the command pass.
+    expect(client.isLaunched(), 'the rejected stop was applied anyway').toBe(true);
   });
 });
 
@@ -1051,5 +1083,102 @@ describe('the control global when the page got there first (Wave 0.3)', () => {
         carrier: {},
       }),
     ).not.toThrow();
+  });
+});
+
+// WAVE 0.3 review round 1 — three defects in the same seam: the slot, the latch, and teardown.
+describe('the control surface fails closed and cannot be reset by the page (round 1)', () => {
+  const preOwn = (global: object): void => {
+    Object.defineProperty(global, '__bugsee_bridge', {
+      value: { control: () => {}, snapshot: () => '[]' },
+      configurable: false,
+    });
+  };
+
+  it('does NOT declare `obscuring` when the control binding could not be installed', () => {
+    // SEV1: `caps` was computed from the obscuring probe alone. A page script that pre-owns the name makes
+    // defineProperty throw, so the SDK holds no control surface — but it still told native "I mask
+    // sensitive pixels myself", and native then DROPS its own masking script. Result: nothing masks, and
+    // password fields render legibly in the captured video. The same fail-closed rule the probe already
+    // has (`obscuringWorks`) has to cover this failure too.
+    const fake = fakeGlobal();
+    preOwn(fake.global);
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    track(
+      'tok',
+      baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+    );
+    const hello = fake.msgs().find((m): m is HelloMessage => m.k === 'hello');
+    expect(hello?.caps, 'declared obscuring with no control surface').not.toContain('obscuring');
+  });
+
+  it('still declares `obscuring` on the normal path — the canary', () => {
+    // Without this, the assertion above is satisfied by never declaring the capability at all.
+    const fake = fakeGlobal();
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    track(
+      'tok',
+      baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
+    );
+    const hello = fake.msgs().find((m): m is HelloMessage => m.k === 'hello');
+    expect(hello?.caps).toContain('obscuring');
+  });
+
+  it('a stale stop() does not kill a NEWER session', () => {
+    // SEV2: the slot is shared per-global, and stop() reverted it with no ownership check. A framework
+    // that unmounts late (or a plain double-stop) therefore made the LIVE session's control dead and
+    // posted a spurious `bye` while capture was still flowing.
+    const fake = fakeGlobal();
+    const carrier = {};
+    const a = launch('tok', baseOptions({ global: fake.global, carrier }));
+    void a.stop();
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    const b = track(
+      'tok',
+      baseOptions({ global: fake.global, carrier, document: dom.document as unknown as Document }),
+    );
+    expect(fake.global.__bugsee_bridge?.snapshot()).not.toBe('[]'); // b is live — canary
+
+    void a.stop(); // the stale handle fires again
+
+    expect(b.isLaunched()).toBe(true);
+    expect(
+      fake.global.__bugsee_bridge?.snapshot(),
+      'a stale stop() made the live session inert',
+    ).not.toBe('[]');
+  });
+
+  it('a page-forced RELAUNCH cannot un-latch the control channel', () => {
+    // SEV2: `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
+    // whose singleton guard reads a mutable carrier field. So the page could clear the carrier, relaunch,
+    // and get a fresh unlatched channel — defeating "one-way" entirely. The latch belongs to the GLOBAL.
+    //
+    // Asserted through onError (a rejected control reports) rather than through capture behaviour: two
+    // clients on one carrier share the console interceptor, so a `pause` on the second is not a reliable
+    // observable — an earlier draft of this test passed for that reason while proving nothing.
+    const onError = vi.fn();
+    const fake = fakeGlobal();
+    const carrier: Record<string, Record<string, { client?: unknown }>> = {};
+    track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    const first = fake.msgs().find((m): m is HelloMessage => m.k === 'hello');
+    sendControl(fake.global, { tok: (first as unknown as { tok: string }).tok, command: 'resume' });
+
+    // What a page script actually does: the carrier registry is a plain mutable object on the host, so
+    // clearing the version slot's `client` defeats the singleton guard (carrier.ts `getCarrier().client`).
+    for (const slot of Object.values(carrier.__BUGSEE__ ?? {})) {
+      slot.client = undefined;
+    }
+    track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    expect(
+      fake.msgs().filter((m) => m.k === 'hello').length,
+      'the relaunch never happened — the guard swallowed it, so this asserts nothing',
+    ).toBe(2);
+
+    onError.mockClear();
+    sendControl(fake.global, { command: 'pause' }); // untokened, from the page
+    expect(
+      onError,
+      'the relaunch reset the latch — untokened control was accepted',
+    ).toHaveBeenCalled();
   });
 });

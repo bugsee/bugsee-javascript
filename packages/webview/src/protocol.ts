@@ -1,5 +1,21 @@
 import type { FileType } from '@bugsee/protocol';
 
+// The JSON intrinsics, captured at MODULE LOAD (review round 1, SEV1).
+//
+// `JSON.parse` and `JSON.stringify` are page-writable globals. Reading them at call time let a script do:
+//
+//   const orig = JSON.parse;
+//   JSON.parse = s => { if (s.includes('"k":"control"')) steal(orig(s).tok); return orig(s); };
+//
+// which reads the token out of NATIVE's echoed control message — defeating D-A1, whose guarantee is stated
+// only in outbound terms ("sent once, on hello"). The same trick on `stringify` (or an
+// `Object.prototype.toJSON`) reads the outbound hello and can silently replace the payload.
+//
+// Capturing them here is not absolute — a script that runs before this module is evaluated still wins — but
+// this module is part of the SDK bundle, so it loads with the SDK rather than at first use.
+const jsonParse = JSON.parse;
+const jsonStringify = JSON.stringify;
+
 // The versioned wire protocol crossing the WebView boundary (docs/design/webview-bridge.md §6). A single,
 // transport-agnostic JSON envelope rides whichever channel is available (Android @JavascriptInterface /
 // WebMessageChannel; later iOS/Cordova). Every message carries `b` (the protocol version) — its presence also
@@ -271,7 +287,7 @@ export function encode(
     case 'batch':
       return `{"b":${message.b},"k":"batch","e":[${message.e.map(spliceRawPayload).join(',')}]}`;
     default:
-      return JSON.stringify(message);
+      return jsonStringify(message);
   }
 }
 
@@ -282,7 +298,7 @@ export function encode(
  */
 function spliceRawPayload(message: EntryMessage | ReportMessage | SecureMessage): string {
   const { p, ...envelope } = message;
-  const head = JSON.stringify(envelope);
+  const head = jsonStringify(envelope);
   return `${head.slice(0, -1)},"p":${p}}`;
 }
 
@@ -292,12 +308,27 @@ function spliceRawPayload(message: EntryMessage | ReportMessage | SecureMessage)
 export function parseControl(raw: string): ControlMessage | undefined {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = jsonParse(raw);
   } catch {
     return undefined;
   }
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
+  }
+  // Cut the prototype chain BEFORE any field is read (review round 1, SEV1). Every subsequent read —
+  // `k`, `b`, `tok`, `command`, `config`, `session` — is a plain property lookup, so without this a single
+  // line of page script forges an authenticated message by riding native's own:
+  //
+  //   Object.prototype.command = 'stop';   // read off a legitimately-tokened control -> SDK torn down
+  //   Object.prototype.tok = 'x';          // makes every LEGACY (untokened) control look like an attack
+  //
+  // `JSON.parse` never produces inherited own-properties, so nulling the prototype cannot discard anything
+  // native actually sent. `config` is nulled too — `reportTrigger` is read off it, and it is the quiet half
+  // of this attack (the WebView opens native bug reports at will, past the D5 gate).
+  Object.setPrototypeOf(parsed, null);
+  const config = (parsed as { config?: unknown }).config;
+  if (typeof config === 'object' && config !== null) {
+    Object.setPrototypeOf(config, null);
   }
   const m = parsed as { k?: unknown; b?: unknown };
   if (m.k !== 'control' || typeof m.b !== 'number') {

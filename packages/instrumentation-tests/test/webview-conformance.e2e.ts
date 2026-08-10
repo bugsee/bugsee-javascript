@@ -236,19 +236,50 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
   // on every control message. A receiver that does not is not rejected — it simply leaves the channel
   // unauthenticated, and any script in the page can then pause or stop capture through
   // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
-  it('publishes a control token on hello that native must echo back (Wave 0.3)', () => {
-    const { rx } = track(boot());
+  it('publishes a control token on hello that native must echo back (Wave 0.3)', async () => {
+    // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: store `hello.tok` per-WebView and echo it as
+    // `tok` on every control message. A receiver that does not is not rejected — it simply leaves the
+    // channel unauthenticated, and any script in the page can then pause or stop capture through
+    // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
+    //
+    // Round 1 caught the earlier version of this test asserting `expect(rx.host.__bugsee_bridge)
+    // .toBeDefined()` — unconditionally true, since the binding is non-configurable and permanent. It
+    // passed with the token ignored entirely. The enforcement is now asserted on the D5 report gate, an
+    // OBSERVABLE the native team can reproduce.
+    const { client, rx } = track(boot());
     const hello = rx.messages()[0] as { tok?: string };
     expect(typeof hello.tok, 'hello carries no control token').toBe('string');
-    expect((hello.tok as string).length).toBeGreaterThan(0);
     rx.assertAllConform(); // the token field is part of the shipped schema
 
-    // A tokened control is accepted...
+    // A tokened control is accepted: the gate turns ON.
     rx.sendControl({ tok: hello.tok, config: { reportTrigger: true } });
-    // ...and having proven it knows the token, native has locked the page out: an untokened control from a
-    // page script no longer applies. Asserted on an OBSERVABLE config change, not on a return value.
+    await client.logException(new Error('gate-on'));
+    expect(rx.byKind('report')).toHaveLength(1);
+
+    // Having proven it knows the token, native has locked the page out: an UNTOKENED control — which any
+    // page script can send — must no longer be able to turn the gate back off.
     rx.sendControl({ config: { reportTrigger: false } });
-    expect(rx.host.__bugsee_bridge).toBeDefined();
+    await client.logException(new Error('still-gated-on'));
+    expect(
+      rx.byKind('report'),
+      'an untokened control from the page downgraded the D5 gate after the channel authenticated',
+    ).toHaveLength(2);
+  });
+
+  it('keeps accepting native control AFTER the channel authenticates (Wave 0.3)', async () => {
+    // The canary the whole scheme needs and round 1 found missing: every tokened test sent exactly ONE
+    // message, so `if (tok === token && !authenticated)` — a one-word change — locked native permanently
+    // out of its own channel while the suite stayed green. Native sends many control messages over a
+    // session; the second must work as well as the first.
+    const { client, rx } = track(boot());
+    const tok = (rx.messages()[0] as { tok?: string }).tok;
+    rx.sendControl({ tok, config: { reportTrigger: true } }); // first — arms the latch
+    rx.sendControl({ tok, config: { reportTrigger: false } }); // second — must still be applied
+    await client.logException(new Error('after-second'));
+    expect(
+      rx.byKind('report'),
+      'native was locked out of its own channel after the first tokened message',
+    ).toHaveLength(0);
   });
 
   it('never repeats the token after hello — a late-loading page script must not learn it', () => {
@@ -276,6 +307,21 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
       before,
     );
     rx.assertAllConform();
+  });
+
+  it('the schema REJECTS a malformed `tok` in BOTH directions (Wave 0.3)', () => {
+    // Round 1: the schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
+    // `"type":"string","minLength":1` would have gone unnoticed. An empty token matters concretely: the
+    // JS side treats a present-but-wrong token as an ATTACK and rejects the message, so a receiver
+    // echoing `""` would break the handshake it was meant to authenticate.
+    const hello = { b: 1, k: 'hello', sdk: 'x', caps: [], session: 's' };
+    expect(validateMessage({ ...hello, tok: 'ok' })).toBe(true); // canary: a good token still validates
+    expect(validateMessage({ ...hello, tok: '' })).toBe(false);
+    expect(validateMessage({ ...hello, tok: 42 })).toBe(false);
+
+    expect(validateMessage({ b: 1, k: 'control', tok: 'ok' })).toBe(true);
+    expect(validateMessage({ b: 1, k: 'control', tok: '' })).toBe(false);
+    expect(validateMessage({ b: 1, k: 'control', tok: 42 })).toBe(false);
   });
 
   it('the schema REJECTS a malformed message (the guard actually discriminates)', () => {

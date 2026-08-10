@@ -1,3 +1,4 @@
+import { neverThrow } from '@bugsee/core';
 import { type ControlMessage, parseControl } from './protocol';
 
 // The native→JS control entry point (docs/design/webview-bridge.md §7). Native drives the JS SDK by calling
@@ -35,6 +36,14 @@ export function createBridgeControl(opts?: {
   token?: string;
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
+  /**
+   * The one-way latch, owned by the CALLER so it can outlive this handler (review round 1).
+   *
+   * It used to be a closure variable here, which made "one-way" true only within a single `launch()` —
+   * and `launch` is itself a page global, so a script could relaunch to get an un-latched channel. The
+   * launch passes the per-GLOBAL slot's object instead. Defaults to a private one for standalone use.
+   */
+  auth?: { authenticated: boolean };
 }): BridgeControl {
   const config: BridgeControlConfig = { reportTrigger: opts?.reportTrigger ?? false };
   const token = opts?.token;
@@ -42,7 +51,11 @@ export function createBridgeControl(opts?: {
   // would break every existing host. Instead the channel starts open and latches CLOSED the first time a
   // correctly-tokened message proves native speaks the new protocol. A page script cannot force the latch
   // (it needs the secret) and cannot release it (there is no path back to false).
-  let authenticated = false;
+  const auth = opts?.auth ?? { authenticated: false };
+  // A page script can call `__bugsee_bridge.control(...)` in a loop, so the rejection report is ONCE per
+  // handler. D-A4 declined to report sink swaps for exactly this reason ("a page could trigger it at will
+  // to flood `onError`"); applying the opposite rule here would have been inconsistent.
+  let reportedRejection = false;
 
   /** Whether this message may act on the SDK. */
   const admits = (msg: ControlMessage): boolean => {
@@ -53,7 +66,7 @@ export function createBridgeControl(opts?: {
     }
     const tok = (msg as { tok?: unknown }).tok;
     if (tok === token) {
-      authenticated = true; // latch
+      auth.authenticated = true; // latch
       return true;
     }
     // A present-but-wrong token is an attack, never a legacy receiver — the whole point of the
@@ -61,7 +74,7 @@ export function createBridgeControl(opts?: {
     if (tok !== undefined) {
       return false;
     }
-    return !authenticated;
+    return !auth.authenticated;
   };
 
   return {
@@ -74,9 +87,21 @@ export function createBridgeControl(opts?: {
       if (!admits(msg)) {
         // Rejected wholesale: config as well as commands. Flipping `reportTrigger` from the page is the
         // quiet half of this attack (the WebView opens native bug reports at will, past the D5 gate).
-        opts?.onError?.(
-          new Error('Bugsee: rejected an unauthenticated control message on the WebView bridge'),
-        );
+        // Contained AND rate-limited. `control()` is documented "never throws" because an exception here
+        // propagates into native's `evaluateJavascript` — the fail-open shape fixed as SEV1-1 — and a host
+        // `onError` is arbitrary app code that may throw.
+        if (!reportedRejection) {
+          reportedRejection = true;
+          neverThrow(
+            () =>
+              opts?.onError?.(
+                new Error(
+                  'Bugsee: rejected an unauthenticated control message on the WebView bridge',
+                ),
+              ),
+            undefined,
+          );
+        }
         return;
       }
       if (msg.session !== undefined) {

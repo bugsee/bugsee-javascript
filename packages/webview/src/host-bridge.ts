@@ -45,8 +45,13 @@ export function createHostBridge(opts?: {
   //
   // Deliberately NOT reported when a swap happens: detecting it costs a global read per post to surface an
   // event the SDK cannot act on, and a page could trigger it at will to flood `onError`.
-  let pinned: { post(raw: string): void } | undefined;
-  const resolve = (): { post(raw: string): void } | undefined => {
+  //
+  // What is pinned is the BOUND METHOD, not the object (review round 1). Holding the object still read
+  // `sink.post` on every send, so `window.BugseeBridge.post = evil` — a property write that never touches
+  // the binding pinning watches — rerouted the whole capture stream. Binding captures the receiver too,
+  // which is what a Java `@JavascriptInterface` host object needs.
+  let pinned: ((raw: string) => void) | undefined;
+  const resolve = (): ((raw: string) => void) | undefined => {
     if (pinned !== undefined) {
       return pinned;
     }
@@ -56,21 +61,24 @@ export function createHostBridge(opts?: {
     if (typeof b?.post !== 'function') {
       return undefined;
     }
-    pinned = b as { post(raw: string): void };
+    pinned = b.post.bind(b);
     return pinned;
   };
 
-  const send = (sink: { post(raw: string): void }, raw: string): void => {
+  const send = (sink: (raw: string) => void, raw: string): void => {
     try {
-      sink.post(raw);
+      sink(raw);
     } catch (error) {
       onError(error);
     }
   };
 
   return {
+    // A PURE read (review round 1): this used to call `resolve()`, so merely asking "is the bridge there?"
+    // pinned the sink as a side effect. A getter that mutates is a trap for any future caller, and it made
+    // the pin happen at an arbitrary read rather than at the first message.
     get available(): boolean {
-      return resolve() !== undefined;
+      return pinned !== undefined || typeof global.BugseeBridge?.post === 'function';
     },
     post(raw: string): void {
       const sink = resolve();

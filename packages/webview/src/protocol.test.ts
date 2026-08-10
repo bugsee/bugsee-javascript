@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   batchMessage,
   byeMessage,
@@ -263,5 +263,99 @@ describe('parseControl', () => {
     expect(parseControl('null')).toBeUndefined();
     expect(parseControl(JSON.stringify({ b: 1, k: 'entry' }))).toBeUndefined(); // wrong kind
     expect(parseControl(JSON.stringify({ k: 'control', session: 'x' }))).toBeUndefined(); // no `b` tag
+  });
+});
+
+// WAVE 0.3 review round 1, SEV1 — the control channel is reachable from the page, so `parseControl` must
+// survive a hostile realm, not merely malformed input.
+describe('parseControl is hostile-realm safe', () => {
+  /** Set a key on Object.prototype for one test and always remove it (a leak breaks every later test). */
+  const withPolluted = (key: string, value: unknown, fn: () => void): void => {
+    Object.defineProperty(Object.prototype, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: false,
+    });
+    try {
+      fn();
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)[key];
+    }
+  };
+
+  it('does not read `command` off Object.prototype', () => {
+    // The forgery: the page pollutes the prototype and NATIVE's own correctly-tokened message is then read
+    // as carrying `command:'stop'`. No token needed — the check is bypassed, not broken.
+    withPolluted('command', 'stop', () => {
+      const msg = parseControl('{"b":1,"k":"control","session":"s"}');
+      expect(msg).toBeDefined();
+      expect(msg?.command, 'a polluted prototype forged a command').toBeUndefined();
+    });
+  });
+
+  it('does not read `tok` off Object.prototype', () => {
+    // The denial-of-service twin: an inherited `tok` makes every UNTOKENED (legacy-receiver) control look
+    // present-but-wrong, which the auth rule treats as an attack — so one line disables native's channel.
+    withPolluted('tok', 'guessed', () => {
+      const msg = parseControl('{"b":1,"k":"control","command":"pause"}');
+      expect((msg as unknown as { tok?: unknown })?.tok).toBeUndefined();
+    });
+  });
+
+  it('does not read `config` off Object.prototype', () => {
+    withPolluted('config', { reportTrigger: true }, () => {
+      const msg = parseControl('{"b":1,"k":"control"}');
+      expect(msg?.config, 'a polluted prototype forged a config push').toBeUndefined();
+    });
+  });
+
+  it('does not read `reportTrigger` off a nested polluted prototype', () => {
+    // `config` is a real object from JSON, so nulling only the top level leaves its own prototype live.
+    withPolluted('reportTrigger', true, () => {
+      const msg = parseControl('{"b":1,"k":"control","config":{}}');
+      expect(msg?.config?.reportTrigger).toBeUndefined();
+    });
+  });
+
+  it('still reads the fields native actually sent', () => {
+    // The canary. Every assertion above is satisfied by a parser that returns nothing at all.
+    const msg = parseControl(
+      '{"b":1,"k":"control","tok":"t","session":"s","command":"flush","config":{"reportTrigger":true}}',
+    );
+    expect(msg?.command).toBe('flush');
+    expect(msg?.session).toBe('s');
+    expect(msg?.config?.reportTrigger).toBe(true);
+    expect((msg as unknown as { tok?: string })?.tok).toBe('t');
+  });
+
+  it('uses the JSON intrinsics captured at module load, not the live globals', () => {
+    // A page can replace `JSON.parse` to read native's control message — which carries the ECHOED TOKEN.
+    // The token's whole guarantee is stated outbound-only ("sent once, on hello"); this is the inbound leak.
+    const original = JSON.parse;
+    const spy = vi.fn(original);
+    JSON.parse = spy as unknown as typeof JSON.parse;
+    try {
+      const msg = parseControl('{"b":1,"k":"control","tok":"secret"}');
+      expect((msg as unknown as { tok?: string })?.tok).toBe('secret'); // still parses correctly
+      expect(
+        spy,
+        'parseControl went through the page-replaceable JSON.parse',
+      ).not.toHaveBeenCalled();
+    } finally {
+      JSON.parse = original;
+    }
+  });
+
+  it('encodes through the captured stringify, not the live global', () => {
+    const original = JSON.stringify;
+    const spy = vi.fn(original);
+    JSON.stringify = spy as unknown as typeof JSON.stringify;
+    try {
+      expect(encode(byeMessage())).toContain('"k":"bye"');
+      expect(spy, 'encode went through the page-replaceable JSON.stringify').not.toHaveBeenCalled();
+    } finally {
+      JSON.stringify = original;
+    }
   });
 });

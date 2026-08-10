@@ -107,6 +107,21 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('keeps accepting tokened control AFTER the latch arms — native is not locked out', () => {
+    // Round 1, SEV1: every tokened test sent exactly ONE message, so `if (tok === token &&
+    // !authenticated)` — one word — locked native permanently out of its own channel and the whole suite
+    // stayed green. Native sends many control messages per session (pause on background, flush before a
+    // frame, stop on teardown); the second must work as well as the first.
+    const onCommand = vi.fn();
+    const control = createBridgeControl({ token: TOKEN, onCommand });
+    control.control(raw({ tok: TOKEN, command: 'flush' })); // arms the latch
+    onCommand.mockClear();
+    control.control(raw({ tok: TOKEN, command: 'pause' }));
+    expect(onCommand, 'native was locked out after its first tokened message').toHaveBeenCalledWith(
+      'pause',
+    );
+  });
+
   it('rejects a WRONG token even before the upgrade — a guess must never be treated as legacy', () => {
     // The subtle failure mode: "no token means legacy" must not become "any token I do not recognise means
     // legacy". A present-but-wrong token is an attack, not an old receiver.
@@ -154,5 +169,68 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
     control.control(raw({ command: 'resume' }));
     expect(onCommand).toHaveBeenNthCalledWith(1, 'pause');
     expect(onCommand).toHaveBeenNthCalledWith(2, 'resume');
+  });
+});
+
+// WAVE 0.3 review round 1 — the rejection report is itself page-reachable, so it needs the same treatment
+// as any other host callback.
+describe('createBridgeControl — the rejection report is contained and bounded', () => {
+  const TOKEN = 'tok-abc123';
+  const raw = (msg: Record<string, unknown>): string =>
+    JSON.stringify({ b: 1, k: 'control', ...msg });
+
+  const upgraded = (over: Parameters<typeof createBridgeControl>[0] = {}) => {
+    const control = createBridgeControl({ token: TOKEN, ...over });
+    control.control(raw({ tok: TOKEN, command: 'flush' })); // arm the latch
+    return control;
+  };
+
+  it('does not let a THROWING onError escape into evaluateJavascript', () => {
+    // `control()` is called by native through `evaluateJavascript`. An exception crossing that boundary is
+    // the SEV1-1 fail-open shape (native gets an error instead of a result at frame-capture time), and
+    // `onError` is arbitrary host code — a dev-mode assert, a logger with a throwing toJSON.
+    const control = upgraded({
+      onError: () => {
+        throw new Error('host sink exploded');
+      },
+    });
+    expect(() => control.control(raw({ command: 'stop' }))).not.toThrow();
+  });
+
+  it('reports at most ONCE, however many times the page calls it', () => {
+    // A page script can loop on `__bugsee_bridge.control(...)`, allocating an Error per call into the
+    // host's error sink. D-A4 refused to report sink swaps for precisely this reason; the same rule has
+    // to hold here or the two decisions in one wave contradict each other.
+    const onError = vi.fn();
+    const control = upgraded({ onError });
+    for (let i = 0; i < 50; i++) {
+      control.control(raw({ command: 'pause' }));
+    }
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('still REJECTS every one of those messages, not just the first', () => {
+    // The canary for the rate limit: capping the report must not cap the enforcement.
+    const onCommand = vi.fn();
+    const control = upgraded({ onCommand });
+    onCommand.mockClear();
+    for (let i = 0; i < 5; i++) {
+      control.control(raw({ command: 'stop' }));
+    }
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it('shares a caller-owned latch, so a second handler inherits it', () => {
+    // What makes the latch survive a page-forced relaunch: the state belongs to the global, not to one
+    // handler instance.
+    const auth = { authenticated: false };
+    const first = createBridgeControl({ token: TOKEN, auth });
+    first.control(raw({ tok: TOKEN, command: 'flush' }));
+    expect(auth.authenticated).toBe(true);
+
+    const onCommand = vi.fn();
+    const second = createBridgeControl({ token: 'a-different-token', auth, onCommand });
+    second.control(raw({ command: 'pause' })); // untokened, page-issued
+    expect(onCommand, 'a fresh handler started un-latched').not.toHaveBeenCalled();
   });
 });

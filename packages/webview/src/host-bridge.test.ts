@@ -136,17 +136,73 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
     expect(s.real).toEqual(['buffered', 'live']);
   });
 
-  it('pins the FIRST bridge it sees, not one that replaces it before the first post', () => {
-    // The window between "native attached" and "the SDK posted" is still a window. Whoever is there when
-    // the SDK first looks is the sink for the session.
+  it('pins at the first POST, and reading `available` does not pin', () => {
+    // `available` used to call resolve(), so a mere read pinned the sink. Round 1 flagged the mutating
+    // getter; it now reports without binding anything. Pinning happens at the first message instead —
+    // which in `launch()` is the synchronous hello, so no page script can run in between.
     const s = swappable();
     s.attach();
     const bridge = createHostBridge({ global: s.global });
-    expect(bridge.available).toBe(true); // <- first look happens here
-    s.hijack();
+    expect(bridge.available).toBe(true); // pure read — must NOT pin
     bridge.post('x');
-    expect(s.real).toEqual(['x']);
+    s.hijack();
+    bridge.post('y');
+    expect(s.real).toEqual(['x', 'y']);
     expect(s.attacker).toEqual([]);
+  });
+
+  it('keeps sending to the pinned METHOD after the page overwrites `post` on the object', () => {
+    // Round 1, SEV2: pinning the OBJECT still dereferenced `.post` on every send, so a page script could
+    // leave the binding alone — the thing pinning watches — and just overwrite the method:
+    //   window.BugseeBridge.post = evil
+    // and receive the entire capture stream. The bound method is captured once instead.
+    const real: string[] = [];
+    const attacker: string[] = [];
+    const bridgeObj = { post: (r: string) => real.push(r) };
+    const global = { BugseeBridge: bridgeObj };
+    const bridge = createHostBridge({ global });
+    bridge.post('before');
+
+    bridgeObj.post = (r: string) => attacker.push(r); // mutate the METHOD, not the binding
+    bridge.post('after');
+
+    expect(real, 'the real sink lost traffic when `post` was overwritten').toEqual([
+      'before',
+      'after',
+    ]);
+    expect(attacker, 'overwriting `post` captured the stream').toEqual([]);
+  });
+
+  it('calls the native sink with the bridge object as receiver', () => {
+    // A Java @JavascriptInterface is a host object: `post` must be called WITH it as receiver. Binding is
+    // what preserves that; a bare function reference would lose it and throw at the JNI boundary.
+    let receiver: unknown;
+    const bridgeObj = {
+      post(this: unknown, _raw: string) {
+        receiver = this;
+      },
+    };
+    createHostBridge({ global: { BugseeBridge: bridgeObj } }).post('x');
+    expect(receiver).toBe(bridgeObj);
+  });
+
+  it('hands the whole BACKLOG to whichever sink pins first — which is why secrets must not be buffered', () => {
+    // Round 1 raised this as a token leak. Verified precisely: pinning and draining happen in the SAME
+    // synchronous `post()`, so nothing can interleave between them, and re-reading the global at drain
+    // time is not separately exploitable. The real hazard is upstream and is REAL: anything already in the
+    // buffer is delivered to whatever sink turns up later. `hello` is the first message, so if it carried
+    // the control token while native had not yet attached, a page script that attaches after the SDK
+    // receives that token.
+    //
+    // This test pins the behaviour so the mitigation cannot be quietly undone: the fix is in `launch()`,
+    // which withholds the token unless a sink is ALREADY present (see launch.test.ts).
+    const s = swappable();
+    const bridge = createHostBridge({ global: s.global });
+    bridge.post('buffered-secret');
+    s.hijack(); // a page script, not native, is what turns up
+    bridge.post('live');
+    expect(s.attacker).toEqual(['buffered-secret', 'live']);
+    expect(s.real).toEqual([]);
   });
 
   it('does not pin a malformed bridge — a non-function post is not a sink', () => {

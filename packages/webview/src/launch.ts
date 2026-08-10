@@ -38,6 +38,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
+import { mintControlToken } from './control-token';
 import { createHostBridge } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
@@ -156,8 +157,22 @@ const INERT_SESSION: BridgeSession = {
   snapshot: (): string => '[]',
 };
 
-/** Per-global session slot, so the immutable binding installed below can be re-pointed across launches. */
-const BRIDGE_SLOTS = new WeakMap<object, { session: BridgeSession }>();
+/**
+ * Per-global state behind the immutable `__bugsee_bridge` binding.
+ *
+ * `session` is re-pointed across launches. `installed` records whether the binding is actually OURS — a
+ * page script that pre-owns the name makes `defineProperty` throw, and the SDK must then fail closed
+ * rather than advertise a control surface it does not have. `auth` holds the one-way latch at GLOBAL
+ * scope, not per-launch: `launch` is itself a page global, so a per-launch latch could be reset simply by
+ * relaunching (review round 1).
+ */
+interface BridgeSlot {
+  session: BridgeSession;
+  installed: boolean;
+  auth: { authenticated: boolean };
+}
+
+const BRIDGE_SLOTS = new WeakMap<object, BridgeSlot>();
 
 /**
  * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
@@ -174,12 +189,16 @@ const BRIDGE_SLOTS = new WeakMap<object, { session: BridgeSession }>();
 function bridgeSlotFor(
   global: object,
   onError: ((error: unknown) => void) | undefined,
-): { session: BridgeSession } {
+): BridgeSlot {
   const existing = BRIDGE_SLOTS.get(global);
   if (existing !== undefined) {
     return existing; // a previous launch already closed the binding on this global
   }
-  const slot = { session: INERT_SESSION };
+  const slot: BridgeSlot = {
+    session: INERT_SESSION,
+    installed: false,
+    auth: { authenticated: false },
+  };
   const api = Object.freeze({
     control: (raw: string): void => slot.session.control(raw),
     snapshot: (): string => slot.session.snapshot(),
@@ -191,13 +210,17 @@ function bridgeSlotFor(
       configurable: false,
       enumerable: true,
     });
+    slot.installed = true;
   } catch (error) {
     // Something already owns the name on a non-configurable binding — a hostile page that ran first, or a
     // host that pre-defined it. Nothing can be reclaimed here, so report and let the session run WITHOUT a
-    // control entry rather than throwing out of launch().
-    onError?.(error);
-    return slot;
+    // control entry rather than throwing out of launch(). `installed` stays false, and the caller uses it
+    // to fail CLOSED — see the `obscuring` capability. `onError` is contained: it belongs to the host app
+    // and must not take launch() down (capture may never alter app behaviour).
+    neverThrow(() => onError?.(error), undefined);
   }
+  // Cached either way, so a repeat launch does not retry a defineProperty that is guaranteed to throw and
+  // re-report the same failure once per launch.
   BRIDGE_SLOTS.set(global, slot);
   return slot;
 }
@@ -250,11 +273,22 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
   let obscuringWorks = false;
   let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
-  // The per-session control token (Wave 0.3 / D-A1). Minted here, held in this closure — unreachable from
-  // the page — and published exactly once, on `hello` below.
-  const controlToken = randomId();
+  // The per-session control token (Wave 0.3 / D-A1). Minted from a CSPRNG — NOT `randomId()`, whose
+  // fallback is `Math.random()` and which documents itself as unsuitable for secrets (see control-token.ts).
+  // `undefined` when the runtime has no CSPRNG: the channel then stays unauthenticated, which is the
+  // documented pre-upgrade state and strictly better than a token the page can predict.
+  //
+  // Read `bridge.available` HERE, before anything is posted, and use the one answer for both the published
+  // hello and the enforcing side. Deciding twice would risk the two disagreeing — enforcing a token the
+  // handshake never published locks native out permanently.
+  // `mintControlToken()` reads `globalThis`, NOT the injected `global`: that option is a seam for the
+  // bridge SURFACE (`BugseeBridge` / `__bugsee_bridge`), not a realm, and the CSPRNG must come from the
+  // realm actually executing this code.
+  const controlToken = bridge.available ? mintControlToken() : undefined;
   const control = createBridgeControl({
     token: controlToken,
+    // The latch lives on the per-global slot, not in this closure, so a page-forced relaunch inherits it.
+    auth: bridgeSlot.auth,
     onError: options.onError,
     reportTrigger: options.reportTrigger ?? false,
     onCommand: (command) => {
@@ -422,20 +456,35 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
   // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
   // from `caps`.
-  obscuringWorks = obscuring?.probe() === true;
+  // Fail CLOSED on both counts (review round 1). The probe already covered "collection is broken"; the
+  // second half is that a control surface we do not own is just as disqualifying. Declaring `obscuring` is
+  // what makes native DROP its own masking script — so advertising it while the page owns
+  // `__bugsee_bridge` leaves sensitive pixels masked by nobody, which is worse than not declaring at all.
+  obscuringWorks = obscuring?.probe() === true && bridgeSlot.installed;
   const caps = obscuringWorks ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
   // time via `__bugsee_bridge.snapshot()` (serialized rects; `[]` when obscuring is off).
   // The binding itself is immutable (D-A3); what a launch swaps is the SESSION behind it.
-  bridgeSlot.session = {
+  const mySession: BridgeSession = {
     control: control.control,
     snapshot: (): string => obscuring?.snapshot() ?? '[]',
   };
+  bridgeSlot.session = mySession;
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // lets native decide legacy coexistence (D10).
+  //
+  // The token rides this message ONLY when a native sink is already attached (review round 1, SEV1). When
+  // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
+  // later — and a page script can be that sink, which is precisely the tap this whole wave exists to stop.
+  // Handing it the token would be worse than sending none: it could then authenticate, arm the one-way
+  // latch, and lock the real native receiver out of its own channel.
+  //
+  // Withholding costs an unauthenticated session in the late-attach case, which is the pre-upgrade state
+  // the design already accepts. It is NOT the common case: native adds the interface before the page
+  // loads, so by `hello` the sink is normally there.
   bridge.post(
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
@@ -463,7 +512,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       setCarrierClient(undefined, carrier);
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
-      bridgeSlot.session = INERT_SESSION;
+      // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
+      // global, so a late/duplicate stop() from a stale handle would otherwise make a NEWER live session
+      // inert — control and the frame-time snapshot dead while capture keeps flowing.
+      if (bridgeSlot.session === mySession) {
+        bridgeSlot.session = INERT_SESSION;
+      }
       return stopCore(timeout);
     },
   };
