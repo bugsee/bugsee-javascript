@@ -222,6 +222,43 @@ its video gate because it has no trust boundary to establish: masking really is 
 The cost is a sub-frame composer running with video off, producing rects nobody consumes — bounded at one
 DOM query and a listener per frame, because D-A5 means a sub-frame does nothing else.
 
+## D-A7. Masking ownership is monotone: native never masks less because of what the page says
+
+**Third design; the first two were structurally wrong, not merely buggy.**
+
+| Attempt | Rule | How it fell |
+|---|---|---|
+| Round 1 | A `caps:["obscuring"]` claim stands native masking down | The claim arrives from the page. One forged `hello` disabled native masking. |
+| Round 2 | Claim **plus rects** — "evidence, not a claim" | Both arrive on the *same* unauthenticated interface, so the attacker simply sends both. It also latched permanently, so the next navigation had no masker at all, and `p:[{}]` (every field defaulting to 0) parsed to a non-empty list of a zero-area rect that still replaced the store. |
+
+The error was the same both times, and it is not a detail: **a decision that REDUCES masking cannot be
+authorised by the party being masked.** No amount of evidence from the page fixes that, because the page
+supplies the evidence.
+
+**The rule now removes the decision instead of trying to authenticate it:**
+
+- Native's own masking is **never** stood down.
+- The mask is the **union** of two independent sources — native's rects and the bridge's.
+- The bridge replaces only *its own* source. It can add masking, or withdraw rects it contributed itself.
+  It cannot touch native's.
+- Rects with no area (`right <= left` or `bottom <= top`) are dropped: a rect that masks nothing is not an
+  update, and treating one as an update is what let `[{}]` displace real rects.
+
+Nothing is left for a forged message to switch off, so nothing needs authenticating. The worst case is
+masking the same region twice, which costs nothing and cannot expose anything — the correct direction for a
+privacy control.
+
+This also **restores** a legitimate behaviour round 2 had to break. Refusing empty payloads was the only way
+to stop a page wiping the single shared store; with the sources split, an empty payload is safe and is
+applied again. That matters: the JS side sends `[]` whenever a document genuinely has no secure areas, and
+sends a **full-screen fail-closed rect** when collection throws — so under the round-2 rule one transient
+failure left the entire recording permanently blacked out.
+
+**Consequence for D10.** "The advanced SDK fully replaces legacy" is no longer something native negotiates
+over the wire, because the wire cannot carry a trustworthy answer. If that hand-over is wanted later, it has
+to be decided from something native controls — e.g. the resolved bundle version stamped in at build time —
+never from `caps`.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.
