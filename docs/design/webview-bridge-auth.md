@@ -183,6 +183,36 @@ client object is still constructed and returned so the public signature and the 
 one handshake, one token and one capture stream, while giving obscuring the every-frame coverage the legacy
 path already has. Without it, that change multiplies sessions instead of widening coverage.
 
+## D-A6. Obscuring reach is a guarantee, not an option
+
+**Bugsee's product guarantee is that privacy-sensitive content is obscured automatically, to the maximum
+extent possible.** Reach therefore cannot depend on configuration.
+
+The legacy in-page script already honoured this literally: registered as an ALL-ORIGINS (`["*"]`)
+document-start script, gated only by video capture, so masking reaches every subframe including cross-origin
+ones. The advanced path did not — its document-start registration returned early whenever
+`WebViewDomainAllowlist` was empty (the default), leaving only a top-frame `evaluateJavascript` at
+page-ready. And the legacy all-origins registration is **skipped** once the advanced path is active.
+
+So with the real bundle shipped, every iframe's password and payment fields would have rendered unmasked in
+the captured video: a regression against legacy, arriving silently with the first published bundle.
+
+**The two concerns are now decoupled — which is what the allowlist was always for:**
+
+| Concern | Reach | Gate |
+|---|---|---|
+| **Obscuring** | every frame, every origin, always | video capture only |
+| **Data capture** | the top frame | D9 allowlist |
+
+D9's stated purpose — *"don't inject Bugsee into third-party content (OAuth/payment/ads)"* — continues to
+hold, because **D-A5 is what makes injecting everywhere safe**: an injected sub-frame runs the obscuring
+composer and nothing else. Third-party frames contribute mask rects and never a capture stream. Without
+D-A5 the two goals genuinely conflicted; with it they do not.
+
+Implemented in `WebViewWrapper.maybeRegisterDocumentStartScript` (Android), mirroring
+`maybeRegisterLegacyDocumentStartScript` including its latch-on-SUCCESS retry: a transient reflection
+failure must not permanently downgrade a session to top-frame-only masking.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.
@@ -222,9 +252,12 @@ Being explicit, because the review's finding was that this boundary had been ass
   > `onPageCommitVisible`/`onPageFinished` — **after** the page's own scripts have run.
   >
   > Everything in this section is therefore load-bearing for ordinary pages, not just hostile ones, and the
-  > in-page defences below are a second line rather than the first. Making the advanced bundle a
-  > document-start script unconditionally — as the *legacy* path already is — is native-side work tracked
-  > separately; it is the single highest-value change to this threat model.
+  > in-page defences below are a second line rather than the first.
+  >
+  > **Addressed for obscuring (D-A6):** the advanced bundle is now registered as an all-origins
+  > document-start script, so masking runs before the page's own scripts in every frame. Data capture
+  > still arrives at page-ready in the top frame, so the ordering caveat above continues to apply to the
+  > token and the control binding — a script that runs first still sees `hello`.
 
 - **`event.ports` is delivered to every `message` listener.** A page listener registered before the SDK can
   capture the same transferred port. Document-start injection is what would make the SDK first, so the port
