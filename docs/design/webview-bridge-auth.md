@@ -213,6 +213,15 @@ Implemented in `WebViewWrapper.maybeRegisterDocumentStartScript` (Android), mirr
 `maybeRegisterLegacyDocumentStartScript` including its latch-on-SUCCESS retry: a transient reflection
 failure must not permanently downgrade a session to top-frame-only masking.
 
+**Registration is unconditional, not video-gated.** Document-start buys two distinct things, and only one
+is about pixels: obscuring REACH, and injection ORDER. The trust boundary — pinned sink, closed binding,
+control token — assumes the SDK ran before the page's scripts, and that assumption is load-bearing whenever
+the SDK captures at all, video or not. So video capture gates masking, never ordering. The legacy path keeps
+its video gate because it has no trust boundary to establish: masking really is its only reason to run.
+
+The cost is a sub-frame composer running with video off, producing rects nobody consumes — bounded at one
+DOM query and a listener per frame, because D-A5 means a sub-frame does nothing else.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.
@@ -254,10 +263,16 @@ Being explicit, because the review's finding was that this boundary had been ass
   > Everything in this section is therefore load-bearing for ordinary pages, not just hostile ones, and the
   > in-page defences below are a second line rather than the first.
   >
-  > **Addressed for obscuring (D-A6):** the advanced bundle is now registered as an all-origins
-  > document-start script, so masking runs before the page's own scripts in every frame. Data capture
-  > still arrives at page-ready in the top frame, so the ordering caveat above continues to apply to the
-  > token and the control binding — a script that runs first still sees `hello`.
+  > **CLOSED (D-A6).** The advanced bundle is registered as an all-origins document-start script,
+  > **unconditionally** — so the SDK runs before the page's own scripts, in every frame, on every
+  > navigation. The pinned sink, the closed binding and the token now have the ordering they always
+  > assumed.
+  >
+  > Registration is deliberately *not* gated on video capture. Video decides whether there are pixels to
+  > mask; it says nothing about whether the SDK gets to run first, and the capture tap (SEV1-3) is live
+  > whenever the SDK captures at all. The residual exposure is a host that disables the advanced path
+  > entirely, or a build where document-start reflection is unavailable on every tier — both fall back to
+  > page-ready injection, where this section's original caveat still applies.
 
 - **`event.ports` is delivered to every `message` listener.** A page listener registered before the SDK can
   capture the same transferred port. Document-start injection is what would make the SDK first, so the port
