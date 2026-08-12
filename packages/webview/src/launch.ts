@@ -272,7 +272,6 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   let obscuring: ObscuringChannel | undefined; // TOP frame: the native I/O channel
   // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
   let obscuringWorks = false;
-  let childComposer: ObscuringComposer | undefined; // SUB-frame: bubbles its rects up to the parent
   // The per-session control token (Wave 0.3 / D-A1). Minted from a CSPRNG — NOT `randomId()`, whose
   // fallback is `Math.random()` and which documents itself as unsuitable for secrets (see control-token.ts).
   // `undefined` when the runtime has no CSPRNG: the channel then stays unauthenticated, which is the
@@ -372,6 +371,55 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // performance streams land in later slices.)
   const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
   const domDocument = options.document ?? (globalThis as { document?: Document }).document;
+
+  // === SUB-FRAME: obscuring only, and nothing else =============================================
+  //
+  // A WebView has ONE Bugsee session, owned by the top frame. A sub-frame that is injected (D9) exists to
+  // contribute its secure-area rects to the top frame's composed union — that is the whole job.
+  //
+  // Everything below this branch is deliberately skipped in a sub-frame:
+  //  - `hello`: the protocol is one handshake per WebView. N frames posting N hellos makes the session id,
+  //    the retained control token and the D10 obscuring decision a RACE between frames.
+  //  - the control token: a sub-frame can never RECEIVE control — `evaluateJavascript` targets the top
+  //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
+  //    would be rejected as a mismatch.
+  //  - capture: each frame keeps its own `seq` from 0, so entries from different frames collide in
+  //    ordering. And D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66) — running
+  //    a full capture stack inside every ad/OAuth/payment iframe is the opposite of that.
+  //  - `client.launch()`: `isLaunched()` stays false, which is truthful. This frame captures nothing.
+  //
+  // The client is still constructed and returned so the public signature holds and the host's `stop()`
+  // works; it simply never starts.
+  const w = win as { top?: unknown; self?: unknown } | undefined;
+  const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
+  // `win !== undefined` is not a redundant guard: it is what tells the type system that a sub-frame always
+  // HAS a window. `isTopFrame` is derived from `win`, so `!isTopFrame` already implies it is defined —
+  // spelling it here keeps the composer's `window` unconditional instead of leaving an unreachable branch.
+  if (win !== undefined && !isTopFrame) {
+    if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+      const childComposer = createObscuringComposer({
+        document: domDocument as unknown as ComposerDocument,
+        window: win as unknown as ComposerWindow,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        isTopFrame: false,
+      });
+      // The composer is called directly here, so its failures would escape launch() — and `window.parent`
+      // is [Replaceable], so one line of page script is enough to make it throw.
+      neverThrow(() => childComposer.start(), options.onError);
+      publicClient = {
+        ...client,
+        stop(timeout?: number): Promise<boolean> {
+          neverThrow(() => childComposer.stop(), options.onError);
+          return client.stop(timeout);
+        },
+      };
+    } else {
+      publicClient = client;
+    }
+    setCarrierClient(publicClient, carrier);
+    return publicClient;
+  }
+
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
     () => createConsoleInterceptor(),
@@ -420,31 +468,17 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   //   - the TOP frame owns the native I/O (the channel): it composes its own rects + the rects bubbled up from
   //     sub-frames into DOCUMENT-ABSOLUTE coordinates, posts the union as `secure`, and declares the `obscuring`
   //     capability so native drops its legacy masking (D10);
-  //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — it does
-  //     NOT post to native and does NOT declare the cap (only the top frame's union reaches native).
+  //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
+  //     by the sub-frame branch above, which returns before reaching here.
   // (Native owns the final "is coverage complete → fully drop legacy" decision: it knows its D9 injection set.)
-  const w = win as { top?: unknown; self?: unknown } | undefined;
-  const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
-  const obscuringDoc = domDocument as unknown as ComposerDocument;
-  const obscuringWin = win !== undefined ? { window: win as unknown as ComposerWindow } : {};
-  const obscuringErr = options.onError !== undefined ? { onError: options.onError } : {};
   if ((options.captureObscuring ?? true) && domDocument !== undefined) {
-    if (isTopFrame) {
-      obscuring = createObscuringChannel({
-        bridge,
-        document: obscuringDoc,
-        ...obscuringWin,
-        ...obscuringErr,
-        seq,
-      });
-    } else {
-      childComposer = createObscuringComposer({
-        document: obscuringDoc,
-        ...obscuringWin,
-        ...obscuringErr,
-        isTopFrame: false,
-      });
-    }
+    obscuring = createObscuringChannel({
+      bridge,
+      document: domDocument as unknown as ComposerDocument,
+      ...(win !== undefined ? { window: win as unknown as ComposerWindow } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      seq,
+    });
   }
   // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native), and
   // only once a collection has been PROVEN to work. Declaring the capability is what makes native stand its
@@ -495,10 +529,6 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   if (obscuringWorks) {
     obscuring?.start();
   }
-  // The channel guards the TOP frame; a SUB-frame composer is called directly, so its failures escaped
-  // launch() itself — and `window.parent` is [Replaceable], so one line of page script was enough
-  // (measured: `launch()` threw `hostile parent`, onError never fired).
-  neverThrow(() => childComposer?.start(), options.onError);
 
   // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
   // launch() starts fresh.
@@ -507,7 +537,6 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       obscuring?.stop(); // detach the secure-area observers/listeners
-      neverThrow(() => childComposer?.stop(), options.onError);
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script

@@ -157,6 +157,32 @@ look again:
 Detecting the swap and reporting it was considered and rejected: it costs a global read per post to
 report an event the SDK cannot act on, and a page can trigger it at will to spam `onError`.
 
+## D-A5. A sub-frame contributes obscuring rects and nothing else
+
+Prerequisite for making the advanced bundle a document-start script (see *What this does NOT close*).
+
+`launch()` gated only the obscuring path on frame position; the handshake and capture ran in **every**
+injected frame. That is already live wherever `WebViewDomainAllowlist` is non-empty, and it is what made
+all-origins document-start injection unsafe rather than merely broad:
+
+- **One session per WebView.** N frames posting N `hello`s makes the session id, the retained control token
+  and the D10 obscuring decision a race between frames — and native now latches the *first* hello, so which
+  frame wins is arbitrary.
+- **A sub-frame can never receive control.** `evaluateJavascript` targets the top frame, so a token minted
+  in a sub-frame is unusable; if native retained it, the top frame's own control would be rejected as a
+  mismatch and the channel would be dead.
+- **`seq` collides.** Each frame counts from 0, so entries from different frames interleave incoherently.
+- **D9 exists to keep Bugsee out of third-party content** (`webview-bridge.md:66`). Running a full capture
+  stack inside every ad / OAuth / payment iframe is the opposite of its stated purpose.
+
+So a sub-frame now runs the obscuring composer and returns: no `hello`, no token, no interceptors, no
+`client.launch()`. `isLaunched()` reports `false`, which is truthful — that frame captures nothing. The
+client object is still constructed and returned so the public signature and the host's `stop()` hold.
+
+**Consequence for the document-start change:** with this in place, all-origins injection produces exactly
+one handshake, one token and one capture stream, while giving obscuring the every-frame coverage the legacy
+path already has. Without it, that change multiplies sessions instead of widening coverage.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.

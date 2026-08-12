@@ -480,9 +480,11 @@ describe('launch (webview)', () => {
           window: win.target as unknown as WindowEvents,
         }),
       );
-      expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring'); // only the top frame declares it
+      // A sub-frame posts NOTHING to native at all — stronger than the previous assertion, which only
+      // checked that its hello omitted the `obscuring` cap. There is one session per WebView and the top
+      // frame owns it, so a sub-frame never handshakes (see the sub-frame describe block below).
+      expect(fake.msgs()).toEqual([]);
       expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // no native obscuring pull from a sub-frame
-      expect(fake.msgs().some((m) => m.k === 'secure')).toBe(false); // a sub-frame never posts `secure` to native
       // ...instead it bubbles its VIEWPORT rects up to its parent (composed there into the whole-page mask).
       expect(parentPost).toHaveBeenCalledWith(
         {
@@ -1180,5 +1182,105 @@ describe('the control surface fails closed and cannot be reset by the page (roun
       onError,
       'the relaunch reset the latch — untokened control was accepted',
     ).toHaveBeenCalled();
+  });
+});
+
+// STEP 1 of the document-start work — a SUB-FRAME contributes obscuring rects and nothing else.
+//
+// Today every injected frame runs a FULL SDK: `isTopFrame` gates only the obscuring path, while the
+// handshake (`bridge.post(hello)`) and capture (`client.launch()` + the interceptors) run unconditionally.
+// That is already live whenever `WebViewDomainAllowlist` is non-empty, and it is what makes registering
+// the advanced bundle as an all-origins document-start script unsafe:
+//
+//  - N hellos per WebView. The protocol is ONE session per WebView, and native now latches the first
+//    hello — so which frame supplies the retained token and the obscuring decision becomes a race.
+//  - A sub-frame can never RECEIVE control: `evaluateJavascript` targets the top frame. A token minted in
+//    a sub-frame is unusable, and if native retains it the top frame's own control is rejected.
+//  - Each frame keeps its own `seq` counter from 0, so entries from different frames collide in ordering.
+//  - D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66). Running full capture in
+//    every injected frame is the opposite of that.
+describe('a sub-frame contributes obscuring only (document-start step 1)', () => {
+  /** A window that reports itself as a SUB-frame (top is some other window). */
+  const subFrameWindow = () => {
+    const win = fakeEventTarget();
+    const posted: unknown[] = [];
+    Object.assign(win.target, {
+      self: win.target,
+      top: { other: true },
+      parent: { postMessage: (m: unknown) => posted.push(m) },
+    });
+    return { win, posted };
+  };
+
+  const topFrameWindow = () => {
+    const win = fakeEventTarget();
+    Object.assign(win.target, { self: win.target, top: win.target });
+    return win;
+  };
+
+  it('posts NO hello — the WebView has exactly one session, owned by the top frame', () => {
+    const fake = fakeGlobal();
+    const { win } = subFrameWindow();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+  });
+
+  it('installs NO capture — a third-party iframe’s console is not the app’s session', () => {
+    const fake = fakeGlobal();
+    const { win } = subFrameWindow();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    console.log('iframe-noise-should-not-cross');
+    expect(
+      fake.msgs().some((m) => JSON.stringify(m).includes('iframe-noise-should-not-cross')),
+    ).toBe(false);
+  });
+
+  it('does not report itself as launched', () => {
+    const fake = fakeGlobal();
+    const { win } = subFrameWindow();
+    const client = track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    expect(client.isLaunched()).toBe(false);
+  });
+
+  it('STILL bubbles its secure rects to the parent — the one thing a sub-frame is for', () => {
+    const fake = fakeGlobal();
+    const { win, posted } = subFrameWindow();
+    const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(2)] });
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: win.target as unknown as WindowEvents,
+        document: dom.document as unknown as Document,
+      }),
+    );
+    expect(posted.length, 'the sub-frame stopped composing obscuring rects').toBeGreaterThan(0);
+  });
+
+  it('TOP frame is unaffected — hello, capture and launch all still happen', () => {
+    // The canary. Every assertion above is satisfied by an SDK that does nothing anywhere.
+    const fake = fakeGlobal();
+    const win = topFrameWindow();
+    const client = track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    console.log('top-frame-capture-works');
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(1);
+    expect(client.isLaunched()).toBe(true);
+    expect(
+      entriesOfType(fake.msgs(), 'log').some((e) =>
+        JSON.stringify(e.p).includes('top-frame-capture-works'),
+      ),
+    ).toBe(true);
   });
 });
