@@ -1284,3 +1284,84 @@ describe('a sub-frame contributes obscuring only (document-start step 1)', () =>
     ).toBe(true);
   });
 });
+
+// The whole point of a sub-frame running the composer: its secure views must still reach native. The
+// composer unit tests cover the re-mapping arithmetic; NOTHING covered the chain through `launch()`, which
+// is exactly the path the sub-frame change touched. This closes that.
+describe('secure views from a SUB-frame still reach native (D9 chain, through launch)', () => {
+  /** A document with one secure input of its own AND one <iframe> whose contentWindow is `childWin`. */
+  const topDocument = (childWin: object) => {
+    const iframe = {
+      contentWindow: childWin,
+      getBoundingClientRect: () => ({ top: 30, left: 40, bottom: 130, right: 240 }),
+    };
+    return fakeDomDocument({
+      [SECURE_INPUT]: [secureEl(2)],
+      iframe: [iframe as unknown as { getBoundingClientRect(): object }],
+    });
+  };
+
+  it('composes the top frame’s own rects WITH a child frame’s bubbled rects into one `secure`', () => {
+    const fake = fakeGlobal();
+    const childWin = {};
+    const dom = topDocument(childWin);
+    const win = fakeEventTarget();
+    Object.assign(win.target, { self: win.target, top: win.target }); // this IS the top frame
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        document: dom.document as unknown as Document,
+        window: win.target as unknown as WindowEvents,
+      }),
+    );
+
+    // The sub-frame's SDK bubbles its viewport rects up (postMessage). Replay that arrival.
+    win.emit('message', {
+      data: {
+        __bugsee_secure_bubble: 1,
+        areas: [{ type: 'text', top: 5, left: 6, bottom: 7, right: 8 }],
+      },
+      source: childWin,
+    });
+
+    const secure = fake.msgs().filter((m): m is SecureMessage => m.k === 'secure');
+    expect(secure.length, 'no secure message reached native').toBeGreaterThan(0);
+    expect(secure.at(-1)?.p).toEqual([
+      { type: 'text', top: 2, left: 3, bottom: 4, right: 5 }, // the top frame's own input
+      { type: 'text', top: 35, left: 46, bottom: 37, right: 48 }, // the child's, offset by the <iframe>
+    ]);
+  });
+
+  it('ignores a bubble from a window that is NOT one of this frame’s iframes', () => {
+    // The security half: `BugseeBridge` aside, `postMessage` is reachable by anyone. Only a verified child
+    // iframe of THIS document may contribute rects — otherwise a hostile frame could inject or displace
+    // the mask. (Removing rects is what would expose pixels.)
+    const fake = fakeGlobal();
+    const dom = topDocument({});
+    const win = fakeEventTarget();
+    Object.assign(win.target, { self: win.target, top: win.target });
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        document: dom.document as unknown as Document,
+        window: win.target as unknown as WindowEvents,
+      }),
+    );
+    const before = fake.msgs().filter((m) => m.k === 'secure').length;
+
+    win.emit('message', {
+      data: {
+        __bugsee_secure_bubble: 1,
+        areas: [{ type: 'text', top: 9, left: 9, bottom: 9, right: 9 }],
+      },
+      source: { imposter: true },
+    });
+
+    expect(fake.msgs().filter((m) => m.k === 'secure').length).toBe(before);
+    expect(fake.global.__bugsee_bridge?.snapshot()).toBe(
+      JSON.stringify([{ type: 'text', top: 2, left: 3, bottom: 4, right: 5 }]),
+    );
+  });
+});
