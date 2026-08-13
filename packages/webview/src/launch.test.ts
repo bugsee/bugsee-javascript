@@ -954,6 +954,23 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
     return (hello as unknown as { tok: string }).tok;
   };
 
+  it('never puts a NATIVE-minted nonce on the wire, and mints no token of its own', () => {
+    // D-A10. The whole value of a native-minted secret is that the page never sees it. Publishing it in
+    // `hello` — which is what the JS-minted token must do, so native can learn it — would hand it to
+    // whatever sink is listening, including a page script that shadowed the bridge before us. Native
+    // already has this one, so there is nobody to publish it to.
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global, controlNonce: 'minted-by-native' }));
+    console.log('some-traffic'); // produce post-hello messages too
+
+    const all = fake.msgs();
+    expect(all.length).toBeGreaterThan(1); // else the assertion below is vacuous
+    expect(all.some((m) => JSON.stringify(m).includes('minted-by-native'))).toBe(false);
+    // And no JS-minted token is published either: two secrets would mean two ways in, and the weaker one
+    // (page-mintable, wire-published) would set the real bar.
+    expect(tokenOf(fake)).toBeUndefined();
+  });
+
   it('publishes a token on hello, exactly once and nowhere else', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));

@@ -34,6 +34,17 @@ export function createBridgeControl(opts?: {
    * message. Omitted → the channel can never authenticate and stays open, which is the pre-token behaviour.
    */
   token?: string;
+  /**
+   * A secret minted by NATIVE and handed to this SDK out of band — interpolated into the bundle native
+   * injects, so it arrives by a route the page never observes (D-A10).
+   *
+   * When present it supersedes {@link token} entirely and the channel is CLOSED from the first message.
+   * That is the difference that matters: `token` is minted by JS and published in `hello`, so a page script
+   * can mint one too and native cannot tell them apart — which is why that scheme can only ever start open
+   * and wait to latch. Native already knows this one, so an untokened message is an attack from the outset
+   * rather than a possible legacy receiver.
+   */
+  nativeSecret?: string;
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
   /**
@@ -47,6 +58,7 @@ export function createBridgeControl(opts?: {
 }): BridgeControl {
   const config: BridgeControlConfig = { reportTrigger: opts?.reportTrigger ?? false };
   const token = opts?.token;
+  const nativeSecret = opts?.nativeSecret;
   // The one-way upgrade (D-A2). No shipped native receiver echoes a token yet, so requiring one immediately
   // would break every existing host. Instead the channel starts open and latches CLOSED the first time a
   // correctly-tokened message proves native speaks the new protocol. A page script cannot force the latch
@@ -59,6 +71,13 @@ export function createBridgeControl(opts?: {
 
   /** Whether this message may act on the SDK. */
   const admits = (msg: ControlMessage): boolean => {
+    // A native-minted secret admits nothing else, from the very first message. No open period, no latch to
+    // arm — native knew the secret before this SDK existed, so there is no legacy receiver to accommodate.
+    // This is what closes the window in which a page script could `control({cmd:"stop"})` the capture off,
+    // and the permanent hole when `mintControlToken` finds no CSPRNG and returns undefined.
+    if (nativeSecret !== undefined) {
+      return (msg as { tok?: unknown }).tok === nativeSecret;
+    }
     // No secret was minted, so nothing can be authenticated against — and rejecting a token we cannot
     // verify would lock out a MODERN native rather than an old one. Stay open; the latch never arms.
     if (token === undefined) {

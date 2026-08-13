@@ -6,6 +6,55 @@ const reply = (m: Omit<ControlMessage, 'k' | 'b'>): string =>
   JSON.stringify({ b: PROTOCOL_VERSION, k: 'control', ...m });
 
 describe('createBridgeControl', () => {
+  // D-A10 — a NATIVE-minted secret closes the channel from the first message.
+  //
+  // `token` (D-A1) is minted by JS and published in `hello`, which means a page script can mint one too and
+  // native cannot tell the two apart. It is why the channel has to start OPEN and wait to latch: until a
+  // correctly-tokened message proves native speaks the new protocol, nothing can be rejected. During that
+  // window — and FOREVER when `mintControlToken` returns undefined because no CSPRNG is present — a page
+  // script can call `__bugsee_bridge.control(...)` with `cmd:"stop"` and switch the customer's capture off.
+  //
+  // A native-minted secret has no such window. Native already knows it before the first message, so an
+  // untokened or wrongly-tokened control message is an attack from the outset, not a legacy receiver.
+  describe('with a native-minted secret', () => {
+    it('rejects an untokened control message immediately — there is no open period', () => {
+      const onCommand = vi.fn();
+      const bc = createBridgeControl({ onCommand, nativeSecret: 'from-native' });
+
+      bc.control(reply({ command: 'stop' }));
+
+      expect(onCommand).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wrongly-tokened control message', () => {
+      const onCommand = vi.fn();
+      const bc = createBridgeControl({ onCommand, nativeSecret: 'from-native' });
+
+      bc.control(reply({ command: 'stop', tok: 'guessed' } as never));
+
+      expect(onCommand).not.toHaveBeenCalled();
+    });
+
+    it('admits a control message carrying the native secret', () => {
+      const onCommand = vi.fn();
+      const bc = createBridgeControl({ onCommand, nativeSecret: 'from-native' });
+
+      bc.control(reply({ command: 'stop', tok: 'from-native' } as never));
+
+      expect(onCommand).toHaveBeenCalledWith('stop');
+    });
+
+    it('stays closed after a rejection — a wrong token cannot re-open the channel', () => {
+      const onCommand = vi.fn();
+      const bc = createBridgeControl({ onCommand, nativeSecret: 'from-native' });
+
+      bc.control(reply({ command: 'stop', tok: 'guessed' } as never));
+      bc.control(reply({ command: 'pause' })); // untokened, after the failed attempt
+
+      expect(onCommand).not.toHaveBeenCalled();
+    });
+  });
+
   it('defaults reportTrigger to false (D5) with no native session yet', () => {
     const bc = createBridgeControl();
     expect(bc.config).toEqual({ reportTrigger: false });

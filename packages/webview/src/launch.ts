@@ -116,6 +116,19 @@ export interface BugseeWebViewLaunchOptions {
   /** Report handler: `before` mutates/returns a new report or null to VETO it. */
   reportHandler?: ReportHandler;
 
+  /**
+   * A secret minted by NATIVE and passed in through the injected bootstrap (D-A10).
+   *
+   * Native chooses the bytes of the bundle it injects and, via document-start, runs them before any page
+   * script — the one asymmetry native holds over the page. A nonce carried that way is a secret the page
+   * never sees, which the JS-minted control token can never be: `launch` is itself reachable from the page,
+   * so anything minted here a page script can mint too.
+   *
+   * When set, the control channel is closed from the FIRST message and this value is NOT published in
+   * `hello` — native already has it, and putting it on the wire would hand it to whatever sink is listening.
+   */
+  controlNonce?: string;
+
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -283,9 +296,17 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // `mintControlToken()` reads `globalThis`, NOT the injected `global`: that option is a seam for the
   // bridge SURFACE (`BugseeBridge` / `__bugsee_bridge`), not a realm, and the CSPRNG must come from the
   // realm actually executing this code.
-  const controlToken = bridge.available ? mintControlToken() : undefined;
+  //
+  // A NATIVE-minted nonce supersedes all of that when present (D-A10). Native interpolates it into the
+  // bundle it injects, so it reaches this SDK by a route the page never observes, and native knew it before
+  // the first message — no publication in `hello`, no open period, no latch to arm. The JS-minted token
+  // remains for hosts that pass no nonce.
+  const nativeSecret = options.controlNonce;
+  const controlToken =
+    nativeSecret === undefined && bridge.available ? mintControlToken() : undefined;
   const control = createBridgeControl({
     token: controlToken,
+    ...(nativeSecret !== undefined ? { nativeSecret } : {}),
     // The latch lives on the per-global slot, not in this closure, so a page-forced relaunch inherits it.
     auth: bridgeSlot.auth,
     onError: options.onError,
