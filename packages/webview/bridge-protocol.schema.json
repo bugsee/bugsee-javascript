@@ -74,7 +74,7 @@
         "tok": {
           "type": "string",
           "minLength": 1,
-          "description": "Per-session control token. Native MUST store it per-WebView and echo it as `tok` on every `control` message; JS rejects control that omits or mismatches it once it has seen one valid tokened message. Sent ONLY here — never repeated on later JS->native messages, because that would expose it to any script tapping the bridge after launch."
+          "description": "SUPERSEDED by D-A10 — a receiver MUST NOT store or echo this. It was minted by the JS SDK and published here so native could learn it, which authenticated nobody: `hello` arrives on the same @JavascriptInterface any frame can post to, so native cannot tell this token from one a page script minted. That is why the channel had to start open and wait to latch, and why a script could stop capture inside that window. Native mints its OWN secret instead and delivers it inside the bundle it injects (see `control.tok`). The field stays on the wire only so an older SDK still validates."
         }
       },
       "required": [
@@ -340,7 +340,7 @@
         "tok": {
           "type": "string",
           "minLength": 1,
-          "description": "Echo of the token native received on `hello`. Proves the message came from native rather than from a script in the page, which can also reach `__bugsee_bridge.control(...)`. Optional on the wire for compatibility with receivers that predate it, but a receiver that omits it leaves the control channel unauthenticated and a page script can pause/stop the SDK. MUST be omitted entirely rather than sent empty: JS treats a present-but-wrong token as an attack and rejects the message."
+          "description": "The control secret NATIVE minted (D-A10) — 128 bits of CSPRNG, interpolated into the bundle native injects as `BugseeWebView.launch(token,{controlNonce})`, so it reaches the SDK by a route the page never observes. Required on EVERY control message, from the first: the SDK rejects anything else with no open period and no latch to race. It must NOT be derived from `hello.tok`, which any page script can mint. It must also differ from the capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping the outgoing stream send commands."
         }
       },
       "required": [
