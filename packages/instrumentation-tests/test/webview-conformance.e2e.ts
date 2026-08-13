@@ -15,6 +15,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 // the harness validates against the SAME file shipped in the @bugsee/webview package — they cannot drift.
 import schema from '../../webview/bridge-protocol.schema.json';
 
+/** The two secrets native mints and injects; see D-A10/D-A11. */
+const CONTROL_NONCE = 'conformance-control-nonce';
+const CAPTURE_NONCE = 'conformance-capture-nonce';
+
 // Compiled once: validates any JS<->native message against the protocol schema.
 const validateMessage = new Ajv({ allErrors: true }).compile(schema);
 
@@ -45,11 +49,23 @@ function createReceiver() {
             `protocol VIOLATION: ${JSON.stringify(m)}\n${JSON.stringify(validateMessage.errors, null, 2)}`,
           );
         }
+        // D-A11: native DROPS anything without the capture nonce, so an unstamped message is not merely
+        // off-contract — it is capture that silently never arrives. Schema-valid is not sufficient here,
+        // because the field is optional on the wire (a host that mints no nonce still conforms).
+        const stamped = (m as { n?: unknown }).n;
+        if (stamped !== CAPTURE_NONCE) {
+          throw new Error(
+            `UNSTAMPED message — native would drop this: ${JSON.stringify(m)}`,
+          );
+        }
       }
     },
     /** native -> JS control. The control message itself is schema-checked (it is part of the contract). */
     sendControl(msg: Record<string, unknown>): void {
-      const control = { b: 1, k: 'control', ...msg };
+      // Native stamps every control message with the secret it minted and injected (D-A10). The SDK
+      // requires it from the FIRST message — there is no open period — so a harness that omitted it was
+      // exercising a channel real native never speaks on.
+      const control = { b: 1, k: 'control', tok: CONTROL_NONCE, ...msg };
       expect(validateMessage(control)).toBe(true); // native must also speak valid control
       host.__bugsee_bridge?.control(JSON.stringify(control));
     },
@@ -66,6 +82,12 @@ function boot(options: Parameters<typeof launch>[1] = {}): {
   tickers.length = 0;
   const client = launch('app-token', {
     global: rx.host,
+    // Boot the way native actually boots the SDK (D-A10/D-A11): both secrets arrive through the injected
+    // bootstrap. Without them the harness exercised an unstamped wire that production never emits — and
+    // since native now DROPS unstamped messages, a green harness would have meant nothing about the bytes
+    // a real receiver sees.
+    controlNonce: CONTROL_NONCE,
+    captureNonce: CAPTURE_NONCE,
     carrier: {}, // fresh per-WebView carrier so the singleton + shared interceptors are isolated per test
     captureNetwork: false, // don't patch jsdom's fetch/XHR; network capture is covered by unit tests
     // a deterministic system-traces sampler + a captured scheduler so a tick produces a traces.system entry
@@ -236,33 +258,33 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
   // on every control message. A receiver that does not is not rejected — it simply leaves the channel
   // unauthenticated, and any script in the page can then pause or stop capture through
   // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
-  it('publishes a control token on hello that native must echo back (Wave 0.3)', async () => {
-    // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: store `hello.tok` per-WebView and echo it as
-    // `tok` on every control message. A receiver that does not is not rejected — it simply leaves the
-    // channel unauthenticated, and any script in the page can then pause or stop capture through
-    // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
+  it('requires the NATIVE-minted control secret, from the very first message (D-A10)', async () => {
+    // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret, interpolate it into
+    // the bundle it injects (`BugseeWebView.launch(token, {controlNonce, captureNonce})`), and put the
+    // control one on EVERY control message as `tok`.
     //
-    // Round 1 caught the earlier version of this test asserting `expect(rx.host.__bugsee_bridge)
-    // .toBeDefined()` — unconditionally true, since the binding is non-configurable and permanent. It
-    // passed with the token ignored entirely. The enforcement is now asserted on the D5 report gate, an
-    // OBSERVABLE the native team can reproduce.
+    // It replaces the earlier scheme, where the SDK minted a token, published it in `hello`, and native
+    // echoed it back. That authenticated nobody: `hello` arrives on an interface any frame can post to, so
+    // native could not tell the SDK's token from a page script's — which is why the channel had to start
+    // OPEN and wait to latch, and why any script could `control({cmd:'stop'})` inside that window. A secret
+    // native mints and delivers inside the injected script is one the page never sees.
     const { client, rx } = track(boot());
     const hello = rx.messages()[0] as { tok?: string };
-    expect(typeof hello.tok, 'hello carries no control token').toBe('string');
-    rx.assertAllConform(); // the token field is part of the shipped schema
+    expect(hello.tok, 'hello must NOT carry a secret — native already has its own').toBeUndefined();
+    rx.assertAllConform();
 
-    // A tokened control is accepted: the gate turns ON.
-    rx.sendControl({ tok: hello.tok, config: { reportTrigger: true } });
+    // A correctly-stamped control is accepted: the D5 gate turns ON.
+    rx.sendControl({ config: { reportTrigger: true } });
     await client.logException(new Error('gate-on'));
     expect(rx.byKind('report')).toHaveLength(1);
 
-    // Having proven it knows the token, native has locked the page out: an UNTOKENED control — which any
-    // page script can send — must no longer be able to turn the gate back off.
-    rx.sendControl({ config: { reportTrigger: false } });
-    await client.logException(new Error('still-gated-on'));
+    // An UNSTAMPED control — what any page script can send — must be refused, with no open period to
+    // exploit and no latch to race.
+    rx.sendControl({ tok: undefined, config: { reportTrigger: false } });
+    await client.logException(new Error('gate-still-on'));
     expect(
       rx.byKind('report'),
-      'an untokened control from the page downgraded the D5 gate after the channel authenticated',
+      'an unstamped control message reconfigured the SDK',
     ).toHaveLength(2);
   });
 
@@ -297,7 +319,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     const { client, rx } = boot();
     await client.stop();
     const bye = rx.byKind('bye')[0];
-    expect(bye).toEqual({ b: 1, k: 'bye' });
+    expect(bye).toEqual({ b: 1, k: 'bye', n: CAPTURE_NONCE });
     // Wave 0.3 / D-A3: the control entry sits on a NON-CONFIGURABLE binding — a removable global was a
     // replaceable one, which is the defect — so teardown makes it inert instead of deleting it.
     const before = rx.messages().length;

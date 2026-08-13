@@ -348,14 +348,73 @@ Two ways out, and they are not equivalent:
 Until one of these lands, activating the advanced path **re-opens** the masking bypass that 7.1.x shipped.
 Treat the version bump as gated on it.
 
+## D-A10. Native mints the control secret, so the channel is never open
+
+`tok` (D-A1) is minted by JS and published in `hello` so native can learn it. That is the whole problem:
+`hello` arrives on an interface any frame can post to, so native cannot tell the SDK's token from a page
+script's. The channel therefore had to start **open** and wait to latch on the first correctly-tokened
+message — and a page could `__bugsee_bridge.control({cmd:"stop"})` inside that window, permanently when the
+page realm had no CSPRNG and `mintControlToken` returned `undefined`.
+
+Native mints it instead: 128 bits of `SecureRandom`, interpolated into the bundle native injects as
+`BugseeWebView.launch("<token>",{controlNonce:"…"})`. The SDK holds it in closure scope and requires it on
+every inbound control message **from the first one** — no publication, no open period, no latch. `onHello`
+retains nothing.
+
+## D-A11. A second secret authenticates capture, and it is separate on purpose
+
+`BugseeBridge.post` is reachable from every frame, so any script could inject fabricated
+`log`/`network`/`events`/`traces`/`breadcrumbs` entries — and with no rate limit, loop until the native ring
+buffer evicted the genuine capture of the bug being reported. That last part is why it is not merely a
+data-integrity concern: it destroys evidence.
+
+The SDK now stamps every outgoing message with `n`, and native drops anything that does not carry it, before
+any delegate effect. The gate covers **every** inbound kind: a forged `hello` drives native into replying to
+a page script, which is state change on an unauthenticated message.
+
+**Why two secrets and not one.** The capture nonce has to travel the wire to do its job, so a script that
+shadowed `BugseeBridge` before the SDK pinned it will read it — survivable, since such a script can already
+forge capture. Reusing the control secret would mean that same exposure also granted `cmd:"stop"`, turning a
+capture tap into a kill switch.
+
+**Skew fails closed and loudly.** A bundle older than native stamps nothing, so native drops 100% of its
+capture. That is the correct direction, but it was silent — indistinguishable from "the WebView was never
+used" — so the first rejection is now logged once, naming both likely causes.
+
+## D-A12. The pull needs more than one trigger
+
+D-A9 moved the mask to the snapshot pull but left `onSecure` as its only caller, and a comment claiming the
+pull "also runs on the control path" to justify why a suppressed push was harmless. **No such caller
+existed.** Any state with no admitted push therefore left the advanced path — which has no legacy mask
+source — masking nothing at all. Two ordinary states produce exactly that:
+
+- the JS obscuring channel fails to start (`probe()` false), so it posts nothing;
+- a Bugsee `stop()`→`launch()` re-wraps a WebView whose loaded page still runs the **previous** session's
+  SDK, stamping a nonce the new receiver rejects — so every push is dropped until the user navigates.
+
+The pull works in both cases: it is an outbound `evaluateJavascript`, not a nonce-gated inbound message. So
+native asks whenever a page becomes ready, as well as on a push.
+
+Two further properties the pull needs, each found only after the previous fix shipped:
+
+- **It expires.** A guard only a callback can clear is unsafe when the callback is not guaranteed to run —
+  Android drops it on renderer death, `destroy()` mid-evaluation, or a navigation that tears down the JS
+  context. One lost callback froze the mask permanently.
+- **It has a generation.** Once a deadline lets two pulls overlap, a late answer from an expired pull would
+  release the slot a newer pull holds and overwrite its rects. The issue stamp is the pull's identity, and
+  the callback proves it still owns the slot before acting.
+- **A signal arriving mid-pull is remembered.** The in-flight answer may predate the change that signal
+  announces, so coalescing it away lost it entirely; a dirty flag drives exactly one re-pull.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.
 
 | Message | Field | Direction | Meaning |
 |---|---|---|---|
-| `hello` | `tok: string` | JS→native | The session token. Sent **once**. Native stores it per-WebView. |
-| `control` | `tok: string` | native→JS | Echo. Required once the channel has upgraded (D-A2). |
+| `hello` | `tok: string` | JS→native | **Superseded by D-A10.** The JS-minted token; native no longer stores or echoes it. |
+| `control` | `tok: string` | native→JS | The secret NATIVE minted (D-A10). Required on every control message, from the first. |
+| *all JS→native* | `n: string` | JS→native | The capture nonce (D-A11). Native drops any message without it. |
 
 `bridge-protocol.schema.json` gains both, and the conformance harness asserts the round-trip.
 
