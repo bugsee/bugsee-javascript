@@ -31,7 +31,8 @@ export function createBridgeControl(opts?: {
   onCommand?: (command: NonNullable<ControlMessage['command']>) => void;
   /**
    * The JS-minted per-session token published once on `hello` (D-A1), used ONLY against a host that
-   * injected no `nativeSecret`. Native echoes it on every control message. Omitted → the channel can never
+   * injected no `nativeSecret`. Such a host would echo it on every control message — no shipped receiver ever
+   * did, and a current one mints its own secret instead. Omitted → the channel can never
    * authenticate and stays open, which is the pre-token behaviour.
    *
    * Superseded by {@link nativeSecret} wherever native mints one: a token this SDK mints is one a page

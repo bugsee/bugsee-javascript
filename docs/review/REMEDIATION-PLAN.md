@@ -21,7 +21,7 @@ serious hole, and none blocks anything else.
 |---|---|---|---|---|
 | 0.1 | ✅ **DONE** — **Cross-tenant capture-ring sharing in Durable Objects** — each DO instance gets its own partition. Built as `createPartitionedCaptureStore` in `@bugsee/core` (`partitioned-capture-store.ts`), with the tenant `owner` threaded from `instrument-durable-object.ts` / `instrument-class.ts`. Design: `docs/design/cloudflare-tenant-isolation.md`. Tested in `partitioned-capture-store.test.ts` + the cloudflare suites. | `packages/cloudflare`, `packages/core` | 2–3d |
 | 0.2 | ✅ **DONE** — **Renderer-controlled `type` reaches `path.join` in main** — `t` is validated against a closed `KNOWN_FILE_TYPES` set and `ts` against a finite-number check, in `packages/electron/src/protocol.ts`. A failing message is DROPPED, not sanitised. `protocol.test.ts` asserts the proven exploit string (`'../../../../victim/pwned.txt'`) and seven sibling shapes are all rejected. | `packages/electron` | 2–3d |
-| 0.3 | ✅ **JS SIDE DONE** (`b861387`) — **Unauthenticated, page-replaceable bridge globals.** Sink PINNED on first resolve (SEV1-3); the `__bugsee_bridge` binding is now `writable:false, configurable:false` with `stop()` making the session INERT instead of deleting it (SEV1-4b); a per-session token minted in JS and published once on `hello` authenticates inbound control, enforced by a ONE-WAY UPGRADE so no shipped receiver breaks (SEV1-4a). Design + cross-repo contract: `docs/design/webview-bridge-auth.md`. **Native remaining:** echo `hello.tok` on control (activates the whole thing), then point the existing `WebViewMessageChannel` at the advanced bridge for API 26+. | `packages/webview` | Any later-loading script on the page taps the whole un-redacted capture stream, or suppresses capture entirely. | 3–4d |
+| 0.3 | ✅ **JS SIDE DONE** (`b861387`) — **Unauthenticated, page-replaceable bridge globals.** Sink PINNED on first resolve (SEV1-3); the `__bugsee_bridge` binding is now `writable:false, configurable:false` with `stop()` making the session INERT instead of deleting it (SEV1-4b); a per-session token minted in JS and published once on `hello` authenticates inbound control, enforced by a ONE-WAY UPGRADE so no shipped receiver breaks (SEV1-4a). Design + cross-repo contract: `docs/design/webview-bridge-auth.md`. **Native remaining:** NONE for the token — SUPERSEDED by D-A10: native mints its OWN control secret and injects it, and must NOT echo `hello.tok` (echoing a page-mintable value authenticated nobody). Optionally still: point the existing `WebViewMessageChannel` at the advanced bridge for API 26+. | `packages/webview` | Any later-loading script on the page taps the whole un-redacted capture stream, or suppresses capture entirely. | 3–4d |
 
 **0.3 sequencing, revised 2026-08-10.** D1 assumed the Android receiver gated this. It has since landed on
 Android master (`BridgeReceiver`/`BridgeMessageParser`/`BridgeHandshake` + fuzz tests), and the JS side was
@@ -110,9 +110,9 @@ a change in the rrweb fork. A test pins the current behaviour so that a fork cha
   synchronous native pull, `start()`, and change-tracking recompute. The policy is a **full-frame secure
   rect**, deliberately NOT "last known good": stale rects report success while a field added after the
   failure goes unmasked. Every failure is reported through `onError` rather than being silent.
-- **The `obscuring` capability is now gated on a successful probe** (SEV1 #2). Declaring it is what makes
-  native stand its legacy masking script down, and the protocol has no retraction message — so on a page
-  where collection already throws, the SDK stays silent and native keeps its own masking. No wire change,
+- **The `obscuring` capability is now gated on a successful probe** (SEV1 #2). Declaring it tells native this
+  SDK supplies the rects, and the protocol has no retraction message — so on a page where collection already
+  throws, the SDK stays silent rather than promising rects it cannot deliver. No wire change,
   so this needs no Android coordination.
 
 Remaining in `webview`: the bridge-authentication items (SEV1 #3/#4) are **Wave 0.3**, still gated on the

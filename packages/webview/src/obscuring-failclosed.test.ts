@@ -12,8 +12,8 @@ import {
 // analysis").
 //
 // `__bugsee_bridge.snapshot()` is the SYNCHRONOUS pull native performs at frame-capture time to learn which
-// rects to mask. Declaring the `obscuring` capability is exactly what tells native to stand its legacy
-// masking script down — so when this chain throws there is no second line of defence, and native renders the
+// rects to mask. On the advanced path this SDK is the ONLY in-WebView mask source — the legacy in-page script
+// is not injected there — so when this chain throws there is no second line of defence, and native renders the
 // frame UNMASKED with password / cc-* / .bugsee-hide content in it. There was no `try` anywhere in
 // obscuring-source.ts, obscuring-composer.ts or obscuring-channel.ts, and one line of page script
 // (`document.querySelectorAll = () => { throw 0 }`) was enough to trigger it deliberately.
@@ -208,9 +208,9 @@ describe('the channel — the boundary native actually calls', () => {
   });
 
   it('probe() reports whether obscuring can actually do its job', () => {
-    // What gates the `obscuring` capability: declaring it is what makes native stand its own masking down,
-    // so it must not be declared on a page where collection is already failing (SEV1 #2 — the protocol has
-    // no way to retract it afterwards).
+    // What gates the `obscuring` capability: declaring it tells native this SDK supplies the rects, and on
+    // the advanced path nothing else does — so it must not be declared on a page where collection is already
+    // failing (SEV1 #2 — the protocol has no way to retract it afterwards).
     expect(channel(okDoc()).probe()).toBe(true);
     expect(channel(throwingDoc()).probe()).toBe(false);
   });

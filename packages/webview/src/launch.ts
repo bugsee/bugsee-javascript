@@ -58,7 +58,7 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 // capture (console→log + network in slice 1; full parity in slice 2) over a HostBridgeCaptureStore that STREAMS
 // each entry across the WebView boundary — NO transport / upload pipeline / bundle store / IndexedDB (native is
 // the ring buffer + the bundler). On launch it opens a `hello` handshake (declaring its capabilities, which
-// are recorded by native but decide nothing — D-A7) and exposes `__bugsee_bridge.control` for native→JS control.
+// are recorded nowhere by native and decide nothing — D-A7) and exposes `__bugsee_bridge.control` for control.
 // WebView-originated report TRIGGERING is gated behind `reportTrigger` (D5, default off) — wired in slice 2.
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
@@ -67,8 +67,8 @@ export const SDK_VERSION = '0.0.0';
 // The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
 // nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
 // capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)
-// so native knows whether the advanced SDK masks sensitive pixels itself; if absent native keeps its legacy
-// masking source is present, which native ADDS to its own. The DOM viewtree + performance streams land later.
+// so native knows whether this SDK contributes a masking source at all — rects it ADDS to its own mask, never
+// a reason to stand that mask down. The DOM viewtree + performance streams land in later slices.
 const CAPABILITIES = [
   'log',
   'network',
@@ -525,8 +525,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     });
   }
   // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native), and
-  // only once a collection has been PROVEN to work. Declaring the capability is what makes native stand its
-  // capability, and the protocol has no retraction message — so on a page where
+  // only once a collection has been PROVEN to work. The claim cannot be retracted — the protocol has no
+  // retraction message — so on a page where
   // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
   // answer (docs/review/webview.md SEV1 #2).
   //
@@ -535,9 +535,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
   // from `caps`.
   // Fail CLOSED on both counts (review round 1). The probe already covered "collection is broken"; the
-  // second half is that a control surface we do not own is just as disqualifying. Declaring `obscuring` is
-  // what makes native DROP its own masking script — so advertising it while the page owns
-  // `__bugsee_bridge` leaves sensitive pixels masked by nobody, which is worse than not declaring at all.
+  // second half is that a control surface we do not own is just as disqualifying. Declaring `obscuring` tells
+  // native this SDK supplies rects; advertising it while the page owns `__bugsee_bridge` means the rects it
+  // expects never arrive, and on the advanced path there is no other in-WebView mask source — so the pixels
+  // are masked by nobody, which is worse than not declaring at all.
   obscuringWorks = obscuring?.probe() === true && bridgeSlot.installed;
   const caps = obscuringWorks ? [...CAPABILITIES, 'obscuring'] : [...CAPABILITIES];
 
@@ -552,7 +553,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   bridgeSlot.session = mySession;
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
-  // is recorded by native but decides nothing (D-A7).
+  // is recorded nowhere by native and decides nothing (D-A7).
   //
   // The token rides this message ONLY when a native sink is already attached (review round 1, SEV1). When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up

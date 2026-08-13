@@ -317,7 +317,8 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    handed to the Android team** (the protocol TS types, the schema, and the harness are kept in lockstep).
 8. **Android native receiver** (in the `android/` repo, coordinated) — a new v1 receiver alongside legacy
    `BugseeJsListener`, switched by the handshake; new consumers for performance/traces/events/errors; the gated
-   `report` handling; per-frame D8/D9 injection gating; D10 capability-driven legacy suppression. We supply the
+   `report` handling; per-frame D8/D9 injection gating. (D10's capability-driven legacy suppression is
+   SUPERSEDED — D-A7: native masks regardless and unions both sources.) We supply the
    conformance harness + this spec.
 
 ## 13. Deferred / open

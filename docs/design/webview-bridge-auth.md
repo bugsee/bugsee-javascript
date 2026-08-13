@@ -442,10 +442,14 @@ no open period to activate. Item 2 closes SEV1-3 for API 26+.
 
 Being explicit, because the review's finding was that this boundary had been assumed rather than examined:
 
-- **SEV2-5, forged JS→native messages**, on the `@JavascriptInterface` fallback. A page script can still
-  call `window.BugseeBridge.post(…)` and forge `entry`/`report` messages. The MessagePort closes it on API
-  26+; below that it stands. Adding the token to outbound messages would close it and would break D-A1, so
-  it is deliberately not done.
+- **SEV2-5, forged JS→native messages**, on the `@JavascriptInterface` fallback. **CLOSED by D-A11**, and by
+  the route this bullet rejected. It said "adding the token to outbound messages would close it and would
+  break D-A1, so it is deliberately not done" — correct about D-A1, wrong about the conclusion. The answer
+  was a SECOND secret: `n` rides every outbound message and native drops anything without it, while the
+  control secret stays off the wire entirely. One secret could not do both jobs; two can.
+
+  Residual: a script that shadows `BugseeBridge` before the SDK pins it reads `n` and can forge capture —
+  the accepted pre-pin case — but not control, which is exactly what the split buys.
 - **A page script that runs before the SDK.** It sees `hello`, learns the token, and can do anything the
   SDK can. No in-page mechanism defends against this.
 
@@ -470,6 +474,8 @@ Being explicit, because the review's finding was that this boundary had been ass
   > page-ready injection, where this section's original caveat still applies.
 
 - **`event.ports` is delivered to every `message` listener.** A page listener registered before the SDK can
-  capture the same transferred port. Document-start injection is what would make the SDK first, so the port
-  defends against *later* scripts — which is the SEV1-3 threat — and not against an earlier one. See the
-  caveat above: today the SDK is generally not first.
+  capture the same transferred port. Document-start injection is what makes the SDK first, so the port
+  defends against *later* scripts — which is the SEV1-3 threat — and not against an earlier one. The caveat
+  above is **CLOSED (D-A6)**: registration is unconditional all-origins document-start, so the SDK IS first
+  wherever the reflection tiers succeed. Where they do not, the page-ready fallback applies and an earlier
+  script wins — the accepted residual.

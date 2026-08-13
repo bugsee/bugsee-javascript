@@ -371,13 +371,13 @@ describe('launch (webview)', () => {
         baseOptions({ global: fake.global, document: dom.document as unknown as Document }),
       );
       const hello = fake.msgs()[0] as HelloMessage;
-      expect(hello.caps).toContain('obscuring'); // tells native to drop its legacy masking script
+      expect(hello.caps).toContain('obscuring'); // tells native this SDK supplies the rects
     });
 
     it('does NOT declare `obscuring` when collection is already failing (Wave 1.4)', () => {
-      // Declaring the capability is what makes native stand its own masking down, and the protocol has no
-      // way to retract it. On a page where rect collection throws — one line of script is enough — staying
-      // silent keeps native's legacy masking in place instead of leaving the frame unmasked all session.
+      // Declaring the capability tells native this SDK supplies the rects, and the protocol has no way to
+      // retract it. On a page where collection throws — one line of script is enough — declaring anyway
+      // promises rects that never arrive, and on the advanced path nothing else masks.
       const fake = fakeGlobal();
       const dom = fakeDomDocument();
       const broken = {
@@ -440,7 +440,7 @@ describe('launch (webview)', () => {
       );
     });
 
-    it('does NOT declare `obscuring` when there is no DOM (native keeps legacy masking)', () => {
+    it('does NOT declare `obscuring` when there is no DOM — it promises rects it cannot supply', () => {
       const fake = fakeGlobal();
       track('tok', baseOptions({ global: fake.global })); // no document
       expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');

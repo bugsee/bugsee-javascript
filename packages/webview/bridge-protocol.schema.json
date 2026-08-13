@@ -198,7 +198,7 @@
     },
     "secure": {
       "type": "object",
-      "description": "JS->native: the current secure-area rects to MASK (D10). `p` is the SecureArea[] INLINE (an array).",
+      "description": "JS->native: the current secure-area rects to MASK. `p` is the SecureArea[] INLINE (an array). A CURRENT native receiver DISCARDS this payload and re-reads the rects from `__bugsee_bridge.snapshot()` instead (D-A9) — the message is a freshness signal, because anything on this interface is page-forgeable. An older receiver applies the payload directly, so it must still be correct and must fail CLOSED (a whole-frame rect) rather than empty.",
       "properties": {
         "b": {
           "type": "integer",

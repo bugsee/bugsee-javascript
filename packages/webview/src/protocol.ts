@@ -178,8 +178,8 @@ export interface ControlMessage {
    *
    * NOT derived from {@link HelloMessage.tok}, which any page script can mint. Also distinct from the
    * capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping
-   * the outgoing stream send commands. Applies only to a host that injected no nonce; a current native receiver echoes no `hello.tok` only against a host that injected
-   * no nonce.
+   * the outgoing stream send commands. Applies only to a host that injected no nonce; a current native
+   * receiver echoes no `hello.tok` at all.
    */
   readonly tok?: string;
 }
