@@ -254,10 +254,15 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
 
   // WAVE 0.3 — the control-channel token (docs/design/webview-bridge-auth.md D-A1/D-A2).
   //
-  // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: store `hello.tok` per-WebView and echo it as `tok`
-  // on every control message. A receiver that does not is not rejected — it simply leaves the channel
-  // unauthenticated, and any script in the page can then pause or stop capture through
-  // `__bugsee_bridge.control(...)`, which is reachable from the page by construction.
+  // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret from a CSPRNG,
+  // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{controlNonce,captureNonce})`),
+  // and put the control one on EVERY control message as `tok`.
+  //
+  // Do NOT store and echo `hello.tok`. That was the earlier scheme and it authenticated nobody: `hello`
+  // arrives on the same interface any frame can post to, so native cannot tell the SDK's token from a page
+  // script's — which is why the channel had to start OPEN and wait to latch, and why any script could stop
+  // capture inside that window. A receiver that mints its own secret has no such window.
+
   it('requires the NATIVE-minted control secret, from the very first message (D-A10)', async () => {
     // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret, interpolate it into
     // the bundle it injects (`BugseeWebView.launch(token, {controlNonce, captureNonce})`), and put the
@@ -288,31 +293,51 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     ).toHaveLength(2);
   });
 
-  it('keeps accepting native control AFTER the channel authenticates (Wave 0.3)', async () => {
-    // The canary the whole scheme needs and round 1 found missing: every tokened test sent exactly ONE
-    // message, so `if (tok === token && !authenticated)` — a one-word change — locked native permanently
-    // out of its own channel while the suite stayed green. Native sends many control messages over a
-    // session; the second must work as well as the first.
+  it('keeps accepting native control AFTER the first authenticated message (D-A10)', async () => {
+    // The canary round 1 found missing: every tokened test sent exactly ONE message, so
+    // `if (tok === secret && !authenticated)` — a one-word change — would lock native permanently out of
+    // its own channel while the suite stayed green. Native sends many control messages over a session.
+    //
+    // Round 12 caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
+    // under D-A10 `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
+    // harness default and got BOTH messages rejected. It then asserted zero reports and passed because
+    // nothing was applied at all, which is the opposite of what it is named for.
     const { client, rx } = track(boot());
-    const tok = (rx.messages()[0] as { tok?: string }).tok;
-    rx.sendControl({ tok, config: { reportTrigger: true } }); // first — arms the latch
-    rx.sendControl({ tok, config: { reportTrigger: false } }); // second — must still be applied
+
+    rx.sendControl({ config: { reportTrigger: true } });  // first — gate ON
+    rx.sendControl({ config: { reportTrigger: false } }); // second — must still be applied
     await client.logException(new Error('after-second'));
+
     expect(
       rx.byKind('report'),
-      'native was locked out of its own channel after the first tokened message',
+      'native was locked out of its own channel after the first authenticated message',
     ).toHaveLength(0);
+
+    // ...and prove the gate was genuinely reachable, so the assertion above is not "nothing worked".
+    rx.sendControl({ config: { reportTrigger: true } });
+    await client.logException(new Error('gate-back-on'));
+    expect(rx.byKind('report'), 'the control channel stopped working entirely').toHaveLength(1);
   });
 
-  it('never repeats the token after hello — a late-loading page script must not learn it', () => {
-    // The constraint the whole scheme rests on. `BugseeBridge` is a page global, so any script loading after
-    // the SDK can wrap it and read every subsequent message; the token must not be in any of them.
+  it('never puts the CONTROL secret on the wire at all (D-A10)', () => {
+    // The constraint the whole scheme rests on. `BugseeBridge` is a page global, so any script loading
+    // after the SDK can wrap it and read every subsequent message. Under D-A1 the token rode `hello` and
+    // the guarantee was only "never REPEATED after hello"; under D-A10 native already holds the secret, so
+    // it need never be sent — a strictly stronger property, and this asserts that one.
+    //
+    // Round 12 caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
+    // searching every message for the literal substring "undefined". It could not fail.
     const { rx } = track(boot());
-    const token = (rx.messages()[0] as { tok?: string }).tok as string;
     console.log('post-hello-traffic');
-    const later = rx.messages().slice(1);
-    expect(later.length).toBeGreaterThan(0); // else vacuous
-    expect(later.some((m) => JSON.stringify(m).includes(token))).toBe(false);
+
+    const all = rx.messages();
+    expect(all.length).toBeGreaterThan(1); // else vacuous
+    expect(
+      all.some((m) => JSON.stringify(m).includes(CONTROL_NONCE)),
+      'the control secret reached the wire, where a page script can read it',
+    ).toBe(false);
+    // The CAPTURE nonce, by contrast, must be on every message — that is how native authenticates them.
+    expect(all.every((m) => (m as { n?: string }).n === CAPTURE_NONCE)).toBe(true);
   });
 
   it('emits a schema-valid bye on stop (teardown signal) and makes the control global inert', async () => {

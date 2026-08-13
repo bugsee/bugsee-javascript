@@ -57,12 +57,15 @@ export interface HelloMessage {
   /** The JS-side session id (until native supplies its own via the control reply). */
   readonly session: string;
   /**
-   * The per-session control token (Wave 0.3 / D-A1, docs/design/webview-bridge-auth.md). Native stores it
-   * per-WebView and echoes it on every `control` message; JS rejects control that does not carry it.
+   * SUPERSEDED by D-A10 — a native receiver MUST NOT store or echo this.
    *
-   * Sent HERE and nowhere else. Repeating it on later outbound messages would hand it to any script that
-   * taps the bridge after launch, which is exactly the attacker this defends against — so no convenience
-   * field may ever carry it again.
+   * It is minted by this SDK and published here so native could learn it, which authenticates nobody:
+   * `hello` arrives on the same `@JavascriptInterface` any frame can post to, so native cannot tell it from
+   * a token a page script minted. That is why the channel had to start open and wait to latch, and why a
+   * script could stop capture inside that window. Native mints its OWN secret instead and delivers it
+   * inside the bundle it injects — see {@link ControlMessage.tok}.
+   *
+   * Still emitted only when no `controlNonce` was injected, i.e. against a host that predates D-A10.
    */
   readonly tok?: string;
 }
@@ -167,7 +170,16 @@ export interface ControlMessage {
   readonly config?: ControlConfig;
   /** A one-shot command (pause/resume/flush/stop/snapshot — handled in slice 3). */
   readonly command?: 'pause' | 'resume' | 'flush' | 'stop' | 'snapshot';
-  /** Echo of the `hello` token (Wave 0.3 / D-A1) — proves this message came from native, not the page. */
+  /**
+   * The control secret NATIVE minted (D-A10), interpolated into the bundle native injects so it reaches
+   * this SDK by a route the page never observes. Required on EVERY control message, from the first —
+   * `__bugsee_bridge.control(...)` is page-callable, so there is no open period and no latch to race.
+   *
+   * NOT derived from {@link HelloMessage.tok}, which any page script can mint. Also distinct from the
+   * capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping
+   * the outgoing stream send commands. Falls back to echoing `hello.tok` only against a host that injected
+   * no nonce.
+   */
   readonly tok?: string;
 }
 
