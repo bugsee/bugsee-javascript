@@ -275,9 +275,23 @@ party able to speak on it was the page. Shipped in 7.1.0 and 7.1.1.
 bundle is injected at all. In every shipped build the interface simply does not exist, which closes the
 forged `hello`, `secure`, `report`, `entry` and `batch` routes at once rather than one at a time.
 
+Both terms of that gate are now decided **once per WebView**. `isAdvancedScriptUsable()` already memoized;
+the option term was a live re-read, so the attach decision and the injection decision consulted it
+independently and could in principle disagree — which reconstructs the exact state the gate exists to
+prevent, an interface attached with no bundle behind it.
+
 Two bounds were added alongside it, since the surface returns when the bundle does: `batch` unrolls at most
-`MAX_BATCH_ENTRIES` (1000) entries, and one `secure` message contributes at most `MAX_SECURE_RECTS` (512)
-rects — with the list's *capacity* clamped too, so a payload cannot pre-allocate before a rect is validated.
+`MAX_BATCH_ENTRIES` (1000) entries, and one `secure` message contributes at most `MAX_SECURE_AREAS` (4096)
+areas — with the list's *capacity* clamped too, so a payload cannot pre-allocate before a rect is validated.
+
+The secure-area bound is on the **scan**, not on the accepted output. Bounding only the result list lets a
+payload of degenerate areas iterate freely: `{}` defaults every field to `0`, is dropped as zero-area, and
+so never grows the result — the cap reads as satisfied while the loop runs the attacker's chosen length.
+
+It is also sized as an abuse bound a real document cannot reach, **not** as a routine truncation, because
+truncating here is not a safe direction. The tempting argument — these rects are unioned with native's own,
+so dropping surplus ones cannot unmask what native masked — holds only while native *has* a source of its
+own. On the advanced path it does not (see below), so every dropped rect would be a field left legible.
 
 ### The precondition this does NOT satisfy
 
