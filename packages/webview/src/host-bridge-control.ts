@@ -63,10 +63,14 @@ export function createBridgeControl(opts?: {
   const config: BridgeControlConfig = { reportTrigger: opts?.reportTrigger ?? false };
   const token = opts?.token;
   const nativeSecret = opts?.nativeSecret;
-  // The one-way upgrade (D-A2). No shipped native receiver echoes a token yet, so requiring one immediately
-  // would break every existing host. Instead the channel starts open and latches CLOSED the first time a
-  // correctly-tokened message proves native speaks the new protocol. A page script cannot force the latch
-  // (it needs the secret) and cannot release it (there is no path back to false).
+  // The one-way upgrade (D-A2) — the FALLBACK path only, reached when native injected no `nativeSecret`.
+  // There, requiring a token immediately would break every host whose receiver echoes none, so the channel
+  // starts open and latches CLOSED the first time a correctly-tokened message proves native speaks the new
+  // protocol. A page script cannot force the latch (it needs the secret) or release it (no path back).
+  //
+  // With a native-minted secret there is no upgrade and no latch: the channel is closed from the first
+  // message (see `admits`). The open period is precisely what D-A10 removed, because a page script could
+  // stop capture inside it — and forever, when the realm had no CSPRNG to mint a token with.
   const auth = opts?.auth ?? { authenticated: false };
   // A page script can call `__bugsee_bridge.control(...)` in a loop, so the rejection report is ONCE per
   // handler. D-A4 declined to report sink swaps for exactly this reason ("a page could trigger it at will

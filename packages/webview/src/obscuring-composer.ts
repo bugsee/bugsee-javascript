@@ -225,11 +225,15 @@ export function createObscuringComposer(opts: {
       }
     },
     refresh(): void {
-      // The PUSH path — and the one native actually masks from. A failure here used to emit NOTHING, so
-      // native silently kept its previous rects: exactly the "stale rects report success" state the pull
-      // path was hardened against. Grounded in the Android receiver: `WebViewBridgeConnection` →
-      // `BridgeSecureSink.setSecureAreas(...)` REPLACES the stored rects, while the pull
-      // (`requestSnapshot`) has no production caller at all.
+      // The PUSH path. A failure here used to emit NOTHING, so a receiver that masks from the push
+      // silently kept its previous rects — exactly the "stale rects report success" state the pull path
+      // was hardened against.
+      //
+      // The push must still be correct, and must still fail CLOSED, for both receiver generations. An
+      // older one masks from it directly (`BridgeSecureSink.setSecureAreas` replaces the stored rects). A
+      // current one (Android D-A9) discards the payload and treats the message purely as a freshness
+      // signal that triggers `requestSnapshot` — so a push that never arrives is a pull that never
+      // happens, and the mask goes stale either way.
       try {
         ownAreas = source.snapshot();
         emit();

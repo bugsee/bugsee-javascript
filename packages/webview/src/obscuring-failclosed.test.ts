@@ -261,10 +261,11 @@ describe('the composer fails closed too', () => {
 });
 
 // Review round 1 (webview reviewer, SEV1 #1/#2/#3). The previous fix hardened the PULL
-// (`__bugsee_bridge.snapshot()`); the Android receiver masks from the PUSH — `WebViewBridgeConnection` →
-// `BridgeSecureSink.setSecureAreas(...)`, which REPLACES the stored rects — and `requestSnapshot` has no
-// production caller at all. So every claim below is about what native actually receives.
-describe('the PUSH path — the one native masks from — also fails closed', () => {
+// (`__bugsee_bridge.snapshot()`) while leaving the push able to emit nothing — and the push is what a
+// receiver acts on, whichever generation it is: an older one masks from the payload directly, a current
+// one (Android D-A9) discards the payload and re-pulls on receipt. Either way a push that fails silently
+// leaves the mask stale, so every claim below is about what native actually receives.
+describe('the PUSH path — what native acts on — also fails closed', () => {
   const composerWith = (doc: SecureDocument, onError = vi.fn()) => {
     const posted: unknown[][] = [];
     const composer = createObscuringComposer({
@@ -277,8 +278,13 @@ describe('the PUSH path — the one native masks from — also fails closed', ()
   };
 
   it('pushes the initial rects at start, instead of leaving native with nothing', () => {
-    // Declaring the capability stands native's own masking down. With no initial push it masked NOTHING
-    // until the first mutation/scroll/focus — and a static page injected after `load` never pushed at all.
+    // With no initial push, native masked NOTHING until the first mutation/scroll/focus — and a static page
+    // injected after `load` never pushed at all.
+    //
+    // The original framing — "declaring the `obscuring` capability stands native's own masking down" — is
+    // superseded (D-A7). Native never stands its masking down for anything the page claims, because a
+    // decision that REDUCES masking cannot be authorised by the party being masked. The initial push still
+    // matters for the reason above, not that one.
     const { composer, posted } = composerWith(okDoc([{ top: 5, left: 6, bottom: 7, right: 8 }]));
     composer.start();
     expect(posted).toHaveLength(1);

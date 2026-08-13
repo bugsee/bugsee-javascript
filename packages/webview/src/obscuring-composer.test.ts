@@ -77,7 +77,7 @@ describe('createObscuringComposer — top frame', () => {
     expect(c.snapshot()).toEqual([{ type: 'hidden', top: 9, left: 6, bottom: 11, right: 8 }]);
   });
 
-  it('POSTS the initial rects on start — native masks from the push, not the pull', () => {
+  it('POSTS the initial rects on start — the push is what makes native look at all', () => {
     const doc = fakeDoc({ [HIDE]: [secureEl(0)] });
     const onCompose = vi.fn();
     const c = createObscuringComposer({
@@ -88,10 +88,13 @@ describe('createObscuringComposer — top frame', () => {
       mutationObserver: undefined,
     });
     c.start();
-    // Previously this asserted the opposite. It was wrong about the product: the Android receiver masks from
-    // the PUSHED `secure` messages (`BridgeSecureSink.setSecureAreas`), and the pull (`requestSnapshot`) has
-    // no production caller. With no initial push, native stood its legacy masking down and then masked
-    // NOTHING until the first mutation/scroll/focus — and a static page injected after `load` never pushed.
+    // Previously this asserted the opposite, and was wrong about the product: with no initial push, native
+    // stood its legacy masking down and then masked NOTHING until the first mutation/scroll/focus — and a
+    // static page injected after `load` never pushed at all.
+    //
+    // That still holds under the current Android receiver, by a different route. It no longer masks from
+    // the pushed payload (D-A9 discards it) — it re-pulls `__bugsee_bridge.snapshot()` on receipt. So the
+    // push is the trigger rather than the data, and no initial push is still no initial mask.
     expect(onCompose).toHaveBeenCalledTimes(1);
     expect(onCompose.mock.calls[0]?.[0]).toHaveLength(1);
     c.stop();
@@ -99,7 +102,8 @@ describe('createObscuringComposer — top frame', () => {
 
   it('fails CLOSED when composing a child frame throws — never posts an empty set', () => {
     // compose() reads every child iframe's LIVE rect on each emit, so a detached or hostile iframe throws
-    // here — below the source's own guard. Posting [] would CLEAR native's mask (setSecureAreas replaces).
+    // here — below the source's own guard. Posting [] clears the mask on a receiver that masks from the
+    // payload, and on a current one wastes the only signal that would have re-pulled the real rects.
     const childWin = {};
     let broken = false;
     const iframe = {

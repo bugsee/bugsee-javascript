@@ -199,7 +199,8 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     document.dispatchEvent(new window.Event('focus')); // a tracked change recomputes the secure areas
 
     // The LAST secure message: [0] is the initial push emitted at start(), which precedes this password
-    // input existing. Native masks from the pushed stream, so an initial push is required — see
+    // input existing. An initial push is required either way — an older receiver masks from the payload,
+    // a current one (D-A9) re-pulls on receipt — so no push means no mask. See
     // packages/webview/src/obscuring-composer.ts start().
     const secures = rx.byKind('secure');
     const secure = secures[secures.length - 1];
