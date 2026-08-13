@@ -293,6 +293,34 @@ truncating here is not a safe direction. The tempting argument — these rects a
 so dropping surplus ones cannot unmask what native masked — holds only while native *has* a source of its
 own. On the advanced path it does not (see below), so every dropped rect would be a field left legible.
 
+### D-A9. The mask comes from the PULL, so the forgeable push decides nothing
+
+The advanced path had an unforgeable channel all along and was not using it.
+
+`BridgeControlScript.snapshotExpression()` evaluates
+`(window.__bugsee_bridge && window.__bugsee_bridge.snapshot()) || "[]"`, and `__bugsee_bridge` is installed
+on a **closed binding** (`writable:false, configurable:false` — the SEV1-1 fix). A page script therefore
+cannot swap the object to make `snapshot()` return rects of its choosing, and a page that pre-owns the name
+makes the SDK fail closed rather than advertise a surface it does not have. `BridgeControlSender` even
+exposes `requestSnapshot(...)` for it — with **no production caller**. The pull was built and left unwired,
+so native's only source of bridge rects was the pushed `secure` message, which any frame can forge.
+
+Every previous attempt tried to decide whether to *trust* the payload — a `caps` claim, a claim plus
+"evidence", split sources. All of them argued about attribution on a channel where the sender cannot be
+identified. The rule now removes the payload from the decision entirely:
+
+- `onSecure` **discards** `secure.payload`. The message is a freshness signal — "something changed,
+  re-read the truth" — and nothing more.
+- The rects come from `requestSnapshot`, parsed out of the double-encoded `evaluateJavascript` result.
+- At most one pull is outstanding (`mSnapshotInFlight`), because the trigger is free for a page to spam and
+  every pull marshals an `evaluateJavascript` onto the main thread.
+
+A forged push now costs a re-read of reality. A suppressed one costs freshness, not correctness. And
+withdrawal still works — an empty *snapshot* is the legitimate signal, which the page cannot forge.
+
+This is why the advanced path does **not** need the nonce for masking, and the legacy path does: legacy is
+push-only and has no equivalent of the closed binding to pull against.
+
 ### The precondition this does NOT satisfy
 
 Gating `attach` makes today safe by removing the surface. It does not make the surface safe. **Before
