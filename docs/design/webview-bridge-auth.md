@@ -317,7 +317,7 @@ identified. The rule now removes the payload from the decision entirely:
 - `onSecure` **discards** `secure.payload`. The message is a freshness signal — "something changed,
   re-read the truth" — and nothing more.
 - The rects come from `requestSnapshot`, parsed out of the double-encoded `evaluateJavascript` result.
-- At most one pull is outstanding (`mSnapshotInFlight`), because the trigger is free for a page to spam and
+- At most one pull is outstanding (`mSnapshotIssuedAt`), because the trigger is free for a page to spam and
   every pull marshals an `evaluateJavascript` onto the main thread.
 
 A forged push now costs a re-read of reality. A suppressed one costs freshness, not correctness. And
