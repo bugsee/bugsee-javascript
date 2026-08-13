@@ -1224,10 +1224,12 @@ describe('the control surface fails closed and cannot be reset by the page (roun
 // That is already live whenever `WebViewDomainAllowlist` is non-empty, and it is what makes registering
 // the advanced bundle as an all-origins document-start script unsafe:
 //
-//  - N hellos per WebView. The protocol is ONE session per WebView, and native now latches the first
-//    hello — so which frame supplies the retained token and the obscuring decision becomes a race.
-//  - A sub-frame can never RECEIVE control: `evaluateJavascript` targets the top frame. A token minted in
-//    a sub-frame is unusable, and if native retains it the top frame's own control is rejected.
+//  - N hellos per WebView. The protocol is ONE session per WebView, so N frames announcing themselves is
+//    N sessions' worth of handshakes for one. (The sharper version of this — whichever frame's hello
+//    native LATCHED decided the retained token and the obscuring capability — is gone: native retains
+//    nothing from a hello and mints its own secret, D-A10, and `caps` decides nothing, D-A7.)
+//  - A sub-frame can never RECEIVE control: `evaluateJavascript` targets the top frame, so a sub-frame
+//    that opened a session cannot be paused, flushed or stopped.
 //  - Each frame keeps its own `seq` counter from 0, so entries from different frames collide in ordering.
 //  - D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66). Running full capture in
 //    every injected frame is the opposite of that.
