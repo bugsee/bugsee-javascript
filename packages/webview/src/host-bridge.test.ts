@@ -219,3 +219,55 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
     expect(real).toEqual(['buffered', 'live']);
   });
 });
+
+describe('nonce stamping (D-A11)', () => {
+  const sink = (): { got: string[]; global: object } => {
+    const got: string[] = [];
+    return { got, global: { BugseeBridge: { post: (raw: string) => got.push(raw) } } };
+  };
+
+  it('stamps every outgoing message with the native-minted nonce', () => {
+    // Native cannot tell the SDK's `entry`/`batch` from a page script's — both arrive on the same
+    // @JavascriptInterface. Unstamped, any frame can inject fabricated log/network entries into the
+    // customer's session, and (with no rate limit) flood the ring buffer until the REAL capture of the bug
+    // being reported is evicted. Stamping is what lets native drop them.
+    const s = sink();
+    const bridge = createHostBridge({ global: s.global, nonce: 'n-123' });
+
+    bridge.post('{"b":1,"k":"entry","t":"log"}');
+
+    expect(JSON.parse(s.got[0] as string)).toMatchObject({ n: 'n-123', b: 1, k: 'entry' });
+  });
+
+  it('stamps buffered messages too, when they drain', () => {
+    // The backlog is posted BEFORE the bridge attaches. If drain skipped stamping, everything captured
+    // during startup would be dropped by native as forged — the messages most likely to matter.
+    const s = sink();
+    const detached = {} as { BugseeBridge?: unknown };
+    const bridge = createHostBridge({ global: detached, nonce: 'n-123' });
+    bridge.post('{"b":1,"k":"hello"}');
+
+    (detached as { BugseeBridge?: unknown }).BugseeBridge = s.global as never;
+    Object.assign(detached, s.global);
+    bridge.post('{"b":1,"k":"entry"}');
+
+    expect(s.got).toHaveLength(2);
+    for (const raw of s.got) expect(JSON.parse(raw)).toMatchObject({ n: 'n-123' });
+  });
+
+  it('escapes the nonce rather than splicing it raw', () => {
+    // The nonce reaches the wire inside a JSON string. An unescaped quote would corrupt every message.
+    const s = sink();
+    createHostBridge({ global: s.global, nonce: 'a"b\\c' }).post('{"b":1,"k":"entry"}');
+
+    expect(JSON.parse(s.got[0] as string)).toMatchObject({ n: 'a"b\\c' });
+  });
+
+  it('leaves messages untouched when no nonce was issued', () => {
+    // Backward compatible: a host that mints no nonce must still produce exactly the previous wire bytes.
+    const s = sink();
+    createHostBridge({ global: s.global }).post('{"b":1,"k":"entry"}');
+
+    expect(s.got[0]).toBe('{"b":1,"k":"entry"}');
+  });
+});

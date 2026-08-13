@@ -9,6 +9,10 @@
 /** The default JS→native send buffer size (messages held while the bridge is not yet attached). */
 export const DEFAULT_MAX_BUFFER = 256;
 
+// Pinned at module scope, before page script can run: a page that replaces `JSON.stringify` would
+// otherwise control how the nonce is serialized on every message we send.
+const jsonStringify = JSON.stringify;
+
 /** The JS→native channel: post a wire string; never throws. */
 export interface HostBridge {
   /** Whether the native bridge is currently attached (`window.BugseeBridge.post` present). */
@@ -26,10 +30,21 @@ export function createHostBridge(opts?: {
   global?: object;
   maxBuffer?: number;
   onError?: (error: unknown) => void;
+  /**
+   * The native-minted nonce (D-A10), stamped as `n` on every outgoing message so native can tell this SDK's
+   * traffic from a page script's (D-A11).
+   *
+   * Without it native cannot: `BugseeBridge.post` is reachable from every frame, so any script can inject
+   * fabricated `log`/`network`/`events`/`traces`/`breadcrumbs` entries into the customer's session — and
+   * with no rate limit, can loop until the ring buffer evicts the real capture of the bug being reported.
+   * Omitted → the previous wire bytes exactly, for hosts that mint no nonce.
+   */
+  nonce?: string;
 }): HostBridge {
   const global = (opts?.global ?? globalThis) as AndroidBridgeGlobal;
   const maxBuffer = opts?.maxBuffer ?? DEFAULT_MAX_BUFFER;
   const onError = opts?.onError ?? ((): void => {});
+  const nonce = opts?.nonce;
   const buffer: string[] = [];
 
   // PINNED on first resolve (Wave 0.3 / D-A4, docs/design/webview-bridge-auth.md).
@@ -65,9 +80,23 @@ export function createHostBridge(opts?: {
     return pinned;
   };
 
+  /**
+   * Splice the nonce in as the first member. Done HERE — the one place every message leaves through,
+   * buffered or direct — rather than at each `encode` call site, so a new sender cannot forget it and have
+   * its traffic silently dropped by native as forged.
+   *
+   * The guard on `{"b":` is what keeps this a safe string operation: every encoded envelope starts that way
+   * (see `encode`), so there is always a member to precede. Anything else is passed through untouched
+   * rather than corrupted into `{"n":"…",}`.
+   */
+  const stamp = (raw: string): string =>
+    nonce === undefined || !raw.startsWith('{"b":')
+      ? raw
+      : `{"n":${jsonStringify(nonce)},${raw.slice(1)}`;
+
   const send = (sink: (raw: string) => void, raw: string): void => {
     try {
-      sink(raw);
+      sink(stamp(raw));
     } catch (error) {
       onError(error);
     }

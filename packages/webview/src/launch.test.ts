@@ -971,6 +971,21 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
     expect(tokenOf(fake)).toBeUndefined();
   });
 
+  it('stamps the CAPTURE nonce on the wire and never the CONTROL one', () => {
+    // The two secrets are separate for a reason, and this is the assertion that keeps them that way.
+    // The capture nonce must travel — that is how native tells our entries from a page script's. The
+    // control nonce must not, ever: a script that shadowed `BugseeBridge` before we pinned it would read
+    // anything we send, and knowing the control secret upgrades that tap into `cmd:"stop"`.
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global, controlNonce: 'ctl-secret', captureNonce: 'cap-secret' }));
+    console.log('some-traffic');
+
+    const all = fake.msgs();
+    expect(all.length).toBeGreaterThan(1);
+    expect(all.every((m) => (m as { n?: string }).n === 'cap-secret')).toBe(true);
+    expect(all.some((m) => JSON.stringify(m).includes('ctl-secret'))).toBe(false);
+  });
+
   it('publishes a token on hello, exactly once and nowhere else', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));

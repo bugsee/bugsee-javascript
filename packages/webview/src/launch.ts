@@ -129,6 +129,17 @@ export interface BugseeWebViewLaunchOptions {
    */
   controlNonce?: string;
 
+  /**
+   * A second native-minted secret, stamped on every OUTGOING message so native can drop capture it did not
+   * send (D-A11). Also arrives through the injected bootstrap.
+   *
+   * Separate from {@link controlNonce} on purpose. This one has to travel the wire to do its job, so a page
+   * script that shadowed `BugseeBridge` before the sink was pinned will read it — and that is survivable,
+   * because such a script can already forge capture today. Sharing one secret across both directions would
+   * mean the same exposure also granted `cmd:"stop"`, upgrading a capture tap into a capture kill switch.
+   */
+  captureNonce?: string;
+
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
 
@@ -270,6 +281,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // immediately (native is the ring + bundler). No transport / upload pipeline / bundle store / IndexedDB.
   const bridge = createHostBridge({
     global,
+    // Stamped on every outgoing message so native can distinguish this SDK's capture from a page script's
+    // (D-A11). A SEPARATE secret from `controlNonce`, deliberately: this one necessarily travels the wire,
+    // so a script that shadowed `BugseeBridge` before we pinned it (the page-ready fallback) reads it. That
+    // costs forged capture, which such a script could already produce. Reusing the control nonce here would
+    // additionally hand it `cmd:"stop"` — turning a tap into a kill switch.
+    ...(options.captureNonce !== undefined ? { nonce: options.captureNonce } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
