@@ -30,8 +30,12 @@ export function createBridgeControl(opts?: {
   /** Seam for native commands (slice 3 wires pause/resume/flush/snapshot/stop). */
   onCommand?: (command: NonNullable<ControlMessage['command']>) => void;
   /**
-   * The per-session token published once on `hello` (Wave 0.3 / D-A1). Native echoes it on every control
-   * message. Omitted → the channel can never authenticate and stays open, which is the pre-token behaviour.
+   * The JS-minted per-session token published once on `hello` (D-A1), used ONLY against a host that
+   * injected no `nativeSecret`. Native echoes it on every control message. Omitted → the channel can never
+   * authenticate and stays open, which is the pre-token behaviour.
+   *
+   * Superseded by {@link nativeSecret} wherever native mints one: a token this SDK mints is one a page
+   * script can mint too, which is why this path must start open and wait to latch.
    */
   token?: string;
   /**

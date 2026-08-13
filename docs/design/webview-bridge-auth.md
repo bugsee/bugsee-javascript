@@ -57,6 +57,11 @@ to point that existing machinery at the advanced bridge, not to build it.
 
 ## D-A1. Who mints the token: **JS mints it, publishes it once in `hello`**
 
+> **SUPERSEDED by [D-A10](#d-a10-native-mints-the-control-secret-so-the-channel-is-never-open).** Kept for
+> the reasoning, which is what led to D-A10. The conclusion below — that JS minting needs no injection
+> change — was true but bought a token native cannot attribute, and so a control channel that had to start
+> open. Native mints the secret now. Do not implement this section.
+
 The alternative was native minting it and injecting it in the bootstrap. Rejected: the Android injector
 deliberately passes **no** inline options to the advanced bundle (`WebViewUtils.getAdvancedWebViewScript`:
 "Unlike the legacy script it carries no inline launch options — the bundle self-configures over the bridge
@@ -420,13 +425,16 @@ Additive; every field optional; a receiver that ignores them behaves exactly as 
 
 ## Native-side work (separate repo)
 
-1. **Store `hello.tok`** per-WebView in `BridgeHandshake` and echo it on every `BridgeControlSender` message.
+1. ~~**Store `hello.tok`** per-WebView and echo it.~~ **DONE differently — see D-A10.** Native mints its own
+   secret and injects it; `BridgeHandshake` carries no token at all, because a reply built from `hello.tok`
+   is a reply carrying a value the page could have minted.
 2. **Point `WebViewMessageChannel` at the advanced bridge** for JS→native, keeping the
    `@JavascriptInterface` as the < API 26 fallback.
 3. Optional, and worth doing with (2): reject inbound posts arriving on the `@JavascriptInterface` once a
    port is established, so the fallback cannot be used to bypass the port.
 
-Item 1 alone activates D-A2 and closes SEV1-4(a). Item 2 closes SEV1-3 for API 26+.
+Item 1 is superseded by D-A10, which closes SEV1-4(a) outright rather than via the D-A2 upgrade — there is
+no open period to activate. Item 2 closes SEV1-3 for API 26+.
 
 ## What this does NOT close
 

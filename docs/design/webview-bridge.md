@@ -127,11 +127,16 @@ the wrong `k`.
 
 - **`hello`** (JS→native, once per page/handshake) — `{k:"hello", b, sdk:"<version>", caps:[<FileTypes + features
   e.g. "obscuring">], session:"<jsSessionId>", tok?:"<controlToken>"}`. Opens capability negotiation.
-  `tok` is the per-session CONTROL TOKEN (`webview-bridge-auth.md` D-A1): native MUST retain it per-WebView
-  and echo it on every `control` message, or the control channel stays open to any script in the page.
-  Sent here and **nowhere else** — repeating it on later JS→native messages would expose it to a tap.
+  `tok` is **superseded** (`webview-bridge-auth.md` D-A10): native MUST NOT retain or echo it. It is minted
+  by the JS SDK and announced here, so native cannot tell it from a token a page script minted — it
+  authenticated nobody. Native mints its OWN secret and delivers it inside the bundle it injects; see
+  `control` below. The field remains only for an SDK that predates D-A10.
+  Every JS→native message additionally carries `n`, the CAPTURE nonce (D-A11) — native drops anything
+  without it, since `BugseeBridge.post` is reachable from every frame.
 - **`control`** (native→JS, via `evaluateJavascript` → `__bugsee_bridge.control(msg)`) — the handshake reply +
-  ongoing control (§7). Carries `tok` (the echo) once native has adopted it.
+  ongoing control (§7). Carries `tok` = the secret NATIVE minted (D-A10), on EVERY control message from the
+  first. Not derived from `hello.tok`, and distinct from `n` — `n` travels the wire, so sharing them would
+  let a script tapping the outgoing stream send commands.
 - **`entry`** — one streamed `CaptureDataEntry`, routed by `t` (§6.4).
 - **`batch`** — `{k:"batch","e":[<entry>,…]}` coalescing many entries into one crossing (logs/network can be
   high-volume; one bridge hop beats N). **`batch` carries `entry` messages ONLY** — never `report`s (reports are
@@ -158,7 +163,7 @@ the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE 
 
 1. Native injects bootstrap + bundle (gated by D8/D9) + a seed config.
 2. JS auto-launches → posts `hello` with `caps` (declares `obscuring` if present — D10) + protocol version.
-3. Native replies via `__bugsee_bridge.control({ k:"control", b, accept:<version>, tok:"<echo of hello.tok>",
+3. Native replies via `__bugsee_bridge.control({ k:"control", b, accept:<version>, tok:"<native-minted secret>",
    session:"<nativeSessionId>", config:{ reportTrigger:false } })`.
 
    > **As-built vs aspirational.** Only the keys above are implemented and accepted. The `timeBase`,
