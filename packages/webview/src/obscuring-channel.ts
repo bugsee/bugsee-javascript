@@ -11,12 +11,13 @@ import {
 } from './obscuring-source';
 import { encode, type SecureArea, secureMessage } from './protocol';
 
-// The obscuring CHANNEL (docs/design/webview-bridge.md D10) — the TOP frame's native I/O for obscuring. It owns
+// The obscuring CHANNEL — the TOP frame's native I/O for obscuring. It owns
 // a top-frame obscuring COMPOSER (which tracks this frame's secure rects AND folds in the rects bubbled up from
 // sub-frames, mapped into document-absolute coordinates) and on every change posts a `secure` envelope so native
 // can keep its whole-page mask current; it also answers native's SYNCHRONOUS pull (`__bugsee_bridge.snapshot()`,
 // called at frame-capture time) with the serialized rects, and the `snapshot` control COMMAND by re-posting them.
-// Declaring the `obscuring` capability in the hello is what lets native skip its legacy masking script (D10) —
+// Declaring the `obscuring` capability tells native this SDK contributes rects; native ADDS them to its own
+// mask and never stands that mask down for the claim (D-A7) —
 // so this channel is the piece that makes the advanced SDK a full replacement. Time/seq frame mirrors the
 // report path (Date.now / performance.now / performance.timeOrigin), seq shared so it orders with the stream.
 
@@ -35,7 +36,7 @@ export interface ObscuringChannel {
    * Whether obscuring can actually collect rects right now.
    *
    * Gates the `obscuring` capability in the hello: declaring it is precisely what tells native to skip its
-   * own masking script (D10), and the protocol has no way to retract it afterwards (docs/review/webview.md
+   * own masking source, and the protocol has no way to retract the claim afterwards (docs/review/webview.md
    * SEV1 #2). On a page where collection already fails, not declaring it leaves native's legacy masking in
    * place — which is the fail-closed answer.
    */

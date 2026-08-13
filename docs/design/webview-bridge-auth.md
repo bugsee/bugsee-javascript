@@ -350,8 +350,10 @@ Two ways out, and they are not equivalent:
    actually distinguishes our SDK from the page, because the secret travels by a route the page never sees —
    unlike `tok` (D-A1), which JS mints and any script can mint too.
 
-Until one of these lands, activating the advanced path **re-opens** the masking bypass that 7.1.x shipped.
-Treat the version bump as gated on it.
+**CLOSED — by option 2, plus one thing this section did not anticipate.** D-A10/D-A11 gave native a secret
+the page never sees, so inbound messages are authenticated. D-A9/D-A12 went further and removed the need to
+trust the inbound payload for masking at all: native re-reads the rects from a closed binding it can ask
+directly. The version bump is no longer gated on this.
 
 ## D-A10. Native mints the control secret, so the channel is never open
 

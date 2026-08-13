@@ -10,7 +10,7 @@ import type { SecureArea } from './protocol';
 // Sub-frame secure-rect COMPOSITION (docs/design/webview-bridge.md D9/D10 — the open frame-attribution item).
 // A WebView can host (cross-origin) sub-frames, each injected with its own SDK. The native mask is composed over
 // the WHOLE page, so the TOP frame must report the UNION of every frame's secure rects (in top-document
-// coordinates) — otherwise native can't drop its legacy masking. Ported from the legacy `VIEWS_BUBBLE` mechanism:
+// coordinates) — otherwise sub-frame fields go unmasked. Ported from the legacy `VIEWS_BUBBLE` mechanism:
 //   - each frame's obscuring SOURCE produces VIEWPORT-relative rects for that frame;
 //   - a CHILD frame `postMessage`s its composed rects up to `window.parent` (cross-origin-safe — see below);
 //   - a frame RECEIVES a child's bubble, re-maps it by that child's `<iframe>` offset (read FRESH each compose,

@@ -58,16 +58,17 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 // capture (console→log + network in slice 1; full parity in slice 2) over a HostBridgeCaptureStore that STREAMS
 // each entry across the WebView boundary — NO transport / upload pipeline / bundle store / IndexedDB (native is
 // the ring buffer + the bundler). On launch it opens a `hello` handshake (declaring its capabilities, which
-// drive native's legacy-coexistence decision, D10) and exposes `__bugsee_bridge.control` for native→JS control.
+// are recorded by native but decide nothing — D-A7) and exposes `__bugsee_bridge.control` for native→JS control.
 // WebView-originated report TRIGGERING is gated behind `reportTrigger` (D5, default off) — wired in slice 2.
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
 export const SDK_VERSION = '0.0.0';
 
-// The capture FileTypes this SDK emits — declared in the hello so native can negotiate (D10). The `obscuring`
+// The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
+// nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
 // capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)
 // so native knows whether the advanced SDK masks sensitive pixels itself; if absent native keeps its legacy
-// masking script (D10). The DOM viewtree + performance streams land in later slices.
+// masking source is present, which native ADDS to its own. The DOM viewtree + performance streams land later.
 const CAPABILITIES = [
   'log',
   'network',
@@ -91,8 +92,11 @@ export interface BugseeWebViewLaunchOptions {
   maxNetworkBodySize?: number;
   /**
    * Stream the viewport rects of sensitive elements (password / payment inputs + `.bugsee-hide`) so native masks
-   * them in its captured frames (D10 obscuring). Default true. When on, the SDK declares the `obscuring`
-   * capability so native drops its legacy masking script; turn off (or run without a DOM) to keep legacy masking.
+   * them in its captured frames. Default true. When on, the SDK declares the `obscuring` capability and streams
+   * rects native ADDS to its own mask (D-A7 — native never stands its masking down for a page-supplied claim).
+   *
+   * Turning it off does NOT fall back to legacy masking: on the advanced path the legacy in-page script is not
+   * injected, so opting out leaves this SDK contributing no rects at all.
    */
   captureObscuring?: boolean;
 
@@ -417,7 +421,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   //
   // Everything below this branch is deliberately skipped in a sub-frame:
   //  - `hello`: the protocol is one handshake per WebView. N frames posting N hellos makes the session id,
-  //    the retained control token and the D10 obscuring decision a RACE between frames.
+  //    N sessions' worth of handshakes for one WebView. (The sharper version — whichever frame's hello decided
+  //    the retained token and the obscuring capability — is gone: native retains nothing, D-A10, and `caps`
+  //    decides nothing, D-A7.)
   //  - the control token: a sub-frame can never RECEIVE control — `evaluateJavascript` targets the top
   //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
   //    would be rejected as a mismatch.
@@ -500,15 +506,15 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     client.addDetectionProvider(createUnhandledRejectionProvider(win));
   }
 
-  // Obscuring (D10/D9): when there is a DOM and it isn't opted out, track the secure-area rects so native masks
+  // Obscuring (D9): when there is a DOM and it isn't opted out, track the secure-area rects so native masks
   // sensitive pixels. Obscuring runs in EVERY injected frame, but the frame's role differs (sub-frame rect
   // COMPOSITION — the legacy VIEWS_BUBBLE port):
   //   - the TOP frame owns the native I/O (the channel): it composes its own rects + the rects bubbled up from
   //     sub-frames into DOCUMENT-ABSOLUTE coordinates, posts the union as `secure`, and declares the `obscuring`
-  //     capability so native drops its legacy masking (D10);
+  //     capability, which native adds to its own mask rather than standing that mask down (D-A7);
   //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
   //     by the sub-frame branch above, which returns before reaching here.
-  // (Native owns the final "is coverage complete → fully drop legacy" decision: it knows its D9 injection set.)
+  // (Native never drops its own masking for this — D-A7. The union is what makes the whole path monotone.)
   if ((options.captureObscuring ?? true) && domDocument !== undefined) {
     obscuring = createObscuringChannel({
       bridge,
@@ -520,7 +526,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   }
   // Only the TOP frame declares `obscuring` (it alone reports the composed whole-page union to native), and
   // only once a collection has been PROVEN to work. Declaring the capability is what makes native stand its
-  // legacy masking script down (D10), and the protocol has no retraction message — so on a page where
+  // capability, and the protocol has no retraction message — so on a page where
   // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
   // answer (docs/review/webview.md SEV1 #2).
   //
@@ -546,7 +552,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   bridgeSlot.session = mySession;
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
-  // lets native decide legacy coexistence (D10).
+  // is recorded by native but decides nothing (D-A7).
   //
   // The token rides this message ONLY when a native sink is already attached (review round 1, SEV1). When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
@@ -568,8 +574,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     obscuring?.start();
   }
 
-  // The public client. stop() clears the per-WebView carrier slot + removes the control global so a later
-  // launch() starts fresh.
+  // The public client. stop() clears the per-WebView carrier slot and makes the control global INERT — the
+  // binding is non-configurable and cannot be removed (D-A3), so a later launch() re-points the session
+  // behind it rather than starting from a fresh binding.
   const stopCore = client.stop;
   publicClient = {
     ...client,

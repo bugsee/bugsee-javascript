@@ -31,7 +31,7 @@ export function createHostBridge(opts?: {
   maxBuffer?: number;
   onError?: (error: unknown) => void;
   /**
-   * The native-minted nonce (D-A10), stamped as `n` on every outgoing message so native can tell this SDK's
+   * The native-minted CAPTURE nonce (D-A11 — a different secret from the D-A10 control nonce), stamped as `n` on every outgoing message so native can tell this SDK's
    * traffic from a page script's (D-A11).
    *
    * Without it native cannot: `BugseeBridge.post` is reachable from every frame, so any script can inject

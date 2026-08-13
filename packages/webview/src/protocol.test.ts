@@ -330,7 +330,7 @@ describe('parseControl is hostile-realm safe', () => {
   });
 
   it('uses the JSON intrinsics captured at module load, not the live globals', () => {
-    // A page can replace `JSON.parse` to read native's control message — which carries the ECHOED TOKEN.
+    // A page can replace `JSON.parse` to read native's control message — which carries the CONTROL SECRET.
     // The token's whole guarantee is stated outbound-only ("sent once, on hello"); this is the inbound leak.
     const original = JSON.parse;
     const spy = vi.fn(original);

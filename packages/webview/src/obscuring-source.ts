@@ -1,6 +1,6 @@
 import type { SecureArea } from './protocol';
 
-// The obscuring source (docs/design/webview-bridge.md D10) — the WebView-specific capability that lets the
+// The obscuring source — the WebView-specific capability that lets the
 // advanced SDK fully REPLACE the legacy inject-script. JS cannot redact native-rendered pixels, so it streams
 // the viewport rects of sensitive elements + native masks them in its captured frames. Ported from the legacy
 // `hidden-view` interceptor, but READ-ONLY: the legacy auto-added a `.bugsee-hide` class to password/cc inputs

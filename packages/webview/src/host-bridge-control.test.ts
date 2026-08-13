@@ -121,9 +121,12 @@ describe('createBridgeControl', () => {
 // later outbound messages: that is precisely what stops a script which taps the bridge AFTER launch — the
 // real SEV1-3 threat, an ad tag loading late — from ever learning it.
 //
-// Enforcement is a ONE-WAY UPGRADE (D-A2) because no shipped native receiver echoes a token yet. The
-// channel starts unauthenticated (today's behaviour, no breakage), and the first correctly-tokened message
-// flips it closed forever. A page script cannot force the flip (it needs the token) nor undo it.
+// Enforcement is a ONE-WAY UPGRADE (D-A2): the channel starts unauthenticated and the first correctly-tokened
+// message flips it closed forever. A page script cannot force the flip (it needs the token) nor undo it.
+//
+// This whole path is now the FALLBACK, reached only when native injected no nonce. A current native receiver
+// mints its own secret and the channel is closed from the first message with no open window — see the
+// `with a native-minted secret` block above (D-A10).
 describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   const TOKEN = 'tok-abc123';
   const raw = (msg: Record<string, unknown>): string =>

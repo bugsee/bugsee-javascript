@@ -36,8 +36,10 @@ the **native-side receiver contract**, (d) the **control plane** (gating, config
   assembles no bundles, persists nothing, uploads nothing.
 - The native SDK owns the **session, the report trigger (by default), the canonical redaction config, and the
   pixel masking**. The WebView enriches whatever the native side does.
-- The protocol is **new + versioned**, with a **capability handshake** the legacy protocol lacks; the handshake
-  also decides whether the legacy thin script must still be loaded (for obscuring) — see D10.
+- The protocol is **new + versioned**, with a **capability handshake** the legacy protocol lacks. The handshake
+  was once also how native decided whether to keep loading the legacy thin script for obscuring — **superseded
+  by D-A7**: `caps` arrives from the page, so a capability claim cannot be allowed to REDUCE masking. Native
+  masks regardless and unions the two sources. See D10 below.
 - First milestone is **Android only**; the envelope is transport-agnostic so each later platform is "+1 channel
   + 1 native receiver".
 
@@ -64,7 +66,7 @@ the **native-side receiver contract**, (d) the **control plane** (gating, config
 | **D7** | **The advanced JS SDK ships bundled inside the native SDK** (resource, modern analog of `R.raw.bugsee_inject_script`), injected by native as a tiny **bootstrap/loader** + the heavy `@bugsee/webview` bundle. | One shipping artifact; the bootstrap (document-start, cheap) activates the heavy SDK from native-pushed config. |
 | **D8** | **`advancedWebViewCapture` native option defaults ON (opt-out).** | Get the value by default; embedders disable per need. The SDK ships in the binary regardless (size NFR). |
 | **D9** | **Domain allowlist** native option: host + wildcard (`*.example.com`), **default = all**, evaluated **per-frame incl. cross-origin subframes** at load time. | Don't inject Bugsee into third-party content (OAuth/payment/ads) when restricted; per-frame because WebViews embed cross-origin iframes. |
-| **D10** | **Obscuring (secure-area masking) drives the legacy relationship, negotiated by the capability handshake.** The advanced SDK declares `caps` in `hello`; if it includes `obscuring` → advanced is the sole path (native suppresses legacy); else native also loads legacy for obscuring and tells advanced to skip the overlap. **Target: build obscuring into `@bugsee/webview` so it fully replaces legacy.** | The new SDK has no obscuring today and obscuring (masking native-rendered pixels via streamed rects) is mandatory + WebView-specific. Making it a negotiated capability means "replace when able, coexist otherwise" falls out automatically — no hard-coded mode. |
+| **D10** | ~~Obscuring drives the legacy relationship, negotiated by the capability handshake.~~ **SUPERSEDED by D-A7 (`webview-bridge-auth.md`).** The negotiation was the defect: `caps` arrives on a page-reachable interface, so any script could claim `obscuring` and make native stand its own masking down. A decision that REDUCES masking cannot be authorised by the party being masked. Native now masks unconditionally and applies the UNION of its own rects and the bridge's; `caps` is recorded nowhere and decides nothing. `@bugsee/webview` still supplies obscuring — it just adds to the mask rather than replacing it. | Kept for the reasoning. Any hand-over of masking ownership must be decided from something native controls (e.g. the resolved bundle version stamped in at build time), never from the wire. |
 
 ## 5. Architecture — the streaming-source inversion
 
@@ -172,8 +174,9 @@ the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE 
    > receiver written from the old text emits a message that FAILS the shipped schema, and JS silently drops
    > the extra config (it reads only `reportTrigger` and `session`). `config.enabledTypes` is accepted by the
    > schema but likewise not applied — see the SEV2 list in `docs/review/webview.md`.
-4. Native uses `caps` to decide legacy coexistence (D10): `obscuring` present → suppress legacy; absent → also
-   load legacy + set `config.skip:["network","obscuring"…]` so advanced doesn't double-capture.
+4. Native records `caps` nowhere and suppresses nothing (**D-A7**). It masks unconditionally and unions its own
+   rects with the bridge's, because a page script can declare any capability it likes. `config.skip` may still
+   narrow non-privacy overlap; it must never be derived from a claim that reduces masking.
 5. Version skew: native accepts the highest protocol version it speaks ≤ JS's; unknown `t` types are ignored
    (forward-compat); a JS newer than native degrades to the accepted version.
 
@@ -224,26 +227,26 @@ fallback; the 1-entry-at-a-time vs `batch` choice is the SDK's, transparent to n
   runs them before crossing (`red:true`) AND native re-applies → the union of both filter sets is enforced.
 - **Visual masking (obscuring):** JS only streams the secure-area **rects** (it cannot redact native-rendered
   pixels); native masks the frame (scale + scroll-offset mapping, per `BugseeSecureViewsManager`). This is the
-  one redaction that MUST be native — and the capability that decides legacy coexistence (D10).
+  one redaction that MUST be native. (`caps` no longer decides legacy coexistence — D-A7.)
 
 ## 9. Packaging, loading & gating
 
 - **Bundle (D7):** native ships the `@bugsee/webview` IIFE as a resource + a tiny **bootstrap**. The bootstrap is
-  injected at **document-start** (`WebViewCompat.addDocumentStartJavaScript` where available, else page-ready), so
+  injected at **document-start** (`WebViewDocumentStartInjector (reflection tiers; androidx's addDocumentStartJavaScript is not used)` where available, else page-ready), so
   interceptors beat app scripts; it activates the heavy SDK from native-pushed config.
 - **Gate 1 — `advancedWebViewCapture` (D8, default ON):** native decides per-WebView whether to inject at all.
 - **Gate 2 — domain allowlist (D9, default all):** native checks each frame's origin (incl. cross-origin
   subframes) at load; non-matching frames are skipped. The bootstrap also re-checks `location` against the
   pushed allowlist (belt-and-suspenders for a full-navigation between native's gate and activation).
-- **Legacy coexistence (D10):** decided by the `hello.caps` handshake — advanced-only when it declares
-  `obscuring`, else legacy + advanced with the overlap suppressed.
+- **Legacy coexistence:** NOT decided by `hello.caps` (**D-A7**). Native masks regardless and unions both
+  sources; a page-supplied claim can only ever add masking, never withdraw it.
 - **Builds:** an **IIFE single-string** (native resource, strict size budget) + an **npm/ESM** entry (for web
   apps that detect-and-adapt, and for tests).
 
 ## 10. Lifecycle (Android)
 
 Inject at document-start → JS `hello` → native `control({config, session, timeBase})`. Re-inject + re-handshake
-on full navigation (bootstrap guards on `'__bugsee_bridge' in window`); SPA route changes are tracked in-SDK
+on full navigation (bootstrap guards on `'BugseeWebView' in window`); SPA route changes are tracked in-SDK
 (Navigation API). `pagehide` → JS flush + `bye`; native `flush`/`stop` before `WebView.destroy()`. Native app
 background → `pause`; foreground → `resume`; native session rotation → `setSession`.
 
@@ -282,8 +285,8 @@ background → `pause`; foreground → `resume`; native session rotation → `se
    `obscuring-channel.ts` that streams a `secure` envelope on change and answers native's synchronous pull
    `__bugsee_bridge.snapshot()` (serialized rects) + the `snapshot` control command (async re-push). Adds
    `obscuring` to `hello.caps` ONLY when a DOM is present + not opted out (`captureObscuring`, default true) — so
-   native drops its legacy masking only when the advanced SDK actually masks. `secure` wire message + builder
-   added to the protocol. 100% cov, mutator-looped.
+   native does NOT drop its legacy masking for any claim the page makes (D-A7) — it unions both sources.
+   `secure` wire message + builder added to the protocol. 100% cov, mutator-looped.
 5. **Redaction wiring (D3) — DONE.** Webview launch options `networkFilter`/`logFilter`/`breadcrumbFilter`/
    `reportHandler` install into the core `filters` service (via the facade `set*`), so the capture providers +
    the report path run them before crossing. A `redaction-provenance.ts` helper maps each crossing to its `red`
@@ -338,10 +341,10 @@ background → `pause`; foreground → `resume`; native session rotation → `se
   non-PII; accepted ONLY from a verified child `<iframe>.contentWindow`), each frame re-maps a child's rects by
   that iframe's offset (read FRESH each compose, so an intermediate scroll never goes stale; a removed iframe is
   GC'd), and ONLY the TOP frame adds the page scroll → document-absolute → posts `secure` + declares the
-  `obscuring` capability. So the top frame reports the whole-page UNION and the advanced SDK fully replaces legacy
-  masking. Composition only ADDS rects → a malicious bubble can only OVER-mask, never leak. **Native owns the
-  final "is coverage complete → fully drop legacy" call** (it knows its D9 injection set; with the default-all
-  allowlist, coverage is complete). Tested by `obscuring-composer.test.ts` + a real-iframe scenario in the
+  `obscuring` capability. So the top frame reports the whole-page UNION, which native adds to its own mask.
+  Composition only ADDS rects → a malicious bubble can only OVER-mask, never leak. Native does **not** drop its
+  legacy masking on the strength of that coverage (**D-A7**): the claim arrives from the page, so it cannot be
+  allowed to reduce masking. Tested by `obscuring-composer.test.ts` + a real-iframe scenario in the
   conformance harness.
 - **Entry/origin attribution for NON-obscuring sub-frame capture (logs/network) — OPEN, decide before slice 8.**
   Distinct from obscuring (now composed): a sub-frame's logs/network entries still post to the SAME

@@ -7,7 +7,7 @@ import type { FileType } from '@bugsee/protocol';
 //   const orig = JSON.parse;
 //   JSON.parse = s => { if (s.includes('"k":"control"')) steal(orig(s).tok); return orig(s); };
 //
-// which reads the token out of NATIVE's echoed control message — defeating D-A1, whose guarantee is stated
+// which reads the token out of NATIVE's control message — defeating D-A1, whose guarantee is stated
 // only in outbound terms ("sent once, on hello"). The same trick on `stringify` (or an
 // `Object.prototype.toJSON`) reads the outbound hello and can silently replace the payload.
 //
@@ -95,7 +95,7 @@ export interface EntryMessage {
   readonly p: string;
 }
 
-/** One secure area native must MASK in its rendered frame (D10) — a sensitive input / `.bugsee-hide` element's
+/** One secure area native must MASK in its rendered frame — a sensitive input / `.bugsee-hide` element's
  *  viewport rect. JS cannot redact native-rendered pixels, so it only streams the rects; native masks them. */
 export interface SecureArea {
   /** `text` = a secure input field; `hidden` = an explicitly `.bugsee-hide`-marked element. */
@@ -106,7 +106,8 @@ export interface SecureArea {
   readonly right: number;
 }
 
-/** JS→native: the current set of secure-area rects to mask (D10 obscuring). Native applies the LATEST (by `s`).
+/** JS→native: the current set of secure-area rects to mask. A current native receiver DISCARDS this payload and
+ *  re-pulls `__bugsee_bridge.snapshot()` instead (D-A9); an older one applies the LATEST (by `s`).
  *  Also returned synchronously by `__bugsee_bridge.snapshot()` at native frame-capture time. */
 export interface SecureMessage {
   readonly b: number;
@@ -177,7 +178,7 @@ export interface ControlMessage {
    *
    * NOT derived from {@link HelloMessage.tok}, which any page script can mint. Also distinct from the
    * capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping
-   * the outgoing stream send commands. Falls back to echoing `hello.tok` only against a host that injected
+   * the outgoing stream send commands. Applies only to a host that injected no nonce; a current native receiver echoes no `hello.tok` only against a host that injected
    * no nonce.
    */
   readonly tok?: string;
