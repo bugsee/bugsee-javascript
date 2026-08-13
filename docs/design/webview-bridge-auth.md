@@ -259,6 +259,53 @@ over the wire, because the wire cannot carry a trustworthy answer. If that hand-
 to be decided from something native controls — e.g. the resolved bundle version stamped in at build time —
 never from `caps`.
 
+## D-A8. The interface's lifetime is bound to the bundle's — and the nonce that must come before it goes live
+
+**Found by review round 5, after four rounds had walked past it.** Every earlier round reasoned about the
+*advanced* path, because that is what the token work touched. The exposure was on the **default** one.
+
+`WebViewWrapper.initialize()` attached the `BugseeBridge` `@JavascriptInterface` **unconditionally**, before
+and outside the branch that chooses the advanced bundle over the legacy script. `webview-version.txt` is the
+build-time placeholder `0.0.0` in every released build, so `isAdvancedScriptUsable()` is false, no
+`@bugsee/webview` SDK is ever loaded — and yet the interface was published to every page anyway. The only
+party able to speak on it was the page. Shipped in 7.1.0 and 7.1.1.
+
+**Rule: no legitimate speaker, no interface.** `attach` now sits inside
+`isAdvancedWebViewCaptureEnabled() && isAdvancedScriptUsable()`, the same gate that decides whether the
+bundle is injected at all. In every shipped build the interface simply does not exist, which closes the
+forged `hello`, `secure`, `report`, `entry` and `batch` routes at once rather than one at a time.
+
+Two bounds were added alongside it, since the surface returns when the bundle does: `batch` unrolls at most
+`MAX_BATCH_ENTRIES` (1000) entries, and one `secure` message contributes at most `MAX_SECURE_RECTS` (512)
+rects — with the list's *capacity* clamped too, so a payload cannot pre-allocate before a rect is validated.
+
+### The precondition this does NOT satisfy
+
+Gating `attach` makes today safe by removing the surface. It does not make the surface safe. **Before
+`webview-version.txt` carries a real bundle, this must be closed:**
+
+Once the advanced path is live, `BugseeBridge` is a page-reachable global again, and on that path the legacy
+obscuring script is *not* injected — so the D-A7 union has exactly **one** member, the bridge's. Every rect
+protecting a password field then originates from a channel any script in any frame can post to. D-A7's
+guarantee ("native never masks less because of what the page says") holds only while native has a source of
+its own; on the advanced path it has none, and a forged `secure` with a smaller rect set withdraws real
+masking. The monotone rule is intact in structure and empty in practice.
+
+Two ways out, and they are not equivalent:
+
+1. **Inject legacy obscuring on both paths**, so native always has an independent source. Rejected as-is:
+   `getJSScript()` is the *whole* legacy in-page script — obscuring plus capture — and `WebViewJSListener`
+   is attached on both paths, so running it under the advanced bundle double-captures. It would need the
+   obscuring portion split into its own asset first.
+2. **Authenticate the channel with a nonce native controls** (preferred). Native mints a per-document random
+   nonce, interpolates it into the document-start bundle it injects, and rejects any inbound message without
+   it. The bundle holds it in closure scope, so page scripts cannot read it back. This is the one shape that
+   actually distinguishes our SDK from the page, because the secret travels by a route the page never sees —
+   unlike `tok` (D-A1), which JS mints and any script can mint too.
+
+Until one of these lands, activating the advanced path **re-opens** the masking bypass that 7.1.x shipped.
+Treat the version bump as gated on it.
+
 ## Wire changes
 
 Additive; every field optional; a receiver that ignores them behaves exactly as today.
