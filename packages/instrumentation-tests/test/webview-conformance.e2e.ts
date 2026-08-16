@@ -54,9 +54,7 @@ function createReceiver() {
         // because the field is optional on the wire (a host that mints no nonce still conforms).
         const stamped = (m as { n?: unknown }).n;
         if (stamped !== CAPTURE_NONCE) {
-          throw new Error(
-            `UNSTAMPED message — native would drop this: ${JSON.stringify(m)}`,
-          );
+          throw new Error(`UNSTAMPED message — native would drop this: ${JSON.stringify(m)}`);
         }
       }
     },
@@ -288,10 +286,9 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     // exploit and no latch to race.
     rx.sendControl({ tok: undefined, config: { reportTrigger: false } });
     await client.logException(new Error('gate-still-on'));
-    expect(
-      rx.byKind('report'),
-      'an unstamped control message reconfigured the SDK',
-    ).toHaveLength(2);
+    expect(rx.byKind('report'), 'an unstamped control message reconfigured the SDK').toHaveLength(
+      2,
+    );
   });
 
   it('keeps accepting native control AFTER the first authenticated message (D-A10)', async () => {
@@ -305,7 +302,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     // nothing was applied at all, which is the opposite of what it is named for.
     const { client, rx } = track(boot());
 
-    rx.sendControl({ config: { reportTrigger: true } });  // first — gate ON
+    rx.sendControl({ config: { reportTrigger: true } }); // first — gate ON
     rx.sendControl({ config: { reportTrigger: false } }); // second — must still be applied
     await client.logException(new Error('after-second'));
 

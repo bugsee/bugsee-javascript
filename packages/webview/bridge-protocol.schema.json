@@ -15,10 +15,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "t",
-        "s"
-      ],
+      "required": ["t", "s"],
       "additionalProperties": false
     },
     "fileType": {
@@ -77,13 +74,7 @@
           "description": "SUPERSEDED by D-A10 — a receiver MUST NOT store or echo this. It was minted by the JS SDK and published here so native could learn it, which authenticated nobody: `hello` arrives on the same @JavascriptInterface any frame can post to, so native cannot tell this token from one a page script minted. That is why the channel had to start open and wait to latch, and why a script could stop capture inside that window. Native mints its OWN secret instead and delivers it inside the bundle it injects (see `control.tok`). The field stays on the wire only so an older SDK still validates."
         }
       },
-      "required": [
-        "b",
-        "k",
-        "sdk",
-        "caps",
-        "session"
-      ],
+      "required": ["b", "k", "sdk", "caps", "session"],
       "additionalProperties": false
     },
     "entry": {
@@ -128,17 +119,7 @@
           "type": "object"
         }
       },
-      "required": [
-        "b",
-        "k",
-        "t",
-        "s",
-        "ts",
-        "mono",
-        "o",
-        "red",
-        "p"
-      ],
+      "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
       "additionalProperties": false
     },
     "report": {
@@ -183,17 +164,7 @@
           "type": "object"
         }
       },
-      "required": [
-        "b",
-        "k",
-        "t",
-        "s",
-        "ts",
-        "mono",
-        "o",
-        "red",
-        "p"
-      ],
+      "required": ["b", "k", "t", "s", "ts", "mono", "o", "red", "p"],
       "additionalProperties": false
     },
     "secure": {
@@ -232,15 +203,7 @@
           }
         }
       },
-      "required": [
-        "b",
-        "k",
-        "s",
-        "ts",
-        "mono",
-        "o",
-        "p"
-      ],
+      "required": ["b", "k", "s", "ts", "mono", "o", "p"],
       "additionalProperties": false
     },
     "batch": {
@@ -266,11 +229,7 @@
           }
         }
       },
-      "required": [
-        "b",
-        "k",
-        "e"
-      ],
+      "required": ["b", "k", "e"],
       "additionalProperties": false
     },
     "bye": {
@@ -290,10 +249,7 @@
           "description": "The capture nonce (D-A11). Native mints it, interpolates it into the bundle it injects, and DROPS any inbound message that does not carry it — `BugseeBridge.post` is reachable from every frame, so this is the only thing distinguishing the SDK's traffic from a page script's. Optional on the wire so a host that mints no nonce still validates; a native receiver that mints one MUST require it."
         }
       },
-      "required": [
-        "b",
-        "k"
-      ],
+      "required": ["b", "k"],
       "additionalProperties": false
     },
     "control": {
@@ -329,13 +285,7 @@
           "additionalProperties": false
         },
         "command": {
-          "enum": [
-            "pause",
-            "resume",
-            "flush",
-            "stop",
-            "snapshot"
-          ]
+          "enum": ["pause", "resume", "flush", "stop", "snapshot"]
         },
         "tok": {
           "type": "string",
@@ -343,10 +293,7 @@
           "description": "The control secret NATIVE minted (D-A10) — 128 bits of CSPRNG, interpolated into the bundle native injects as `BugseeWebView.launch(token,{controlNonce})`, so it reaches the SDK by a route the page never observes. Required on EVERY control message, from the first: the SDK rejects anything else with no open period and no latch to race. It must NOT be derived from `hello.tok`, which any page script can mint. It must also differ from the capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping the outgoing stream send commands."
         }
       },
-      "required": [
-        "b",
-        "k"
-      ],
+      "required": ["b", "k"],
       "additionalProperties": false
     },
     "secureArea": {
@@ -354,10 +301,7 @@
       "description": "One masked rect inside a `secure` message's `p` payload (DOCUMENT-absolute coordinates).",
       "properties": {
         "type": {
-          "enum": [
-            "text",
-            "hidden"
-          ]
+          "enum": ["text", "hidden"]
         },
         "top": {
           "type": "number"
@@ -372,13 +316,7 @@
           "type": "number"
         }
       },
-      "required": [
-        "type",
-        "top",
-        "left",
-        "bottom",
-        "right"
-      ],
+      "required": ["type", "top", "left", "bottom", "right"],
       "additionalProperties": false
     }
   },
