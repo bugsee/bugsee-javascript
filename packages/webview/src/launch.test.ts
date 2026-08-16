@@ -153,6 +153,38 @@ describe('launch (webview)', () => {
     expect(hello.session.length).toBeGreaterThan(0);
   });
 
+  it('handshakes and streams over a WKWebView (iOS) host, stamping the capture nonce', () => {
+    // The whole composition over the iOS transport, not just the sink unit. `launch` builds the bridge, the
+    // capture store, the obscuring channel and the report pipeline against one `global`; if any of them
+    // reached for the Android interface directly rather than going through the host bridge, this fails.
+    //
+    // The nonce assertion is the load-bearing half: native drops every unstamped message (D-A11), so a
+    // transport that reached the wire without passing the stamping choke point would produce a session in
+    // which 100% of WebView capture is silently discarded — the failure mode hardest to notice in the field.
+    const posted: string[] = [];
+    const global: {
+      webkit: { messageHandlers: { BugseeBridge: { postMessage(raw: string): void } } };
+      __bugsee_bridge?: BridgeGlobalApi;
+    } = {
+      webkit: { messageHandlers: { BugseeBridge: { postMessage: (r) => posted.push(r) } } },
+    };
+    track('tok', baseOptions({ global, captureNonce: 'cap-ios' }));
+    console.log('webkit-marker-1');
+
+    const msgs = posted.map((r) => JSON.parse(r) as AnyMsg);
+    const hello = msgs.find((m): m is HelloMessage => m.k === 'hello');
+    expect(hello?.sdk).toBe('0.0.0');
+    expect(
+      msgs.filter((m) => (m as { n?: unknown }).n !== 'cap-ios'),
+      'a message reached the WKWebView sink without the capture nonce',
+    ).toEqual([]);
+    expect(
+      msgs.some(
+        (m) => m.k === 'entry' && JSON.stringify((m as EntryMessage).p).includes('webkit-marker-1'),
+      ),
+    ).toBe(true);
+  });
+
   it('streams a captured console log across the bridge as a log entry', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));
@@ -977,7 +1009,10 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
     // control nonce must not, ever: a script that shadowed `BugseeBridge` before we pinned it would read
     // anything we send, and knowing the control secret upgrades that tap into `cmd:"stop"`.
     const fake = fakeGlobal();
-    track('tok', baseOptions({ global: fake.global, controlNonce: 'ctl-secret', captureNonce: 'cap-secret' }));
+    track(
+      'tok',
+      baseOptions({ global: fake.global, controlNonce: 'ctl-secret', captureNonce: 'cap-secret' }),
+    );
     console.log('some-traffic');
 
     const all = fake.msgs();

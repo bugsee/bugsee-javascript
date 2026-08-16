@@ -62,7 +62,7 @@ the **native-side receiver contract**, (d) the **control plane** (gating, config
 | **D3** | **Native redacts by default; layered when JS filters are set.** JS streams un-redacted unless the embedder configured JS-side filters, in which case JS redacts before crossing AND native re-applies. | Native owns the canonical filter config; a `redacted` provenance flag per message lets native know a JS pass ran (it re-applies regardless — safe). |
 | **D4** | **Full taxonomy parity** carried across the bridge. | The whole point is the richer capture; the envelope is `FileType`-tagged + extensible, so unknown types are forward-compatibly ignored. |
 | **D5** | **WebView-originated report TRIGGERING is gated behind a launch option, default OFF.** Errors/exceptions still stream up as entries (timeline breadcrumbs with stacks); what's gated is *emitting a `report` trigger* (a WebView error / `logException` causing native to open a bug). | In an embedded WebView, native is the authority on when a bug is opened; you don't want every third-party JS error to spawn a report. Delivered via the handshake config. |
-| **D6** | **Android only** for the first milestone; iOS / Cordova / HarmonyOS deferred. | Focus; the transport-agnostic envelope makes later platforms additive. |
+| **D6** | ~~**Android only** for the first milestone.~~ **iOS is now in scope** (`host-bridge.ts` speaks both `window.BugseeBridge.post` and `window.webkit.messageHandlers.BugseeBridge.postMessage`); Cordova / HarmonyOS remain deferred. | The transport-agnostic envelope made it additive exactly as intended: the WKWebView host is one more sink shape behind the same pinning + nonce-stamping choke point, with zero wire change. The handler deliberately reuses the Android interface NAME so the two natives share one protocol, one schema and one conformance harness — and is deliberately NOT the legacy `BugseeJsListener`, which speaks the old envelope and coexists during migration. |
 | **D7** | **The advanced JS SDK ships bundled inside the native SDK** (resource, modern analog of `R.raw.bugsee_inject_script`), injected by native as a tiny **bootstrap/loader** + the heavy `@bugsee/webview` bundle. | One shipping artifact; the bootstrap (document-start, cheap) activates the heavy SDK from native-pushed config. |
 | **D8** | **`advancedWebViewCapture` native option defaults ON (opt-out).** | Get the value by default; embedders disable per need. The SDK ships in the binary regardless (size NFR). |
 | **D9** | **Domain allowlist** native option: host + wildcard (`*.example.com`), **default = all**, evaluated **per-frame incl. cross-origin subframes** at load time. | Don't inject Bugsee into third-party content (OAuth/payment/ads) when restricted; per-frame because WebViews embed cross-origin iframes. |
@@ -323,7 +323,9 @@ background → `pause`; foreground → `resume`; native session rotation → `se
 
 ## 13. Deferred / open
 
-- **iOS (WKScriptMessageHandler), Cordova, HarmonyOS** receivers + channels (D6).
+- **Cordova, HarmonyOS** receivers + channels (D6). The **iOS (WKScriptMessageHandler) channel is BUILT on the
+  JS side** — `createHostBridge` resolves a WKWebView handler with the same pin-on-first-resolve discipline as
+  the Android interface; what remains is the iOS NATIVE receiver (`ios/sdk`, see `webview-bridge-ios.md`).
 - **`profile` / `replay` / `screenshot`** streaming (native owns frames for now).
 - **Originating-session re-propagation** + WebView↔native trace stitching polish.
 - **Obscuring fidelity** parity audit vs legacy (edge cases: nested scroll, transforms, fixed elements).

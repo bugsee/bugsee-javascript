@@ -136,19 +136,36 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
     expect(s.real).toEqual(['buffered', 'live']);
   });
 
-  it('pins at the first POST, and reading `available` does not pin', () => {
-    // `available` used to call resolve(), so a mere read pinned the sink. Round 1 flagged the mutating
-    // getter; it now reports without binding anything. Pinning happens at the first message instead —
-    // which in `launch()` is the synchronous hello, so no page script can run in between.
+  it('pins at the first POST', () => {
     const s = swappable();
     s.attach();
     const bridge = createHostBridge({ global: s.global });
-    expect(bridge.available).toBe(true); // pure read — must NOT pin
     bridge.post('x');
     s.hijack();
     bridge.post('y');
     expect(s.real).toEqual(['x', 'y']);
     expect(s.attacker).toEqual([]);
+  });
+
+  it('reading `available` does not pin — the pin happens at the first message', () => {
+    // `available` used to call resolve(), so a mere read pinned the sink. Round 1 flagged the mutating
+    // getter; it now reports without binding anything. Pinning happens at the first message instead —
+    // which in `launch()` is the synchronous hello, so no page script can run in between.
+    //
+    // Reading `available` BEFORE the swap is what makes the difference observable. The sibling test above
+    // could not see it: it attached the real sink first, so a pinning getter pinned exactly what the test
+    // then asserted, and the "does not pin" half of its name was never checked at all.
+    const s = swappable();
+    s.attach(); // sink A
+    const bridge = createHostBridge({ global: s.global });
+    expect(bridge.available).toBe(true); // pure read — must NOT bind A
+    s.hijack(); // sink B replaces A before any message is sent
+    bridge.post('first');
+
+    expect(s.attacker, 'the getter pinned sink A, so the first message never reached B').toEqual([
+      'first',
+    ]);
+    expect(s.real).toEqual([]);
   });
 
   it('keeps sending to the pinned METHOD after the page overwrites `post` on the object', () => {
@@ -217,6 +234,189 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
     global.BugseeBridge = { post: (r: string) => real.push(r) };
     bridge.post('live');
     expect(real).toEqual(['buffered', 'live']);
+  });
+});
+
+// The WKWebView sink (iOS). Native registers a WKScriptMessageHandler under the SAME name Android uses for
+// its @JavascriptInterface — `BugseeBridge` — so the wire, the nonce and the pinning discipline are identical
+// and only the call shape differs: `window.webkit.messageHandlers.BugseeBridge.postMessage(raw)`.
+//
+// Deliberately the same name, and deliberately NOT the legacy `BugseeJsListener`: the two channels coexist
+// during migration exactly as they do on Android, and the legacy one speaks a different protocol.
+describe('createHostBridge — the WKWebView (iOS) sink', () => {
+  /** A fake WKWebView global: `window.webkit.messageHandlers.BugseeBridge.postMessage(raw)`. */
+  const withWebkit = (
+    postMessage: (raw: string) => void,
+  ): { webkit: { messageHandlers: { BugseeBridge: { postMessage(raw: string): void } } } } => ({
+    webkit: { messageHandlers: { BugseeBridge: { postMessage } } },
+  });
+
+  it('posts the raw wire string to webkit.messageHandlers.BugseeBridge.postMessage', () => {
+    const posted: string[] = [];
+    const bridge = createHostBridge({ global: withWebkit((r) => posted.push(r)) });
+    expect(bridge.available).toBe(true);
+    bridge.post('{"b":1,"k":"hello"}');
+    expect(posted).toEqual(['{"b":1,"k":"hello"}']);
+  });
+
+  it('reports unavailable when webkit is present but our handler is not registered', () => {
+    // `window.webkit` exists in every WKWebView, so its mere presence proves nothing. Only OUR named
+    // handler does — and native registers it solely on the gated advanced path.
+    const bridge = createHostBridge({ global: { webkit: { messageHandlers: {} } } });
+    expect(bridge.available).toBe(false);
+    expect(() => bridge.post('a')).not.toThrow(); // buffered, never throws
+  });
+
+  it('reports unavailable when there is no webkit at all (a non-WKWebView realm)', () => {
+    const bridge = createHostBridge({ global: {} });
+    expect(bridge.available).toBe(false);
+  });
+
+  it('buffers until native registers the handler, then flushes the backlog in order', () => {
+    // Native adds the handler in `WKWebViewConfiguration`, so it is normally there before page script —
+    // but the runtime-injection path registers later, and the SDK must not lose that startup capture.
+    const global: {
+      webkit?: { messageHandlers: { BugseeBridge?: { postMessage(raw: string): void } } };
+    } = {};
+    const bridge = createHostBridge({ global });
+    bridge.post('a');
+    bridge.post('b');
+    const posted: string[] = [];
+    global.webkit = { messageHandlers: { BugseeBridge: { postMessage: (r) => posted.push(r) } } };
+    bridge.post('c');
+    expect(posted).toEqual(['a', 'b', 'c']);
+  });
+
+  it('calls postMessage with the message handler as receiver', () => {
+    // `webkit.messageHandlers.X` is a host object on iOS exactly as an @JavascriptInterface is on Android:
+    // `postMessage` must be invoked WITH it as receiver or WebKit throws. Binding is what preserves that.
+    let receiver: unknown;
+    const handler = {
+      postMessage(this: unknown, _raw: string) {
+        receiver = this;
+      },
+    };
+    createHostBridge({
+      global: { webkit: { messageHandlers: { BugseeBridge: handler } } },
+    }).post('x');
+    expect(receiver).toBe(handler);
+  });
+
+  it('keeps delivering to the pinned sink after the page swaps window.webkit', () => {
+    // The SEV1-3 tap, in its iOS shape. `window.webkit` is an ordinary page-visible object, so a script
+    // that runs after the SDK can replace the whole tree and receive 100% of subsequent capture — logs,
+    // request URLs, bodies — with the SDK still apparently working. Pinning the bound method on first
+    // resolve is what makes the swap unobservable.
+    const real: string[] = [];
+    const attacker: string[] = [];
+    const global: {
+      webkit?: { messageHandlers: { BugseeBridge: { postMessage(raw: string): void } } };
+    } = { webkit: { messageHandlers: { BugseeBridge: { postMessage: (r) => real.push(r) } } } };
+    const bridge = createHostBridge({ global });
+    bridge.post('before');
+    global.webkit = {
+      messageHandlers: { BugseeBridge: { postMessage: (r) => attacker.push(r) } },
+    };
+    bridge.post('after');
+
+    expect(real, 'the real native sink lost traffic after the swap').toEqual(['before', 'after']);
+    expect(attacker, 'a page script that swapped window.webkit received capture').toEqual([]);
+  });
+
+  it('keeps sending to the pinned METHOD after the page overwrites postMessage', () => {
+    // The same round-1 SEV2 hole as Android's: pinning the OBJECT would still dereference `.postMessage`
+    // on every send, so leaving the tree alone and overwriting just the method reroutes the stream.
+    const real: string[] = [];
+    const attacker: string[] = [];
+    const handler = { postMessage: (r: string) => real.push(r) };
+    const bridge = createHostBridge({
+      global: { webkit: { messageHandlers: { BugseeBridge: handler } } },
+    });
+    bridge.post('before');
+
+    handler.postMessage = (r: string) => attacker.push(r);
+    bridge.post('after');
+
+    expect(real, 'the real sink lost traffic when postMessage was overwritten').toEqual([
+      'before',
+      'after',
+    ]);
+    expect(attacker, 'overwriting postMessage captured the stream').toEqual([]);
+  });
+
+  it('does not pin a malformed handler — a non-function postMessage is not a sink', () => {
+    const global: { webkit?: unknown } = {
+      webkit: { messageHandlers: { BugseeBridge: { postMessage: 'not a function' } } },
+    };
+    const bridge = createHostBridge({ global: global as object });
+    expect(bridge.available).toBe(false);
+    bridge.post('buffered');
+
+    const real: string[] = [];
+    global.webkit = {
+      messageHandlers: { BugseeBridge: { postMessage: (r: string) => real.push(r) } },
+    };
+    bridge.post('live');
+    expect(real).toEqual(['buffered', 'live']);
+  });
+
+  it('routes a WebKit postMessage failure to onError without throwing', () => {
+    // WebKit throws if the handler was removed (navigation, `removeScriptMessageHandler`). Capture must
+    // never alter host-app behaviour, so that surfaces as an SDK error and nothing else.
+    const onError = vi.fn();
+    const bridge = createHostBridge({
+      global: withWebkit(() => {
+        throw new Error('handler removed');
+      }),
+      onError,
+    });
+    expect(() => bridge.post('a')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('stamps the capture nonce over the WebKit sink too', () => {
+    // D-A11 is enforced at the single stamping choke point, so it must hold for every transport. A sink
+    // that bypassed it would have 100% of its capture dropped by native as forged.
+    const posted: string[] = [];
+    createHostBridge({ global: withWebkit((r) => posted.push(r)), nonce: 'n-ios' }).post(
+      '{"b":1,"k":"entry","t":"log"}',
+    );
+    expect(JSON.parse(posted[0] as string)).toMatchObject({ n: 'n-ios', b: 1, k: 'entry' });
+  });
+
+  it('prefers the Android interface when a realm somehow exposes both', () => {
+    // Neither runtime exposes both in practice; the point is that resolution is DETERMINISTIC rather than
+    // dependent on property order, so a page cannot influence which sink is chosen by planting the other.
+    const android: string[] = [];
+    const webkit: string[] = [];
+    const bridge = createHostBridge({
+      global: {
+        BugseeBridge: { post: (r: string) => android.push(r) },
+        webkit: {
+          messageHandlers: { BugseeBridge: { postMessage: (r: string) => webkit.push(r) } },
+        },
+      },
+    });
+    bridge.post('x');
+    expect(android).toEqual(['x']);
+    expect(webkit).toEqual([]);
+  });
+
+  it('falls back to WebKit when the Android interface is present but malformed', () => {
+    // A page script can plant `window.BugseeBridge = {}`. If that merely SHADOWED the real WebKit sink the
+    // page would have a denial-of-capture primitive; preferring Android must mean preferring a USABLE one.
+    const posted: string[] = [];
+    const bridge = createHostBridge({
+      global: {
+        BugseeBridge: { post: 'not a function' },
+        webkit: {
+          messageHandlers: { BugseeBridge: { postMessage: (r: string) => posted.push(r) } },
+        },
+      } as object,
+    });
+    expect(bridge.available).toBe(true);
+    bridge.post('x');
+    expect(posted).toEqual(['x']);
   });
 });
 
