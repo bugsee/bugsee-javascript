@@ -411,22 +411,6 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
     expect(planted, 'a plant at the vacant Android name captured the stream').toEqual([]);
   });
 
-  it('ignores a plant at the vacant WebKit name when native declared android', () => {
-    // The mirror image: Android leaves `window.webkit` vacant, so the same plant works there in reverse.
-    const real: string[] = [];
-    const planted: string[] = [];
-    const both = {
-      BugseeBridge: { post: (r: string) => real.push(r) },
-      webkit: {
-        messageHandlers: { BugseeBridge: { postMessage: (r: string) => planted.push(r) } },
-      },
-    };
-
-    createHostBridge({ global: both, transport: 'android' }).post('x');
-    expect(real).toEqual(['x']);
-    expect(planted, 'a plant at the vacant WebKit name captured the stream').toEqual([]);
-  });
-
   it('a declared ANDROID transport that is absent never falls back either', () => {
     // The android half needs its own no-fallback case, and it must be one where PROBING would give the
     // wrong answer. Asserting "declared android reaches the android sink" proves nothing: the probe

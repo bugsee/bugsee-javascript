@@ -185,6 +185,42 @@ describe('launch (webview)', () => {
     ).toBe(true);
   });
 
+  it('honours a DECLARED transport end to end, ignoring a plant at the vacant name', () => {
+    // The unit tests cover `createHostBridge`; nothing covered the LAUNCH forwarding, so deleting that
+    // one line left the whole suite green while the SDK silently reverted to probing — and hard-coding
+    // the wrong transport there would make one platform capture nothing at all, just as silently.
+    // Coverage does not catch it either: the line executes on its false branch in every other test.
+    const real: string[] = [];
+    const planted: string[] = [];
+    const global: {
+      BugseeBridge: { post(raw: string): void };
+      webkit: { messageHandlers: { BugseeBridge: { postMessage(raw: string): void } } };
+      __bugsee_bridge?: BridgeGlobalApi;
+    } = {
+      BugseeBridge: { post: (r) => planted.push(r) },
+      webkit: { messageHandlers: { BugseeBridge: { postMessage: (r) => real.push(r) } } },
+    };
+
+    track('tok', baseOptions({ global, transport: 'webkit' }));
+
+    expect(real.length, 'the declared WebKit sink received nothing').toBeGreaterThan(0);
+    expect(planted, 'a plant at the vacant Android name captured the stream').toEqual([]);
+  });
+
+  it('captures NOTHING rather than falling back when the declared transport is absent', () => {
+    // Fail-closed, end to end. Native said which handler it registered, so anything at the other name is
+    // by definition not native's — and a silent fallback there is the whole hole this closes.
+    const planted: string[] = [];
+    track(
+      'tok',
+      baseOptions({
+        global: { BugseeBridge: { post: (r: string) => planted.push(r) } },
+        transport: 'webkit',
+      }),
+    );
+    expect(planted).toEqual([]);
+  });
+
   it('streams a captured console log across the bridge as a log entry', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));

@@ -112,11 +112,26 @@ export function createHostBridge(opts?: {
    * the usable-sink fall-through already defeats, into "plant a thrower", which would defeat it. That is a
    * denial-of-capture primitive at exactly the name the fall-through exists to neutralise.
    */
+  // Reported ONCE per bridge, like the control channel's rejection diagnostic. `findSink` re-runs on
+  // every post until a sink pins, so a page that installs a throwing getter drives one `onError` per
+  // captured entry — and the page sets the entry rate. This module already refuses that elsewhere ("a
+  // page could trigger it at will to flood `onError`"); the guard must not quietly reverse the rule.
+  let reportedProbeError = false;
   const guarded = (probe: () => ((raw: string) => void) | undefined) => {
     try {
       return probe();
     } catch (error) {
-      onError(error);
+      if (!reportedProbeError) {
+        reportedProbeError = true;
+        // `onError` is arbitrary host code and may throw. Bare, it converts the hostile-getter path from
+        // "throws into the host app" into "throws into the host app via your error handler" — which is
+        // the exact outcome this guard exists to prevent.
+        try {
+          onError(error);
+        } catch {
+          // the host's own handler failed; there is nowhere left to report it
+        }
+      }
       return undefined;
     }
   };

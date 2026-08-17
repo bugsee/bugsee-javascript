@@ -84,6 +84,7 @@ function boot(options: Parameters<typeof launch>[1] = {}): {
     // bootstrap. Without them the harness exercised an unstamped wire that production never emits — and
     // since native now DROPS unstamped messages, a green harness would have meant nothing about the bytes
     // a real receiver sees.
+    transport: 'android' as const,
     controlNonce: CONTROL_NONCE,
     captureNonce: CAPTURE_NONCE,
     carrier: {}, // fresh per-WebView carrier so the singleton + shared interceptors are isolated per test
@@ -254,7 +255,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
   // WAVE 0.3 — the control-channel token (docs/design/webview-bridge-auth.md D-A1/D-A2).
   //
   // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret from a CSPRNG,
-  // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{controlNonce,captureNonce})`),
+  // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{transport,controlNonce,captureNonce})`),
   // and put the control one on EVERY control message as `tok`.
   //
   // Do NOT store and echo `hello.tok`. That was the earlier scheme and it authenticated nobody: `hello`
@@ -264,7 +265,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
 
   it('requires the NATIVE-minted control secret, from the very first message (D-A10)', async () => {
     // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret, interpolate it into
-    // the bundle it injects (`BugseeWebView.launch(token, {controlNonce, captureNonce})`), and put the
+    // the bundle it injects (`BugseeWebView.launch(token, {transport, controlNonce, captureNonce})`), and put the
     // control one on EVERY control message as `tok`.
     //
     // It replaces the earlier scheme, where the SDK minted a token, published it in `hello`, and native

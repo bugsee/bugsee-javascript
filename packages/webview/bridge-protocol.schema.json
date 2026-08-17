@@ -290,7 +290,7 @@
         "tok": {
           "type": "string",
           "minLength": 1,
-          "description": "The control secret NATIVE minted (D-A10) — 128 bits of CSPRNG, interpolated into the bundle native injects as `BugseeWebView.launch(token,{controlNonce})`, so it reaches the SDK by a route the page never observes. Required on EVERY control message, from the first: the SDK rejects anything else with no open period and no latch to race. It must NOT be derived from `hello.tok`, which any page script can mint. It must also differ from the capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping the outgoing stream send commands."
+          "description": "The control secret NATIVE minted (D-A10) — 128 bits of CSPRNG, interpolated into the bundle native injects as `BugseeWebView.launch(token,{transport,controlNonce,captureNonce})` — where `transport` is `android` for an @JavascriptInterface host or `webkit` for a WKScriptMessageHandler host, and MUST be declared: each native leaves the other interface name permanently vacant and page-writable, so a host that omits it makes the SDK probe, and a well-formed plant at that vacant name receives the whole capture stream, so it reaches the SDK by a route the page never observes. Required on EVERY control message, from the first: the SDK rejects anything else with no open period and no latch to race. It must NOT be derived from `hello.tok`, which any page script can mint. It must also differ from the capture nonce `n`: that one necessarily travels the wire, so sharing them would let a script tapping the outgoing stream send commands."
         }
       },
       "required": ["b", "k"],
