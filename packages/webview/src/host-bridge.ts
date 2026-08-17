@@ -37,6 +37,18 @@ interface HostBridgeGlobal {
   webkit?: { messageHandlers?: { BugseeBridge?: { postMessage?: (raw: string) => void } } };
 }
 
+/**
+ * Which sink native actually registered.
+ *
+ * Native knows this and the page does not, which is the entire point: each native populates one of the two
+ * names and leaves the other permanently VACANT — Android's `addJavascriptInterface` creates
+ * `window.BugseeBridge` and never `window.webkit`; iOS's `addScriptMessageHandler:name:` creates
+ * `webkit.messageHandlers.BugseeBridge` and never `window.BugseeBridge`. A vacant name is a page-writable
+ * slot, so any scheme that PROBES hands the capture stream to a well-formed plant at whichever name the
+ * platform leaves empty.
+ */
+export type HostBridgeTransport = 'android' | 'webkit';
+
 /** Build the host bridge over a global (default `globalThis`); buffers until the native bridge attaches. */
 export function createHostBridge(opts?: {
   global?: object;
@@ -52,11 +64,24 @@ export function createHostBridge(opts?: {
    * Omitted → the previous wire bytes exactly, for hosts that mint no nonce.
    */
   nonce?: string;
+  /**
+   * The sink native registered, declared over the same out-of-band route that carries the nonces (the
+   * bootstrap native interpolates into the injected bundle).
+   *
+   * When given, ONLY that sink is ever used and the other name is ignored however well-formed it looks.
+   * There is no fallback: native said which one it registered, so anything at the other name is by
+   * definition not native's.
+   *
+   * Omitted → both are probed, which is what hosts predating this option do. That probe is best-effort by
+   * construction and is exactly what declaring the transport exists to replace.
+   */
+  transport?: HostBridgeTransport;
 }): HostBridge {
   const global = (opts?.global ?? globalThis) as HostBridgeGlobal;
   const maxBuffer = opts?.maxBuffer ?? DEFAULT_MAX_BUFFER;
   const onError = opts?.onError ?? ((): void => {});
   const nonce = opts?.nonce;
+  const transport = opts?.transport;
   const buffer: string[] = [];
 
   // PINNED on first resolve (Wave 0.3 / D-A4, docs/design/webview-bridge-auth.md).
@@ -80,27 +105,64 @@ export function createHostBridge(opts?: {
   let pinned: ((raw: string) => void) | undefined;
 
   /**
-   * Find a USABLE sink, without pinning. Android is checked first purely so resolution is deterministic
-   * rather than dependent on property order — no realm exposes both in practice, and a page that plants the
-   * other one must not be able to influence which is chosen.
+   * Each probe guards ITSELF, so one hostile name cannot suppress the other.
    *
-   * "Usable" is load-bearing in that ordering: falling through a malformed `BugseeBridge` is what stops
-   * `window.BugseeBridge = {}` from SHADOWING a real WebKit handler, which would hand the page a
-   * denial-of-capture primitive. It is also why a malformed sink is never pinned at all — the SDK could then
-   * never reach a bridge that attached correctly afterwards, which is worse than re-resolving.
+   * A page can install a throwing getter on either name. Under a single shared try/catch, a getter on the
+   * VACANT name aborts resolution before the real sink is ever consulted — turning "plant a `{}`", which
+   * the usable-sink fall-through already defeats, into "plant a thrower", which would defeat it. That is a
+   * denial-of-capture primitive at exactly the name the fall-through exists to neutralise.
+   */
+  const guarded = (probe: () => ((raw: string) => void) | undefined) => {
+    try {
+      return probe();
+    } catch (error) {
+      onError(error);
+      return undefined;
+    }
+  };
+
+  /** The Android `@JavascriptInterface` sink, bound — a Java host object needs its receiver. */
+  const androidSink = (): ((raw: string) => void) | undefined =>
+    guarded(() => {
+      const android = global.BugseeBridge;
+      return typeof android?.post === 'function' ? android.post.bind(android) : undefined;
+    });
+
+  /** The iOS `WKScriptMessageHandler` sink, bound — `webkit.messageHandlers.X` is a host object too. */
+  const webkitSink = (): ((raw: string) => void) | undefined =>
+    guarded(() => {
+      const handler = global.webkit?.messageHandlers?.BugseeBridge;
+      return typeof handler?.postMessage === 'function'
+        ? handler.postMessage.bind(handler)
+        : undefined;
+    });
+
+  /**
+   * Find a USABLE sink, without pinning.
+   *
+   * A DECLARED transport is exclusive: only that sink is consulted, and its absence is never a reason to
+   * try the other. Probing by preference order cannot be made safe, because the name a platform does NOT
+   * use stays page-writable — so a well-formed plant there takes the whole capture stream, on iOS without
+   * even needing to win a race, since `window.BugseeBridge` is never occupied there.
+   *
+   * Undeclared falls back to probing, for hosts that predate the option. "Usable" is load-bearing there:
+   * falling through a malformed sink stops a `{}` plant from shadowing a real handler. It is also why a
+   * malformed sink is never PINNED — the SDK could then never reach a bridge that attached correctly
+   * afterwards, which is worse than re-resolving.
+   *
+   * Every read here touches page-reachable properties, and a page can install a throwing getter on any of
+   * them. Resolution runs OUTSIDE the send try/catch, so without this guard a hostile getter turns
+   * `launch()` and every later capture call into an exception inside the host app.
    */
   const findSink = (): ((raw: string) => void) | undefined => {
-    const android = global.BugseeBridge;
-    if (typeof android?.post === 'function') {
-      // Bound, not bare: a Java @JavascriptInterface is a host object and needs its receiver.
-      return android.post.bind(android);
+    // Probe ONLY when nothing was declared. Keying exclusivity on `=== 'android'` and letting everything
+    // else fall through means an unrecognized value — a typo, a trailing space, a transport added by a
+    // newer native — silently reverts to the insecure probe. An option whose whole purpose is to fail
+    // closed must not fail open on a value it does not recognise.
+    if (transport === undefined) {
+      return androidSink() ?? webkitSink();
     }
-    const webkit = global.webkit?.messageHandlers?.BugseeBridge;
-    if (typeof webkit?.postMessage === 'function') {
-      // Same on iOS — `webkit.messageHandlers.X` is a host object; an unbound `postMessage` throws.
-      return webkit.postMessage.bind(webkit);
-    }
-    return undefined;
+    return transport === 'android' ? androidSink() : webkitSink();
   };
 
   const resolve = (): ((raw: string) => void) | undefined => {

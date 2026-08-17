@@ -384,22 +384,170 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
     expect(JSON.parse(posted[0] as string)).toMatchObject({ n: 'n-ios', b: 1, k: 'entry' });
   });
 
-  it('prefers the Android interface when a realm somehow exposes both', () => {
-    // Neither runtime exposes both in practice; the point is that resolution is DETERMINISTIC rather than
-    // dependent on property order, so a page cannot influence which sink is chosen by planting the other.
-    const android: string[] = [];
-    const webkit: string[] = [];
+  it('sends ONLY to the transport native declared, ignoring a well-formed plant at the other name', () => {
+    // THE hazard of supporting two sinks, and it is not the same as the malformed case below.
+    //
+    // Each native populates exactly one of these names and leaves the other permanently VACANT: Android's
+    // `addJavascriptInterface` creates `window.BugseeBridge` and never `window.webkit`; iOS's
+    // `addScriptMessageHandler:name:` creates `webkit.messageHandlers.BugseeBridge` and never
+    // `window.BugseeBridge`. A vacant name is a page-writable slot, so probing by preference order means a
+    // page script that plants a WELL-FORMED sink at whichever name its platform leaves empty receives 100%
+    // of the capture stream — logs, request URLs, bodies, all un-redacted — plus the capture nonce stamped
+    // on every message, while the real handler gets nothing and the SDK reports no error. On iOS it needs
+    // no race at all: `window.BugseeBridge` is never occupied.
+    //
+    // No probe ORDER fixes this; order only chooses which platform is exposed. Native declares the
+    // transport instead — it knows which one it registered, and says so over the same out-of-band route
+    // that already carries the nonces.
+    const real: string[] = [];
+    const planted: string[] = [];
+    const both = {
+      BugseeBridge: { post: (r: string) => planted.push(r) },
+      webkit: { messageHandlers: { BugseeBridge: { postMessage: (r: string) => real.push(r) } } },
+    };
+
+    createHostBridge({ global: both, transport: 'webkit' }).post('x');
+    expect(real, 'the declared WebKit sink did not receive the message').toEqual(['x']);
+    expect(planted, 'a plant at the vacant Android name captured the stream').toEqual([]);
+  });
+
+  it('ignores a plant at the vacant WebKit name when native declared android', () => {
+    // The mirror image: Android leaves `window.webkit` vacant, so the same plant works there in reverse.
+    const real: string[] = [];
+    const planted: string[] = [];
+    const both = {
+      BugseeBridge: { post: (r: string) => real.push(r) },
+      webkit: {
+        messageHandlers: { BugseeBridge: { postMessage: (r: string) => planted.push(r) } },
+      },
+    };
+
+    createHostBridge({ global: both, transport: 'android' }).post('x');
+    expect(real).toEqual(['x']);
+    expect(planted, 'a plant at the vacant WebKit name captured the stream').toEqual([]);
+  });
+
+  it('a declared ANDROID transport that is absent never falls back either', () => {
+    // The android half needs its own no-fallback case, and it must be one where PROBING would give the
+    // wrong answer. Asserting "declared android reaches the android sink" proves nothing: the probe
+    // fallback tries android first anyway, so that test passes with the declaration ignored entirely —
+    // which is exactly the mutation it was supposed to catch.
+    const planted: string[] = [];
     const bridge = createHostBridge({
       global: {
-        BugseeBridge: { post: (r: string) => android.push(r) },
+        webkit: {
+          messageHandlers: { BugseeBridge: { postMessage: (r: string) => planted.push(r) } },
+        },
+      },
+      transport: 'android',
+    });
+    expect(bridge.available).toBe(false);
+    bridge.post('x');
+    expect(planted, 'a declared android host fell back to a WebKit plant').toEqual([]);
+  });
+
+  it('a declared transport that is absent NEVER falls back to the other one', () => {
+    // Falling back would reopen the hole exactly when it matters: native said "webkit", so anything at the
+    // Android name is by definition not native's.
+    const planted: string[] = [];
+    const bridge = createHostBridge({
+      global: { BugseeBridge: { post: (r: string) => planted.push(r) } },
+      transport: 'webkit',
+    });
+    expect(bridge.available).toBe(false);
+    bridge.post('x');
+    expect(planted).toEqual([]);
+  });
+
+  it('still probes both when native declares no transport, for hosts that predate the option', () => {
+    // Backward compatibility: an older bundle's bootstrap sends no transport. Probing is best-effort and
+    // documented as such — it is precisely what the declared transport exists to replace.
+    const android: string[] = [];
+    createHostBridge({ global: { BugseeBridge: { post: (r: string) => android.push(r) } } }).post(
+      'x',
+    );
+    expect(android).toEqual(['x']);
+
+    const webkit: string[] = [];
+    createHostBridge({
+      global: {
         webkit: {
           messageHandlers: { BugseeBridge: { postMessage: (r: string) => webkit.push(r) } },
         },
       },
+    }).post('y');
+    expect(webkit).toEqual(['y']);
+  });
+
+  it('a throwing getter on the VACANT name cannot suppress the real sink', () => {
+    // The sharper half of the previous test, and the one that has teeth. Under a single shared try/catch a
+    // hostile getter on the name a platform does not use aborts resolution before the real sink is ever
+    // consulted — upgrading "plant a `{}`", which the usable-sink fall-through defeats, into "plant a
+    // thrower", which would defeat it. That is denial-of-capture at exactly the name the fall-through
+    // exists to neutralise.
+    //
+    // The sibling below installs throwing getters on BOTH names, so it cannot tell the two designs apart.
+    const real: string[] = [];
+    const global = {
+      webkit: { messageHandlers: { BugseeBridge: { postMessage: (r: string) => real.push(r) } } },
+    };
+    Object.defineProperty(global, 'BugseeBridge', {
+      get() {
+        throw new Error('hostile getter on the vacant name');
+      },
     });
+
+    const bridge = createHostBridge({ global });
+    expect(bridge.available, 'a thrower at the vacant name hid the real sink').toBe(true);
     bridge.post('x');
-    expect(android).toEqual(['x']);
-    expect(webkit).toEqual([]);
+    expect(real).toEqual(['x']);
+  });
+
+  it('an UNRECOGNISED transport fails closed rather than reverting to the probe', () => {
+    // A typo, a trailing space, or a transport a newer native introduces must not silently restore the
+    // insecure probe. An option whose entire purpose is to fail closed cannot fail open on a value it does
+    // not recognise.
+    const planted: string[] = [];
+    const bridge = createHostBridge({
+      global: { BugseeBridge: { post: (r: string) => planted.push(r) } },
+      transport: 'ios' as unknown as 'webkit',
+    });
+    expect(bridge.available).toBe(false);
+    bridge.post('x');
+    expect(planted, 'an unrecognised transport fell back to probing').toEqual([]);
+  });
+
+  it('reports a hostile getter to onError rather than failing silently', () => {
+    // Otherwise the bridge simply goes dark: no sink, no diagnostic, and capture buffers until evicted.
+    const onError = vi.fn();
+    const global = {};
+    Object.defineProperty(global, 'BugseeBridge', {
+      get() {
+        throw new Error('hostile');
+      },
+    });
+    createHostBridge({ global, onError }).post('x');
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('never throws out of resolution when a page makes the host properties throw', () => {
+    // `available` and `post` resolve OUTSIDE the send try/catch, and resolution performs page-controllable
+    // property reads. A page can install a throwing getter on `window.webkit`, which would turn both
+    // `launch()` and every later capture call into an exception inside the host app — the one thing
+    // capture must never do.
+    const global = {};
+    for (const name of ['webkit', 'BugseeBridge']) {
+      Object.defineProperty(global, name, {
+        get() {
+          throw new Error('hostile getter');
+        },
+      });
+    }
+
+    const bridge = createHostBridge({ global });
+    expect(() => bridge.available).not.toThrow();
+    expect(bridge.available).toBe(false);
+    expect(() => bridge.post('x')).not.toThrow();
   });
 
   it('falls back to WebKit when the Android interface is present but malformed', () => {

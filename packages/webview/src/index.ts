@@ -10,6 +10,7 @@ export {
   createHostBridge,
   DEFAULT_MAX_BUFFER,
   type HostBridge,
+  type HostBridgeTransport,
 } from './host-bridge';
 export {
   createHostBridgeCaptureStore,

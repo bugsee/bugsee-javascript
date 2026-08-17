@@ -39,7 +39,7 @@ import {
 import { BugseeOption } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { mintControlToken } from './control-token';
-import { createHostBridge } from './host-bridge';
+import { createHostBridge, type HostBridgeTransport } from './host-bridge';
 import { createHostBridgeCaptureStore } from './host-bridge-capture-store';
 import { createBridgeControl } from './host-bridge-control';
 import { createObscuringChannel, type ObscuringChannel } from './obscuring-channel';
@@ -142,6 +142,19 @@ export interface BugseeWebViewLaunchOptions {
    * mean the same exposure also granted `cmd:"stop"`, upgrading a capture tap into a capture kill switch.
    */
   captureNonce?: string;
+
+  /**
+   * Which native sink to use, declared by native in the bootstrap it interpolates into the injected
+   * bundle (D-A11's out-of-band route).
+   *
+   * Native knows which handler it registered and the page does not. That asymmetry is the whole value:
+   * each native populates one of the two interface names and leaves the other permanently VACANT — so a
+   * vacant name is a page-writable slot, and probing for a sink hands the capture stream to a well-formed
+   * plant there. On iOS that needs no race at all, since `window.BugseeBridge` is never occupied.
+   *
+   * Omitted → both are probed, which is what hosts predating this option do.
+   */
+  transport?: HostBridgeTransport;
 
   /** Internal-error sink (provider-start / bridge-post failures). Default no-op. */
   onError?: (error: unknown) => void;
@@ -290,6 +303,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     // costs forged capture, which such a script could already produce. Reusing the control nonce here would
     // additionally hand it `cmd:"stop"` — turning a tap into a kill switch.
     ...(options.captureNonce !== undefined ? { nonce: options.captureNonce } : {}),
+    ...(options.transport !== undefined ? { transport: options.transport } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
