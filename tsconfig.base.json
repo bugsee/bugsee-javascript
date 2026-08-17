@@ -13,6 +13,29 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
 
+    // Dead code and unreachable branches are how a refactor leaves a limb behind that still typechecks.
+    // Every one of these was measured at ZERO existing violations across the tier-0 + platform packages
+    // before being turned on, so they cost nothing today and only bite on new code.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "noUncheckedSideEffectImports": true,
+
+    // DELIBERATELY NOT ENABLED, with the reason, so the next person does not re-litigate it blind:
+    //
+    //   exactOptionalPropertyTypes — genuinely valuable (it distinguishes "absent" from "present and
+    //     undefined", which is exactly the class of bug that produced several defects in the WebView
+    //     bridge). Measured at 182 errors across 7 packages alone, so it is a migration of its own
+    //     rather than a flag flip. Worth scheduling.
+    //
+    //   erasableSyntaxOnly — rejects `enum`, and the LogLevel/Severity enums in @bugsee/protocol are
+    //     part of the wire contract. Converting them to const objects is churn with no safety gain.
+    //
+    //   noPropertyAccessFromIndexSignature — 65 errors, and it buys style (obj['k'] over obj.k) rather
+    //     than safety, since noUncheckedIndexedAccess already forces the undefined check that matters.
+
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "esModuleInterop": true,

@@ -10,7 +10,6 @@ export function runEntry(launch: LaunchFn): void {
   if (collectorUrl === undefined || collectorUrl === '') {
     console.error('[e2e] BUGSEE_E2E_COLLECTOR is not set'); // standalone entry diagnostic
     process.exit(2);
-    return;
   }
   runScenario(launch, { collectorUrl, scenario })
     .then(() => {

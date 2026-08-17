@@ -169,7 +169,6 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
     await client.logException(new Error('e2e multi-instance incident'));
     await client.flush(2000); // assembly+persist complete; the upload fails (unreachable) — bundle kept
     process.exit(1); // die — this instance's pid is now gone (a dead sibling for the recoverer)
-    return;
   }
   const client = launch('e2e-app-token', {
     endpoint: collectorUrl,
@@ -215,7 +214,6 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
     // bundle — only the marker + the on-disk chunks remain (the marker-recovery path must rebuild from them).
     void client.logException(new Error('e2e disk-recovery incident'));
     process.exit(0);
-    return;
   }
   const client = launch('e2e-app-token', {
     endpoint: collectorUrl,

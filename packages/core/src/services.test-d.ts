@@ -16,7 +16,9 @@ const client = createClient();
 
 // getService(token) resolves to the token's type.
 type Got = ReturnType<typeof client.getService<{ hello: string }>>;
-type _resolvesToTokenType = Expect<Equal<Got, { hello: string }>>;
+// Exported so `noUnusedLocals` does not flag it: DECLARING this alias IS the assertion — `Expect` fails
+// to instantiate unless `Equal` is true — so there is nothing to "use" it at a value level.
+export type _resolvesToTokenType = Expect<Equal<Got, { hello: string }>>;
 const member: string = client.getService(TypedSvc).hello;
 void member;
 
