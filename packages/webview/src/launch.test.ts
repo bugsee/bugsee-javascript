@@ -221,6 +221,39 @@ describe('launch (webview)', () => {
     expect(planted).toEqual([]);
   });
 
+  it('does NOT expose a mutation-capable client on the page-reachable carrier', () => {
+    // In a WebView the page is not the app — native is. `window.__BUGSEE__` is an ordinary writable
+    // property, so whatever is stored there is reachable by any page script, third-party tag or XSS.
+    // A client there would be a capture tap, a suppressor and a kill switch at once:
+    //
+    //   const c = Object.values(window.__BUGSEE__)[0].client;
+    //   c.setNetworkEventFilter(e => { exfiltrate(e); return e; });  // + disables default redaction
+    //   c.setLogEventFilter(() => null);                             // suppress
+    //   c.stop();                                                    // kill
+    //
+    // none of which needs a sink to shadow, a race to win, or the D-A10 control secret — it walks around
+    // every defence the bridge has. So the carrier gets a resolver-only facade.
+    const carrier = {} as { __BUGSEE__?: Record<string, { client?: Record<string, unknown> }> };
+    const client = track('tok', baseOptions({ carrier }));
+
+    const exposed = Object.values(carrier.__BUGSEE__ ?? {})[0]?.client;
+    expect(exposed, 'nothing was published for the capture pipeline to resolve').toBeDefined();
+    for (const method of [
+      'setNetworkEventFilter',
+      'setLogEventFilter',
+      'setBreadcrumbFilter',
+      'setReportHandler',
+      'stop',
+      'logException',
+    ]) {
+      expect(exposed?.[method], `\`${method}\` is reachable from page script`).toBeUndefined();
+    }
+    // The resolver IS still there — the capture pipeline reaches redaction filters through it.
+    expect(typeof exposed?.getService).toBe('function');
+    // And the real client, with the full surface, is what launch() hands back to its caller.
+    expect(typeof client.stop).toBe('function');
+  });
+
   it('streams a captured console log across the bridge as a log entry', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));
