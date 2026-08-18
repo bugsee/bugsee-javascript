@@ -3,8 +3,10 @@ import {
   type CaptureStore,
   type Clock,
   contributeServiceManifest,
+  FiltersToken,
   type Scheduler,
   type StoredEntry,
+  setCarrierClient,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeWebViewLaunchOptions, launch } from './launch';
@@ -264,6 +266,15 @@ describe('launch (webview)', () => {
       forgeProvider?.({ name: 'filters' }),
       'a forged token resolved a provider',
     ).toBeUndefined();
+
+    // The other half, and the reason the facade exists at all: the REAL token still resolves. Without
+    // this, a facade that answered `undefined` to everything would pass every assertion above while
+    // silently cutting the capture pipeline off from the redaction filters — masking that fails open.
+    expect(forge?.(FiltersToken), 'the genuine FiltersToken stopped resolving').toBeDefined();
+    expect(
+      forgeProvider?.(FiltersToken),
+      'the genuine FiltersToken stopped resolving a provider',
+    ).toBeDefined();
     // And the real client, with the full surface, is what launch() hands back to its caller.
     expect(typeof client.stop).toBe('function');
   });
@@ -747,8 +758,129 @@ describe('launch (webview)', () => {
     const opts = baseOptions({ onError });
     const first = track('tok', opts);
     const second = launch('tok', opts); // same carrier
-    expect(second).toBe(first);
+    expect(second).not.toBe(first);
+    expect(second.isLaunched()).toBe(true);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a repeat launch cannot reach redaction, lifetime or the container', () => {
+    // `launch` is a page global (the IIFE publishes `BugseeWebView.launch`, injected into the page
+    // world), so a repeat call is a page-reachable request for the live client. Returning the real one
+    // handed over `setNetworkEventFilter` — a capture tap that also disables the default sanitizer —
+    // plus `stop()` and the DI container, which made moving the client off the carrier pointless.
+    //
+    // The previous version of this test asserted `second === first`, pinning exactly that.
+    const onError = vi.fn();
+    const opts = baseOptions({ onError });
+    const first = track('tok', opts);
+    const repeat = launch('tok', opts);
+
+    const filter = vi.fn((e: unknown) => e) as never;
+    const refused = (name: string): boolean =>
+      onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${name}\``));
+
+    // Asserted per method, not in bulk: an earlier version of this test CALLED each one and checked
+    // nothing, so deleting `setNetworkEventFilter` from the blocked set — restoring the exact capture
+    // tap this test exists to prevent — left it green.
+    repeat.setNetworkEventFilter(filter);
+    expect(refused('setNetworkEventFilter')).toBe(true);
+    repeat.setLogEventFilter(filter);
+    expect(refused('setLogEventFilter')).toBe(true);
+    repeat.setBreadcrumbFilter(filter);
+    expect(refused('setBreadcrumbFilter')).toBe(true);
+    repeat.setReportHandler(filter);
+    expect(refused('setReportHandler')).toBe(true);
+    expect(() => repeat.getService({ name: 'filters' } as never)).toThrow();
+    expect(() => repeat.getServiceProvider({ name: 'filters' } as never)).toThrow();
+    repeat.addService({ name: 'filters' } as never);
+    expect(refused('addService')).toBe(true);
+    repeat.registerExt('x' as never, {} as never);
+    expect(refused('registerExt')).toBe(true);
+
+    // The blocked setters are inert, not merely noisy: the real client never received the filter.
+    expect(filter).not.toHaveBeenCalled();
+    expect(first).not.toBe(repeat);
+    // Capture entry points stay live — page script can already produce captured content by other means,
+    // so refusing them would cost function without buying safety.
+    expect(() => repeat.log('still allowed')).not.toThrow();
+    expect(() => repeat.event('still allowed')).not.toThrow();
+  });
+
+  it('a repeat launch cannot end or drain the session the embedder owns', async () => {
+    // `stop()` from page script is a kill switch on the host app's capture; `flush()` forces an upload
+    // the embedder did not ask for. Both report and return false rather than throwing, so an embedder who
+    // genuinely double-launched sees a diagnosable no-op instead of an exception.
+    const onError = vi.fn();
+    const opts = baseOptions({ onError });
+    const first = track('tok', opts);
+    const repeat = launch('tok', opts);
+
+    await expect(repeat.stop()).resolves.toBe(false);
+    await expect(repeat.flush()).resolves.toBe(false);
+    const said = (n: string): boolean =>
+      onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${n}\``));
+    expect(said('stop')).toBe(true);
+    expect(said('flush')).toBe(true);
+    // The real session is still running — the refusal was not merely cosmetic.
+    expect(first.isLaunched()).toBe(true);
+  });
+
+  it('a repeat launch from a FOREIGN module copy returns an inert client, never undefined', () => {
+    // Two copies of @bugsee/webview can end up in one page (a host bundle and an injected one). The copy
+    // that did not perform the launch sees an occupied carrier but holds no client of its own, and the
+    // carrier deliberately no longer stores one — it stores a resolver-only facade. Handing back
+    // `undefined as Bugsee` there would make the caller's FIRST method call a TypeError inside the host
+    // page. An inert client is diagnosable; a crash in someone else's page is not.
+    const carrier: Record<string, unknown> = {};
+    setCarrierClient({ isLaunched: () => true } as never, carrier);
+    const onError = vi.fn();
+    const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+
+    expect(inert).toBeDefined();
+    // Both facts are reported, because they are different diagnoses: "you launched twice" points at the
+    // call site, "another module copy owns the session" points at the bundle. A count assertion alone
+    // would pass with either one missing.
+    const messages = onError.mock.calls.map(([e]) => (e as Error).message);
+    expect(messages.some((m) => m.includes('more than once'))).toBe(true);
+    expect(messages.some((m) => m.includes('another module copy'))).toBe(true);
+    expect(inert.isLaunched?.()).toBe(true);
+
+    // Every method the facade declares is present and safe to call. A missing one is not a cosmetic gap:
+    // it is the TypeError this fallback exists to prevent, so the whole surface is exercised.
+    const surface = [
+      'launch',
+      'log',
+      'event',
+      'trace',
+      'addBreadcrumb',
+      'setUserIdentifier',
+      'clearUserIdentifier',
+      'setAttribute',
+      'clearAttribute',
+      'clearAllAttributes',
+      'setNetworkEventFilter',
+      'setLogEventFilter',
+      'setBreadcrumbFilter',
+      'setReportHandler',
+    ];
+    for (const name of surface) {
+      expect(typeof inert[name], name).toBe('function');
+      expect(() => inert[name]?.('x' as never), name).not.toThrow();
+    }
+    expect(inert.getUserIdentifier?.()).toBeNull();
+    expect(inert.getAttribute?.('k')).toBeUndefined();
+    expect(inert.getAllAttributes?.()).toEqual({});
+  });
+
+  it('the inert client refuses to end a session it does not own', async () => {
+    const carrier: Record<string, unknown> = {};
+    setCarrierClient({ isLaunched: () => true } as never, carrier);
+    const inert = launch('tok', baseOptions({ carrier }));
+    await expect(inert.stop()).resolves.toBe(false);
+    await expect(inert.flush()).resolves.toBe(false);
   });
 
   it('runs contributed service manifests (extension wiring) at launch', () => {

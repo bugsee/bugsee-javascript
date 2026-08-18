@@ -297,18 +297,20 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   const bridgeSlot = bridgeSlotFor(global, options.onError);
 
-  // The carrier holds the FACADE, so its presence is the "already launched" signal; the real client to
-  // hand back comes from module scope. A second module copy would see the facade and refuse correctly,
-  // which is the outcome that matters — it just cannot return the first copy's client object.
-  const alreadyLaunched =
-    getCarrierClient<unknown>(carrier) !== undefined ? launchedClient : undefined;
+  // The carrier holds the FACADE, so its presence is the "already launched" signal; the client to hand
+  // back comes from module scope — RESTRICTED, because `launch` is a page global and a repeat call is
+  // therefore a page-reachable request for the live client. See `restrictedClientFor`.
   if (getCarrierClient<unknown>(carrier) !== undefined) {
     options.onError?.(
       new Error(
         'Bugsee.launch() called more than once in this WebView; the repeat call is ignored',
       ),
     );
-    return alreadyLaunched as Bugsee;
+    // Never `undefined as Bugsee`: a second module copy that did not perform the launch would hand back
+    // a value whose first method call is a TypeError. An inert client is diagnosable; a crash is not.
+    return launchedClient !== undefined
+      ? restrictedClientFor(launchedClient, options.onError)
+      : inertClient(options.onError);
   }
 
   const resolved = resolveLaunchOptions(
@@ -639,6 +641,101 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   launchedClient = publicClient;
   setCarrierClient(carrierFacadeFor(publicClient), carrier);
   return publicClient;
+}
+
+/**
+ * What a REPEAT `launch()` hands back.
+ *
+ * `launch` is a page global — the IIFE publishes it as `BugseeWebView.launch`, and native injects that
+ * bundle into the page world. So `BugseeWebView.launch('anything')` is a one-line way for page script to
+ * ask for the live client, and returning the real one handed over `setNetworkEventFilter` (a capture tap
+ * that also disables the default sanitizer), `stop()`, and the DI container. Moving the client off the
+ * page-reachable carrier achieved nothing while this door stayed open.
+ *
+ * The split is by what the page can ALREADY do. It can generate captured content — a `console.log` is
+ * captured, a `fetch` is captured — so `log`/`event`/`trace`/`addBreadcrumb`/`logException` stay live and
+ * grant nothing new. What it must not gain is control over REDACTION (the filters, the report handler),
+ * over the session's LIFETIME (`stop`/`flush`), or over the container (`getService`, `addService`,
+ * `registerExt`) — none of which it can reach by any other route.
+ *
+ * Neutralised rather than removed, so the value still satisfies the declared type and an embedder who
+ * genuinely double-launched gets a working object rather than a TypeError. Each blocked call reports
+ * through `onError`, so a real double-launch is diagnosable.
+ */
+function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void): Bugsee {
+  const refuse = (method: string): void => {
+    neverThrow(
+      () =>
+        onError?.(
+          new Error(
+            `Bugsee: \`${method}\` is not available on a repeat launch() in a WebView; the original ` +
+              'client holds it. This call was ignored.',
+          ),
+        ),
+      undefined,
+    );
+  };
+  const blocked = {
+    setNetworkEventFilter: (): void => refuse('setNetworkEventFilter'),
+    setLogEventFilter: (): void => refuse('setLogEventFilter'),
+    setBreadcrumbFilter: (): void => refuse('setBreadcrumbFilter'),
+    setReportHandler: (): void => refuse('setReportHandler'),
+    stop: async (): Promise<boolean> => {
+      refuse('stop');
+      return false;
+    },
+    flush: async (): Promise<boolean> => {
+      refuse('flush');
+      return false;
+    },
+    getService: (): never => {
+      refuse('getService');
+      throw new Error('Bugsee: getService is not available on a repeat launch()');
+    },
+    getServiceProvider: (): never => {
+      refuse('getServiceProvider');
+      throw new Error('Bugsee: getServiceProvider is not available on a repeat launch()');
+    },
+    addService: (): void => refuse('addService'),
+    registerExt: (): void => refuse('registerExt'),
+  };
+  return { ...client, ...blocked } as unknown as Bugsee;
+}
+
+/** A repeat launch from a module copy that did not perform it: inert, but never `undefined`. */
+function inertClient(onError?: (error: unknown) => void): Bugsee {
+  neverThrow(
+    () =>
+      onError?.(
+        new Error(
+          'Bugsee: launch() was already called from another module copy; this call returns an inert client.',
+        ),
+      ),
+    undefined,
+  );
+  const noop = (): void => {};
+  return {
+    isLaunched: (): boolean => true,
+    launch: noop,
+    stop: async (): Promise<boolean> => false,
+    flush: async (): Promise<boolean> => false,
+    log: noop,
+    event: noop,
+    trace: noop,
+    addBreadcrumb: noop,
+    setUserIdentifier: noop,
+    getUserIdentifier: (): string | null => null,
+    clearUserIdentifier: noop,
+    setAttribute: noop,
+    getAttribute: (): undefined => undefined,
+    clearAttribute: noop,
+    clearAllAttributes: noop,
+    getAllAttributes: (): Record<string, never> => ({}),
+    setNetworkEventFilter: noop,
+    setLogEventFilter: noop,
+    setBreadcrumbFilter: noop,
+    setReportHandler: noop,
+  } as unknown as Bugsee;
 }
 
 /**
