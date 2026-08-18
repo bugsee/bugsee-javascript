@@ -649,17 +649,34 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
  * Everything else on the client — `setNetworkEventFilter`, `setLogEventFilter`, `stop`, `logException` —
  * exists for the embedder and has no business being reachable from page script.
  *
- * Reading a service is not a meaningful capability for an attacker who already runs in the page: the
- * FilterStore it yields holds the filters the EMBEDDER set, and a page script that wanted to read its own
- * page's traffic can do so directly. What it cannot do any more is REPLACE them.
+ * "Resolver-only" is NOT by itself a defence, and an earlier version of this comment wrongly said it was
+ * ("reading a service is not a meaningful capability"). Reading IS the capability: the container keys
+ * providers on `token.name`, a plain string, and the FilterStore it hands back is the same unfrozen object
+ * `setNetworkEventFilter` writes — so a forged `{name:'filters'}` reaches `filters.network = …`, which is
+ * the capture tap AND the default-sanitizer bypass in one property write.
+ *
+ * What actually closes it is resolving by token IDENTITY (below): a page can forge the shape of a token
+ * but not the identity of an object only this module holds.
  */
 function carrierFacadeFor(client: Bugsee): { getService: unknown; getServiceProvider: unknown } {
   const resolver = client as unknown as {
     getService: (token: unknown) => unknown;
     getServiceProvider: (token: unknown) => unknown;
   };
+  // IDENTITY, not name. The container keys providers by `token.name`, a plain string, so forwarding an
+  // arbitrary token let page script write its own:
+  //
+  //   facade.getService({ name: 'filters' }).network = e => { exfiltrate(e); return e; }
+  //
+  // and land on the very same FilterStore object `setNetworkEventFilter` mutates — the capture tap and
+  // the redaction bypass, straight back through the facade that was supposed to remove them. Resolving
+  // only token objects this module holds closes it: a page can forge the shape but not the identity.
+  const allowed: readonly unknown[] = [FiltersToken];
+  const resolve = (forward: (token: unknown) => unknown, token: unknown): unknown =>
+    allowed.includes(token) ? forward(token) : undefined;
   return {
-    getService: (token: unknown): unknown => resolver.getService(token),
-    getServiceProvider: (token: unknown): unknown => resolver.getServiceProvider(token),
+    getService: (token: unknown): unknown => resolve((t) => resolver.getService(t), token),
+    getServiceProvider: (token: unknown): unknown =>
+      resolve((t) => resolver.getServiceProvider(t), token),
   };
 }

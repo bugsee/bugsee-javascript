@@ -250,6 +250,20 @@ describe('launch (webview)', () => {
     }
     // The resolver IS still there — the capture pipeline reaches redaction filters through it.
     expect(typeof exposed?.getService).toBe('function');
+
+    // And it resolves by token IDENTITY, not by name. The container keys providers on `token.name`, a
+    // plain string, so a facade that forwarded any token let page script forge one and land on the very
+    // same mutable FilterStore `setNetworkEventFilter` writes — the tap and the redaction bypass, back
+    // through the facade meant to remove them.
+    const forge = exposed?.getService as ((token: unknown) => unknown) | undefined;
+    for (const name of ['filters', 'captureStore', 'transport', 'scheduler']) {
+      expect(forge?.({ name }), `a forged \`${name}\` token resolved`).toBeUndefined();
+    }
+    const forgeProvider = exposed?.getServiceProvider as ((token: unknown) => unknown) | undefined;
+    expect(
+      forgeProvider?.({ name: 'filters' }),
+      'a forged token resolved a provider',
+    ).toBeUndefined();
     // And the real client, with the full surface, is what launch() hands back to its caller.
     expect(typeof client.stop).toBe('function');
   });
