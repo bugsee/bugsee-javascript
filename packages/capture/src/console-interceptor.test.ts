@@ -72,6 +72,120 @@ describe('formatConsoleArgs (portable default formatter)', () => {
   });
 });
 
+describe('createConsoleInterceptor — a hostile argument must not reach the app', () => {
+  // BINDING: an interceptor must never alter application behavior. The capture block ran under
+  // `try/finally` with no `catch`, so anything thrown while formatting escaped into the application's own
+  // `console.log(...)` call AND skipped the passthrough below it — the app both crashed where it
+  // previously did not, and lost the line it was trying to print.
+  //
+  // Not a theoretical input: a getter that throws is what ORM row proxies, MobX/Vue reactive objects read
+  // outside their scope, and detached DOM nodes all do.
+  const hostileValues: ReadonlyArray<[string, unknown]> = [
+    [
+      'a getter that throws',
+      {
+        get boom(): string {
+          throw new Error('getter exploded');
+        },
+      },
+    ],
+    [
+      'a toJSON that throws',
+      {
+        toJSON(): never {
+          throw new Error('toJSON exploded');
+        },
+      },
+    ],
+    [
+      'a Proxy whose traps throw',
+      new Proxy(
+        {},
+        {
+          ownKeys(): never {
+            throw new Error('trap exploded');
+          },
+        },
+      ),
+    ],
+    [
+      'an object nested past the stringify recursion limit',
+      (() => {
+        let node: Record<string, unknown> = {};
+        const root = node;
+        for (let i = 0; i < 20000; i++) {
+          const next: Record<string, unknown> = {};
+          node.n = next;
+          node = next;
+        }
+        return root;
+      })(),
+    ],
+  ];
+
+  for (const [label, value] of hostileValues) {
+    it(`does not throw into the caller, and still forwards, for ${label}`, () => {
+      const f = fake();
+      const ic = createConsoleInterceptor({ now: () => 1 });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+
+      expect(() => con().log(value)).not.toThrow();
+      // The passthrough is the half a bare `finally` silently skipped: the app's own output.
+      expect(f.calls).toEqual([{ method: 'log', args: [value] }]);
+      // And capture still happened — degraded to a placeholder rather than dropped entirely.
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.message).toContain('[Unserializable]');
+    });
+  }
+
+  it('survives an injected formatter that throws', () => {
+    // `format` is a public option — the whole point of the seam is that a platform swaps in its own
+    // (node passes `util.format`). A formatter is arbitrary code, so it can throw, and when it did the
+    // exception escaped into the application's `console.log` and the passthrough never ran. Making the
+    // default stringifier total fixed the common cause; it cannot fix an injected one.
+    const f = fake();
+    const ic = createConsoleInterceptor({
+      now: () => 1,
+      format: () => {
+        throw new Error('formatter exploded');
+      },
+    });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+
+    expect(() => con().log('hi')).not.toThrow();
+    expect(f.calls).toEqual([{ method: 'log', args: ['hi'] }]);
+    // Capture is lost for this line — there is no message to record — but the application is untouched,
+    // which is the trade this guard exists to make.
+    expect(logs).toHaveLength(0);
+
+    // And the guard is not left set: the next line is captured normally.
+    con().log('after');
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it('keeps forwarding after a hostile argument — the patch is not left wedged', () => {
+    const f = fake();
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+
+    con().log({
+      get boom(): string {
+        throw new Error('getter exploded');
+      },
+    });
+    con().log('after');
+
+    // The re-entrancy guard is cleared in `finally`, so a throw must not strand it — otherwise every
+    // later log in the process is silently dropped from capture.
+    expect(f.calls).toHaveLength(2);
+    expect(logs).toHaveLength(2);
+    expect(logs[1]?.message).toBe('after');
+  });
+});
+
 describe('createConsoleInterceptor — capture (fires the "log" stage)', () => {
   it('fires a LogEvent (mapped level, source "console", formatted message, clock timestamp)', () => {
     fake();

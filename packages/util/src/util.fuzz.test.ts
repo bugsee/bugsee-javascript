@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { fromBase64, toBase64 } from './base64';
 import { deepMerge } from './deep-merge';
+import { jsonSafeStringify } from './json-safe-stringify';
 import { utf8ByteLength } from './utf8-byte-length';
 
 /**
@@ -45,7 +46,12 @@ const surrogateHeavyString = (maxLength = 32): fc.Arbitrary<string> =>
     .map((units) => String.fromCharCode(...units));
 
 describe('utf8ByteLength (fuzz)', () => {
-  const encoder = new TextEncoder();
+  // Reached through globalThis: this tier compiles without the DOM/Node libs (that is the point of the
+  // allocation-free implementation under test), so `TextEncoder` is not in its type space.
+  const { TextEncoder: Encoder } = globalThis as unknown as {
+    TextEncoder: new () => { encode(input: string): Uint8Array };
+  };
+  const encoder = new Encoder();
 
   // THE contract, stated in its own doc comment: it exists to avoid allocating a Uint8Array on the
   // capture hot path, so it must agree with the encoder it replaces for every input. It feeds the
@@ -198,6 +204,86 @@ describe('deepMerge (fuzz)', () => {
         const result = deepMerge({}, parsed);
         const expected = Object.keys(parsed).filter((k) => k !== '__proto__');
         expect(Object.keys(result).sort()).toEqual(expected.sort());
+      }),
+      { numRuns: 500 },
+    );
+  });
+});
+
+describe('jsonSafeStringify (fuzz)', () => {
+  /**
+   * Values an application can genuinely hand to `console.log` — and that `JSON.stringify` refuses.
+   *
+   * A throwing getter is not exotic: ORM row proxies, MobX/Vue reactive objects read outside their
+   * scope, and detached DOM nodes all throw on property access. This function is the SDK's designated
+   * safe stringifier for arbitrary captured data, so "arbitrary" has to include these.
+   */
+  const hostile = fc.oneof(
+    fc.constant({
+      get boom() {
+        throw new Error('getter exploded');
+      },
+    }),
+    fc.constant({
+      toJSON() {
+        throw new Error('toJSON exploded');
+      },
+    }),
+    fc.constant(
+      new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error('proxy trap exploded');
+          },
+        },
+      ),
+    ),
+    fc.constant({ big: BigInt('123456789012345678901234567890') }),
+    fc.constant(
+      (() => {
+        const cyclic: Record<string, unknown> = {};
+        cyclic.self = cyclic;
+        return cyclic;
+      })(),
+    ),
+    fc.constant(
+      (() => {
+        // Deep enough to blow the recursion JSON.stringify does internally.
+        let node: Record<string, unknown> = {};
+        const root = node;
+        for (let i = 0; i < 20000; i++) {
+          const next: Record<string, unknown> = {};
+          node.n = next;
+          node = next;
+        }
+        return root;
+      })(),
+    ),
+    fc.anything(),
+  );
+
+  // Totality is the whole contract. It is called from the console interceptor's patched `console.log`,
+  // so a throw here does not merely lose capture — it lands inside the application's own call.
+  it('never throws, and always returns a string', () => {
+    fc.assert(
+      fc.property(hostile, (value) => {
+        let out: string | undefined;
+        expect(() => {
+          out = jsonSafeStringify(value);
+        }).not.toThrow();
+        expect(typeof out).toBe('string');
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  // Whatever it returns must survive the JSON round-trip it exists to guarantee, or the bundle carries a
+  // field the backend cannot parse.
+  it('returns parseable JSON for values JSON can represent', () => {
+    fc.assert(
+      fc.property(fc.jsonValue(), (value) => {
+        expect(() => JSON.parse(jsonSafeStringify(value))).not.toThrow();
       }),
       { numRuns: 500 },
     );

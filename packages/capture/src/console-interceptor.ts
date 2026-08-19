@@ -99,6 +99,15 @@ class ConsoleInterceptor extends InterceptorBase<ConsoleStageMap> {
               source: 'console',
               message: this.#format(args),
             });
+          } catch {
+            // Swallowed on purpose. This runs INSIDE the application's own `console.log` call, so
+            // anything escaping here crashes code that was merely logging — and, because the passthrough
+            // below sits after this block, the application also loses the line it was printing. Capture
+            // is worth losing to avoid that; the reverse is not true.
+            //
+            // `format` is the reachable source: it is a public option a platform replaces (node passes
+            // `util.format`), so it is arbitrary code. Subscriber callbacks are already isolated by the
+            // emitter, and the default stringifier is total, but neither covers an injected formatter.
           } finally {
             this.#capturing = false;
           }
