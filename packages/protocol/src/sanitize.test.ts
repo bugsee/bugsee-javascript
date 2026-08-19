@@ -9,6 +9,37 @@ import {
 } from './index';
 import type { NetworkEvent } from './wire';
 
+/**
+ * A cost guard that survives a shared CI runner.
+ *
+ * These used to assert an absolute wall-clock budget (`< 100 ms`), which measures the MACHINE at least as
+ * much as the code: under CI's coverage instrumentation the HEALTHY pass took 373 ms here, and the gate
+ * had been red since 2026-08-12 for that reason alone.
+ *
+ * The property each test is named for is linearity, so measure that: run the same shape at N and at 4N,
+ * on the same machine, in the same process, under the same instrumentation. Linear work grows about 4x;
+ * the quadratic forms recorded in the comments below grow about 16x (16 ms -> 227 ms across a 4x step).
+ * A ceiling of 8x sits between the two, and scales with however slow the runner happens to be.
+ */
+// `Date.now`, not `performance.now`: this tier compiles without the DOM/Node libs. Millisecond
+// resolution is ample here — the measured passes are tens to hundreds of milliseconds, and the ratio
+// being tested is 4x versus 16x.
+const measure = (fn: () => void): number => {
+  const started = Date.now();
+  fn();
+  return Date.now() - started;
+};
+
+const expectLinearIn = (run: (size: number) => void, size: number): void => {
+  run(size / 4); // warm-up: otherwise first-call JIT cost lands in the baseline and inflates the budget
+  const small = measure(() => run(size / 4));
+  const large = measure(() => run(size));
+  // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
+  // of ~8 ms that a single GC pause could blow — trading one flake for another. 5 ms floors the budget at
+  // 40 ms while leaving the separation intact, since the quadratic forms measure 84 ms at the SMALL size.
+  expect(large).toBeLessThan(Math.max(small, 5) * 8);
+};
+
 const R = '<redacted>';
 const GH = `ghp_${'a'.repeat(36)}`;
 
@@ -342,10 +373,10 @@ describe('sanitizeBody — JSON that does not parse', () => {
     // The unanchored form of this pattern put a candidate start at every `"` — 16 ms at 8 KB, 227 ms at
     // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
     // over, which is why it now has a test rather than a comment.
-    const hostile = `{"${'\\"'.repeat(128_000)}`; // ~256 KB, escaped quotes, never closed
-    const started = Date.now();
-    sanitizeBody(hostile, 'application/json');
-    expect(Date.now() - started).toBeLessThan(100);
+    const build = (n: number): string => `{"${'\\"'.repeat(n)}`; // escaped quotes, never closed
+    expectLinearIn((n) => {
+      sanitizeBody(build(n), 'application/json');
+    }, 128_000);
   });
 
   it('does not apply the JSON pass to a body that is not JSON-shaped', () => {
@@ -425,10 +456,13 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
     // Two new alternatives went into a pattern whose UNANCHORED form was quadratic. Measured across eight
     // adversarial shapes (unterminated quotes of both kinds, bare idents, dense commas/colons/braces):
     // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
-    for (const hostile of [`{'${"\\'".repeat(128_000)}`, `{${'ab,'.repeat(80_000)}`]) {
-      const started = Date.now();
-      sanitizeBody(hostile, 'application/json');
-      expect(Date.now() - started).toBeLessThan(100);
+    for (const build of [
+      (n: number): string => `{'${"\\'".repeat(n)}`,
+      (n: number): string => `{${'ab,'.repeat(n)}`,
+    ]) {
+      expectLinearIn((n) => {
+        sanitizeBody(build(n), 'application/json');
+      }, 100_000);
     }
   });
 });
@@ -498,14 +532,14 @@ describe('sanitizeBody — XML', () => {
   });
 
   it('stays linear on hostile XML-shaped input', () => {
-    for (const hostile of [
-      `<${'a'.repeat(200_000)}`, // an unterminated tag
-      '<a>'.repeat(80_000), // many opens, never closed
-      `<a ${'b="c" '.repeat(60_000)}>`, // one tag, very many attributes
+    for (const build of [
+      (n: number): string => `<${'a'.repeat(n)}`, // an unterminated tag
+      (n: number): string => '<a>'.repeat(n), // many opens, never closed
+      (n: number): string => `<a ${'b="c" '.repeat(n)}>`, // one tag, very many attributes
     ]) {
-      const started = Date.now();
-      sanitizeBody(hostile, 'application/xml');
-      expect(Date.now() - started).toBeLessThan(100);
+      expectLinearIn((n) => {
+        sanitizeBody(build(n), 'application/xml');
+      }, 200_000);
     }
   });
 });

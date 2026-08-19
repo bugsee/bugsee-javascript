@@ -246,19 +246,32 @@ describe('jsonSafeStringify (fuzz)', () => {
    * A throwing getter is not exotic: ORM row proxies, MobX/Vue reactive objects read outside their
    * scope, and detached DOM nodes all throw on property access. This function is the SDK's designated
    * safe stringifier for arbitrary captured data, so "arbitrary" has to include these.
+   *
+   * Enumerated and run ONCE each rather than folded into a generator. Each is a fixed value, so
+   * re-drawing them hundreds of times tests nothing new — and the deep one is expensive to serialize
+   * and expensive to FAIL to serialize, which pushed this test past vitest's 5s timeout on CI (where
+   * coverage instrumentation makes it slower still) while passing locally. A fuzz suite that has to run
+   * on every commit has to stay cheap.
    */
-  const hostile = fc.oneof(
-    fc.constant({
-      get boom() {
-        throw new Error('getter exploded');
+  const hostileValues: ReadonlyArray<[string, unknown]> = [
+    [
+      'a getter that throws',
+      {
+        get boom() {
+          throw new Error('getter exploded');
+        },
       },
-    }),
-    fc.constant({
-      toJSON() {
-        throw new Error('toJSON exploded');
+    ],
+    [
+      'a toJSON that throws',
+      {
+        toJSON() {
+          throw new Error('toJSON exploded');
+        },
       },
-    }),
-    fc.constant(
+    ],
+    [
+      'a Proxy whose traps throw',
       new Proxy(
         {},
         {
@@ -267,18 +280,19 @@ describe('jsonSafeStringify (fuzz)', () => {
           },
         },
       ),
-    ),
-    fc.constant({ big: BigInt('123456789012345678901234567890') }),
-    fc.constant(
+    ],
+    ['a BigInt', { big: BigInt('123456789012345678901234567890') }],
+    [
+      'a cycle',
       (() => {
         const cyclic: Record<string, unknown> = {};
         cyclic.self = cyclic;
         return cyclic;
       })(),
-    ),
-    fc.constant(
+    ],
+    [
+      'nesting past the stringify recursion limit',
       (() => {
-        // Deep enough to blow the recursion JSON.stringify does internally.
         let node: Record<string, unknown> = {};
         const root = node;
         for (let i = 0; i < 20000; i++) {
@@ -288,15 +302,22 @@ describe('jsonSafeStringify (fuzz)', () => {
         }
         return root;
       })(),
-    ),
-    fc.anything(),
-  );
+    ],
+  ];
 
   // Totality is the whole contract. It is called from the console interceptor's patched `console.log`,
   // so a throw here does not merely lose capture — it lands inside the application's own call.
-  it('never throws, and always returns a string', () => {
+  it.each(hostileValues)('never throws and returns a string for %s', (_label, value) => {
+    let out: string | undefined;
+    expect(() => {
+      out = jsonSafeStringify(value);
+    }).not.toThrow();
+    expect(typeof out).toBe('string');
+  });
+
+  it('never throws for arbitrary generated values', () => {
     fc.assert(
-      fc.property(hostile, (value) => {
+      fc.property(fc.anything(), (value) => {
         let out: string | undefined;
         expect(() => {
           out = jsonSafeStringify(value);

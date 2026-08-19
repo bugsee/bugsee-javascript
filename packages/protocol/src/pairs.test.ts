@@ -6,6 +6,39 @@ import { redactSensitivePairs } from './pairs';
 // including the region past `end`, e.g. a URL fragment — must survive byte-for-byte.
 const all = (input: string): string => redactSensitivePairs(input, 0, input.length);
 
+/**
+ * A cost guard that survives a shared CI runner.
+ *
+ * These used to assert an absolute wall-clock budget (`< 100 ms`), which measures the MACHINE at least as
+ * much as the code. Under CI's coverage instrumentation the HEALTHY linear pass took 1438 ms — more than
+ * the 1339 ms the quadratic defect this test was written against produced locally — so no fixed number
+ * can separate them, and the gate had been red since 2026-08-12.
+ *
+ * The property these tests are named for is linearity, so measure that instead: run the same shape at N
+ * and at 4N, on the same machine, in the same process, under the same instrumentation. Linear work grows
+ * about 4x; the quadratic forms recorded in the comments below grow about 16x (84 ms -> 1339 ms across
+ * exactly that 4x step). A ceiling of 8x sits between the two with room on either side, and scales with
+ * however slow the runner happens to be.
+ */
+// `Date.now`, not `performance.now`: this tier compiles without the DOM/Node libs. Millisecond
+// resolution is ample here — the measured passes are tens to hundreds of milliseconds, and the ratio
+// being tested is 4x versus 16x.
+const measure = (fn: () => void): number => {
+  const started = Date.now();
+  fn();
+  return Date.now() - started;
+};
+
+const expectLinearIn = (run: (size: number) => void, size: number): void => {
+  run(size / 4); // warm-up: otherwise first-call JIT cost lands in the baseline and inflates the budget
+  const small = measure(() => run(size / 4));
+  const large = measure(() => run(size));
+  // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
+  // of ~8 ms that a single GC pause could blow — trading one flake for another. 5 ms floors the budget at
+  // 40 ms while leaving the separation intact, since the quadratic forms measure 84 ms at the SMALL size.
+  expect(large).toBeLessThan(Math.max(small, 5) * 8);
+};
+
 describe('redactSensitivePairs — what it redacts', () => {
   it('replaces a sensitive value with the URL-ENCODED token, not the bare one', () => {
     // The bare `<redacted>` would be invalid in a URL and would re-encode differently per consumer.
@@ -111,28 +144,43 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
     // An `end` past `length` yields the right ANSWER either way — the scan just reads `undefined` — so only
     // the cost is observable, and it has to be large enough to see: unclamped costs 31 ms at 10 million and
     // 301 ms at 100 million, against 0 ms clamped. A 10-million bound passed the assertion at 50 ms.
-    const started = Date.now();
-    expect(redactSensitivePairs('a=1&password=x', 0, 100_000_000)).toBe(
-      'a=1&password=%3Credacted%3E',
-    );
-    expect(Date.now() - started).toBeLessThan(50);
+    const input = 'a=1&password=x';
+    expect(redactSensitivePairs(input, 0, 100_000_000)).toBe('a=1&password=%3Credacted%3E');
+
+    // NOT a linearity check like the two below: the unclamped cost grows LINEARLY with `end`, so a ratio
+    // between two large bounds stays flat and proves nothing. The property here is that `end` must not
+    // affect the cost AT ALL, because it is clamped to the string — so the baseline is the honest bound.
+    redactSensitivePairs(input, 0, input.length); // warm-up
+    const honest = measure(() => {
+      redactSensitivePairs(input, 0, input.length);
+    });
+    const overshooting = measure(() => {
+      redactSensitivePairs(input, 0, 100_000_000);
+    });
+    expect(overshooting).toBeLessThan(Math.max(honest, 5) * 8);
   });
 
   it('scans a long separator run in linear time', () => {
     // `indexOf('=', pos)` was unbounded by `end`, so every segment in a run carrying no `=` rescanned to
     // end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M — quadratic, and reachable through
     // `sanitizeUrl(event.url)`, which has no length cap. The header comment claimed "linear" throughout.
-    const hostile = `https://h/p?${'&'.repeat(400_000)}`;
-    const started = Date.now();
+    const build = (n: number): string => `https://h/p?${'&'.repeat(n)}`;
+    const hostile = build(400_000);
     expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expect(Date.now() - started).toBeLessThan(100);
+    expectLinearIn((n) => {
+      const input = build(n);
+      redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+    }, 400_000);
   });
 
   it('scans a long `;` separator run in linear time too', () => {
-    const hostile = `https://h/p?${';'.repeat(400_000)}`;
-    const started = Date.now();
+    const build = (n: number): string => `https://h/p?${';'.repeat(n)}`;
+    const hostile = build(400_000);
     expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expect(Date.now() - started).toBeLessThan(100);
+    expectLinearIn((n) => {
+      const input = build(n);
+      redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+    }, 400_000);
   });
 
   it('never throws on a malformed percent escape in the key', () => {
