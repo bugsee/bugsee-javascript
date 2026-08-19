@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Bugsee JavaScript SDK — monorepo root (see docs/design/sdk-design.md)",
+  "description": "Bugsee JavaScript SDK \u2014 monorepo root (see docs/design/sdk-design.md)",
   "license": "UNLICENSED",
   "packageManager": "pnpm@11.3.0",
   "engines": {
@@ -24,7 +24,8 @@
     "mutation": "turbo run mutation",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build && changeset publish"
+    "release": "turbo run build && changeset publish",
+    "test:mutation": "node scripts/mutation.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

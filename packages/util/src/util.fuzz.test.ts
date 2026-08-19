@@ -1,8 +1,10 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromBase64, toBase64 } from './base64';
 import { deepMerge } from './deep-merge';
 import { jsonSafeStringify } from './json-safe-stringify';
+import { randomId } from './random-id';
+import { sha256Hex } from './sha256';
 import { utf8ByteLength } from './utf8-byte-length';
 
 /**
@@ -31,11 +33,21 @@ const codeUnitString = (maxLength = 64): fc.Arbitrary<string> =>
     .array(fc.integer({ min: 0, max: 0xffff }), { maxLength })
     .map((units) => String.fromCharCode(...units));
 
-/** The same, but biased hard toward surrogates so pairs and half-pairs actually collide. */
+/**
+ * The same, but biased hard toward surrogates so pairs and half-pairs actually collide.
+ *
+ * The four boundary code units are drawn EXPLICITLY, not left to a uniform pick out of the 2048-value
+ * surrogate range. Mutation testing proved this necessary: narrowing `code <= 0xdbff` to `code <
+ * 0xdbff` — which drops the last high surrogate out of the pair check, so a valid pair starting at
+ * U+DBFF is counted as 3 bytes instead of 4 — SURVIVED a uniform generator, because reaching it needs
+ * exactly 0xDBFF immediately followed by a low surrogate. Off-by-one bugs live on boundaries, so the
+ * generator has to name them.
+ */
 const surrogateHeavyString = (maxLength = 32): fc.Arbitrary<string> =>
   fc
     .array(
       fc.oneof(
+        fc.constantFrom(0xd800, 0xdbff, 0xdc00, 0xdfff), // the exact edges of both surrogate halves
         fc.integer({ min: 0xd800, max: 0xdfff }), // any surrogate, paired or not
         fc.integer({ min: 0, max: 0x7f }), // ASCII, to create boundaries
         fc.integer({ min: 0x80, max: 0x7ff }),
@@ -44,6 +56,14 @@ const surrogateHeavyString = (maxLength = 32): fc.Arbitrary<string> =>
       { maxLength },
     )
     .map((units) => String.fromCharCode(...units));
+
+/** Every adjacent pair of the four boundary code units, so each pairing decision is hit deterministically. */
+const boundaryPairs = fc
+  .tuple(
+    fc.constantFrom(0xd7ff, 0xd800, 0xdbff, 0xdc00, 0xdfff, 0xe000),
+    fc.constantFrom(0xd7ff, 0xd800, 0xdbff, 0xdc00, 0xdfff, 0xe000),
+  )
+  .map(([a, b]) => String.fromCharCode(a, b));
 
 describe('utf8ByteLength (fuzz)', () => {
   // Reached through globalThis: this tier compiles without the DOM/Node libs (that is the point of the
@@ -81,6 +101,15 @@ describe('utf8ByteLength (fuzz)', () => {
         expect(utf8ByteLength(s)).toBe(encoder.encode(s).length);
       }),
       { numRuns: 1000 },
+    );
+  });
+
+  it('agrees with TextEncoder on every adjacent pair of surrogate-range boundaries', () => {
+    fc.assert(
+      fc.property(boundaryPairs, (s) => {
+        expect(utf8ByteLength(s)).toBe(encoder.encode(s).length);
+      }),
+      { numRuns: 200 },
     );
   });
 
@@ -278,6 +307,20 @@ describe('jsonSafeStringify (fuzz)', () => {
     );
   });
 
+  // The fallback is a VALUE, not just a non-throw. Blanking the placeholder to `''` survived every other
+  // property here: the totality check only asked for a string, and the round-trip check never reaches
+  // the catch. An empty return would put an unparseable field in the bundle.
+  it('returns an identifiable, parseable placeholder when a value cannot be serialized', () => {
+    const unserializable = {
+      get boom(): string {
+        throw new Error('getter exploded');
+      },
+    };
+    const out = jsonSafeStringify(unserializable);
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(JSON.parse(out)).toBe('[Unserializable]');
+  });
+
   // Whatever it returns must survive the JSON round-trip it exists to guarantee, or the bundle carries a
   // field the backend cannot parse.
   it('returns parseable JSON for values JSON can represent', () => {
@@ -286,6 +329,78 @@ describe('jsonSafeStringify (fuzz)', () => {
         expect(() => JSON.parse(jsonSafeStringify(value))).not.toThrow();
       }),
       { numRuns: 500 },
+    );
+  });
+});
+
+/**
+ * Both of these targets pick an implementation from a runtime probe, and mutation testing showed the
+ * choice was unverified: forcing either probe to `false` changed nothing any test could see. The
+ * fallbacks are legitimate, so the fix is not to forbid them — it is to assert that the preferred path
+ * is actually taken when available, and that both paths agree.
+ */
+describe('runtime-probed implementations (fuzz)', () => {
+  // `globalThis.crypto` is a getter-only property on modern Node, so it cannot be assigned directly.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses Web Crypto randomUUID when the runtime provides it', () => {
+    let calls = 0;
+    vi.stubGlobal('crypto', {
+      randomUUID: () => {
+        calls += 1;
+        return 'ffffffff-1111-2222-3333-444444444444';
+      },
+    });
+    expect(randomId()).toBe('ffffffff111122223333444444444444');
+    expect(calls).toBe(1);
+  });
+
+  it('falls back to a well-formed id when the runtime has no Web Crypto', () => {
+    vi.stubGlobal('crypto', undefined);
+    fc.assert(
+      fc.property(fc.integer(), () => {
+        expect(randomId()).toMatch(/^[0-9a-f]{32}$/);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('uses WebCrypto subtle.digest when the runtime provides it', () => {
+    // Same class of gap as randomUUID above: both digest paths return the same bytes, so forcing the
+    // probe to false changed no observable output and survived. The preference itself has to be asserted.
+    let digestCalls = 0;
+    const { crypto: realCrypto } = globalThis as unknown as {
+      crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
+    };
+    const real = realCrypto.subtle;
+    vi.stubGlobal('crypto', {
+      subtle: {
+        digest: (algorithm: string, data: Uint8Array) => {
+          digestCalls += 1;
+          return real.digest(algorithm, data);
+        },
+      },
+    });
+    return sha256Hex('abc').then((hex) => {
+      expect(digestCalls).toBe(1);
+      expect(hex).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    });
+  });
+
+  // A differential between the two digest implementations. They are supposed to be interchangeable, and
+  // the bundle's integrity depends on that: a hash computed by the WebCrypto path in one runtime and
+  // verified against the node:crypto path in another must match.
+  it('computes the same digest with and without WebCrypto available', async () => {
+    const inputs = ['', 'abc', 'the quick brown fox', '😀 multibyte ✓'];
+    const withWebCrypto = await Promise.all(inputs.map((i) => sha256Hex(i)));
+    vi.stubGlobal('crypto', undefined); // force the node:crypto fallback
+    const withFallback = await Promise.all(inputs.map((i) => sha256Hex(i)));
+    expect(withFallback).toEqual(withWebCrypto);
+    // Known answer, so a change that broke BOTH paths identically still fails.
+    expect(withWebCrypto[1]).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
     );
   });
 });

@@ -133,6 +133,21 @@ describe('isElectronRenderer', () => {
 
 describe('isElectronMain', () => {
   it('is false in a plain Node process (default)', () => expect(isElectronMain()).toBe(false));
+  // Both halves of the `&&` must be load-bearing. Mutation testing showed neither of these was covered:
+  // replacing the version check with `true` survived (nothing exercised a 'browser'-type process WITHOUT
+  // an electron version), and so did dropping the `?.` after `versions` (nothing passed a process object
+  // lacking `versions` at all, which is what a non-Electron runtime looks like).
+  it('is false for a browser-type process that is not Electron', () => {
+    vi.stubGlobal('process', { type: 'browser', versions: { node: '22.0.0' } });
+    expect(isElectronMain()).toBe(false);
+  });
+
+  it('is false, and does not throw, for a process with no versions object', () => {
+    vi.stubGlobal('process', { type: 'browser' });
+    expect(() => isElectronMain()).not.toThrow();
+    expect(isElectronMain()).toBe(false);
+  });
+
   it('is true with an electron version and browser type', () => {
     vi.stubGlobal('process', { versions: { electron: '30.0.0' }, type: 'browser' });
     expect(isElectronMain()).toBe(true);
