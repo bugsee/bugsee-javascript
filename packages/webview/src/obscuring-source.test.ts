@@ -53,6 +53,72 @@ describe('collectSecureAreas', () => {
   });
 });
 
+describe('createObscuringSource — listener registration', () => {
+  /**
+   * Both options are load-bearing, and neither was asserted — dropping either survived every test.
+   *
+   * `passive: true` is a promise to the browser that the handler will never call `preventDefault`. It is
+   * the difference between observing scroll and being able to block it, and the SDK's binding rule is
+   * that instrumentation must not alter application behavior. Losing it also costs the browser's
+   * scroll-optimization fast path on the very events that fire most.
+   *
+   * `capture: true` runs the handler on the way DOWN, so a page that calls `stopPropagation` in its own
+   * bubble-phase handler cannot hide scroll/resize/focus changes from the recomputation. If it could, the
+   * secure rects would go stale exactly when the layout moved — masks left behind over the wrong pixels.
+   */
+  it('registers every listener capture-phase and passive, on both targets', () => {
+    const registrations: Array<{ target: string; type: string; options: unknown }> = [];
+    const record = (target: string) => ({
+      addEventListener: (type: string, _l: unknown, options: unknown) =>
+        registrations.push({ target, type, options }),
+      removeEventListener: () => {},
+    });
+    const doc = { ...fakeDoc({}), ...record('document') };
+    const win = { ...record('window') };
+
+    const source = createObscuringSource({
+      document: doc as never,
+      window: win as never,
+      onChange: () => {},
+      mutationObserver: undefined,
+    });
+    source.start();
+
+    expect(registrations.length).toBeGreaterThan(0);
+    expect(registrations.some((r) => r.target === 'window')).toBe(true);
+    expect(registrations.some((r) => r.target === 'document')).toBe(true);
+    for (const r of registrations) {
+      expect(r.options, `${r.target}/${r.type}`).toEqual({ capture: true, passive: true });
+    }
+    source.stop();
+  });
+
+  it('removes each listener with the same options object it registered', () => {
+    // A listener removed with different options is NOT removed at all — the DOM matches on
+    // (type, listener, capture). Getting this wrong leaks a live handler past `stop()`, which keeps
+    // recomputing secure rects for a session that has ended.
+    const added: Array<[string, unknown, unknown]> = [];
+    const removed: Array<[string, unknown, unknown]> = [];
+    const target = {
+      addEventListener: (t: string, l: unknown, o: unknown) => added.push([t, l, o]),
+      removeEventListener: (t: string, l: unknown, o: unknown) => removed.push([t, l, o]),
+    };
+    const source = createObscuringSource({
+      document: { ...fakeDoc({}), ...target } as never,
+      window: { ...target } as never,
+      onChange: () => {},
+      mutationObserver: undefined,
+    });
+    source.start();
+    source.stop();
+
+    expect(removed.length).toBe(added.length);
+    for (const [type, listener, options] of added) {
+      expect(removed).toContainEqual([type, listener, options]);
+    }
+  });
+});
+
 describe('createObscuringSource', () => {
   it('snapshot() returns the CURRENT secure areas', () => {
     const doc = fakeDoc({ [SECURE_INPUT]: [el(1)], [HIDE]: [] });

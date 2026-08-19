@@ -137,6 +137,39 @@ describe('createObscuringComposer — top frame', () => {
     c.stop();
   });
 
+  it('accepts BOTH secure-area types from a child frame, not just text', () => {
+    // `hidden` is the type a `.bugsee-hide` element produces — content the user explicitly marked
+    // secret. Every existing child-frame test bubbled only `text` areas, so narrowing the accepted set
+    // to exclude `hidden` changed nothing any test could see: a `.bugsee-hide` element inside an iframe
+    // would have stopped being masked, silently, which is the worst way for masking to fail.
+    const childWin = {};
+    const iframe = iframeEl(childWin, 10, 20);
+    const doc = fakeDoc({ iframe: [iframe] });
+    const win = fakeWin({ scrollX: 0, scrollY: 0 });
+    const onCompose = vi.fn();
+    const c = createObscuringComposer({
+      document: doc,
+      window: win,
+      isTopFrame: true,
+      onCompose,
+      mutationObserver: undefined,
+    });
+    c.start();
+    win.fire('message', {
+      data: BUBBLE([
+        { type: 'text', top: 1, left: 1, bottom: 2, right: 2 },
+        { type: 'hidden', top: 3, left: 3, bottom: 4, right: 4 },
+      ]),
+      source: childWin,
+    });
+
+    const emitted = onCompose.mock.calls.at(-1)?.[0] as SecureArea[];
+    expect(emitted.map((a) => a.type).sort()).toEqual(['hidden', 'text']);
+    // And each is re-mapped by the iframe's offset, so the mask lands where the field actually is.
+    expect(emitted).toContainEqual({ type: 'hidden', top: 13, left: 23, bottom: 14, right: 24 });
+    c.stop();
+  });
+
   it('includes a child frame: a bubble from a child iframe is re-mapped by the iframe offset', () => {
     const childWin = {};
     const iframe = iframeEl(childWin, 30, 40); // the <iframe> element sits at (left:40, top:30) in this frame
@@ -334,6 +367,68 @@ describe('createObscuringComposer — top frame', () => {
       { type: 'text', top: 30, left: 40, bottom: 31, right: 41 },
     ]);
     c.stop();
+  });
+});
+
+describe('createObscuringComposer — fail-closed', () => {
+  /**
+   * The composer's own fallback, distinct from the collector's underneath it. Composition does more than
+   * query the DOM — it reads page scroll to convert viewport rects to document-absolute ones — and that
+   * read can throw on an exotic or torn-down window. When it does, the frame must be reported as fully
+   * covered rather than as having no secure areas at all.
+   *
+   * Mutation testing found this uncovered: replacing `[FAIL_CLOSED_AREA]` with `[]` here changed nothing
+   * any test could see, because every case that reached fail-closed did so through the COLLECTOR, whose
+   * own fallback then supplied the area.
+   */
+  /**
+   * Composition throws where it reaches back into the DOM: resolving each registered child frame to its
+   * `<iframe>` so the child's rects can be re-mapped by the iframe's current offset. A document whose
+   * `iframe` query throws is the reachable shape (a torn-down or exotic document), and it only bites once
+   * a child has actually bubbled — which is exactly the sub-frame masking case.
+   */
+  const setupThrowingCompose = () => {
+    const win = fakeWin();
+    const childWin = { name: 'child' };
+    // Throwing from the very start is not the case under test: the bubble HANDLER also resolves the
+    // iframe (to verify the sender), so the exception would land there and the child would never
+    // register. The failure being exercised is composition breaking LATER — the document changing under
+    // a child that is already known — so the query starts healthy and is broken afterwards.
+    let broken = false;
+    const doc = {
+      ...fakeDoc(),
+      querySelectorAll: (sel: string) => {
+        if (sel === 'iframe') {
+          if (broken) {
+            throw new Error('iframe query exploded');
+          }
+          return [iframeEl(childWin, 5, 5)] as never;
+        }
+        return (sel === SECURE_INPUT ? [secureEl(10)] : []) as never;
+      },
+    };
+    const composed: SecureArea[][] = [];
+    const errors: unknown[] = [];
+    const composer = createObscuringComposer({
+      document: doc as never,
+      window: win as never,
+      isTopFrame: true,
+      onCompose: (areas) => composed.push([...areas]),
+      onError: (e) => errors.push(e),
+    });
+    composer.start();
+    win.fire('message', {
+      data: BUBBLE([{ type: 'text', top: 1, left: 1, bottom: 2, right: 2 }]),
+      source: childWin,
+    });
+    broken = true;
+    return { composer, composed, errors };
+  };
+
+  it('snapshots the whole frame when composition itself throws', () => {
+    const { composer, errors } = setupThrowingCompose();
+    expect(composer.snapshot()).toEqual([FAIL_CLOSED_AREA]);
+    expect(errors.length).toBeGreaterThan(0);
   });
 });
 

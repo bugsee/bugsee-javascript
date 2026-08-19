@@ -80,7 +80,13 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
   //
   // Not a theoretical input: a getter that throws is what ORM row proxies, MobX/Vue reactive objects read
   // outside their scope, and detached DOM nodes all do.
-  const hostileValues: ReadonlyArray<[string, unknown]> = [
+  // `degrades` = the value is unserializable in EVERY environment, so the captured message must show the
+  // placeholder. Deep nesting is deliberately not in that set: whether `JSON.stringify` overflows depends
+  // on the stack the host happens to give it, and it did not overflow under the mutation-test runner even
+  // though it does under vitest. Asserting the placeholder for it made the test environment-dependent.
+  // What holds everywhere — and is the property that matters — is that nothing escapes and the app's own
+  // call still goes through.
+  const hostileValues: ReadonlyArray<[string, unknown, boolean]> = [
     [
       'a getter that throws',
       {
@@ -88,6 +94,7 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
           throw new Error('getter exploded');
         },
       },
+      true,
     ],
     [
       'a toJSON that throws',
@@ -96,6 +103,7 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
           throw new Error('toJSON exploded');
         },
       },
+      true,
     ],
     [
       'a Proxy whose traps throw',
@@ -107,6 +115,7 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
           },
         },
       ),
+      true,
     ],
     [
       'an object nested past the stringify recursion limit',
@@ -120,10 +129,11 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
         }
         return root;
       })(),
+      false,
     ],
   ];
 
-  for (const [label, value] of hostileValues) {
+  for (const [label, value, degrades] of hostileValues) {
     it(`does not throw into the caller, and still forwards, for ${label}`, () => {
       const f = fake();
       const ic = createConsoleInterceptor({ now: () => 1 });
@@ -133,9 +143,11 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
       expect(() => con().log(value)).not.toThrow();
       // The passthrough is the half a bare `finally` silently skipped: the app's own output.
       expect(f.calls).toEqual([{ method: 'log', args: [value] }]);
-      // And capture still happened — degraded to a placeholder rather than dropped entirely.
+      // And capture still happened, rather than being dropped entirely.
       expect(logs).toHaveLength(1);
-      expect(logs[0]?.message).toContain('[Unserializable]');
+      if (degrades) {
+        expect(logs[0]?.message).toContain('[Unserializable]');
+      }
     });
   }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createObscuringChannel } from './obscuring-channel';
+import { FAIL_CLOSED_AREA } from './obscuring-source';
 import type { SecureMessage } from './protocol';
 
 const el = (top: number) => ({
@@ -47,6 +48,50 @@ function setup(docAreas: Record<string, ReturnType<typeof el>[]>) {
   });
   return { bridge, doc, channel };
 }
+
+describe('createObscuringChannel — fail-closed snapshot', () => {
+  /**
+   * The synchronous `snapshot()` pull is the ONLY masking source on the advanced path: native calls it at
+   * frame-capture time and masks exactly the rects it returns. So what a BROKEN page yields decides
+   * between a fully covered frame and a fully legible one.
+   *
+   * Nothing asserted the CONTENT of that answer. Replacing `[FAIL_CLOSED_AREA]` with `[]` — the exact
+   * fail-OPEN the design exists to prevent — survived the whole suite, because every existing test drove
+   * the happy path and only ever checked that `snapshot()` returned a string.
+   *
+   * Asserted end-to-end through the channel, which is how native reaches it. The layer that actually
+   * answers a throwing DOM query is `collectSecureAreas`; the composer and the channel each hold their
+   * own fail-closed fallback behind it as defense in depth (the composer's is covered separately, and
+   * the channel's is unreachable while the composer catches everything).
+   */
+  it('answers with the full-viewport fail-closed area when the DOM query throws', () => {
+    const bridge = fakeBridge();
+    const errors: unknown[] = [];
+    const channel = createObscuringChannel({
+      bridge,
+      document: {
+        querySelectorAll: () => {
+          throw new Error('DOM query exploded');
+        },
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      } as never,
+      seq: () => 1,
+      wallNow: () => 5000,
+      now: () => 1.5,
+      timeOrigin: 200,
+      mutationObserver: undefined,
+      onError: (e) => errors.push(e),
+    });
+
+    const parsed = JSON.parse(channel.snapshot()) as unknown[];
+    // Not merely "non-empty": it must be the area that covers everything, or native masks a strip and
+    // leaves the rest of the screen readable.
+    expect(parsed).toEqual([FAIL_CLOSED_AREA]);
+    expect(parsed[0]).toMatchObject({ type: 'hidden', top: 0, left: 0 });
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
 
 describe('createObscuringChannel', () => {
   it('posts a secure message with the serialized rects + time/seq frame on change', () => {
