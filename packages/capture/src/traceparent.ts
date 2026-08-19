@@ -72,11 +72,16 @@ export function parseTraceparent(header: string | undefined): ParsedTraceparent 
   if (typeof header !== 'string') {
     return undefined;
   }
-  const [version = '', traceId = '', spanId = '', flags = ''] = header
-    .trim()
-    .toLowerCase()
-    .split('-');
+  const fields = header.trim().toLowerCase().split('-');
+  const [version = '', traceId = '', spanId = '', flags = ''] = fields;
   if (!HEX2_RE.test(version) || version === 'ff') {
+    return undefined;
+  }
+  // W3C: a version-00 header has EXACTLY four fields and a parser must reject one carrying more. The
+  // tolerance below — parse the first four, ignore the rest — is what the spec asks of parsers reading a
+  // FUTURE version they do not understand; applying it to 00 as well meant adopting a trace id from a
+  // peer whose header the spec calls invalid.
+  if (version === '00' && fields.length !== 4) {
     return undefined;
   }
   if (!TRACE_ID_RE.test(traceId) || traceId === ZERO_TRACE_ID) {

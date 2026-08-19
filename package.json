@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Bugsee JavaScript SDK \u2014 monorepo root (see docs/design/sdk-design.md)",
+  "description": "Bugsee JavaScript SDK — monorepo root (see docs/design/sdk-design.md)",
   "license": "UNLICENSED",
   "packageManager": "pnpm@11.3.0",
   "engines": {
@@ -35,6 +35,7 @@
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.7",
+    "fast-check": "^4.9.0",
     "madge": "^8.0.0",
     "rollup": "^4.60.4",
     "size-limit": "^12.1.0",

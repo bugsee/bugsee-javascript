@@ -1,3 +1,5 @@
+import { utf8ByteLength } from '@bugsee/util';
+
 // W3C `tracestate` codec (https://www.w3.org/TR/trace-context/#tracestate-header) + the Bugsee vendor entry.
 // `tracestate` is the OTel-legal vendor channel that rides alongside `traceparent` (cross-project-tracing.md,
 // T4/T7): a comma-separated, ORDERED (most-recently-mutated first) list of `key=value` members. We parse it
@@ -12,6 +14,13 @@ export interface TracestateEntry {
 
 // W3C / Bugsee OTLP Profile v1 §12 (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
 // on overflow. Both caps are pinned so every Bugsee SDK truncates to identical bytes.
+//
+// The byte cap is measured in UTF-8 BYTES, which is what "512 bytes" means on the wire and what a peer
+// SDK measuring bytes will compare against. It previously compared `String.length` — UTF-16 code units —
+// and the two diverge for exactly the input a remote peer controls: the KEY is charset-validated below,
+// but the VALUE is not, so a multibyte value passed a 512-unit check while emitting far more than 512
+// bytes (a generated case reached 934). That broke the one thing this constant exists to guarantee:
+// identical truncation across SDKs.
 const MAX_ENTRIES = 32;
 const MAX_BYTES = 512;
 // A permissive lowercase key (covers simple vendor keys + the `tenant@vendor` form's chars); strict enough to
@@ -62,7 +71,7 @@ export function setTracestateEntry(
   const rest = entries.filter((entry) => entry.key !== key);
   let next = [{ key, value }, ...rest].slice(0, MAX_ENTRIES);
   // 512-byte soft cap: drop the oldest (from the end) until it fits — but never our own (front) entry.
-  while (next.length > 1 && serializeTracestate(next).length > MAX_BYTES) {
+  while (next.length > 1 && utf8ByteLength(serializeTracestate(next)) > MAX_BYTES) {
     next = next.slice(0, -1);
   }
   return next;
