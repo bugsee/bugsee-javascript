@@ -78,7 +78,7 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 
   it('masks every password input regardless of its other attributes', () => {
     fc.assert(
@@ -101,7 +101,7 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 
   /**
    * When the mask ancestry cannot be determined, nothing is published — and this is where a suspected
@@ -143,7 +143,7 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 
   // An ABSENT `closest` is a different case from a broken one, and deliberately does NOT mask: the
   // target is not an Element in the document (a non-Element EventTarget, a framework's synthetic
@@ -155,7 +155,7 @@ describe('describeTarget masking (fuzz)', () => {
     const desc = describeTarget({ tagName: 'DIV' }, MASK_SELECTOR) as Record<string, unknown>;
     expect(desc.masked).toBeUndefined();
     expect(desc.tag).toBe('div');
-  });
+  }, 30_000);
 
   /**
    * Editable content is a VALUE, not a label.
@@ -189,7 +189,7 @@ describe('describeTarget masking (fuzz)', () => {
       ),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 
   // The same rule for form controls: their text content is a value too, and `aria-label` is the only
   // author-set label allowed through.
@@ -213,7 +213,7 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 300 },
     );
-  });
+  }, 30_000);
 
   // Totality over well-behaved-but-odd shapes: whatever the target's fields hold, describing it must
   // not throw of its own accord.
@@ -247,5 +247,5 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 });

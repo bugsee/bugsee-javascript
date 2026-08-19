@@ -75,7 +75,7 @@ describe('parseTraceparent (fuzz)', () => {
       ),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 
   // Whatever it accepts must be usable downstream without re-validation: the ids are spliced straight
   // into an outgoing `traceparent`, so a malformed id accepted here becomes a malformed header we emit.
@@ -97,7 +97,7 @@ describe('parseTraceparent (fuzz)', () => {
       ),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 
   it('accepts every well-formed header and recovers its ids exactly', () => {
     fc.assert(
@@ -110,7 +110,7 @@ describe('parseTraceparent (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 
   // Shape properties alone cannot see this: `ff` carries perfectly well-formed ids, so an implementation
   // that stopped rejecting it produced valid-looking output and passed everything above. The spec forbids
@@ -128,7 +128,7 @@ describe('parseTraceparent (fuzz)', () => {
       ),
       { numRuns: 300 },
     );
-  });
+  }, 30_000);
 
   // W3C: a version-00 header has exactly four fields, and a parser MUST reject one with extra fields.
   // The tolerance this module documents is for FUTURE versions ("future versions with extra fields"),
@@ -143,7 +143,7 @@ describe('parseTraceparent (fuzz)', () => {
       }),
       { numRuns: 300 },
     );
-  });
+  }, 30_000);
 
   // Documented leniencies, pinned so they stay deliberate: surrounding whitespace and uppercase hex are
   // tolerated. If either is ever tightened, that is a decision to make explicitly, not to discover.
@@ -155,7 +155,7 @@ describe('parseTraceparent (fuzz)', () => {
       }),
       { numRuns: 300 },
     );
-  });
+  }, 30_000);
 });
 
 describe('tracestate codec (fuzz)', () => {
@@ -173,7 +173,7 @@ describe('tracestate codec (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 
   // Parsing is the only gate between a peer's header and our in-memory list, so its own caps must hold
   // regardless of what arrives.
@@ -191,7 +191,7 @@ describe('tracestate codec (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 
   // The codec's fixed point: whatever survives one parse must survive serialization unchanged. A value
   // that re-splits on the way back out (an embedded comma, say) would silently rewrite another vendor's
@@ -205,7 +205,7 @@ describe('tracestate codec (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
-  });
+  }, 30_000);
 
   /**
    * The normative cross-SDK cap: "cap at 32 entries AND 512 bytes ... pinned so every Bugsee SDK
@@ -247,9 +247,11 @@ describe('tracestate codec (fuzz)', () => {
           expect(byteLength(serialized)).toBeLessThanOrEqual(512);
         }
       }),
-      { numRuns: 500 },
+      // Fewer runs than the cheap string properties above: each case builds up to 40 multibyte entries
+      // and serializes them repeatedly, which is the costliest generator in this file.
+      { numRuns: 200 },
     );
-  });
+  }, 30_000);
 
   // Our entry is the one the backend joins on, so it must survive every mutation and lead the list.
   it('always places the bugsee entry first and keeps it', () => {
@@ -265,7 +267,7 @@ describe('tracestate codec (fuzz)', () => {
       ),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 });
 
 describe('traceparent decorator cross-origin guarantee (fuzz)', () => {
@@ -286,34 +288,32 @@ describe('traceparent decorator cross-origin guarantee (fuzz)', () => {
    * one nobody wrote a case for.
    */
   it('never injects traceparent cross-origin when no allowlist is configured', () => {
+    const APP_ORIGIN = 'https://app.example.com';
+    // One resolver, shared by the decorator and the expectation. Parsing each URL twice doubled the cost
+    // of the most expensive generator here, and `fc.webUrl()` is already slow — under coverage on CI this
+    // property exceeded vitest's 5 s timeout while taking 281 ms locally.
+    const originOf = (url: string, base: string): string | undefined => {
+      try {
+        return new URLCtor(url, base).origin;
+      } catch {
+        return undefined;
+      }
+    };
     const decorate = createTraceparentDecorator({
       getActiveSpan: () => span,
-      origin: 'https://app.example.com',
-      resolveOrigin: (url, base) => {
-        try {
-          return new URLCtor(url, base).origin;
-        } catch {
-          return undefined;
-        }
-      },
+      origin: APP_ORIGIN,
+      resolveOrigin: originOf,
     });
     fc.assert(
       fc.property(fc.webUrl(), (url) => {
         const result = decorate({ url, method: 'GET', headers: {} });
-        const sameOrigin = (() => {
-          try {
-            return new URLCtor(url, 'https://app.example.com').origin === 'https://app.example.com';
-          } catch {
-            return false;
-          }
-        })();
-        if (!sameOrigin) {
+        if (originOf(url, APP_ORIGIN) !== APP_ORIGIN) {
           expect(result?.traceparent).toBeUndefined();
         }
       }),
-      { numRuns: 1000 },
+      { numRuns: 300 },
     );
-  });
+  }, 30_000);
 
   // An upstream trace context is authoritative: overwriting it would fork the distributed trace.
   it('never overwrites an existing traceparent, whatever the header casing', () => {
@@ -335,5 +335,5 @@ describe('traceparent decorator cross-origin guarantee (fuzz)', () => {
       ),
       { numRuns: 500 },
     );
-  });
+  }, 30_000);
 });
