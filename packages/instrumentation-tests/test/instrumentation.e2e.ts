@@ -223,48 +223,61 @@ describe.each(
       // THE proof of our native-free "where is the main thread stuck" mechanism: V8 keeps sampling during
       // the stall, so the spinning function (`e2eHangSpin`) appears in the profile attached to the hang
       // report. This is what justifies NOT adopting a native stack-capture addon (see node-diagnostics.md).
-      const hang = bundles.find((b) => b.request.source.mechanism === 'hang');
-      expect(hang, 'no AppHang bundle was delivered').toBeDefined();
-      const bundle = hang as ParsedBundle;
+      //
+      // Examined across EVERY hang bundle, not the first one delivered, and that distinction is the whole
+      // fix. The watchdog reports once per hang EPISODE and re-arms when the episode ends, so a
+      // CPU-starved runner produces additional, entirely genuine AppHang reports alongside the deliberate
+      // spin. Each report snapshots the profiler, and snapshotting stop+restarts it — so whichever report
+      // lands first takes the segment containing the spin and the others get fresh, near-empty ones.
+      // `find` then picked an arbitrary member of that set.
+      //
+      // CI proved it rather than suggesting it: the attached profile covered 57 ms with 6 samples whose
+      // busiest frames were the watchdog's own `#dispatchWorkerThreadMessage` / `post` / `emit` — a
+      // segment that began AFTER the hang ended, which is precisely a second episode's report. The
+      // rolling restart cannot explain a 57 ms window either: its interval is the whole recording window
+      // (60 s), so a tick landing in that slot is not a coincidence worth entertaining.
+      const hangs = bundles.filter((b) => b.request.source.mechanism === 'hang');
+      expect(hangs.length, 'no AppHang bundle was delivered').toBeGreaterThan(0);
 
+      const withProfile = hangs.filter((b) => b.files['profile.json'] !== undefined);
       expect(
-        bundle.files['profile.json'],
-        // If this is undefined again, the profiler was gone by the time the report assembled — look at
-        // the scenario's wait for report entry, not at the profiler itself.
-        'the AppHang bundle carries no profile.json (was the profiler torn down before assembly?)',
-      ).toBeDefined();
-      const profile = parseJson<{
+        withProfile.length,
+        // Distinct from the assertion below on purpose: "no profile at all" means the profiler was gone
+        // by assembly time (look at the scenario's wait for report entry), while "profile without the
+        // frame" means the segment did not cover the spin. Keeping them separate is what let the second
+        // one be diagnosed from a single CI occurrence.
+        `no AppHang bundle carries profile.json (was the profiler torn down before assembly?) — ${hangs.length} hang bundle(s) delivered`,
+      ).toBeGreaterThan(0);
+
+      type Profile = {
         nodes: Array<{ id?: number; hitCount?: number; callFrame: { functionName: string } }>;
         startTime?: number;
         endTime?: number;
         samples?: number[];
-      }>(bundle.files['profile.json']);
-      const blocking = profile.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin');
-      // This assertion used to fail intermittently under the FULL parallel run and never in isolation,
-      // which the earlier investigation could not reproduce and so left instrumented rather than fixed.
-      // CI then produced the sharper variant — `profile.json` MISSING ENTIRELY (2026-08-13, 2026-08-19) —
-      // and that named the mechanism: the scenario waited a fixed 700 ms for the watchdog before calling
-      // `flush()`, and on a contended runner the report had not entered the pipeline yet. `flush()` awaits
-      // SUBMITTED reports, so it returned, `stop()` tore down the inspector session, and the hang report
-      // assembled afterwards with no profiler to snapshot.
-      //
-      // The same lateness explains this weaker form: a report entering a little late still finds a live
-      // profiler, but the rolling restart has already discarded the segment the spin was recorded in — so
-      // the profile exists and `e2eHangSpin` is not in it. The scenario now waits for the report to ENTER
-      // the pipeline (its `before` hook) instead of for a duration, which removes the race at its source.
-      //
-      // The diagnostics stay: if either form recurs, the failure has to say why in one occurrence.
-      const busiest = [...profile.nodes]
-        .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
-        .slice(0, 8)
-        .map((n) => `${n.callFrame.functionName || '(anonymous)'}:${n.hitCount ?? 0}`);
+      };
+      const profiles = withProfile.map((b) => parseJson<Profile>(b.files['profile.json']));
+      const blocking = profiles.some((p) =>
+        p.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin'),
+      );
+
+      // Every candidate is described on failure, so a recurrence shows whether the spin's segment went
+      // somewhere else or was never recorded at all.
+      const describe = (p: Profile, i: number): string => {
+        const busiest = [...p.nodes]
+          .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
+          .slice(0, 6)
+          .map((n) => `${n.callFrame.functionName || '(anonymous)'}:${n.hitCount ?? 0}`);
+        const span =
+          p.startTime !== undefined && p.endTime !== undefined
+            ? `${Math.round((p.endTime - p.startTime) / 1000)}ms`
+            : '?';
+        return `  [${i}] window ${span}, nodes ${p.nodes.length}, samples ${p.samples?.length ?? '?'} — ${busiest.join(', ')}`;
+      };
       expect(
         blocking,
         [
-          'the blocking frame e2eHangSpin is not in the AppHang profile',
-          `  profile window: ${profile.startTime ?? '?'} → ${profile.endTime ?? '?'} (µs)`,
-          `  nodes: ${profile.nodes.length}, samples: ${profile.samples?.length ?? '?'}`,
-          `  busiest frames: ${busiest.join(', ')}`,
+          `the blocking frame e2eHangSpin is in none of the ${profiles.length} AppHang profile(s)`,
+          ...profiles.map(describe),
         ].join('\n'),
       ).toBe(true);
     });

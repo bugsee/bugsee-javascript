@@ -690,8 +690,11 @@ describe('launch', () => {
       baseOptions({ process: fp.proc, captureStore: memStore(), exitOnUncaught: false }),
     );
     fp.fire('unhandledRejection', new Error('rejected'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fp.exit).toHaveBeenCalledWith(1); // Node's own outcome, preserved
+    // `vi.waitFor`, like its four siblings above — not a fixed sleep. The exit path is asynchronous (the
+    // rejection is captured, the report assembled and flushed, and only then does the process exit), so
+    // `setTimeout(20)` was a bet that the machine finishes in 20 ms. A loaded 2-core CI runner does not,
+    // and these three failed there while passing locally on every Node version available here.
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1)); // Node's own outcome, preserved
     expect(fp.stderr.join('')).toContain('rejected');
   });
 
@@ -731,16 +734,22 @@ describe('launch', () => {
     (fp.proc as unknown as { execArgv: string[] }).execArgv = ['--unhandled-rejections=throw'];
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
     fp.fire('unhandledRejection', new Error('rejected'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fp.exit).toHaveBeenCalledWith(1);
+    // `vi.waitFor`, like its four siblings above — not a fixed sleep. The exit path is asynchronous (the
+    // rejection is captured, the report assembled and flushed, and only then does the process exit), so
+    // `setTimeout(20)` was a bet that the machine finishes in 20 ms. A loaded 2-core CI runner does not,
+    // and these three failed there while passing locally on every Node version available here.
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
   it('still exits on a rejection under `preserve` with exitOnUncaught left at its default', async () => {
     const fp = fakeProcess();
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
     fp.fire('unhandledRejection', new Error('rejected'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fp.exit).toHaveBeenCalledWith(1);
+    // `vi.waitFor`, like its four siblings above — not a fixed sleep. The exit path is asynchronous (the
+    // rejection is captured, the report assembled and flushed, and only then does the process exit), so
+    // `setTimeout(20)` was a bet that the machine finishes in 20 ms. A loaded 2-core CI runner does not,
+    // and these three failed there while passing locally on every Node version available here.
+    await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
   it('installs no uncaughtException handler when detectCrashes is false', () => {
