@@ -84,7 +84,7 @@ describe('utf8ByteLength (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 
   it('agrees with TextEncoder for arbitrary UTF-16 code-unit sequences, lone surrogates included', () => {
     fc.assert(
@@ -93,7 +93,7 @@ describe('utf8ByteLength (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 
   it('agrees with TextEncoder on surrogate-dense input, where pairing decisions collide', () => {
     fc.assert(
@@ -102,7 +102,7 @@ describe('utf8ByteLength (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
-  }, 30_000);
+  });
 
   it('agrees with TextEncoder on every adjacent pair of surrogate-range boundaries', () => {
     fc.assert(
@@ -111,7 +111,7 @@ describe('utf8ByteLength (fuzz)', () => {
       }),
       { numRuns: 200 },
     );
-  }, 30_000);
+  });
 
   // Additivity across a split is what a caller doing incremental accounting relies on. It holds for every
   // split EXCEPT one through the middle of a surrogate pair, where both halves become replacement
@@ -128,7 +128,7 @@ describe('utf8ByteLength (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 });
 
 describe('base64 (fuzz)', () => {
@@ -139,7 +139,7 @@ describe('base64 (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 
   // Every byte value must survive, including 0x00 and the high half that a naive charCode round-trip
   // mangles. Stated separately from the round-trip above so a failure names the cause.
@@ -154,7 +154,7 @@ describe('base64 (fuzz)', () => {
       }),
       { numRuns: 300 },
     );
-  }, 30_000);
+  });
 });
 
 describe('deepMerge (fuzz)', () => {
@@ -205,7 +205,7 @@ describe('deepMerge (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 
   it('leaves both inputs unmutated', () => {
     fc.assert(
@@ -222,7 +222,7 @@ describe('deepMerge (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 
   // Merging a payload into `{}` must not smuggle in a key the payload did not carry — the result's own
   // keys are exactly the source's, minus the one key that is deliberately refused.
@@ -236,7 +236,7 @@ describe('deepMerge (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 });
 
 describe('jsonSafeStringify (fuzz)', () => {
@@ -330,7 +330,7 @@ describe('jsonSafeStringify (fuzz)', () => {
       }),
       { numRuns: 300 },
     );
-  }, 30_000);
+  });
 
   // The fallback is a VALUE, not just a non-throw. Blanking the placeholder to `''` survived every other
   // property here: the totality check only asked for a string, and the round-trip check never reaches
@@ -344,7 +344,7 @@ describe('jsonSafeStringify (fuzz)', () => {
     const out = jsonSafeStringify(unserializable);
     expect(() => JSON.parse(out)).not.toThrow();
     expect(JSON.parse(out)).toBe('[Unserializable]');
-  }, 30_000);
+  });
 
   // Whatever it returns must survive the JSON round-trip it exists to guarantee, or the bundle carries a
   // field the backend cannot parse.
@@ -355,7 +355,7 @@ describe('jsonSafeStringify (fuzz)', () => {
       }),
       { numRuns: 500 },
     );
-  }, 30_000);
+  });
 });
 
 /**
@@ -380,7 +380,7 @@ describe('runtime-probed implementations (fuzz)', () => {
     });
     expect(randomId()).toBe('ffffffff111122223333444444444444');
     expect(calls).toBe(1);
-  }, 30_000);
+  });
 
   it('falls back to a well-formed id when the runtime has no Web Crypto', () => {
     vi.stubGlobal('crypto', undefined);
@@ -390,7 +390,7 @@ describe('runtime-probed implementations (fuzz)', () => {
       }),
       { numRuns: 200 },
     );
-  }, 30_000);
+  });
 
   it('uses WebCrypto subtle.digest when the runtime provides it', () => {
     // Same class of gap as randomUUID above: both digest paths return the same bytes, so forcing the
@@ -412,7 +412,7 @@ describe('runtime-probed implementations (fuzz)', () => {
       expect(digestCalls).toBe(1);
       expect(hex).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
     });
-  }, 30_000);
+  });
 
   // A differential between the two digest implementations. They are supposed to be interchangeable, and
   // the bundle's integrity depends on that: a hash computed by the WebCrypto path in one runtime and
@@ -427,5 +427,5 @@ describe('runtime-probed implementations (fuzz)', () => {
     expect(withWebCrypto[1]).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
     );
-  }, 30_000);
+  });
 });

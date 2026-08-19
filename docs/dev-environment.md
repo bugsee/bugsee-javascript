@@ -86,6 +86,33 @@ Changesets, independent versioning. `@bugsee/protocol` exact-pinned by every con
 
 Package manager: **pnpm 11.3.0** (declared in root `package.json` `packageManager`). Task runner: **turbo** (`turbo.json`). All commands run from the repo root unless noted.
 
+### Reproducing the CI gate locally
+
+```bash
+pnpm ci:local                 # the `check` job: lint → typecheck → cycles → coverage → unit  (~35 s)
+pnpm ci:local --e2e           # also the `e2e` job: node · bun · deno · real frameworks       (~4 min)
+pnpm ci:local --force         # ignore the turbo cache so every package really re-runs
+```
+
+**`pnpm test` is not what CI runs.** The gate runs `turbo run test:coverage` (each package enforcing its
+own thresholds) plus `turbo run test:unit` (harness-owned suites that define no `test:coverage` script and
+are therefore invisible to the other task). A change can pass `pnpm test` and still fail the gate — that
+is how several red builds reached `main`. `scripts/ci-local.sh` mirrors `.github/workflows/ci.yml`
+step for step and is kept in lockstep with it BY HAND.
+
+Three divergences remain, and they are the ones that actually bite:
+
+- **Speed.** The runner is roughly 7–18× slower than a dev machine under coverage instrumentation. A test
+  whose pass condition includes a DURATION can be green here and red there. Assert ratios rather than
+  wall-clock budgets, and keep property-test case counts modest.
+- **Node version.** CI pins Node 22; the script warns when the local major differs.
+- **Load.** CI runs the same `turbo` fan-out, but on 2 cores. Failures that only appear under parallel
+  load (a stalled request, a port race) reproduce locally only under `--force` across all packages, not
+  when running one package's tests.
+
+`act` would give closer parity by running the workflow in Docker, but on Apple Silicon it emulates
+linux/amd64 and is far slower than the real runner — the script is the better trade for turnaround.
+
 ### Install
 
 ```bash

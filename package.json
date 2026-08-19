@@ -25,7 +25,8 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "turbo run build && changeset publish",
-    "test:mutation": "node scripts/mutation.mjs"
+    "test:mutation": "node scripts/mutation.mjs",
+    "ci:local": "bash scripts/ci-local.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

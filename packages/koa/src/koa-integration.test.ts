@@ -69,6 +69,29 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
+/**
+ * `fetch` with a deadline.
+ *
+ * Node's fetch has NO default timeout, so a request that stalls hangs until the test timeout fires and
+ * reports only "Test timed out" — naming neither the request nor the phase. This test hung for the full
+ * 30 s during a parallel `turbo run test:coverage` across 55 packages, while passing 5/5 in isolation,
+ * which is exactly the shape a load-dependent stall takes.
+ *
+ * The deadline does not fix a stall; it makes the next one say what stalled, and fails in seconds
+ * instead of occupying the runner.
+ */
+const get = async (url: string, headers?: Record<string, string>): Promise<string> => {
+  try {
+    const response = await fetch(url, {
+      ...(headers ? { headers } : {}),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return await response.text();
+  } catch (error) {
+    throw new Error(`request to ${url} did not complete within 10s`, { cause: error });
+  }
+};
+
 function boot(): { url: string; client: Bugsee; bundles: Uint8Array[] } {
   const { transport, bundles } = recordingTransport();
   const client = launch('tok', {
@@ -110,10 +133,10 @@ function boot(): { url: string; client: Bugsee; bundles: Uint8Array[] } {
 describe('@bugsee/koa — real Koa server (e2e)', () => {
   it('reports a handler error (http-error), skips the ok + 404 routes', async () => {
     const { url, client, bundles } = boot();
-    await fetch(`${url}/handler-error`).then((r) => r.text());
-    await fetch(`${url}/missing`).then((r) => r.text()); // Koa default 404 (no throw)
-    await fetch(`${url}/client-error`).then((r) => r.text()); // thrown 400 → skipped
-    await fetch(`${url}/ok`).then((r) => r.text());
+    await get(`${url}/handler-error`);
+    await get(`${url}/missing`); // Koa default 404 (no throw)
+    await get(`${url}/client-error`); // thrown 400 → skipped
+    await get(`${url}/ok`);
     await client.flush(5000);
     expect(bundles).toHaveLength(1); // only the genuine handler error
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
@@ -130,11 +153,7 @@ describe('@bugsee/koa — real Koa server (e2e)', () => {
     const { url, client, bundles } = boot();
     const users = ['alice@x.com', 'bob@x.com', 'carol@x.com'];
     await Promise.all(
-      users.map((user, i) =>
-        fetch(`${url}/work?d=${users.length - 1 - i}`, { headers: { 'x-user': user } }).then((r) =>
-          r.text(),
-        ),
-      ),
+      users.map((user, i) => get(`${url}/work?d=${users.length - 1 - i}`, { 'x-user': user })),
     );
     await client.flush(5000);
 
