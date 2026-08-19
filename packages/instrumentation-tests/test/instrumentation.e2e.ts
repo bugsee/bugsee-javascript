@@ -229,7 +229,9 @@ describe.each(
 
       expect(
         bundle.files['profile.json'],
-        'the AppHang bundle carries no profile.json',
+        // If this is undefined again, the profiler was gone by the time the report assembled — look at
+        // the scenario's wait for report entry, not at the profiler itself.
+        'the AppHang bundle carries no profile.json (was the profiler torn down before assembly?)',
       ).toBeDefined();
       const profile = parseJson<{
         nodes: Array<{ id?: number; hitCount?: number; callFrame: { functionName: string } }>;
@@ -238,12 +240,20 @@ describe.each(
         samples?: number[];
       }>(bundle.files['profile.json']);
       const blocking = profile.nodes.some((n) => n.callFrame.functionName === 'e2eHangSpin');
-      // This assertion has failed 3 times in ~13 FULL parallel `pnpm test:e2e` runs and never once in
-      // isolation — 10/10 present there, including under synthetic CPU saturation, and the spin keeps its
-      // CPU time under load (measured: 394 ms of CPU in a 400 ms wall-clock spin), so starvation is ruled
-      // out. Rather than ship a fix for a condition that cannot be reproduced, the failure now carries the
-      // evidence needed to diagnose it in ONE more occurrence: whether the profile covers the hang at all,
-      // how many samples it holds, and what the busiest frames actually were.
+      // This assertion used to fail intermittently under the FULL parallel run and never in isolation,
+      // which the earlier investigation could not reproduce and so left instrumented rather than fixed.
+      // CI then produced the sharper variant — `profile.json` MISSING ENTIRELY (2026-08-13, 2026-08-19) —
+      // and that named the mechanism: the scenario waited a fixed 700 ms for the watchdog before calling
+      // `flush()`, and on a contended runner the report had not entered the pipeline yet. `flush()` awaits
+      // SUBMITTED reports, so it returned, `stop()` tore down the inspector session, and the hang report
+      // assembled afterwards with no profiler to snapshot.
+      //
+      // The same lateness explains this weaker form: a report entering a little late still finds a live
+      // profiler, but the rolling restart has already discarded the segment the spin was recorded in — so
+      // the profile exists and `e2eHangSpin` is not in it. The scenario now waits for the report to ENTER
+      // the pipeline (its `before` hook) instead of for a duration, which removes the race at its source.
+      //
+      // The diagnostics stay: if either form recurs, the failure has to say why in one occurrence.
       const busiest = [...profile.nodes]
         .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
         .slice(0, 8)

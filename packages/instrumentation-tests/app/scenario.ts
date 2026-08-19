@@ -64,9 +64,33 @@ async function runMainScenario(launch: LaunchFn, collectorUrl: string): Promise<
 
   // A deliberate main-thread hang past the fair threshold → the worker watchdog fires an AppHang report.
   // The CPU profiler keeps sampling through the stall, so `e2eHangSpin` lands in the profile attached to it.
+  //
+  // Waiting for the report to ENTER the pipeline, not for a fixed delay. `flush()` awaits reports that
+  // have already been submitted, so the race is entirely about whether the watchdog has fired by the time
+  // flush is called. A fixed `sleep(700)` lost that race on a contended CI runner: flush found nothing
+  // pending, `stop()` tore down the inspector session, and the hang report then assembled with no
+  // profiler to snapshot — the bundle still uploaded, so "an AppHang report was delivered" passed while
+  // "the AppHang bundle carries a CPU profile" failed. That is the intermittent CI failure this replaces.
+  //
+  // `before` runs at report entry, ahead of assembly and therefore ahead of the profile snapshot, and it
+  // returns the request unchanged so nothing about the bundle differs.
+  let hangEntered: () => void = () => {};
+  const hangSubmitted = new Promise<void>((resolve) => {
+    hangEntered = resolve;
+  });
+  client.setReportHandler({
+    before: (request) => {
+      if (request.source.mechanism === 'hang') {
+        hangEntered();
+      }
+      return request;
+    },
+  });
+
   e2eHangSpin(400);
-  // Let the watchdog's queued message process on the (now-unblocked) loop and the report assemble.
-  await sleep(700);
+  // A ceiling, not a wait: the happy path resolves as soon as the watchdog fires. If it never does, the
+  // assertions downstream report that clearly rather than this hanging the scenario.
+  await Promise.race([hangSubmitted, sleep(15_000)]);
 
   // Generous flush/stop budgets: the AppHang report's assembly snapshots the real CPU profiler and the
   // upload pipeline's first retry backoff is ~5s — under CPU-contended CI a tighter budget could time out
