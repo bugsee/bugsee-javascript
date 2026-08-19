@@ -30,7 +30,11 @@ const measure = (fn: () => void): number => {
 };
 
 const expectLinearIn = (run: (size: number) => void, size: number): void => {
-  run(size / 4); // warm-up: otherwise first-call JIT cost lands in the baseline and inflates the budget
+  // Warm up on a SMALL input. Its only job is to get the code path JIT-compiled before the baseline is
+  // measured — an unwarmed baseline is inflated, which makes the budget too generous and could mask a
+  // regression. Doing it at the baseline size instead made each guard run the expensive shape three
+  // times rather than twice, and the XML one then exceeded vitest's 5 s timeout on CI.
+  run(size / 16);
   const small = measure(() => run(size / 4));
   const large = measure(() => run(size));
   // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
@@ -158,7 +162,7 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
       redactSensitivePairs(input, 0, 100_000_000);
     });
     expect(overshooting).toBeLessThan(Math.max(honest, 5) * 8);
-  });
+  }, 30_000);
 
   it('scans a long separator run in linear time', () => {
     // `indexOf('=', pos)` was unbounded by `end`, so every segment in a run carrying no `=` rescanned to
@@ -171,7 +175,7 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
       const input = build(n);
       redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
     }, 400_000);
-  });
+  }, 30_000);
 
   it('scans a long `;` separator run in linear time too', () => {
     const build = (n: number): string => `https://h/p?${';'.repeat(n)}`;
@@ -181,7 +185,7 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
       const input = build(n);
       redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
     }, 400_000);
-  });
+  }, 30_000);
 
   it('never throws on a malformed percent escape in the key', () => {
     // decodeURIComponent('%zz') throws; a URL we merely observed must never break capture.

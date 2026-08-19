@@ -31,7 +31,11 @@ const measure = (fn: () => void): number => {
 };
 
 const expectLinearIn = (run: (size: number) => void, size: number): void => {
-  run(size / 4); // warm-up: otherwise first-call JIT cost lands in the baseline and inflates the budget
+  // Warm up on a SMALL input. Its only job is to get the code path JIT-compiled before the baseline is
+  // measured — an unwarmed baseline is inflated, which makes the budget too generous and could mask a
+  // regression. Doing it at the baseline size instead made each guard run the expensive shape three
+  // times rather than twice, and the XML one then exceeded vitest's 5 s timeout on CI.
+  run(size / 16);
   const small = measure(() => run(size / 4));
   const large = measure(() => run(size));
   // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
@@ -377,7 +381,7 @@ describe('sanitizeBody — JSON that does not parse', () => {
     expectLinearIn((n) => {
       sanitizeBody(build(n), 'application/json');
     }, 128_000);
-  });
+  }, 30_000);
 
   it('does not apply the JSON pass to a body that is not JSON-shaped', () => {
     // The pass is gated on the JSON branch; prose quoting `"password": x` in a text body is not a document.
@@ -456,15 +460,17 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
     // Two new alternatives went into a pattern whose UNANCHORED form was quadratic. Measured across eight
     // adversarial shapes (unterminated quotes of both kinds, bare idents, dense commas/colons/braces):
     // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
-    for (const build of [
-      (n: number): string => `{'${"\\'".repeat(n)}`,
-      (n: number): string => `{${'ab,'.repeat(n)}`,
-    ]) {
+    // Each shape keeps the size it was originally written with: a single shared size silently changed
+    // how much work two of them do.
+    for (const [build, size] of [
+      [(n: number): string => `{'${"\\'".repeat(n)}`, 128_000],
+      [(n: number): string => `{${'ab,'.repeat(n)}`, 80_000],
+    ] as const) {
       expectLinearIn((n) => {
         sanitizeBody(build(n), 'application/json');
-      }, 100_000);
+      }, size);
     }
-  });
+  }, 30_000);
 });
 
 describe('sanitizeBody — XML', () => {
@@ -532,16 +538,16 @@ describe('sanitizeBody — XML', () => {
   });
 
   it('stays linear on hostile XML-shaped input', () => {
-    for (const build of [
-      (n: number): string => `<${'a'.repeat(n)}`, // an unterminated tag
-      (n: number): string => '<a>'.repeat(n), // many opens, never closed
-      (n: number): string => `<a ${'b="c" '.repeat(n)}>`, // one tag, very many attributes
-    ]) {
+    for (const [build, size] of [
+      [(n: number): string => `<${'a'.repeat(n)}`, 200_000], // an unterminated tag
+      [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
+      [(n: number): string => `<a ${'b="c" '.repeat(n)}>`, 60_000], // one tag, very many attributes
+    ] as const) {
       expectLinearIn((n) => {
         sanitizeBody(build(n), 'application/xml');
-      }, 200_000);
+      }, size);
     }
-  });
+  }, 30_000);
 });
 
 describe('sanitizeBody — multipart/form-data', () => {
