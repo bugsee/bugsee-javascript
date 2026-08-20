@@ -86,6 +86,14 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   } catch {
     return undefined;
   }
+  // The PARSE succeeding does not mean an object came back. `JSON.parse('null')` yields `null`, and
+  // `JSON.parse('1')` a number, so reading `.k` off the result threw a TypeError for input a renderer can
+  // post trivially. The receiver happens to catch, which downgraded it to an onError, but this function's
+  // contract is `… | undefined` and a decoder at a trust boundary that throws is a hazard for the next
+  // caller that does not wrap it.
+  if (message === null || typeof message !== 'object') {
+    return undefined;
+  }
   if (message.k !== 'entry' || !isKnownFileType(message.t)) {
     return undefined;
   }
@@ -164,6 +172,10 @@ export function decodeReport(raw: string): DecodedReport | undefined {
   try {
     message = JSON.parse(raw) as typeof message;
   } catch {
+    return undefined;
+  }
+  // Same as `decodeStreamEntry`: a successful parse can still yield `null` or a primitive.
+  if (message === null || typeof message !== 'object') {
     return undefined;
   }
   if (message.k !== 'report' || !isPlainObject(message.p)) {
