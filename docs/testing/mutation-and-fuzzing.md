@@ -85,6 +85,20 @@ slightly DOWN (89.56% → 88.99%). Neither figure means what it looks like:
 
 Judge a mutation run by which survivors are real, not by the percentage.
 
+### A large DATA TABLE drags the score without meaning anything
+
+`@bugsee/replay`'s `masking.ts` scores **40%**, the lowest in the SDK, and that number is an artifact:
+**195 of its 209 survivors are `StringLiteral` mutations** inside the ~200-entry `STRUCTURAL_ATTRIBUTES`
+allowlist. Each entry is an independent data item, so mutating `'aria-expanded'` to `""` survives unless a
+test names that exact attribute.
+
+Pinning all 200 would be noise, because the consequence of a missing entry is OVER-masking — a rendering
+regression, not a leak. The exceptions are the handful where over-masking IS a privacy failure and are
+therefore worth naming individually: `display` and `visibility` masked to `****` read as invalid and
+render as UNSET, so content the app deliberately hid became VISIBLE in the replay.
+
+Read that file's score as "14 logic survivors", not "40%". Filter a report by mutator before judging it.
+
 ### A property that iterates a list cannot defend that list
 
 `SENSITIVE_HEADERS` and `SENSITIVE_KEY_SUBSTRINGS` are walked by several properties, so deleting an entry
