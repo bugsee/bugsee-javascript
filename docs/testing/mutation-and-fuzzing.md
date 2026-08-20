@@ -66,6 +66,25 @@ The useful conclusion from that: a surviving mutant here means "no test could te
 properties run against every mutant, it also means "this mutation does not leak". Chase the survivors that
 change WHAT IS REDACTED, not the ones that change WHICH PASS DID IT.
 
+### A score that does not move is not the same as tests that add nothing
+
+Adding the `node` coexistence properties left `liveness.ts` at 6 survivors and moved the package score
+slightly DOWN (89.56% → 88.99%). Neither figure means what it looks like:
+
+- The mutants those properties kill were **already killed**. What the properties add is protection against
+  a change mechanical mutation cannot express — deleting the whole main-thread branch, which re-introduces
+  the SIGSTOP data-loss regression. Verified by injecting it: the properties fail.
+- The survivors left in `isSiblingDead` are **equivalent**. Removing the explicit
+  `liveMtimeMs === undefined` guard changes nothing, because the fall-through reaches the main-thread check
+  (which returns false) or evaluates `NaN > patientMs` (also false). Checked exhaustively over 192
+  alive/heartbeat/now/patience/threadId combinations: zero disagreements. The guard is defensive clarity.
+- The survivor SET differs run to run even when the count does not — `liveness.ts` swapped an L33
+  `ConditionalExpression` for an L38 `OptionalChaining` between two runs of the same code. Stryker's
+  per-test mapping shifts when the test set changes, so treat small score movements as noise and compare
+  the survivors themselves.
+
+Judge a mutation run by which survivors are real, not by the percentage.
+
 ### A property that iterates a list cannot defend that list
 
 `SENSITIVE_HEADERS` and `SENSITIVE_KEY_SUBSTRINGS` are walked by several properties, so deleting an entry
