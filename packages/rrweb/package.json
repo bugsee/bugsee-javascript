@@ -24,11 +24,11 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/rrweb-record": "github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920",
     "@rrweb/types": "^2.1.0",
     "rrweb": "^2.1.0"
   },
   "devDependencies": {
+    "@bugsee/rrweb-record": "github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920",
     "jsdom": "^25.0.1"
   },
   "publishConfig": {

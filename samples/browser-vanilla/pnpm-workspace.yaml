@@ -55,9 +55,6 @@ overrides:
   '@bugsee/webview': 'file:../../.local-registry/bugsee-webview.tgz'
   '@bugsee/webworker': 'file:../../.local-registry/bugsee-webworker.tgz'
 
-# @bugsee/rrweb depends on a git dependency (@bugsee/rrweb-record) which pnpm 11 blocks in
-# subdependencies by default. See samples/FINDINGS.md — this is a publish blocker, not a sample bug.
-blockExoticSubdeps: false
 
 # The unpublished @bugsee/* tarballs (version 0.0.0) resolve via `file:` but pnpm 11's supply-chain
 # minimumReleaseAge check still probes the registry BY NAME and 404s (they don't exist on npm at all,

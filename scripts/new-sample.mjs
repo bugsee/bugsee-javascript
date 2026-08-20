@@ -47,10 +47,6 @@ const yaml = [
   'overrides:',
   ...Object.entries(overrides).map(([k, v]) => `  '${k}': '${v}'`),
   '',
-  '# @bugsee/rrweb depends on a git dependency (@bugsee/rrweb-record) which pnpm 11 blocks in',
-  '# subdependencies by default. See samples/FINDINGS.md — this is a publish blocker, not a sample bug.',
-  'blockExoticSubdeps: false',
-  '',
 ].join('\n');
 writeFileSync(join(dir, 'pnpm-workspace.yaml'), yaml);
 

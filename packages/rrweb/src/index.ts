@@ -1,8 +1,9 @@
 // @bugsee/rrweb — the single, SWAPPABLE rrweb import point for @bugsee/replay (+ @bugsee/replay-canvas).
 //
-// The RECORD path is consumed from the Bugsee-hardened rrweb fork via `@bugsee/rrweb-record` (a git
-// dependency on github.com/bugsee/rrweb#bugsee-dist — a prebuilt, record-only bundle with the replay
-// player tree-shaken out; ~56 KB gzip). Swapping the source (fork ref / npm) touches ONLY this file —
+// The RECORD path comes from the Bugsee-hardened rrweb fork via `@bugsee/rrweb-record` — a prebuilt,
+// record-only bundle with the replay player tree-shaken out (~56 KB gzip). It is a BUILD-time
+// dependency that tsup inlines into this package's dist: as a runtime dependency it was a git ref on
+// a private repository, which no customer can install. Swapping the source touches ONLY this file —
 // @bugsee/replay stays untouched (design D1/D2).
 //
 // The event/option TYPES still come from the published rrweb/@rrweb/types type surface (they match the

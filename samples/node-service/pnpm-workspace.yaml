@@ -55,6 +55,3 @@ overrides:
   '@bugsee/webview': 'file:../../.local-registry/bugsee-webview.tgz'
   '@bugsee/webworker': 'file:../../.local-registry/bugsee-webworker.tgz'
 
-# @bugsee/rrweb depends on a git dependency (@bugsee/rrweb-record) which pnpm 11 blocks in
-# subdependencies by default. See samples/FINDINGS.md — this is a publish blocker, not a sample bug.
-blockExoticSubdeps: false

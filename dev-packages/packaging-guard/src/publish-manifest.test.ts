@@ -112,3 +112,40 @@ describe('every buildable package declares what it publishes', () => {
     }
   });
 });
+
+// A published package may only depend on things a customer can actually install. `@bugsee/rrweb`
+// shipped a `github:bugsee/rrweb#<sha>` dependency on a private repository: pnpm 11 refuses an exotic
+// dependency in a SUBdependency by default (`ERR_PNPM_EXOTIC_SUBDEP`), and even with that disabled it
+// needs git access nobody outside this org has. Every browser-family package was uninstallable.
+describe('published dependencies are installable', () => {
+  const EXOTIC = /^(github:|git\+|git:|file:|link:|https?:)/;
+
+  it.each([
+    ['github:bugsee/rrweb#d50d8d7', true],
+    ['git+ssh://git@github.com/bugsee/rrweb.git', true],
+    ['git://github.com/bugsee/rrweb.git', true],
+    ['file:../rrweb', true],
+    ['link:../rrweb', true],
+    ['https://example.com/pkg.tgz', true],
+    ['^2.1.0', false],
+    ['workspace:*', false], // rewritten to a real version by `pnpm pack`
+    ['0.1.0', false],
+    ['>=18', false],
+  ])('classifies %s as exotic=%s', (range, exotic) => {
+    // The rule itself, asserted directly: a manifest carrying an exotic range cannot even be
+    // installed, so mutating one to prove this check works fails at install time instead of here.
+    expect(EXOTIC.test(range)).toBe(exotic);
+  });
+
+  it.each(
+    buildable.map(({ dir, manifest }) => [manifest.name, dir] as const),
+  )('%s declares only registry dependencies', (_name, dir) => {
+    const { manifest } = buildable.find((p) => p.dir === dir) as (typeof buildable)[number];
+    const runtime = {
+      ...(manifest as { dependencies?: Record<string, string> }).dependencies,
+      ...(manifest as { peerDependencies?: Record<string, string> }).peerDependencies,
+    };
+    const exotic = Object.entries(runtime).filter(([, range]) => EXOTIC.test(range));
+    expect(exotic, 'a consumer cannot install these').toEqual([]);
+  });
+});
