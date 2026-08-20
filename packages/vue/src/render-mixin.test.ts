@@ -195,4 +195,25 @@ describe('createBugseeVueRenderMixin', () => {
     // a lingering stale start would have produced a (wrong, too-early) span here.
     expect(recordChildSpan).not.toHaveBeenCalled();
   });
+
+  it('degrades to epoch 0 — without throwing into Vue — on a host with no `performance`', () => {
+    // The default clock is the only part of this mixin that reads a runtime global, and it reads it from
+    // `beforeMount`, which is OUTSIDE the try/catch that guards the after-hooks. On a host that has no
+    // `performance` (or a partial one), an unguarded read would throw straight out of a Vue lifecycle hook
+    // and fail the component's mount — the SDK breaking the app, which the binding rule forbids.
+    const { client, recordChildSpan } = fakeActive();
+    const m = createBugseeVueRenderMixin({ getClient: () => client }); // no injected clock → the default
+    const i = inst({ $options: { name: 'UserCard' } });
+    vi.stubGlobal('performance', undefined);
+    try {
+      expect(() => m.beforeMount.call(i)).not.toThrow();
+      expect(() => m.mounted.call(i)).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(recordChildSpan).toHaveBeenCalledTimes(1);
+    const [, opts] = recordChildSpan.mock.calls[0] as [string, Record<string, unknown>];
+    expect(opts.startTimestampMs).toBe(0);
+    expect(opts.endTimestampMs).toBe(0);
+  });
 });

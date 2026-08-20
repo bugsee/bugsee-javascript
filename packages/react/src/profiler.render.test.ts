@@ -28,20 +28,43 @@ function fakeActive() {
   return { client, recordChildSpan };
 }
 
-const render = (element: ReturnType<typeof createElement>): (() => void) => {
+const mount = (element: ReturnType<typeof createElement>) => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
     root.render(element);
   });
-  return () => {
-    act(() => {
-      root.unmount();
-    });
-    container.remove();
+  return {
+    rerender: (next: ReturnType<typeof createElement>) => {
+      act(() => {
+        root.render(next);
+      });
+    },
+    cleanup: () => {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    },
   };
 };
+
+const render = (element: ReturnType<typeof createElement>): (() => void) => mount(element).cleanup;
+
+/** The attributes of the n-th recorded span. */
+const attrsOf = (spy: ReturnType<typeof vi.fn>, index: number): Record<string, unknown> =>
+  (spy.mock.calls[index]?.[1] as { attributes: Record<string, unknown> }).attributes;
+
+const optsOf = (
+  spy: ReturnType<typeof vi.fn>,
+  index: number,
+): { startTimestampMs: number; endTimestampMs: number; description: string } =>
+  spy.mock.calls[index]?.[1] as {
+    startTimestampMs: number;
+    endTimestampMs: number;
+    description: string;
+  };
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -60,6 +83,33 @@ describe('BugseeProfiler produces spans through a real render', () => {
     expect(recordChildSpan).toHaveBeenCalled();
     const [op] = recordChildSpan.mock.calls[0] as [string];
     expect(op).toBe('ui.render');
+    cleanup();
+  });
+
+  it('records that span from REACT’s Profiler, not from the fallback measurement', () => {
+    // The assertion the test above is missing, and the reason four different mutations of the live path
+    // survived the audit: with `onRender` neutralised — or with `<Profiler>` never rendered at all — the
+    // post-commit fallback still records a `ui.render` span, so "a span was recorded" says nothing about
+    // WHICH path produced it. The fallback marks itself; React's own path must therefore carry no mark,
+    // and must carry the id and phase React reported.
+    const { client, recordChildSpan } = fakeActive();
+    const cleanup = render(
+      createElement(
+        BugseeProfiler,
+        { id: 'Live', getClient: () => client },
+        createElement('div', null, 'hi'),
+      ),
+    );
+    expect(recordChildSpan).toHaveBeenCalledTimes(1);
+    const attrs = attrsOf(recordChildSpan, 0);
+    // not `toBeUndefined()`: the key must be ABSENT, not present-and-undefined — an undefined-valued
+    // attribute is not a legal span attribute and would travel into the protocol as one.
+    expect(attrs).not.toHaveProperty('ui.render_source');
+    expect(attrs['ui.render_phase']).toBe('mount');
+    expect(optsOf(recordChildSpan, 0).description).toBe('Live');
+    // React reports `baseDuration` (cost without memoization) separately from `actualDuration`; the
+    // fallback has no such number and reports the same value for both.
+    expect(typeof attrs['ui.render_base_duration_ms']).toBe('number');
     cleanup();
   });
 
@@ -129,5 +179,103 @@ describe('BugseeProfiler produces spans through a real render', () => {
       );
       cleanup();
     }).not.toThrow();
+  });
+
+  it('measures the UPDATE phase itself when Profiler never fires — a re-render in production', () => {
+    // The mount fallback was covered; the update fallback was not covered AT ALL (the audit reported the
+    // `'update'` literal as unreached), so nothing defended the mounted-flag flip or the measured duration.
+    const { client, recordChildSpan } = fakeActive();
+    const before = Date.now();
+    const view = (label: string) =>
+      createElement(
+        BugseeProfiler,
+        { id: 'Prod', getClient: () => client, __profilerInert: true },
+        createElement('div', null, label),
+      );
+    const { rerender, cleanup } = mount(view('a'));
+    rerender(view('b'));
+    const after = Date.now();
+
+    expect(recordChildSpan).toHaveBeenCalledTimes(2);
+    expect(attrsOf(recordChildSpan, 0)['ui.render_phase']).toBe('mount');
+    expect(attrsOf(recordChildSpan, 1)['ui.render_phase']).toBe('update'); // NOT a second 'mount'
+    for (const index of [0, 1]) {
+      const { startTimestampMs, endTimestampMs } = optsOf(recordChildSpan, index);
+      const attrs = attrsOf(recordChildSpan, index);
+      expect(Number.isFinite(startTimestampMs)).toBe(true);
+      expect(Number.isFinite(endTimestampMs)).toBe(true);
+      // The fallback's duration IS its extent — render start to post-commit — for both the reported
+      // duration and the base duration. A sum instead of a difference passes neither.
+      // `toBeCloseTo`, not `toBe`: the component subtracts the two `performance.now()` readings, while the
+      // span timestamps add `timeOrigin` (~1.7e12) to each FIRST — an addition whose ulp is ~2e-4 ms, so
+      // the two differ in the low bits. The tolerance is 5e-3 ms; a SUM instead of a difference lands
+      // ~1e5 x further away than that and fails comfortably.
+      expect(attrs['ui.render_duration_ms']).toBeCloseTo(endTimestampMs - startTimestampMs, 2);
+      expect(attrs['ui.render_base_duration_ms']).toBeCloseTo(endTimestampMs - startTimestampMs, 2);
+      expect(endTimestampMs).toBeGreaterThanOrEqual(startTimestampMs);
+      // and it is a real wall-clock epoch, not a value relative to some other origin: the whole span has
+      // to sit inside the window this test ran in.
+      expect(startTimestampMs).toBeGreaterThanOrEqual(before);
+      expect(endTimestampMs).toBeLessThanOrEqual(after + 1);
+    }
+    cleanup();
+  });
+
+  it('re-arms the fallback after React reported a commit', () => {
+    // `reportedRef` is the handshake between the two measurement paths, and it is CONSUMED, not sticky: a
+    // commit React reported must not silence the fallback for every commit after it. Leaving the flag set
+    // would mean an app that renders once under a live Profiler and then loses it (a lazily-loaded chunk
+    // built against a production react-dom) silently stops producing render spans.
+    const { client, recordChildSpan } = fakeActive();
+    const { rerender, cleanup } = mount(
+      createElement(
+        BugseeProfiler,
+        { id: 'Both', getClient: () => client },
+        createElement('div', null, 'a'),
+      ),
+    );
+    expect(recordChildSpan).toHaveBeenCalledTimes(1);
+    expect(attrsOf(recordChildSpan, 0)).not.toHaveProperty('ui.render_source'); // React's
+
+    rerender(
+      createElement(
+        BugseeProfiler,
+        { id: 'Both', getClient: () => client, __profilerInert: true },
+        createElement('div', null, 'b'),
+      ),
+    );
+    expect(recordChildSpan).toHaveBeenCalledTimes(2);
+    expect(attrsOf(recordChildSpan, 1)['ui.render_source']).toBe('fallback');
+    expect(attrsOf(recordChildSpan, 1)['ui.render_phase']).toBe('update');
+    cleanup();
+  });
+
+  it.each([
+    ['no `performance` global at all', undefined],
+    ['a `performance` without `now`', {}],
+  ])('renders and still records when the host has %s', (_label, stub) => {
+    // The component reads `performance.now()` from the RENDER BODY, outside any guard the recorder applies
+    // — so on a host that has no `performance` (or a partial one), an unguarded read would throw straight
+    // into React's render phase and unmount the tree. The clock degrading to 0 is the accepted cost; taking
+    // the app down is not.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', stub);
+    try {
+      const cleanup = render(
+        createElement(
+          BugseeProfiler,
+          { id: 'NoPerf', getClient: () => client, __profilerInert: true },
+          createElement('div', null, 'x'),
+        ),
+      );
+      expect(recordChildSpan).toHaveBeenCalledTimes(1);
+      const { startTimestampMs, endTimestampMs } = optsOf(recordChildSpan, 0);
+      expect(startTimestampMs).toBe(0);
+      expect(endTimestampMs).toBe(0);
+      expect(attrsOf(recordChildSpan, 0)['ui.render_duration_ms']).toBe(0);
+      cleanup();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

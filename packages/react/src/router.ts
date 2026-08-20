@@ -22,18 +22,28 @@ export interface RouteMatchLike {
 export function routePatternFromMatches(
   matches: readonly RouteMatchLike[] | null | undefined,
 ): string | undefined {
-  if (!matches || matches.length === 0) return undefined;
-  const segments: string[] = [];
-  for (const m of matches) {
-    const path = m.route?.path;
-    if (path === undefined || path === '') continue; // pathless / layout / index route
-    const trimmed = path.replace(/^\/+|\/+$/g, ''); // strip leading/trailing slashes for the join
-    if (trimmed !== '') segments.push(trimmed);
-  }
-  if (segments.length === 0) {
-    return matches.some((m) => m.route?.path === '/') ? '/' : undefined; // root route, else nothing usable
-  }
-  return `/${segments.join('/')}`;
+  // CONTAINED, like the identical extraction in @bugsee/solid and @bugsee/vue — and unlike them, this one
+  // was not, which is the defect this guard closes. `matches` is HOST-supplied (whatever the app hands
+  // `matchRoutes()` back, or hands this public export directly): a non-array is not iterable, and a proxied
+  // or exotic match throws on a plain property read. Both escaped into `instrumentRouterMatches`, which is
+  // documented as "call on each navigation" and therefore runs inside the app's own navigation effect — so
+  // the SDK broke the host's route change, exactly what Wave 2.1's rule forbids. Failing to NAME a route
+  // must cost the name and nothing else.
+  return neverThrow(() => {
+    if (!matches || matches.length === 0) return undefined;
+    const segments: string[] = [];
+    for (const m of matches) {
+      const path = m.route?.path;
+      if (path === undefined || path === '') continue; // pathless / layout / index route
+      const trimmed = path.replace(/^\/+|\/+$/g, ''); // strip leading/trailing slashes for the join
+      if (trimmed !== '') segments.push(trimmed);
+    }
+    if (segments.length === 0) {
+      // root route, else nothing usable
+      return matches.some((m) => m.route?.path === '/') ? '/' : undefined;
+    }
+    return `/${segments.join('/')}`;
+  });
 }
 
 /**

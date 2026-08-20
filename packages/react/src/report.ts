@@ -30,10 +30,20 @@ export interface ReportReactErrorOptions extends Omit<ReportErrorOptions, 'label
  */
 export function linkComponentStack(error: unknown, componentStack: string | undefined): void {
   if (!(error instanceof Error) || componentStack === undefined || componentStack === '') return;
-  const frame = new Error(`React component stack:${componentStack}`);
-  frame.stack = `React component stack:${componentStack}`; // describeError reads `.stack` for the description
-  frame.cause = error.cause; // chain any existing cause BEHIND the component-stack frame (non-destructive)
-  error.cause = frame;
+  // CONTAINED, and the containment is load-bearing rather than defensive. This mutates an object the
+  // APPLICATION owns, and an app is entitled to hand us one that refuses to be written: `error.cause = …`
+  // throws a TypeError in strict mode on a frozen / sealed / non-extensible Error, and reading `error.cause`
+  // runs an app-defined getter. That throw used to reach `reportReactError`'s outer `neverThrow` BEFORE
+  // `reportError` ran, so a frozen error produced NO REPORT AT ALL — the customer's crash disappeared
+  // because the SDK could not decorate it. Enrichment is best-effort; the report is not.
+  try {
+    const frame = new Error(`React component stack:${componentStack}`);
+    frame.stack = `React component stack:${componentStack}`; // describeError reads `.stack` for the description
+    frame.cause = error.cause; // chain any existing cause BEHIND the frame (non-destructive)
+    error.cause = frame;
+  } catch {
+    // an error object that refuses the link is still reported, just without the component stack attached
+  }
 }
 
 /**

@@ -65,6 +65,37 @@ describe('reportReactError', () => {
   it('is a no-op (no throw) when no SDK is launched and no getClient is injected', () => {
     expect(() => reportReactError(new Error('x'))).not.toThrow(); // carrier empty → defaultGetClient undefined
   });
+
+  it('still REPORTS an error whose `cause` cannot be written (frozen / sealed)', () => {
+    // The component-stack link is best-effort ENRICHMENT. `error.cause = frame` is an assignment to a
+    // non-extensible object, which throws a TypeError in strict mode — and that throw reached
+    // `reportReactError`'s outer guard BEFORE `reportError` ran, so a frozen error produced NO report at
+    // all. The customer's crash disappeared because the SDK failed to decorate it.
+    for (const harden of [Object.freeze, Object.seal, Object.preventExtensions]) {
+      const { client, logException } = fakeClient();
+      const err = harden(new Error(`hardened by ${harden.name}`));
+      reportReactError(err, { getClient: () => client, componentStack: COMPONENT_STACK });
+      expect(logException).toHaveBeenCalledTimes(1);
+      expect(logException.mock.calls[0]?.[0]).toBe(err); // the SAME object, unenriched but reported
+    }
+  });
+
+  it('still reports when reading the existing `cause` throws', () => {
+    // The frame chains any EXISTING cause behind it, so the link also READS `error.cause` — a getter the
+    // app owns, on an object the app owns.
+    const { client, logException } = fakeClient();
+    const err = new Error('boom');
+    Object.defineProperty(err, 'cause', {
+      get() {
+        throw new Error('hostile cause getter');
+      },
+      configurable: true,
+    });
+    expect(() =>
+      reportReactError(err, { getClient: () => client, componentStack: COMPONENT_STACK }),
+    ).not.toThrow();
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('linkComponentStack', () => {
@@ -88,6 +119,20 @@ describe('linkComponentStack', () => {
     const value = { not: 'an error' };
     linkComponentStack(value, COMPONENT_STACK);
     expect(value).toEqual({ not: 'an error' }); // unchanged
+  });
+
+  it('names the cause frame so an app inspecting `err.cause` can tell what linked it', () => {
+    // The frame becomes part of the APPLICATION's error object; anything logging `err.cause.message`
+    // (a very ordinary thing to do) sees this string.
+    const err = new Error('boom');
+    linkComponentStack(err, COMPONENT_STACK);
+    expect((err.cause as Error).message).toBe(`React component stack:${COMPONENT_STACK}`);
+  });
+
+  it('leaves a frozen error untouched rather than throwing at the app', () => {
+    const err = Object.freeze(new Error('boom'));
+    expect(() => linkComponentStack(err, COMPONENT_STACK)).not.toThrow();
+    expect(err.cause).toBeUndefined();
   });
 
   it('is a no-op for an empty or undefined component stack', () => {

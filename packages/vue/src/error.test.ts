@@ -90,6 +90,24 @@ describe('reportVueError', () => {
     expect(logException.mock.calls[0]?.[1]?.labels).toEqual(['vue.info:setup']);
   });
 
+  it('adds NO vue.info label for an empty info string', () => {
+    // Vue passes `info` on every call; an empty one carries no information, and a bare `vue.info:` label
+    // would be an issue-search facet that matches everything and means nothing.
+    const { client, logException } = fakeClient();
+    reportVueError(new Error('x'), {
+      info: '',
+      instance: instance({ $options: { name: 'Widget' } }),
+      getClient: () => client,
+    });
+    expect(logException.mock.calls[0]?.[1]?.labels).toEqual(['vue.component:Widget']);
+  });
+
+  it('omits labels entirely when the info is empty and there is no component name', () => {
+    const { client, logException } = fakeClient();
+    reportVueError(new Error('x'), { info: '', getClient: () => client });
+    expect(logException.mock.calls[0]?.[1]?.labels).toBeUndefined();
+  });
+
   it('applies a mechanism override', () => {
     const { client, logException } = fakeClient();
     reportVueError(new Error('x'), { getClient: () => client, mechanism: 'programmatic' });

@@ -51,6 +51,22 @@ describe('routePatternFromMatches', () => {
     expect(routePatternFromMatches([match('/')])).toBe('/');
   });
 
+  it('returns "/" for a root route with a PATHLESS child — the index-route config', () => {
+    // `{ path: '/', children: [{ index: true, … }] }` is the single most common react-router root config,
+    // and it matches as TWO records: the root (path '/') plus a pathless index route. Neither contributes a
+    // segment, so the answer comes from the root-route fall-back — which must ask whether ANY match is the
+    // root, not whether every one is. Getting it wrong leaves the home page named by its raw URL.
+    expect(routePatternFromMatches([match('/'), { route: {} }])).toBe('/');
+    expect(routePatternFromMatches([{ route: {} }, match('/')])).toBe('/');
+  });
+
+  it('keeps the internal slashes of a path configured as one multi-segment route', () => {
+    // `<Route path="users/:id">` is a single match carrying BOTH segments. Only the LEADING and TRAILING
+    // slashes are normalized away; an internal one is part of the pattern and must survive the join.
+    expect(routePatternFromMatches([match('users/:id')])).toBe('/users/:id');
+    expect(routePatternFromMatches([match('/app/'), match('users/:id')])).toBe('/app/users/:id');
+  });
+
   it('returns undefined for no matches / no usable path', () => {
     expect(routePatternFromMatches([])).toBeUndefined();
     expect(routePatternFromMatches(null)).toBeUndefined();

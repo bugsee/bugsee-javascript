@@ -135,9 +135,28 @@ describe('the host-boundary contract (Wave 2.2)', () => {
     expect(() => listener?.({ matches: [{ route: { path: '/users/:id' } }] })).not.toThrow();
   });
 
-  it('contains a throwing client in the pure helpers too', () => {
-    expect(() => linkComponentStack(new Error('x'), 'at X')).not.toThrow();
-    expect(() => routePatternFromMatches([{ route: { path: '/a' } }] as never)).not.toThrow();
+  it('contains a HOSTILE ARGUMENT in the pure helpers', () => {
+    // Named for what it drives. These two take no client, so a hostile client is not the hazard they have;
+    // their hazard is the ARGUMENT, which comes from the host — an error object the app owns, and whatever
+    // the app's router hands over. Passing them well-formed literals (which is what this test used to do)
+    // asserted nothing at all.
+    expect(() => linkComponentStack(Object.freeze(new Error('x')), 'at X')).not.toThrow();
+    const hostileError = new Error('x');
+    Object.defineProperty(hostileError, 'cause', {
+      get() {
+        throw new Error('hostile cause getter');
+      },
+      configurable: true,
+    });
+    expect(() => linkComponentStack(hostileError, 'at X')).not.toThrow();
+
+    const hostileMatch = new Proxy({} as never, {
+      get() {
+        throw new Error('exotic match');
+      },
+    });
+    expect(() => routePatternFromMatches([hostileMatch])).not.toThrow();
+    expect(() => routePatternFromMatches({} as never)).not.toThrow(); // not even an array
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {

@@ -76,6 +76,30 @@ describe('BugseeErrorBoundary', () => {
     expect(err.cause).toBeUndefined(); // null component stack → nothing linked
   });
 
+  it('still runs the app’s own onError when the SDK reporting fails outright', () => {
+    // The binding rule, at the seam where breaking it hurts most: the boundary exists to let the app
+    // recover, and the app's `onError` prop is how it does that. An SDK failure — a hostile client, a
+    // throwing app-supplied resolver — must cost the report and nothing else. If reporting could take the
+    // app's handler down with it, installing Bugsee would convert a recovered error into a lost one.
+    for (const getClient of [
+      () =>
+        new Proxy({} as Bugsee, {
+          get: () => () => {
+            throw new Error('SDK internal failure');
+          },
+        }),
+      () => {
+        throw new Error('app resolver failed');
+      },
+    ]) {
+      const onError = vi.fn();
+      const boundary = makeBoundary({ getClient, onError });
+      const err = new Error('render boom');
+      expect(() => boundary.componentDidCatch(err, errorInfo('\n    in Widget'))).not.toThrow();
+      expect(onError).toHaveBeenCalledWith(err, '\n    in Widget');
+    }
+  });
+
   it('componentDidCatch falls back to the default carrier client when no getClient prop is given', () => {
     const boundary = makeBoundary(); // no getClient → reportReactError uses the carrier (none launched)
     expect(() => boundary.componentDidCatch(new Error('boom'), errorInfo(null))).not.toThrow();

@@ -77,6 +77,23 @@ describe('recordReactRenderSpan', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('falls back to timeOrigin 0 when there is no `performance` global AT ALL', () => {
+    // Distinct from the case above: there the global exists and lacks the field; here the whole object is
+    // missing, which is the non-browser host this React-free escape hatch is meant to be callable from.
+    // Reading `.timeOrigin` off it unguarded throws — and it throws OUTSIDE `recordRenderSpan`'s own guard,
+    // so it would escape into React's commit phase rather than being contained.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', undefined);
+    try {
+      expect(() => recordReactRenderSpan(profile, { getClient: () => client })).not.toThrow();
+      expect(
+        (recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number }).startTimestampMs,
+      ).toBe(100); // 0 + startTime
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('BugseeProfiler', () => {
@@ -85,10 +102,11 @@ describe('BugseeProfiler', () => {
   // gained hooks for the production fallback (Wave 4.6 / D4): calling a hook component outside a renderer
   // throws "Invalid hook call".
   //
-  // Its three assertions are all covered better by `profiler.render.test.ts`, which renders through real
-  // react-dom: that a span IS recorded on a dev render can only happen if a real `<Profiler>` fired, which
-  // subsumes the structural check. The one thing worth keeping explicitly is that the DEV path uses
-  // React's OWN timings rather than the fallback's — asserted there by the absence of `ui.render_source`.
+  // Its three assertions are all covered by `profiler.render.test.ts`, which renders through real react-dom
+  // and asserts the absence of `ui.render_source` — i.e. that the span came from React's own Profiler and
+  // not from the post-commit fallback, which records an indistinguishable `ui.render` span otherwise. (That
+  // assertion was named in this comment before it existed; it does now.) What stays here is the recording
+  // core's half of the same contract: fed React's numbers and no `source`, it must not invent one.
   it('uses React’s own timings in development, not the fallback measurement', () => {
     const { client, recordChildSpan } = fakeActive();
     // Drive the recording core exactly as the live-Profiler path does: no `source`, React's numbers.
@@ -108,7 +126,9 @@ describe('BugseeProfiler', () => {
       expect.objectContaining({ description: 'Page', startTimestampMs: 10, endTimestampMs: 18 }),
     );
     const [, opts] = recordChildSpan.mock.calls[0] as [string, Record<string, unknown>];
-    expect((opts.attributes as Record<string, unknown>)['ui.render_source']).toBeUndefined();
+    // ABSENT, not present-and-undefined: `{ 'ui.render_source': undefined }` is not a legal span attribute
+    // and would be carried into the protocol as one, so `toBeUndefined()` is too weak here.
+    expect(opts.attributes).not.toHaveProperty('ui.render_source');
   });
 });
 
@@ -141,6 +161,22 @@ describe('withBugseeProfiler', () => {
 
     const anon = withBugseeProfiler((() => null) as ComponentType);
     expect(((anon as () => ReactElement)() as ReactElement).props.id).toBe('Component'); // fallback
+  });
+
+  it('names the wrapper for React DevTools, from the resolved profiler id', () => {
+    // The displayName is what a developer sees in the component tree; an HOC that renders as an anonymous
+    // wrapper is exactly the thing displayName exists to prevent.
+    const Named: ComponentType = () => null;
+    Named.displayName = 'NamedView';
+    expect((withBugseeProfiler(Wrapped, 'MyView') as ComponentType).displayName).toBe(
+      'withBugseeProfiler(MyView)',
+    );
+    expect((withBugseeProfiler(Named) as ComponentType).displayName).toBe(
+      'withBugseeProfiler(NamedView)',
+    );
+    expect((withBugseeProfiler((() => null) as ComponentType) as ComponentType).displayName).toBe(
+      'withBugseeProfiler(Component)',
+    );
   });
 
   it('forwards the wrapped component props through', () => {
