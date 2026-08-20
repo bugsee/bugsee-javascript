@@ -130,12 +130,18 @@ describe('setRouteName', () => {
   });
 
   it('is a no-op when the performance extension is not registered (ext throws)', () => {
+    // `not.toThrow()` alone cannot fail here either — `neverThrow` guarantees it. What has teeth is
+    // `onError`: without `tryGetPerf(client)?.` the undefined perf API is called, which throws INTO
+    // `neverThrow` and reports an SDK-internal error every time an app runs with `performanceMonitoring`
+    // off. A real no-op reports nothing. (This assertion was missing; the `?.` mutant survived.)
     const client = {
       ext: () => {
         throw new Error('not registered');
       },
     } as unknown as Bugsee;
-    expect(() => setRouteName('/x', { getClient: () => client })).not.toThrow();
+    const onError = vi.fn();
+    expect(() => setRouteName('/x', { getClient: () => client, onError })).not.toThrow();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('falls back to the carrier client when no getClient is injected', () => {

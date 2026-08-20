@@ -31,12 +31,15 @@ describe('angular error handler is a contained host boundary', () => {
 });
 
 describe('angular unwrapping is inside the guard too', () => {
-  it('does not throw when unwrapping a hostile error object', () => {
-    // `originalError()` reads `ngOriginalError`/`rejection` off the thrown value BEFORE the (separately
-    // guarded) report, so a throwing getter there escapes unless the seam itself is contained.
+  it('does not throw when unwrapping a hostile error object — AND still reports it', () => {
+    // `originalError()` reads `ngOriginalError` off the thrown value BEFORE the report, so a throwing
+    // getter there escapes unless the seam itself is contained. Asserting only "did not throw" was not
+    // enough: the unwrap shared ONE guard with the report, so a hostile value did not merely lose the
+    // UNWRAP — the customer's uncaught Angular error was never reported at all, and this test passed.
+    const logException = vi.fn((_error: unknown, _options?: unknown) => Promise.resolve());
     const delegate = { handleError: vi.fn() };
     const handler = createAngularErrorHandler({
-      getClient: () => ({ logException: () => Promise.resolve() }) as never,
+      getClient: () => ({ logException }) as never,
       delegate,
     });
     const hostile = {
@@ -47,6 +50,30 @@ describe('angular unwrapping is inside the guard too', () => {
     expect(() => handler.handleError(hostile)).not.toThrow();
     // Identity, not deep equality: a deep compare would itself read the throwing getter.
     expect(delegate.handleError.mock.calls[0]?.[0]).toBe(hostile);
+    expect(logException).toHaveBeenCalledTimes(1);
+    expect(logException.mock.calls[0]?.[0]).toBe(hostile); // the raw value, since the unwrap failed
+  });
+
+  it('reportAngularError does not throw out of the PUBLIC export on a hostile thrown value', () => {
+    // `createAngularErrorHandler` guards its call, but `reportAngularError` is exported directly for apps
+    // that report from their own handler — and the unwrap ran outside every guard, so this threw.
+    const hostileProxy = new Proxy(
+      {},
+      {
+        has() {
+          throw new Error('hostile `in` trap');
+        },
+        get() {
+          throw new Error('hostile get trap');
+        },
+      },
+    );
+    const logException = vi.fn((_error: unknown, _options?: unknown) => Promise.resolve());
+    expect(() =>
+      errorMod.reportAngularError(hostileProxy, { getClient: () => ({ logException }) as never }),
+    ).not.toThrow();
+    expect(logException).toHaveBeenCalledTimes(1);
+    expect(logException.mock.calls[0]?.[0]).toBe(hostileProxy);
   });
 });
 

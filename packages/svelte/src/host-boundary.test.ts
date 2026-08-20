@@ -30,18 +30,25 @@ describe('svelte handleError is a contained host boundary', () => {
     expect(onError).toHaveBeenCalled();
   });
 
-  it('does not throw when reading the route off a hostile event', () => {
+  it('does not throw when reading the route off a hostile event — AND still reports the error', () => {
+    // `not.toThrow()` alone was not enough here: the route read and the report shared ONE guard, so an
+    // unreadable `event` did not merely cost the route LABEL, it dropped the customer's error entirely
+    // while every assertion in this test still passed. The report is the artifact; the label is decoration.
+    const logException = vi.fn((_error: unknown, _options?: unknown) => Promise.resolve());
     const appHandler = vi.fn(() => ({ message: 'ok' }));
     const hook = handleErrorWithBugsee(appHandler, {
-      getClient: () => ({ logException: () => Promise.resolve() }) as never,
+      getClient: () => ({ logException }) as never,
     });
+    const error = new Error('e');
     const input = {
-      error: new Error('e'),
+      error,
       get event() {
         throw new Error('hostile event');
       },
     };
     expect(hook(input as never)).toEqual({ message: 'ok' });
+    expect(logException).toHaveBeenCalledTimes(1);
+    expect(logException.mock.calls[0]?.[0]).toBe(error);
   });
 });
 

@@ -43,6 +43,37 @@ describe('reportAngularError', () => {
     const wrapped = Object.assign(new Error('wrapped'), { ngOriginalError: null });
     reportAngularError(wrapped, { getClient: () => client });
     expect(logException.mock.calls[0]?.[0]).toBe(wrapped);
+
+    // …and the UNDEFINED half the name promises but the body never checked. Angular's wrapper carries the
+    // key with an undefined value whenever it wrapped nothing; without the `wrapped !== undefined` guard
+    // the adapter reports `undefined` — an issue with no error at all — instead of the wrapper.
+    const { client: c2, logException: log2 } = fakeClient();
+    const wrappedUndefined = Object.assign(new Error('wrapped'), { ngOriginalError: undefined });
+    expect('ngOriginalError' in wrappedUndefined).toBe(true); // the key IS present, the value is not
+    reportAngularError(wrappedUndefined, { getClient: () => c2 });
+    expect(log2.mock.calls[0]?.[0]).toBe(wrappedUndefined);
+  });
+
+  it('reports a null / undefined thrown value as-is (Angular forwards whatever was thrown)', () => {
+    // `handleError` receives the raw thrown value, and `throw null` / `throw undefined` are legal JS that
+    // real code (and minified third-party bundles) produce. `originalError` probes the value for Angular's
+    // wrapper BEFORE the report and outside `reportError`'s guard, so dropping either half of the
+    // `error !== null && typeof error === 'object'` precondition throws a TypeError straight out of the
+    // public `reportAngularError` — replacing a reported error with a crash in the reporter.
+    for (const thrown of [null, undefined]) {
+      const { client, logException } = fakeClient();
+      expect(() => reportAngularError(thrown, { getClient: () => client })).not.toThrow();
+      expect(logException).toHaveBeenCalledTimes(1);
+      expect(logException.mock.calls[0]?.[0]).toBe(thrown);
+    }
+  });
+
+  it('reports primitive thrown values as-is (`in` on a primitive would throw)', () => {
+    for (const thrown of [0, '', false, Symbol('s'), 123n]) {
+      const { client, logException } = fakeClient();
+      expect(() => reportAngularError(thrown, { getClient: () => client })).not.toThrow();
+      expect(logException.mock.calls[0]?.[0]).toBe(thrown);
+    }
   });
 
   it('applies a mechanism override', () => {

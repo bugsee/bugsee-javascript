@@ -35,7 +35,17 @@ function originalError(error: unknown): unknown {
 /** Report an Angular error to the launched Bugsee client (unwrapping `ngOriginalError`). A no-op when no SDK
  *  is launched. */
 export function reportAngularError(error: unknown, options: AngularErrorOptions = {}): void {
-  reportError(originalError(error), options); // unwrap Angular's wrapper, then report
+  // The unwrap is contained SEPARATELY from the report, and falls back to the raw error. `originalError`
+  // probes a value the HOST threw — `'ngOriginalError' in error` fires a proxy's `has` trap and the read
+  // fires a getter, either of which can throw. Unguarded and outside `reportError`'s own guard, that threw
+  // straight out of this PUBLIC export, and inside `createAngularErrorHandler` it was swallowed together
+  // with the report — so an exotic thrown value cost the error report entirely. Unwrapping is a
+  // best-effort refinement (Angular ≤18 only); losing it must never lose the error.
+  let target = error;
+  neverThrow(() => {
+    target = originalError(error);
+  }, options.onError);
+  reportError(target, options);
 }
 
 export interface AngularErrorHandlerOptions extends AngularErrorOptions {

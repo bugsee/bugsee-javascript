@@ -50,6 +50,32 @@ describe('startSvelteRenderSpan', () => {
     }
   });
 
+  it('falls back to 0 timestamps when there is NO performance global at all', () => {
+    // The test below stubs `performance` to `{}` — PRESENT but empty — which exercises only the `?? 0`
+    // fallbacks, never the `perf?.` guards. The preprocessor injects `startSvelteRenderSpan()` at the top
+    // of EVERY component's script with no containment around it, so in an environment without a
+    // `performance` global (SvelteKit's SSR/prerender pass) a missing guard throws during component init
+    // and fails the render outright. That is the case this pins.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', undefined);
+    try {
+      let onMounted!: () => void;
+      expect(() => {
+        onMounted = startSvelteRenderSpan('NoPerfGlobal', { getClient: () => client });
+      }).not.toThrow(); // component init is unguarded — a throw here fails the render
+      expect(() => onMounted()).not.toThrow();
+      const opts = recordChildSpan.mock.calls[0]?.[1] as {
+        startTimestampMs: number;
+        endTimestampMs: number;
+      };
+      expect(recordChildSpan).toHaveBeenCalledTimes(1);
+      expect(opts.startTimestampMs).toBe(0);
+      expect(opts.endTimestampMs).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('falls back to 0 timestamps when the performance clock is unavailable', () => {
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', {});

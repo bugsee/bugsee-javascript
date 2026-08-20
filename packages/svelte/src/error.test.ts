@@ -69,17 +69,54 @@ describe('handleErrorWithBugsee', () => {
     expect(result).toEqual({ message: 'Custom error page' }); // …and its return is forwarded to SvelteKit
   });
 
-  it('tolerates a missing event/route (server-thrown or pre-route error) — no route label', () => {
+  // The four cases below all describe a DEGRADED route shape: no label is expected, but THE ERROR MUST
+  // STILL BE REPORTED. `expect(calls[0]?.[1]?.labels).toBeUndefined()` alone cannot say that — it passes
+  // just as happily when `logException` was never called at all, which is exactly what happens if a
+  // property read on the framework-supplied `event` throws into the surrounding `neverThrow`. Every one of
+  // these therefore asserts the REPORT first and the absent label second.
+  const expectReportedWithoutLabel = (
+    logException: ReturnType<typeof fakeClient>['logException'],
+    error: unknown,
+  ) => {
+    expect(logException).toHaveBeenCalledTimes(1);
+    expect(logException.mock.calls[0]?.[0]).toBe(error);
+    const opts = logException.mock.calls[0]?.[1] ?? {};
+    expect('labels' in opts).toBe(false);
+  };
+
+  it('tolerates a missing event entirely (server-thrown or pre-route error) — reports, no route label', () => {
     const { client, logException } = fakeClient();
     const handleError = handleErrorWithBugsee(undefined, { getClient: () => client });
-    handleError({ error: new Error('x') });
-    expect(logException.mock.calls[0]?.[1]?.labels).toBeUndefined();
+    const error = new Error('x');
+    handleError({ error });
+    expectReportedWithoutLabel(logException, error);
+  });
+
+  it('tolerates an event with NO route object — reports, no route label', () => {
+    // `HandleErrorInput` declares `route` optional, so this is a supported input, and it is the only shape
+    // that exercises the second `?.` in `input.event?.route?.id`.
+    const { client, logException } = fakeClient();
+    const handleError = handleErrorWithBugsee(undefined, { getClient: () => client });
+    const error = new Error('x');
+    handleError({ error, event: {} });
+    expectReportedWithoutLabel(logException, error);
   });
 
   it('tolerates a NULL route id (SvelteKit passes null for a route without an id) — no bogus label', () => {
     const { client, logException } = fakeClient();
     const handleError = handleErrorWithBugsee(undefined, { getClient: () => client });
-    handleError({ error: new Error('x'), event: { route: { id: null } } });
-    expect(logException.mock.calls[0]?.[1]?.labels).toBeUndefined(); // not 'svelte.route:null'
+    const error = new Error('x');
+    handleError({ error, event: { route: { id: null } } });
+    expectReportedWithoutLabel(logException, error); // not 'svelte.route:null'
+  });
+
+  it('treats an EMPTY route id as absent — no `svelte.route:` label with nothing after the colon', () => {
+    // An empty id is not a route; labelling with a bare `svelte.route:` creates a meaningless
+    // high-traffic label that groups unrelated issues together in the dashboard.
+    const { client, logException } = fakeClient();
+    const handleError = handleErrorWithBugsee(undefined, { getClient: () => client });
+    const error = new Error('x');
+    handleError({ error, event: { route: { id: '' } } });
+    expectReportedWithoutLabel(logException, error);
   });
 });

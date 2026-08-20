@@ -112,11 +112,32 @@ describe('recordRenderSpan', () => {
   });
 
   it('is a no-op when no SDK / performance ext is available', () => {
+    // `onError` is the teeth (same reason as the no-active-transaction case above): without
+    // `getPerformanceApi(...)?.`, `getActiveSpan()` is called on undefined and throws into `neverThrow`,
+    // so EVERY render in an app that has no SDK launched (or `performanceMonitoring` off) reported an
+    // SDK-internal error while the suite still saw "did not throw". This assertion was missing.
+    const onError = vi.fn();
     expect(() =>
       recordRenderSpan(
         { name: 'X', startTimestampMs: 0, endTimestampMs: 1 },
-        { getClient: () => undefined },
+        { getClient: () => undefined, onError },
       ),
     ).not.toThrow();
+    expect(onError).not.toHaveBeenCalled();
+
+    // …and the same for a launched client whose performance extension is not registered (`ext` throws).
+    const noPerf = {
+      ext: () => {
+        throw new Error('not registered');
+      },
+    } as unknown as Bugsee;
+    const onError2 = vi.fn();
+    expect(() =>
+      recordRenderSpan(
+        { name: 'X', startTimestampMs: 0, endTimestampMs: 1 },
+        { getClient: () => noPerf, onError: onError2 },
+      ),
+    ).not.toThrow();
+    expect(onError2).not.toHaveBeenCalled();
   });
 });

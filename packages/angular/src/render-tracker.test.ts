@@ -109,6 +109,30 @@ describe('createBugseeRenderTracker', () => {
     }
   });
 
+  it('falls back to 0 timestamps when there is NO performance global at all', () => {
+    // The test below stubs `performance` to `{}` — PRESENT but empty — which never exercises the `perf?.`
+    // guards, only the `?? 0` fallbacks. An environment with no `performance` global (an SSR/prerender
+    // pass, a non-browser test host) makes `perf` itself undefined, and `start()` is called straight from
+    // `ngOnInit` with NO containment around it — so a missing guard throws out of the component's
+    // lifecycle hook and takes the view down. That is the case this pins.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', undefined);
+    try {
+      const t = createBugseeRenderTracker('NoPerfGlobal', { getClient: () => client });
+      expect(() => t.start()).not.toThrow(); // ngOnInit is unguarded — a throw here is fatal to the view
+      expect(() => t.end()).not.toThrow();
+      const opts = recordChildSpan.mock.calls[0]?.[1] as {
+        startTimestampMs: number;
+        endTimestampMs: number;
+      };
+      expect(recordChildSpan).toHaveBeenCalledTimes(1);
+      expect(opts.startTimestampMs).toBe(0);
+      expect(opts.endTimestampMs).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('falls back to 0 timestamps when the performance clock is unavailable', () => {
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', {}); // no now / no timeOrigin

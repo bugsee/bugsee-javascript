@@ -25,7 +25,15 @@ export function reportServerError(error: unknown, options: ReportServerErrorOpti
     const client = (options.getClient ?? (() => getCarrierClient<BugseeClient>()))();
     if (client === undefined) return;
     if (options.event !== undefined) {
-      client.event(options.event.name, options.event.params);
+      // Contained SEPARATELY from the report below. The attribution event is decoration; `logException` is
+      // the artifact this hook exists to produce. `client.event()` reaches the capture aggregator and its
+      // store, so a failure there is reachable in production (a failed disk write on the node tier) — and
+      // sharing the outer `catch` meant it silently vetoed the exception report for EVERY SSR adapter.
+      try {
+        client.event(options.event.name, options.event.params);
+      } catch {
+        // Attribution is best-effort; the report below must still happen.
+      }
     }
     void client.logException(error, { mechanism: options.mechanism ?? 'http-error' });
   } catch {

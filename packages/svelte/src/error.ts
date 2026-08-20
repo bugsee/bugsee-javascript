@@ -48,8 +48,15 @@ export function handleErrorWithBugsee(
   return (input) => {
     // Contained (Wave 2.1): route extraction reads a framework-supplied object and the report follows, and
     // a throw from either used to skip the app's own handleError — which is what SvelteKit renders from.
+    //
+    // Route extraction gets its OWN guard, separate from the report. The route id is decoration (a
+    // searchable label); the report is the artifact this hook exists to produce. Sharing one guard meant
+    // that an `event` whose `route` could not be read — a throwing getter, a proxied/exotic object, the
+    // very shape `host-boundary.test.ts` already exercises — silently dropped the customer's error
+    // ENTIRELY rather than merely losing its label. `router.ts` has always read its navigation this way;
+    // the error seam did not.
+    const routeId = neverThrow(() => input.event?.route?.id, options.onError);
     neverThrow(() => {
-      const routeId = input.event?.route?.id;
       reportSvelteError(input.error, {
         ...options,
         ...(typeof routeId === 'string' && routeId !== '' ? { routeId } : {}),
