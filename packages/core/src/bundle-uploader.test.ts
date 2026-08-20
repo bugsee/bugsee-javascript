@@ -29,17 +29,29 @@ describe('createBundleUploader', () => {
     expect(calls[0]?.options?.body).toBe(body);
   });
 
-  it('sends the §8.3 PUT headers (Content-Length, checksum, fileName) and no auth/content-type', async () => {
+  it('sends the §8.3 PUT headers (Content-Length, fileName) and no auth/content-type', async () => {
     const { transport, calls } = fakeTransport(() => res(200));
     await createBundleUploader(transport).putBundle('https://s3/put', body, opts);
     const h = (calls[0]?.options?.headers ?? {}) as Record<string, string>;
     expect(h['Content-Length']).toBe('3');
-    expect(h['x-amz-checksum-sha256']).toBe('deadbeef');
     expect(h.fileName).toBe('a.bundle.zip');
     expect(h.authorization).toBeUndefined();
     expect(h.Authorization).toBeUndefined();
     expect(h['content-type']).toBeUndefined();
     expect(h['Content-Type']).toBeUndefined();
+  });
+
+  it('sends NO x-amz-checksum-sha256 header, which the presigned url does not authorize', async () => {
+    // S3 folds every `x-amz-*` header into the string it signs. The collector mints the url without a
+    // checksum (the SDK never sends `bundle_sha256` at issue-create, so there is nothing for it to
+    // sign), so adding the header here made S3 compute a different string and reject EVERY bundle
+    // upload with 403 SignatureDoesNotMatch — the last hop of the pipeline, after the report was
+    // already accepted. Reproduced against the live collector and isolated to this single header.
+    const { transport, calls } = fakeTransport(() => res(200));
+    await createBundleUploader(transport).putBundle('https://s3/put', body, opts);
+    const h = (calls[0]?.options?.headers ?? {}) as Record<string, string>;
+    expect(h['x-amz-checksum-sha256']).toBeUndefined();
+    expect(Object.keys(h).some((k) => k.toLowerCase().startsWith('x-amz-'))).toBe(false);
   });
 
   it('maps a 4xx to a non-retryable failure', async () => {

@@ -132,11 +132,11 @@ describe('launchEdge', () => {
     const client = launchTracked('tok', baseOptions({ transport }));
     await client.logException(new Error('x'));
     await client.flush();
-    // the PUT: the wrapper adds x-bugsee-internal AND the merge PRESERVES the uploader's signed-PUT header
-    // (x-amz-checksum-sha256 comes only from bundle-uploader's options.headers — proves `...options.headers`).
+    // the PUT: the wrapper adds x-bugsee-internal AND the merge PRESERVES the uploader's signed-PUT
+    // headers (`fileName` comes only from bundle-uploader's options.headers — proves `...options.headers`).
     const put = findPut(transport);
     expect((put?.[1] as HttpRequestOptions).headers?.['x-bugsee-internal']).toBe('1');
-    expect((put?.[1] as HttpRequestOptions).headers?.['x-amz-checksum-sha256']).toBeDefined();
+    expect((put?.[1] as HttpRequestOptions).headers?.fileName).toMatch(/\.zip$/);
     // the control-plane /v2/issues call: the merge also preserves the Bearer authorization header.
     const issues = transport.mock.calls.find(([url]) => url.endsWith('/v2/issues'));
     const issueHeaders = (issues?.[1] as HttpRequestOptions).headers;
