@@ -95,12 +95,23 @@ export function resolveBugseeCli(env: EnvRecord = process.env): string {
   return 'bugsee-cli';
 }
 
-/* v8 ignore start -- thin node:child_process adapter; the injectable SpawnFn seam is what tests exercise. */
+/**
+ * The exit code reported for a child that was TERMINATED rather than exited (`close` gives `code: null`).
+ *
+ * It used to be mapped to `0` — the shell's success code. A `bugsee-cli` killed by the Linux OOM killer on
+ * a large source-map tree, or by a cancelled CI job's SIGTERM, therefore looked like a completed upload:
+ * `uploadSourcemaps` treated it as CONFIRMED and went on to step 3, deleting the client `.map` files. The
+ * only copy of the mapping, destroyed for symbols that were never delivered — with a green build.
+ */
+const SIGNAL_EXIT_CODE = -1;
+
 const defaultSpawn: SpawnFn = (command, args, options) =>
   new Promise<SpawnResult>((resolve, reject) => {
     const child = nodeSpawn(command, args, spawnOptionsFor(options) as never);
     let stdout = '';
     let stderr = '';
+    /* v8 ignore next 2 -- `stdio: [_, 'pipe', 'pipe']` always gives us both streams; the `?.` only
+       satisfies the nullable child_process types. */
     child.stdout?.on('data', (chunk) => {
       stdout += chunk;
     });
@@ -108,9 +119,20 @@ const defaultSpawn: SpawnFn = (command, args, options) =>
       stderr += chunk;
     });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    child.on('close', (code, signal) => {
+      if (code === null) {
+        // Keep whatever the child managed to say, and name the signal — otherwise the failure is a bare
+        // exit code with no cause anywhere in the build log.
+        resolve({
+          code: SIGNAL_EXIT_CODE,
+          stdout,
+          stderr: `${stderr}bugsee-cli was terminated by signal ${String(signal)}\n`,
+        });
+        return;
+      }
+      resolve({ code, stdout, stderr });
+    });
   });
-/* v8 ignore stop */
 
 /** Run `bugsee-cli <args…>`, resolving the binary and forwarding token/endpoint via env. Throws on non-zero. */
 export async function runBugseeCli(

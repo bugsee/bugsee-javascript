@@ -47,6 +47,9 @@ describe('bugseeUnpluginFactory', () => {
   });
 
   it('writeBundle with no resolvable output dir is a no-op (does not throw)', async () => {
+    // NOTE: this only pins that the hook does not throw. Whether the hook actually reaches (or skips)
+    // the upload is asserted in plugin.upload.test.ts, against an ENABLED plugin — with `disabled: true`
+    // a no-op is the correct outcome for every input, so nothing here could discriminate.
     const plugin = makePlugin({ disabled: true });
     const vite = plugin.vite as { writeBundle: (o: object) => Promise<void> };
     await expect(vite.writeBundle({})).resolves.toBeUndefined();

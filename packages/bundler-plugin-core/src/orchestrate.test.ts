@@ -264,3 +264,96 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
     });
   });
 });
+
+// The three gaps below all made the *default* behaviour untested: the walk's exclusions, its exact depth
+// boundary, and the failure sink a user without an `onError` actually gets.
+describe('defaultDeleteMapFiles — exclusions and bounds (defaults, not injected)', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'bugsee-walk-'));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (rel: string): Promise<void> => {
+    const full = join(root, rel);
+    await mkdir(join(full, '..'), { recursive: true });
+    await writeFile(full, 'x');
+  };
+  const rel = (paths: string[]): string[] => paths.map((p) => p.slice(root.length + 1)).sort();
+
+  it('never descends into a TEST directory (test / tests / __tests__)', async () => {
+    // Fixture maps under a test directory are authored files, not build output — deleting them is the
+    // same unrecoverable working-tree loss as deleting src/.
+    await write(join('test', 'fixture.js.map'));
+    await write(join('tests', 'fixture.js.map'));
+    await write(join('__tests__', 'fixture.js.map'));
+    await write('app.js.map');
+    expect(rel(await defaultDeleteMapFiles(root))).toEqual(['app.js.map']);
+  });
+
+  it('never descends into ANY dot-directory, not only the ones named in the list', async () => {
+    // `.vercel` / `.output` / `.turbo` are not in NEVER_WALK; the leading-dot rule is what covers them,
+    // and every tool that appears next year.
+    await write(join('.vercel', 'output', 'fn.js.map'));
+    await write(join('.turbo', 'cache.js.map'));
+    await write('app.js.map');
+    expect(rel(await defaultDeleteMapFiles(root))).toEqual(['app.js.map']);
+  });
+
+  it('deletes at the deepest ALLOWED level and stops one level further (the exact boundary)', async () => {
+    // MAX_DELETE_DEPTH is 6: six directory levels below the out dir are still build output, the seventh
+    // is treated as a mis-resolved root. Pinning both sides keeps the limit from drifting silently.
+    await write(join('a', 'b', 'c', 'd', 'e', 'f', 'at-limit.js.map'));
+    await write(join('a', 'b', 'c', 'd', 'e', 'f', 'g', 'past-limit.js.map'));
+    expect(rel(await defaultDeleteMapFiles(root))).toEqual([
+      join('a', 'b', 'c', 'd', 'e', 'f', 'at-limit.js.map'),
+    ]);
+  });
+
+  it('leaves non-.map files alone even when they merely CONTAIN ".map"', async () => {
+    await write('sourcemap.js');
+    await write('app.map.js');
+    await write('app.js.map');
+    expect(rel(await defaultDeleteMapFiles(root))).toEqual(['app.js.map']);
+    expect((await readdir(root)).sort()).toEqual(['app.map.js', 'sourcemap.js']);
+  });
+});
+
+describe('the DEFAULT failure sink (no onError supplied)', () => {
+  it('warns on the console, naming the plugin and the error', async () => {
+    // Without an injected `onError` this is the only thing a user sees. A silent failure here is a
+    // source-map pipeline that does nothing, forever, with no signal at all.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await uploadSourcemaps({
+        ...base,
+        run: vi.fn(async () => {
+          throw new Error('bugsee-cli exited 20');
+        }) as never,
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain('[bugsee]');
+      expect(message).toContain('bugsee-cli exited 20');
+      // and the result must not claim the inject/upload happened
+      expect(result).toEqual({ injected: false, uploaded: false, deletedMaps: [] });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports injected:false even when it was the UPLOAD (step 2) that failed', async () => {
+    // `injected` is what tells a caller whether the built files were rewritten. Claiming true after a
+    // contained failure would make a later "already injected" decision wrong.
+    const run = vi.fn(async (args: string[]) => {
+      if (args[0] === 'debug-files') throw new Error('upload failed');
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const onError = vi.fn();
+    const result = await uploadSourcemaps({ ...base, run: run as never, onError });
+    expect(result).toEqual({ injected: false, uploaded: false, deletedMaps: [] });
+    expect(onError).toHaveBeenCalledOnce();
+  });
+});

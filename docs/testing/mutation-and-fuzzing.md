@@ -42,6 +42,28 @@ normal run, so every mutant in them reports `NoCoverage` and drags the score dow
 `opentelemetry` and `types`. Read the score with that in mind when comparing against any figure recorded
 before 2026-08-20.
 
+### The `src/index.ts` exclusion has a blind spot
+
+The shared config excludes `src/index.ts` from mutation, because in almost every package here it is a pure
+re-export barrel and mutating it adds only noise. Two consequences worth knowing:
+
+- Where index.ts is the ENTIRE implementation (`@bugsee/babel-plugin-component-annotate` is one file), the
+  exclusion left Stryker with nothing to mutate, and it reported that as an opaque crash rather than "no
+  files matched" — so `pnpm test:mutation babel-plugin-component-annotate` simply failed, and the package
+  was silently un-auditable by the documented command. `scripts/mutation.mjs` now detects the case and
+  keeps index.ts in the set.
+- Where index.ts holds real logic ALONGSIDE other files, it is still excluded and that logic is still
+  unmeasured. `@bugsee/svelte-plugin-component-annotate` is the known case: `componentAnnotatePreprocessor`
+  lives in its index.ts. To audit one of these, override the glob:
+
+```
+pnpm test:mutation <pkg> --mutate 'src/**/*.ts,!src/**/*.test.ts,!src/**/*.test-d.ts,!src/**/*.d.ts'
+```
+
+The general lesson: a package's mutation score only covers the files the glob actually selected. Read the
+per-file table, not just the total — a file that is absent from it was never measured, which is not the
+same as being well covered.
+
 ### Known equivalent mutants
 
 Recorded so they are not re-triaged every run. `@bugsee/util` sits at **97.95%**; all five survivors are

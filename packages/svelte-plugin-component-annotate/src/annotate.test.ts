@@ -140,3 +140,39 @@ describe('annotateMarkup', () => {
     expect(code).toBe('<div data-bugsee-component="Cyc"></div>');
   });
 });
+
+// The walker's defensive guards were entirely unpinned: every one of them could be deleted and the suite
+// stayed green, even though removing them turns a malformed node into a THROWN build error rather than a
+// skipped element. A preprocessor that throws takes the user's build down with it.
+describe('annotateMarkup — malformed / exotic AST nodes are skipped, never fatal', () => {
+  it('ignores an element node whose name is not a string', () => {
+    // Without the typeof guard, `isHostTag(undefined)` stringifies to "undefined" — which starts with a
+    // lowercase letter, so the node is taken for a host element and `name.length` then throws.
+    const content = '<div></div>';
+    for (const name of [undefined, 42, null, { toString: () => 'div' }]) {
+      const node = { type: 'Element', name, start: 0, attributes: [] };
+      expect(annotateMarkup(content, 'X', legacyParse([node]))).toBeUndefined();
+    }
+  });
+
+  it('ignores a null / primitive entry inside an element’s attributes array', () => {
+    // Reading `.type` off a null attribute throws. The element must simply be treated as un-annotated.
+    const content = '<div></div>';
+    const node = el('div', 0, { attributes: [null, 'stray', 7, undefined] });
+    expect(annotateMarkup(content, 'X', legacyParse([node]))).toBe(
+      '<div data-bugsee-component="X"></div>',
+    );
+  });
+
+  it('only a real Attribute counts as already-annotated — a same-named directive/spread does not', () => {
+    // `isAnnotated` matches on NAME; without the `type === 'Attribute'` check any node that happened to
+    // carry that name would suppress the annotation and the component would go unattributed.
+    const content = '<div></div>';
+    const node = el('div', 0, {
+      attributes: [{ type: 'Spread', name: 'data-bugsee-component' }],
+    });
+    expect(annotateMarkup(content, 'X', legacyParse([node]))).toBe(
+      '<div data-bugsee-component="X"></div>',
+    );
+  });
+});

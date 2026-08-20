@@ -73,7 +73,6 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       writeBundle: (output: OutputLike) => uploadForOutput(output),
     },
     rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output) },
-    /* v8 ignore start -- webpack afterEmit glue; exercised by the real-webpack e2e (SM-C). */
     webpack(compiler: WebpackCompilerLike) {
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
@@ -82,7 +81,6 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         }
       });
     },
-    /* v8 ignore stop */
   };
 };
 

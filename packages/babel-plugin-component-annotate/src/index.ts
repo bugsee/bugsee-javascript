@@ -37,13 +37,20 @@ function assignedVariableName(t: typeof BabelTypes, path: FnOrClassPath): string
 }
 
 /** The component name a function/class path defines, or undefined when it is not a (PascalCase) component.
- *  The assigned-const name wins (so `const Foo = class Bar {}` and `const Foo = memo(fn)` both → `Foo`); a
- *  bare declaration falls back to its own id (`function Foo(){}` / `class Foo {}`). */
+ *  The assigned-const name wins (so `const Foo = class Bar {}` and `const Foo = memo(fn)` both → `Foo`);
+ *  otherwise the node's OWN id is used, for a declaration (`function Foo(){}` / `class Foo {}`) and for a
+ *  named EXPRESSION alike.
+ *
+ *  The named-expression fallback is not an edge case: `export default memo(function Card() { … })` and
+ *  `export default forwardRef(function Input(props, ref) { … })` are the shapes React's own documentation
+ *  shows, and with no enclosing `const` there is nothing else to name them by. Without it they produced
+ *  zero annotations — silently, since the build still succeeded. */
 function componentNameOf(t: typeof BabelTypes, path: FnOrClassPath): string | undefined {
   const variable = assignedVariableName(t, path);
   if (variable !== undefined) return isComponentName(variable) ? variable : undefined;
   const node = path.node;
-  if ((t.isFunctionDeclaration(node) || t.isClassDeclaration(node)) && node.id) {
+  // ArrowFunctionExpression is the one member of the union with no `id` at all — hence the guard.
+  if (!t.isArrowFunctionExpression(node) && node.id) {
     return isComponentName(node.id.name) ? node.id.name : undefined;
   }
   return undefined;

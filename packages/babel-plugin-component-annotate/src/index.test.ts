@@ -82,9 +82,11 @@ describe('componentAnnotatePlugin', () => {
     expect(transform('const renderRow = () => <tr>x</tr>;')).not.toContain('data-bugsee-component');
   });
 
-  it('RESETS the scope per file (pre) — an aborted file does not leak into the next on a reused instance', () => {
-    // babel reuses one plugin instance across a multi-file build; pre() resets the closure per file so an
-    // aborted transform (component pushed, then a throw before exit pops it) can't leak into the next file.
+  it('ISOLATES the scope per file — an aborted file does not leak into the next on a reused instance', () => {
+    // babel reuses one plugin instance across a multi-file build, but creates a fresh `PluginPass` per
+    // FILE — and the component stack hangs off that state, so an aborted transform (component pushed,
+    // then a throw before exit pops it) cannot leak into the next file. (An earlier revision reset a
+    // per-instance closure in `pre()`; that is what the SEV1 re-entrancy suite below replaced.)
     const instance = componentAnnotatePlugin({ types: babelTypes });
     const boom = () => ({
       visitor: {
@@ -101,7 +103,7 @@ describe('componentAnnotatePlugin', () => {
         babelrc: false,
       }),
     ).toThrow();
-    // File 2 on the SAME instance — its <span> must NOT inherit A's leaked scope (pre() reset it).
+    // File 2 on the SAME instance — its <span> must NOT inherit A's leaked scope.
     const out2 =
       transformSync('function helper() { return <span/>; }', {
         plugins: ['@babel/plugin-syntax-jsx', instance],
@@ -245,5 +247,93 @@ describe('re-entrancy: a peer plugin transforming mid-traversal', () => {
       })?.code ?? '';
     expect(out).toContain('<div data-bugsee-component="Outer"');
     expect(out).toContain('<p data-bugsee-component="Outer"');
+  });
+});
+
+// SEV1 — a NAMED FUNCTION/CLASS EXPRESSION was not recognised as a component, so `export default
+// memo(function Card() { … })` and `export default forwardRef(function Input(props, ref) { … })` — two of
+// the shapes React's own documentation shows — produced ZERO annotations. `componentNameOf` fell back to
+// `node.id` only for a *declaration*; a named expression with no enclosing `const` had a PascalCase id
+// sitting right there and it was ignored. Silent: the build succeeded, the component simply never appeared
+// in any attributed issue.
+describe('named function/class EXPRESSIONS are components too', () => {
+  it('annotates `export default memo(function Card(){…})` with the function’s own name', () => {
+    const out = transform('export default memo(function Card() { return <div>x</div>; });');
+    expect(out).toContain('<div data-bugsee-component="Card"');
+  });
+
+  it('annotates `export default forwardRef(function Input(props, ref){…})`', () => {
+    const out = transform(
+      'export default forwardRef(function Input(props, ref) { return <input ref={ref}/>; });',
+    );
+    expect(out).toContain('data-bugsee-component="Input"');
+  });
+
+  it('annotates a named class expression that is not assigned to a const', () => {
+    const out = transform('export default memo(class Thing { render(){ return <b>b</b>; } });');
+    expect(out).toContain('<b data-bugsee-component="Thing"');
+  });
+
+  it('annotates a named function expression in any position (not just an export default)', () => {
+    expect(transform('register(function Panel(){ return <section>s</section>; });')).toContain(
+      '<section data-bugsee-component="Panel"',
+    );
+    expect(transform('const arr = [function Row(){ return <tr>r</tr>; }];')).toContain(
+      '<tr data-bugsee-component="Row"',
+    );
+  });
+
+  it('still lets an assigned const name WIN over the expression’s own id', () => {
+    // `const Foo = class Bar {}` → "Foo": the fallback must not start overriding the assigned name.
+    const out = transform('const Foo = class Bar { render() { return <div>x</div>; } };');
+    expect(out).toContain('data-bugsee-component="Foo"');
+    expect(out).not.toContain('data-bugsee-component="Bar"');
+    const memoed = transform(
+      'const Panel = memo(function Inner() { return <section>x</section>; });',
+    );
+    expect(memoed).toContain('data-bugsee-component="Panel"');
+    expect(memoed).not.toContain('data-bugsee-component="Inner"');
+  });
+
+  it('does NOT treat a lowercase-named function expression as a component', () => {
+    expect(transform('register(function row(){ return <tr>r</tr>; });')).not.toContain(
+      'data-bugsee-component',
+    );
+  });
+
+  it('does NOT annotate an ANONYMOUS expression with no name to fall back to', () => {
+    expect(transform('export default () => <div/>;')).not.toContain('data-bugsee-component');
+    expect(transform('register(function(){ return <span/>; });')).not.toContain(
+      'data-bugsee-component',
+    );
+  });
+});
+
+describe('plugin identity + exotic JSX attributes', () => {
+  it('registers under the name babel reports in errors and plugin ordering', () => {
+    expect(componentAnnotatePlugin({ types: babelTypes }).name).toBe('bugsee-component-annotate');
+  });
+
+  it('annotates a host element that carries a SPREAD attribute (no `name` to read)', () => {
+    // `<div {...rest} />` is ordinary React. A JSXSpreadAttribute has no `.name`, so the already-annotated
+    // check has to test the node TYPE before touching it or the whole build throws a TypeError.
+    expect(transform('function A(){ return <div {...rest} />; }')).toContain(
+      'data-bugsee-component="A"',
+    );
+  });
+
+  it('annotates a host element that carries a NAMESPACED attribute (<div xml:lang=…>)', () => {
+    // A JSXNamespacedName's `.name` is a NODE, not a string — it must not be mistaken for our attribute.
+    expect(transform('function A(){ return <div xml:lang="en" />; }')).toContain(
+      'data-bugsee-component="A"',
+    );
+  });
+
+  it('does not double-annotate an element whose manual attribute sits after a spread', () => {
+    const out = transform(
+      'function A(){ return <div {...rest} data-bugsee-component="Manual" />; }',
+    );
+    expect(out.match(/data-bugsee-component/g)?.length).toBe(1);
+    expect(out).toContain('data-bugsee-component="Manual"');
   });
 });

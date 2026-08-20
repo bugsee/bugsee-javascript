@@ -31,6 +31,13 @@ describe('componentNameFromFilename', () => {
     expect(componentNameFromFilename('/+page.svelte')).toBe('page');
   });
 
+  it('strips ONLY a leading +, never one inside the name', () => {
+    // `Foo+Bar.svelte` is a perfectly legal file name; collapsing it to `FooBar` would silently attribute
+    // the component under a name that appears nowhere in the project.
+    expect(componentNameFromFilename('/src/Foo+Bar.svelte')).toBe('Foo+Bar');
+    expect(componentNameFromFilename('/src/a+b+c.svelte')).toBe('a+b+c');
+  });
+
   it('returns undefined for a non-.svelte file', () => {
     expect(componentNameFromFilename('/src/app.ts')).toBeUndefined();
     expect(componentNameFromFilename('/src/styles.css')).toBeUndefined();
