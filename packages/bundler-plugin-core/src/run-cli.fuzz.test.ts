@@ -38,20 +38,27 @@ function recordingSpawn(result: { code: number; stdout?: string; stderr?: string
 }
 
 describe('resolveBugseeCli — properties', () => {
+  // What the resolver returns without an override: the launcher inside the installed
+  // @bugsee/bugsee-cli package, resolved from this module rather than looked up on PATH.
+  const resolvedDefault = resolveBugseeCli({});
+
   it('uses the override exactly when it carries something other than whitespace', () => {
     fc.assert(
       fc.property(fc.string({ maxLength: 20 }), (override) => {
-        const expected = override.trim() === '' ? 'bugsee-cli' : override;
+        const expected = override.trim() === '' ? resolvedDefault : override;
         expect(resolveBugseeCli({ BUGSEE_CLI_PATH: override })).toBe(expected);
       }),
       { numRuns: 300 },
     );
   });
 
-  it('falls back to the bare name for any env that does not set the override', () => {
+  it('resolves the installed launcher for any env that does not set the override', () => {
     fc.assert(
       fc.property(baseEnv, (env) => {
-        expect(resolveBugseeCli(env as EnvRecord)).toBe('bugsee-cli');
+        const resolved = resolveBugseeCli(env as EnvRecord);
+        expect(resolved).toBe(resolvedDefault);
+        // Never the bare name: relying on PATH is what made a real consumer's build fail with ENOENT.
+        expect(resolved).toMatch(/run-bugsee-cli\.js$/);
       }),
       { numRuns: 200 },
     );
@@ -115,7 +122,11 @@ describe('runBugseeCli — properties', () => {
         async (args, token, endpoint) => {
           const { spawn, calls } = recordingSpawn({ code: 0 });
           await runBugseeCli(args, { spawn, env: {}, token, endpoint });
-          expect(calls[0]?.args).toEqual(args); // forwarded verbatim, nothing appended
+          // Forwarded verbatim, nothing appended. The launcher path is argv[0] when the resolved
+          // target is the package's `.js` launcher, which node runs for us.
+          expect(calls[0]?.args?.slice(calls[0]?.command === process.execPath ? 1 : 0)).toEqual(
+            args,
+          );
           expect(calls[0]?.args).not.toContain(token);
           expect(calls[0]?.args).not.toContain(endpoint);
         },

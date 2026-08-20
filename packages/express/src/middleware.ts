@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  defaultShouldReport,
   neverThrow,
   type RequestContextStore,
   RequestContextStoreToken,
@@ -24,7 +25,10 @@ export interface ExpressRequest {
   method?: string;
   url?: string;
   originalUrl?: string;
+  /** The path the ROUTER matched — relative to where that router is mounted. */
   route?: { path?: string };
+  /** The mount prefix of the router handling this request (`''` for the app itself). */
+  baseUrl?: string;
   headers: Record<string, string | string[] | undefined>;
 }
 /** Minimal structural Express response. */
@@ -54,7 +58,11 @@ export interface ExpressAdapterOptions {
   /** Resolve the active client; default the process-singleton carrier client. Injectable for tests. */
   getClient?: () => Bugsee | undefined;
   /** Mint a context id; default a portable random id. Injectable for tests. */
-  newContextId?: () => string /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */;
+  newContextId?: () => string;
+  /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx —
+   *  the same default every other backend adapter uses. */
+  shouldReport?: (err: unknown) => boolean;
+  /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */
   onError?: (error: unknown) => void;
 }
 
@@ -66,7 +74,20 @@ const headerValue = (
   return Array.isArray(value) ? value[0] : value;
 };
 
-const routeOf = (req: ExpressRequest): string | undefined => req.route?.path;
+/**
+ * The full route PATTERN for this request: the router's mount prefix joined to the path it matched.
+ *
+ * `req.route.path` alone is relative to the router, so a router mounted at `/projects/:id/tasks`
+ * reported its `POST /` handler as `"/"` and its `GET /:taskId` as `"/:taskId"` — every nested router
+ * in a real application misattributed, and every router's root handler grouped together.
+ */
+const routeOf = (req: ExpressRequest): string | undefined => {
+  const path = req.route?.path;
+  if (path === undefined) return undefined;
+  const base = (req.baseUrl ?? '').replace(/\/+$/, ''); // Express may hand back a trailing slash
+  if (base === '') return path;
+  return path === '/' ? base : `${base}${path}`;
+};
 const urlOf = (req: ExpressRequest): string => req.originalUrl ?? req.url ?? '';
 
 const resolveStore = (client: Bugsee): RequestContextStore | undefined =>
@@ -79,6 +100,9 @@ const toOptions = (options: ExpressAdapterOptions): ServerInstrumentOptions => (
     ? { getClient: options.getClient }
     : { getClient: defaultGetClient }),
   ...(options.newContextId !== undefined ? { newContextId: options.newContextId } : {}),
+  // The same predicate the error handler uses, so the two halves of the adapter agree on what is
+  // worth reporting whether the app wires them by hand or through setupExpress.
+  shouldReport: options.shouldReport ?? defaultShouldReport,
 });
 
 const defaultGetClient = (): Bugsee | undefined => getCarrierClient<Bugsee>();
@@ -128,13 +152,14 @@ export function requestHandler(options: ExpressAdapterOptions = {}): RequestMidd
  */
 export function errorHandler(options: ExpressAdapterOptions = {}): ErrorMiddleware {
   const getClient = options.getClient ?? defaultGetClient;
+  const shouldReport = options.shouldReport ?? defaultShouldReport;
   return (err, req, _res, next) => {
     try {
       const client = getClient();
-      if (client !== undefined) {
+      if (client !== undefined && shouldReport(err)) {
         const store = resolveStore(client);
         // Enrich the active context (the in-flight request's — the http-layer owner's under re-entrancy)
-        // with the matched route, then report. Express reports EVERY unhandled route error.
+        // with the matched route, then report.
         const route = routeOf(req);
         if (store !== undefined && route !== undefined) {
           store.setAttribute('http.route', route);

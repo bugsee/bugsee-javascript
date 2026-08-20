@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BugseeCliError,
@@ -23,11 +24,38 @@ describe('resolveBugseeCli', () => {
   });
 
   it('ignores an empty/whitespace override', () => {
-    expect(resolveBugseeCli({ BUGSEE_CLI_PATH: '   ' })).toBe('bugsee-cli');
+    expect(resolveBugseeCli({ BUGSEE_CLI_PATH: '   ' })).toMatch(/run-bugsee-cli\.js$/);
   });
 
-  it('defaults to `bugsee-cli` (resolved from PATH / node_modules/.bin)', () => {
-    expect(resolveBugseeCli({})).toBe('bugsee-cli');
+  it('falls back to the bare name when @bugsee/bugsee-cli is not installed', () => {
+    // A consumer who pruned the dependency, or an exotic layout: better to try PATH — where they may
+    // have provisioned the binary themselves — than to fail here with a resolution error.
+    const missing = (): string => {
+      throw new Error('MODULE_NOT_FOUND');
+    };
+    expect(resolveBugseeCli({}, missing)).toBe('bugsee-cli');
+  });
+
+  it('spawns an explicitly-provided non-.js binary directly, with no node wrapper', async () => {
+    const { spawn, calls } = fakeSpawn({ code: 0, stdout: 'ok' });
+    await runBugseeCli(['sourcemaps', 'inject', './dist'], {
+      spawn,
+      env: { BUGSEE_CLI_PATH: '/opt/bugsee-cli' },
+    });
+    expect(calls[0]?.command).toBe('/opt/bugsee-cli');
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', './dist']);
+  });
+
+  it('resolves the launcher inside the installed @bugsee/bugsee-cli package', () => {
+    // Not the bare name. `@bugsee/bugsee-cli` is a dependency of THIS package, so under pnpm its bin
+    // is never linked into a consuming project's root node_modules/.bin — a real consumer's build
+    // failed with ENOENT, and it only ever worked inside this monorepo because the binary happened to
+    // be on PATH there. Resolved from the installed package instead, which is package-manager and
+    // PATH independent.
+    const resolved = resolveBugseeCli({});
+    expect(resolved).not.toBe('bugsee-cli');
+    expect(resolved).toMatch(/run-bugsee-cli\.js$/);
+    expect(existsSync(resolved)).toBe(true);
   });
 });
 
@@ -36,8 +64,11 @@ describe('runBugseeCli', () => {
     const { spawn, calls } = fakeSpawn({ code: 0, stdout: 'ok' });
     const result = await runBugseeCli(['sourcemaps', 'inject', './dist'], { spawn, env: {} });
     expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '' });
-    expect(calls[0]?.command).toBe('bugsee-cli');
-    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', './dist']);
+    // A `.js` launcher runs through node, not directly: a `.js` file is not spawnable on Windows and
+    // a transitive dependency's bin has no `.cmd` shim there.
+    expect(calls[0]?.command).toBe(process.execPath);
+    expect(calls[0]?.args?.[0]).toMatch(/run-bugsee-cli\.js$/);
+    expect(calls[0]?.args?.slice(1)).toEqual(['sourcemaps', 'inject', './dist']);
   });
 
   it('passes the token/endpoint via env vars (never on argv)', async () => {

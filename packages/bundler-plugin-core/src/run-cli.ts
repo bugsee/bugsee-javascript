@@ -2,6 +2,7 @@
 // to it (the @sentry/cli model). Spawning is behind an injectable seam so the orchestration is unit-testable
 // without a real binary. Token/endpoint are passed via env vars (not argv) to keep secrets out of process lists.
 import { spawn as nodeSpawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 export type EnvRecord = Record<string, string | undefined>;
 
@@ -81,18 +82,36 @@ export class BugseeCliError extends Error {
 }
 
 /**
- * Resolve the `bugsee-cli` binary: an explicit `BUGSEE_CLI_PATH` override wins, otherwise the bare name
- * `bugsee-cli`, found on PATH via `node_modules/.bin` (npm/pnpm put it there when a build script runs).
- * `@bugsee/bugsee-cli` — the cargo-dist npm installer that downloads the platform binary and exposes that
- * bin — is a DIRECT dependency of this package, so the binary is present with no extra install (zero-config).
- * The `BUGSEE_CLI_PATH` override remains the escape hatch for locked-down/offline CI that blocks the download.
+ * Resolve the `bugsee-cli` launcher: an explicit `BUGSEE_CLI_PATH` override wins, otherwise the
+ * launcher script inside the installed `@bugsee/bugsee-cli` package, resolved from THIS module.
+ *
+ * It used to return the bare name `bugsee-cli` and rely on PATH. `@bugsee/bugsee-cli` is a dependency
+ * of this package, not of the consuming project, so under pnpm its bin is never linked into that
+ * project's root `node_modules/.bin` — a real consumer's build failed with ENOENT, and it only ever
+ * worked inside this monorepo because the binary happened to be on PATH there. Resolving through
+ * `require.resolve` is independent of PATH, of the package manager's layout, and of which script the
+ * build was started from.
+ *
+ * `BUGSEE_CLI_PATH` remains the escape hatch for locked-down/offline CI that blocks the download.
  */
-export function resolveBugseeCli(env: EnvRecord = process.env): string {
+export function resolveBugseeCli(
+  env: EnvRecord = process.env,
+  /** Injectable module resolution, so the not-installed fallback below is reachable in a test. */
+  resolveModule: (specifier: string) => string = (specifier) =>
+    createRequire(import.meta.url).resolve(specifier),
+): string {
   const override = env.BUGSEE_CLI_PATH;
   if (override !== undefined && override.trim() !== '') {
     return override;
   }
-  return 'bugsee-cli';
+  try {
+    // The package's `bin` entry — a small node launcher that execs the downloaded platform binary.
+    return resolveModule('@bugsee/bugsee-cli/run-bugsee-cli.js');
+  } catch {
+    // Not installed (a consumer who deliberately pruned it, or an exotic layout): fall back to PATH
+    // so an explicitly-provisioned binary still works, rather than failing outright here.
+    return 'bugsee-cli';
+  }
 }
 
 /**
@@ -141,6 +160,12 @@ export async function runBugseeCli(
 ): Promise<SpawnResult> {
   const env = options.env ?? process.env;
   const binary = (options.resolveBinary ?? resolveBugseeCli)(env);
+  // The resolved default is the package's node launcher, a `.js` file. Running it through
+  // `process.execPath` rather than executing it directly keeps this working on Windows, where a
+  // `.js` file is not spawnable and there is no `.cmd` shim for a transitive dependency's bin.
+  const isScript = binary.endsWith('.js');
+  const command = isScript ? process.execPath : binary;
+  const commandArgs = isScript ? [binary, ...args] : args;
   const spawn = options.spawn ?? defaultSpawn;
 
   const childEnv: EnvRecord = { ...env };
@@ -164,7 +189,7 @@ export async function runBugseeCli(
 
   let result: SpawnResult;
   try {
-    result = await spawn(binary, args, {
+    result = await spawn(command, commandArgs, {
       cwd: options.cwd,
       env: childEnv,
       signal: controller.signal,

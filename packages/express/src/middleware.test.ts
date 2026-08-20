@@ -289,6 +289,79 @@ describe('errorHandler', () => {
     expect(ctx.attributes['http.route']).toBe('/users/:id');
   });
 
+  it('includes the router mount prefix in http.route', () => {
+    // `req.route.path` is relative to the ROUTER, so a router mounted at /projects/:id/tasks reported
+    // its `POST /` handler as `http.route: "/"`. Every nested router in a real app was misattributed,
+    // and grouped with every other router's root handler.
+    const { client, store } = fakeClient();
+    const ctx = { contextId: 'c', attributes: {} as Record<string, AttributeValue> };
+    store?.run(ctx, () => {
+      errorHandler({ getClient: () => client })(
+        new Error('e'),
+        fakeReq({
+          baseUrl: '/projects/:id/tasks',
+          originalUrl: '/projects/7/tasks/9',
+          route: { path: '/:taskId' },
+        }),
+        fakeRes().res,
+        vi.fn(),
+      );
+    });
+    expect(ctx.attributes['http.route']).toBe('/projects/:id/tasks/:taskId');
+  });
+
+  it.each([
+    ['/api', '/', '/api'],
+    ['/api/', '/', '/api'],
+    ['', '/users/:id', '/users/:id'],
+    [undefined, '/users/:id', '/users/:id'],
+    ['/a', '/b/:c', '/a/b/:c'],
+  ])('joins baseUrl %s with route %s as %s', (baseUrl, path, expected) => {
+    const { client, store } = fakeClient();
+    const ctx = { contextId: 'c', attributes: {} as Record<string, AttributeValue> };
+    store?.run(ctx, () => {
+      errorHandler({ getClient: () => client })(
+        new Error('e'),
+        fakeReq({ ...(baseUrl !== undefined ? { baseUrl } : {}), route: { path } }),
+        fakeRes().res,
+        vi.fn(),
+      );
+    });
+    expect(ctx.attributes['http.route']).toBe(expected);
+  });
+
+  it('reports a 5xx and skips a 4xx by default, like every other backend adapter', () => {
+    // express was the only adapter with no `shouldReport`: its error handler reported EVERY error
+    // reaching it, so an app that throws its 404s and validation failures could not opt out.
+    const { client, logException } = fakeClient();
+    const notFound = Object.assign(new Error('nope'), { status: 404 });
+    const boom = Object.assign(new Error('boom'), { status: 503 });
+    errorHandler({ getClient: () => client })(notFound, fakeReq(), fakeRes().res, vi.fn());
+    expect(logException).not.toHaveBeenCalled();
+    errorHandler({ getClient: () => client })(boom, fakeReq(), fakeRes().res, vi.fn());
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an error with no status at all', () => {
+    const { client, logException } = fakeClient();
+    errorHandler({ getClient: () => client })(new Error('e'), fakeReq(), fakeRes().res, vi.fn());
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours a custom shouldReport, and still forwards the error either way', () => {
+    const { client, logException } = fakeClient();
+    const next = vi.fn();
+    const err = Object.assign(new Error('boom'), { status: 503 });
+    errorHandler({ getClient: () => client, shouldReport: () => false })(
+      err,
+      fakeReq(),
+      fakeRes().res,
+      next,
+    );
+    expect(logException).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(err); // the app's error handling is untouched
+  });
+
   it('forwards via next(err) with no client (no report)', () => {
     const next = vi.fn();
     const err = new Error('e');
