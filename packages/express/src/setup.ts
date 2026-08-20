@@ -18,6 +18,53 @@ import {
 // If you have your OWN error-response middleware, set { autoErrorHandler: false } and call
 // setupExpressErrorHandler() yourself, right before yours.
 
+/**
+ * Register Bugsee's error handler so it runs BEFORE any error middleware the app already has.
+ *
+ * `app.use` appends, and Express runs error middleware in registration order. The ordinary way to
+ * write an Express app is setup → routes → your own error responder → listen, so appending at listen
+ * put Bugsee's handler AFTER that responder — and a responder that sends a response without calling
+ * `next(err)`, which is what every real one does, means Bugsee's handler is never reached. Errors went
+ * unreported on the DEFAULT path, silently.
+ *
+ * So: append as usual, then move the layer ahead of the app's first error-handling layer. Express
+ * keeps its layers on `app.router.stack` (v5) / `app._router.stack` (v4), each with a `handle` whose
+ * ARITY distinguishes error middleware (4) from request middleware (3). Every step is guarded — an
+ * app whose internals do not look like this (a wrapper, a future layout) keeps today's behaviour
+ * rather than losing the handler altogether.
+ */
+function insertErrorHandler(
+  app: ExpressApp,
+  handler: ErrorMiddleware,
+  onError?: (error: unknown) => void,
+): void {
+  // Where the app's own error middleware starts, decided BEFORE appending — an append cannot shift
+  // any earlier index, so this stays valid afterwards.
+  const stack = routerStack(app, onError);
+  const at =
+    stack?.findIndex((layer) => typeof layer.handle === 'function' && layer.handle.length === 4) ??
+    -1;
+  app.use(handler); // let Express build the layer, however it does that in this version
+  if (stack === undefined || at === -1) return; // unrecognised app, or nothing to get in front of
+  // Move the layer Express just appended to the front of the app's error middleware.
+  neverThrow(() => {
+    stack.splice(at, 0, ...stack.splice(stack.length - 1, 1));
+  }, onError);
+}
+
+/** Express's live middleware layers — `app.router.stack` (v5) / `app._router.stack` (v4). */
+function routerStack(
+  app: ExpressApp,
+  onError?: (error: unknown) => void,
+): Array<{ handle?: unknown }> | undefined {
+  let stack: unknown;
+  neverThrow(() => {
+    const internals = app as { router?: { stack?: unknown }; _router?: { stack?: unknown } };
+    stack = internals.router?.stack ?? internals._router?.stack;
+  }, onError);
+  return Array.isArray(stack) ? (stack as Array<{ handle?: unknown }>) : undefined;
+}
+
 /** The minimal Express application surface setupExpress needs. */
 export interface ExpressApp {
   use(handler: RequestMiddleware | ErrorMiddleware): unknown;
@@ -58,7 +105,7 @@ function setupExpressUnsafe(app: ExpressApp, options: SetupExpressOptions = {}):
     const installErrorHandler = (): void => {
       if (!installed) {
         installed = true;
-        app.use(errorHandler(adapter));
+        insertErrorHandler(app, errorHandler(adapter), options.onError);
       }
     };
     // (1) Primary: install deterministically when the server starts listening — after the routes, before

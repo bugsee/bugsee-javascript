@@ -7,6 +7,7 @@ import type { BugseeApi, Bundle, BundleUploader, IssueCreateResult, PutResult } 
 import {
   createUploadPipeline,
   type PipelineOutcome,
+  QUEUE_OVERFLOW_CODE,
   type UploadPipelineOptions,
 } from './upload-pipeline';
 
@@ -208,13 +209,15 @@ describe('createUploadPipeline — retries', () => {
     expect(result.permanent).toBeFalsy();
   });
 
-  it('does NOT mark a queue_overflow drop permanent — that bundle was never attempted', async () => {
+  it('does NOT mark a queue_overflow refusal permanent — that bundle was never attempted', async () => {
     const put = vi.fn(async () => new Promise<PutResult>(() => {})); // hangs, filling the buffer
-    const pipeline = createUploadPipeline(deps({ uploader: fakeUploader(put), bufferSize: 1 }));
+    const pipeline = createUploadPipeline(
+      deps({ uploader: fakeUploader(put), bufferSize: 1, maxWaiting: 0 }),
+    );
     void pipeline.enqueue(bundle);
     const overflow = await pipeline.enqueue(bundle);
     expect(overflow.ok).toBe(false);
-    expect(overflow.permanent).toBeFalsy();
+    expect(overflow.permanent).toBeFalsy(); // the durable copy must survive for the next launch
   });
 
   it('does not retry a non-retryable PUT failure', async () => {
@@ -380,7 +383,10 @@ describe('createUploadPipeline — operation rejections (enqueue never rejects)'
 });
 
 describe('createUploadPipeline — backpressure & buffer', () => {
-  it('drops the latest bundle when the buffer is full (queue_overflow)', async () => {
+  it('makes a bundle WAIT for a slot rather than refusing it', async () => {
+    // `bufferSize` is a CONCURRENCY limit, not an admission limit. Refusing the overflow meant a burst
+    // of incidents past it was answered "queue overflow" and never retried in-process — a server
+    // failing fifty requests at once uploaded a handful and left the rest for the next restart.
     const gate = createDeferred<PutResult>();
     const outcomes: PipelineOutcome[] = [];
     const pipeline = createUploadPipeline(
@@ -391,11 +397,58 @@ describe('createUploadPipeline — backpressure & buffer', () => {
       }),
     );
     const first = pipeline.enqueue(bundle); // occupies the single slot (pending)
-    const second = await pipeline.enqueue(bundle); // buffer full -> dropped
-    expect(second.ok).toBe(false);
-    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'queue_overflow' });
+    const second = pipeline.enqueue(bundle); // waits for it, rather than being dropped
+    await Promise.resolve();
+    expect(outcomes).not.toContainEqual({
+      kind: 'drop',
+      category: 'issue',
+      reason: 'queue_overflow',
+    });
     gate.resolve({ ok: true });
     expect((await first).ok).toBe(true);
+    expect((await second).ok).toBe(true); // uploaded once the slot freed
+  });
+
+  it('refuses only past the hard waiting cap, so memory stays bounded', async () => {
+    const gate = createDeferred<PutResult>();
+    const outcomes: PipelineOutcome[] = [];
+    const pipeline = createUploadPipeline(
+      deps({
+        uploader: fakeUploader(() => gate.promise),
+        bufferSize: 1,
+        maxWaiting: 2,
+        onOutcome: (o) => outcomes.push(o),
+      }),
+    );
+    void pipeline.enqueue(bundle); // the slot
+    void pipeline.enqueue(bundle); // waiting 1
+    void pipeline.enqueue(bundle); // waiting 2
+    const refused = await pipeline.enqueue(bundle); // past the cap
+    expect(refused.ok).toBe(false);
+    expect(refused.error?.code).toBe(QUEUE_OVERFLOW_CODE);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'queue_overflow' });
+    gate.resolve({ ok: true });
+  });
+
+  it('uploads an entire burst as slots free, in order', async () => {
+    const uploaded: string[] = [];
+    const pipeline = createUploadPipeline(
+      deps({
+        uploader: {
+          putBundle: async (_url, _body, o) => {
+            uploaded.push(o.fileName);
+            return { ok: true };
+          },
+        },
+        bufferSize: 2,
+      }),
+    );
+    const names = Array.from({ length: 25 }, (_, i) => `b${i}.bundle.zip`);
+    const results = await Promise.all(
+      names.map((n) => pipeline.enqueue({ ...bundle, fileName: n })),
+    );
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(uploaded.sort()).toEqual(names.sort());
   });
 
   it('frees a slot once an operation settles', async () => {

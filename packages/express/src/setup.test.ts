@@ -99,3 +99,78 @@ describe('setupExpressErrorHandler', () => {
     expect(stack[0]?.length).toBe(4);
   });
 });
+
+describe(`setupExpress — placing the error handler among the app own error middleware`, () => {
+  /** A fake with express's real router stack shape: layers whose `handle` arity 4 = error middleware. */
+  function fakeAppWithRouter() {
+    const layers: Array<{ handle: RequestMiddleware | ErrorMiddleware }> = [];
+    const app = {
+      router: { stack: layers },
+      use(handler: RequestMiddleware | ErrorMiddleware) {
+        layers.push({ handle: handler });
+        return app;
+      },
+      listen: (..._args: never[]) => 'server',
+    };
+    return { app, layers };
+  }
+
+  it(`installs BEFORE an error responder the app registered first`, () => {
+    // The ordinary way to write an Express app is: setup, routes, your own error responder, listen.
+    // Appending Bugsee's handler at listen() put it AFTER that responder — and a responder that sends
+    // a response without calling next(err), which is what every real one does, means Bugsee's handler
+    // is never reached. Errors were silently unreported on the DEFAULT path.
+    const { app, layers } = fakeAppWithRouter();
+    setupExpress(app as never);
+    const appErrorResponder: ErrorMiddleware = (_e, _q, _s, _n) => {};
+    app.use(appErrorResponder);
+    app.listen();
+
+    const errorLayers = layers.filter((l) => l.handle.length === 4).map((l) => l.handle);
+    expect(errorLayers).toHaveLength(2);
+    expect(errorLayers[1]).toBe(appErrorResponder); // ours runs first, then theirs
+  });
+
+  it('appends when the app has no error middleware of its own', () => {
+    const { app, layers } = fakeAppWithRouter();
+    setupExpress(app as never);
+    app.listen();
+    expect(layers.filter((l) => l.handle.length === 4)).toHaveLength(1);
+  });
+
+  it('still installs exactly once across listen() and the first request', () => {
+    const { app, layers } = fakeAppWithRouter();
+    setupExpress(app as never);
+    app.listen();
+    app.listen();
+    expect(layers.filter((l) => l.handle.length === 4)).toHaveLength(1);
+  });
+
+  it('finds the layer stack on Express 4 (_router) as well as 5 (router)', () => {
+    // Both layouts are in the field; reading only one would silently revert to appending — the exact
+    // failure this placement exists to prevent, on whichever major we did not check.
+    const layers: Array<{ handle: RequestMiddleware | ErrorMiddleware }> = [];
+    const app = {
+      _router: { stack: layers }, // Express 4
+      use(handler: RequestMiddleware | ErrorMiddleware) {
+        layers.push({ handle: handler });
+        return app;
+      },
+      listen: (..._args: never[]) => 'server',
+    };
+    setupExpress(app as never);
+    const appErrorResponder: ErrorMiddleware = (_e, _q, _s, _n) => {};
+    app.use(appErrorResponder);
+    app.listen();
+    const errorLayers = layers.filter((l) => l.handle.length === 4).map((l) => l.handle);
+    expect(errorLayers[1]).toBe(appErrorResponder); // ours first, then theirs
+  });
+
+  it('falls back to appending when the router stack is not reachable', () => {
+    // A structural app, a future express layout, or a wrapper — never worse than today's behaviour.
+    const { app, stack } = fakeAppWithListen();
+    setupExpress(app as never);
+    app.listen();
+    expect(stack.filter((h) => h.length === 4)).toHaveLength(1);
+  });
+});

@@ -27,8 +27,11 @@ export type PipelineOutcome =
 export interface UploadPipelineOptions {
   api: BugseeApi;
   uploader: BundleUploader;
-  /** Max concurrent in-flight operations (§7.8). Default 4. */
+  /** Max CONCURRENT in-flight operations (§7.8). Default 4. Bundles beyond it WAIT for a slot rather
+   *  than being refused — it is a concurrency limit, not an admission limit. */
   bufferSize?: number;
+  /** Hard cap on bundles waiting for a slot before one is refused. Default 200. */
+  maxWaiting?: number;
   /** Retry attempts for retryable failures (§7.5: max 3). Default 3. */
   maxRetries?: number;
   /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. */
@@ -62,6 +65,14 @@ export const QUEUE_OVERFLOW_CODE = 1001;
 export function createUploadPipeline(options: UploadPipelineOptions): UploadPipeline {
   const { api, uploader, onOutcome } = options;
   const bufferSize = options.bufferSize ?? 4;
+  // A hard backstop on memory, well above the rate limiter's 100-per-60s admission budget, so it is
+  // reached only if something upstream stops honouring that.
+  const maxWaiting = options.maxWaiting ?? 200;
+  const waiting: Array<{
+    bundle: Bundle;
+    category: OutcomeCategory;
+    resolve: (result: UploadResult | Promise<UploadResult>) => void;
+  }> = [];
   const maxRetries = options.maxRetries ?? 3;
   const sha256 = options.sha256 ?? sha256Hex;
   const sleep = options.sleep ?? defaultSleep;
@@ -202,22 +213,42 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     );
   };
 
+  /** Begin an upload, holding a concurrency slot until it settles, then release the slot to whoever
+   *  is waiting. */
+  const start = (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
+    const operation = runOperation(bundle, category);
+    inFlight.add(operation);
+    void operation.finally(() => {
+      inFlight.delete(operation);
+      const next = waiting.shift();
+      if (next !== undefined) {
+        next.resolve(start(next.bundle, next.category));
+      }
+    });
+    return operation;
+  };
+
   return {
     enqueue(bundle: Bundle, hint?: UploadHint): Promise<UploadResult> {
       const category = hint?.category ?? 'issue';
       if (inFlight.size >= bufferSize) {
-        onOutcome?.({ kind: 'drop', category, reason: 'queue_overflow' });
-        return Promise.resolve({
-          ok: false,
-          error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),
+        if (waiting.length >= maxWaiting) {
+          onOutcome?.({ kind: 'drop', category, reason: 'queue_overflow' });
+          return Promise.resolve({
+            ok: false,
+            error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),
+          });
+        }
+        // WAIT for a slot rather than refusing. Refusing meant a burst of incidents past `bufferSize`
+        // was answered "queue overflow" and, in-process, never retried — a server failing fifty
+        // requests at once uploaded a handful and left the rest for the next restart. `bufferSize` is
+        // a CONCURRENCY limit, not an admission limit; the storm guards are the Client's rate limiter
+        // and the trigger pipeline's queue, both of which run before anything reaches here.
+        return new Promise<UploadResult>((resolve) => {
+          waiting.push({ bundle, category, resolve });
         });
       }
-      const operation = runOperation(bundle, category);
-      inFlight.add(operation);
-      void operation.finally(() => {
-        inFlight.delete(operation);
-      });
-      return operation;
+      return start(bundle, category);
     },
 
     async flush(timeout?: number): Promise<boolean> {
