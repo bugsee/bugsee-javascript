@@ -355,7 +355,7 @@ LIVE in-process bundle assembly of an OPEN part read an empty dir → an empty b
 live-snapshot-of-pending-ring-data path). (Adverse-I/O host-lag stays §10-benchmark-validated, not a flaky
 CI gate.)
 
-### Browser capture-completeness — IN PROGRESS (started 2026-06-05)
+### Browser capture-completeness — **COMPLETE** (CE1–CE4, 2026-06-05 → 2026-06-25, on `main`)
 The crash/network/storage/recovery pipeline is done, but the browser auto-capture SURFACE was thin vs
 the Android/iOS SDKs + competitors (Sentry/Firebase/BugSnag/Datadog) — gap analysis: see
 [[capture-completeness-vs-parity]] in memory. Closing it, browser-first (Node's traces are already
@@ -390,7 +390,7 @@ solid), in slices:
   `@bugsee/performance` **extension** (§0.6) rather than a browser-core provider — tracked as its own
   milestone below.
 
-### Performance / APM extension (`@bugsee/performance`) — IN PROGRESS (started 2026-06-08)
+### Performance / APM extension (`@bugsee/performance`) — **COMPLETE** (P0–P3.x, 2026-06-08 → 2026-06-14, on `main`)
 Full extension (web-vitals + page-load detail + active APM), **on by default via the umbrella**, built
 from competitor source as a design reference (Google `web-vitals`, Sentry, Firebase, Datadog) so we ship
 past their known rakes — see [[performance-apm-extension-plan]] in memory for the metric catalog + the
@@ -792,7 +792,7 @@ conditions). Shape:
   `require('@bugsee/node')` and `import('@bugsee/node')` resolve through the built dist chain (incl. the
   external `fflate`) and `launch()` returns a working client; the umbrella resolves
   node→`index.node.{cjs,js}`, browser→`index.cjs`. Gates green (typecheck 57/57, tests 2013/2013, no cycles).
-### `@bugsee/webworker` — Web Workers DONE; Service Worker PARTIAL (2026-06-29, on `main`)
+### `@bugsee/webworker` — Web Workers + Service Worker **COMPLETE** (2026-06-29; SW finished 2026-07-03, on `main`)
 A DOM-less browser-family worker SDK. Composition = the clean edge launch (memory-only, no durable queue, no
 context provider) with the browser's two detection providers swapped in (`createWindowErrorProvider` /
 `createUnhandledRejectionProvider` on the worker `self` — they take any addEventListener target, so the
@@ -807,9 +807,10 @@ analog of edge's `ctx.waitUntil`), and (2) a durable IndexedDB bundle queue (`pe
 'service-worker') persists each incident bundle + `recover()` re-uploads any a prior activation left behind on
 the next launch — reusing browser-utils + core (same pattern as `@bugsee/browser`). So an assembled crash
 bundle survives termination. 32 tests, 100% coverage; mutation loops (env/launch/event/persist) + 2-agent
-review. README + design matrix §3.2 (Web Worker xhr ✓) updated. **Remaining follow-up (smaller):** persist the
-ROLLING capture buffer across activations (IDB chunk capture store + marker recovery — only the rarer
-cross-activation case; an in-activation incident already reports with that activation's capture).
+review. README + design matrix §3.2 (Web Worker xhr ✓) updated. **The rolling-buffer follow-up is DONE**
+(#165, `f4193f4`, 2026-07-03): the capture buffer now persists across activations via the IDB chunk capture
+store + report-marker store, with `recoverReports` re-reporting what a prior activation left behind — the
+cross-activation case that memory-only capture could not serve. Nothing outstanding on this milestone.
 
 ### Browser/worker multi-instance IDB coexistence — DONE (bundle queue + capture/markers) (2026-06-30, on `main`) → `docs/design/browser-multi-instance-coexistence.md`
 The browser-tier counterpart of the node multi-instance disk coexistence. IndexedDB is **origin-scoped**, so N
@@ -873,7 +874,7 @@ Runs the new JS SDK INSIDE an embedded native WebView and streams its capture UP
 - **7 conformance harness:** `bridge-protocol.schema.json` (machine-checkable JSON Schema, shipped) + `webview-conformance.e2e.ts` (jsdom) boots the REAL SDK vs a mock native receiver, validates EVERY message against the schema (ajv) + asserts the full-session round-trips. **This schema + harness ARE the reference spec for the Android team.**
 Every slice test-first, 100% line/fn/stmt + ≥90% branch, per-entity mutator loop, convergent multi-agent review.
 - **Sub-frame secure-rect composition (D9) — DONE (2026-07-01).** The last JS item blocking native legacy-suppression. Android-canonical VIEWS_BUBBLE port (`obscuring-composer.ts`): obscuring runs in every injected frame; a sub-frame `postMessage`s its viewport rects to its parent (verified-iframe-only, sanitized, non-PII), each frame folds in a child's rects re-mapped by the iframe offset (fresh each compose), the TOP frame adds page scroll → document-absolute → posts `secure` + alone declares the `obscuring` cap. Composition only ADDS rects (over-mask-only, never leak). The wire protocol/schema are UNCHANGED (the bubble is internal JS↔JS).
-**Remaining (out of this repo): slice 8 = the Android native receiver (native/Java, separate `android/` repo).** Native owns the final "coverage complete → fully drop legacy" decision (it knows its D9 injection set); the still-open NON-obscuring item is per-sub-frame entry/origin attribution for logs/network (a `frame` field, decide before slice 8).
+**Remaining (out of this repo): the native receivers.** Android's is code-complete on the `android/` repo; iOS's was ported and is in review (Gerrit 16606–16621). Native owns the final "coverage complete → fully drop legacy" decision (it knows its D9 injection set). The per-sub-frame entry/origin attribution question is **CLOSED (2026-08-20): not needed** — a sub-frame runs obscuring only and captures nothing, so there are no sub-frame entries on the wire to attribute; see `docs/design/webview-bridge.md`.
 
 ### Meta-framework adapters — `@bugsee/adapter-kit` + Remix DONE + Nuxt COMPLETE (2026-07-07, on `main`) → `docs/design/meta-framework-adapters.md`
 

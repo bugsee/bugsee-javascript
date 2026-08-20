@@ -349,11 +349,25 @@ background → `pause`; foreground → `resume`; native session rotation → `se
   legacy masking on the strength of that coverage (**D-A7**): the claim arrives from the page, so it cannot be
   allowed to reduce masking. Tested by `obscuring-composer.test.ts` + a real-iframe scenario in the
   conformance harness.
-- **Entry/origin attribution for NON-obscuring sub-frame capture (logs/network) — OPEN, decide before slice 8.**
-  Distinct from obscuring (now composed): a sub-frame's logs/network entries still post to the SAME
-  `BugseeBridge.post` with no `frame`/origin id, so native can't attribute a LOG to a frame. If per-sub-frame
-  entry attribution is in v1 scope, a `frame`/origin field must be added to the envelope (or `hello`); else
-  document that sub-frame entries are merged into the WebView's single timeline.
+- **Entry/origin attribution for sub-frame capture (logs/network) — DECIDED 2026-08-20: NOT NEEDED, because
+  sub-frames do not capture.** The question was posed before the sub-frame branch landed and is moot against
+  the architecture that shipped: `launch()` returns early in any frame that is not the top one
+  (`packages/webview/src/launch.ts`, "SUB-FRAME: obscuring only, and nothing else"). A sub-frame posts no
+  `hello`, mints no control token, starts no capture, and reports `isLaunched() === false`. Its entire job is
+  contributing secure-area rects to the top frame's composed union, and those travel frame-to-frame by
+  `postMessage`, never to native. So there are no sub-frame log/network entries on the wire to attribute, and
+  no `frame`/origin field is required in the envelope.
+
+  Two reasons that is also the RIGHT shape, not merely the current one. D9 exists to keep Bugsee out of
+  third-party content, and running a capture stack inside every ad / OAuth / payment iframe is the opposite
+  of that. And each frame keeps its own `seq` from 0, so entries from N frames would collide in the ordering
+  and dedup the sequence exists to provide.
+
+  IF per-frame capture is ever wanted, the envelope field is the smallest part of the work: a sub-frame
+  cannot receive control (`evaluateJavascript` targets the top frame), so it would have to stream entries UP
+  to the top frame by `postMessage` — the obscuring bubble's shape — with the top frame re-stamping `seq`
+  and forwarding. That is a design change, not a field addition, and it should be driven by a real request
+  for per-frame attribution rather than by this note.
 - **Machine-checkable envelope schema — DONE (slice 7).** The envelope's TS types live in
   `packages/webview/src/protocol.ts`; the cross-language artifact is `packages/webview/bridge-protocol.schema.json`
   (JSON Schema draft-07, shipped in the package), validated end-to-end by `webview-conformance.e2e.ts`. The

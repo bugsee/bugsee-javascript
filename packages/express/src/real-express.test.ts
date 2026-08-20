@@ -3,6 +3,22 @@ import express from 'express';
 import { describe, expect, it } from 'vitest';
 import { requestHandler } from './middleware';
 
+/**
+ * `fetch` with a deadline.
+ *
+ * Node's fetch has NO default timeout, so a request that stalls hangs until the test timeout fires and
+ * reports only "Test timed out" — naming neither the request nor the phase. A `@bugsee/koa` integration
+ * test did exactly that during a parallel `turbo run test:coverage` across 55 packages while passing 5/5
+ * in isolation, which is the shape a load-dependent stall takes. The deadline does not prevent a stall;
+ * it makes the next one fail in seconds and say which URL it was waiting on.
+ */
+// Typed off `fetch` itself rather than naming `Response`/`RequestInit`: a framework's own `Response`
+// type shadows the global one in these files (express's, notably), and this stays correct regardless.
+const fetchWithDeadline = (
+  url: string,
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+
 // Review finding (host-boundary reviewer, SEV1 #2): express builds its request `info` — including the
 // APPLICATION-supplied `user` callback — OUTSIDE runServerRequest, so the engine guard added in c90a06a
 // could not see it. Measured on real express before the fix: `500`, the app's own error middleware handed a
@@ -34,7 +50,7 @@ describe('@bugsee/express against real express', () => {
       res.send('APP-OK');
     });
     const { port, close } = await listen(app);
-    const res = await fetch(`http://127.0.0.1:${port}/`);
+    const res = await fetchWithDeadline(`http://127.0.0.1:${port}/`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('APP-OK');
     expect(errors).toHaveLength(1);
@@ -51,7 +67,7 @@ describe('@bugsee/express against real express', () => {
       res.status(500).send(`APP-ERRMW saw: ${err.message}`);
     }) as express.ErrorRequestHandler);
     const { port, close } = await listen(app);
-    const res = await fetch(`http://127.0.0.1:${port}/`);
+    const res = await fetchWithDeadline(`http://127.0.0.1:${port}/`);
     expect(await res.text()).toBe('APP-ERRMW saw: APP-ERROR');
     await close();
   });

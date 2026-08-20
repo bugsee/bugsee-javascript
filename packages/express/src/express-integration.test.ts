@@ -5,6 +5,22 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { afterEach, describe, expect, it } from 'vitest';
 import { errorHandler, requestHandler, setupExpress } from './index';
 
+/**
+ * `fetch` with a deadline.
+ *
+ * Node's fetch has NO default timeout, so a request that stalls hangs until the test timeout fires and
+ * reports only "Test timed out" — naming neither the request nor the phase. A `@bugsee/koa` integration
+ * test did exactly that during a parallel `turbo run test:coverage` across 55 packages while passing 5/5
+ * in isolation, which is the shape a load-dependent stall takes. The deadline does not prevent a stall;
+ * it makes the next one fail in seconds and say which URL it was waiting on.
+ */
+// Typed off `fetch` itself rather than naming `Response`/`RequestInit`: a framework's own `Response`
+// type shadows the global one in these files (express's, notably), and this stays correct regardless.
+const fetchWithDeadline = (
+  url: string,
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+
 // End-to-end integration over a REAL express server + the REAL @bugsee/node SDK + real AsyncLocalStorage.
 // The headline this proves (the whole point of the foundation): under CONCURRENT, interleaved requests on
 // one process + one SDK, each error report carries ITS OWN user + contextId, and the capture entries
@@ -121,7 +137,7 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
       await Promise.all(
         users.map((user, i) =>
           // Reversed delays: carol finishes first, alice last — interleaved.
-          fetch(`http://127.0.0.1:${port}/work?d=${users.length - 1 - i}`, {
+          fetchWithDeadline(`http://127.0.0.1:${port}/work?d=${users.length - 1 - i}`, {
             headers: { 'x-user': user },
           }).then((r) => r.text()),
         ),
@@ -181,7 +197,7 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
     try {
       const port = (server.address() as AddressInfo).port;
       // The FIRST request must already be covered by the auto-appended error handler.
-      const res = await fetch(`http://127.0.0.1:${port}/boom`, {
+      const res = await fetchWithDeadline(`http://127.0.0.1:${port}/boom`, {
         headers: { 'x-user': 'dave@x.com' },
       });
       await res.text();

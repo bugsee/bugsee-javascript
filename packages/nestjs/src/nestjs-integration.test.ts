@@ -17,6 +17,22 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { afterEach, describe, expect, it } from 'vitest';
 import { type SetupNestOptions, setupNest } from './index';
 
+/**
+ * `fetch` with a deadline.
+ *
+ * Node's fetch has NO default timeout, so a request that stalls hangs until the test timeout fires and
+ * reports only "Test timed out" — naming neither the request nor the phase. A `@bugsee/koa` integration
+ * test did exactly that during a parallel `turbo run test:coverage` across 55 packages while passing 5/5
+ * in isolation, which is the shape a load-dependent stall takes. The deadline does not prevent a stall;
+ * it makes the next one fail in seconds and say which URL it was waiting on.
+ */
+// Typed off `fetch` itself rather than naming `Response`/`RequestInit`: a framework's own `Response`
+// type shadows the global one in these files (express's, notably), and this stays correct regardless.
+const fetchWithDeadline = (
+  url: string,
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+
 // End-to-end over a REAL NestJS app (express platform) + the REAL @bugsee/node SDK. This is the
 // empirical proof of the seam design (docs/design/framework-adapters.md): which lifecycle phases each
 // seam captures, the 4xx-skip policy, cross-seam dedup, and per-request context isolation under
@@ -183,7 +199,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
   it('interceptor (default) reports handler / service errors, skips HttpExceptions', async () => {
     const { url, bundles, client } = await boot({});
     for (const path of ['/handler-error', '/service-error', '/not-found', '/ok']) {
-      await fetch(url + path).then((r) => r.text());
+      await fetchWithDeadline(url + path).then((r) => r.text());
     }
     await client.flush(5000);
     // 2 genuine errors reported; the 404 + the ok route produced nothing.
@@ -195,14 +211,14 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
 
   it('interceptor (default) does NOT see guard-thrown errors (the documented gap)', async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'interceptor' });
-    await fetch(`${url}/guard-error`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
     await client.flush(5000);
     expect(bundles).toHaveLength(0); // interceptor is subscribed AFTER guards run
   });
 
   it("the global filter ('filter') DOES capture a guard-thrown error", async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'filter' });
-    await fetch(`${url}/guard-error`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
     await client.flush(5000);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
@@ -210,8 +226,8 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
 
   it("'both' captures guard + handler errors and reports a handler error ONCE (dedup)", async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'both' });
-    await fetch(`${url}/guard-error`).then((r) => r.text());
-    await fetch(`${url}/handler-error`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/handler-error`).then((r) => r.text());
     await client.flush(5000);
     // guard (filter only) + handler (seen by both, deduped to one) = 2 — NOT 3.
     expect(bundles).toHaveLength(2);
@@ -219,17 +235,17 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
 
   it("'both' still skips an expected 4xx (NotFound + a guard ForbiddenException)", async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'both' });
-    await fetch(`${url}/not-found`).then((r) => r.text());
-    await fetch(`${url}/guard-forbidden`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/not-found`).then((r) => r.text());
+    await fetchWithDeadline(`${url}/guard-forbidden`).then((r) => r.text());
     await client.flush(5000);
     expect(bundles).toHaveLength(0);
   });
 
   it('preserves the original HTTP response (status + body) while reporting', async () => {
     const { url, client } = await boot({ errorCapture: 'both' });
-    const notFound = await fetch(`${url}/not-found`);
+    const notFound = await fetchWithDeadline(`${url}/not-found`);
     expect(notFound.status).toBe(404); // Nest still maps the HttpException
-    const okRes = await fetch(`${url}/ok`);
+    const okRes = await fetchWithDeadline(`${url}/ok`);
     expect(await okRes.text()).toBe('ok'); // success unaffected
     await client.flush(5000);
   });
@@ -241,7 +257,9 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
       users.map(async (user, i) => {
         // stagger so they finish out of order (real interleaving)
         await sleep(i * 5);
-        return fetch(`${url}/work`, { headers: { 'x-user': user } }).then((r) => r.text());
+        return fetchWithDeadline(`${url}/work`, { headers: { 'x-user': user } }).then((r) =>
+          r.text(),
+        );
       }),
     );
     await client.flush(5000);
@@ -287,7 +305,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
 
   it('correlates a POST-with-body request to its context (enterWith survives body parsing)', async () => {
     const { url, bundles, client } = await bootFastify();
-    await fetch(`${url}/post-work`, {
+    await fetchWithDeadline(`${url}/post-work`, {
       method: 'POST',
       headers: { 'x-user': 'fast@x.com', 'content-type': 'application/json' },
       body: JSON.stringify({ some: 'payload' }),
@@ -310,7 +328,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
     await Promise.all(
       users.map(async (user, i) => {
         await sleep(i * 5);
-        return fetch(`${url}/post-work`, {
+        return fetchWithDeadline(`${url}/post-work`, {
           method: 'POST',
           headers: { 'x-user': user, 'content-type': 'application/json' },
           body: JSON.stringify({ i }),
