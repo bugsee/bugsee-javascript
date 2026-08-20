@@ -1,5 +1,20 @@
 # Findings — samples/vue-spa
 
+> **Status update (after the wave-1 fix round).** The wire-contract defects this sample found —
+> `x-client-type: web`, the unparsed `{ok, result}` response envelope with its snake_case ids, the
+> HTTP-200 rejection read as success, and the `x-amz-checksum-sha256` header on the signed S3 PUT —
+> are FIXED in `@bugsee/core` (`0318229`, `84976f7`). The missing `publishConfig` on
+> `@bugsee/replay`/`replay-canvas`/`rrweb` and friends is fixed in `3921760`, and the `0.0.0` SDK
+> version the collector rejected is fixed in `6d63ba8`. The workarounds this sample carried for those
+> have been removed, and it was re-verified against real staging with the SDK as a customer gets it.
+>
+> What remains open here is tracked in `samples/FINDINGS.md`: the collector's CORS policy (which no
+> browser sample can work around honestly), and the upload pipeline deferring bursts of more than four
+> concurrent reports to the next process start (F-X8) — which is what several remaining "wire" checks
+> in this sample are actually measuring.
+
+
+
 Every SDK defect, data-arrival failure or data inconsistency observed while building and running
 this sample. One entry per finding. Do NOT fix SDK code here — record it.
 

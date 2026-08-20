@@ -26,22 +26,6 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       sourcemap: true,
-      rollupOptions: {
-        // WORKAROUND for a packaging defect in @bugsee/replay + @bugsee/replay-canvas (see
-        // samples/vue-spa/FINDINGS.md F-1): their packed tarballs still point `exports`/`main`/`types`
-        // at `./src/index.ts` (the monorepo dev-mode convention — publishConfig.exports is MISSING from
-        // both package.json files, unlike every other browser-family package), and only `src/index.ts`
-        // itself (not its sibling modules) is included in the tarball. @bugsee/browser's dist
-        // unconditionally contains `await import('@bugsee/replay')` / `('@bugsee/replay-canvas')` —
-        // gated at RUNTIME by the `replay` launch option, but Vite's bundler resolves dynamic-import
-        // targets at build/scan time regardless, so both `pnpm dev` and `pnpm build` fail before the
-        // app ever runs unless these two are marked external. This sample launches with `replay: false`
-        // (see src/bugsee.ts), so the excluded import is never actually reached at runtime.
-        external: ['@bugsee/replay', '@bugsee/replay-canvas'],
-      },
-    },
-    optimizeDeps: {
-      exclude: ['@bugsee/replay', '@bugsee/replay-canvas'],
     },
     define: {
       'import.meta.env.VITE_BUGSEE_APP_TOKEN': JSON.stringify(env.BUGSEE_APP_TOKEN ?? ''),

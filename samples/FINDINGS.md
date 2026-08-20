@@ -51,6 +51,43 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
   therefore never reach.
 - **Evidence:** issue `SNODE-1`, `# Report source` → `Trigger: not reported`.
 
+### F-X8 · A burst of more than 4 concurrent reports is deferred to the next process start
+
+- **Severity:** major
+- **Package:** `@bugsee/core` (`packages/core/src/upload-pipeline.ts:190`)
+- **Scenario:** S4/S5 under concurrency — several incidents at once
+- **Expected:** a server that fails 50 concurrent requests reports 50 incidents in that process.
+- **Observed:** the upload pipeline admits at most `bufferSize` (default **4**) in-flight uploads and
+  refuses everything beyond that with `queue_overflow`, returning a non-permanent failure. The
+  durable pipeline writes each bundle to disk BEFORE the attempt and keeps the copy when the result
+  is not settled, so nothing is destroyed — but **nothing retries in-process either**:
+  `durable-upload-pipeline.recover()` is called exactly once, at launch
+  (`packages/node/src/launch.ts:715`), and there is no timer-based drain. On a long-running server a
+  refused report waits for the next restart.
+- **Reproduce:** `samples/express-api`, fresh process, 20 concurrent `POST /scenarios/s4/error-instance`
+  then one `flush` — 10 bundles upload and the count is stable thereafter, indefinitely. Over the
+  sample's full sweep (~260 reports) only 6 arrive. Each scenario passes on its own.
+- **Evidence:** `samples/express-api` wire checks `S4.dedupe`, `S8.report-mutate`, `S2 attribute
+  after`, `concurrency isolation 0/50` — all four fail for this one reason, and all four pass when
+  their scenario runs alone.
+- **Fix direction (not applied):** drain the durable queue on a timer (and after a successful upload)
+  rather than only at launch, so backpressure defers by seconds rather than until restart.
+
+### F-X9 · `logException` with a non-Error produces an issue with no crash payload
+
+- **Severity:** major
+- **Package:** `@bugsee/core` (`packages/core/src/crash.ts`, the report path)
+- **Scenario:** S4 — `logException('a string')`, `logException({ code, message })`, `logException(null)`
+- **Expected:** a usable issue. Passing a non-Error throwable is part of the documented surface (the
+  scenario catalog names it, and JS code throws non-Errors routinely), so it should produce a
+  synthetic exception — a type derived from the value and a stack captured at the call site.
+- **Observed:** the uploaded bundle contains **no `crash.json` at all**. `request.json` carries the
+  stringified value as `summary`, and nothing else; the backend answers `get_issue` with
+  *"Crash data for the issue was not found"*. The issue exists, is counted, and is useless.
+- **Reproduce:** launch, `await client.logException('a plain string throwable')`, flush, then unzip
+  the PUT body — `crash.json` is absent (an `Error` in the same harness produces it).
+- **Evidence:** issues `SBROWSER-3` (28 events) and `SVUE-4`, both `<missing crash details>`.
+
 ### F-X4 · Captured logs never reach the issue
 
 - **Severity:** major

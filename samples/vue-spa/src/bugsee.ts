@@ -40,12 +40,6 @@ export function launchBugsee(): Bugsee {
 
   client = launch(import.meta.env.VITE_BUGSEE_APP_TOKEN as string, {
     endpoint: import.meta.env.VITE_BUGSEE_ENDPOINT as string,
-    // WORKAROUND for FINDINGS.md F-4 (blocker): @bugsee/browser hardcodes SDK_VERSION = '0.0.0'
-    // (packages/browser/src/launch.ts:79 — the same repo-wide unpublished-version gap as
-    // samples/FINDINGS.md F-X2), and the staging collector rejects sdk.version "0.0.0" outright with
-    // `UnsupportedSdkError: SDK version is no longer supported`, before any session is even created.
-    // Overriding the injectable `sdkVersion` option is the only way past it from a sample.
-    sdkVersion: '9.9.9',
     appVersion: '1.0.0',
     appBuild: String(import.meta.env.VITE_BUGSEE_APP_BUILD ?? '1'),
 
@@ -61,14 +55,10 @@ export function launchBugsee(): Bugsee {
     captureViewHierarchy: true,
     detectCrashes: true,
 
-    // Session replay is FORCED OFF — see samples/vue-spa/FINDINGS.md F-1 (blocker): @bugsee/replay and
-    // @bugsee/replay-canvas are packaged without publishConfig.exports, so the installed tarballs are
-    // missing files their own entry point imports. @bugsee/browser's dist unconditionally contains
-    // `await import('@bugsee/replay')`, which crashes BOTH `vite dev` and `vite build` unless the two
-    // packages are excluded/externalized (see vite.config.ts) — and even then, actually turning replay
-    // on would hit the same broken module at runtime. S11 is therefore UNTESTABLE in this sample, not
-    // merely undemonstrated.
-    replay: false,
+    // Session replay, with the privacy defaults left as they ship: every text node and input value
+    // masked, media and canvas blocked. The checkout form's password and card fields are the things
+    // that must never leave the browser.
+    replay: true,
 
     maxRecordingTime: 60,
     maxDataSize: 10,

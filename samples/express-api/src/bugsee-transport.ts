@@ -1,72 +1,18 @@
-// A "tee" transport: forwards every SDK network call to the REAL staging endpoint (with three
-// deliberate rewrites — see WORKAROUNDS below), so verification against the Bugsee backend over MCP
-// is genuine, while also recording a parsed summary of each call locally. That local record is what
-// lets `pnpm verify` and the dashboard assert on things the MCP surface does not expose (redacted
-// network bodies, the exact bundle contents, the trace_id a report carried) — the "wire" verification
-// depth from docs/samples/PLAN.md §4.
+// A "tee" transport: forwards every SDK network call to the REAL staging endpoint verbatim, while
+// recording a parsed summary of each call locally. That local record is what lets `pnpm verify` and
+// the dashboard assert on things the MCP surface does not expose (redacted network bodies, the exact
+// bundle contents, the trace_id a report carried) — the "wire" verification depth from
+// docs/samples/PLAN.md §4.
 //
-// WORKAROUNDS — see FINDINGS.md for the full diagnosis of each; NONE of them is "the bug fixed", they
-// exist purely so the REST of this sample's verification can reach the real backend at all. Found in
-// this order, each blocking delivery further along the same request:
+// It rewrites NOTHING. It used to carry three deliberate rewrites, working around SDK defects this
+// sample found (a hardcoded `x-client-type: web`, the unparsed `{ok, result}` response envelope, and
+// an `x-amz-checksum-sha256` header the presigned S3 url was never signed for). All three are fixed
+// in @bugsee/core; see samples/FINDINGS.md. If a rewrite ever reappears here, the sample has stopped
+// testing what a customer actually runs.
 //
-//   F-1: `@bugsee/core`'s `createBugseeApi` (packages/core/src/bugsee-api.ts) hardcodes the
-//   `x-client-type` header to the literal `'web'` regardless of the actual runtime. The staging
-//   backend validates it against the application's registered `type` and rejects every non-web call
-//   with `ApplicationTypeMismatchError` (code 11004) once the SDK version passes the version gate
-//   (which itself rejects the real `sdkVersion: '0.0.0'` — see samples/FINDINGS.md F-X2). Rewritten
-//   here on the wire.
-//
-//   F-2: `ensureSession()`/`postIssue()` in the same file decode the raw `/v2/sessions` and
-//   `/v2/issues` response bodies directly as the DTO (`{access_token}`, `IssueCreateResult`) and only
-//   check the HTTP status. The REAL backend wraps every response in an envelope — `{ok:true,
-//   result:{access_token, ...}}` on success, `{ok:false, error:{type, message, code}}` on a REJECTED
-//   request that still comes back HTTP 200. So even a fully successful session create leaves
-//   `accessToken === undefined` (not the real token, and not `null` either — so the SDK's
-//   `if (accessToken !== null)` memoization guard treats it as "already authenticated" FOREVER), and a
-//   rejected request is silently treated as success. Unwrapped here on the wire.
-//
-//   F-3 (the one that actually blocks the BUNDLE, even past F-1/F-2): `createBundleUploader`
-//   (packages/core/src/bundle-uploader.ts) sends a client-computed `x-amz-checksum-sha256` header on
-//   the signed S3 PUT. Because that header name is `x-amz-*`, AWS's SigV2 signature verification folds
-//   it into the request's canonicalized headers — but the Bugsee backend's presigned `Signature` query
-//   parameter was computed WITHOUT it (the backend cannot know the checksum in advance), so S3 rejects
-//   EVERY bundle PUT with `403 SignatureDoesNotMatch`. Confirmed by isolation: dropping only that one
-//   header (the `fileName` header is harmless — not an `x-amz-*` name) makes the exact same PUT
-//   succeed. Stripped here on the wire.
-//
-// This is a real HttpTransport (same shape @bugsee/node's `transport` launch option expects), built on
+// This is a real HttpTransport (the shape @bugsee/node's `transport` launch option expects), built on
 // the Node global `fetch` — no @bugsee/node-utils import needed.
 import { strFromU8, unzipSync } from '@bugsee/util';
-
-/** F-1 workaround: what a real customer would have to send for `x-client-type` to be accepted for a
- *  `type: "javascript"` staging application — the SDK sends the literal string `'web'` instead. */
-const CLIENT_TYPE_WORKAROUND = 'javascript';
-
-/** F-2 workaround: unwrap the real backend's `{ok, result|error}` envelope so the SDK's naive
- *  top-level DTO decode (packages/core/src/bugsee-api.ts) sees what it expects. Only applied to the
- *  two control-plane endpoints that are actually decoded by the SDK (sessions + issues) — the
- *  performance endpoint's body is never read on success, so it needs no unwrap. */
-function unwrapEnvelope(url: string, status: number, buf: Uint8Array): { status: number; buf: Uint8Array } {
-  if (!url.endsWith('/v2/sessions') && !url.endsWith('/v2/issues')) return { status, buf };
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(buf)) as {
-      ok?: boolean;
-      result?: unknown;
-      error?: { message?: string };
-    };
-    if (parsed.ok === true && parsed.result !== undefined) {
-      return { status, buf: new TextEncoder().encode(JSON.stringify(parsed.result)) };
-    }
-    if (parsed.ok === false) {
-      // Surface the rejection as a real HTTP failure so the SDK's status-based error handling
-      // (invalidateSession + retry) actually engages, instead of silently caching a broken session.
-      return { status: 502, buf };
-    }
-    return { status, buf };
-  } catch {
-    return { status, buf }; // not JSON / not the envelope shape — forward unchanged
-  }
-}
 
 export interface HttpRequestOptions {
   method?: string;
@@ -185,24 +131,13 @@ function parseBundle(body: Uint8Array): ParsedBundleSummary | undefined {
   }
 }
 
-/** Build the real transport used by the launched client. Every call is forwarded to the real staging
- *  endpoint, with the F-1 `x-client-type` rewrite, the F-2 envelope-unwrap and the F-3
- *  checksum-header strip applied so the round trip actually succeeds — see the module doc comment. */
+/** Build the transport used by the launched client. Every call is forwarded to the real staging
+ *  endpoint verbatim; the tee only RECORDS a parsed copy, so wire-level assertions (redaction,
+ *  attributes, route names, dedupe) can be made on exactly what the SDK sent. It rewrites nothing. */
 export function createTeeTransport(): HttpTransport {
   return async (url, options = {}) => {
     const method = options.method ?? 'GET';
-    // F-1 WORKAROUND: rewrite the SDK's hardcoded 'web' to what the backend expects for a
-    // `type: "javascript"` application.
-    let headers =
-      options.headers?.['x-client-type'] !== undefined
-        ? { ...options.headers, 'x-client-type': CLIENT_TYPE_WORKAROUND }
-        : options.headers;
-    // F-3 WORKAROUND: the signed S3 PUT's Signature was computed without x-amz-checksum-sha256, so
-    // sending it makes S3 reject the request — strip it before it ever reaches the wire.
-    if (method === 'PUT' && headers?.['x-amz-checksum-sha256'] !== undefined) {
-      const { 'x-amz-checksum-sha256': _dropped, ...rest } = headers;
-      headers = rest;
-    }
+    const headers = options.headers;
     const init: RequestInit = { method, headers };
     if (options.body !== undefined) {
       init.body = typeof options.body === 'string' ? options.body : new Uint8Array(options.body);
@@ -217,9 +152,8 @@ export function createTeeTransport(): HttpTransport {
       resHeaders[k] = v;
     });
 
-    // F-2 WORKAROUND: unwrap the real backend's {ok, result|error} envelope for the two endpoints the
-    // SDK actually decodes (sessions + issues) before it ever reaches the SDK's own JSON.parse.
-    const { status, buf } = unwrapEnvelope(url, res.status, rawBuf);
+    const status = res.status;
+    const buf = rawBuf;
 
     const kind = classify(url, method);
     const record: CapturedCall = {
