@@ -1,0 +1,14 @@
+{
+  "_comment": "instrumentIncomingRequests OFF — the escape hatch. Same as default otherwise so the only variable under test is auto-instrumentation.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "captureSystemTraces": true,
+  "captureSystemEvents": true,
+  "detectCrashes": true,
+  "detectHangs": false,
+  "profiling": false,
+  "capturedDataStore": "disk",
+  "recover": true,
+  "instrumentIncomingRequests": false,
+  "performanceMonitoring": true
+}

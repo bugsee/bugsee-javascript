@@ -1,0 +1,11 @@
+{
+  "_comment": "unhandledRejections: 'none' — no listener installed; Node's own default behaviour (crash) is untouched.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "unhandledRejections": "none",
+  "detectCrashes": true,
+  "detectHangs": false,
+  "capturedDataStore": "disk",
+  "recover": true,
+  "instrumentIncomingRequests": true
+}

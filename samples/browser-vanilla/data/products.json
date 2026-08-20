@@ -1,0 +1,62 @@
+[
+  {
+    "id": "widget-aurora",
+    "name": "Aurora Widget",
+    "price": 24.99,
+    "category": "gadgets",
+    "description": "A softly glowing desk widget that syncs its color to your calendar.",
+    "image": "aurora",
+    "priceHistory": [22.99, 23.49, 23.99, 24.49, 23.99, 24.99, 24.99],
+    "stock": 42
+  },
+  {
+    "id": "widget-basalt",
+    "name": "Basalt Widget",
+    "price": 39.5,
+    "category": "gadgets",
+    "description": "Heavyweight paperweight widget carved from volcanic rock, Bluetooth inside.",
+    "image": "basalt",
+    "priceHistory": [45.0, 43.5, 41.0, 40.0, 39.5, 39.5, 39.5],
+    "stock": 17
+  },
+  {
+    "id": "widget-cobalt",
+    "name": "Cobalt Widget",
+    "price": 12.0,
+    "category": "accessories",
+    "description": "A pocket-sized widget clip that tracks how often you fidget with it.",
+    "image": "cobalt",
+    "priceHistory": [9.99, 10.5, 11.0, 11.5, 12.0, 11.75, 12.0],
+    "stock": 120
+  },
+  {
+    "id": "widget-driftwood",
+    "name": "Driftwood Widget",
+    "price": 58.0,
+    "category": "home",
+    "description": "A reclaimed-wood widget stand that charges three devices at once.",
+    "image": "driftwood",
+    "priceHistory": [62.0, 60.0, 59.0, 58.5, 58.0, 58.0, 58.0],
+    "stock": 8
+  },
+  {
+    "id": "widget-ember",
+    "name": "Ember Widget",
+    "price": 15.75,
+    "category": "accessories",
+    "description": "A tiny hand-warmer widget with a companion app for heat scheduling.",
+    "image": "ember",
+    "priceHistory": [14.0, 14.5, 15.0, 15.25, 15.5, 15.75, 15.75],
+    "stock": 65
+  },
+  {
+    "id": "widget-fathom",
+    "name": "Fathom Widget",
+    "price": 89.0,
+    "category": "home",
+    "description": "A depth-mapping widget for aquarium owners, streams live to your phone.",
+    "image": "fathom",
+    "priceHistory": [95.0, 93.0, 91.0, 90.0, 89.5, 89.0, 89.0],
+    "stock": 5
+  }
+]

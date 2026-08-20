@@ -1,0 +1,35 @@
+{
+  "name": "@bugsee-samples/react-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:api": "node server/api-server.mjs",
+    "dev:app": "vite --port 5302",
+    "dev": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:app\"",
+    "build": "vite build",
+    "preview:app": "vite preview --port 5302 --strictPort",
+    "preview": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm preview:app\"",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@bugsee/babel-plugin-component-annotate": "file:../../.local-registry/bugsee-babel-plugin-component-annotate.tgz",
+    "@bugsee/react": "file:../../.local-registry/bugsee-react.tgz",
+    "@bugsee/vite-plugin": "file:../../.local-registry/bugsee-vite-plugin.tgz",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1"
+  },
+  "devDependencies": {
+    "@bugsee/performance": "file:../../.local-registry/bugsee-performance.tgz",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.7",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "playwright": "^1.49.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "ws": "^8.18.0"
+  }
+}

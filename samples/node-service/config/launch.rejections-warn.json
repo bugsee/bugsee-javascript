@@ -1,0 +1,11 @@
+{
+  "_comment": "unhandledRejections: 'warn' — capture + print, process stays alive.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "unhandledRejections": "warn",
+  "detectCrashes": true,
+  "detectHangs": false,
+  "capturedDataStore": "disk",
+  "recover": true,
+  "instrumentIncomingRequests": true
+}

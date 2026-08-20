@@ -1,0 +1,23 @@
+{
+  "name": "@bugsee-samples/node-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env src/server.ts",
+    "start": "node --env-file=.env src/server.ts",
+    "verify": "node --env-file=.env scripts/verify.ts",
+    "smoke:dual-module": "node --env-file=.env scripts/run-dual-module-smoke.mjs",
+    "scenario:kill-recover": "node --env-file=.env scripts/kill-recover.ts",
+    "scenario:multi-instance": "node --env-file=.env scripts/multi-instance.ts",
+    "scenario:crash": "node --env-file=.env scripts/crash-harness.ts",
+    "otel:collector": "node scripts/otel-collector.ts"
+  },
+  "dependencies": {
+    "@bugsee/bugsee": "file:../../.local-registry/bugsee-bugsee.tgz",
+    "@bugsee/node": "file:../../.local-registry/bugsee-node.tgz",
+    "@bugsee/node-utils": "file:../../.local-registry/bugsee-node-utils.tgz",
+    "@bugsee/opentelemetry": "file:../../.local-registry/bugsee-opentelemetry.tgz",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@bugsee-samples/express-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "verify": "tsx scripts/verify.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bugsee/express": "file:../../.local-registry/bugsee-express.tgz",
+    "@bugsee/node": "file:../../.local-registry/bugsee-node.tgz",
+    "@bugsee/util": "file:../../.local-registry/bugsee-util.tgz",
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

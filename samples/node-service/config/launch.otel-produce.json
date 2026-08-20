@@ -1,0 +1,16 @@
+{
+  "_comment": "OTel produce direction: TEE finished performance transactions to a locally-run OTLP/HTTP collector (scripts/otel-collector.mjs).",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "detectCrashes": true,
+  "detectHangs": false,
+  "capturedDataStore": "disk",
+  "recover": true,
+  "instrumentIncomingRequests": true,
+  "performanceMonitoring": true,
+  "performanceSampleRate": 1,
+  "performanceFlushIntervalMs": 2000,
+  "otelExportUrl": "http://127.0.0.1:4318/v1/traces",
+  "otelExportHeaders": { "x-sample": "node-service" },
+  "otelExportResource": { "service.name": "bugsee-sample-node-service" }
+}

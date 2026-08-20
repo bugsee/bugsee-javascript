@@ -1,0 +1,123 @@
+# This file makes samples/vue-spa a standalone pnpm project and pins every @bugsee/*
+# dependency — including transitive ones — to the local pre-publish tarball produced by
+# `node scripts/pack-local.mjs`. That is what makes this sample a real pre-publish test: it
+# installs dist/ through the published `exports` map, exactly as a customer will.
+#
+# Re-run `node scripts/pack-local.mjs` after ANY change to packages/, then `pnpm install` here.
+overrides:
+  '@bugsee/adapter-kit': 'file:../../.local-registry/bugsee-adapter-kit.tgz'
+  '@bugsee/angular': 'file:../../.local-registry/bugsee-angular.tgz'
+  '@bugsee/astro': 'file:../../.local-registry/bugsee-astro.tgz'
+  '@bugsee/babel-plugin-component-annotate': 'file:../../.local-registry/bugsee-babel-plugin-component-annotate.tgz'
+  '@bugsee/browser': 'file:../../.local-registry/bugsee-browser.tgz'
+  '@bugsee/browser-utils': 'file:../../.local-registry/bugsee-browser-utils.tgz'
+  '@bugsee/bugsee': 'file:../../.local-registry/bugsee-bugsee.tgz'
+  '@bugsee/bun': 'file:../../.local-registry/bugsee-bun.tgz'
+  '@bugsee/bundler-plugin-core': 'file:../../.local-registry/bugsee-bundler-plugin-core.tgz'
+  '@bugsee/capture': 'file:../../.local-registry/bugsee-capture.tgz'
+  '@bugsee/cloudflare': 'file:../../.local-registry/bugsee-cloudflare.tgz'
+  '@bugsee/core': 'file:../../.local-registry/bugsee-core.tgz'
+  '@bugsee/deno': 'file:../../.local-registry/bugsee-deno.tgz'
+  '@bugsee/electron': 'file:../../.local-registry/bugsee-electron.tgz'
+  '@bugsee/elysia': 'file:../../.local-registry/bugsee-elysia.tgz'
+  '@bugsee/express': 'file:../../.local-registry/bugsee-express.tgz'
+  '@bugsee/fastify': 'file:../../.local-registry/bugsee-fastify.tgz'
+  '@bugsee/hapi': 'file:../../.local-registry/bugsee-hapi.tgz'
+  '@bugsee/hono': 'file:../../.local-registry/bugsee-hono.tgz'
+  '@bugsee/integration-shims': 'file:../../.local-registry/bugsee-integration-shims.tgz'
+  '@bugsee/koa': 'file:../../.local-registry/bugsee-koa.tgz'
+  '@bugsee/logger': 'file:../../.local-registry/bugsee-logger.tgz'
+  '@bugsee/nestjs': 'file:../../.local-registry/bugsee-nestjs.tgz'
+  '@bugsee/nextjs': 'file:../../.local-registry/bugsee-nextjs.tgz'
+  '@bugsee/node': 'file:../../.local-registry/bugsee-node.tgz'
+  '@bugsee/node-utils': 'file:../../.local-registry/bugsee-node-utils.tgz'
+  '@bugsee/nuxt': 'file:../../.local-registry/bugsee-nuxt.tgz'
+  '@bugsee/opentelemetry': 'file:../../.local-registry/bugsee-opentelemetry.tgz'
+  '@bugsee/performance': 'file:../../.local-registry/bugsee-performance.tgz'
+  '@bugsee/protocol': 'file:../../.local-registry/bugsee-protocol.tgz'
+  '@bugsee/react': 'file:../../.local-registry/bugsee-react.tgz'
+  '@bugsee/remix': 'file:../../.local-registry/bugsee-remix.tgz'
+  '@bugsee/replay': 'file:../../.local-registry/bugsee-replay.tgz'
+  '@bugsee/replay-canvas': 'file:../../.local-registry/bugsee-replay-canvas.tgz'
+  '@bugsee/rrweb': 'file:../../.local-registry/bugsee-rrweb.tgz'
+  '@bugsee/service': 'file:../../.local-registry/bugsee-service.tgz'
+  '@bugsee/solid': 'file:../../.local-registry/bugsee-solid.tgz'
+  '@bugsee/svelte': 'file:../../.local-registry/bugsee-svelte.tgz'
+  '@bugsee/svelte-plugin-component-annotate': 'file:../../.local-registry/bugsee-svelte-plugin-component-annotate.tgz'
+  '@bugsee/sveltekit': 'file:../../.local-registry/bugsee-sveltekit.tgz'
+  '@bugsee/types': 'file:../../.local-registry/bugsee-types.tgz'
+  '@bugsee/util': 'file:../../.local-registry/bugsee-util.tgz'
+  '@bugsee/vercel-edge': 'file:../../.local-registry/bugsee-vercel-edge.tgz'
+  '@bugsee/vite-plugin': 'file:../../.local-registry/bugsee-vite-plugin.tgz'
+  '@bugsee/vue': 'file:../../.local-registry/bugsee-vue.tgz'
+  '@bugsee/web-adapter': 'file:../../.local-registry/bugsee-web-adapter.tgz'
+  '@bugsee/webpack-plugin': 'file:../../.local-registry/bugsee-webpack-plugin.tgz'
+  '@bugsee/webview': 'file:../../.local-registry/bugsee-webview.tgz'
+  '@bugsee/webworker': 'file:../../.local-registry/bugsee-webworker.tgz'
+
+# @bugsee/rrweb depends on a git dependency (@bugsee/rrweb-record) which pnpm 11 blocks in
+# subdependencies by default. See samples/FINDINGS.md — this is a publish blocker, not a sample bug.
+blockExoticSubdeps: false
+
+minimumReleaseAgeExclude:
+  - vite@8.2.2
+  # Every @bugsee/* package is packed at version 0.0.0 (see samples/FINDINGS.md F-X2 — pre-publish
+  # versioning gap) and is not on the npm registry at all (installed from a local tarball via the
+  # `overrides` above). pnpm 11's minimumReleaseAge supply-chain check tries to look each one up on
+  # the public registry regardless of the `file:` resolution and fails closed on the 404. Excluding
+  # them by exact name@version is the same workaround the root pnpm-workspace.yaml uses for
+  # @bugsee/bugsee-cli@0.7.2.
+  - '@bugsee/adapter-kit@0.0.0'
+  - '@bugsee/angular@0.0.0'
+  - '@bugsee/astro@0.0.0'
+  - '@bugsee/babel-plugin-component-annotate@0.0.0'
+  - '@bugsee/browser@0.0.0'
+  - '@bugsee/browser-utils@0.0.0'
+  - '@bugsee/bugsee@0.0.0'
+  - '@bugsee/bun@0.0.0'
+  - '@bugsee/bundler-plugin-core@0.0.0'
+  - '@bugsee/capture@0.0.0'
+  - '@bugsee/cloudflare@0.0.0'
+  - '@bugsee/core@0.0.0'
+  - '@bugsee/deno@0.0.0'
+  - '@bugsee/electron@0.0.0'
+  - '@bugsee/elysia@0.0.0'
+  - '@bugsee/express@0.0.0'
+  - '@bugsee/fastify@0.0.0'
+  - '@bugsee/hapi@0.0.0'
+  - '@bugsee/hono@0.0.0'
+  - '@bugsee/integration-shims@0.0.0'
+  - '@bugsee/koa@0.0.0'
+  - '@bugsee/logger@0.0.0'
+  - '@bugsee/nestjs@0.0.0'
+  - '@bugsee/nextjs@0.0.0'
+  - '@bugsee/node@0.0.0'
+  - '@bugsee/node-utils@0.0.0'
+  - '@bugsee/nuxt@0.0.0'
+  - '@bugsee/opentelemetry@0.0.0'
+  - '@bugsee/performance@0.0.0'
+  - '@bugsee/protocol@0.0.0'
+  - '@bugsee/react@0.0.0'
+  - '@bugsee/remix@0.0.0'
+  - '@bugsee/replay@0.0.0'
+  - '@bugsee/replay-canvas@0.0.0'
+  - '@bugsee/rrweb@0.0.0'
+  - '@bugsee/service@0.0.0'
+  - '@bugsee/solid@0.0.0'
+  - '@bugsee/svelte@0.0.0'
+  - '@bugsee/svelte-plugin-component-annotate@0.0.0'
+  - '@bugsee/sveltekit@0.0.0'
+  - '@bugsee/types@0.0.0'
+  - '@bugsee/util@0.0.0'
+  - '@bugsee/vercel-edge@0.0.0'
+  - '@bugsee/vite-plugin@0.0.0'
+  - '@bugsee/vue@0.0.0'
+  - '@bugsee/web-adapter@0.0.0'
+  - '@bugsee/webpack-plugin@0.0.0'
+  - '@bugsee/webview@0.0.0'
+  - '@bugsee/webworker@0.0.0'
+  - '@rolldown/binding-darwin-x64@1.2.5'
+  - '@rolldown/binding-linux-arm64-gnu@1.2.5'
+
+allowBuilds:
+  esbuild: true

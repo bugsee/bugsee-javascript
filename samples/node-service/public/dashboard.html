@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Link shortener — Bugsee node-service sample</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; gap: 0.5rem; margin: 1rem 0; }
+  input[type=text] { flex: 1; padding: 0.4rem; }
+  button { padding: 0.4rem 0.8rem; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  .stats { display: flex; gap: 1.5rem; margin: 1rem 0; }
+  .stat { background: #f7f7f7; padding: 0.6rem 1rem; border-radius: 6px; }
+  .stat b { display: block; font-size: 1.3rem; }
+  footer { margin-top: 2rem; font-size: 0.8rem; color: #777; }
+</style>
+</head>
+<body>
+<h1>Link shortener</h1>
+<p>A tiny <code>node:http</code> service — the reference sample for <code>@bugsee/node</code>. See
+<a href="/scenarios.md">scenarios.md</a> for the Bugsee scenario panel (HTTP routes under
+<code>/scenario/*</code>, <code>/burn</code>, <code>/block</code>, <code>/admin/*</code>).</p>
+
+<div class="stats" id="stats"></div>
+
+<form id="create-form">
+  <input type="text" id="url" placeholder="https://example.com/some/long/path" required />
+  <input type="text" id="ttl" placeholder="TTL ms (optional)" style="max-width:10rem" />
+  <button type="submit">Shorten</button>
+</form>
+
+<table>
+  <thead><tr><th>Code</th><th>URL</th><th>Hits</th><th>Expires</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<footer>Bugsee staging app: <code>SNODE</code> · endpoint set via <code>.env</code></footer>
+
+<script>
+async function refresh() {
+  const [stats, links] = await Promise.all([
+    fetch('/api/stats').then((r) => r.json()),
+    fetch('/api/links').then((r) => r.json()),
+  ]);
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><b>${stats.total}</b>total</div>
+    <div class="stat"><b>${stats.active}</b>active</div>
+    <div class="stat"><b>${stats.expired}</b>expired</div>
+    <div class="stat"><b>${stats.totalHits}</b>hits</div>`;
+  document.getElementById('rows').innerHTML = links
+    .map(
+      (l) =>
+        `<tr><td><a href="/${l.code}">${l.code}</a></td><td>${l.url}</td><td>${l.hits}</td><td>${l.expiresAt ? new Date(l.expiresAt).toLocaleTimeString() : 'never'}</td></tr>`,
+    )
+    .join('');
+}
+document.getElementById('create-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('url').value;
+  const ttl = document.getElementById('ttl').value;
+  await fetch('/api/links', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url, ttlMs: ttl ? Number(ttl) : null }),
+  });
+  document.getElementById('url').value = '';
+  document.getElementById('ttl').value = '';
+  refresh();
+});
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

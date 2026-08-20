@@ -1,0 +1,12 @@
+{
+  "_comment": "exitOnUncaught: false — an uncaught EXCEPTION is captured + reported but the process is NOT exited.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "unhandledRejections": "preserve",
+  "detectCrashes": true,
+  "detectHangs": false,
+  "exitOnUncaught": false,
+  "capturedDataStore": "disk",
+  "recover": true,
+  "instrumentIncomingRequests": true
+}

@@ -1,0 +1,15 @@
+{
+  "_comment": "captureWriter: 'worker' — off-thread worker_threads capture writer over a SAB ring, instead of the default in-line batched writer.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "detectCrashes": true,
+  "detectHangs": true,
+  "hangFairMs": 800,
+  "hangMediumMs": 1600,
+  "hangSevereMs": 2600,
+  "profiling": true,
+  "capturedDataStore": "disk",
+  "captureWriter": "worker",
+  "recover": true,
+  "instrumentIncomingRequests": true
+}

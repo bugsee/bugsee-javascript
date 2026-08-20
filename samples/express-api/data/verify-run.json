@@ -1,0 +1,1958 @@
+{
+  "runMarker": "run-mt1fkx7t",
+  "at": "2026-08-20T11:22:39.965Z",
+  "results": [
+    {
+      "id": "api.no-auth",
+      "method": "GET",
+      "path": "/projects",
+      "status": 401,
+      "expected": 401,
+      "ok": true,
+      "body": {
+        "error": "missing bearer token"
+      }
+    },
+    {
+      "id": "api.bad-auth",
+      "method": "GET",
+      "path": "/projects",
+      "status": 403,
+      "expected": 403,
+      "ok": true,
+      "body": {
+        "error": "invalid bearer token"
+      }
+    },
+    {
+      "id": "api.create-project",
+      "method": "POST",
+      "path": "/projects",
+      "status": 201,
+      "expected": 201,
+      "ok": true,
+      "body": {
+        "id": "50nuvaju",
+        "name": "Verify project",
+        "createdAt": "2026-08-20T11:22:14.976Z"
+      }
+    },
+    {
+      "id": "api.validation-4xx",
+      "method": "POST",
+      "path": "/projects",
+      "status": 400,
+      "expected": 400,
+      "ok": true,
+      "body": {
+        "error": "\"name\" must be a non-empty string"
+      }
+    },
+    {
+      "id": "api.create-task",
+      "method": "POST",
+      "path": "/projects/50nuvaju/tasks",
+      "status": 201,
+      "expected": 201,
+      "ok": true,
+      "body": {
+        "id": "ijbjzaxv",
+        "projectId": "50nuvaju",
+        "title": "Verify task",
+        "done": false,
+        "createdAt": "2026-08-20T11:22:14.978Z",
+        "score": 1
+      }
+    },
+    {
+      "id": "api.get-project",
+      "method": "GET",
+      "path": "/projects/50nuvaju",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "id": "50nuvaju",
+        "name": "Verify project",
+        "createdAt": "2026-08-20T11:22:14.976Z"
+      }
+    },
+    {
+      "id": "api.pagination",
+      "method": "GET",
+      "path": "/projects?page=1&pageSize=1",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "items": [
+          {
+            "id": "50nuvaju",
+            "name": "Verify project",
+            "createdAt": "2026-08-20T11:22:14.976Z"
+          }
+        ],
+        "page": 1,
+        "pageSize": 1,
+        "total": 1,
+        "totalPages": 1
+      }
+    },
+    {
+      "id": "api.not-found",
+      "method": "GET",
+      "path": "/projects/does-not-exist",
+      "status": 404,
+      "expected": 404,
+      "ok": true,
+      "body": {
+        "error": "project not found"
+      }
+    },
+    {
+      "id": "S1.status",
+      "method": "GET",
+      "path": "/scenarios/s1/status",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "isLaunched": true
+      }
+    },
+    {
+      "id": "S1.relaunch-noop",
+      "method": "POST",
+      "path": "/scenarios/s1/relaunch-noop",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "sameInstance": true
+      }
+    },
+    {
+      "id": "S2.identity-attributes",
+      "method": "POST",
+      "path": "/scenarios/s2/identity-attributes",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "userIdentifier": "sample-user@bugsee.dev",
+        "beforeSnapshot": {
+          "str_attr": "hello-run-mt1fkx7t",
+          "num_attr": 42,
+          "bool_attr": true,
+          "arr_attr": [
+            "a",
+            "b",
+            "c"
+          ]
+        },
+        "afterSnapshot": {
+          "str_attr": "hello-run-mt1fkx7t",
+          "num_attr": 42,
+          "bool_attr": true,
+          "arr_attr": [
+            "a",
+            "b",
+            "c"
+          ],
+          "after_attr": "set-after-event-run-mt1fkx7t"
+        },
+        "getAttribute_num_attr": 42
+      }
+    },
+    {
+      "id": "S2.clear-attributes",
+      "method": "POST",
+      "path": "/scenarios/s2/clear-attributes",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "afterClearAll": {}
+      }
+    },
+    {
+      "id": "S3.telemetry",
+      "method": "POST",
+      "path": "/scenarios/s3/telemetry",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S4.error-instance",
+      "method": "POST",
+      "path": "/scenarios/s4/error-instance",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S4.non-error",
+      "method": "POST",
+      "path": "/scenarios/s4/non-error",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S4.cause",
+      "method": "POST",
+      "path": "/scenarios/s4/cause",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S4.options",
+      "method": "POST",
+      "path": "/scenarios/s4/options",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S4.dedupe",
+      "method": "POST",
+      "path": "/scenarios/s4/dedupe",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t",
+        "r1": {
+          "ok": false,
+          "error": {
+            "code": 0,
+            "fatal": false,
+            "name": "BugseeError"
+          }
+        },
+        "r2": {
+          "ok": false
+        }
+      }
+    },
+    {
+      "id": "S4.storm",
+      "method": "POST",
+      "path": "/scenarios/s4/storm",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t",
+        "tookMs": 12,
+        "stillResponsive": true
+      }
+    },
+    {
+      "id": "S5.route-throw",
+      "method": "GET",
+      "path": "/scenarios/s5/route-throw",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "s5-route-throw-run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S5.middleware-throw",
+      "method": "GET",
+      "path": "/scenarios/s5/middleware-throw",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "s5-middleware-throw-run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S5.async-throw",
+      "method": "GET",
+      "path": "/scenarios/s5/async-throw",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "s5-async-throw-run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S5.timeout-throw",
+      "method": "POST",
+      "path": "/scenarios/s5/timeout-throw",
+      "status": 202,
+      "expected": 202,
+      "ok": true,
+      "body": {
+        "accepted": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S5.unhandled-rejection",
+      "method": "POST",
+      "path": "/scenarios/s5/unhandled-rejection",
+      "status": 202,
+      "expected": 202,
+      "ok": true,
+      "body": {
+        "accepted": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S6.console",
+      "method": "POST",
+      "path": "/scenarios/s6/console",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S7.fetch-get",
+      "method": "GET",
+      "path": "/scenarios/s7/fetch-get",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 200,
+        "thirdPartyBody": {
+          "ok": true,
+          "receivedAt": 1787224935067
+        }
+      }
+    },
+    {
+      "id": "S7.fetch-post-json",
+      "method": "POST",
+      "path": "/scenarios/s7/fetch-post-json",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 200,
+        "thirdPartyBody": {
+          "ok": true,
+          "receivedAt": 1787224935068
+        }
+      }
+    },
+    {
+      "id": "S7.fetch-post-text",
+      "method": "POST",
+      "path": "/scenarios/s7/fetch-post-text",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 200
+      }
+    },
+    {
+      "id": "S7.4xx",
+      "method": "GET",
+      "path": "/scenarios/s7/4xx",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 404,
+        "ok": false
+      }
+    },
+    {
+      "id": "S7.5xx",
+      "method": "GET",
+      "path": "/scenarios/s7/5xx",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 500,
+        "ok": false
+      }
+    },
+    {
+      "id": "S7.connection-failure",
+      "method": "GET",
+      "path": "/scenarios/s7/connection-failure",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "failed": true,
+        "error": "fetch failed"
+      }
+    },
+    {
+      "id": "S7.large-body",
+      "method": "GET",
+      "path": "/scenarios/s7/large-body",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 200,
+        "bodyLength": 20000
+      }
+    },
+    {
+      "id": "S7.no-content-type",
+      "method": "GET",
+      "path": "/scenarios/s7/no-content-type",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "thirdPartyStatus": 200,
+        "contentType": null,
+        "text": "no content type here"
+      }
+    },
+    {
+      "id": "S8.log-redaction",
+      "method": "POST",
+      "path": "/scenarios/s8/log-redaction",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S8.breadcrumb-drop",
+      "method": "POST",
+      "path": "/scenarios/s8/breadcrumb-drop",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S8.report-mutate",
+      "method": "POST",
+      "path": "/scenarios/s8/report-mutate",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S8.report-veto",
+      "method": "POST",
+      "path": "/scenarios/s8/report-veto",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S8.network-filter",
+      "method": "POST",
+      "path": "/scenarios/s8/network-filter",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t",
+        "filterInvoked": true
+      }
+    },
+    {
+      "id": "S9.manual-span",
+      "method": "POST",
+      "path": "/scenarios/s9/manual-span",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t",
+        "transactionName": "scenario.manual.run-mt1fkx7t",
+        "traceId": "30b6f3dc49319397ea0693e2ddc6815e"
+      }
+    },
+    {
+      "id": "S9.route-name",
+      "method": "POST",
+      "path": "/scenarios/s9/route-name",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "ok": true,
+        "marker": "run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "S10.outbound-trace",
+      "method": "GET",
+      "path": "/scenarios/s10/outbound-trace",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "marker": "run-mt1fkx7t",
+        "traceparentReceivedByThirdParty": "00-737f7236cfc49d7a4c08d50c45aa6b72-d18e08f5c80bc72e-01"
+      }
+    },
+    {
+      "id": "S12.info",
+      "method": "GET",
+      "path": "/scenarios/s12/info",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "capturedDataStore": "disk",
+        "dataDir": "(default os.tmpdir()/bugsee)",
+        "note": "see scenarios.md S12 for the manual SIGKILL-recovery reproduction (needs a process restart)."
+      }
+    },
+    {
+      "id": "route-naming.flat",
+      "method": "GET",
+      "path": "/scenarios/route-naming/proj1/tasks/task1",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "pattern": "/route-naming/:id/tasks/:taskId",
+        "baseUrl": "/scenarios",
+        "originalUrl": "/scenarios/route-naming/proj1/tasks/task1?marker=run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "route-naming.nested-list",
+      "method": "GET",
+      "path": "/projects/50nuvaju/tasks",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "items": [
+          {
+            "id": "ijbjzaxv",
+            "projectId": "50nuvaju",
+            "title": "Verify task",
+            "done": false,
+            "createdAt": "2026-08-20T11:22:14.978Z"
+          }
+        ],
+        "page": 1,
+        "pageSize": 20,
+        "total": 1,
+        "totalPages": 1
+      }
+    },
+    {
+      "id": "status.4xx-not-reported",
+      "method": "GET",
+      "path": "/scenarios/status/4xx",
+      "status": 400,
+      "expected": 400,
+      "ok": true,
+      "body": {
+        "error": "a normal validation-style 4xx — never thrown, never reported"
+      }
+    },
+    {
+      "id": "status.5xx-reported",
+      "method": "GET",
+      "path": "/scenarios/status/5xx-thrown",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "s-5xx-thrown-run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "alt.status",
+      "method": "GET",
+      "path": "/scenarios/alt-status",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "launched": true
+      }
+    },
+    {
+      "id": "alt.route-status",
+      "method": "GET",
+      "path": "/scenarios/alt/status",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "instrumentIncomingRequests": false,
+        "activeTransaction": {
+          "op": "http.server",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "alt.route-naming",
+      "method": "GET",
+      "path": "/scenarios/alt/projects/p1/tasks/t1",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "pattern": "/projects/:id/tasks/:taskId",
+        "concrete": "/scenarios/alt/projects/p1/tasks/t1?marker=run-mt1fkx7t"
+      }
+    },
+    {
+      "id": "alt.throw",
+      "method": "GET",
+      "path": "/scenarios/alt/throw",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "ok": false,
+        "error": "alt-app synchronous throw (adapter-alone, instrumentIncomingRequests:false)"
+      }
+    },
+    {
+      "id": "alt.throw-async",
+      "method": "GET",
+      "path": "/scenarios/alt/throw-async",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "ok": false,
+        "error": "alt-app async throw (adapter-alone)"
+      }
+    },
+    {
+      "id": "concurrency.8",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=8&delayMs=1",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-8"
+      }
+    },
+    {
+      "id": "concurrency.9",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=9&delayMs=0",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-9"
+      }
+    },
+    {
+      "id": "concurrency.7",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=7&delayMs=2",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-7"
+      }
+    },
+    {
+      "id": "concurrency.6",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=6&delayMs=3",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-6"
+      }
+    },
+    {
+      "id": "concurrency.5",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=5&delayMs=4",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-5"
+      }
+    },
+    {
+      "id": "concurrency.4",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=4&delayMs=5",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-4"
+      }
+    },
+    {
+      "id": "concurrency.48",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=48&delayMs=1",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-48"
+      }
+    },
+    {
+      "id": "concurrency.49",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=49&delayMs=0",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-49"
+      }
+    },
+    {
+      "id": "concurrency.0",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=0&delayMs=9",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-0"
+      }
+    },
+    {
+      "id": "concurrency.3",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=3&delayMs=6",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-3"
+      }
+    },
+    {
+      "id": "concurrency.46",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=46&delayMs=3",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-46"
+      }
+    },
+    {
+      "id": "concurrency.47",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=47&delayMs=2",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-47"
+      }
+    },
+    {
+      "id": "concurrency.45",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=45&delayMs=4",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-45"
+      }
+    },
+    {
+      "id": "concurrency.2",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=2&delayMs=7",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-2"
+      }
+    },
+    {
+      "id": "concurrency.44",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=44&delayMs=5",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-44"
+      }
+    },
+    {
+      "id": "concurrency.1",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=1&delayMs=8",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-1"
+      }
+    },
+    {
+      "id": "concurrency.43",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=43&delayMs=6",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-43"
+      }
+    },
+    {
+      "id": "concurrency.42",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=42&delayMs=7",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-42"
+      }
+    },
+    {
+      "id": "concurrency.41",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=41&delayMs=8",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-41"
+      }
+    },
+    {
+      "id": "concurrency.40",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=40&delayMs=9",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-40"
+      }
+    },
+    {
+      "id": "concurrency.39",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=39&delayMs=10",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-39"
+      }
+    },
+    {
+      "id": "concurrency.38",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=38&delayMs=11",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-38"
+      }
+    },
+    {
+      "id": "concurrency.37",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=37&delayMs=12",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-37"
+      }
+    },
+    {
+      "id": "concurrency.36",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=36&delayMs=13",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-36"
+      }
+    },
+    {
+      "id": "concurrency.35",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=35&delayMs=14",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-35"
+      }
+    },
+    {
+      "id": "concurrency.34",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=34&delayMs=15",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-34"
+      }
+    },
+    {
+      "id": "concurrency.33",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=33&delayMs=16",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-33"
+      }
+    },
+    {
+      "id": "concurrency.32",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=32&delayMs=17",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-32"
+      }
+    },
+    {
+      "id": "concurrency.30",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=30&delayMs=19",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-30"
+      }
+    },
+    {
+      "id": "concurrency.31",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=31&delayMs=18",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-31"
+      }
+    },
+    {
+      "id": "concurrency.29",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=29&delayMs=20",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-29"
+      }
+    },
+    {
+      "id": "concurrency.28",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=28&delayMs=21",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-28"
+      }
+    },
+    {
+      "id": "concurrency.27",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=27&delayMs=22",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-27"
+      }
+    },
+    {
+      "id": "concurrency.26",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=26&delayMs=23",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-26"
+      }
+    },
+    {
+      "id": "concurrency.25",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=25&delayMs=24",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-25"
+      }
+    },
+    {
+      "id": "concurrency.24",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=24&delayMs=25",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-24"
+      }
+    },
+    {
+      "id": "concurrency.23",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=23&delayMs=26",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-23"
+      }
+    },
+    {
+      "id": "concurrency.22",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=22&delayMs=27",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-22"
+      }
+    },
+    {
+      "id": "concurrency.21",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=21&delayMs=28",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-21"
+      }
+    },
+    {
+      "id": "concurrency.20",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=20&delayMs=29",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-20"
+      }
+    },
+    {
+      "id": "concurrency.19",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=19&delayMs=30",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-19"
+      }
+    },
+    {
+      "id": "concurrency.18",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=18&delayMs=31",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-18"
+      }
+    },
+    {
+      "id": "concurrency.17",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=17&delayMs=32",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-17"
+      }
+    },
+    {
+      "id": "concurrency.15",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=15&delayMs=34",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-15"
+      }
+    },
+    {
+      "id": "concurrency.16",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=16&delayMs=33",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-16"
+      }
+    },
+    {
+      "id": "concurrency.14",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=14&delayMs=35",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-14"
+      }
+    },
+    {
+      "id": "concurrency.13",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=13&delayMs=36",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-13"
+      }
+    },
+    {
+      "id": "concurrency.12",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=12&delayMs=37",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-12"
+      }
+    },
+    {
+      "id": "concurrency.11",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=11&delayMs=38",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-11"
+      }
+    },
+    {
+      "id": "concurrency.10",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit?idx=10&delayMs=39",
+      "status": 500,
+      "expected": 500,
+      "ok": true,
+      "body": {
+        "error": "concurrency-run-mt1fkx7t-10"
+      }
+    },
+    {
+      "id": "concurrency.summary",
+      "method": "GET",
+      "path": "/scenarios/concurrency/hit (x50)",
+      "status": 500,
+      "expected": 500,
+      "ok": true
+    },
+    {
+      "id": "S1.flush",
+      "method": "POST",
+      "path": "/scenarios/s1/flush",
+      "status": 200,
+      "expected": 200,
+      "ok": true,
+      "body": {
+        "flushed": true
+      }
+    }
+  ],
+  "bundleCount": 6,
+  "transactions": [
+    {
+      "seq": 4,
+      "at": "2026-08-20T11:22:17.527Z",
+      "kind": "performance",
+      "method": "POST",
+      "url": "https://apidev.bugsee.com/v2/performance/transactions",
+      "status": 202,
+      "requestHeaders": {
+        "content-type": "application/json",
+        "authorization": "Bearer 4237713a-cd6f-4e18-a642-b3549a3c21c9",
+        "x-bugsee-internal": "1"
+      },
+      "transactions": [
+        {
+          "name": "POST /s2/clear-attributes",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s3/telemetry",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/error-instance",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/non-error",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/cause",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/options",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/dedupe",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s4/storm",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s5/route-throw",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s5/middleware-throw",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s5/async-throw",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s5/timeout-throw",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s5/unhandled-rejection",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s6/console",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /ok",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s7/fetch-get",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "POST /ok",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s7/fetch-post-json",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "POST /ok",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s7/fetch-post-text",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /not-found",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s7/4xx",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /boom",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s7/5xx",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /s7/connection-failure",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /large",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s7/large-body",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /no-content-type",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s7/no-content-type",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "POST /s8/log-redaction",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s8/breadcrumb-drop",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s8/report-mutate",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s8/report-veto",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /echo-headers",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s8/network-filter",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "scenario.manual.run-mt1fkx7t",
+          "op": "scenario",
+          "status": "OK",
+          "spanCount": 6
+        },
+        {
+          "name": "POST /s9/manual-span",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /s9/route-name",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "POST /score",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /s10/outbound-trace",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 1
+        },
+        {
+          "name": "GET /s12/info",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /route-naming/:id/tasks/:taskId",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /status/4xx",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /status/5xx-thrown",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /alt-status",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /status",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /projects/:id/tasks/:taskId",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /throw",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /throw-async",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        },
+        {
+          "name": "GET /concurrency/hit",
+          "op": "http.server",
+          "status": "ERROR",
+          "spanCount": 0
+        }
+      ]
+    },
+    {
+      "seq": 16,
+      "at": "2026-08-20T11:22:21.137Z",
+      "kind": "performance",
+      "method": "POST",
+      "url": "https://apidev.bugsee.com/v2/performance/transactions",
+      "status": 202,
+      "requestHeaders": {
+        "content-type": "application/json",
+        "authorization": "Bearer 4237713a-cd6f-4e18-a642-b3549a3c21c9",
+        "x-bugsee-internal": "1"
+      },
+      "transactions": [
+        {
+          "name": "POST /s1/flush",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        }
+      ]
+    },
+    {
+      "seq": 17,
+      "at": "2026-08-20T11:22:28.177Z",
+      "kind": "performance",
+      "method": "POST",
+      "url": "https://apidev.bugsee.com/v2/performance/transactions",
+      "status": 202,
+      "requestHeaders": {
+        "content-type": "application/json",
+        "authorization": "Bearer 4237713a-cd6f-4e18-a642-b3549a3c21c9",
+        "x-bugsee-internal": "1"
+      },
+      "transactions": [
+        {
+          "name": "GET /_debug/bundles",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        }
+      ]
+    },
+    {
+      "seq": 18,
+      "at": "2026-08-20T11:22:31.142Z",
+      "kind": "performance",
+      "method": "POST",
+      "url": "https://apidev.bugsee.com/v2/performance/transactions",
+      "status": 202,
+      "requestHeaders": {
+        "content-type": "application/json",
+        "authorization": "Bearer 4237713a-cd6f-4e18-a642-b3549a3c21c9",
+        "x-bugsee-internal": "1"
+      },
+      "transactions": [
+        {
+          "name": "GET /_debug/bundles",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        }
+      ]
+    },
+    {
+      "seq": 19,
+      "at": "2026-08-20T11:22:37.991Z",
+      "kind": "performance",
+      "method": "POST",
+      "url": "https://apidev.bugsee.com/v2/performance/transactions",
+      "status": 202,
+      "requestHeaders": {
+        "content-type": "application/json",
+        "authorization": "Bearer 4237713a-cd6f-4e18-a642-b3549a3c21c9",
+        "x-bugsee-internal": "1"
+      },
+      "transactions": [
+        {
+          "name": "GET /_debug/bundles",
+          "op": "http.server",
+          "status": "OK",
+          "spanCount": 0
+        }
+      ]
+    }
+  ]
+}

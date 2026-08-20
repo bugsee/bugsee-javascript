@@ -1,0 +1,3 @@
+{
+  "_comment": "S1 'minimum options' profile — no fields set beyond what src/bugsee-client.ts always supplies (endpoint/appId/appVersion/appBuild). Every BugseeLaunchOptions default applies."
+}

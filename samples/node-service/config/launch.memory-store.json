@@ -1,0 +1,10 @@
+{
+  "_comment": "capturedDataStore: 'memory' — legacy in-RAM ring, no disk/recovery. Contrast case for S12.",
+  "captureLogs": true,
+  "captureNetwork": true,
+  "detectCrashes": true,
+  "detectHangs": false,
+  "capturedDataStore": "memory",
+  "recover": true,
+  "instrumentIncomingRequests": true
+}
