@@ -12,13 +12,17 @@ import {
   type LockManagerLike,
   markerDatabaseName,
 } from '@bugsee/browser-utils';
+import { createConsoleInterceptor } from '@bugsee/capture';
 import {
   type BundleStore,
   BundleStoreToken,
   contributeServiceManifest,
+  createCaptureExporter,
   createMemoryCaptureStore,
   createReportingRequest,
   createSystemClock,
+  getCarrier,
+  getOrCreateInterceptor,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
@@ -277,6 +281,20 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(client.getService(BundleStoreToken)).toBeDefined(); // ...but the durable bundle store still wired
   });
 
+  it('a memory-only (web-worker) launch records NO markers and reports no internal error', async () => {
+    // The marker hook is handed to the core client only when there IS a marker store. Handing it over
+    // unconditionally gives core `{ store: undefined }`, which it treats as present and then fails on at
+    // every single report — swallowed into onError, so the only visible symptom is an internal error per
+    // incident. A clean memory-only launch must produce none.
+    const onError = vi.fn();
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, onError })); // default web-worker → no markers
+    await client.logException(new Error('memory-only incident'));
+    await client.flush();
+    expect(JSON.stringify(issueJson(transport))).toContain('memory-only incident'); // delivered…
+    expect(onError).not.toHaveBeenCalled(); // …with nothing failing behind the scenes
+  });
+
   it('persists the rolling capture buffer under a per-instance prefix in the per-token capture db', async () => {
     const idb = new IDBFactory();
     const tick: Array<() => void> = [];
@@ -368,6 +386,74 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
     expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
     expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(1);
+  });
+
+  it("recovers a dead sibling's incident WHATEVER generation it recorded under (the -1 sentinel)", async () => {
+    // `currentGeneration: -1` means "no generation in this sibling's data is the live one, so every one
+    // of them is eligible" — a marker whose generation equals `currentGeneration` is SKIPPED
+    // (packages/core/src/capture-recovery.ts:51). Passing anything a real generation could equal (a
+    // wall-clock ms, or a small counter after an injected clock) silently drops that sibling's incident.
+    // The value below is arbitrary on purpose: recovery must not depend on it.
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 1, { m: 'gen-one-crash' }, true);
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([
+      { m: 'gen-one-crash' },
+    ]);
+  });
+
+  it('bounds the DURABLE (IndexedDB) rolling buffer too, not just the in-memory one', async () => {
+    // The persist path builds a different store (createIdbChunkCaptureStore) and got its own copy of the
+    // bounds argument; replacing that whole argument object with `{}` — an unbounded Service Worker
+    // buffer growing in IndexedDB until the origin quota kills it — passed every other test here.
+    const idb = new IDBFactory();
+    const transport = uploadTransport();
+    const ticks: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb: () => void) => {
+        ticks.push(cb);
+        return 'h' as unknown as ReturnType<Scheduler['setInterval']>;
+      },
+      clearInterval: () => {},
+    };
+    const client = track(
+      'tok',
+      baseOptions({
+        transport,
+        scheduler,
+        indexedDB: idb,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        maxDataSize: 0.0001, // ≈ 104 bytes
+      }),
+    );
+    console.log(`OLDEST-DURABLE${'x'.repeat(400)}`);
+    await new Promise((r) => setTimeout(r, 0));
+    for (const cb of ticks) {
+      cb(); // close the part holding it
+    }
+    console.log(`NEWEST-DURABLE${'x'.repeat(400)}`);
+    await new Promise((r) => setTimeout(r, 0));
+    await client.logException(new Error('durable bounds probe'));
+    await client.flush();
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    const logs = strFromU8(files['logs.json'] as Uint8Array);
+    expect(logs).toContain('NEWEST-DURABLE');
+    expect(logs).not.toContain('OLDEST-DURABLE'); // evicted by the byte ceiling
   });
 
   it('sweeps a DEAD sibling with capture but NO incident, uploading nothing', async () => {
@@ -521,22 +607,37 @@ describe('launch (webworker)', () => {
   });
 
   it('accepts an injected clock + a DEFAULT scheduler (none injected)', async () => {
+    const transport = uploadTransport();
     const client = launch('tok', {
-      transport: uploadTransport(),
+      transport,
       captureNetwork: false,
       globalScope: fakeScope().scope,
       clock: createSystemClock(),
     });
     clients.push(client);
-    await client.logException(new Error('x'));
+    await client.logException(new Error('default-scheduler incident'));
     await client.flush();
-    expect(client).toBeDefined();
+    // Assert the SDK actually WORKS on the real timer scheduler — `expect(client).toBeDefined()` (what
+    // this test used to check) passes for any launch at all, including one wired to nothing.
+    expect(JSON.stringify(issueJson(transport))).toContain('default-scheduler incident');
   });
 
-  it('defaults to the fetch transport when none is injected', () => {
+  it('defaults to the fetch transport when none is injected', async () => {
+    // Same reason: the old body only checked that launch() returned something. Stub the global `fetch`
+    // the browser transport is built on and assert the SDK's own request actually went through it.
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return new Response(JSON.stringify({ access_token: 'access' }), { status: 200 });
+    });
     const client = launch('tok', { captureNetwork: false, globalScope: fakeScope().scope });
     clients.push(client);
-    expect(client).toBeDefined();
+    await client.logException(new Error('x'));
+    await client.flush();
+    expect(calls[0]?.[0]).toBe('https://api.bugsee.com/v2/sessions');
+    expect(
+      (calls[0]?.[1]?.headers as Record<string, string> | undefined)?.['x-bugsee-internal'],
+    ).toBe('1'); // …and still internal-tagged, so the SDK never captures its own traffic
   });
 
   it('threads the app identity (id/version/build) into the environment', async () => {
@@ -751,5 +852,379 @@ describe('Service Worker detection (Wave 4.2)', () => {
       await client.flush();
       expect(issueJson(transport).environment.platform.type).toBe('web-worker');
     });
+  });
+});
+
+// The URL every request is sent to, the token that authorizes it, and the SDK version the backend keys the
+// SDK by are all resolved in launch() from module constants — and were asserted by NOTHING. The suite's
+// fake transport matches routes with `endsWith('/v2/sessions')`, so an empty (or wrong) endpoint, an empty
+// SDK version and a dropped app token all sailed through it: mutations blanking DEFAULT_ENDPOINT and
+// SDK_VERSION, and one replacing the whole `createBugseeApi` config with `{}`, each survived the full suite.
+describe('launch — endpoint / app token / SDK version wiring', () => {
+  const callTo = (transport: ReturnType<typeof uploadTransport>, suffix: string) =>
+    transport.mock.calls.find(([url]) => url.endsWith(suffix));
+
+  it('sends every API request to the default https://api.bugsee.com origin', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    expect(callTo(transport, '/v2/sessions')?.[0]).toBe('https://api.bugsee.com/v2/sessions');
+    expect(callTo(transport, '/v2/issues')?.[0]).toBe('https://api.bugsee.com/v2/issues');
+  });
+
+  it('routes to an explicit endpoint override instead', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, endpoint: 'https://eu.bugsee.test' }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    expect(callTo(transport, '/v2/sessions')?.[0]).toBe('https://eu.bugsee.test/v2/sessions');
+    expect(callTo(transport, '/v2/issues')?.[0]).toBe('https://eu.bugsee.test/v2/issues');
+  });
+
+  it('authorizes with the launch app token (header + session body)', async () => {
+    const transport = uploadTransport();
+    const client = track('my-app-token', baseOptions({ transport }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
+    expect(session.headers?.['x-app-token']).toBe('my-app-token');
+    expect(JSON.parse(session.body as string)).toMatchObject({ app_token: 'my-app-token' });
+  });
+
+  it('reports the package SDK version (user-agent + environment.sdk.version) by default', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
+    expect(session.headers?.['user-agent']).toBe('BugseeJS/0.0.0');
+    expect(
+      (issueJson(transport).environment as unknown as { sdk: { version: string } }).sdk.version,
+    ).toBe('0.0.0');
+  });
+
+  it('honors an explicit sdkVersion override everywhere it is reported', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, sdkVersion: '9.9.9' }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
+    expect(session.headers?.['user-agent']).toBe('BugseeJS/9.9.9');
+    expect(
+      (issueJson(transport).environment as unknown as { sdk: { version: string } }).sdk.version,
+    ).toBe('9.9.9');
+  });
+});
+
+// The two bounds on the rolling buffer — `maxDataSize` (MB → bytes) and `maxRecordingTime` (s → ms) — are
+// the only thing keeping a long-lived worker's capture from growing without limit, and the whole
+// `storeBounds` object could be replaced with `{}` (unbounded), the MB conversion divided instead of
+// multiplied, and the `maxDataSize` option definition deleted, without a single test noticing.
+describe('launch — rolling capture bounds (maxDataSize / maxRecordingTime)', () => {
+  // A scheduler whose interval callback is driven by hand: the client's tick is what CLOSES the current
+  // part, and only a closed part can be evicted (by the byte cap or the time window).
+  const manualTicker = () => {
+    const ticks: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb: () => void) => {
+        ticks.push(cb);
+        return 'h' as unknown as ReturnType<Scheduler['setInterval']>;
+      },
+      clearInterval: () => {},
+    };
+    return {
+      scheduler,
+      tick: () => {
+        for (const cb of ticks) {
+          cb();
+        }
+      },
+    };
+  };
+
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  const uploadedLogs = async (
+    client: ReturnType<typeof launch>,
+    transport: ReturnType<typeof uploadTransport>,
+  ): Promise<string> => {
+    await client.logException(new Error('bounds probe'));
+    await client.flush();
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    const name = Object.keys(files).find((n) => n.includes('log')) as string;
+    return strFromU8(files[name] as Uint8Array);
+  };
+
+  const bigLog = (marker: string) => `${marker}${'x'.repeat(400)}`;
+
+  it('evicts the oldest closed part once the byte ceiling is exceeded (maxDataSize is in MEGABYTES)', async () => {
+    const transport = uploadTransport();
+    const { scheduler, tick } = manualTicker();
+    // 0.0001 MB ≈ 104 bytes — smaller than a single one of the ~400-byte log lines below.
+    const client = track('tok', baseOptions({ transport, scheduler, maxDataSize: 0.0001 }));
+    console.log(bigLog('OLDEST-ENTRY'));
+    await settle();
+    tick(); // closes the part holding the oldest entry (an OPEN part is never evicted)
+    console.log(bigLog('NEWEST-ENTRY'));
+    await settle();
+    const logs = await uploadedLogs(client, transport);
+    expect(logs).toContain('NEWEST-ENTRY'); // the live part always survives (soft bound)
+    expect(logs).not.toContain('OLDEST-ENTRY'); // …the closed one over the ceiling did not
+  });
+
+  it('keeps everything when the same capture fits the ceiling (the MB→bytes conversion is a multiply)', async () => {
+    const transport = uploadTransport();
+    const { scheduler, tick } = manualTicker();
+    // 1 MB = 1_048_576 bytes: the same ~800 bytes of capture now fits comfortably. Divide instead of
+    // multiply anywhere in `maxDataSize * 1024 * 1024` and this becomes a sub-byte ceiling that evicts.
+    const client = track('tok', baseOptions({ transport, scheduler, maxDataSize: 1 }));
+    console.log(bigLog('OLDEST-ENTRY'));
+    await settle();
+    tick();
+    console.log(bigLog('NEWEST-ENTRY'));
+    await settle();
+    const logs = await uploadedLogs(client, transport);
+    expect(logs).toContain('OLDEST-ENTRY');
+    expect(logs).toContain('NEWEST-ENTRY');
+  });
+
+  it('keeps an entry captured 5 s ago inside the DEFAULT 60 s window (maxRecordingTime is in SECONDS)', async () => {
+    const transport = uploadTransport();
+    const { scheduler, tick } = manualTicker();
+    let now = 0;
+    const clock = { wallNow: () => now, monotonicNow: () => now };
+    const client = track('tok', baseOptions({ transport, scheduler, clock }));
+    console.log('INSIDE-WINDOW');
+    await settle();
+    now = 1000;
+    tick(); // close the part at t=1s
+    now = 5000;
+    tick(); // …and tick again 4 s later: 5 s in, still far inside a 60 s window
+    await settle();
+    const logs = await uploadedLogs(client, transport);
+    expect(logs).toContain('INSIDE-WINDOW'); // a seconds→ms divide would make the window 0.06 ms
+  });
+
+  it('drops an entry that falls out of an explicit 1 s maxRecordingTime window', async () => {
+    const transport = uploadTransport();
+    const { scheduler, tick } = manualTicker();
+    let now = 0;
+    const clock = { wallNow: () => now, monotonicNow: () => now };
+    const client = track('tok', baseOptions({ transport, scheduler, clock, maxRecordingTime: 1 }));
+    console.log('OUTSIDE-WINDOW');
+    await settle();
+    now = 1000;
+    tick();
+    now = 5000;
+    tick(); // 5 s later: outside a 1 s window (+ the one-part grace) → evicted
+    console.log('STILL-RECORDING');
+    await settle();
+    const logs = await uploadedLogs(client, transport);
+    expect(logs).not.toContain('OUTSIDE-WINDOW');
+    expect(logs).toContain('STILL-RECORDING'); // the option shortened the window, it did not stop capture
+  });
+});
+
+// stop() is not the core client's stop: launch WRAPS it to release the per-worker singleton slot, and that
+// wrapper is the only thing that lets a worker re-launch (a Service Worker script re-evaluated on a new
+// activation, or a test/host that tears the SDK down and brings it back). Emptying the whole wrapper body
+// left every test in this file green.
+describe('launch — stop() releases the singleton', () => {
+  it('returns the core stop result and stops the client', async () => {
+    const client = launch('tok', baseOptions({ carrier: {} }));
+    expect(client.isLaunched()).toBe(true);
+    // Awaited as a value rather than via `.resolves` so a wrapper that returns nothing fails on the
+    // assertion (expected undefined to be true) instead of on expect()'s own argument check.
+    expect(await client.stop()).toBe(true); // delegates to the core stop (not a swallowed no-op)
+    expect(client.isLaunched()).toBe(false);
+  });
+
+  it('lets a later launch() start a FRESH client on the same carrier (no repeat-launch warning)', async () => {
+    const carrier = {};
+    const onError = vi.fn();
+    const first = launch('tok', baseOptions({ carrier, onError }));
+    await first.stop();
+
+    const transport = uploadTransport();
+    const second = track('tok', baseOptions({ carrier, onError, transport }));
+    expect(second).not.toBe(first); // the carrier slot was cleared → a real new launch
+    expect(onError).not.toHaveBeenCalled(); // …so it is NOT treated as a duplicate launch
+    // And the fresh client is fully wired, not a stopped husk.
+    await second.logException(new Error('after-relaunch'));
+    await second.flush();
+    expect(JSON.stringify(issueJson(transport))).toContain('after-relaunch');
+  });
+
+  it('ignores a repeat launch when no onError sink was supplied (the warning is optional)', () => {
+    const carrier = {};
+    const first = track('tok', baseOptions({ carrier, onError: undefined }));
+    expect(() => launch('tok', baseOptions({ carrier, onError: undefined }))).not.toThrow();
+    expect(launch('tok', baseOptions({ carrier }))).toBe(first);
+  });
+});
+
+// Network capture is half of what a worker SDK is for (a Service Worker sits ON the network path), and
+// every test above turns it OFF to keep the real `fetch` global unpatched — so nothing exercised the
+// wiring: the whole `installNetworkCapture({ carrier, captureBodies, maxBodyBytes })` argument object
+// could be replaced with `{}` and the body-capture default flipped to false with the suite still green.
+// These use a private carrier + a stubbed `fetch`, so the leaf interceptors are fresh per test and the
+// real global is never touched.
+describe('launch — network capture wiring', () => {
+  const drainNetwork = async (store: ReturnType<typeof memStore>) =>
+    (await createCaptureExporter(store).drain()).get('network');
+
+  const stubFetch = (body: string, extraHeaders: Record<string, string> = {}) => {
+    const slot = globalThis as unknown as { fetch?: unknown };
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'text/plain', ...extraHeaders },
+        }),
+    );
+    return () =>
+      (slot.fetch as (i: unknown, init?: unknown) => Promise<unknown>)(
+        'https://api.example.test/orders?token=secret',
+        { method: 'POST' },
+      );
+  };
+
+  // The response-body amendment is emitted asynchronously (a second `complete` event once the bounded
+  // clone read settles), so poll until the capture contains the awaited marker rather than guessing a
+  // number of ticks. `settled` is the last-read snapshot, used for the negative assertions.
+  const networkJson = async (
+    store: ReturnType<typeof memStore>,
+    awaited: string,
+  ): Promise<string> => {
+    let settled = '[]';
+    await vi.waitFor(async () => {
+      settled = JSON.stringify((await drainNetwork(store)) ?? []);
+      expect(settled).toContain(awaited);
+    });
+    return settled;
+  };
+
+  it('captures a fetch — url, method and the RESPONSE BODY (bodies default ON)', async () => {
+    const store = memStore();
+    const doFetch = stubFetch('the-response-payload');
+    track('tok', baseOptions({ captureNetwork: true, captureStore: store, carrier: {} }));
+    await doFetch();
+    const json = await networkJson(store, 'the-response-payload'); // bodies default to ON
+    expect(json).toContain('api.example.test/orders');
+    expect(json).toContain('POST');
+    expect(json).not.toContain('secret'); // …and the provider still redacts the URL's token param
+  });
+
+  it('captures the request but NOT the body when captureNetworkBodies is off', async () => {
+    const store = memStore();
+    const doFetch = stubFetch('the-response-payload');
+    track(
+      'tok',
+      baseOptions({
+        captureNetwork: true,
+        captureNetworkBodies: false,
+        captureStore: store,
+        carrier: {},
+      }),
+    );
+    await doFetch();
+    const json = await networkJson(store, 'api.example.test/orders'); // still captured…
+    expect(json).not.toContain('the-response-payload'); // …without the body
+  });
+
+  // Content-Length is set deliberately: it selects the interceptor's known-over-cap fast skip. The
+  // streaming variant (no Content-Length, body read until it exceeds the cap) is currently unable to
+  // report `size_too_large` at all — `readBoundedBody`'s `await reader.cancel()`
+  // (packages/capture/src/fetch-interceptor.ts) is a CLONE (tee-branch) cancel, which per the WHATWG tee
+  // algorithm only settles once the app's branch is also cancelled/consumed, so the amendment event
+  // never fires. That is a defect in @bugsee/capture, not in this package's wiring.
+  it('refuses to read a response bigger than maxNetworkBodySize', async () => {
+    const store = memStore();
+    const doFetch = stubFetch('x'.repeat(200), { 'content-length': '200' });
+    track(
+      'tok',
+      baseOptions({
+        captureNetwork: true,
+        maxNetworkBodySize: 8,
+        captureStore: store,
+        carrier: {},
+      }),
+    );
+    await doFetch();
+    // The bounded read gives up instead of buffering it, and says why.
+    const json = await networkJson(store, 'size_too_large');
+    expect(json).not.toContain('x'.repeat(200));
+  });
+
+  // "Interceptors must not alter app behavior" (binding, docs): with body capture off the SDK must not
+  // even CLONE the app's response — cloning tees the body stream, which changes buffering/backpressure
+  // for the application. The captured output alone cannot show this (the provider strips bodies a second
+  // time), so assert the observable side effect on the app's own Response object.
+  it('does not clone the app response at all when body capture is off', async () => {
+    const clones: boolean[] = [];
+    const makeResponse = () => {
+      const response = new Response('the-response-payload', {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+      const original = response.clone.bind(response);
+      response.clone = () => {
+        clones.push(true);
+        return original();
+      };
+      return response;
+    };
+    vi.stubGlobal('fetch', async () => makeResponse());
+    const doFetch = () =>
+      (globalThis as unknown as { fetch: (u: string) => Promise<unknown> }).fetch(
+        'https://api.example.test/orders',
+      );
+
+    const off = memStore();
+    track(
+      'tok',
+      baseOptions({
+        captureNetwork: true,
+        captureNetworkBodies: false,
+        captureStore: off,
+        carrier: {},
+      }),
+    );
+    await doFetch();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(clones).toEqual([]); // never touched the app's stream
+
+    const on = memStore();
+    track('tok2', baseOptions({ captureNetwork: true, captureStore: on, carrier: {} }));
+    await doFetch();
+    await networkJson(on, 'the-response-payload'); // …and with capture on it does read a clone
+    expect(clones.length).toBeGreaterThan(0);
+  });
+
+  it('registers the interceptor singletons on the INJECTED carrier (one patch per global)', () => {
+    const carrier = {};
+    track('tok', baseOptions({ carrier }));
+    const registry = getCarrier(carrier).interceptors;
+    expect(registry.get('console')).toBeDefined(); // the console→log source, keyed for cross-package reuse
+    expect(registry.get('fetch')).toBeDefined();
+    // console + the 5 cross-runtime network leaves (fetch/xhr/websocket/sse/webtransport). No DOM input
+    // source and no node-http: this is the DOM-less worker composition.
+    expect([...registry.keys()].sort()).toEqual([
+      'console',
+      'fetch',
+      'sse',
+      'websocket',
+      'webtransport',
+      'xhr',
+    ]);
+  });
+
+  it('reuses a console interceptor already on the carrier instead of installing a second one', () => {
+    const carrier = {};
+    const existing = getOrCreateInterceptor('console', () => createConsoleInterceptor(), carrier);
+    track('tok', baseOptions({ carrier }));
+    expect(getCarrier(carrier).interceptors.get('console')).toBe(existing); // same instance, one patch
   });
 });

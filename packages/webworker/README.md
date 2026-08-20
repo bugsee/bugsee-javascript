@@ -38,7 +38,9 @@ self.addEventListener('fetch', withBugseeEvent(bugsee, (event) => {
 
 - **`withBugseeEvent`** hands the SDK flush to `event.waitUntil`, keeping the worker alive until an incident's
   upload completes — the SW analog of the edge SDK's `ctx.waitUntil` (without it a fire-and-forget upload can be
-  dropped when the worker is killed).
+  dropped when the worker is killed). It never alters your handler's outcome: your error is always the one
+  rethrown, and an SDK-internal failure (or a failed upload) goes to the optional third argument —
+  `withBugseeEvent(bugsee, handler, (error) => console.debug(error))` — instead of failing the event.
 - **Persistence is ON by default** for `service-worker`: a durable **IndexedDB bundle queue** persists each
   incident bundle before upload and re-uploads any a prior activation left behind (e.g. killed mid-upload) on
   the next launch — so an assembled crash bundle is never lost to termination. (`persist: false` opts out;

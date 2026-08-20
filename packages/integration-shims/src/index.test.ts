@@ -1,6 +1,8 @@
 import {
+  type CaptureProvider,
   type CaptureProviderInit,
   createCaptureAggregator,
+  createCaptureCoordinator,
   createCaptureExporter,
   createMemoryCaptureStore,
   createOperationDispatcher,
@@ -154,5 +156,60 @@ describe('named convenience shims', () => {
       'shim:xhrInterceptor',
       'xhrInterceptor is a no-op on deno; ignored',
     );
+  });
+});
+
+// Integration (standards §3, cross-package boundary): the `controllingOption` promise — "it only warns when
+// the user enabled the feature" — is NOT enforced by the shim itself. The CAPTURE COORDINATOR reads
+// `provider.controllingOption` and skips the provider entirely when the launch gate says the option is off
+// (packages/core/src/capture-coordinator.ts:41). Calling `provider.start()` directly, as the unit tests
+// above do, bypasses that gate, so the gating contract only holds if the shim leaves `controllingOption`
+// genuinely ABSENT when none was supplied — assigning `undefined` unconditionally would make every gated
+// shim look ungated and warn on a feature the user never turned on.
+describe('shims ⇄ core capture coordinator (controllingOption gating)', () => {
+  const coordinatorFor = (provider: CaptureProvider, enabled: Record<string, boolean>) => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const co = createCaptureCoordinator({
+      operations: createOperationDispatcher(),
+      captureAggregator: createCaptureAggregator(store),
+    });
+    co.addProvider(provider);
+    return {
+      start: () => co.start(createOptionsContainer(), (option: string) => enabled[option] === true),
+      stop: () => co.stop(),
+    };
+  };
+
+  it('never warns for a gated shim whose controlling option is DISABLED', () => {
+    const { logger, warns } = realLogger();
+    const p = createViewHierarchyProviderShim({
+      runtime: 'cloudflare',
+      logger,
+      controllingOption: 'com.bugsee.option.capture.viewhierarchy',
+    });
+    coordinatorFor(p, { 'com.bugsee.option.capture.viewhierarchy': false }).start();
+    expect(warns).toEqual([]); // the user never enabled it → no noise about it being a no-op
+  });
+
+  it('warns exactly once for a gated shim whose controlling option is ENABLED', () => {
+    const { logger, warns } = realLogger();
+    const p = createViewHierarchyProviderShim({
+      runtime: 'cloudflare',
+      logger,
+      controllingOption: 'com.bugsee.option.capture.viewhierarchy',
+    });
+    coordinatorFor(p, { 'com.bugsee.option.capture.viewhierarchy': true }).start();
+    expect(warns).toEqual(['viewHierarchyProvider is a no-op on cloudflare; ignored']);
+  });
+
+  it('starts an UNGATED shim even when the gate enables nothing (an absent controllingOption is not a gate)', () => {
+    const { logger, warns } = realLogger();
+    const p = createBreadcrumbsProviderShim({ runtime: 'cloudflare', logger });
+    // `controllingOption` is an own property valued `undefined` here (the class field declaration is
+    // emitted, so `'controllingOption' in p` is true either way) — what the coordinator reads is the
+    // VALUE, and `undefined` means ungated: the provider must start regardless of the gate.
+    expect(p.controllingOption).toBe(undefined);
+    coordinatorFor(p, {}).start(); // gate says nothing is enabled — an ungated provider still starts
+    expect(warns).toEqual(['breadcrumbsProvider is a no-op on cloudflare; ignored']);
   });
 });

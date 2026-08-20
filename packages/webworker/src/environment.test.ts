@@ -59,7 +59,11 @@ describe('buildWorkerEnvironment', () => {
       probe({ deviceMemoryBytes: () => undefined, cpuCount: () => undefined }),
     );
     expect(env.platform).not.toHaveProperty('memory_total');
-    expect(env.hardware).toEqual({ device_id: null }); // only the device id remains
+    // toStrictEqual, not toEqual: `toEqual` ignores keys whose value is `undefined`, so it passed just as
+    // happily when the conditional spreads degraded into unconditional ones and the envelope carried
+    // `cpu_count: undefined` / `memory_total: undefined` — i.e. it did not check the omission its name
+    // claims. Mutating both spreads to unconditional survived the whole suite.
+    expect(env.hardware).toStrictEqual({ device_id: null }); // only the device id remains
   });
 
   it('carries the device id, sdk build, and wire-translated options', () => {

@@ -435,6 +435,102 @@ describe('createFetchInterceptor — response body', () => {
     expect(calls).toBeLessThan(5); // bounded — did not read the (infinite) stream to completion
   });
 
+  /**
+   * The over-cap reason must be reported even when `cancel()` NEVER SETTLES.
+   *
+   * This is the real behaviour of the stream we read, not a hypothetical. The bounded read runs on
+   * `response.clone()`, and a clone is a tee BRANCH: per the WHATWG `ReadableStreamTee` algorithm a
+   * branch's `cancel()` only settles once BOTH branches are cancelled or consumed. So whenever the
+   * application ignores the response body — a fire-and-forget POST, a request made for its status alone —
+   * the cancel is still pending, forever. Measured against a real `Response.clone()`, and against a
+   * literal `.tee()`, so it is the spec algorithm rather than one runtime's quirk.
+   *
+   * Awaiting it therefore lost the amendment entirely: the entry carried neither `body` nor
+   * `no_body_reason`, so "we refused to read this" became indistinguishable from "there was nothing to
+   * read", and a pending promise plus a locked reader were retained for the life of the page. Every
+   * existing test here used a `cancel` that resolves immediately, which mocks the hazard away.
+   */
+  it('reports the over-cap reason even when cancel() never settles (the tee-branch case)', async () => {
+    const { target, call } = harness(async () =>
+      responseWith({
+        cloneBody: () => ({
+          getReader: () => ({
+            read: () => Promise.resolve({ done: false, value: new TE().encode('abcdefgh') }),
+            cancel: () => new Promise<void>(() => {}), // never settles, exactly like an un-drained tee
+          }),
+        }),
+      }),
+    );
+    const ic = createFetchInterceptor({ target, maxBodyBytes: 5 });
+    const events = collect(ic);
+    await call('https://api/x');
+    await settle(() => overrideEvent(events) !== undefined);
+    expect(overrideEvent(events)?.custom?.no_body_reason).toBe('size_too_large');
+  });
+
+  /** Same hazard on the READ-ERROR path, where `cant_read_data` would be lost the same way. */
+  it('reports cant_read_data even when cancel() never settles', async () => {
+    const { target, call } = harness(async () =>
+      responseWith({
+        cloneBody: () => ({
+          getReader: () => ({
+            read: () => Promise.reject(new Error('stream broke')),
+            cancel: () => new Promise<void>(() => {}),
+          }),
+        }),
+      }),
+    );
+    const ic = createFetchInterceptor({ target, maxBodyBytes: 5 });
+    const events = collect(ic);
+    await call('https://api/x');
+    await settle(() => overrideEvent(events) !== undefined);
+    expect(overrideEvent(events)?.custom?.no_body_reason).toBe('cant_read_data');
+  });
+
+  /** The reader is released on the READ-ERROR path too, or a broken stream leaks its lock. */
+  it('releases the reader when the read fails', async () => {
+    const cancel = vi.fn(() => Promise.resolve());
+    const { target, call } = harness(async () =>
+      responseWith({
+        cloneBody: () => ({
+          getReader: () => ({ read: () => Promise.reject(new Error('broke')), cancel }),
+        }),
+      }),
+    );
+    const ic = createFetchInterceptor({ target, maxBodyBytes: 5 });
+    const events = collect(ic);
+    await call('https://api/x');
+    await settle(() => overrideEvent(events) !== undefined);
+    expect(overrideEvent(events)?.custom?.no_body_reason).toBe('cant_read_data');
+    expect(cancel, 'the reader was not released after a read error').toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A reader that has already errored can throw SYNCHRONOUSLY from `cancel()` rather than returning a
+   * rejected promise. Release is best-effort cleanup — it must never become the thing that breaks the
+   * capture, or a broken stream would cost the whole entry instead of just its body.
+   */
+  it('survives a reader whose cancel() throws synchronously', async () => {
+    const throwingCancel = () => {
+      throw new TypeError('reader is already released');
+    };
+    const { target, call } = harness(async () =>
+      responseWith({
+        cloneBody: () => ({
+          getReader: () => ({
+            read: () => Promise.resolve({ done: false, value: new TE().encode('abcdefgh') }),
+            cancel: throwingCancel as unknown as () => Promise<void>,
+          }),
+        }),
+      }),
+    );
+    const ic = createFetchInterceptor({ target, maxBodyBytes: 5 });
+    const events = collect(ic);
+    await call('https://api/x');
+    await settle(() => overrideEvent(events) !== undefined);
+    expect(overrideEvent(events)?.custom?.no_body_reason).toBe('size_too_large');
+  });
+
   it('keeps a body exactly at the byte cap', async () => {
     const { target, call } = harness(async () =>
       responseWith({ cloneBody: () => streamOf('12345') }),

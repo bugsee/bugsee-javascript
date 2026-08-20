@@ -126,6 +126,31 @@ type StreamReader = {
 };
 
 /**
+ * Release a bounded read's reader WITHOUT awaiting it.
+ *
+ * We read `response.clone()`, and a clone is a tee BRANCH: per the WHATWG `ReadableStreamTee` algorithm a
+ * branch's `cancel()` settles only once BOTH branches are cancelled or consumed. So when the application
+ * ignores the response body — a fire-and-forget POST, a request made for its status alone — the cancel
+ * stays pending forever. Awaiting it meant `readBoundedBody` never resolved, the `complete` amendment
+ * never fired, and the entry carried neither `body` nor `no_body_reason`: "we refused to read this"
+ * became indistinguishable from "there was nothing to read", with a pending promise and a locked reader
+ * retained for the life of the page. (Responses carrying `Content-Length` take the fast-skip above and
+ * were unaffected, which is why only chunked/streamed ones showed it.)
+ *
+ * Fire and forget. The rejection is swallowed because there is nobody to report it to and nothing to do
+ * about it — this is release, not a read whose outcome matters.
+ */
+function releaseReader(reader: StreamReader): void {
+  try {
+    void reader.cancel().catch(() => {
+      /* the branch is being torn down anyway */
+    });
+  } catch {
+    /* a reader that already errored can throw synchronously — nothing left to release */
+  }
+}
+
+/**
  * Read a CLONED response body up to `maxBytes` (never the whole stream — design: don't alter app
  * behavior / memory) and cancel the reader. Returns undefined when there is no body to capture (no
  * stream). Honors a Content-Length fast-skip (known over-cap → never read). Never throws: a read error
@@ -159,16 +184,14 @@ const readBoundedBody = async (
       const chunk = value as Uint8Array;
       total += chunk.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        releaseReader(reader);
         return { reason: 'size_too_large' };
       }
       chunks.push(chunk);
     }
   } catch {
-    try {
-      await reader?.cancel();
-    } catch {
-      /* reader already errored — nothing to release */
+    if (reader !== undefined) {
+      releaseReader(reader);
     }
     return { reason: 'cant_read_data' };
   }

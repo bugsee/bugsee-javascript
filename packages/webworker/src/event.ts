@@ -1,3 +1,4 @@
+import { neverThrow } from '@bugsee/core';
 import type { Bugsee } from './launch';
 
 // Service Worker event flush (design §3.x — the SW analog of the edge ctx.waitUntil). A Service Worker is
@@ -23,31 +24,53 @@ export type ServiceWorkerEventHandler<E extends ExtendableEventLike> = (event: E
  *  self.addEventListener('fetch', withBugseeEvent(bugsee, (event) => {
  *    event.respondWith(handle(event.request));
  *  }));
- *  ``` */
+ *  ```
+ *
+ *  CONTAINED at the host boundary (the Wave 2.1 `neverThrow` rule; the edge sibling guards the same seam —
+ *  vercel-edge/src/edge-context.ts). This wrapper runs with the CUSTOMER'S error in flight, and neither
+ *  side of it is total: `logException` reads `.message`/`.stack` off the thrown value (a Proxy with a
+ *  throwing trap, a throwing `stack` getter or a throwing `toString` — all things a handler can throw —
+ *  make it throw), and `waitUntil` throws InvalidStateError on an event that is no longer active. Either
+ *  escape would REPLACE the application's error with an SDK one and skip the flush. The flush promise
+ *  handed to `waitUntil` can likewise only RESOLVE: a rejected extend-lifetime promise fails the event —
+ *  on `install`/`activate` that fails the Service Worker registration itself. SDK-internal failures go to
+ *  the optional `onError` sink instead.
+ *
+ *  @param onError where an SDK-internal failure inside the wrapper is reported; it is never thrown into
+ *  the handler. Default: dropped. */
 export function withBugseeEvent<E extends ExtendableEventLike>(
   client: Bugsee,
   handler: ServiceWorkerEventHandler<E>,
+  onError?: (error: unknown) => void,
 ): (event: E) => void {
+  const capture = (error: unknown): void => {
+    neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), onError);
+  };
+  // A flush that can only resolve — see the note above on rejected extend-lifetime promises.
+  const flushed = async (): Promise<void> => {
+    try {
+      await client.flush();
+    } catch (error) {
+      neverThrow(() => onError?.(error)); // a throwing sink must not defeat the guard either
+    }
+  };
+  const keepAlive = (event: E, promise: Promise<unknown>): void => {
+    neverThrow(() => event.waitUntil(promise), onError);
+  };
   return (event: E): void => {
     try {
       const result = handler(event);
       if (result instanceof Promise) {
         // Async handler: capture a rejection (it would otherwise be an unhandledrejection), THEN flush — all
         // inside one waitUntil so the worker stays alive through both the handler's work and the upload.
-        event.waitUntil(
-          result
-            .catch((error: unknown) => {
-              void client.logException(error, { mechanism: 'uncaught' });
-            })
-            .then(() => client.flush()),
-        );
+        keepAlive(event, result.catch(capture).then(flushed));
       } else {
-        event.waitUntil(client.flush());
+        keepAlive(event, flushed());
       }
     } catch (error) {
       // A synchronous throw: capture + flush (kept alive) + rethrow so the platform still sees the failure.
-      void client.logException(error, { mechanism: 'uncaught' });
-      event.waitUntil(client.flush());
+      capture(error);
+      keepAlive(event, flushed());
       throw error;
     }
   };
