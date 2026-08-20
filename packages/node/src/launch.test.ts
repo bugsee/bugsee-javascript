@@ -1889,11 +1889,19 @@ describe('launch — trace propagation (X3)', () => {
 describe('launch — capturedDataStore (disk by default, D3)', () => {
   it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee/<appTokenHash>', () => {
     const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers
-    const appRoot = join(tmpdir(), 'bugsee', hashAppToken('tok'));
+    // A DEDICATED app token, because the cleanup below removes the whole per-token root. Forty other
+    // tests in this file launch under 'tok' and, with disk the default, write their own instance subtrees
+    // into that same root — several of them still live (heartbeats, lazily-created dirs) when this test's
+    // `finally` runs. Wiping the shared root therefore destroyed their state AND raced their writes:
+    // `rmSync` lists a directory, a sibling instance creates a file in it, and the removal fails ENOTEMPTY.
+    // That is the flake; the assertion here is about the DEFAULT root's shape, and any token exercises it.
+    const token = 'tok-disk-default';
+    const appRoot = join(tmpdir(), 'bugsee', hashAppToken(token));
     const ownerSub = join(appRoot, '4242-0-disktest');
+    rmSync(appRoot, { recursive: true, force: true }); // a previous crashed run must not fail this one
     try {
       const client = launchTracked(
-        'tok',
+        token,
         baseOptions({
           scheduler,
           instanceIdentity: { pid: 4242, threadId: 0, nonce: () => 'disktest' },

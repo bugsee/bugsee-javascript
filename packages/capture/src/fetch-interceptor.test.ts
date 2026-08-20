@@ -531,6 +531,48 @@ describe('createFetchInterceptor — response body', () => {
     expect(overrideEvent(events)?.custom?.no_body_reason).toBe('size_too_large');
   });
 
+  /**
+   * `cancel()` may also return a REJECTED promise (a stream errored while being torn down). Release is
+   * best-effort, so the rejection is swallowed — but it must be swallowed, not left unhandled: an
+   * unhandled rejection in a page the SDK merely observes is exactly the kind of noise Wave 2.1 forbids.
+   */
+  it('swallows a cancel() that rejects, without an unhandled rejection', async () => {
+    // This tier has no Node or DOM lib (it is runtime-portable), so the host hooks come through a cast.
+    const host = globalThis as unknown as {
+      process: {
+        on(event: string, listener: (reason: unknown) => void): void;
+        off(event: string, listener: (reason: unknown) => void): void;
+      };
+      setTimeout(fn: () => void, ms: number): unknown;
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    host.process.on('unhandledRejection', onUnhandled);
+    try {
+      const { target, call } = harness(async () =>
+        responseWith({
+          cloneBody: () => ({
+            getReader: () => ({
+              read: () => Promise.resolve({ done: false, value: new TE().encode('abcdefgh') }),
+              cancel: () => Promise.reject(new Error('stream already errored')),
+            }),
+          }),
+        }),
+      );
+      const ic = createFetchInterceptor({ target, maxBodyBytes: 5 });
+      const events = collect(ic);
+      await call('https://api/x');
+      await settle(() => overrideEvent(events) !== undefined);
+      expect(overrideEvent(events)?.custom?.no_body_reason).toBe('size_too_large');
+      await new Promise((r) => host.setTimeout(() => r(undefined), 10)); // let it surface
+      expect(unhandled, 'the cancel rejection was left unhandled').toEqual([]);
+    } finally {
+      host.process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('keeps a body exactly at the byte cap', async () => {
     const { target, call } = harness(async () =>
       responseWith({ cloneBody: () => streamOf('12345') }),
