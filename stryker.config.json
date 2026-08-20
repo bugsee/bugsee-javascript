@@ -1,13 +1,23 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Shared mutation-testing config. Run it per package via `pnpm test:mutation <package-dir>` (scripts/mutation.mjs), which sets cwd to that package so the relative globs below resolve inside it. Opt-in and NOT a CI gate: the per-entity mutator loop is the always-on discipline, this is the periodic audit that catches tests which rotted after the entity was written.",
+  "_comment": "Shared mutation-testing config. Run it per package via `pnpm test:mutation <package-dir>` (scripts/mutation.mjs), which sets cwd to that package so the relative globs below resolve inside it. Opt-in and NOT a CI gate: the per-entity mutator loop is the always-on discipline, this is the periodic audit that catches tests which rotted after the entity was written. NOTE: `*.test-d.ts` (vitest TYPE tests, run only under --typecheck) must be excluded like `*.test.ts` \u2014 Stryker otherwise mutates them, and every such mutant reports NoCoverage because the normal run never executes them. In @bugsee/protocol that was 178 mutants dragging the score down ~20 points, hiding the real picture. The vitest coverage config excludes them for the same reason.",
   "testRunner": "vitest",
   "plugins": ["../../node_modules/@stryker-mutator/vitest-runner/dist/src/index.js"],
   "reporters": ["clear-text", "progress", "json"],
-  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
   "coverageAnalysis": "perTest",
-  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/index.ts", "!src/**/*.d.ts"],
+  "mutate": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/**/*.test-d.ts",
+    "!src/index.ts",
+    "!src/**/*.d.ts"
+  ],
   "concurrency": 4,
   "timeoutMS": 30000,
-  "clearTextReporter": { "maxTestsToLog": 0 }
+  "clearTextReporter": {
+    "maxTestsToLog": 0
+  }
 }
