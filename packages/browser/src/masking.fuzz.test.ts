@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { describeTarget } from './input-source';
+import { createDomSnapshot } from './viewtree';
 
 /**
  * Property-based tests for the target-masking rules.
@@ -247,5 +248,84 @@ describe('describeTarget masking (fuzz)', () => {
       }),
       { numRuns: 1000 },
     );
+  });
+});
+
+/**
+ * The at-report DOM snapshot reuses `describeTarget`, so its masking rules carry over — but the walk adds
+ * one of its own that nothing else can make: a masked node COLLAPSES, and its descendants are never
+ * visited. That is the difference between hiding a password field and hiding the form it sits in.
+ */
+describe('DOM snapshot masking (fuzz)', () => {
+  interface FakeEl {
+    tagName: string;
+    id?: string;
+    textContent?: string;
+    children?: FakeEl[];
+    getAttribute?: (name: string) => string | null;
+    closest?: (selector: string) => unknown;
+  }
+
+  /** A subtree whose ROOT is masked and whose descendants each carry a distinctive secret. */
+  const maskedSubtree = (secrets: readonly string[]): FakeEl => {
+    const child = (s: string, depth: number): FakeEl => ({
+      tagName: 'DIV',
+      id: s,
+      textContent: s,
+      getAttribute: (name: string) => (name === 'class' ? s : null),
+      // Every node inside the subtree reports the mask ancestor, as a real `closest` would.
+      closest: (selector: string) => (selector === MASK_SELECTOR ? { tagName: 'DIV' } : null),
+      children: depth > 0 ? [child(`${s}x`, depth - 1)] : [],
+    });
+    return {
+      tagName: 'SECTION',
+      getAttribute: () => null,
+      closest: (selector: string) => (selector === MASK_SELECTOR ? { tagName: 'DIV' } : null),
+      children: secrets.map((s) => child(s, 2)),
+    };
+  };
+
+  it('collapses a masked subtree without visiting its descendants', () => {
+    fc.assert(
+      fc.property(fc.array(secret, { minLength: 1, maxLength: 4 }), (secrets) => {
+        const body = maskedSubtree(secrets);
+        const snapshot = createDomSnapshot({
+          document: { body } as never,
+          maskSelector: MASK_SELECTOR,
+        })();
+
+        const serialized = JSON.stringify(snapshot);
+        for (const s of secrets) {
+          expect(serialized, 'a masked subtree leaked a descendant').not.toContain(s);
+        }
+        // Collapsed, not merely scrubbed: the masked root carries no children at all.
+        expect(snapshot?.masked).toBe(true);
+        expect(snapshot?.children).toBeUndefined();
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it('still walks an UNMASKED tree, so the snapshot keeps its value', () => {
+    const body: FakeEl = {
+      tagName: 'BODY',
+      getAttribute: () => null,
+      closest: () => null,
+      children: [
+        {
+          tagName: 'MAIN',
+          id: 'content',
+          getAttribute: () => null,
+          closest: () => null,
+          children: [{ tagName: 'BUTTON', getAttribute: () => null, closest: () => null }],
+        },
+      ],
+    };
+    const snapshot = createDomSnapshot({
+      document: { body } as never,
+      maskSelector: MASK_SELECTOR,
+    })();
+    expect(snapshot?.children?.[0]?.id).toBe('content');
+    expect(snapshot?.children?.[0]?.children?.[0]?.tag).toBe('button');
   });
 });
