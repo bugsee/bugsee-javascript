@@ -34,6 +34,14 @@ A surviving mutant is a **question**, not automatically a defect. Triage each on
    Leave it, and record it below.
 3. **Dead weight** — the code itself is unnecessary. Delete it.
 
+### Excluding what should not be mutated
+
+`*.test-d.ts` — vitest TYPE tests — must be excluded alongside `*.test.ts`. They never execute under the
+normal run, so every mutant in them reports `NoCoverage` and drags the score down for no reason: in
+`@bugsee/protocol` that was 178 mutants hiding ~20 points, and it also understated `core`,
+`opentelemetry` and `types`. Read the score with that in mind when comparing against any figure recorded
+before 2026-08-20.
+
 ### Known equivalent mutants
 
 Recorded so they are not re-triaged every run. `@bugsee/util` sits at **97.95%**; all five survivors are
@@ -46,6 +54,24 @@ equivalent:
 - `env.ts` (1) — dropping the optional chain in `g.process?.type` on the right of an `&&` whose left
   operand already dereferenced `g.process?.versions?.electron`. If `process` is undefined the left side is
   `false` and short-circuits, so the right side is unreachable in exactly the case the `?.` guards.
+
+**`@bugsee/protocol` (84.09%)** — most of the remaining `sanitize.ts` survivors are REDUNDANCY rather
+than gaps, and that is the design: the passes deliberately overlap so no single detection step is
+load-bearing. Verified by injection, not assumed — disabling JSON content-type detection entirely, or
+multipart detection entirely, leaks nothing, because `looksLikeJson` and the textual form/colon passes
+cover the same ground. The `%XX` alternative in the anchored JWT boundary is the same story: no input
+could be constructed where removing it changes the outcome.
+
+The useful conclusion from that: a surviving mutant here means "no test could tell", and since the leak
+properties run against every mutant, it also means "this mutation does not leak". Chase the survivors that
+change WHAT IS REDACTED, not the ones that change WHICH PASS DID IT.
+
+### A property that iterates a list cannot defend that list
+
+`SENSITIVE_HEADERS` and `SENSITIVE_KEY_SUBSTRINGS` are walked by several properties, so deleting an entry
+keeps them all green — the property and the data move together. Twenty such deletions survived. Lists that
+are a product promise have to be pinned BY VALUE somewhere, and the same applies to `DEFAULT_FILENAMES`,
+which is half of a cross-process contract.
 
 ## Property-based tests
 
