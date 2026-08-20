@@ -70,6 +70,13 @@ const readBody = (req: IncomingMessage): Promise<Uint8Array> =>
     req.on('error', reject);
   });
 
+// The REAL collector wraps every /v2 response: `{ ok: true, result }` on success, `{ ok: false, error }`
+// on failure — and a failure arrives with HTTP 200. This mock used to answer with a flat body carrying
+// camelCase ids, which was the SDK's (wrong) assumption rather than the server's contract, so the e2e
+// suite could never catch the mismatch. Verified against apidev.bugsee.com and against the appserver's
+// `app.utils.js` success()/error().
+const envelope = (result: unknown): unknown => ({ ok: true, result });
+
 const sendJson = (res: ServerResponse, status: number, payload: unknown): void => {
   const body = Buffer.from(JSON.stringify(payload));
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -113,7 +120,7 @@ export async function startMockCollector(): Promise<MockCollector> {
           if (session.environment !== undefined) {
             check('session', 'environmentEnvelope', session.environment);
           }
-          sendJson(res, 200, { access_token: 'e2e-access-token' });
+          sendJson(res, 200, envelope({ access_token: 'e2e-access-token' }));
           return;
         }
         if (method === 'POST' && url.endsWith('/v2/issues')) {
@@ -125,11 +132,16 @@ export async function startMockCollector(): Promise<MockCollector> {
           const issueId = `i${issueSeq}`;
           const uploadPath = `/upload/${issueSeq}`;
           issueByUploadPath.set(uploadPath, issueId);
-          sendJson(res, 200, {
-            endpoint: `${base}${uploadPath}`,
-            issueId,
-            recordingId: `r${issueSeq}`,
-          });
+          sendJson(
+            res,
+            200,
+            envelope({
+              _id: issueId,
+              issue_id: issueId,
+              recording_id: `r${issueSeq}`,
+              endpoint: `${base}${uploadPath}`,
+            }),
+          );
           return;
         }
         if (method === 'PUT' && url.startsWith('/upload/')) {

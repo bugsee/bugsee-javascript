@@ -40,11 +40,22 @@ function startServer(): Promise<{ server: Server; origin: string; received: Rece
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(obj));
       };
+      // The REAL collector envelopes every /v2 response as `{ ok, result }` and names the ids in
+      // snake_case (verified against apidev.bugsee.com). This loopback stands in for it, so it has to
+      // speak the server's contract rather than the SDK's assumption about it.
       if (url.endsWith('/v2/sessions')) {
-        json({ access_token: 'access-token' });
+        json({ ok: true, result: { access_token: 'access-token' } });
       } else if (url.endsWith('/v2/issues')) {
         const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-        json({ endpoint: `${origin}/upload`, issueId: 'issue-1', recordingId: 'rec-1' });
+        json({
+          ok: true,
+          result: {
+            _id: 'issue-1',
+            issue_id: 'issue-1',
+            recording_id: 'rec-1',
+            endpoint: `${origin}/upload`,
+          },
+        });
       } else {
         res.writeHead(200);
         res.end();

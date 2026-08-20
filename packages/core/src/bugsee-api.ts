@@ -25,6 +25,34 @@ export interface BugseeApiOptions {
 const decode = (body: Uint8Array): unknown => JSON.parse(strFromU8(body));
 const isOk = (status: number): boolean => status >= 200 && status < 300;
 
+/** The collector's v2 response envelope (appserver `app.utils.js` `success()`/`error()`). */
+interface V2Envelope {
+  ok?: boolean;
+  result?: unknown;
+  error?: { type?: string; message?: string; code?: number };
+}
+
+/**
+ * Unwrap a `/v2/*` response body.
+ *
+ * Every apiVersion>=2 response is `{ ok: true, result }` or `{ ok: false, error }` — and a REJECTION
+ * arrives with **HTTP 200**, so the status code alone never reveals it. Reading the result fields off
+ * the top level (as this client used to) silently produced `undefined` for a successful call and
+ * silently produced "success" for a rejected one. A body without `ok` is passed through unchanged, so
+ * a v1-shaped or proxied response still works.
+ */
+function unwrap(body: Uint8Array, what: string): unknown {
+  const decoded = decode(body);
+  if (typeof decoded !== 'object' || decoded === null) return decoded;
+  const envelope = decoded as V2Envelope;
+  if (envelope.ok === undefined) return decoded;
+  if (envelope.ok === false) {
+    const { type = 'CollectorError', message = 'rejected', code = 0 } = envelope.error ?? {};
+    throw new BugseeError(`${what} rejected: ${type}: ${message}`, code);
+  }
+  return envelope.result;
+}
+
 export function createBugseeApi(transport: HttpTransport, options: BugseeApiOptions): BugseeApi {
   const { baseUrl, appToken, sdkVersion } = options;
   const sessionId = options.sessionId ?? randomId();
@@ -35,7 +63,12 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
   const baseHeaders = (): Record<string, string> => ({
     'content-type': 'application/json',
     accept: '*/*',
-    'x-client-type': 'web',
+    // The collector matches this against the APPLICATION type (appserver `utils.isValidForClient`),
+    // and a JS SDK application is type `javascript` — sending `web` had every session rejected with
+    // ApplicationTypeMismatchError. `javascript` also stays off the dashboard cookie-auth path, which
+    // only `web`/`unknown`/absent take (`populate.middleware.js`); that risk was the reason `web` was
+    // chosen, and it does not apply. Resolves design open question #1 (sdk-design.md §wire C3).
+    'x-client-type': 'javascript',
     'user-agent': `BugseeJS/${sdkVersion}`,
     'x-bugsee-internal': '1',
     'x-app-token': appToken,
@@ -53,7 +86,17 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
     if (!isOk(response.status)) {
       throw new BugseeError(`issue create failed (status ${response.status})`, response.status);
     }
-    return decode(response.body) as IssueCreateResult;
+    // The collector answers snake_case (`issue_id`/`recording_id`); the SDK's own shape is camelCase.
+    const result = unwrap(response.body, 'issue create') as {
+      endpoint: string;
+      issue_id: IssueId;
+      recording_id: RecordingId;
+    };
+    return {
+      endpoint: result.endpoint,
+      issueId: result.issue_id,
+      recordingId: result.recording_id,
+    };
   };
 
   return {
@@ -71,7 +114,14 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
       if (!isOk(response.status)) {
         throw new BugseeError(`session create failed (status ${response.status})`, response.status);
       }
-      accessToken = (decode(response.body) as { access_token: string }).access_token as AccessToken;
+      const token = (unwrap(response.body, 'session create') as { access_token?: string } | null)
+        ?.access_token;
+      if (typeof token !== 'string') {
+        // Never cache a non-token: a cached `undefined` is not `null`, so every later upload would go
+        // out as `Bearer undefined` and the session would never be re-requested.
+        throw new BugseeError('session create returned no access token', 0);
+      }
+      accessToken = token as AccessToken;
       return accessToken;
     },
 
