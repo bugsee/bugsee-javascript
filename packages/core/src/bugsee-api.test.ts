@@ -13,7 +13,7 @@ const requestJson: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };

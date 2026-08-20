@@ -96,7 +96,7 @@ describe('createWindowErrorProvider', () => {
     }
   });
 
-  it('falls back to message + filename:lineno:colno when event.error is absent (no crash.json)', () => {
+  it('falls back to message + filename:lineno:colno when event.error is absent', () => {
     const w = fakeWindow();
     const requests = started(createWindowErrorProvider(w.win));
     w.emit('error', {
@@ -110,7 +110,17 @@ describe('createWindowErrorProvider', () => {
     expect(requests[0]?.report.description).toBe(
       '    at <anonymous> (https://app.test/page.js:12:5)',
     );
-    expect(requests[0]?.report.crash).toBeUndefined(); // cross-origin: no thrown Error → no crash.json
+    // Cross-origin "Script error." carries no thrown value, so the crash is synthesised from what the
+    // EVENT knows — not from the absent value, whose synthetic form would say only "Null".
+    expect(requests[0]?.report.crash).toMatchObject({
+      exception_type: 'error',
+      handled: false,
+      exception: {
+        name: 'Error',
+        reason: 'Uncaught ReferenceError: x is not defined',
+        frames: [{ trace: 'at <anonymous> (https://app.test/page.js:12:5)', user: true }],
+      },
+    });
   });
 
   it('falls back to message when event.error is undefined (not just null)', () => {
@@ -204,13 +214,17 @@ describe('createUnhandledRejectionProvider', () => {
     ); // SC3
   });
 
-  it('handles a non-Error rejection reason (no crash.json)', () => {
+  it('handles a non-Error rejection reason', () => {
     const w = fakeWindow();
     const requests = started(createUnhandledRejectionProvider(w.win));
     w.emit('unhandledrejection', { reason: { code: 42 } });
     expect(requests[0]?.report.summary).toBe('[object Object]');
     expect(requests[0]?.report.description).toBeUndefined();
-    expect(requests[0]?.report.crash).toBeUndefined();
+    // A rejected non-Error still gets a usable crash document.
+    expect(requests[0]?.report.crash).toMatchObject({
+      handled: false,
+      exception: { name: 'Object', reason: '{"code":42}' },
+    });
   });
 
   it('defaults to the global window', () => {

@@ -218,7 +218,7 @@ const pendingBundle = (summary: string): Uint8Array => {
     type: 'crash',
     summary,
     severity: Severity.Blocker,
-    source: { mechanism: 'uncaught' },
+    source: { type: 'crash', mechanism: 'uncaught' },
     created_on: '2026-05-29T00:00:00Z',
     environment: {
       platform: { type: 'node', version: '1' },

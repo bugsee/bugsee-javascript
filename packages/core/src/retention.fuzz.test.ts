@@ -24,7 +24,7 @@ const environment = {
 const makeBundle = (summary: string, bytes: number): Bundle => ({
   request: {
     summary,
-    source: { mechanism: 'programmatic' },
+    source: { type: 'error', mechanism: 'programmatic' },
     created_on: '2026-05-29T00:00:00Z',
     environment,
   } as unknown as Bundle['request'],

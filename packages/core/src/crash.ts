@@ -136,15 +136,65 @@ function buildException(
 }
 
 /**
- * Build the structured crash.json container from a thrown value. Returns `undefined` for non-Errors (the
- * caller keeps the request.json summary/description fallback).
+ * Build the structured crash.json container from a thrown value. A non-Error gets a SYNTHETIC
+ * exception rather than nothing at all — see {@link syntheticException}.
  */
-export function buildCrashJson(
-  error: unknown,
-  options: BuildCrashOptions = {},
-): CrashJson | undefined {
+/**
+ * The exception for a value that is NOT an Error.
+ *
+ * JS throws non-Errors routinely — a string, a plain object, a rejected promise's value — and
+ * `logException` accepts them. Returning nothing here meant the bundle carried no `crash.json` at
+ * all, so the report had a summary and nothing else and the backend answered "Crash data for the
+ * issue was not found": an issue that exists, is counted, and cannot be acted on. A synthetic
+ * exception makes it usable. There are no frames: the value never had a stack, and the SDK's own
+ * call frames would describe the SDK rather than the fault.
+ */
+function syntheticException(value: unknown): CrashException {
+  const exception: CrashException = { name: typeTag(value), frames: [] };
+  const reason = renderThrowable(value);
+  if (reason !== '') {
+    exception.reason = reason;
+  }
+  return exception;
+}
+
+/** A display name for a thrown value: its own `name`, else its class, else its primitive type. */
+function typeTag(value: unknown): string {
+  if (typeof value === 'object' && value !== null) {
+    const named = (value as { name?: unknown }).name;
+    if (typeof named === 'string' && named !== '') return named;
+    const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
+    return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
+  }
+  if (value === null) return 'Null';
+  // 'string' -> 'String', matching how the mobile SDKs label a thrown primitive.
+  const type = typeof value;
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+/** A bounded, never-throwing rendering of a thrown value for `exception.reason`. */
+function renderThrowable(value: unknown): string {
+  if (typeof value === 'object' && value !== null) {
+    const message = (value as { message?: unknown }).message;
+    if (typeof message === 'string' && message !== '') return message;
+    try {
+      // A circular or getter-throwing object must not take the report down with it.
+      return JSON.stringify(value) ?? String(value);
+    } catch {
+      return Object.prototype.toString.call(value);
+    }
+  }
+  return String(value);
+}
+
+export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson {
   if (!(error instanceof Error)) {
-    return undefined;
+    return {
+      exception_type: 'error',
+      ndkCrash: false,
+      handled: options.handled ?? false,
+      exception: syntheticException(error),
+    };
   }
   const parseStack = options.parseStack ?? parseV8Stack;
   const globalObject = options.globalObject ?? (globalThis as unknown);

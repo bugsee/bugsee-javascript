@@ -53,7 +53,7 @@ describe('assembleBundle — request.json', () => {
       type: 'crash',
       summary: 'Boom',
       severity: 5, // 'blocker' -> 5
-      source: { mechanism: 'uncaught', origin: 'window.onerror' },
+      source: { type: 'crash', mechanism: 'uncaught', origin: 'window.onerror' },
       created_on: '2023-11-14T22:13:20.000Z',
       environment: env,
       description: 'stack...',
@@ -77,8 +77,23 @@ describe('assembleBundle — request.json', () => {
   it('defaults source.mechanism to programmatic when the source has none', () => {
     const request = createReportingRequest({ source: { type: 'shake' }, id: 'r1' });
     expect(assembleBundle(request, new Map(), context()).request.source).toEqual({
+      type: 'shake',
       mechanism: 'programmatic',
     });
+  });
+
+  it.each([
+    ['crash', 'crash'],
+    ['error', 'error'],
+    ['shake', 'shake'],
+    ['code_upload', 'code_upload'],
+    ['unknown', 'unknown'],
+  ] as const)('puts the %s TRIGGER on the wire as source.type', (trigger, expected) => {
+    // The collector classifies a report by `source.type` and matches notification filters on it
+    // (`source_types`). It used to be computed here, used to derive the issue type, and then dropped
+    // before assembly — so every JS issue arrived with no trigger and could not match any filter.
+    const request = createReportingRequest({ source: { type: trigger }, id: 'r1' });
+    expect(assembleBundle(request, new Map(), context()).request.source.type).toBe(expected);
   });
 
   it('omits empty labels/signatures and absent description/email/origin', () => {

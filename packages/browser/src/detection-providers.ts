@@ -39,10 +39,31 @@ function describeError(value: unknown): { summary: string; description?: string 
   return { summary: String(value) };
 }
 
-/** Structured crash.json (SC3) from a thrown value — `handled: false` (uncaught). Undefined for non-Errors
- *  (incl. a cross-origin `error` event with no `.error`). Uses the browser's multi-engine stack parser. */
-function crashOf(value: unknown): CrashJson | undefined {
+/** Structured crash.json (SC3) from a thrown value — `handled: false` (uncaught). A non-Error gets a
+ *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
+function crashOf(value: unknown): CrashJson {
   return buildCrashJson(value, { parseStack, handled: false });
+}
+
+/**
+ * The crash for an `error` event. Prefer the thrown value; when the event carries none — a cross-origin
+ * "Script error." has no `.error` — synthesise the exception from what the EVENT knows (its message and
+ * `filename:lineno:colno`) rather than from the absent value, whose synthetic form would say only
+ * "Null". This is the same information the description already falls back to.
+ */
+function crashOfErrorEvent(event: ErrorEvent): CrashJson {
+  if (event.error != null) {
+    return crashOf(event.error);
+  }
+  const crash = crashOf(new Error(event.message));
+  crash.exception.name = 'Error';
+  if (event.filename) {
+    const frame = parseLocation(`${event.filename}:${event.lineno}:${event.colno}`);
+    crash.exception.frames = [{ trace: formatStack([frame]).trim(), user: true }];
+  } else {
+    crash.exception.frames = [];
+  }
+  return crash;
 }
 
 // Describe an ErrorEvent: prefer the thrown value (`event.error`); when it's absent (a cross-origin
@@ -98,7 +119,7 @@ class WindowErrorProvider extends BrowserWindowDetectionProvider {
     const errorEvent = event as ErrorEvent;
     const { summary, description } = describeErrorEvent(errorEvent);
     // The thrown value (absent for a cross-origin "Script error." → no crash.json).
-    const crash = crashOf(errorEvent.error);
+    const crash = crashOfErrorEvent(errorEvent);
     this.handleReportingRequest(
       this.createCrashReport({
         mechanism: 'uncaught',

@@ -130,7 +130,11 @@ describe('createElectronMainReceiver — report routing + listener containment',
       onReport: (r) => reports.push(r),
     }).start();
     send(
-      JSON.stringify({ k: 'report', p: { source: { mechanism: 'uncaught' }, report: {} }, ts: 1 }),
+      JSON.stringify({
+        k: 'report',
+        p: { source: { type: 'crash', mechanism: 'uncaught' }, report: {} },
+        ts: 1,
+      }),
     );
     expect(reports).toHaveLength(1);
     expect(added).toHaveLength(0); // the store must not see an incident

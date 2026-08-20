@@ -19,6 +19,21 @@
         "electron-renderer"
       ]
     },
+    "reportingTriggerType": {
+      "description": "source.type (wire.ts ReportingTriggerType) \u2014 how the report was triggered. The collector classifies on this and matches notification filters (source_types) against it.",
+      "enum": [
+        "unknown",
+        "crash",
+        "error",
+        "assert",
+        "shake",
+        "broadcast",
+        "screenshot",
+        "notification",
+        "code_dialog",
+        "code_upload"
+      ]
+    },
     "mechanism": {
       "description": "source.mechanism (wire.ts Mechanism).",
       "enum": [
@@ -115,8 +130,11 @@
         },
         "source": {
           "type": "object",
-          "required": ["mechanism"],
+          "required": ["type", "mechanism"],
           "properties": {
+            "type": {
+              "$ref": "#/definitions/reportingTriggerType"
+            },
             "mechanism": {
               "$ref": "#/definitions/mechanism"
             },

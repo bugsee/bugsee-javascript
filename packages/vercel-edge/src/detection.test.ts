@@ -86,7 +86,11 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     t.emit('unhandledrejection', { reason: 'boom-string' });
     expect(requests[0]?.report.summary).toBe('boom-string');
     expect('description' in (requests[0]?.report ?? {})).toBe(false);
-    expect(requests[0]?.report.crash).toBeUndefined(); // non-Error → no crash.json
+    // A non-Error still gets a usable crash document (a synthetic exception), rather than none.
+    expect(requests[0]?.report.crash).toMatchObject({
+      handled: false,
+      exception: { name: 'String' },
+    });
   });
 
   it('tolerates a null / undefined event (no `.reason` access throw) — reports String(undefined)', () => {

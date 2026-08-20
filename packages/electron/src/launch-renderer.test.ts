@@ -248,7 +248,7 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
       launch: fakeLaunch,
       post: (raw) => posted.push(raw),
     });
-    const req = { source: { mechanism: 'uncaught' }, report: { summary: 'boom' } };
+    const req = { source: { type: 'crash', mechanism: 'uncaught' }, report: { summary: 'boom' } };
 
     expect(await injected?.triggerPipeline.report(req)).toEqual({ ok: false });
     expect(posted).toEqual([]);

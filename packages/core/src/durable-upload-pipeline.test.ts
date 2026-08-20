@@ -17,7 +17,7 @@ const request = (summary: string): RequestJson => ({
   type: 'error',
   summary,
   severity: Severity.High,
-  source: { mechanism: 'programmatic' },
+  source: { type: 'error', mechanism: 'programmatic' },
   created_on: '2026-05-29T00:00:00Z',
   environment,
 });

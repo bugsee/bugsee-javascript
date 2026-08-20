@@ -11,7 +11,7 @@ const aBundle = (summary: string): Bundle => ({
     type: 'crash',
     summary,
     severity: Severity.Blocker,
-    source: { mechanism: 'uncaught' },
+    source: { type: 'crash', mechanism: 'uncaught' },
     created_on: '2026-06-29T00:00:00Z',
     environment: {
       platform: { type: 'web', version: '1' },

@@ -213,7 +213,7 @@ const pendingBundle = (summary: string): Uint8Array => {
     type: 'crash',
     summary,
     severity: Severity.Blocker,
-    source: { mechanism: 'uncaught' },
+    source: { type: 'crash', mechanism: 'uncaught' },
     created_on: '2026-06-02T00:00:00Z',
     environment: {
       platform: { type: 'web', version: '1' },

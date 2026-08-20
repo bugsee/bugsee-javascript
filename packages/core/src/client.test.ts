@@ -557,11 +557,21 @@ describe('createClient — crash.json (SC3)', () => {
     });
   });
 
-  it('omits crash.json for a non-Error logException', async () => {
+  it('still writes a crash.json for a non-Error logException, with a synthetic exception', async () => {
+    // A bundle with no crash.json produced an issue the backend could only answer with "Crash data
+    // for the issue was not found" — present, counted, unusable. Non-Error throwables are ordinary
+    // JS, and `logException` accepts them.
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     await client.logException('just a string');
-    expect('crash.json' in unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body)).toBe(false);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    expect('crash.json' in files).toBe(true);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+      handled: boolean;
+      exception: { name: string; reason: string };
+    };
+    expect(crash.exception).toMatchObject({ name: 'String', reason: 'just a string' });
+    expect(crash.handled).toBe(true); // logException is a caught exception
   });
 });
 

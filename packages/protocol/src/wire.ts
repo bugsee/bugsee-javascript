@@ -33,6 +33,23 @@ export type PlatformType =
   | 'electron-main'
   | 'electron-renderer';
 
+/**
+ * How a report was triggered, as every Bugsee SDK puts it on the wire in `source.type`
+ * (appserver `code/constants/issue.js`). Distinct from the issue `type` (bug/crash/error), which is
+ * DERIVED from this, and from the capture {@link Mechanism}.
+ */
+export type ReportingTriggerType =
+  | 'unknown'
+  | 'crash'
+  | 'error'
+  | 'assert'
+  | 'shake'
+  | 'broadcast'
+  | 'screenshot'
+  | 'notification'
+  | 'code_dialog'
+  | 'code_upload';
+
 /** environment envelope (design §8.6). Metadata bags carry an index signature for optional fields. */
 export interface EnvironmentEnvelope {
   platform: {
@@ -60,7 +77,13 @@ export interface RequestJson {
   severity: Severity;
   email?: string;
   signatures?: string[];
-  source: { mechanism: Mechanism; origin?: string };
+  /**
+   * How the report was triggered. `type` is what the collector reads to classify and to match
+   * notification filters (`source_types`); omitting it left every JS issue with no trigger at all —
+   * `Trigger: not reported` on the issue, and unmatchable by any filter. `mechanism` is the capture
+   * mechanism, a finer-grained and INDEPENDENT axis (see {@link Mechanism}).
+   */
+  source: { type: ReportingTriggerType; mechanism: Mechanism; origin?: string };
   created_on: string; // ISO-8601 with Z
   environment: EnvironmentEnvelope;
   /**

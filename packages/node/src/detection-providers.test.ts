@@ -74,7 +74,11 @@ describe('createUncaughtExceptionProvider', () => {
     p.emit('uncaughtException', 'just a string');
     expect(requests[0]?.report.summary).toBe('just a string');
     expect(requests[0]?.report.description).toBeUndefined();
-    expect(requests[0]?.report.crash).toBeUndefined(); // non-Error → no crash.json
+    // A non-Error still gets a usable crash document (a synthetic exception), rather than none.
+    expect(requests[0]?.report.crash).toMatchObject({
+      handled: false,
+      exception: { name: 'String' },
+    });
   });
 
   it('falls back to the error name, and omits the description, when message/stack are absent', () => {
@@ -139,7 +143,10 @@ describe('createUnhandledRejectionProvider', () => {
     p.emit('unhandledRejection', { code: 42 });
     expect(requests[0]?.report.summary).toBe('[object Object]');
     expect(requests[0]?.report.description).toBeUndefined();
-    expect(requests[0]?.report.crash).toBeUndefined();
+    expect(requests[0]?.report.crash).toMatchObject({
+      handled: false,
+      exception: { name: 'Object', reason: '{"code":42}' },
+    });
   });
 
   it('defaults to the global process', () => {

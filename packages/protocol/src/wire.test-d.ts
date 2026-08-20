@@ -31,7 +31,7 @@ const request: RequestJson = {
   type: 'error',
   summary: 'Boom',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: '2026-05-26T00:00:00Z',
   environment: env,
 };
@@ -70,7 +70,7 @@ const fullRequest: RequestJson = {
   severity: 5,
   email: 'x@example.com',
   signatures: ['sig'],
-  source: { mechanism: 'http-error', origin: 'fetch' },
+  source: { type: 'error', mechanism: 'http-error', origin: 'fetch' },
   created_on: '2026-05-26T00:00:00Z',
   environment: fullEnv,
 };
@@ -118,7 +118,7 @@ const fullNetworkEvent: NetworkEvent = {
 export const reqNoType: RequestJson = {
   summary: 's',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -126,7 +126,7 @@ export const reqNoType: RequestJson = {
 export const reqNoSummary: RequestJson = {
   type: 'error',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -134,7 +134,7 @@ export const reqNoSummary: RequestJson = {
 export const reqNoSeverity: RequestJson = {
   type: 'error',
   summary: 's',
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: 'x',
   environment: env,
 };
@@ -151,7 +151,7 @@ export const reqNoCreatedOn: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   environment: env,
 };
 // @ts-expect-error `environment` is required on RequestJson
@@ -159,7 +159,7 @@ export const reqNoEnvironment: RequestJson = {
   type: 'error',
   summary: 's',
   severity: 3,
-  source: { mechanism: 'uncaught' },
+  source: { type: 'crash', mechanism: 'uncaught' },
   created_on: 'x',
 };
 

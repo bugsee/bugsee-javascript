@@ -7,7 +7,7 @@ import { createElectronRendererReportPipeline } from './renderer-report-pipeline
 // main, never upload them itself — see docs/review/electron.md SEV1 #2.
 const request = (over: Partial<ReportingRequest> = {}): ReportingRequest =>
   ({
-    source: { mechanism: 'uncaught' },
+    source: { type: 'crash', mechanism: 'uncaught' },
     report: { type: 'crash', summary: 'renderer boom' },
     ...over,
   }) as ReportingRequest;
@@ -39,7 +39,7 @@ describe('createElectronRendererReportPipeline', () => {
 
   it('PRESERVES the mechanism — the attribution main must not re-file away', () => {
     const { p, posted } = pipeline();
-    void p.report(request({ source: { mechanism: 'unhandledrejection' } } as never));
+    void p.report(request({ source: { type: 'crash', mechanism: 'unhandledrejection' } } as never));
     expect(decodeReport(posted[0] as string)?.source.mechanism).toBe('unhandledrejection');
   });
 

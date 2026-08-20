@@ -57,5 +57,6 @@ export type {
   NetworkStage,
   NoBodyReason,
   PlatformType,
+  ReportingTriggerType,
   RequestJson,
 } from './wire';

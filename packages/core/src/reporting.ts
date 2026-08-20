@@ -1,4 +1,4 @@
-import type { Mechanism } from '@bugsee/protocol';
+import type { Mechanism, ReportingTriggerType } from '@bugsee/protocol';
 import type { AttributeValue, IssueType, SeverityName } from '@bugsee/types';
 import type { CrashJson, NativeCrashJson } from './crash';
 
@@ -16,18 +16,10 @@ export interface ReportAttachment {
 // Android's filesystem/Bitmap/encryption/disk-stage machinery is platform-specific and intentionally
 // omitted here — the JS v3 bundle path is in-memory (CaptureExporter.drain() → request.json → zip).
 
-/** How a report was triggered (Android ReportingSource.ReportingTriggerType). */
-export type ReportingTriggerType =
-  | 'unknown'
-  | 'crash'
-  | 'error'
-  | 'assert'
-  | 'shake'
-  | 'broadcast'
-  | 'screenshot'
-  | 'notification'
-  | 'code_dialog'
-  | 'code_upload';
+// The trigger vocabulary lives in @bugsee/protocol, because it is a WIRE value (`request.json`
+// `source.type`) that the collector reads, not an internal one. Re-exported here so the reporting
+// API keeps reading naturally.
+export type { ReportingTriggerType } from '@bugsee/protocol';
 
 /** The origin of a reporting request (Android ReportingSource). */
 export interface ReportingSource {

@@ -73,7 +73,10 @@ describe('R0 — renderer incident convergence', () => {
     });
 
     // R2 will route this through the renderer's report pipeline. Until then nothing forwards it.
-    const incident = { source: { mechanism: 'uncaught' }, report: { summary: 'renderer boom' } };
+    const incident = {
+      source: { type: 'crash', mechanism: 'uncaught' },
+      report: { summary: 'renderer boom' },
+    };
     postIncident(ipc.post, incident);
 
     expect(joined).toHaveLength(1);
@@ -85,7 +88,10 @@ describe('R0 — renderer incident convergence', () => {
     // capture store, producing a SECOND, array-shaped `crash.json` in the bundle and polluting every
     // subsequent report for the next 60 s. The report transport must bypass the store entirely.
     startMain();
-    postIncident(ipc.post, { source: { mechanism: 'uncaught' }, report: { summary: 'boom' } });
+    postIncident(ipc.post, {
+      source: { type: 'crash', mechanism: 'uncaught' },
+      report: { summary: 'boom' },
+    });
 
     // Nothing of type `crash` may have been routed into the store by the incident.
     const snapshot = mainStore.snapshot();
@@ -101,7 +107,7 @@ describe('R0 — renderer incident convergence', () => {
     // carrying a main-side stack — destroying the attribution this whole design exists to fix.
     startMain();
     postIncident(ipc.post, {
-      source: { mechanism: 'uncaught' },
+      source: { type: 'crash', mechanism: 'uncaught' },
       report: { summary: 'renderer boom', type: 'crash' },
     });
     expect((joined[0]?.source as { mechanism?: string } | undefined)?.mechanism).toBe('uncaught');

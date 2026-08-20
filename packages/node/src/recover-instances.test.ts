@@ -56,7 +56,7 @@ const aBundle = (summary: string): Bundle => ({
     type: 'crash',
     summary,
     severity: 3,
-    source: { mechanism: 'uncaught' },
+    source: { type: 'crash', mechanism: 'uncaught' },
     created_on: '2026-05-29T00:00:00Z',
     environment: env,
   } as Bundle['request'],

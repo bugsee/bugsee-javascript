@@ -122,6 +122,8 @@ export function assembleBundle(
     summary: report.summary ?? defaultSummary(report.type),
     severity: severityToWire(report.severity),
     source: {
+      // The TRIGGER, which the collector classifies on and matches notification filters against.
+      type: source.type,
       mechanism: source.mechanism ?? 'programmatic',
       ...(source.origin !== undefined ? { origin: source.origin } : {}),
     },

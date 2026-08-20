@@ -243,9 +243,9 @@ describe('decodeReport — hostile / malformed input', () => {
   });
 
   it('round-trips a well-formed report through encodeReport', () => {
-    const raw = encodeReport({ mechanism: 'uncaught' }, { summary: 's' }, 5);
+    const raw = encodeReport({ type: 'crash', mechanism: 'uncaught' }, { summary: 's' }, 5);
     expect(decodeReport(raw)).toEqual({
-      source: { mechanism: 'uncaught' },
+      source: { type: 'crash', mechanism: 'uncaught' },
       report: { summary: 's' },
       timestamp: 5,
     });

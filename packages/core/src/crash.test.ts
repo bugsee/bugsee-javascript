@@ -83,11 +83,64 @@ describe('buildCrashJson', () => {
     expect(depth).toBe(10); // 10 causes attached, the 11th dropped
   });
 
-  it('defaults handled to false and returns undefined for non-Errors', () => {
-    expect(buildCrashJson('not an error')).toBeUndefined();
-    expect(buildCrashJson(undefined)).toBeUndefined();
+  it('defaults handled to false', () => {
     const err = errorWith('Error', 'x', 'Error: x\n    at f (a.js:1:1)');
     expect(buildCrashJson(err, { parseStack: parseV8Stack })?.handled).toBe(false);
+  });
+
+  describe('non-Error throwables', () => {
+    // JS code throws non-Errors routinely, and `logException` accepts them. They used to produce NO
+    // crash.json at all, so the uploaded bundle had a summary and nothing else and the backend
+    // answered "Crash data for the issue was not found" — an issue that exists, is counted, and
+    // cannot be acted on. A synthetic exception keeps the report usable.
+    it.each([
+      ['a string throwable', 'String', 'a string throwable'],
+      [42, 'Number', '42'],
+      [true, 'Boolean', 'true'],
+      [null, 'Null', 'null'],
+      [undefined, 'Undefined', 'undefined'],
+      [Symbol.iterator, 'Symbol', 'Symbol(Symbol.iterator)'],
+    ])('synthesises an exception for %s', (value, name, reason) => {
+      const crash = buildCrashJson(value);
+      expect(crash?.exception.name).toBe(name);
+      expect(crash?.exception.reason).toBe(reason);
+      expect(crash?.exception_type).toBe('error');
+    });
+
+    it('renders a plain object with no message as JSON, so its fields survive', () => {
+      const crash = buildCrashJson({ code: 'E_SCENARIO', status: 503 });
+      expect(crash?.exception.name).toBe('Object');
+      expect(crash?.exception.reason).toBe('{"code":"E_SCENARIO","status":503}');
+    });
+
+    it("prefers a thrown object's own `message` over the JSON rendering", () => {
+      const crash = buildCrashJson({ code: 'E_SCENARIO', message: 'object throwable' });
+      expect(crash?.exception.reason).toBe('object throwable');
+    });
+
+    it("uses a thrown object's own `name`/`message` when it has them (an Error-like)", () => {
+      const crash = buildCrashJson({ name: 'HttpError', message: 'timeout' });
+      expect(crash?.exception.name).toBe('HttpError');
+      expect(crash?.exception.reason).toBe('timeout');
+    });
+
+    it('survives a value that cannot be stringified', () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      const crash = buildCrashJson(circular);
+      expect(crash?.exception.name).toBe('Object');
+      expect(typeof crash?.exception.reason).toBe('string'); // rendered, not thrown on
+    });
+
+    it('carries the class name of a thrown non-Error instance', () => {
+      class Boom {}
+      expect(buildCrashJson(new Boom())?.exception.name).toBe('Boom');
+    });
+
+    it('honours `handled`, exactly as it does for an Error', () => {
+      expect(buildCrashJson('x', { handled: true })?.handled).toBe(true);
+      expect(buildCrashJson('x')?.handled).toBe(false);
+    });
   });
 
   it('omits reason when the error has no message', () => {
