@@ -15,7 +15,8 @@
     "./upload-contract.schema.json": "./upload-contract.schema.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "upload-contract.schema.json"
   ],
   "sideEffects": false,
   "scripts": {
@@ -42,7 +43,8 @@
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
         }
-      }
+      },
+      "./upload-contract.schema.json": "./upload-contract.schema.json"
     }
   }
 }
