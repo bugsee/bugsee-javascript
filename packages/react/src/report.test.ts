@@ -1,7 +1,7 @@
 import type { Bugsee } from '@bugsee/browser';
 import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { linkComponentStack, reportReactError } from './report';
+import { linkComponentStack, reportReactError, reportRouteError } from './report';
 
 // A fake client capturing logException calls (the only method the adapter touches).
 function fakeClient() {
@@ -143,5 +143,37 @@ describe('linkComponentStack', () => {
     const b = new Error('b');
     linkComponentStack(b, '');
     expect(b.cause).toBeUndefined();
+  });
+});
+
+describe('reportRouteError', () => {
+  it('reports a route error the router surfaced, and dedupes a re-render of the same one', () => {
+    // A react-router data router catches a route element's render throw in its OWN boundary, before
+    // any ancestor sees it — so a BugseeErrorBoundary around <RouterProvider> never fires and nothing
+    // is reported. The app picks the error up from `useRouteError()` and hands it here instead.
+    const { client, logException } = fakeClient();
+    const error = new Error('route boom');
+    reportRouteError(error, { getClient: () => client });
+    reportRouteError(error, { getClient: () => client }); // a re-render of the same error element
+    expect(logException).toHaveBeenCalledTimes(2); // both forwarded; the CORE dedupes by instance
+    expect(logException.mock.calls[0]?.[0]).toBe(error);
+    expect(logException.mock.calls[0]?.[1]).toMatchObject({ mechanism: 'uncaught' });
+  });
+
+  it('lets the caller override the mechanism', () => {
+    const { client, logException } = fakeClient();
+    reportRouteError(new Error('x'), { getClient: () => client, mechanism: 'programmatic' });
+    expect(logException.mock.calls[0]?.[1]).toMatchObject({ mechanism: 'programmatic' });
+  });
+
+  it('links a component stack when the caller has one', () => {
+    const { client, logException } = fakeClient();
+    const error = new Error('x');
+    reportRouteError(error, { getClient: () => client, componentStack: '\n    at Route' });
+    expect((logException.mock.calls[0]?.[0] as Error).cause).toBeInstanceOf(Error);
+  });
+
+  it('never throws out of the app when there is no launched client', () => {
+    expect(() => reportRouteError(new Error('x'), { getClient: () => undefined })).not.toThrow();
   });
 });

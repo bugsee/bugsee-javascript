@@ -19,8 +19,19 @@ import { vueComponentName } from './component-name';
 export type VueErrorMechanism = AdapterMechanism;
 
 /** The minimal Vue `App` surface we touch — structurally matches `createApp(...)`'s `app`. */
+/**
+ * The slice of Vue's `App` this seam touches — structural, so `vue` stays a peer rather than a
+ * dependency.
+ *
+ * `instance` is `never`, not `unknown`. Vue types the real handler's instance as
+ * `ComponentPublicInstance | null`, and under `strictFunctionTypes` a property holding a function is
+ * checked CONTRAVARIANTLY — so a structural `instance: unknown` made a genuine `App` unassignable
+ * here, and `installBugseeErrorHandler(createApp(…))` did not typecheck for any real user. It only
+ * ever passed against this package's own test double. `never` accepts any instance type from either
+ * direction, which is what a structural stand-in for someone else's callback needs.
+ */
 export interface VueAppLike {
-  config: { errorHandler?: ((err: unknown, instance: unknown, info: string) => void) | undefined };
+  config: { errorHandler?: ((err: unknown, instance: never, info: string) => void) | undefined };
 }
 
 /** Options for the Vue error seam (client resolver + mechanism). */
@@ -66,7 +77,9 @@ export function installBugseeErrorHandler(app: VueAppLike, options: VueErrorOpti
     // at exactly the moment the app needs its handler most.
     neverThrow(() => reportVueError(err, { ...options, info, instance }), options.onError);
     if (typeof previous === 'function') {
-      previous(err, instance, info); // preserve the app's own handler
+      // `instance` is `never` in the structural type (see VueAppLike); at runtime it is whatever Vue
+      // handed us, and the app's own handler is the one that knows how to read it.
+      (previous as (e: unknown, i: unknown, n: string) => void)(err, instance, info);
     } else {
       vueDefaultErrorHandler(err); // …and Vue's own when the app had none
     }

@@ -13,4 +13,18 @@ export type {
 } from '@bugsee/core';
 // The SpanProcessor type users receive via `onOtelSpanProcessor` to register on their TracerProvider.
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
+// The performance extension's public surface. Re-exported for a reason beyond convenience:
+// @bugsee/performance declaration-merges `NameExtensionMapping` so that `client.ext('performance')`
+// is typed, and TypeScript only loads that augmentation if the consumer's type graph reaches the
+// package. Nothing else here referenced it, so the published .d.ts never mentioned it and
+// `client.ext('performance')` had NO usable type for anyone installing from npm — it worked inside
+// this monorepo only because source-based `exports` make the whole graph visible.
+export type {
+  PerformanceApi,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export { type BugseeLaunchOptionsWithPerformance, launch } from './launch';

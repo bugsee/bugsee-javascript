@@ -10,7 +10,7 @@ import * as router from './router';
 
 const { createBugseeErrorHandlers } = handlers;
 const { recordReactRenderSpan } = profiler;
-const { linkComponentStack, reportReactError } = report;
+const { linkComponentStack, reportReactError, reportRouteError } = report;
 const { instrumentReactRouter, instrumentRouterMatches, routePatternFromMatches, setRouteName } =
   router;
 
@@ -46,6 +46,9 @@ const hostileResolver = (): Bugsee => {
 /** Entry points that take work from the host and must contain their own failures. */
 const INVOCATIONS: Array<[string, (getClient: () => Bugsee) => void]> = [
   ['reportReactError', (g) => reportReactError(new Error('boom'), { getClient: g })],
+  // Called from the app's own route error element, which react-router renders while the app is
+  // already in trouble — a throw here would replace the app's error page with an SDK failure.
+  ['reportRouteError', (g) => reportRouteError(new Error('boom'), { getClient: g })],
   [
     'recordReactRenderSpan',
     (g) =>

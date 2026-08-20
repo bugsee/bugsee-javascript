@@ -52,6 +52,34 @@ export function linkComponentStack(error: unknown, componentStack: string | unde
  * instance-dedup). A no-op when no SDK is launched. (A React-19 `onUncaughtError`/`onCaughtError` global
  * handler that also routes here is a possible later addition — see D8; not built yet.)
  */
+/**
+ * Report an error that REACT ROUTER surfaced, from the app's own route error element.
+ *
+ * Why this exists: with a react-router v6 data router, the router wraps every route in its own
+ * `RenderErrorBoundary`, which catches a route element's render throw BEFORE any ancestor boundary.
+ * A `BugseeErrorBoundary` around `<RouterProvider>` is therefore never invoked, and the error is
+ * never reported — silently, with the router's own fallback rendered as if nothing were wrong. No
+ * amount of wrapping fixes that; the error has to be picked up where the router hands it over.
+ *
+ * ```tsx
+ * import { useRouteError } from 'react-router-dom';
+ * import { reportRouteError } from '@bugsee/react';
+ *
+ * export function RouteError() {
+ *   const error = useRouteError();
+ *   reportRouteError(error);
+ *   return <p>Something went wrong.</p>;
+ * }
+ * ```
+ *
+ * Safe to call on every render: the core dedupes by thrown instance, so a re-render of the same error
+ * element reports nothing further. Takes no react-router import — the app passes the error in, which
+ * is what keeps react-router a peer rather than a dependency.
+ */
+export function reportRouteError(error: unknown, options: ReportReactErrorOptions = {}): void {
+  reportReactError(error, { mechanism: 'uncaught', ...options });
+}
+
 export function reportReactError(error: unknown, options: ReportReactErrorOptions = {}): void {
   // CONTAINED, including the pre-work. `reportError` guards its own body, but `resolveClient` and
   // `linkComponentStack` ran OUTSIDE that guard — and `getClient` is an APPLICATION-supplied callback that

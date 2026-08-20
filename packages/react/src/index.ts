@@ -27,6 +27,7 @@ export {
   type ReactErrorMechanism,
   type ReportReactErrorOptions,
   reportReactError,
+  reportRouteError,
 } from './report';
 export {
   instrumentReactRouter,

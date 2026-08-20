@@ -3,6 +3,17 @@ import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installBugseeErrorHandler, reportVueError, type VueAppLike } from './error';
 
+/** Call the installed handler the way VUE does. `instance` is `never` in the structural VueAppLike
+ *  (a property holding someone else's callback is checked contravariantly), so the stand-in widens it
+ *  at the call site — the one place a real caller is Vue and not us. */
+const callHandler = (app: VueAppLike, err: unknown, inst: unknown, info: string): void => {
+  (app.config.errorHandler as ((e: unknown, i: unknown, n: string) => void) | undefined)?.(
+    err,
+    inst,
+    info,
+  );
+};
+
 function fakeClient() {
   const logException = vi.fn(
     (
@@ -132,7 +143,8 @@ describe('installBugseeErrorHandler', () => {
     const { client, logException } = fakeClient();
     const app: VueAppLike = { config: {} };
     installBugseeErrorHandler(app, { getClient: () => client });
-    app.config.errorHandler?.(
+    callHandler(
+      app,
       new Error('render boom'),
       instance({ $options: { name: 'Widget' } }),
       'render function',
@@ -148,7 +160,7 @@ describe('installBugseeErrorHandler', () => {
     installBugseeErrorHandler(app, { getClient: () => client });
     const err = new Error('x');
     const inst = instance({});
-    app.config.errorHandler?.(err, inst, 'mounted hook');
+    callHandler(app, err, inst, 'mounted hook');
     expect(previous).toHaveBeenCalledWith(err, inst, 'mounted hook'); // the app's handler still runs
   });
 });
