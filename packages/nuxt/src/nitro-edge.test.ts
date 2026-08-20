@@ -101,6 +101,24 @@ describe('installBugseeNitroEdge', () => {
     expect(resolveWaitUntil).toHaveBeenCalledWith(undefined);
   });
 
+  // The ExecutionContext lives five levels deep in a structure Nitro owns, and which level exists depends on
+  // the preset AND the Nitro version. Every partial shape must degrade to "no ctx" — a throw here happens
+  // inside Nitro's own error handling, i.e. Bugsee replacing the app's error with its own.
+  it.each([
+    ['an empty context', {}],
+    ['no event', { tags: ['request'] }],
+    ['an event with no context bag', { event: { path: '/p' } }],
+    ['an event context with no cloudflare', { event: { context: {} } }],
+    ['a cloudflare bag with no ctx', { event: { context: { cloudflare: {} } } }],
+  ])('degrades to no ctx (and never throws) for %s', (_label, context) => {
+    const { nitroApp, fireError } = fakeNitro();
+    captureWaitUntil();
+    installBugseeNitroEdge(nitroApp, { appToken: 'tok', launch: () => fakeClient() as never });
+
+    expect(() => fireError(new Error('x'), context as never)).not.toThrow();
+    expect(resolveWaitUntil).toHaveBeenCalledWith(undefined);
+  });
+
   it('does NOT report an expected H3 client error (statusCode < 500)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();

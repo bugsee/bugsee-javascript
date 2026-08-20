@@ -40,7 +40,12 @@ describe('attachBugseeOtelProvider', () => {
     expect(outcome).toBe('existing-provider');
     const err = onError.mock.calls[0]?.[0];
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/registerOTel/); // tells the user how to feed spans instead
+    // The notice IS the product surface here: it must say what happened AND name both escape hatches, or the
+    // user is left with a silently trace-less Next app and no idea why.
+    const message = (err as Error).message;
+    expect(message).toMatch(/already registered/); // what happened
+    expect(message).toMatch(/registerOTel/); // how to feed spans through their own provider
+    expect(message).toMatch(/onSpanProcessor/); // where to get the processor from
   });
 
   it('is disabled by setupOtelProvider: false (never loads the SDK)', async () => {
@@ -87,5 +92,62 @@ describe('attachBugseeOtelProvider', () => {
     // and registers a real BasicTracerProvider on the free global slot. afterEach's trace.disable() resets it.
     const outcome = await attachBugseeOtelProvider(processor);
     expect(outcome).toBe('registered');
+  });
+
+  // The outcome alone proves nothing about the ZERO-CONFIG PROMISE: "Next emits its built-in spans and
+  // Bugsee consumes them, with no user OTel setup". `defaultLoad` is the only code path that wires the real
+  // peers, so it is the only place that can get that wiring wrong — a provider built without our processor,
+  // or a `createProvider` that yields nothing, still returns 'registered'. Drive a real span through the
+  // GLOBAL tracer (what Next.js itself uses) and assert it lands on the Bugsee processor.
+  it('makes the REAL global tracer deliver spans to the Bugsee processor (zero-config end to end)', async () => {
+    const onEnd = vi.fn<(span: { name: string }) => void>();
+    const realProcessor = {
+      onStart() {},
+      onEnd,
+      forceFlush: async () => {},
+      shutdown: async () => {},
+    } as never;
+
+    expect(await attachBugseeOtelProvider(realProcessor)).toBe('registered');
+
+    // `trace.getTracer` resolves through the global provider we just installed — exactly how Next's own
+    // instrumentation emits its spans.
+    trace.getTracer('next.js').startSpan('next-span').end();
+
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd.mock.calls[0]?.[0]?.name).toBe('next-span');
+  });
+
+  // `attachBugseeOtelProvider` is fired FIRE-AND-FORGET (`void attach(...)`) by registerServer, so a throw
+  // here is an unhandled rejection in the user's server — not a caught error. `onError` is optional, and
+  // every defensive path must survive its absence.
+  describe('never throws when no onError sink is provided', () => {
+    it('load rejecting → "unavailable"', async () => {
+      await expect(
+        attachBugseeOtelProvider(processor, {
+          load: async () => {
+            throw new Error('module resolution failed');
+          },
+        }),
+      ).resolves.toBe('unavailable');
+    });
+
+    it('slot already taken → "existing-provider" (the guidance notice has nowhere to go)', async () => {
+      const mods = fakeMods({ setGlobalTracerProvider: vi.fn(() => false) });
+      await expect(attachBugseeOtelProvider(processor, { load: async () => mods })).resolves.toBe(
+        'existing-provider',
+      );
+    });
+
+    it('provider construction throwing → "error"', async () => {
+      const mods = fakeMods({
+        createProvider: vi.fn(() => {
+          throw new Error('bad provider');
+        }),
+      });
+      await expect(attachBugseeOtelProvider(processor, { load: async () => mods })).resolves.toBe(
+        'error',
+      );
+    });
   });
 });

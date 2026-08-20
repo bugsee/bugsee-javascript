@@ -33,6 +33,16 @@ describe('bugsee() integration', () => {
     expect(bugsee({ appToken: 'tok' }).name).toBe('@bugsee/astro');
   });
 
+  // These two ids are not free-form labels — Vite's contract is what makes the generated middleware
+  // loadable at all. A virtual module id must be a bare specifier that no file resolution can claim (hence
+  // the `virtual:` convention), and Vite warns on / mishandles an unnamed plugin.
+  it('follows Vite’s virtual-module + named-plugin conventions', () => {
+    expect(SERVER_MIDDLEWARE_ID.startsWith('virtual:')).toBe(true);
+    expect(SERVER_MIDDLEWARE_ID.length).toBeGreaterThan('virtual:'.length);
+    const { plugin } = runSetup(bugsee({ appToken: 'tok' }));
+    expect(plugin.name.length).toBeGreaterThan(0);
+  });
+
   it('injects the client launch (page) + adds the generated server middleware FIRST', () => {
     const { injectScript, addMiddleware } = runSetup(bugsee({ appToken: 'tok' }));
     expect(injectScript).toHaveBeenCalledWith('page', clientInitScript('tok', {}));

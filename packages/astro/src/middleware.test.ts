@@ -74,6 +74,26 @@ describe('createBugseeMiddleware — error capture', () => {
     expect(client.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
     expect(client.event).toHaveBeenCalledWith('astro.request-error', {}); // safePath caught, no method/path
   });
+
+  // Astro's `APIContext` is Astro's to shape, and `order: 'pre'` puts this middleware ahead of everything —
+  // including whatever a future Astro version, an adapter, or another `pre` middleware hands down. If the
+  // attribution read throws, Bugsee has replaced the app's error (which Astro would have rendered an error
+  // page for) with its own TypeError. The report must still go out, too — attribution is decoration.
+  it.each([
+    ['a context with no request at all', {}],
+    ['a null context', null],
+    ['an undefined context', undefined],
+  ])('still reports, and never throws its own error, for %s', async (_label, context) => {
+    const client = fakeClient();
+    const err = new Error('route boom');
+    await expect(
+      createBugseeMiddleware({ getClient: () => client })(context as never, async () => {
+        throw err;
+      }),
+    ).rejects.toBe(err); // the APP's error, unchanged
+    expect(client.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(client.event).toHaveBeenCalledWith('astro.request-error', {});
+  });
 });
 
 describe('createBugseeMiddleware — trace injection', () => {
@@ -116,12 +136,18 @@ describe('createBugseeMiddleware — trace injection', () => {
 
   it('leaves a response with NO content-type header untouched (nullish content-type)', async () => {
     const client = fakeClient();
-    const res = new Response(null, { status: 204 }); // no content-type
+    // Two traps this test used to fall into, both of which made it pass vacuously:
+    //  1. status 204 exits at the null-body guard BEFORE the content-type is ever read;
+    //  2. a STRING body makes the fetch spec set `content-type: text/plain;charset=UTF-8` for you.
+    // A byte body at status 200 is the only combination that actually reaches `.get(…) ?? ''` with null.
+    const res = new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    expect(res.headers.get('content-type')).toBeNull(); // the premise of this test, asserted
     const out = await createBugseeMiddleware({ getClient: () => client })(
       ctx(),
       vi.fn(async () => res),
     );
     expect(out).toBe(res);
+    expect(new Uint8Array(await out.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3])); // body intact
   });
 
   it('leaves an HTML response untouched when no trace is active', async () => {
@@ -139,12 +165,24 @@ describe('createBugseeMiddleware — trace injection', () => {
 
   it('leaves an HTML response without </head> untouched even with a trace', async () => {
     const client = fakeClient();
-    const html = htmlResponse('<div>no head</div>');
+    // Carries a content-length so "untouched" is checked, not just "the same text". The body has already
+    // been read at this point so the response must be RECONSTRUCTED — but reconstructed IDENTICALLY: nothing
+    // was injected, so dropping the content-length (as the injecting path must) would be a lie about a body
+    // that never changed.
+    const html = new Response('<div>no head</div>', {
+      status: 201,
+      statusText: 'Created',
+      headers: { 'content-type': 'text/html', 'content-length': '18', 'x-custom': 'keep' },
+    });
     const res = await createBugseeMiddleware({ getClient: () => client })(
       ctx(),
       vi.fn(async () => html),
     );
     expect(await res.text()).toBe('<div>no head</div>');
+    expect(res.status).toBe(201);
+    expect(res.statusText).toBe('Created');
+    expect(res.headers.get('content-length')).toBe('18');
+    expect(res.headers.get('x-custom')).toBe('keep');
   });
 
   it('defaults to the carrier client', async () => {

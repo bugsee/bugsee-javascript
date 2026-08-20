@@ -104,8 +104,52 @@ describe('installBugseeNitro', () => {
 
     fireError(new Error('x')); // no context
     const params = client.event.mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(params).toEqual({}); // no method/path/tags
+    // toStrictEqual, not toEqual: a `{ method: undefined, path: undefined, tags: undefined }` bag is NOT the
+    // same artifact — the keys reach the wire, and `toEqual` would wave it through.
+    expect(params).toStrictEqual({});
     expect(client.logException).toHaveBeenCalledTimes(1);
+  });
+
+  // Nitro's `error` hook is fired from several places, and only the request path carries an H3 event: an
+  // `unhandledRejection`/`plugin`-tagged error arrives with a context that has NO `event` at all. A throw
+  // here would replace the app's error with ours inside Nitro's own error handling.
+  it('reports when the context carries tags but NO h3 event (unhandledRejection path)', () => {
+    const client = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
+
+    const err = new Error('rejected');
+    expect(() => fireError(err, { tags: ['unhandledRejection'] })).not.toThrow();
+
+    expect(client.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(client.event.mock.calls[0]?.[1]).toStrictEqual({ tags: ['unhandledRejection'] });
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a string', 'plain string failure'],
+    ['a number', 42],
+  ])('reports a non-object thrown value (%s) without throwing', (_label, thrown) => {
+    const client = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
+
+    // The H3-status probe must tolerate anything Nitro hands it — `null?.statusCode` is the whole point of
+    // the optional chain.
+    expect(() => fireError(thrown)).not.toThrow();
+    expect(client.logException).toHaveBeenCalledWith(thrown, { mechanism: 'http-error' });
+  });
+
+  it('omits `tags` entirely when Nitro passes an EMPTY tag list', () => {
+    const client = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
+
+    fireError(new Error('x'), { event: { method: 'GET', path: '/' }, tags: [] });
+
+    // An empty `tags: []` is noise on the report — the guard exists to keep it off the wire.
+    expect(client.event.mock.calls[0]?.[1]).toStrictEqual({ method: 'GET', path: '/' });
   });
 
   it('injects the trace <meta> into the SSR <head> (render:html), reading the launched client', () => {

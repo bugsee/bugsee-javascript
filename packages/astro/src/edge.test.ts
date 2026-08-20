@@ -92,12 +92,27 @@ describe('createEdgeMiddleware', () => {
     expect(await res.text()).toBe('<head><meta name="traceparent" content="00-t-s-01"></head>');
   });
 
-  it('stamps empty attributes when the request has no method/url (defensive)', async () => {
-    await createEdgeMiddleware({ getClient: () => ({ id: 'c' }) as never })(
-      { request: {} as Request },
-      vi.fn(async () => new Response('x')),
-    );
-    expect((runInEdgeContext.mock.calls[0]?.[1] as { attributes: unknown }).attributes).toEqual({});
+  // `toStrictEqual`, not `toEqual`: `{ 'http.method': undefined }` passes `toEqual({})` while still putting
+  // an undefined-valued attribute onto the edge context — the span carries a key with no value.
+  it.each([
+    ['a request object with no method/url', { request: {} as Request }],
+    ['no request at all', {}],
+    // `locals` exists on EVERY Astro context; only the Cloudflare adapter fills in `locals.runtime`. On
+    // Vercel Edge / node adapters the walk must stop at each missing level.
+    ['locals with no runtime bag (any non-Cloudflare adapter)', { locals: {} }],
+    ['a runtime bag with no ctx', { locals: { runtime: {} } }],
+    ['a null context', null],
+    ['an undefined context', undefined],
+  ])('stamps NO attributes, and never throws, for %s (defensive)', async (_label, context) => {
+    const next = vi.fn(async () => new Response('x'));
+    await expect(
+      createEdgeMiddleware({ getClient: () => ({ id: 'c' }) as never })(context as never, next),
+    ).resolves.toBeDefined();
+    expect(
+      (runInEdgeContext.mock.calls[0]?.[1] as { attributes: unknown }).attributes,
+    ).toStrictEqual({});
+    expect((runInEdgeContext.mock.calls[0]?.[1] as { ctx: unknown }).ctx).toBeUndefined();
+    expect(next).toHaveBeenCalledTimes(1); // the route still ran
   });
 
   it('redacts secrets in the request URL before they reach http.url (Wave 1.1)', async () => {

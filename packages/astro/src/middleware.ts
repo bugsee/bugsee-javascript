@@ -61,10 +61,23 @@ function reportAstroError(
 /** Statuses the fetch spec forbids a body on — reconstructing a Response with one throws TypeError. */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 103, 204, 205, 304]);
 
-/** Inject the trace `<meta>` into an HTML response before `</head>`; return the ORIGINAL response untouched
- *  when it is not HTML, has no active trace, or has no `</head>`. Rewriting buffers the body (Astro's
- *  response is not streamed here) + drops the now-stale `content-length`. Exported so the edge middleware
- *  (`@bugsee/astro/edge`) reuses the exact same injection. */
+/** Does the `content-type` declare an encoding we can round-trip? Injecting buffers the body through
+ *  `Response.text()`, which decodes as UTF-8 UNCONDITIONALLY — the fetch spec ignores the `charset`
+ *  parameter — and the reconstruct re-encodes as UTF-8. So a response declaring any other encoding comes
+ *  back with every non-ASCII byte replaced by U+FFFD (`0xE9` → `EF BF BD`, measured): silent, irreversible
+ *  corruption of a page the app rendered correctly. An absent charset means UTF-8 (Astro's own output, and
+ *  the HTML5 default), so only an EXPLICIT non-UTF-8 charset is declined. */
+function isUtf8Encoded(contentType: string): boolean {
+  const charset = /;\s*charset\s*=\s*"?([^;"\s]+)/i.exec(contentType)?.[1];
+  return charset === undefined || /^utf-?8$/i.test(charset);
+}
+
+/** Inject the trace `<meta>` into an HTML response before its FIRST `</head>`. Returns the ORIGINAL response
+ *  object when there is nothing safe to do: a null-body status, a non-HTML content type, a declared non-UTF-8
+ *  charset, or no active trace. (A traced HTML response with no `</head>` has already had its body read, so
+ *  it comes back RECONSTRUCTED — same status/headers/bytes, a different object.) Rewriting buffers the body
+ *  (Astro's response is not streamed here) + drops the now-stale `content-length`. Exported so the edge
+ *  middleware (`@bugsee/astro/edge`) reuses the exact same injection. */
 export async function injectTraceIntoResponse(
   response: Response,
   options: TraceDataOptions,
@@ -77,6 +90,9 @@ export async function injectTraceIntoResponse(
   if (NULL_BODY_STATUSES.has(response.status)) return response;
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.includes('text/html')) return response;
+  // Never rewrite what we cannot re-encode losslessly — see isUtf8Encoded. A missing trace `<meta>` costs a
+  // correlation link; a mangled page costs the user their page.
+  if (!isUtf8Encoded(contentType)) return response;
   const tag = traceMetaTag(options);
   if (tag === '') return response;
   const html = await response.text();
