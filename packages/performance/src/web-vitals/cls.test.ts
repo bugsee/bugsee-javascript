@@ -86,6 +86,23 @@ describe('onCLS', () => {
     expect(clsOf(shifts)).toBeCloseTo(0.6);
   });
 
+  /**
+   * A ZERO-valued shift does not open a session window.
+   *
+   * `sessionValue` doubles as the "is a window open?" flag, and the two questions only come apart when an
+   * open window sums to exactly 0 — which a `value: 0` layout-shift entry produces. The distinction is
+   * invisible in the reported value (0 + v == v either way); it shows up in WHERE THE 5s CLOCK STARTS,
+   * because a window that never really opened must not age from the zero shift. web-vitals guards this
+   * the same way, so this is also the parity check with the reference implementation.
+   */
+  it('does not open a session window on a zero-valued shift', () => {
+    // t=0 value 0 (opens nothing) → the real window starts at t=500 and is 4500ms old at t=5000, so every
+    // shift joins: 6 x 0.1 = 0.6. Aging from t=0 instead would hit exactly 5000 at the last shift, split
+    // the window, and report 0.5.
+    const shifts = [shift(0, 0), ...[500, 1400, 2300, 3200, 4100, 5000].map((t) => shift(t, 0.1))];
+    expect(clsOf(shifts)).toBeCloseTo(0.6);
+  });
+
   it('keeps the largest window when a later window is bigger', () => {
     // A = 0.2 ; gap ; B = 0.5  → CLS = 0.5
     expect(clsOf([shift(0, 0.1), shift(500, 0.1), shift(3000, 0.3), shift(3500, 0.2)])).toBeCloseTo(

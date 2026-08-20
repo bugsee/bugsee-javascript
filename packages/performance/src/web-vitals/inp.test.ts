@@ -173,6 +173,42 @@ describe('onINP', () => {
     expect(inp()).toBe(30); // 3rd worst of [50,40,30,20,10]
   });
 
+  /**
+   * The polyfill's arithmetic, at a range where getting it wrong actually moves the answer.
+   *
+   * The other polyfill tests use ids starting near 1, where `(max - min)` and `(max + min)` land in the
+   * same floor(count / 50) bucket — so the subtraction could have been an addition and every one of them
+   * would still pass. Ids on a page that has already seen interactions do not start near 1.
+   */
+  it('derives the count from the id RANGE, not the id magnitudes', () => {
+    const { find, win, inp } = setup(); // no native counter → the polyfill is in play
+    // 10 interactions, ids 351..414 stepping by 7 → a range of 63 → count 10 → index floor(10/50) = 0,
+    // so INP is the WORST. Summing the ids instead gives 110, index 2, and the 3rd-worst (800).
+    const ids = Array.from({ length: 10 }, (_, i) => 351 + i * 7);
+    const events = ids.map((id, i) => ev(id, (i + 1) * 100));
+    find('event', 0)?.emit(events); // the polyfill observer tracks the id range
+    find('event', 40)?.emit(events); // the ranking observer
+    win.emit('pagehide');
+    expect(inp()).toBe(1000);
+  });
+
+  /** A stripped env (a worker, an old Safari) has no `performance` at all — that must not throw. */
+  it('survives an env with no performance object', () => {
+    const { Ctor, find } = fakeObservers();
+    const win = fakeWindow();
+    const env: WebVitalsEnv = {
+      PerformanceObserver: Ctor,
+      queueMicrotask: (cb) => cb(),
+      window: win as never,
+    };
+    const seen: Metric[] = [];
+    expect(() => onINP(env, (m) => seen.push(m))).not.toThrow();
+    find('event', 40)?.emit([ev(7, 120)]);
+    expect(() => win.emit('pagehide')).not.toThrow();
+    // …and it still measures: with no native counter the polyfill takes over.
+    expect(seen.at(-1)?.value).toBe(120);
+  });
+
   it('does NOT create the polyfill observer when a native interactionCount exists', () => {
     const { find } = setup(5);
     expect(find('event', 0)).toBeUndefined();

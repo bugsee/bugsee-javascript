@@ -180,6 +180,54 @@ describe('collectNavigations', () => {
     expect(started[0]?.finish).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Everything that can fire BEFORE the first navigation.
+   *
+   * `current` is undefined until a navigation is detected, and three callbacks are already live by then —
+   * a network stage, the tab going hidden, and teardown. Each guards with `current?.`, and every one of
+   * those guards survived mutation, meaning no test ever entered the collector's opening state. A page
+   * that issues a request or is loaded in a background tab before any navigation is detected is the
+   * ordinary case, not an exotic one.
+   */
+  it('tolerates network activity, a hide, and teardown before the first navigation', () => {
+    const source = navSource();
+    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` proves nothing on its own —
+    // a keepAlive that blew up on the undefined transaction would look identical. The error sink makes it
+    // observable.
+    const listenerErrors: unknown[] = [];
+    const network = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>((e) =>
+      listenerErrors.push(e),
+    );
+    const { api, started } = fakeApi();
+    const { env, fireHidden } = fakeEnv();
+    const stop = collectNavigations({ source, api, networkSource: network, env });
+
+    for (const stage of ['before', 'complete', 'error', 'abort'] as const) {
+      network.emit(stage, { id: 'r', timestamp: 0 } as unknown as NetworkEvent);
+    }
+    expect(listenerErrors, 'keepAlive threw before any navigation existed').toEqual([]);
+    expect(() => fireHidden()).not.toThrow();
+    expect(() => stop()).not.toThrow();
+    // None of it invented a transaction out of nothing.
+    expect(started, 'a transaction was started without a navigation').toHaveLength(0);
+  });
+
+  /** A hide arriving AFTER teardown must find nothing to cancel — the listener cannot always be removed. */
+  it('no-ops when the tab hides after teardown', () => {
+    const source = navSource();
+    const { api, started } = fakeApi();
+    const { env, fireHidden } = fakeEnv();
+    const stop = collectNavigations({ source, api, env });
+
+    source.emit('navigate', detail({ to: '/x' }));
+    stop(); // cancels the in-flight navigation and clears `current`
+    const cancelled = (started[0]?.finish as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    expect(() => fireHidden()).not.toThrow();
+    // The post-teardown hide changed nothing — no second finish on an already-cancelled transaction.
+    expect((started[0]?.finish as ReturnType<typeof vi.fn>).mock.calls.length).toBe(cancelled);
+  });
+
   it('works without a network source (no keepAlive wiring)', () => {
     const source = navSource();
     const { api, started } = fakeApi();
