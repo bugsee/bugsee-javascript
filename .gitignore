@@ -10,3 +10,7 @@ reports/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# tsup writes a bundled config next to the package when tsup.config.ts needs transpiling, and leaves
+# it behind if the build is interrupted. Untracked, it fails `biome check .` on a formatting rule.
+tsup.config.bundled_*.mjs
