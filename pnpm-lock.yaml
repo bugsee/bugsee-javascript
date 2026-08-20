@@ -1078,9 +1078,6 @@ importers:
 
   packages/rrweb:
     dependencies:
-      '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)
       '@rrweb/types':
         specifier: ^2.1.0
         version: 2.1.0
@@ -1088,6 +1085,9 @@ importers:
         specifier: ^2.1.0
         version: 2.1.0
     devDependencies:
+      '@bugsee/rrweb-record':
+        specifier: github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
