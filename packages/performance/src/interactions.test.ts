@@ -145,6 +145,35 @@ describe('collectInteractions', () => {
     expect(started[0]?.setAttribute).not.toHaveBeenCalledWith('ui.interaction_target', undefined);
   });
 
+  /**
+   * Everything that can fire BEFORE the first interaction — the collector's opening state.
+   *
+   * `current` is undefined until an interaction is detected, yet a network stage, a tab hide and teardown
+   * are all live from the moment the collector is wired. Every `current?.` guarding that survived
+   * mutation. A page that issues requests during load, or is opened in a background tab, reaches this
+   * state on every session.
+   */
+  it('tolerates network activity, a hide, and teardown before the first interaction', () => {
+    const source = intSource();
+    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` cannot see a keepAlive that
+    // blew up on the undefined transaction. The error sink can.
+    const listenerErrors: unknown[] = [];
+    const network = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>((e) =>
+      listenerErrors.push(e),
+    );
+    const { api, started } = fakeApi();
+    const { env, fireHidden } = fakeEnv();
+    const stop = collectInteractions({ source, api, networkSource: network, env });
+
+    for (const stage of ['before', 'complete', 'error', 'abort'] as const) {
+      network.emit(stage, { id: 'r', timestamp: 0 } as unknown as NetworkEvent);
+    }
+    expect(listenerErrors, 'keepAlive threw before any interaction existed').toEqual([]);
+    expect(() => fireHidden()).not.toThrow();
+    expect(() => stop()).not.toThrow();
+    expect(started, 'a transaction was started without an interaction').toHaveLength(0);
+  });
+
   it('SKIPS the interaction when an active NAVIGATION owns the slot (no double-count of a click→route change)', () => {
     const source = intSource();
     const { api, setActive } = fakeApi();
