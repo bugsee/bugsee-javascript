@@ -18,6 +18,27 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type SetupNestOptions, setupNest } from './index';
 
 /**
+ * Wait for the expected number of bundles, rather than for `flush()` to return.
+ *
+ * `flush()` awaits reports that have already been SUBMITTED, and a report is submitted on the error path
+ * AFTER the response the `fetch` above already resolved on. On a fast machine the two happen close enough
+ * together that flush catches them; under the parallel `turbo run test:coverage` across 55 packages it
+ * does not, and the assertion sees zero. That is the same race the AppHang e2e hit, one layer up.
+ *
+ * The ceiling is generous because it is a ceiling: the happy path returns as soon as the count is reached.
+ */
+const waitForBundles = async (
+  bundles: readonly unknown[],
+  expected: number,
+  timeoutMs = 10_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (bundles.length < expected && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
+/**
  * `fetch` with a deadline.
  *
  * Node's fetch has NO default timeout, so a request that stalls hangs until the test timeout fires and
@@ -203,6 +224,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     }
     await client.flush(5000);
     // 2 genuine errors reported; the 404 + the ok route produced nothing.
+    await waitForBundles(bundles, 2);
     expect(bundles).toHaveLength(2);
     for (const b of bundles.map(parseBundle)) {
       expect(b.request.source.mechanism).toBe('http-error');
@@ -220,6 +242,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     const { url, bundles, client } = await boot({ errorCapture: 'filter' });
     await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
     await client.flush(5000);
+    await waitForBundles(bundles, 1);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
   });
@@ -230,6 +253,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     await fetchWithDeadline(`${url}/handler-error`).then((r) => r.text());
     await client.flush(5000);
     // guard (filter only) + handler (seen by both, deduped to one) = 2 — NOT 3.
+    await waitForBundles(bundles, 2);
     expect(bundles).toHaveLength(2);
   });
 
@@ -312,6 +336,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
     }).then((r) => r.text());
     await client.flush(5000);
 
+    await waitForBundles(bundles, 1);
     expect(bundles).toHaveLength(1);
     const p = parseBundle(bundles[0] as Uint8Array);
     expect(p.request.email).toBe('fast@x.com');
