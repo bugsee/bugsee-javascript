@@ -66,7 +66,19 @@ function edgeAttributes(event: unknown): Record<string, AttributeValue> {
  * launched it degrades to a plain `resolve` (no context).
  */
 export function createEdgeHandle(options: CreateEdgeHandleOptions = {}): SvelteKitHandle {
-  const resolveClient = options.getClient ?? (() => getCarrierClient<Bugsee>());
+  const getClient = options.getClient ?? (() => getCarrierClient<Bugsee>());
+  // `getClient` is APPLICATION-supplied and needs no SDK bug to throw (a TDZ'd module binding, a lazy
+  // import, a throwing getter). This handle wraps EVERY SSR request, so an unguarded throw here would turn
+  // the whole site into a 500 — the SDK breaking the app it exists to observe. A failed resolve degrades to
+  // "not launched", exactly like a `getClient` that returns undefined. (Same shape as the @bugsee/react
+  // `report.ts` and hono `options.user` findings.)
+  const resolveClient = (): Bugsee | undefined => {
+    try {
+      return getClient();
+    } catch {
+      return undefined;
+    }
+  };
   return ({ event, resolve }) => {
     const resolveOptions: SvelteKitResolveOptions = {
       transformPageChunk: ({ html }) => injectTraceMeta(html, { getClient: resolveClient }),

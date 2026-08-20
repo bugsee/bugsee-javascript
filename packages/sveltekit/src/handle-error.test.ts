@@ -62,8 +62,53 @@ describe('createHandleServerError', () => {
   it('omits attribution fields that are absent (no event)', () => {
     const client = fakeClient();
     createHandleServerError({ getClient: () => client })({ error: new Error('x'), status: 500 });
-    expect(client.event).toHaveBeenCalledWith('sveltekit.server-error', {});
+    // `toHaveBeenCalledWith({})` uses toEqual semantics, which treats `{ method: undefined }` as `{}` —
+    // assert on the KEYS so a present-but-undefined attribute cannot slip through.
+    const params = client.event.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(params)).toEqual([]);
     expect(client.logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('STILL reports when the event has no route / request / url sub-objects', () => {
+    const client = fakeClient();
+    const err = new Error('x');
+    // A partial `event` must cost the ATTRIBUTION, never the report — the adapter may not swallow an error
+    // the app would otherwise see reported.
+    createHandleServerError({ getClient: () => client })({ error: err, event: {}, status: 500 });
+    expect(client.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(Object.keys(client.event.mock.calls[0]?.[1] as object)).toEqual([]);
+  });
+
+  it('omits routeId when SvelteKit reports no matched route (route.id === null)', () => {
+    const client = fakeClient();
+    const err = new Error('x');
+    createHandleServerError({ getClient: () => client })(
+      input({ error: err, event: { route: { id: null }, request: { method: 'GET' } } }),
+    );
+    const params = client.event.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect('routeId' in params).toBe(false); // a null route id must not be stamped as attribution
+    expect(params.method).toBe('GET');
+    expect(client.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+  });
+
+  it('omits an EMPTY routeId (no attribution is better than blank attribution)', () => {
+    const client = fakeClient();
+    createHandleServerError({ getClient: () => client })(
+      input({ event: { route: { id: '' }, url: { pathname: '/x' } } }),
+    );
+    const params = client.event.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect('routeId' in params).toBe(false);
+    expect(params.path).toBe('/x');
+  });
+
+  it('reports when `status` is present but NOT a number (the <500 skip is number-only)', () => {
+    // A non-numeric status must not be compared against 500 — `'404' < 500` and `null < 500` are both
+    // true by coercion, which would silently drop a real crash.
+    for (const status of ['404', null] as unknown as number[]) {
+      const client = fakeClient();
+      createHandleServerError({ getClient: () => client })(input({ status }));
+      expect(client.logException).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('defaults to the carrier client when no getClient is given', () => {

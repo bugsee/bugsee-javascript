@@ -94,6 +94,14 @@ describe('captureRemixErrorBoundaryError (Remix v2 root ErrorBoundary)', () => {
     expect(reportReactError).toHaveBeenCalledWith(err, {});
   });
 
+  it('reports a thrown `null` without throwing (the `in` operator would blow up on null)', () => {
+    // `typeof null === 'object'`, so the route-error-response probe MUST rule null out before reaching
+    // `'status' in error` — otherwise the boundary helper throws a TypeError *inside React's error path*,
+    // replacing the app's error with the SDK's.
+    expect(() => captureRemixErrorBoundaryError(null)).not.toThrow();
+    expect(reportReactError).toHaveBeenCalledWith(null, {});
+  });
+
   it('forwards a custom getClient', () => {
     const err = new Error('x');
     const getClient = () => undefined;

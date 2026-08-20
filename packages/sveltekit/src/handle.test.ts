@@ -82,6 +82,15 @@ describe('createHandle', () => {
   });
 
   it('exports a ready-made handle bound to the carrier client', () => {
-    expect(typeof handle).toBe('function');
+    traceMetaTag.mockReturnValue('<meta name="traceparent" content="00-t-s-01">');
+    const { resolve } = fakeResolve();
+    handle({ event: { id: 'evt' }, resolve });
+    const transform = resolve.mock.calls[0]?.[1]?.transformPageChunk as (i: {
+      html: string;
+    }) => string;
+    expect(transform({ html: PAGE })).toContain('<meta name="traceparent" content="00-t-s-01">');
+    // "Bound to the carrier client" means it passes NO getClient — traceMetaTag then falls back to the
+    // process/isolate carrier singleton itself.
+    expect(traceMetaTag.mock.calls[0]?.[0]?.getClient).toBeUndefined();
   });
 });
