@@ -54,7 +54,7 @@ async function click(page: Page, testid: string, waitMs = 400): Promise<string> 
 }
 
 async function runSingleTabSweep(page: Page): Promise<string> {
-  await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/scenarios`, { waitUntil: 'load' });
   await sleep(300);
   const runIdText = await page.locator('code').first().textContent();
   const runId = runIdText?.trim() ?? '(unknown run id)';
@@ -143,7 +143,7 @@ async function runSingleTabSweep(page: Page): Promise<string> {
   record('vue-suspense-error', 'async-component/Suspense error', detailH1 === 'Tomato Basil Soup', `landed on: ${detailH1}`);
 
   // Back to the scenario panel for the remaining scenarios.
-  await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/scenarios`, { waitUntil: 'load' });
   await sleep(300);
 
   // S12 (arm probe; the abrupt-close leg is a separate function below)
@@ -162,8 +162,8 @@ async function runTwoTabCoexistence(context: import('playwright').BrowserContext
   const pageB = await context.newPage();
   try {
     await Promise.all([
-      pageA.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' }),
-      pageB.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' }),
+      pageA.goto(`${BASE}/scenarios`, { waitUntil: 'load' }),
+      pageB.goto(`${BASE}/scenarios`, { waitUntil: 'load' }),
     ]);
     await sleep(300);
     const runA = (await pageA.locator('code').first().textContent())?.trim() ?? '?';
@@ -190,7 +190,7 @@ async function runPersistenceAbruptClose(
 ): Promise<{ marker: string }> {
   const context = await browser.newContext({ storageState: undefined });
   const page = await context.newPage();
-  await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/scenarios`, { waitUntil: 'load' });
   await sleep(300);
   // Fire an exception (queues a bundle) then close the context IMMEDIATELY, without waiting for the
   // upload or calling flush/stop — approximating a hard termination mid-capture (§4 S12).

@@ -156,7 +156,10 @@ async function main(): Promise<void> {
     await hit('S4.cause', 'POST', '/scenarios/s4/cause');
     await hit('S4.options', 'POST', '/scenarios/s4/options');
     await hit('S4.dedupe', 'POST', '/scenarios/s4/dedupe');
-    await hit('S4.storm', 'POST', '/scenarios/s4/storm');
+    // S4.storm runs LAST — see below. It fires 200 exceptions at once and the SDK's capture rate
+    // limiter admits 100 per 60s, by design, so a storm in the MIDDLE of the sweep spends the whole
+    // window's budget and starves every scenario that follows it. That is the SDK protecting itself
+    // correctly; it was this harness measuring inside a window it had already spent.
 
     // ---- S5 Crashes (in-request) ----
     await hit('S5.route-throw', 'GET', '/scenarios/s5/route-throw', 500);
@@ -235,6 +238,9 @@ async function main(): Promise<void> {
       expected: 500,
       ok: concurrencyOk,
     });
+
+    // ---- S4 storm, last: it deliberately spends the rate-limit window (see above) ----
+    await hit('S4.storm', 'POST', '/scenarios/s4/storm');
 
     // ---- flush + let the async pipeline drain ----
     // The S4 storm alone enqueues 200 real uploads; the durable pipeline caps concurrency at 4

@@ -38,6 +38,26 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
 - **Observed once** by `samples/express-api` on a merged issue. Recorded so it is not lost; it needs a
   deliberate reproduction before it can be acted on.
 
+### F-X19 · Two sample harness checks measure timing, not SDK behaviour
+
+- **Severity:** major, **and not yet attributed** — the SDK measures clean in isolation
+- **Scenario:** 50 concurrent requests that throw, against real staging
+- **What the SDK does now**, measured three ways after the F-X8 work:
+  - direct `logException` × 20 → 20 uploaded; × 50 with realistic upload latency → 50 uploaded;
+    × 200 → 100 uploaded, which is exactly the capture rate limiter's 100-per-60s budget doing its job;
+  - a minimal Express app with the default `setupExpress(app)` → 50 of 50 requests reported.
+- **What this sample does:** 21 of 50, reproducibly, and 21 of ~280 across the full sweep. Both the
+  `/v2/issues` count and the bundle-PUT count are 21, so the loss is upstream of the network.
+- **Therefore:** something in this sample's own wiring — its router mounting, its second client, or
+  its scenario routes — and not the SDK path the isolated app exercises. It needs bisecting against
+  the minimal app rather than more SDK changes.
+- **Consequence:** four of `express-api`'s wire checks (`S4.dedupe`, `S8.report-mutate`, `S2 attribute
+  after`, `concurrency isolation`) fail for this reason, and `react-spa`'s `react-report-error` check
+  fails the same way — it asserts that a `/v2/issues` request happens within 1500 ms of a click, which
+  a backlog draining behind it can miss. They are left failing rather than relaxed: a green check that
+  measures the wrong thing is worse than a red one, and these should be rewritten to wait for the
+  evidence rather than for a clock.
+
 ## Resolved
 
 ### F-X1 · `@bugsee/rrweb`'s git dependency — **fixed** (`e60…`, this change)
