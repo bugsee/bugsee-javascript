@@ -24,6 +24,15 @@ const bundle = (name = 'b.bundle.zip'): Bundle => ({
 const request = (id: string): ReportingRequest =>
   createReportingRequest({ source: { type: 'code_upload' }, id });
 
+/** A bundle whose request.summary carries the incident name, so assembly order is observable. */
+const named = (summary: string): Bundle => {
+  const b = bundle();
+  return { ...b, request: { ...b.request, summary } };
+};
+/** A reporting request for one incident, named so it can be matched on the other side. */
+const incident = (summary: string): ReportingRequest =>
+  createReportingRequest({ source: { type: 'error' }, summary, id: summary });
+
 function fakeUpload(): { uploadPipeline: UploadPipeline; enqueue: ReturnType<typeof vi.fn> } {
   const enqueue = vi.fn(async (): Promise<UploadResult> => ({ ok: true }));
   return {
@@ -139,5 +148,57 @@ describe('createTriggerPipeline', () => {
     await pipeline.report(request('first'));
     await pipeline.report(request('second'));
     expect(assemble).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createTriggerPipeline — a burst of concurrent incidents', () => {
+  it('reports every incident of a 20-wide burst, not just the first few', async () => {
+    // Assembly is serialized because it DRAINS the capture exporter, and that is right — but the queue
+    // behind it was bounded at 2, so a server failing 20 requests at once assembled one report, queued
+    // two, and DROPPED the other seventeen before they ever became bundles. Nothing reached the
+    // durable store, so nothing was recoverable either: seventeen incidents simply never existed.
+    // The rate limiter (100 per 60s, applied before this) is the storm guard; this bound was a second,
+    // far tighter one nobody chose.
+    const enqueued: string[] = [];
+    const uploadPipeline: UploadPipeline = {
+      enqueue: async (b) => {
+        enqueued.push(b.request.summary);
+        await Promise.resolve();
+        return { ok: true };
+      },
+      flush: async () => true,
+      drop: () => {},
+    };
+    const pipeline = createTriggerPipeline({
+      assemble: (r) => named(r.report.summary ?? '?'),
+      uploadPipeline,
+    });
+
+    const names = Array.from({ length: 20 }, (_, i) => `incident-${i}`);
+    const results = await Promise.all(names.map((name) => pipeline.report(incident(name))));
+
+    expect(results.filter((r) => r.ok)).toHaveLength(20);
+    expect(enqueued.sort()).toEqual(names.sort());
+  });
+
+  it('still refuses beyond an explicitly configured bound, and says so', async () => {
+    // The bound remains available for a caller that wants one; it is the DEFAULT that was wrong.
+    const uploadPipeline: UploadPipeline = {
+      enqueue: () => new Promise(() => {}), // never settles: everything after the first one queues
+      flush: async () => true,
+      drop: () => {},
+    };
+    const pipeline = createTriggerPipeline({
+      assemble: (r) => named(r.report.summary ?? '?'),
+      uploadPipeline,
+      maxQueueDepth: 1,
+    });
+    void pipeline.report(incident('a')); // in flight
+    await Promise.resolve();
+    void pipeline.report(incident('b')); // queued (depth 1)
+    await Promise.resolve();
+    const third = await pipeline.report(incident('c'));
+    expect(third.ok).toBe(false);
+    expect(third.error?.message).toMatch(/queue overflow/);
   });
 });
