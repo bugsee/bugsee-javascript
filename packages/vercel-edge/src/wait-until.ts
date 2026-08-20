@@ -30,9 +30,16 @@ export function resolveWaitUntil(ctx?: EdgeExecutionContext): WaitUntil {
     const holder = (globalThis as Record<symbol, VercelRequestContextHolder>)[
       VERCEL_REQUEST_CONTEXT
     ];
-    const requestContext = holder?.get?.();
-    if (typeof requestContext?.waitUntil === 'function') {
-      return requestContext.waitUntil.bind(requestContext);
+    // `holder?.get?.()` was NOT enough: an optional call guards null/undefined only, so a present but
+    // non-callable `get` (a squatted symbol, a changed Vercel shape) still threw "get is not a function".
+    // That throw escapes this function, which runInEdgeContext calls OUTSIDE its try (edge-context.ts) —
+    // so it does not cost a flush, it fails the customer's request. Type-guard it, exactly as `waitUntil`
+    // below already is.
+    if (typeof holder?.get === 'function') {
+      const requestContext = holder.get();
+      if (typeof requestContext?.waitUntil === 'function') {
+        return requestContext.waitUntil.bind(requestContext);
+      }
     }
   }
   return () => {};

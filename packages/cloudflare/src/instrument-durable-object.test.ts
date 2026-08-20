@@ -308,3 +308,43 @@ describe('a hostile DurableObjectState', () => {
     spy.mockRestore();
   });
 });
+
+// The tenant key must be USABLE, not merely present.
+//
+// `durableObjectOwner` deliberately returns `undefined` rather than propagating a value that cannot serve as
+// a partition key. An empty string is the dangerous one: it is falsy but `!== undefined`, so it WOULD be
+// spread onto the invocation context as an owner — a "tenant" every id-less DO would share, quietly merging
+// their capture back into one ring, which is the leak the owner exists to prevent.
+describe('an unusable Durable Object id yields NO owner', () => {
+  const ownerFor = async (id: unknown): Promise<string | undefined> => {
+    const { client, store } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    let owner: string | undefined;
+    class DO {
+      // biome-ignore lint/complexity/noUselessConstructor: declares the DO constructor arity (see above)
+      constructor(..._args: unknown[]) {}
+      async fetch(_request: Request): Promise<Response> {
+        owner = store.getCurrent()?.owner;
+        return new Response('ok');
+      }
+    }
+    const Wrapped = instrumentDurableObject('tok', DO);
+    const instance = new Wrapped({ id, waitUntil: () => {} } as never, {}) as unknown as DO;
+    await instance.fetch(new Request('https://x.test/'));
+    return owner;
+  };
+
+  it('drops an EMPTY-STRING id (a shared "" tenant is worse than none)', async () => {
+    await expect(ownerFor({ toString: () => '' })).resolves.toBeUndefined();
+  });
+
+  it('drops a non-string toString() result rather than coercing it', async () => {
+    await expect(ownerFor({ toString: () => 42 })).resolves.toBeUndefined();
+    await expect(ownerFor({ toString: () => undefined })).resolves.toBeUndefined();
+    await expect(ownerFor({ toString: () => ({ nested: true }) })).resolves.toBeUndefined();
+  });
+
+  it('still accepts an ordinary non-empty id (the canary — the guards did not reject everything)', async () => {
+    await expect(ownerFor({ toString: () => 'room-17' })).resolves.toBe('room-17');
+  });
+});

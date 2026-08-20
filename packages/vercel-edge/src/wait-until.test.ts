@@ -74,6 +74,31 @@ describe('resolveWaitUntil', () => {
     expect(() => wu(Promise.resolve(1))).not.toThrow();
   });
 
+  it("falls back to a no-op when the holder's `get` is present but NOT a function", () => {
+    // `holder?.get?.()` guards only null/undefined: an optional CALL on a present, non-callable `get` still
+    // throws "holder?.get is not a function". That throw escapes `resolveWaitUntil`, which `runInEdgeContext`
+    // calls BEFORE its try block (edge-context.ts:62) — so it does not cost a flush, it fails the customer's
+    // request outright. The global is a symbol on `globalThis` that anything in the isolate can set, and the
+    // very next line already type-guards `waitUntil` for exactly this reason.
+    vi.stubGlobal('EdgeRuntime', 'edge-runtime');
+    for (const get of ['not-a-function', 42, {}, [], true]) {
+      (globalThis as Record<symbol, unknown>)[VERCEL_SYMBOL] = { get };
+      let wu: ReturnType<typeof resolveWaitUntil> | undefined;
+      expect(() => {
+        wu = resolveWaitUntil();
+      }).not.toThrow();
+      expect(() => wu?.(Promise.resolve(1))).not.toThrow();
+    }
+  });
+
+  it('falls back to a no-op when the holder itself is a non-object (squatted symbol)', () => {
+    vi.stubGlobal('EdgeRuntime', 'edge-runtime');
+    for (const holder of ['nope', 7, true]) {
+      (globalThis as Record<symbol, unknown>)[VERCEL_SYMBOL] = holder;
+      expect(() => resolveWaitUntil()(Promise.resolve(1))).not.toThrow();
+    }
+  });
+
   it('falls back to a no-op when the symbol is absent entirely (EdgeRuntime present, no holder)', () => {
     vi.stubGlobal('EdgeRuntime', 'edge-runtime');
     const wu = resolveWaitUntil();

@@ -317,3 +317,154 @@ describe('instrumented methods stay on the prototype (Wave: cloudflare SEV1 #1)'
     expect(await instance.increment(3)).toBe(5); // …and `this` (a private #field) still resolves
   });
 });
+
+// The RPC name-selection rules, pinned.
+//
+// `specs` is built by CONCATENATING the lifecycle methods with the derived RPC names, and each spec then
+// `defineProperty`s over the last — so a name that appears in BOTH lists is instrumented twice, and the RPC
+// wrapper (the last one installed) WINS. That silently replaces `fetch`'s route attributes with
+// `{cloudflare.handler:'rpc'}`, which is exactly the enrichment an incident report exists to carry. The
+// `alreadyInstrumented` set on both branches is what prevents it, and nothing exercised it.
+describe('lifecycle methods are never re-instrumented as RPC', () => {
+  it('rpc:true keeps the lifecycle attributes on fetch (not the rpc marker)', async () => {
+    const { client, store } = fakeClient();
+    class Handler {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        attrs = store.getCurrent()?.attributes;
+        return new Response('ok');
+      }
+    }
+    let attrs: Record<string, unknown> | undefined;
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      Handler,
+      [{ name: 'fetch', attributes: () => ({ 'http.url': '/route' }) }],
+      true,
+    );
+    await new Instrumented(ctxStub(), {}).fetch(new Request('https://x.test/route'));
+    expect(attrs).toEqual({ 'http.url': '/route' }); // NOT {cloudflare.handler:'rpc', rpc.method:'fetch'}
+  });
+
+  it('an explicit rpc NAME LIST that repeats a lifecycle method does not override it either', async () => {
+    const { client, store } = fakeClient();
+    let attrs: Record<string, unknown> | undefined;
+    class Handler {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        attrs = store.getCurrent()?.attributes;
+        return new Response('ok');
+      }
+      async other(): Promise<string> {
+        return 'o';
+      }
+    }
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      Handler,
+      [{ name: 'fetch', attributes: () => ({ 'http.url': '/route' }) }],
+      ['fetch', 'other'], // a caller naming fetch explicitly must not lose the route attributes
+    );
+    const instance = new Instrumented(ctxStub(), {});
+    await instance.fetch(new Request('https://x.test/route'));
+    expect(attrs).toEqual({ 'http.url': '/route' });
+    // …and the genuinely-arbitrary name in the same list IS still instrumented.
+    expect(Object.hasOwn(Object.getPrototypeOf(instance) as object, 'other')).toBe(true);
+  });
+
+  it('never instruments `constructor` under rpc:true (it is not an RPC method)', () => {
+    const { client } = fakeClient();
+    class Handler {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Instrumented = instrumentEdgeClass(
+      () => client,
+      Handler,
+      [{ name: 'fetch', attributes: () => ({}) }],
+      true,
+    );
+    const instance = new Instrumented(ctxStub(), {});
+    // Wrapping `constructor` puts a wrapper on the prototype's `constructor` slot: `instance.constructor`
+    // stops being the class, which breaks every `x.constructor === C` check the customer's code may do —
+    // and exposes `constructor` on Cloudflare's RPC surface.
+    // (`prototype.constructor` is an own property of ANY class prototype — what matters is that it still
+    // points at the class rather than having been overwritten with an instrumented wrapper.)
+    expect((instance as unknown as { constructor: unknown }).constructor).toBe(Instrumented);
+    expect(Object.getPrototypeOf(instance)).toBe(Instrumented.prototype);
+  });
+
+  it('does NOT instrument arbitrary methods when the rpc argument is OMITTED (default off)', () => {
+    const { client } = fakeClient();
+    class Handler {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+      async secret(): Promise<string> {
+        return 's';
+      }
+    }
+    // No 4th argument → the `rpc = false` default. Defaulting the other way would instrument every method
+    // of every instrumented class, which is the opt-in this parameter exists to gate.
+    const Instrumented = instrumentEdgeClass(() => client, Handler, [
+      { name: 'fetch', attributes: () => ({}) },
+    ]);
+    const proto = Instrumented.prototype as object;
+    expect(Object.hasOwn(proto, 'fetch')).toBe(true);
+    expect(Object.hasOwn(proto, 'secret')).toBe(false);
+  });
+});
+
+// The wrapper's property DESCRIPTOR must match what a class method looks like.
+//
+// `writable`/`configurable` are not cosmetic here: a non-configurable, non-writable method cannot be
+// replaced afterwards, so a second instrumentation pass (or the customer's own patch, or a test double)
+// throws a TypeError on `defineProperty`/assignment instead of taking effect.
+describe('the installed wrapper looks exactly like a class method', () => {
+  it('is writable, configurable and non-enumerable', () => {
+    const { client } = fakeClient();
+    const Instrumented = instrumentEdgeClass(() => client, FakeObject, [
+      { name: 'fetch', attributes: () => ({}) },
+    ]);
+    const descriptor = Object.getOwnPropertyDescriptor(Instrumented.prototype, 'fetch');
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.writable).toBe(true);
+    expect(descriptor?.configurable).toBe(true);
+    expect(descriptor?.enumerable).toBe(false);
+  });
+
+  it('can still be re-defined afterwards (a frozen slot would throw here)', () => {
+    const { client } = fakeClient();
+    const Instrumented = instrumentEdgeClass(() => client, FakeObject, [
+      { name: 'fetch', attributes: () => ({}) },
+    ]);
+    expect(() => {
+      Object.defineProperty(Instrumented.prototype, 'fetch', {
+        value: () => 'replaced',
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }).not.toThrow();
+    // And plain assignment works too — that is what `writable: true` buys.
+    const proto = Instrumented.prototype as unknown as { fetch: unknown };
+    expect(() => {
+      proto.fetch = () => 'assigned';
+    }).not.toThrow();
+  });
+});

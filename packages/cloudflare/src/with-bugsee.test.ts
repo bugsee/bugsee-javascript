@@ -263,6 +263,69 @@ describe('withBugsee', () => {
     expect(attrs).toEqual({ 'cloudflare.handler': 'rpc', 'rpc.method': 'add' });
   });
 
+  it('leaves an absent FETCH absent — a cron-only Worker must not gain a fetch handler', async () => {
+    // `export default { scheduled }` is a real, common Worker shape. Adding a `fetch` key would both
+    // advertise a fetch handler the Worker does not have and blow up with a TypeError when workerd calls it.
+    const { client } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    const ran = vi.fn();
+    const wrapped = withBugsee('tok', {
+      scheduled: async (_c: ScheduledController, _env: unknown, _ctx: ExecutionContext) => {
+        ran();
+      },
+    });
+    expect('fetch' in wrapped).toBe(false); // the key is ABSENT, not present-as-undefined
+    expect(Object.keys(wrapped)).toEqual(['scheduled']);
+    await wrapped.scheduled?.({ cron: '* * * * *', scheduledTime: 1 }, {}, ctxStub());
+    expect(ran).toHaveBeenCalledTimes(1); // …and the handler it DOES export still works
+  });
+
+  it('carries every OTHER property of the handler object through untouched', async () => {
+    // A module Worker's default export is not limited to the five methods we wrap: Cloudflare keeps adding
+    // handler types (and users hang their own helpers off it). Rebuilding the object from scratch instead of
+    // spreading it would silently DELETE them from the deployed Worker.
+    const { client } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    const passthrough = async (): Promise<string> => 'kept';
+    const original = {
+      fetch: async (_req: Request, _env: unknown, _ctx: ExecutionContext) => new Response('ok'),
+      tailStream: passthrough, // a handler type this SDK does not know about
+      helper: 42,
+    } as unknown as ExportedHandler;
+    const wrapped = withBugsee('tok', original) as unknown as {
+      tailStream?: () => Promise<string>;
+      helper?: number;
+    };
+    expect(wrapped.tailStream).toBe(passthrough); // same reference — forwarded, not re-created
+    expect(await wrapped.tailStream?.()).toBe('kept');
+    expect(wrapped.helper).toBe(42);
+  });
+
+  it('does NOT instrument arbitrary RPC methods of an entrypoint class when no options are passed', async () => {
+    // The 3rd argument defaults to `{}`, so `instrumentRpcMethods` resolves through `?? false`. Defaulting
+    // the other way would wrap every method of every WorkerEntrypoint without the documented opt-in.
+    const { client, store } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    let sawContext = true;
+    class MyEntrypoint {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+      async add(a: number, b: number): Promise<number> {
+        sawContext = store.getCurrent() !== undefined;
+        return a + b;
+      }
+    }
+    const Instrumented = withBugsee('tok', MyEntrypoint); // no options argument at all
+    expect(await new Instrumented(ctxStub(), {}).add(2, 3)).toBe(5);
+    expect(sawContext).toBe(false); // ran raw — no Bugsee context was opened around it
+    expect(Object.hasOwn(Instrumented.prototype as object, 'add')).toBe(false);
+  });
+
   it('leaves absent handler methods absent and does not mutate the original handler', () => {
     const original: ExportedHandler = {
       fetch: async (_req: Request, _env: unknown, _ctx: ExecutionContext) => new Response('ok'),

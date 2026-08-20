@@ -16,8 +16,34 @@ describe('scheduledAttributes', () => {
     });
   });
 
+  // toStrictEqual, not toEqual: `toEqual` treats `{a, 'faas.cron': undefined}` as equal to `{a}`, so it
+  // cannot tell an OMITTED key from one stamped as `undefined` — which is precisely what these tests claim.
   it('omits cron/time when the controller is malformed (defensive)', () => {
-    expect(scheduledAttributes({} as never)).toEqual({
+    expect(scheduledAttributes({} as never)).toStrictEqual({
+      'faas.trigger': 'timer',
+      'cloudflare.handler': 'scheduled',
+    });
+  });
+
+  it('degrades to the markers when there is NO controller at all (never throws)', () => {
+    // The optional chaining is the guard: `controller.cron` on `undefined` would throw out of the wrapper,
+    // turning a malformed cron trigger into a failed invocation.
+    expect(scheduledAttributes(undefined as never)).toStrictEqual({
+      'faas.trigger': 'timer',
+      'cloudflare.handler': 'scheduled',
+    });
+    expect(scheduledAttributes(null as never)).toStrictEqual({
+      'faas.trigger': 'timer',
+      'cloudflare.handler': 'scheduled',
+    });
+  });
+
+  it('ignores a non-string cron and a non-number scheduledTime (type guards, not truthiness)', () => {
+    // A STRING scheduledTime is the case a truthiness check would wave through: `new Date('2023-…')` is a
+    // perfectly valid Date, so only the `typeof === 'number'` guard keeps a non-epoch value out of faas.time.
+    expect(
+      scheduledAttributes({ cron: 5, scheduledTime: '2023-11-14T22:13:20.000Z' } as never),
+    ).toStrictEqual({
       'faas.trigger': 'timer',
       'cloudflare.handler': 'scheduled',
     });
@@ -43,7 +69,21 @@ describe('queueAttributes', () => {
   });
 
   it('omits the queue name / count when the batch is malformed (defensive)', () => {
-    expect(queueAttributes({} as never)).toEqual({
+    expect(queueAttributes({} as never)).toStrictEqual({
+      'faas.trigger': 'pubsub',
+      'cloudflare.handler': 'queue',
+    });
+  });
+
+  it('degrades to the markers when there is NO batch at all (never throws)', () => {
+    expect(queueAttributes(undefined as never)).toStrictEqual({
+      'faas.trigger': 'pubsub',
+      'cloudflare.handler': 'queue',
+    });
+  });
+
+  it('ignores a non-string queue name and non-array messages (type guards)', () => {
+    expect(queueAttributes({ queue: 42, messages: 'three' } as never)).toStrictEqual({
       'faas.trigger': 'pubsub',
       'cloudflare.handler': 'queue',
     });
@@ -66,7 +106,7 @@ describe('tailAttributes', () => {
   });
 
   it('omits the count when events is not an array (defensive)', () => {
-    expect(tailAttributes(undefined as never)).toEqual({
+    expect(tailAttributes(undefined as never)).toStrictEqual({
       'faas.trigger': 'other',
       'cloudflare.handler': 'tail',
     });
