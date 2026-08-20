@@ -14,3 +14,10 @@ reports/
 # tsup writes a bundled config next to the package when tsup.config.ts needs transpiling, and leaves
 # it behind if the build is interrupted. Untracked, it fails `biome check .` on a formatting rule.
 tsup.config.bundled_*.mjs
+
+# Pre-publish tarballs the sample apps install from (scripts/pack-local.mjs).
+.local-registry/
+
+# Sample apps are standalone pnpm projects with their own (dev-only) lockfiles.
+samples/*/node_modules/
+samples/*/pnpm-lock.yaml
