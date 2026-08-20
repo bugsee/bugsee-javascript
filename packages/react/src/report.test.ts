@@ -1,4 +1,5 @@
 import type { Bugsee } from '@bugsee/browser';
+import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { linkComponentStack, reportReactError } from './report';
 
@@ -56,7 +57,7 @@ describe('reportReactError', () => {
 
   it('falls back to the carrier client when no getClient is injected', () => {
     const { client, logException } = fakeClient();
-    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { '0.0.0': { client } }; // seed the carrier slot
+    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } }; // seed the carrier slot
     reportReactError(new Error('via-carrier'));
     expect(logException).toHaveBeenCalledTimes(1);
     expect((logException.mock.calls[0]?.[0] as Error).message).toBe('via-carrier');

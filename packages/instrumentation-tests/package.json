@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/instrumentation-tests",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Cross-runtime end-to-end instrumentation harness: boots the real SDK under node/bun/deno against a mock collector and asserts the uploaded bundle.",
   "type": "module",

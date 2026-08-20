@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/astro",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Astro meta-adapter: an Integration (astro:config:setup) wiring a browser launch + a middleware (error capture + trace) + server/edge init",

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/integration-shims",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "No-op stand-ins for DOM-less runtimes",

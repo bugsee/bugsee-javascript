@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/cloudflare",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Cloudflare Workers (workerd): the @bugsee/vercel-edge composition with ctx.waitUntil + nodejs_compat ALS",

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/babel-plugin-component-annotate",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Babel plugin: annotate host JSX elements with data-bugsee-component for component attribution",

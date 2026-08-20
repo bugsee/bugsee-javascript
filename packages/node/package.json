@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/node",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Node platform: http(s) transport, node:fs storage, uncaught/unhandled handlers, ALS",

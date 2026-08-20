@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/angular",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Angular adapter: ErrorHandler + Router naming",
@@ -56,5 +56,8 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@bugsee/core": "workspace:*"
   }
 }

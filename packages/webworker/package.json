@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/webworker",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "DOM-less browser-family worker SDK: Web Workers + Service Workers (self error/unhandledrejection, console + network capture)",

@@ -10,6 +10,7 @@ import {
 } from '@bugsee/core';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { version as packageVersion } from '../package.json' with { type: 'json' };
 import { resolveEdgeStore } from './edge-context';
 import { type BugseeEdgeLaunchOptions, EdgeContextStoreToken, launchEdge } from './launch';
 
@@ -596,7 +597,9 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
 
   it('identifies itself with the default SDK version, and with an override when given', async () => {
     const byDefault = await upload({});
-    expect(headersOf(byDefault, '/v2/sessions')?.['user-agent']).toBe('BugseeJS/0.0.0');
+    // The DECLARED package version, not a literal: the collector enforces a minimum SDK version, so a
+    // hand-maintained copy here can (and did) drift below it without any test noticing.
+    expect(headersOf(byDefault, '/v2/sessions')?.['user-agent']).toBe(`BugseeJS/${packageVersion}`);
     const overridden = await upload({ sdkVersion: '4.5.6', carrier: {} });
     expect(headersOf(overridden, '/v2/sessions')?.['user-agent']).toBe('BugseeJS/4.5.6');
     // …and the same version reaches the environment envelope, not just the header.

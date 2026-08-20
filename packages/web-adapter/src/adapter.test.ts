@@ -1,4 +1,5 @@
 import type { Bugsee } from '@bugsee/browser';
+import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getPerformanceApi, reportError, resolveClient, setRouteName } from './adapter';
 
@@ -33,7 +34,7 @@ describe('resolveClient', () => {
 
   it('falls back to the carrier client when no resolver is given', () => {
     const { client } = fakeClient();
-    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { '0.0.0': { client } };
+    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } };
     expect(resolveClient()).toBe(client);
   });
 
@@ -146,7 +147,7 @@ describe('setRouteName', () => {
 
   it('falls back to the carrier client when no getClient is injected', () => {
     const { client, setRouteName: spy } = fakeClient();
-    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { '0.0.0': { client } };
+    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } };
     setRouteName('/dash');
     expect(spy).toHaveBeenCalledWith('/dash');
   });

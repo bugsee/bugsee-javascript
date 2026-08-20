@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/solid",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Solid adapter: onError/ErrorBoundary reporting + router naming",
@@ -56,5 +56,8 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@bugsee/core": "workspace:*"
   }
 }

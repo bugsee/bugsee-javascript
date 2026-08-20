@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/node-utils",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "http/https/fs/ALS helpers shared by node/bun/electron-main",

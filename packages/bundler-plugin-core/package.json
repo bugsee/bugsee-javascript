@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/bundler-plugin-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Shared bundler-plugin core — collects build context and drives the Rust bugsee-cli (sourcemaps inject + debug-files upload). The engine under @bugsee/vite-plugin / @bugsee/webpack-plugin.",

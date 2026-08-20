@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/sveltekit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "SvelteKit meta-adapter: portable handleError + handle (ALS context + trace) + server/client/edge entries",

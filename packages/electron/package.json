@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/electron",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Electron SDK: converges the main (Node), renderer (Chromium) and native (crashReporter) layers into one Bugsee session. See docs/design/electron.md.",

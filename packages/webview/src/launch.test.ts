@@ -9,7 +9,7 @@ import {
   setCarrierClient,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type BugseeWebViewLaunchOptions, launch } from './launch';
+import { type BugseeWebViewLaunchOptions, launch, SDK_VERSION } from './launch';
 import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
   BatchMessage,
@@ -147,7 +147,7 @@ describe('launch (webview)', () => {
     track('tok', baseOptions({ global: fake.global }));
     const hello = fake.msgs()[0] as HelloMessage;
     expect(hello.k).toBe('hello');
-    expect(hello.sdk).toBe('0.0.0');
+    expect(hello.sdk).toBe(SDK_VERSION); // the version the native receiver negotiates against
     expect([...hello.caps].sort()).toEqual(
       ['crash', 'events.system', 'events.user', 'log', 'network', 'traces.system'].sort(),
     ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this
@@ -175,7 +175,7 @@ describe('launch (webview)', () => {
 
     const msgs = posted.map((r) => JSON.parse(r) as AnyMsg);
     const hello = msgs.find((m): m is HelloMessage => m.k === 'hello');
-    expect(hello?.sdk).toBe('0.0.0');
+    expect(hello?.sdk).toBe(SDK_VERSION);
     expect(
       msgs.filter((m) => (m as { n?: unknown }).n !== 'cap-ios'),
       'a message reached the WKWebView sink without the capture nonce',

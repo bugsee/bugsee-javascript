@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/remix",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Remix / React Router v7 meta-adapter: server (handleError + node) + client entries",

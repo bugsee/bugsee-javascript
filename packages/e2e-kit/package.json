@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/e2e-kit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Wave V0 — the shared e2e substrate: a schema-validating mock collector plus a bundle-assertion library, used by EVERY harness so a contract check added once applies everywhere.",
   "type": "module",

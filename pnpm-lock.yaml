@@ -57,6 +57,156 @@ importers:
         specifier: ^4.1.7
         version: 4.1.7(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.1)(@types/node@25.9.1)(@vitest/coverage-v8@4.1.7)(jsdom@25.0.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))
 
+  dev-packages/packaging-guard:
+    devDependencies:
+      '@bugsee/adapter-kit':
+        specifier: workspace:*
+        version: link:../../packages/adapter-kit
+      '@bugsee/angular':
+        specifier: workspace:*
+        version: link:../../packages/angular
+      '@bugsee/astro':
+        specifier: workspace:*
+        version: link:../../packages/astro
+      '@bugsee/babel-plugin-component-annotate':
+        specifier: workspace:*
+        version: link:../../packages/babel-plugin-component-annotate
+      '@bugsee/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
+      '@bugsee/browser-utils':
+        specifier: workspace:*
+        version: link:../../packages/browser-utils
+      '@bugsee/bugsee':
+        specifier: workspace:*
+        version: link:../../packages/bugsee
+      '@bugsee/bun':
+        specifier: workspace:*
+        version: link:../../packages/bun
+      '@bugsee/bundler-plugin-core':
+        specifier: workspace:*
+        version: link:../../packages/bundler-plugin-core
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../../packages/capture
+      '@bugsee/cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/cloudflare
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@bugsee/deno':
+        specifier: workspace:*
+        version: link:../../packages/deno
+      '@bugsee/electron':
+        specifier: workspace:*
+        version: link:../../packages/electron
+      '@bugsee/elysia':
+        specifier: workspace:*
+        version: link:../../packages/elysia
+      '@bugsee/express':
+        specifier: workspace:*
+        version: link:../../packages/express
+      '@bugsee/fastify':
+        specifier: workspace:*
+        version: link:../../packages/fastify
+      '@bugsee/hapi':
+        specifier: workspace:*
+        version: link:../../packages/hapi
+      '@bugsee/hono':
+        specifier: workspace:*
+        version: link:../../packages/hono
+      '@bugsee/integration-shims':
+        specifier: workspace:*
+        version: link:../../packages/integration-shims
+      '@bugsee/koa':
+        specifier: workspace:*
+        version: link:../../packages/koa
+      '@bugsee/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
+      '@bugsee/nestjs':
+        specifier: workspace:*
+        version: link:../../packages/nestjs
+      '@bugsee/nextjs':
+        specifier: workspace:*
+        version: link:../../packages/nextjs
+      '@bugsee/node':
+        specifier: workspace:*
+        version: link:../../packages/node
+      '@bugsee/node-utils':
+        specifier: workspace:*
+        version: link:../../packages/node-utils
+      '@bugsee/nuxt':
+        specifier: workspace:*
+        version: link:../../packages/nuxt
+      '@bugsee/opentelemetry':
+        specifier: workspace:*
+        version: link:../../packages/opentelemetry
+      '@bugsee/performance':
+        specifier: workspace:*
+        version: link:../../packages/performance
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@bugsee/react':
+        specifier: workspace:*
+        version: link:../../packages/react
+      '@bugsee/remix':
+        specifier: workspace:*
+        version: link:../../packages/remix
+      '@bugsee/replay':
+        specifier: workspace:*
+        version: link:../../packages/replay
+      '@bugsee/replay-canvas':
+        specifier: workspace:*
+        version: link:../../packages/replay-canvas
+      '@bugsee/rrweb':
+        specifier: workspace:*
+        version: link:../../packages/rrweb
+      '@bugsee/service':
+        specifier: workspace:*
+        version: link:../../packages/service
+      '@bugsee/solid':
+        specifier: workspace:*
+        version: link:../../packages/solid
+      '@bugsee/svelte':
+        specifier: workspace:*
+        version: link:../../packages/svelte
+      '@bugsee/svelte-plugin-component-annotate':
+        specifier: workspace:*
+        version: link:../../packages/svelte-plugin-component-annotate
+      '@bugsee/sveltekit':
+        specifier: workspace:*
+        version: link:../../packages/sveltekit
+      '@bugsee/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      '@bugsee/util':
+        specifier: workspace:*
+        version: link:../../packages/util
+      '@bugsee/vercel-edge':
+        specifier: workspace:*
+        version: link:../../packages/vercel-edge
+      '@bugsee/vite-plugin':
+        specifier: workspace:*
+        version: link:../../packages/vite-plugin
+      '@bugsee/vue':
+        specifier: workspace:*
+        version: link:../../packages/vue
+      '@bugsee/web-adapter':
+        specifier: workspace:*
+        version: link:../../packages/web-adapter
+      '@bugsee/webpack-plugin':
+        specifier: workspace:*
+        version: link:../../packages/webpack-plugin
+      '@bugsee/webview':
+        specifier: workspace:*
+        version: link:../../packages/webview
+      '@bugsee/webworker':
+        specifier: workspace:*
+        version: link:../../packages/webworker
+
   packages/adapter-kit:
     dependencies:
       '@bugsee/core':
@@ -80,6 +230,10 @@ importers:
       '@bugsee/web-adapter':
         specifier: workspace:*
         version: link:../web-adapter
+    devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/astro:
     dependencies:
@@ -855,6 +1009,9 @@ importers:
         specifier: workspace:*
         version: link:../web-adapter
     devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/react':
         specifier: ^18.3.0
         version: 18.3.31
@@ -958,6 +1115,10 @@ importers:
       solid-js:
         specifier: '>=1.6'
         version: 1.9.13
+    devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/svelte:
     dependencies:
@@ -976,6 +1137,10 @@ importers:
       svelte:
         specifier: '>=4'
         version: 5.56.3(@typescript-eslint/types@8.59.4)
+    devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/svelte-plugin-component-annotate:
     devDependencies:
@@ -1088,6 +1253,10 @@ importers:
       vue:
         specifier: '>=3'
         version: 3.5.38(typescript@6.0.3)
+    devDependencies:
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/web-adapter:
     dependencies:

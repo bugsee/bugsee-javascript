@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/util",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Pure utilities: env detection, Deferred, base64, sha256, deep-merge, json-safe-stringify, exponential-backoff, fflate re-export",

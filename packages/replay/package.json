@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/replay",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Session replay: rrweb recorder capture-provider + ReplayEncoder — lazy-loaded via the `replay` launch option (browser). See docs/design/replay.md",

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/webpack-plugin",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Webpack plugin: drives the Bugsee source-map upload (inject debug-IDs + upload via bugsee-cli) at build end.",

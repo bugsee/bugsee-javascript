@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/replay-canvas",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Canvas-replay add-on (opt-in)",

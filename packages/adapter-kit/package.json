@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/adapter-kit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Shared runtime-portable primitives for the SSR meta-framework adapters (server-error bridge + trace-data)",

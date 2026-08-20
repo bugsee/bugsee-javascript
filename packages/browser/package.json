@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/browser",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Browser platform: fetch transport, IndexedDB storage, error handlers, stack-trace parser",

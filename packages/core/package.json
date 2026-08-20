@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "SDK kernel (tier 1): Client, single global Environment, event hubs + EventEmitter, capture/detection providers + extension registry, capture aggregator/store, trigger + upload pipelines, BundleWriter",

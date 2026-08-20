@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/protocol",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Canonical wire shapes: types + sanitizer lists + shape redaction + option-key translator + enum maps",

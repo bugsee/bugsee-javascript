@@ -1,3 +1,4 @@
+import { version as packageVersion } from '../package.json' with { type: 'json' };
 import 'fake-indexeddb/auto'; // polyfills indexedDB/IDBKeyRange for the persist (Service Worker) path
 import type { WindowEvents } from '@bugsee/browser';
 import {
@@ -898,10 +899,10 @@ describe('launch — endpoint / app token / SDK version wiring', () => {
     await client.logException(new Error('x'));
     await client.flush();
     const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
-    expect(session.headers?.['user-agent']).toBe('BugseeJS/0.0.0');
+    expect(session.headers?.['user-agent']).toBe(`BugseeJS/${packageVersion}`);
     expect(
       (issueJson(transport).environment as unknown as { sdk: { version: string } }).sdk.version,
-    ).toBe('0.0.0');
+    ).toBe(packageVersion);
   });
 
   it('honors an explicit sdkVersion override everywhere it is reported', async () => {

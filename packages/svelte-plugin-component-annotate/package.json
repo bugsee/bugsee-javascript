@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/svelte-plugin-component-annotate",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Svelte preprocessor: annotate host elements with data-bugsee-component for component attribution",

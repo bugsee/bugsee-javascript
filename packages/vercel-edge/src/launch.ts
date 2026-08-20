@@ -51,7 +51,7 @@ import {
 // request's `ctx.waitUntil(client.flush())` (the fetch-handler wrapper, E5). The edge context store is
 // registered under EdgeContextStoreToken so the wrapper can open a per-request context via `run()`.
 
-const SDK_VERSION = '0.0.0';
+const SDK_VERSION = '0.1.0';
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Edge capture buffer ceiling (design §966: 10 MB on browser/edge).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/bun",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Bun platform: re-exports @bugsee/node + Bun overrides",

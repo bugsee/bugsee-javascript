@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/rrweb",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Thin swappable wrapper over the rrweb RECORD path (the Bugsee-hardened rrweb fork) — the single rrweb import point for @bugsee/replay + @bugsee/replay-canvas",

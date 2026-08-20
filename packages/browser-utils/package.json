@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/browser-utils",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "fetch transport + IndexedDB storage + DOM helpers shared by browser/web-worker/service-worker",

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/nextjs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Next.js meta-adapter: client + server + edge entries",

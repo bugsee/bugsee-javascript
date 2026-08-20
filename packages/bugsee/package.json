@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/bugsee",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Batteries-included umbrella: the platform composition root + the on-by-default extensions (performance + opentelemetry) wired in, with per-runtime (browser/node) exports conditions",

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/web-adapter",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Shared utilities for the web framework adapters (client resolution, error reporting, route naming)",

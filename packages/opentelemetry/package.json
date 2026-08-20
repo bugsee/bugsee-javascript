@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/opentelemetry",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "OpenTelemetry interop (Tier 3, pluggable extension): two-way bridge — produce Bugsee transactions as OTLP/JSON, consume OTel spans. Runtime-portable mapping core; OTel deps are peers in the per-runtime wiring. See docs/design/opentelemetry-integration.md",

@@ -1,4 +1,5 @@
 import type { Bugsee } from '@bugsee/browser';
+import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reportSolidError, solidErrorHandler } from './error';
 
@@ -36,7 +37,7 @@ describe('reportSolidError', () => {
 
   it('falls back to the carrier client when no getClient is injected', () => {
     const { client, logException } = fakeClient();
-    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { '0.0.0': { client } };
+    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } };
     reportSolidError(new Error('via-carrier'));
     expect(logException).toHaveBeenCalledTimes(1);
   });

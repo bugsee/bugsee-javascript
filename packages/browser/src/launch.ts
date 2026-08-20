@@ -76,7 +76,7 @@ import { createViewtreeSnapshotSource } from './viewtree';
 // `pagehide` / `visibilitychange`→hidden commit the capture store and drain the client (Wave 6.2). The
 // returned client IS the public surface.
 
-const SDK_VERSION = '0.0.0';
+const SDK_VERSION = '0.1.0';
 // How long the page-hide flush waits for the client to drain (Wave 6.2). Short on purpose: a hiding page
 // has no guaranteed time at all, so this bounds the attempt rather than promising it completes — what makes
 // the data safe is that it becomes DURABLE, and the next page load recovers it.

@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/capture",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Cross-runtime capture sources (console/fetch interceptors) + runtime-agnostic capture providers",

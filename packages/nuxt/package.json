@@ -1,6 +1,6 @@
 {
   "name": "@bugsee/nuxt",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Nuxt meta-adapter: a Nuxt Module wiring @bugsee/vue (client) + @bugsee/node (Nitro node server) + @bugsee/vercel-edge (Nitro edge preset)",
