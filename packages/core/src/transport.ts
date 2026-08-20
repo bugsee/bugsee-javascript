@@ -45,7 +45,16 @@ export interface IssueCreateResult {
 }
 
 /** Result of the signed-URL PUT (§7.5). */
-export type PutResult = { ok: true } | { ok: false; status: number; retryable: boolean };
+export type PutResult =
+  | { ok: true }
+  | {
+      ok: false;
+      status: number;
+      retryable: boolean;
+      /** The underlying transport error, when the failure was a throw rather than an HTTP status.
+       *  Without it a DNS failure, a TLS failure and an aborted socket are indistinguishable. */
+      cause?: unknown;
+    };
 
 /** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
 export interface BugseeApi {

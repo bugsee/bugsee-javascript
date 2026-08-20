@@ -8,6 +8,7 @@ import {
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
+import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
 const environment: EnvironmentEnvelope = {
   platform: { type: 'node', version: '1' },
@@ -420,6 +421,138 @@ describe('retention (Wave 6.4)', () => {
       retention: { maxAgeMs: 1000 },
     }).recover();
     await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(map.size).toBe(1);
+  });
+});
+
+describe('createDurableUploadPipeline — draining a burst the pipeline refused', () => {
+  /** A pipeline that admits `capacity` uploads at once and REFUSES the rest, like the real one. */
+  function boundedPipeline(capacity: number) {
+    const delivered: string[] = [];
+    let inFlight = 0;
+    const release: Array<() => void> = [];
+    const pipeline: UploadPipeline = {
+      enqueue: (b) => {
+        if (inFlight >= capacity) {
+          // The real pipeline's `queue_overflow`: a NON-permanent failure, so the durable copy stays.
+          return Promise.resolve({
+            ok: false,
+            error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),
+          });
+        }
+        inFlight += 1;
+        return new Promise<UploadResult>((resolve) => {
+          release.push(() => {
+            inFlight -= 1;
+            delivered.push(b.request.summary);
+            resolve({ ok: true });
+          });
+        });
+      },
+      flush: async () => true,
+      drop: () => {},
+    };
+    return { pipeline, delivered, release };
+  }
+
+  it('uploads every bundle of a burst as capacity frees, instead of waiting for the next launch', async () => {
+    const { store, map } = memStore();
+    const { pipeline, delivered, release } = boundedPipeline(2);
+    const durable = createDurableUploadPipeline({ pipeline, store });
+
+    const results = ['a', 'b', 'c', 'd', 'e'].map((name) =>
+      durable.enqueue(bundle({ request: request(name) })),
+    );
+    // Only two were admitted; the other three were refused and are staged on disk.
+    expect(map.size).toBe(5);
+
+    // Let the in-flight uploads finish, one completion at a time. Each frees a slot, and each
+    // completion pumps the next staged bundle.
+    for (let i = 0; i < 20 && release.length > 0; i += 1) {
+      release.shift()?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    await Promise.all(results);
+    // give the completion-driven pump its microtasks
+    for (let i = 0; i < 20 && release.length > 0; i += 1) {
+      release.shift()?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    expect(delivered.sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(map.size).toBe(0); // every durable copy dropped once delivered
+  });
+
+  it('purges an unparseable staged blob instead of letting it wedge the pump', async () => {
+    // A corrupt leftover must not be handed to the pipeline, and must not be re-read on every
+    // completion for the rest of the process either.
+    const { store, map } = memStore();
+    const { pipeline, release } = boundedPipeline(1);
+    const onError = vi.fn();
+    const durable = createDurableUploadPipeline({ pipeline, store, onError });
+
+    map.set('corrupt', new Uint8Array([0xff, 0xfe, 0xfd])); // not a serialized frame
+    const first = durable.enqueue(bundle({ request: request('good') }));
+    release.shift()?.();
+    await first;
+    await Promise.resolve();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(map.has('corrupt')).toBe(false);
+  });
+
+  it('skips a staged id that vanishes between list() and read()', async () => {
+    const { store, map } = memStore();
+    const { pipeline, release } = boundedPipeline(1);
+    // `list` announces an id the store no longer holds — the race the pump has to tolerate.
+    const racy = { ...store, list: () => [...map.keys(), 'vanished'] };
+    const durable = createDurableUploadPipeline({ pipeline, store: racy });
+
+    const first = durable.enqueue(bundle({ request: request('good') }));
+    release.shift()?.();
+    await expect(first).resolves.toMatchObject({ ok: true });
+  });
+
+  it('does not re-attempt anything while the pipeline is still full', async () => {
+    // A capacity refusal frees nothing, so it must not trigger another attempt. If it did, the
+    // refused bundle would be handed back immediately, refused again, and so on — a spin that lasts
+    // exactly as long as the pipeline stays busy.
+    const { store } = memStore();
+    const { pipeline, release } = boundedPipeline(1);
+    const enqueue = vi.fn(pipeline.enqueue);
+    const durable = createDurableUploadPipeline({
+      pipeline: { enqueue, flush: async () => true, drop: () => {} },
+      store,
+    });
+
+    void durable.enqueue(bundle({ request: request('held') })); // admitted, never released
+    await Promise.resolve();
+    for (const name of ['x', 'y', 'z']) {
+      await durable.enqueue(bundle({ request: request(name) })); // each refused for capacity
+    }
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(enqueue).toHaveBeenCalledTimes(4); // the four calls made, and not one more
+    expect(release).toHaveLength(1);
+  });
+
+  it('attempts each staged bundle at most once per process, so a failing upload cannot spin', async () => {
+    const { store, map } = memStore();
+    const enqueue = vi.fn(
+      async (): Promise<UploadResult> => ({ ok: false, error: new BugseeError('5xx', 503) }),
+    );
+    const durable = createDurableUploadPipeline({
+      pipeline: { enqueue, flush: async () => true, drop: () => {} },
+      store,
+    });
+    await durable.enqueue(bundle());
+    await Promise.resolve();
+    await Promise.resolve();
+    // One attempt, and the bundle is still staged for the next launch — not retried in a hot loop.
+    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(map.size).toBe(1);
   });
 });

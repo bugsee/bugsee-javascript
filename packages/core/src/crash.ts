@@ -99,7 +99,7 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
   if (frame.column !== undefined) {
     data.column = frame.column;
   }
-  const crashFrame: CrashFrame = { trace: frameTrace(frame), user: true };
+  const crashFrame: CrashFrame = { trace: frameTrace(frame), user: isUserFrame(frame) };
   if (Object.keys(data).length > 0) {
     crashFrame.data = data;
   }
@@ -107,6 +107,28 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
     crashFrame.debug_id = frame.debugId;
   }
   return crashFrame;
+}
+
+/**
+ * Is this frame the APPLICATION's, as opposed to the SDK's or the runtime's?
+ *
+ * The SDK sits between the throw and the capture, so its own frames are on every stack it records.
+ * Reporting them as the user's put SDK internals at the top of each trace and fed them into
+ * grouping, which is what a reader has to skip past before reaching the fault.
+ *
+ * Deliberately narrow: only frames the SDK can identify with certainty — its own packages, and the
+ * runtime's internal modules — are excluded. Third-party `node_modules` frames stay the user's;
+ * treating every dependency as foreign is a defensible product choice, but a different one, and
+ * getting it wrong hides the frame the reader actually needs.
+ */
+function isUserFrame(frame: StackFrame): boolean {
+  const file = frame.file;
+  if (file === undefined) return true; // nothing to judge by; assume the application's
+  // `node:internal/...`, `node:events` — the runtime's own modules, never application code.
+  if (file.startsWith('node:')) return false;
+  // The SDK's published packages. Anchored on the path separator so an APPLICATION file that merely
+  // mentions bugsee (`src/bugsee-client.ts`) is not mistaken for one of ours.
+  return !(file.includes('/@bugsee/') || file.includes('\\@bugsee\\'));
 }
 
 function buildException(

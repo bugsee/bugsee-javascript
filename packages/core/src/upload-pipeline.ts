@@ -49,6 +49,16 @@ const defaultSleep = (ms: number): Promise<void> =>
     );
   });
 
+/**
+ * The code on the error returned when a bundle is refused for CAPACITY rather than rejected.
+ *
+ * The distinction matters to the durable layer: a bundle refused because the pipeline was momentarily
+ * full is worth handing back the moment a slot frees, while one that failed against a 5xx or an
+ * offline network is not — that is what the next launch is for. Without a way to tell them apart, the
+ * choice is between losing a burst until restart and retrying a dead upload in a hot loop.
+ */
+export const QUEUE_OVERFLOW_CODE = 1001;
+
 export function createUploadPipeline(options: UploadPipelineOptions): UploadPipeline {
   const { api, uploader, onOutcome } = options;
   const bufferSize = options.bufferSize ?? 4;
@@ -127,6 +137,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     };
     let endpoint = issue.endpoint;
     let lastStatus = 0;
+    let lastCause: unknown;
     let renewed = false;
     let nonRetryable = false;
 
@@ -151,6 +162,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
         return { ok: true, issueId: issue.issueId, recordingId: issue.recordingId };
       }
       lastStatus = put.status;
+      lastCause = put.cause;
       if (put.status === 403) {
         // 403 (signed PUT): renew the signed url once; a second 403 gives up `renew_failed` (§14.8).
         if (renewed) {
@@ -175,7 +187,13 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       }
     }
     return fail(
-      new BugseeError(`bundle upload failed (status ${lastStatus})`, lastStatus),
+      new BugseeError(
+        `bundle upload failed (status ${lastStatus})`,
+        lastStatus,
+        // The transport's own error, when there was one — `status 0` on its own says only that the
+        // request never completed, which is the same answer for every network-level failure.
+        lastCause !== undefined ? { cause: lastCause } : undefined,
+      ),
       category,
       'upload_failed',
       // Only a NON-RETRYABLE status is permanent. Exhausting the retry budget against 5xx/network errors
@@ -189,7 +207,10 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       const category = hint?.category ?? 'issue';
       if (inFlight.size >= bufferSize) {
         onOutcome?.({ kind: 'drop', category, reason: 'queue_overflow' });
-        return Promise.resolve({ ok: false, error: new BugseeError('upload queue overflow', 0) });
+        return Promise.resolve({
+          ok: false,
+          error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),
+        });
       }
       const operation = runOperation(bundle, category);
       inFlight.add(operation);

@@ -443,3 +443,22 @@ describe('createUploadPipeline — drop & flush', () => {
     gate.resolve({ ok: true });
   });
 });
+
+describe('createUploadPipeline — diagnosability', () => {
+  it("surfaces the transport's error as the failure's cause", async () => {
+    // Without it, `onError` and `UploadResult.error` say only "bundle upload failed (status 0)" for
+    // every network-level failure there is.
+    const boom = new Error('ECONNRESET');
+    const pipeline = createUploadPipeline(
+      deps({
+        uploader: fakeUploader(
+          vi.fn(async () => ({ ok: false, status: 0, retryable: true, cause: boom }) as PutResult),
+        ),
+        maxRetries: 0,
+      }),
+    );
+    const result = await pipeline.enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.error?.cause).toBe(boom);
+  });
+});

@@ -8,6 +8,7 @@ import type {
   UploadPipeline,
   UploadResult,
 } from './transport';
+import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
 // Durable bundle queue (design §7.8 / crash recovery). A report bundle is written to durable storage
 // BEFORE its upload is attempted and removed only once the upload is confirmed; any bundle still on
@@ -159,13 +160,73 @@ export function createDurableUploadPipeline(
    */
   const settled = (result: UploadResult): boolean => result.ok || result.permanent === true;
 
+  // Every id this process has really ATTEMPTED — i.e. handed to the pipeline and not turned away for
+  // want of capacity. The pump skips them, which is what makes it terminate: a bundle that failed for
+  // a reason worth retrying (5xx, offline) is exactly what the durable queue carries to the next
+  // launch, and retrying it again immediately would only spin.
+  const attempted = new Set<string>();
+
+  /** Was this refused for CAPACITY (worth handing back as soon as a slot frees) rather than failed? */
+  const refusedForCapacity = (result: UploadResult): boolean =>
+    !result.ok && result.error?.code === QUEUE_OVERFLOW_CODE;
+
+  const attempt = (id: string, bundle: Bundle, hint?: UploadHint): Promise<UploadResult> => {
+    attempted.add(id);
+    return pipeline.enqueue(bundle, hint).then((result) => {
+      if (refusedForCapacity(result)) {
+        // It never occupied a slot, so nothing has freed and there is nothing to pump — but it was
+        // not really attempted either, so it stays eligible for whenever a slot does free.
+        attempted.delete(id);
+        return result;
+      }
+      if (settled(result)) {
+        removeSafe(id); // delivered, or refused — either way there is nothing left to retry
+      }
+      // This upload held a slot and has now released it: hand the next staged bundle over.
+      //
+      // Two things bound this loop, and both are load-bearing. Pumping ONLY here means no attempt can
+      // happen without an upload having completed first; and `attempted` means each staged bundle is
+      // handed over at most once per completion. Remove either and the pump becomes a synchronous
+      // microtask spin that starves the event loop rather than failing an assertion — which is how
+      // the mutation check for both of them shows up.
+      pump();
+      return result;
+    });
+  };
+
+  /**
+   * Hand ONE staged-but-not-yet-attempted bundle to the pipeline, after every completion.
+   *
+   * The upload pipeline admits a bounded number of concurrent uploads and REFUSES the rest
+   * (`queue_overflow`). The durable copy survived that refusal, but nothing re-tried it in-process —
+   * `recover()` runs only at launch — so a server that failed a burst of requests reported the first
+   * few and left the rest waiting for a restart. Measured before this: 20 concurrent reports produced
+   * 10 bundles and then stopped, permanently.
+   *
+   * One at a time, driven by completions rather than a timer, so draining cannot outrun the pipeline's
+   * own admission limit.
+   */
+  const pump = (): void => {
+    for (const id of store.list()) {
+      if (attempted.has(id)) continue;
+      const bytes = store.read(id);
+      if (bytes === undefined) continue; // removed between list() and read()
+      let bundle: Bundle;
+      try {
+        bundle = readFrame(bytes).bundle;
+      } catch (error) {
+        onError(error);
+        removeSafe(id); // unparseable leftover — purge so it can't wedge the pump forever
+        continue;
+      }
+      void attempt(id, bundle);
+      return;
+    }
+  };
+
   // Re-upload a recovered bundle; drop the durable copy once it is delivered — or refused.
   const replay = (id: string, bundle: Bundle): void => {
-    void pipeline.enqueue(bundle).then((result) => {
-      if (settled(result)) {
-        removeSafe(id);
-      }
-    });
+    void attempt(id, bundle);
   };
 
   return {
@@ -176,12 +237,7 @@ export function createDurableUploadPipeline(
       } catch (error) {
         onError(error); // best-effort persistence must never block the upload
       }
-      return pipeline.enqueue(bundle, hint).then((result) => {
-        if (settled(result)) {
-          removeSafe(id); // delivered, or refused — either way there is nothing left to retry
-        }
-        return result;
-      });
+      return attempt(id, bundle, hint);
     },
 
     recover(): void {

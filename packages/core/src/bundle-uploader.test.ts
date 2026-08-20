@@ -100,10 +100,23 @@ describe('createBundleUploader', () => {
     const transport = async (): Promise<HttpResponse> => {
       throw new Error('ECONNRESET');
     };
-    expect(await createBundleUploader(transport).putBundle('u', body, opts)).toEqual({
+    expect(await createBundleUploader(transport).putBundle('u', body, opts)).toMatchObject({
       ok: false,
       status: 0,
       retryable: true,
     });
+  });
+
+  it('carries the transport error through, so the failure is diagnosable', async () => {
+    // Every transport failure used to arrive as the same `{ status: 0, retryable: true }`: a DNS
+    // failure, a TLS failure and an aborted socket were indistinguishable to everything downstream,
+    // including the user's own onError.
+    const boom = new Error('ECONNRESET');
+    const transport = async (): Promise<HttpResponse> => {
+      throw boom;
+    };
+    const result = await createBundleUploader(transport).putBundle('u', body, opts);
+    expect(result.ok).toBe(false);
+    expect((result as { cause?: unknown }).cause).toBe(boom);
   });
 });

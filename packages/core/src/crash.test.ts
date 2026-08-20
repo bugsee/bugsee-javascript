@@ -88,6 +88,53 @@ describe('buildCrashJson', () => {
     expect(buildCrashJson(err, { parseStack: parseV8Stack })?.handled).toBe(false);
   });
 
+  describe('frame attribution', () => {
+    const framesOf = (stack: string): Array<{ trace: string; user: boolean }> =>
+      (buildCrashJson(errorWith('Error', 'x', stack), { parseStack: parseV8Stack }) as CrashJson)
+        .exception.frames;
+
+    it("marks the SDK's own frames as not the user's", () => {
+      // The SDK sits between the throw and the capture, so its frames are ALWAYS on the stack. Calling
+      // them the user's puts SDK internals at the top of every trace and feeds them into grouping.
+      const frames = framesOf(
+        [
+          'Error: x',
+          '    at handler (/app/src/routes.ts:10:5)',
+          '    at run (/app/node_modules/@bugsee/node/dist/index.js:776:12)',
+          '    at Object.run (/app/node_modules/.pnpm/@bugsee+core@0.1.0/node_modules/@bugsee/core/dist/index.cjs:5:1)',
+        ].join('\n'),
+      );
+      expect(frames.map((f) => f.user)).toEqual([true, false, false]);
+    });
+
+    it("marks node internals as not the user's", () => {
+      const frames = framesOf(
+        [
+          'Error: x',
+          '    at handler (/app/src/routes.ts:10:5)',
+          '    at Server.emit (node:events:509:28)',
+          '    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)',
+        ].join('\n'),
+      );
+      expect(frames.map((f) => f.user)).toEqual([true, false, false]);
+    });
+
+    it("does not mistake an application path that merely mentions bugsee for the SDK's", () => {
+      const frames = framesOf(
+        [
+          'Error: x',
+          '    at f (/app/src/bugsee-client.ts:3:1)',
+          '    at g (/app/src/@bugsee.ts:1:1)',
+        ].join('\n'),
+      );
+      expect(frames.map((f) => f.user)).toEqual([true, true]);
+    });
+
+    it("treats a frame with no file as the user's", () => {
+      expect(framesOf('Error: x\n    at <anonymous>').every((f) => f.user)).toBe(true);
+    });
+  });
+
   describe('non-Error throwables', () => {
     // JS code throws non-Errors routinely, and `logException` accepts them. They used to produce NO
     // crash.json at all, so the uploaded bundle had a summary and nothing else and the backend

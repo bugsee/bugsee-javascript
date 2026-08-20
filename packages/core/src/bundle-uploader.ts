@@ -34,8 +34,10 @@ export function createBundleUploader(transport: HttpTransport): BundleUploader {
           },
           body,
         });
-      } catch {
-        return { ok: false, status: 0, retryable: true };
+      } catch (cause) {
+        // Carry the error: status 0 alone says only "the request never completed", which is the same
+        // answer for a DNS failure, a TLS failure and an aborted socket.
+        return { ok: false, status: 0, retryable: true, cause };
       }
       if (response.status >= 200 && response.status < 300) {
         return { ok: true };
