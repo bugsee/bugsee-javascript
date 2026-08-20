@@ -31,6 +31,19 @@ export function toUnixNanoString(ms: number): string {
   return (BigInt(Math.round(ms)) * 1_000_000n).toString();
 }
 
+/**
+ * A finite number → the OTLP `doubleValue`; NaN/±Infinity → their proto3 JSON spellings.
+ *
+ * `JSON.stringify` turns every non-finite number into `null`, and `null` is not a legal `doubleValue` —
+ * a strict collector rejects the ENTIRE export request over one such attribute, in the customer's
+ * infrastructure where we never see it. The mapping defines exact string forms for these three; use them.
+ */
+function toDoubleValue(value: number): OtlpAnyValue {
+  if (Number.isFinite(value)) return { doubleValue: value };
+  if (Number.isNaN(value)) return { doubleValue: 'NaN' };
+  return { doubleValue: value > 0 ? 'Infinity' : '-Infinity' };
+}
+
 /** Map a JS attribute value to an OTLP `AnyValue`; `undefined` (key dropped) for null/undefined/unencodable. */
 export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
   if (value === undefined || value === null) return undefined;
@@ -40,9 +53,14 @@ export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
     case 'boolean':
       return { boolValue: value };
     case 'bigint':
+      // BigInt#toString is always decimal, at any magnitude — exactly what a uint64 field wants.
       return { intValue: value.toString() };
     case 'number':
-      return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+      // SAFE integers only. `Number.isInteger(1e21)` is true, but `String(1e21)` is "1e+21" — not the
+      // decimal string an int64 field requires. Past the safe range a JS number is not a reliable integer
+      // anyway, so it goes out as a double rather than as a precision claim we cannot honour. A caller
+      // with a genuinely large integer should pass a `bigint`, which is exact.
+      return Number.isSafeInteger(value) ? { intValue: String(value) } : toDoubleValue(value);
     default: {
       const json = JSON.stringify(value); // objects/arrays → string; functions/symbols → undefined (dropped)
       return json !== undefined ? { stringValue: json } : undefined;
@@ -82,7 +100,10 @@ const KIND_BY_NAME: Record<string, number> = {
  */
 export function spanKindFor(operation: string, attributes?: Record<string, unknown>): number {
   const override = attributes?.['bugsee.span.kind'];
-  if (typeof override === 'string' && override in KIND_BY_NAME) {
+  // `hasOwn`, not `in`: `in` walks the PROTOTYPE CHAIN, so an override of "toString"/"constructor"/
+  // "valueOf" — reachable input, since attributes come from application code and from whatever OTel SDK
+  // is on the consume side — passed the guard and returned an inherited FUNCTION as the span kind.
+  if (typeof override === 'string' && Object.hasOwn(KIND_BY_NAME, override)) {
     return KIND_BY_NAME[override] as number;
   }
   if (operation.startsWith('http.server')) return OtlpSpanKind.SERVER;

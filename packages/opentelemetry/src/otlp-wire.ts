@@ -21,12 +21,19 @@ export const OtlpStatusCode = {
   ERROR: 2,
 } as const;
 
-/** OTLP `AnyValue` — a one-of over the scalar kinds we produce (uint64 `intValue` is a string). */
+/**
+ * The proto3 JSON representation of a non-finite double. A double is normally a JSON number, but NaN and
+ * the infinities have no JSON number form, so the mapping spells them as these three exact strings —
+ * serializing them as numbers yields `null`, which is not a legal double and costs the whole export.
+ */
+export type OtlpSpecialDouble = 'NaN' | 'Infinity' | '-Infinity';
+
+/** OTLP `AnyValue` — a one-of over the scalar kinds we produce (uint64 `intValue` is a decimal string). */
 export type OtlpAnyValue =
   | { stringValue: string }
   | { boolValue: boolean }
   | { intValue: string }
-  | { doubleValue: number };
+  | { doubleValue: number | OtlpSpecialDouble };
 
 /** OTLP `KeyValue`. */
 export interface OtlpKeyValue {

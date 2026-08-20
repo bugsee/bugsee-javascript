@@ -88,6 +88,35 @@ describe('spanKindFor', () => {
   });
 });
 
+/**
+ * The legacy escape hatch: a `TransactionWire` that predates the `spanId` field. `spanId` is REQUIRED on
+ * the current type, so the fallback is unreachable through the type system and needs a cast to reach —
+ * which is exactly why it was the one branch in the file no test entered.
+ */
+describe('transactionToOtlpSpans — the pre-spanId legacy wire', () => {
+  it('derives the root span id when the transaction carries none', () => {
+    const legacy = {
+      traceId: '0123456789ABCDEF0123456789abcdef',
+      name: '/legacy',
+      operation: 'ui.load',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1000,
+      isSnapshot: false,
+      spans: [
+        { spanId: 'c1c1c1c1c1c1c1c1', operation: 'db.query', status: 'OK', startTimestampMs: 1000 },
+      ],
+    } as unknown as TransactionWire;
+
+    const [root, child] = transactionToOtlpSpans(legacy);
+
+    // Lowercased, because OTLP requires lowercase hex ids and the legacy trace id may not be.
+    expect(root?.spanId).toBe('0123456789abcdef');
+    // The child still links to whatever the root was emitted as — a derived id must not orphan it.
+    expect(child?.parentSpanId).toBe(root?.spanId);
+  });
+});
+
 describe('deriveRootSpanId', () => {
   it('derives a stable 8-byte (16-hex) span id from the trace id', () => {
     expect(deriveRootSpanId('0123456789abcdef0123456789abcdef')).toBe('0123456789abcdef');

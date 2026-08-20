@@ -98,6 +98,38 @@ describe('createOtlpTraceExporter', () => {
     await expect(send([txn()])).resolves.toBeUndefined();
   });
 
+  /**
+   * The success window is exactly 2xx, at both edges.
+   *
+   * The two boundaries were untested, so `>= 300` could have been `> 300` and `< 200` could have been
+   * dropped entirely without a test noticing — and both mistakes silently REPORT SUCCESS for a rejected
+   * export, which is the worst direction to fail in: the uploader's drop-on-failure machinery then
+   * discards the batch as delivered and the traces are gone.
+   */
+  it.each([
+    [100, false],
+    [199, false],
+    [200, true],
+    [204, true],
+    [299, true],
+    [300, false],
+    [301, false],
+    [400, false],
+    [503, false],
+  ])('treats status %i as %s', async (status, succeeds) => {
+    const send = createOtlpTraceExporter({
+      transport: async () => ({ status, headers: {}, body: new Uint8Array() }),
+      url: 'https://c/v1/traces',
+    });
+    if (succeeds) {
+      await expect(send([txn()])).resolves.toBeUndefined();
+    } else {
+      await expect(send([txn()])).rejects.toThrow(
+        new RegExp(`OTLP trace export failed \\(${status}\\)`),
+      );
+    }
+  });
+
   it('does nothing for an empty batch (no transport call)', async () => {
     let called = false;
     const send = createOtlpTraceExporter({

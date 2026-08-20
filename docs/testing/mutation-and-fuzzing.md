@@ -66,6 +66,28 @@ The useful conclusion from that: a surviving mutant here means "no test could te
 properties run against every mutant, it also means "this mutation does not leak". Chase the survivors that
 change WHAT IS REDACTED, not the ones that change WHICH PASS DID IT.
 
+**The conditional-spread class (whole repo).** The codebase writes optional fields as
+`...(x !== undefined ? { x } : {})`. Stryker mutates the condition to `true`, which spreads `{ x: undefined }`
+instead of `{}` — and that is **equivalent in almost every case here**, because the consumers all discard
+undefined: `JSON.stringify` omits undefined-valued properties, `toKeyValues` drops keys whose value does
+not encode, and `??` defaults treat undefined as absent. Thirteen of `@bugsee/opentelemetry`'s fifteen
+remaining survivors are this one shape.
+
+Do not spend a round trying to kill them, and do not "fix" the idiom to satisfy the tool. Confirm the
+equivalence once, empirically, rather than by argument — apply the mutations, serialize the same input
+through both versions, and `cmp` the bytes:
+
+```
+pnpm exec tsx ./probe.mts /tmp/clean.json      # baseline
+# …apply the mutations…
+pnpm exec tsx ./probe.mts /tmp/mutated.json
+cmp -s /tmp/clean.json /tmp/mutated.json       # identical -> equivalent
+```
+
+The exception to watch for is a consumer that distinguishes *absent* from *present-and-undefined* —
+`'k' in obj`, `Object.keys().length`, `hasOwn`, a `toStrictEqual` assertion, or a structured-clone
+boundary such as `postMessage`. Where one of those is downstream, the mutant is real.
+
 ### A score that does not move is not the same as tests that add nothing
 
 Adding the `node` coexistence properties left `liveness.ts` at 6 survivors and moved the package score

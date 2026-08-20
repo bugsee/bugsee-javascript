@@ -1,5 +1,5 @@
 import type { TransactionWire } from '@bugsee/performance';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createBugseeSpanProcessor,
   type ReadableSpanLike,
@@ -122,24 +122,106 @@ describe('createBugseeSpanProcessor', () => {
     expect(emitted[0]?.spans).toEqual([]);
   });
 
-  it('threads maxAgeMs/maxTraces into the assembler (maxTraces:1 evicts the older buffered trace)', () => {
+  // Two tests lived here that promised more than they checked, and are superseded by the forwarding
+  // suite below:
+  //   - "threads maxAgeMs/maxTraces into the assembler" pinned the clock at 0 with maxAgeMs 10_000, so
+  //     the age bound could never elapse and only the maxTraces half was ever exercised;
+  //   - "defaults to a Date.now clock when none is injected" fed a single ROOT span, which assembles
+  //     against an empty buffer — it passed with a clock returning `undefined`, so it asserted nothing
+  //     about the default clock at all.
+});
+
+/**
+ * The factory's own wiring — the options it forwards to the assembler and the default it substitutes when
+ * one is absent.
+ *
+ * Every other test in this file injects a clock and takes the bounds as given, so the DEFAULTS were never
+ * exercised: the built-in `Date.now` clock could have returned anything, and `maxAgeMs`/`maxTraces` could
+ * have been dropped on the floor between the option and the assembler, with no test disagreeing. Both are
+ * only observable indirectly — through which buffered children survive to reach the emitted transaction.
+ */
+describe('createBugseeSpanProcessor — option forwarding + defaults', () => {
+  const child = (traceId: string, spanId: string): ReadableSpanLike =>
+    readable({ traceId, spanId, parentSpanId: 'ffffffffffffffff' });
+  const root = (traceId: string): ReadableSpanLike =>
+    readable({ traceId, spanId: 'r00tr00tr00tr00t' });
+
+  const TRACE_A = '0123456789abcdef0123456789abcde1';
+  const TRACE_B = '0123456789abcdef0123456789abcde2';
+
+  it('forwards maxAgeMs, so a trace whose root is late loses its buffered children', () => {
     const emitted: TransactionWire[] = [];
-    const proc = createBugseeSpanProcessor({
+    let now = 1_000_000;
+    const processor = createBugseeSpanProcessor({
       onTransaction: (t) => emitted.push(t),
-      clock: { wallNow: () => 0 },
-      maxAgeMs: 10_000,
-      maxTraces: 1,
+      clock: { wallNow: () => now },
+      maxAgeMs: 1000,
     });
-    proc.onEnd(readable({ traceId: 'A', spanId: 'ca', parentSpanId: 'ra' })); // buffered
-    proc.onEnd(readable({ traceId: 'B', spanId: 'cb', parentSpanId: 'rb' })); // over cap(1) → A evicted
-    proc.onEnd(readable({ traceId: 'A', spanId: 'ra', name: 'rootA' })); // A's child was evicted → no child
-    expect(emitted[0]?.spans).toEqual([]);
+
+    processor.onEnd(child(TRACE_A, 'c1c1c1c1c1c1c1c1'));
+    now += 5000; // well past the forwarded 1000ms, but well inside the 30000ms default
+    processor.onEnd(root(TRACE_A));
+
+    expect(emitted).toHaveLength(1);
+    // With the option forwarded the buffer was evicted first, so the root assembles alone. If the forward
+    // were dropped, the 30s default would have kept the child and this would be 1.
+    expect(emitted[0]?.spans, 'the aged trace buffer was not evicted').toHaveLength(0);
   });
 
-  it('defaults to a Date.now clock when none is injected (still assembles on root end)', () => {
+  it('forwards maxTraces, so a new trace evicts the oldest buffered one', () => {
     const emitted: TransactionWire[] = [];
-    const proc = createBugseeSpanProcessor({ onTransaction: (t) => emitted.push(t) });
-    proc.onEnd(readable({ traceId: 'T', spanId: 'r', name: 'solo' }));
+    const processor = createBugseeSpanProcessor({
+      onTransaction: (t) => emitted.push(t),
+      clock: { wallNow: () => 1_000_000 },
+      maxTraces: 1,
+    });
+
+    processor.onEnd(child(TRACE_A, 'c1c1c1c1c1c1c1c1'));
+    processor.onEnd(child(TRACE_B, 'c2c2c2c2c2c2c2c2')); // over the cap of 1 → trace A is dropped
+    processor.onEnd(root(TRACE_A));
+
     expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.spans, 'the over-cap trace buffer was not evicted').toHaveLength(0);
+  });
+
+  it('keeps a trace inside the forwarded bounds', () => {
+    const emitted: TransactionWire[] = [];
+    let now = 1_000_000;
+    const processor = createBugseeSpanProcessor({
+      onTransaction: (t) => emitted.push(t),
+      clock: { wallNow: () => now },
+      maxAgeMs: 1000,
+      maxTraces: 8,
+    });
+
+    processor.onEnd(child(TRACE_A, 'c1c1c1c1c1c1c1c1'));
+    now += 500; // inside the age bound
+    processor.onEnd(root(TRACE_A));
+
+    expect(emitted[0]?.spans, 'a trace inside both bounds lost its child').toHaveLength(1);
+    expect(emitted[0]?.spans[0]?.spanId).toBe('c1c1c1c1c1c1c1c1');
+  });
+
+  it('uses a real wall clock when none is injected', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const emitted: TransactionWire[] = [];
+      // NO clock option — the built-in `Date.now` one has to do the work.
+      const processor = createBugseeSpanProcessor({
+        onTransaction: (t) => emitted.push(t),
+        maxAgeMs: 1000,
+      });
+
+      processor.onEnd(child(TRACE_A, 'c1c1c1c1c1c1c1c1'));
+      vi.setSystemTime(new Date('2026-01-01T00:00:10Z')); // +10s, past the 1s bound
+      processor.onEnd(root(TRACE_A));
+
+      // The default clock read real wall time and the age bound bit. A clock that returned a constant —
+      // or `undefined` — would compare NaN, evict nothing, and leave the child attached.
+      expect(emitted[0]?.spans, 'the default clock did not advance').toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
