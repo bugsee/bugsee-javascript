@@ -21,16 +21,6 @@ import { expect } from 'vitest';
 /** 4x the input must not cost 8x the time. Linear lands near 4x, quadratic near 16x. */
 export const LINEAR_BUDGET = 8;
 
-/** How many times each size is measured. The BEST is kept — see `bestOf`. */
-const ATTEMPTS = 3;
-
-/**
- * A baseline below this is too small to divide by: at that scale the reading is mostly clock noise,
- * and a ratio built on it says nothing. Failing is the right answer — the fix is a larger input, not
- * a more forgiving rule.
- */
-const MIN_BASELINE_MS = 0.02;
-
 // `performance.now()`, not `Date.now()`: this tier compiles with neither the DOM nor the Node libs
 // (tsconfig.base `lib: ["ES2023"]`, `types: []`), so it is reached through the same globalThis cast
 // the runtime-portable tiers use. Millisecond resolution is NOT ample, which is what the previous
@@ -53,34 +43,97 @@ export const measure = (fn: () => void): number => {
   return now() - started;
 };
 
+/** How many interleaved rounds each size is measured over. The BEST of each is kept — see below. */
+const ROUNDS = 3;
+
 /**
- * The BEST of `attempts` measurements.
+ * How long ONE measurement must run before it is trusted, in milliseconds.
  *
- * Noise only ever ADDS time — a GC pause, a scheduler preemption, another job on a shared runner —
- * so the minimum is the least contaminated estimate of what the work itself costs. An average lets a
- * single pause decide the verdict, which is how this guard failed on a shared runner while the code
- * under it was provably linear.
+ * ⚠️ THIS IS THE LOAD-BEARING NUMBER, and the reason is specific to the runner. A single 400 K scan
+ * takes well under a millisecond, and macOS moves a CI runner's low-QoS threads between performance
+ * and efficiency cores, which differ by roughly 3x. A sub-millisecond sample lands entirely on
+ * whichever core it happened to get, so the ratio measures the SCHEDULER. Proof: a bare integer loop
+ * — no allocation, no strings, linear by construction — measured 8.31x for a 4x input on that
+ * machine, and failed a ceiling of 8.
+ *
+ * Repeating the work until the batch reaches this long makes a mid-batch migration a fraction of the
+ * sample rather than the whole of it. 25 ms costs about a second across all six guards.
  */
-export const bestOf = (attempts: number, fn: () => void): number => {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < attempts; i += 1) {
-    const elapsed = measure(fn);
-    if (elapsed < best) {
-      best = elapsed;
+const MIN_SAMPLE_MS = 25;
+
+/**
+ * Refuse to spin forever if the work never accumulates time. A real clock always advances, so this
+ * only fires for a stopped one — but without it, `MIN_SAMPLE_MS / 0` is Infinity and the inner loop
+ * becomes an unbreakable spin. `clock` is injectable purely so that case can be tested rather than
+ * asserted about in a comment.
+ */
+const MAX_SCALE_STEPS = 40;
+
+/**
+ * And a ceiling on the batch itself. Scaling alone is not enough: eightfold growth reaches ~10^36
+ * iterations well before step 40, so the INNER loop spins forever and the escape above never runs.
+ * A stopped clock hits this cap instead and fails in about a tenth of a second. Sized far above what
+ * genuinely cheap work needs — a no-op batch this long already runs for ~100 ms, four times the
+ * sample floor.
+ */
+const MAX_ITERATIONS = 1e8;
+
+/**
+ * The cost of ONE call to `fn`, in milliseconds, measured over a batch long enough to be resistant
+ * to scheduling noise.
+ *
+ * Work that already exceeds the floor in a single call — which is every BROKEN case this guards
+ * against — runs exactly once, so a quadratic defect does not multiply into a timeout.
+ */
+export const timePerCall = (fn: () => void, clock: () => number = now): number => {
+  let iterations = 1;
+  for (let step = 0; step < MAX_SCALE_STEPS; step += 1) {
+    const started = clock();
+    for (let i = 0; i < iterations; i += 1) {
+      fn();
     }
+    const elapsed = clock() - started;
+    if (elapsed >= MIN_SAMPLE_MS) {
+      return elapsed / iterations;
+    }
+    // Scale toward the floor, but always advance: a zero reading would otherwise multiply by zero.
+    if (iterations >= MAX_ITERATIONS) {
+      break;
+    }
+    iterations = Math.min(
+      MAX_ITERATIONS,
+      elapsed > 0
+        ? Math.max(iterations + 1, Math.ceil(iterations * (MIN_SAMPLE_MS / elapsed)))
+        : iterations * 8,
+    );
   }
-  return best;
+  throw new Error(
+    `work never accumulated ${MIN_SAMPLE_MS} ms of runtime — it may have been optimized away`,
+  );
 };
 
 /**
- * Assert that `work` scales linearly in the size of the input `prepare` builds.
+ * Measure both sizes over `ROUNDS` INTERLEAVED rounds and keep the best of each.
  *
- * ⚠️ `prepare` IS DELIBERATELY NOT MEASURED. Building a 400 KB string costs real time and real
- * allocation, and it costs *more at the large size than at the small one* — so folding it into the
- * measurement adds a super-linear term that has nothing to do with the code under test. That is not
- * hypothetical: with the build inside the measured region this guard read 5 ms at 100 K and 98 ms at
- * 400 K on a loaded runner — a 19x ratio for a scan that measures 4x when timed on its own.
+ * Interleaved, not one size and then the other: the failure this replaced measured three small runs
+ * and then three large ones, so a throttling episode or a core migration between the two blocks
+ * moved one group entire and the ratio absorbed all of it. Alternating means both sizes sample the
+ * same conditions. The minimum is kept because noise only ever ADDS time, so the cheapest reading is
+ * the least contaminated estimate of the work itself.
  */
+export const measurePair = (
+  small: () => void,
+  large: () => void,
+): { small: number; large: number } => {
+  let bestSmall = Number.POSITIVE_INFINITY;
+  let bestLarge = Number.POSITIVE_INFINITY;
+  for (let round = 0; round < ROUNDS; round += 1) {
+    bestSmall = Math.min(bestSmall, timePerCall(small));
+    bestLarge = Math.min(bestLarge, timePerCall(large));
+  }
+  return { small: bestSmall, large: bestLarge };
+};
+
 export const expectLinearIn = <T>(
   prepare: (size: number) => T,
   work: (input: T) => void,
@@ -92,15 +145,14 @@ export const expectLinearIn = <T>(
 
   const smallInput = prepare(size / 4);
   const largeInput = prepare(size);
-  const small = bestOf(ATTEMPTS, () => work(smallInput));
-  const large = bestOf(ATTEMPTS, () => work(largeInput));
+  const { small, large } = measurePair(
+    () => work(smallInput),
+    () => work(largeInput),
+  );
 
-  if (small < MIN_BASELINE_MS) {
-    throw new Error(
-      `linearity baseline is unmeasurably small (${small.toFixed(4)} ms < ${MIN_BASELINE_MS} ms) — ` +
-        'raise the size rather than relaxing the ceiling',
-    );
-  }
-
+  // No "is the baseline measurable" check any more: `timePerCall` guarantees every sample runs for
+  // at least MIN_SAMPLE_MS, so a per-call cost is always positive and always meaningful. The
+  // invariant moved from a defensive branch nothing could reach into the construction of the
+  // measurement itself.
   expect(large / small).toBeLessThan(LINEAR_BUDGET);
 };
