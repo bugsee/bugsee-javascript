@@ -14,12 +14,32 @@ import { expect } from 'vitest';
  *
  * WHAT IT ASSERTS: a RATIO, never a wall-clock budget. Both measurements are taken on the same
  * machine, in the same process, under the same instrumentation, so however slow that machine is
- * divides out. 4x the input costs about 4x the time when the work is linear and about 16x when it is
- * quadratic; the ceiling sits between the two.
+ * divides out.
  */
 
-/** 4x the input must not cost 8x the time. Linear lands near 4x, quadratic near 16x. */
-export const LINEAR_BUDGET = 8;
+/**
+ * The size gap between the two measurements. Linear work costs about this much more at the large
+ * size; quadratic work costs about the SQUARE of it.
+ *
+ * ⚠️ 16x RATHER THAN THE 4x THIS STARTED WITH, and the reason is measured rather than chosen. At 4x
+ * the two outcomes are 4 and 16 — a factor of four apart — and the CI runner inflates a real
+ * string-scanning ratio by about 2.1x even with batched samples (it read 8.56 and 8.77 for work that
+ * measures 4.07 on an idle machine). Half the available separation went to noise and the guard
+ * failed on healthy code twice.
+ *
+ * At 16x the outcomes are 16 and 256 — a factor of SIXTEEN apart — so the same 2.1x inflation moves
+ * healthy work to ~34 and quadratic work to ~122, and the ceiling below sits between them with
+ * comparable room on each side. The large size is unchanged, so a broken build costs no more to
+ * detect than it did before; only the baseline moved down.
+ */
+const SIZE_SEPARATION = 16;
+
+/**
+ * The ceiling. Linear lands near 16, quadratic near 256, so this sits close to the geometric middle
+ * — about 1.9x above the worst healthy reading the runner has produced and about 1.9x below the
+ * best quadratic one.
+ */
+export const LINEAR_BUDGET = 64;
 
 // `performance.now()`, not `Date.now()`: this tier compiles with neither the DOM nor the Node libs
 // (tsconfig.base `lib: ["ES2023"]`, `types: []`), so it is reached through the same globalThis cast
@@ -139,11 +159,11 @@ export const expectLinearIn = <T>(
   work: (input: T) => void,
   size: number,
 ): void => {
-  // Warm up on a SMALL input, purely to get the path JIT-compiled before the baseline is taken. An
+  // Warm up BELOW the baseline, purely to get the path JIT-compiled before the baseline is taken. An
   // unwarmed baseline is inflated, which makes the ceiling too generous and could mask a regression.
-  work(prepare(size / 16));
+  work(prepare(size / (SIZE_SEPARATION * 4)));
 
-  const smallInput = prepare(size / 4);
+  const smallInput = prepare(size / SIZE_SEPARATION);
   const largeInput = prepare(size);
   const { small, large } = measurePair(
     () => work(smallInput),
@@ -154,5 +174,11 @@ export const expectLinearIn = <T>(
   // at least MIN_SAMPLE_MS, so a per-call cost is always positive and always meaningful. The
   // invariant moved from a defensive branch nothing could reach into the construction of the
   // measurement itself.
-  expect(large / small).toBeLessThan(LINEAR_BUDGET);
+  // The measurements ride along in the message: when this fails on a machine that cannot be
+  // inspected, the ratio alone does not say whether the work got slower or the baseline got faster.
+  expect(
+    large / small,
+    `linearity: ${small.toFixed(4)} ms at n/${SIZE_SEPARATION} vs ${large.toFixed(4)} ms at n ` +
+      `(linear predicts ~${SIZE_SEPARATION}, quadratic ~${SIZE_SEPARATION ** 2})`,
+  ).toBeLessThan(LINEAR_BUDGET);
 };

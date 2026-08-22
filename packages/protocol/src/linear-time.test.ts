@@ -155,7 +155,9 @@ describe('expectLinearIn', () => {
     expect(() =>
       expectLinearIn(
         (n) => {
-          burn((n / 1000) * (n / 1000));
+          // Quadratic, and scaled so it DOMINATES the linear work at the large size — otherwise the
+          // folded-in cost lands right on the ceiling and the test stops discriminating.
+          burn((n / 500) * (n / 500));
           return n;
         },
         burn,
