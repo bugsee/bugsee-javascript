@@ -5,14 +5,21 @@
 // bundles the same entry with the SAME esbuild config the injectable target uses (browser platform, `node:*`
 // external, minified, globalName) — an INDEPENDENT re-bundle (matching the edge X2 precedent), not the package's
 // `tsup` output — and asserts the artifact is:
-//   - self-contained: NO `@bugsee/` token survives (every workspace dep is inlined into the single string),
-//   - node-free: NO `node:` token survives (the only node usage, @bugsee/util's guarded `node:crypto` dynamic
-//     import, is dead under platform:browser and tree-shaken out entirely — a WebView is fully node-free),
+//   - self-contained AND node-free: the output imports NOTHING — every workspace dep is inlined into the
+//     single string, and the only node usage (@bugsee/util's guarded `node:crypto` dynamic import) is dead
+//     under platform:browser and tree-shaken out entirely, so a WebView needs no loader and no builtins,
 //   - within a size budget (a regression catch — the bundle ships fixed in the native binary, so size matters),
 //   - LOADABLE: it evaluates in a fresh isolate and exposes `BugseeWebView.launch`.
-// NOTE: the checks are LITERAL-substring (not regex). esbuild's IIFE format lowers an external import to a
-// minified require-helper CALL (`f("node:fs")` / `i("@bugsee/util")`), so an ESM-shaped `import"…"`/`from"…"`
-// regex would pass VACUOUSLY against an IIFE; a leaked specifier still leaves its literal string in the output.
+// NOTE: self-containment is read from esbuild's METAFILE, not by searching the minified source.
+//
+// It used to be a literal-substring check — `not.toContain('@bugsee/')` and `not.toContain('node:')` — chosen
+// because an ESM-shaped regex would pass vacuously against an IIFE (esbuild lowers an external import to a
+// minified require-helper CALL like `i("@bugsee/util")`, not to an `import"…"` statement). That reasoning was
+// right about regexes and wrong about substrings: it cannot tell an IMPORT from a STRING THAT MERELY LOOKS
+// LIKE ONE. `@bugsee/core`'s `isUserFrame` classifies stack frames by path and so contains the literals
+// `'/@bugsee/'` and `'node:'`; the day it landed, this guard failed a bundle that was — and the metafile
+// proves still is — perfectly self-contained. `edge-bundle.ts` had already learned the same lesson for node
+// imports, for the same reason, and this now uses the same mechanism.
 // The full handshake/entry/control protocol round-trips against a mock native receiver are slice 7.
 
 import { fileURLToPath } from 'node:url';
@@ -33,12 +40,11 @@ describe('slice 6 — @bugsee/webview injectable IIFE bundle guard', () => {
   it('bundles self-contained, node-free, and within the size budget', async () => {
     const bundle = await bundleEdgeEntry(IIFE_ENTRY, 'iife', 'BugseeWebView');
 
-    // Self-contained: no `@bugsee/` token survives — a leaked (externalized) workspace dep would leave its
-    // specifier as a require-helper argument literal (verified: externalizing one makes this token appear).
-    expect(bundle.code).not.toContain('@bugsee/');
-    // Node-free: no `node:` token survives anywhere — a WebView has no node builtins, and esbuild lowers any
-    // leaked external node import to a require-helper call whose `"node:…"` argument would show up here.
-    expect(bundle.code).not.toContain('node:');
+    // Self-contained AND node-free in one property: the artifact is a single string injected into a WebView
+    // that has no module loader and no node builtins, so ANY surviving import of any kind — a workspace
+    // package left external, a `node:*` builtin, a bare dependency — means it cannot run. The metafile lists
+    // exactly those and nothing else, so this asserts the real property rather than a proxy for it.
+    expect(bundle.externalImports).toEqual([]);
 
     console.info(
       `[webview iife] ${(bundle.bytes / KB).toFixed(1)} KB raw / ${(bundle.gzipBytes / KB).toFixed(1)} KB gzip`,

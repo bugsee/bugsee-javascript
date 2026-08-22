@@ -23,19 +23,56 @@ export interface EdgeBundle {
    * (`import { X } from 'node:y'`) because the pattern only matched the bare side-effect form.
    */
   nodeImports: string[];
+  /**
+   * EVERY module the output still imports, of every kind — the authoritative answer to "is this
+   * artifact self-contained?".
+   *
+   * `nodeImports` above is deliberately narrower (static node builtins only) because a guarded
+   * dynamic `import('node:crypto')` is fine on edge. The webview injectable has no such allowance:
+   * it is a single string injected into a WebView with no loader at all, so ANY surviving import —
+   * static, dynamic or require — means the artifact cannot run.
+   */
+  externalImports: string[];
   /** Raw byte length. */
   bytes: number;
   /** gzipped byte length (what counts against the Workers compressed limit). */
   gzipBytes: number;
 }
 
-function measure(code: string, nodeImports: string[] = []): EdgeBundle {
+function measure(
+  code: string,
+  nodeImports: string[] = [],
+  externalImports: string[] = [],
+): EdgeBundle {
   return {
     code,
     nodeImports,
+    externalImports,
     bytes: Buffer.byteLength(code, 'utf8'),
     gzipBytes: gzipSync(Buffer.from(code, 'utf8')).length,
   };
+}
+
+/**
+ * Every module path the built output still imports, of every kind.
+ *
+ * Read from the metafile for the same reason `nodeImportsOf` is, and the reason is no longer
+ * hypothetical: the webview guard used to answer this question by searching the minified source for
+ * the literal `@bugsee/`, and `@bugsee/core`'s `isUserFrame` legitimately contains the strings
+ * `'/@bugsee/'` and `'node:'` — it classifies stack frames by path. A correct, fully-inlined bundle
+ * failed both of that guard's assertions the day those literals were added. Source matching cannot
+ * tell an import from a string that merely looks like one; the metafile can.
+ */
+function externalImportsOf(metafile: {
+  outputs: Record<string, { imports?: Array<{ path: string; kind?: string }> }>;
+}): string[] {
+  const found = new Set<string>();
+  for (const output of Object.values(metafile.outputs)) {
+    for (const imported of output.imports ?? []) {
+      found.add(imported.path);
+    }
+  }
+  return [...found].sort();
 }
 
 /**
@@ -109,7 +146,11 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     metafile: true,
     write: false,
   });
-  return measure(result.outputFiles[0]?.text ?? '', nodeImportsOf(result.metafile));
+  return measure(
+    result.outputFiles[0]?.text ?? '',
+    nodeImportsOf(result.metafile),
+    externalImportsOf(result.metafile),
+  );
 }
 
 /** Bundle an entry FILE (e.g. the VM smoke scenario, or the @bugsee/webview injectable IIFE). `iife` produces a
@@ -138,7 +179,11 @@ export async function bundleEdgeEntry(
     write: false,
     ...(globalName !== undefined ? { globalName } : {}),
   });
-  return measure(result.outputFiles[0]?.text ?? '', nodeImportsOf(result.metafile));
+  return measure(
+    result.outputFiles[0]?.text ?? '',
+    nodeImportsOf(result.metafile),
+    externalImportsOf(result.metafile),
+  );
 }
 
 /** Bundle a whole package's public surface (`export *`) — the conservative upper bound for the size guard. */
