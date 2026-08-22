@@ -12,8 +12,8 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
 ### F-X10 · The collector's CORS policy makes the browser SDK unusable for any customer
 
 - **Severity:** blocker (backend, not this repo)
-- **Status:** **fixed in appserver, awaiting deploy to staging.** Local commit `f0fb054d` on
-  appserver `master` — not pushed to Gerrit.
+- **Status:** **fixed in appserver, awaiting deploy to staging.** Pushed to appserver `main`
+  (`c632f5a7`, `19099ecb`, `e4b94dfe`, `4db0e059`).
 - **Scenario:** any browser-family sample against `apidev.bugsee.com`
 - **Observed:** `Access-Control-Allow-Origin` is answered from an allowlist
   (`cfg.web.cors.trusted_origins`) with a hardcoded fallback of `https://appdev.bugsee.com`, never
@@ -26,25 +26,20 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
   Nothing else in the SDK builds a URL. The fourth hop, the bundle PUT, goes to a presigned S3 URL
   and needs **no change**: `bugsee-upload-west2` already answers a customer-origin preflight with
   `Access-Control-Allow-Origin: *`, `Allow-Methods: GET, HEAD, PUT`, `Allow-Headers: filename`.
-- **Fix applied:** an ingest-scoped policy in `code/middleware/common/cors.middleware.js` —
-  `ACAO: *`, no `Allow-Credentials`, the SDK's headers allowed, `Max-Age: 86400`, CORP
-  `cross-origin` — with the dashboard policy untouched everywhere else. Scoped by **method as
-  well as path** (`/v2/sessions` and `/v2/issues` each serve a cookie-authenticated dashboard GET
-  on the same url), reading the path from `req.url` when `routerPath` is undefined (a preflight
-  matches no route — the router registers no OPTIONS handler, so preflights are answered on the 404
-  path). `error.router.js` shares the same split, so a rejected ingest call stays readable and the
-  SDK can surface the collector's reason instead of an opaque network error.
+- **Fix applied:** an open policy — `ACAO: *`, no `Allow-Credentials`, the SDK's headers allowed,
+  `Max-Age: 86400`, CORP `cross-origin` — that the **route declares** rather than a middleware
+  sniffs. `middleware.common.publicCors` is listed on exactly the three ingest POSTs (and their two
+  `/v1` twins); `GenericRouter` lifts it to the route's `onRequest` hook and auto-registers a
+  matching `OPTIONS` route answered from the same hook, which is what makes it win over the global
+  dashboard policy (route `onRequest` runs before global `preValidation`). The dashboard policy is
+  untouched everywhere else and stands aside only when the route opted in. All of it writes through
+  one module, `code/cors.js`, shared by the middleware, the router and `error.router.js` — so a
+  rejected ingest call stays readable and the SDK can surface the collector's reason instead of an
+  opaque network error. Config lives in `config/default.js` under `web.cors.public`.
 - **Impact on the samples:** until the fix is deployed, `browser-vanilla` keeps its same-origin
   relay and `react-spa`/`vue-spa` keep the Chromium `--disable-web-security` flag. **All three
   workarounds should be stripped and the samples re-verified once staging carries the fix** — that
   re-verification is the real end-to-end proof, which no local test can stand in for.
-
-### F-X17 · MCP `get_issue` does not surface attributes, labels or the report mechanism
-
-- **Severity:** minor (tooling, not the SDK)
-- **Observed:** the SDK sends them (`manifest.attrs` in the uploaded bundle carries the attributes,
-  confirmed by unzipping a real upload), but the MCP surface never shows them, so a sample cannot
-  verify S2/S4 at backend depth and falls back to wire depth.
 
 ### F-X18 · One issue displayed a message and a stack trace from different events
 
@@ -73,6 +68,27 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
   evidence rather than for a clock.
 
 ## Resolved
+
+### F-X17 · MCP `get_issue` did not surface labels, mechanism or attributes — **fixed** (appserver `b103f2cf`)
+
+- **Severity:** minor (tooling, not the SDK)
+- **Observed:** the SDK sends all three, but `get_issue` showed none of them, so a sample could not
+  verify S2/S4 at backend depth and fell back to wire depth.
+- **Three different causes, one per field:**
+  - **labels** — persisted all along; the MCP projection never asked for it and the renderer never
+    printed it. Now a default `# Labels` section.
+  - **mechanism** — never reached disk. `RequestJson.source.mechanism`
+    (`packages/protocol/src/wire.ts:86`) is required and always sent, and the collector passes the
+    body straight to `dao.issues.create`, but the issue schema declared only `source.type` and
+    `source.origin`, so **mongoose strict mode dropped it on every write**. Declaring
+    `source.mechanism` is the fix. Now rendered next to `Trigger:` in `# Report source`, and left
+    absent (not defaulted) when the SDK reported none.
+  - **attributes** — reachable on `recording.manifest.attrs` but never rendered. Unbounded, so
+    opt-in behind a new `include_attributes` argument; keys are mongo-unescaped on the way out.
+- **Caveat:** issues created before that deploy carry no mechanism — only new reports will have one.
+- **Verification:** re-run a browser or node sample and read the issue back through
+  `get_issue` with `include_attributes: true`; `# Labels`, `Mechanism:` and `# Attributes` should
+  all be present. That is what lifts S2/S4 from wire depth to backend depth.
 
 ### F-X1 · `@bugsee/rrweb`'s git dependency — **fixed** (`e60…`, this change)
 
