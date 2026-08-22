@@ -7,42 +7,11 @@ import {
   sanitizeJson,
   sanitizeParams,
 } from './index';
+import { expectLinearIn } from './linear-time.test-helper';
 import type { NetworkEvent } from './wire';
 
-/**
- * A cost guard that survives a shared CI runner.
- *
- * These used to assert an absolute wall-clock budget (`< 100 ms`), which measures the MACHINE at least as
- * much as the code: under CI's coverage instrumentation the HEALTHY pass took 373 ms here, and the gate
- * had been red since 2026-08-12 for that reason alone.
- *
- * The property each test is named for is linearity, so measure that: run the same shape at N and at 4N,
- * on the same machine, in the same process, under the same instrumentation. Linear work grows about 4x;
- * the quadratic forms recorded in the comments below grow about 16x (16 ms -> 227 ms across a 4x step).
- * A ceiling of 8x sits between the two, and scales with however slow the runner happens to be.
- */
-// `Date.now`, not `performance.now`: this tier compiles without the DOM/Node libs. Millisecond
-// resolution is ample here — the measured passes are tens to hundreds of milliseconds, and the ratio
-// being tested is 4x versus 16x.
-const measure = (fn: () => void): number => {
-  const started = Date.now();
-  fn();
-  return Date.now() - started;
-};
-
-const expectLinearIn = (run: (size: number) => void, size: number): void => {
-  // Warm up on a SMALL input. Its only job is to get the code path JIT-compiled before the baseline is
-  // measured — an unwarmed baseline is inflated, which makes the budget too generous and could mask a
-  // regression. Doing it at the baseline size instead made each guard run the expensive shape three
-  // times rather than twice, and the XML one then exceeded vitest's 5 s timeout on CI.
-  run(size / 16);
-  const small = measure(() => run(size / 4));
-  const large = measure(() => run(size));
-  // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
-  // of ~8 ms that a single GC pause could blow — trading one flake for another. 5 ms floors the budget at
-  // 40 ms while leaving the separation intact, since the quadratic forms measure 84 ms at the SMALL size.
-  expect(large).toBeLessThan(Math.max(small, 5) * 8);
-};
+// The linearity guard lives in `./linear-time.test-helper` — see its header for why it asserts a
+// ratio rather than a wall-clock budget, and why building the input is not part of the measurement.
 
 const R = '<redacted>';
 const GH = `ghp_${'a'.repeat(36)}`;
@@ -378,9 +347,13 @@ describe('sanitizeBody — JSON that does not parse', () => {
     // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
     // over, which is why it now has a test rather than a comment.
     const build = (n: number): string => `{"${'\\"'.repeat(n)}`; // escaped quotes, never closed
-    expectLinearIn((n) => {
-      sanitizeBody(build(n), 'application/json');
-    }, 128_000);
+    expectLinearIn(
+      build,
+      (body) => {
+        sanitizeBody(body, 'application/json');
+      },
+      128_000,
+    );
   }, 30_000);
 
   it('does not apply the JSON pass to a body that is not JSON-shaped', () => {
@@ -466,9 +439,13 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
       [(n: number): string => `{'${"\\'".repeat(n)}`, 128_000],
       [(n: number): string => `{${'ab,'.repeat(n)}`, 80_000],
     ] as const) {
-      expectLinearIn((n) => {
-        sanitizeBody(build(n), 'application/json');
-      }, size);
+      expectLinearIn(
+        build,
+        (body) => {
+          sanitizeBody(body, 'application/json');
+        },
+        size,
+      );
     }
   }, 30_000);
 });
@@ -543,9 +520,13 @@ describe('sanitizeBody — XML', () => {
       [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
       [(n: number): string => `<a ${'b="c" '.repeat(n)}>`, 60_000], // one tag, very many attributes
     ] as const) {
-      expectLinearIn((n) => {
-        sanitizeBody(build(n), 'application/xml');
-      }, size);
+      expectLinearIn(
+        build,
+        (body) => {
+          sanitizeBody(body, 'application/xml');
+        },
+        size,
+      );
     }
   }, 30_000);
 });

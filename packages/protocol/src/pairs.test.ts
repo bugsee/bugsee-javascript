@@ -1,47 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { expectLinearIn, measure } from './linear-time.test-helper';
 import { redactSensitivePairs } from './pairs';
+
+// The linearity guard these tests lean on lives in `./linear-time.test-helper` — see its header for why it
+// asserts a ratio rather than a wall-clock budget, and why preparing the input is not measured. It
+// used to be copied into this file and into sanitize.test.ts, and only one copy ever got fixed.
 
 // The shared `key=value&key=value` scanner behind BOTH URL-query redaction and form-body redaction
 // (Android NetworkDataSanitizer.redactSensitivePairs parity). Everything outside a sensitive value —
 // including the region past `end`, e.g. a URL fragment — must survive byte-for-byte.
 const all = (input: string): string => redactSensitivePairs(input, 0, input.length);
-
-/**
- * A cost guard that survives a shared CI runner.
- *
- * These used to assert an absolute wall-clock budget (`< 100 ms`), which measures the MACHINE at least as
- * much as the code. Under CI's coverage instrumentation the HEALTHY linear pass took 1438 ms — more than
- * the 1339 ms the quadratic defect this test was written against produced locally — so no fixed number
- * can separate them, and the gate had been red since 2026-08-12.
- *
- * The property these tests are named for is linearity, so measure that instead: run the same shape at N
- * and at 4N, on the same machine, in the same process, under the same instrumentation. Linear work grows
- * about 4x; the quadratic forms recorded in the comments below grow about 16x (84 ms -> 1339 ms across
- * exactly that 4x step). A ceiling of 8x sits between the two with room on either side, and scales with
- * however slow the runner happens to be.
- */
-// `Date.now`, not `performance.now`: this tier compiles without the DOM/Node libs. Millisecond
-// resolution is ample here — the measured passes are tens to hundreds of milliseconds, and the ratio
-// being tested is 4x versus 16x.
-const measure = (fn: () => void): number => {
-  const started = Date.now();
-  fn();
-  return Date.now() - started;
-};
-
-const expectLinearIn = (run: (size: number) => void, size: number): void => {
-  // Warm up on a SMALL input. Its only job is to get the code path JIT-compiled before the baseline is
-  // measured — an unwarmed baseline is inflated, which makes the budget too generous and could mask a
-  // regression. Doing it at the baseline size instead made each guard run the expensive shape three
-  // times rather than twice, and the XML one then exceeded vitest's 5 s timeout on CI.
-  run(size / 16);
-  const small = measure(() => run(size / 4));
-  const large = measure(() => run(size));
-  // A 5 ms floor, not 1 ms: on a fast machine the small case measures 0-1 ms, which would set a budget
-  // of ~8 ms that a single GC pause could blow — trading one flake for another. 5 ms floors the budget at
-  // 40 ms while leaving the separation intact, since the quadratic forms measure 84 ms at the SMALL size.
-  expect(large).toBeLessThan(Math.max(small, 5) * 8);
-};
 
 describe('redactSensitivePairs — what it redacts', () => {
   it('replaces a sensitive value with the URL-ENCODED token, not the bare one', () => {
@@ -161,6 +129,9 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
     const overshooting = measure(() => {
       redactSensitivePairs(input, 0, 100_000_000);
     });
+    // An ABSOLUTE ceiling, deliberately, unlike the two linearity guards below. The baseline is a
+    // 14-character scan that no clock resolves, so a ratio built on it would be noise — but the
+    // defect costs 301 ms against ~0, and a six-order-of-magnitude gap needs no ratio to separate.
     expect(overshooting).toBeLessThan(Math.max(honest, 5) * 8);
   }, 30_000);
 
@@ -171,20 +142,26 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
     const build = (n: number): string => `https://h/p?${'&'.repeat(n)}`;
     const hostile = build(400_000);
     expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expectLinearIn((n) => {
-      const input = build(n);
-      redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
-    }, 400_000);
+    expectLinearIn(
+      build,
+      (input) => {
+        redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+      },
+      400_000,
+    );
   }, 30_000);
 
   it('scans a long `;` separator run in linear time too', () => {
     const build = (n: number): string => `https://h/p?${';'.repeat(n)}`;
     const hostile = build(400_000);
     expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expectLinearIn((n) => {
-      const input = build(n);
-      redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
-    }, 400_000);
+    expectLinearIn(
+      build,
+      (input) => {
+        redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+      },
+      400_000,
+    );
   }, 30_000);
 
   it('never throws on a malformed percent escape in the key', () => {
