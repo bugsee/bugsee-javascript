@@ -12,18 +12,32 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
 ### F-X10 · The collector's CORS policy makes the browser SDK unusable for any customer
 
 - **Severity:** blocker (backend, not this repo)
+- **Status:** **fixed in appserver, awaiting deploy to staging.** Local commit `f0fb054d` on
+  appserver `master` — not pushed to Gerrit.
 - **Scenario:** any browser-family sample against `apidev.bugsee.com`
 - **Observed:** `Access-Control-Allow-Origin` is answered from an allowlist
   (`cfg.web.cors.trusted_origins`) with a hardcoded fallback of `https://appdev.bugsee.com`, never
   reflecting the requesting origin — and `Access-Control-Allow-Headers` omits `x-app-token` and
   `x-bugsee-internal`, which the SDK sends on every call. A customer's domain can never be on that
   allowlist, so a browser session cannot be created at all. Verified with a direct preflight.
-- **Fix direction:** the SDK ingest routes authenticate by app token and need no cookie credentials,
-  so they want their own policy: `Access-Control-Allow-Origin: *`, no credentials, and the SDK's
-  headers allowed. `appserver/code/middleware/common/cors.middleware.js`.
-- **Impact on the samples:** `browser-vanilla` must keep a same-origin relay; `react-spa` and
-  `vue-spa` must keep a Chromium `--disable-web-security` flag. None of these is available to a real
-  user.
+- **Scope (measured, not assumed):** the browser-origin surface is exactly three appserver routes —
+  `POST /v2/sessions`, `POST /v2/issues` (`packages/core/src/bugsee-api.ts:81,108`) and
+  `POST /v2/performance/transactions` (`packages/performance/src/performance-send.ts:23`).
+  Nothing else in the SDK builds a URL. The fourth hop, the bundle PUT, goes to a presigned S3 URL
+  and needs **no change**: `bugsee-upload-west2` already answers a customer-origin preflight with
+  `Access-Control-Allow-Origin: *`, `Allow-Methods: GET, HEAD, PUT`, `Allow-Headers: filename`.
+- **Fix applied:** an ingest-scoped policy in `code/middleware/common/cors.middleware.js` —
+  `ACAO: *`, no `Allow-Credentials`, the SDK's headers allowed, `Max-Age: 86400`, CORP
+  `cross-origin` — with the dashboard policy untouched everywhere else. Scoped by **method as
+  well as path** (`/v2/sessions` and `/v2/issues` each serve a cookie-authenticated dashboard GET
+  on the same url), reading the path from `req.url` when `routerPath` is undefined (a preflight
+  matches no route — the router registers no OPTIONS handler, so preflights are answered on the 404
+  path). `error.router.js` shares the same split, so a rejected ingest call stays readable and the
+  SDK can surface the collector's reason instead of an opaque network error.
+- **Impact on the samples:** until the fix is deployed, `browser-vanilla` keeps its same-origin
+  relay and `react-spa`/`vue-spa` keep the Chromium `--disable-web-security` flag. **All three
+  workarounds should be stripped and the samples re-verified once staging carries the fix** — that
+  re-verification is the real end-to-end proof, which no local test can stand in for.
 
 ### F-X17 · MCP `get_issue` does not surface attributes, labels or the report mechanism
 
