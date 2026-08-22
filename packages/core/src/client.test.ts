@@ -575,6 +575,99 @@ describe('createClient — crash.json (SC3)', () => {
   });
 });
 
+describe('createClient — report identity is snapshotted at submit time', () => {
+  // Assembly runs DETACHED from the call that reported: the trigger pipeline awaits the capture drain
+  // (and any report snapshots) before it builds the bundle. Reading the global attributes / user
+  // identifier at that point reads whatever the app has done to them in the meantime — so
+  // `logException(e)` followed by `clearAllAttributes()` uploaded an empty `manifest.attrs`, and the
+  // recovery marker (which HAS always snapshotted at submit) disagreed with the live upload of the
+  // very same report. The request context was already snapshotted at submit for exactly this reason;
+  // these two were left reading live.
+  const assembledFrom = (enqueue: ReturnType<typeof fakeUpload>['enqueue'], call = 0) => {
+    const files = unzipSync((enqueue.mock.calls[call]?.[0] as Bundle).body);
+    return {
+      attrs: (
+        JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+          attrs: Record<string, unknown>;
+        }
+      ).attrs,
+      email: (JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as { email?: string })
+        .email,
+    };
+  };
+
+  it('uploads the attributes + user identifier that were live when logException was CALLED', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setAttribute('k', 1);
+    client.setAttribute('tier', 'gold');
+    client.setUserIdentifier('u@e.com');
+
+    // Report, then mutate the global state in the SAME synchronous turn — assembly has not run yet.
+    const pending = client.logException(new Error('boom'));
+    client.clearAllAttributes();
+    client.clearUserIdentifier();
+    await pending;
+
+    expect(assembledFrom(enqueue)).toEqual({ attrs: { k: 1, tier: 'gold' }, email: 'u@e.com' });
+  });
+
+  it('gives each report ITS OWN snapshot when attributes change between two reports', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+
+    client.setAttribute('step', 'first');
+    const first = client.logException(new Error('one'));
+    client.setAttribute('step', 'second');
+    const second = client.logException(new Error('two'));
+    client.setAttribute('step', 'third'); // after BOTH — must reach neither
+    await Promise.all([first, second]);
+
+    expect(assembledFrom(enqueue, 0).attrs).toEqual({ step: 'first' });
+    expect(assembledFrom(enqueue, 1).attrs).toEqual({ step: 'second' });
+  });
+
+  it('agrees with the recovery marker written for the same report', async () => {
+    // The marker is what a recovered (crashed-before-upload) report carries. If the live upload reads
+    // later state, the same incident is described two different ways depending on how it was delivered.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setAttribute('k', 1);
+    client.setUserIdentifier('u@e.com');
+
+    const pending = client.logException(new Error('boom'));
+    client.clearAllAttributes();
+    client.clearUserIdentifier();
+    await pending;
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const assembled = assembledFrom(enqueue);
+    expect(assembled.attrs).toEqual(marker.attributes);
+    expect(assembled.email).toBe(marker.userIdentifier);
+  });
+
+  it('snapshots a DETECTION report at submit too', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+    client.setAttribute('at_crash', 'yes');
+
+    fire(createReportingRequest({ source: { type: 'crash' }, id: 'det-attrs' }));
+    client.clearAllAttributes(); // same turn — before the detached assembly runs
+
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(assembledFrom(enqueue).attrs).toEqual({ at_crash: 'yes' });
+  });
+});
+
 describe('createClient — capture-recovery markers', () => {
   it('logException persists a recovery marker BEFORE assembly and clears it on settle', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();

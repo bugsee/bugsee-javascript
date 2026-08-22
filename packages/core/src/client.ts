@@ -273,6 +273,13 @@ export interface CreateClientOptions {
   onError?: (error: unknown) => void;
 }
 
+/** The global state a report is described by: snapshotted once, at submit, and read by both the
+ *  recovery marker and the bundle so the two can never describe the same incident differently. */
+interface ReportIdentity {
+  attributes: Record<string, AttributeValue>;
+  userIdentifier: string | null;
+}
+
 export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
@@ -317,6 +324,17 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // the request it fired in, not whatever is active when assembly happens to run. The WeakMap entry is
   // collected with the request (no manual cleanup, no leak).
   const reportContexts = new WeakMap<ReportingRequest, RequestContext>();
+  // The GLOBAL attributes + user identifier as they stood at report-SUBMIT time, keyed by the report's
+  // request object — the same detached-assembly problem `reportContexts` solves, for the same reason.
+  // Assembly is queued behind the capture drain and any report snapshots, so reading the Environment
+  // there reads whatever the app has done to it since: `logException(e)` followed by
+  // `clearAllAttributes()` shipped an empty `manifest.attrs`, and the recovery marker — which has always
+  // snapshotted at submit — described the same incident differently from its own live upload.
+  const reportIdentity = new WeakMap<ReportingRequest, ReportIdentity>();
+  const liveIdentity = (): ReportIdentity => ({
+    attributes: environment.getAllAttributes(),
+    userIdentifier: environment.getUserIdentifier(),
+  });
   const captureExporter = createCaptureExporter(captureStore, undefined, onError);
   // The capture-pipeline deps every provider gets once at registration (Android
   // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
@@ -376,11 +394,15 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         }
       }
       const captured = reportContext;
+      // Submit-time identity (see reportIdentity). Absent only on a hypothetical assembly that did not
+      // come through submitReport, where reading the Environment live is the previous behaviour and a
+      // strictly better degrade than shipping no attributes at all.
+      const identity = reportIdentity.get(request) ?? liveIdentity();
       return assembleBundle(request, capturedByType, {
         appToken,
         environment: getEnvironment(),
-        attributes: environment.getAllAttributes(),
-        userIdentifier: environment.getUserIdentifier(),
+        attributes: identity.attributes,
+        userIdentifier: identity.userIdentifier,
         clock,
         ...(captured !== undefined ? { requestContext: captured } : {}),
         ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
@@ -464,13 +486,18 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     if (captured !== undefined) {
       reportContexts.set(handled, captured);
     }
+    // Snapshot the global identity NOW, for the same reason and in the same turn as the context above.
+    // The marker and the bundle read this ONE snapshot, so a recovered report and a live upload of the
+    // same incident can never disagree.
+    const identity = liveIdentity();
+    reportIdentity.set(handled, identity);
     if (reportMarkers !== undefined) {
       try {
         reportMarkers.store.put({
           generation: reportMarkers.generation,
           request: handled,
-          attributes: environment.getAllAttributes(),
-          userIdentifier: environment.getUserIdentifier(),
+          attributes: identity.attributes,
+          userIdentifier: identity.userIdentifier,
         });
       } catch (error) {
         onError(error);
