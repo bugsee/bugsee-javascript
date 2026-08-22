@@ -36,6 +36,10 @@ yellow() { printf '\033[33m%s\033[0m\n' "$1"; }
 
 # The runner uses Node 22 (pinned in the workflow). A different major here is a real source of
 # divergence — a syntax or API difference can pass locally and fail there, or vice versa.
+#
+# Since CI moved to a self-hosted arm64 macOS runner, the OS and architecture match this machine
+# too, so this script is a much closer stand-in than it was against ubuntu-latest. The Node major
+# is the main thing left to diverge.
 CI_NODE_MAJOR=22
 LOCAL_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "$LOCAL_NODE_MAJOR" != "$CI_NODE_MAJOR" ]; then
@@ -88,7 +92,12 @@ if [ "$RUN_E2E" -eq 1 ]; then
   if [ "$MISSING" -eq 1 ]; then
     FAILED+=("Runtime matrix incomplete")
   else
+    # Same reason the workflow does this: nuxt/sveltekit/astro bind fixed ports, and a Ctrl-C'd
+    # run can leave the dev server holding one. The next run then dies with EADDRINUSE and looks
+    # like a broken change rather than leftover state.
+    step "Free the harness ports" bash scripts/free-e2e-ports.sh
     step "E2E suites (turbo run test:e2e)" pnpm exec turbo run test:e2e $FORCE
+    bash scripts/free-e2e-ports.sh >/dev/null 2>&1 || true
   fi
 fi
 
@@ -104,11 +113,12 @@ if [ "${#FAILED[@]}" -eq 0 ]; then
   if [ "$RUN_E2E" -eq 0 ]; then
     echo "   (the e2e job was NOT run; add --e2e)"
   fi
-  # Stated every time, because it is the divergence that has actually bitten: the runner is roughly
-  # 7-18x slower than a dev machine under coverage instrumentation, so a test whose pass condition
-  # includes a DURATION can be green here and red there. Assert ratios, not wall-clock budgets, and
-  # give property tests an explicit timeout.
-  yellow "   Note: the runner is far slower than this machine. Timing-sensitive tests can pass here and fail there."
+  # This used to warn that the runner was 7-18x slower than a dev machine. That was true of
+  # ubuntu-latest and is NOT true of the self-hosted Mac that replaced it — repeating it would now
+  # send people to tune the wrong thing. The hazard inverted: a runner at roughly this machine's
+  # speed can LOSE a race the slow one always won, so a timing-shaped failure there is more likely
+  # a real race than a slow runner. Assert ratios rather than wall-clock budgets either way.
+  yellow "   Note: CI is a self-hosted Mac at roughly this speed — a timing failure there is more likely a real race than a slow runner."
   exit 0
 fi
 red "CI gate FAILED locally:"

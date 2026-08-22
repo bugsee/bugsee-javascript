@@ -100,18 +100,32 @@ are therefore invisible to the other task). A change can pass `pnpm test` and st
 is how several red builds reached `main`. `scripts/ci-local.sh` mirrors `.github/workflows/ci.yml`
 step for step and is kept in lockstep with it BY HAND.
 
-Three divergences remain, and they are the ones that actually bite:
+**CI runs on a self-hosted arm64 macOS runner** (`runs-on: [self-hosted, macOS, ARM64]`), the same pool
+the appserver repo uses — hosted Actions minutes are exhausted. That closed most of the gap this section
+used to describe: the runner is now the same OS, the same architecture and roughly the same speed as the
+machine you develop on.
 
-- **Speed.** The runner is roughly 7–18× slower than a dev machine under coverage instrumentation. A test
-  whose pass condition includes a DURATION can be green here and red there. Assert ratios rather than
-  wall-clock budgets, and keep property-test case counts modest.
+What is left:
+
 - **Node version.** CI pins Node 22; the script warns when the local major differs.
-- **Load.** CI runs the same `turbo` fan-out, but on 2 cores. Failures that only appear under parallel
-  load (a stalled request, a port race) reproduce locally only under `--force` across all packages, not
-  when running one package's tests.
+- **A clean tree, not a clean machine.** `actions/checkout` wipes the working tree (`git clean -ffdx`),
+  so `node_modules` and the local turbo cache are cold every run — but the pnpm store, the runner tool
+  cache and *anything a previous run leaked* persist. Leaked processes are the practical hazard: the
+  nuxt/sveltekit/astro harnesses bind fixed ports, and a cancelled run can leave a dev server holding
+  one. `scripts/free-e2e-ports.sh` clears them before and after the e2e job, and `pnpm ci:local --e2e`
+  runs it too.
+- **No Linux anywhere.** The gate exercised linux-x64 before the move and now exercises only
+  darwin-arm64. Nothing in the SDK is knowingly platform-specific, but nothing checks that any more
+  either.
+- **Serialisation.** `check` and `e2e` are separate jobs so they *can* run at once; with a single
+  runner in the pool they queue instead. Wall-clock only — adding a runner restores it.
 
-`act` would give closer parity by running the workflow in Docker, but on Apple Silicon it emulates
-linux/amd64 and is far slower than the real runner — the script is the better trade for turnaround.
+⚠️ **The speed warning inverted.** It used to read "the runner is 7–18× slower, so a duration-sensitive
+test can pass locally and fail there". That was true of `ubuntu-latest`. A runner at dev-machine speed
+has the opposite failure mode: it can *lose* a race the slow one always won. (That is exactly how a
+start-up race surfaced in the appserver deploy job after its own move.) Treat a timing-shaped failure
+on CI as a probable real race rather than as a slow runner — and assert ratios rather than wall-clock
+budgets either way.
 
 ### Install
 
