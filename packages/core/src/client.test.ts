@@ -34,6 +34,7 @@ const Svc = serviceToken<{ v: number }>('svc');
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
+  runtime: { type: 'web', version: '' },
   sdk: { version: '0', type: 'javascript' },
 });
 

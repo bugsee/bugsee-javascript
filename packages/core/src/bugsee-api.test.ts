@@ -7,6 +7,7 @@ import type { HttpRequestOptions, HttpResponse } from './transport';
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'node', version: '24' },
+  runtime: { type: 'node', version: '' },
   sdk: { version: '1.0.0', type: 'javascript' },
 };
 const requestJson: RequestJson = {

@@ -30,7 +30,10 @@ interface ReportEnvelope {
   type: string;
   summary: string;
   source: { mechanism: string };
-  environment: { platform: { type: string; version: string } };
+  environment: {
+    platform: { type: string; version: string };
+    runtime: { type: string; version: string };
+  };
   /** The per-request context id, present when a request context was active at report time. */
   context_id?: string;
   /** The W3C trace id the report fired in — the cross-project join key (T8). */
@@ -121,19 +124,24 @@ describe.each(
       assertNoContractViolations(collector);
     });
 
-    it('opens exactly one session carrying the runtime platform identity', () => {
+    it('opens exactly one session carrying the runtime identity, and the OS separately', () => {
       expect(collector.sessions).toHaveLength(1);
       const env = collector.sessions[0]?.environment as {
         platform: { type: string; version: string };
+        runtime: { type: string; version: string };
       };
-      expect(env.platform.type).toBe(target.name);
-      expect(typeof env.platform.version).toBe('string');
+      expect(env.runtime.type).toBe(target.name);
+      expect(typeof env.runtime.version).toBe('string');
+      expect(env.runtime.version.length).toBeGreaterThan(0);
+      // ...and `platform` is the HOST, not the runtime — on a real process the two must not coincide.
+      expect(env.platform.type).not.toBe(target.name);
+      expect(['macos', 'linux', 'windows']).toContain(env.platform.type);
       expect(env.platform.version.length).toBeGreaterThan(0);
       if (target.name === 'deno') {
         // Proves the e2e reads the REAL Deno version (Deno.version.deno → a small major) and NOT the
         // node-compat process.versions.node (major ≥ 18) — the milestone's headline gotcha, verified
         // end-to-end on the real Deno runtime (the unit tests run under node and cannot reach this).
-        const major = Number(env.platform.version.split('.')[0]);
+        const major = Number(env.runtime.version.split('.')[0]);
         expect(major).toBeGreaterThanOrEqual(1);
         expect(major).toBeLessThan(18);
       }
@@ -152,7 +160,7 @@ describe.each(
 
       expect(bundle.request.type).toBe('error');
       expect(bundle.request.summary).toBe('e2e instrumented failure');
-      expect(bundle.request.environment.platform.type).toBe(target.name);
+      expect(bundle.request.environment.runtime.type).toBe(target.name);
 
       // Assert each capture file is present before parsing, so a missing file fails with a clear message
       // rather than an opaque strFromU8 type error.
@@ -205,7 +213,10 @@ describe.each(
       // literal would still pass if both sides drifted to the same wrong value. `target.name` is the real
       // runtime this process is, so this also pins the per-runtime value end-to-end.
       expect(crash.source_platform).toBe(bundle.request.environment.platform.type);
-      expect(crash.source_platform).toBe(target.name);
+      // ...and what it mirrors is the OS, not the runtime — bugsee-rust's conformance suite asserts the
+      // same equality, and its `source_platform` is likewise an OS name.
+      expect(crash.source_platform).not.toBe(target.name);
+      expect(['macos', 'linux', 'windows']).toContain(crash.source_platform);
       // `source_arch` is omitted deliberately — the JS SDK reports no `hardware.arch` to mirror, and the
       // rule is that a producer emits only what its environment already states.
       expect(crash).not.toHaveProperty('source_arch');
@@ -216,7 +227,7 @@ describe.each(
       expect(hang, 'no AppHang bundle was delivered').toBeDefined();
       const bundle = hang as ParsedBundle;
       expect(bundle.request.summary).toBe('Main thread hang detected');
-      expect(bundle.request.environment.platform.type).toBe(target.name);
+      expect(bundle.request.environment.runtime.type).toBe(target.name);
     });
 
     it('the AppHang bundle carries a CPU profile whose samples include the blocking frame', () => {
@@ -463,7 +474,7 @@ describe.each(
       expect(err, `no worker-writer error bundle delivered (${result.stderr})`).toBeDefined();
       const bundle = err as ParsedBundle;
       expect(bundle.request.source.mechanism).toBe('programmatic');
-      expect(bundle.request.environment.platform.type).toBe(target.name);
+      expect(bundle.request.environment.runtime.type).toBe(target.name);
 
       expect(
         bundle.files['logs.json'],
@@ -618,7 +629,7 @@ describe.each(
       expect(report.type).toBe('crash');
       expect(report.source.mechanism).toBe('uncaught');
       expect(report.summary).toBe('e2e uncaught crash');
-      expect(report.environment.platform.type).toBe(target.name);
+      expect(report.environment.runtime.type).toBe(target.name);
     });
   });
 });

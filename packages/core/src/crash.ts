@@ -4,7 +4,7 @@
 // `debug_id` (each bundle/chunk its own source-map). This composes the existing `parseV8Stack` +
 // `applyDebugIds` primitives into that container. Runtime-portable: the runtime-specific stack parser +
 // debug-id registration global are injected seams (browser passes its multi-engine parser).
-import type { EnvironmentEnvelope, PlatformType } from '@bugsee/protocol';
+import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { applyDebugIds } from './debug-id';
 import { parseV8Stack, type StackFrame } from './stack';
 
@@ -32,8 +32,12 @@ export interface CrashFrame {
 export interface CrashProvenance {
   /** The SDK family — the backend's routing key, read BEFORE `platform.type`. Mirrors `environment.sdk.type`. */
   source_sdk?: 'javascript';
-  /** The originating platform. Mirrors `environment.platform.type`; used as the platform fallback. */
-  source_platform?: PlatformType;
+  /**
+   * The originating platform — the OS, as `environment.platform.type` reports it (the Rust SDK's
+   * conformance suite asserts the two are equal). Mirrored by COPY, so it follows that field wherever
+   * it goes; used as the platform fallback.
+   */
+  source_platform?: string;
 }
 
 /** A crash.json exception (Android managed-exception parity; recursive `cause` chain). */

@@ -70,6 +70,12 @@ export function buildWorkerEnvironment(
       locale: probe.locale(),
       ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
+    // No OS read from a worker either (see @bugsee/browser) — `platform` keeps the sandbox tag and
+    // `runtime` names which kind of worker this is.
+    runtime: {
+      type: input.platformType,
+      version: '',
+    },
     hardware: {
       // No screen on a worker — only the navigator-derived hardware + the caller's device id.
       device_id: input.deviceId ?? null,

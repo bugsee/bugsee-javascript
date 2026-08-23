@@ -14,6 +14,7 @@ import type { Bundle } from './transport';
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'electron-main', version: '30' },
+  runtime: { type: 'electron-main', version: '' },
   sdk: { version: '1.0.0', type: 'javascript' },
 };
 

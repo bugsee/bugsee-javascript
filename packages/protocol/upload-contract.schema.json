@@ -4,21 +4,6 @@
   "title": "Bugsee JS SDK upload contract",
   "description": "Machine-checkable schema for what the SDK PUTs at the collector: the /v2/sessions environment envelope, the /v2/issues report envelope (also embedded in the bundle as request.json), and the bundle's manifest.json. Shipped from @bugsee/protocol \u2014 the wire-contract package \u2014 so the e2e harness validates against the SAME file the types live beside and the two cannot drift. Mirrors packages/protocol/src/wire.ts; keep them in step.",
   "definitions": {
-    "platformType": {
-      "description": "environment.platform.type (wire.ts PlatformType). A runtime missing here means the SDK reported an identity the backend does not know.",
-      "enum": [
-        "web",
-        "node",
-        "bun",
-        "deno",
-        "workers",
-        "edge-light",
-        "service-worker",
-        "web-worker",
-        "electron-main",
-        "electron-renderer"
-      ]
-    },
     "reportingTriggerType": {
       "description": "source.type (wire.ts ReportingTriggerType) \u2014 how the report was triggered. The collector classifies on this and matches notification filters (source_types) against it.",
       "enum": [
@@ -49,14 +34,28 @@
     },
     "environmentEnvelope": {
       "type": "object",
-      "required": ["platform", "sdk"],
+      "required": ["platform", "runtime", "sdk"],
       "properties": {
         "platform": {
           "type": "object",
           "required": ["type", "version"],
           "properties": {
             "type": {
-              "$ref": "#/definitions/platformType"
+              "description": "The OS the runtime is hosted on, NOT the runtime \u2014 'macos'/'linux'/'windows' from the host tiers (the set bugsee-rust reports), or the sandbox's own tag ('web', 'workers', ...) where no OS is readable.",
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "required": ["type", "version"],
+          "properties": {
+            "type": {
+              "$ref": "#/definitions/runtimeType"
             },
             "version": {
               "type": "string"
@@ -409,6 +408,21 @@
       "items": {
         "$ref": "#/definitions/eventEntry"
       }
+    },
+    "runtimeType": {
+      "description": "environment.runtime.type (wire.ts RuntimeType) \u2014 the JS RUNTIME. A runtime missing here means the SDK reported an identity the backend does not know.",
+      "enum": [
+        "web",
+        "node",
+        "bun",
+        "deno",
+        "workers",
+        "edge-light",
+        "service-worker",
+        "web-worker",
+        "electron-main",
+        "electron-renderer"
+      ]
     }
   },
   "oneOf": [

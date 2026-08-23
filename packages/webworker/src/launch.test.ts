@@ -71,6 +71,7 @@ const pendingBundle = (summary: string): Uint8Array =>
       created_on: '2026-06-29T00:00:00Z',
       environment: {
         platform: { type: 'web-worker', version: '1' },
+        runtime: { type: 'web-worker', version: '' },
         sdk: { version: '0', type: 'javascript' },
       },
     },

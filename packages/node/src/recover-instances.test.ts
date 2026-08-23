@@ -37,6 +37,7 @@ afterEach(() => {
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'node', version: '1' },
+  runtime: { type: 'node', version: '' },
   sdk: { version: '0', type: 'javascript' },
 };
 const clock = { wallNow: () => 1_700_000_000_000, monotonicNow: () => 0 };

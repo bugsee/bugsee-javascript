@@ -30,6 +30,7 @@ const aBundle = (summary: string): Bundle => ({
     created_on: '2026-06-29T00:00:00Z',
     environment: {
       platform: { type: 'web', version: '1' },
+      runtime: { type: 'web', version: '' },
       sdk: { version: '0', type: 'javascript' },
     },
   },

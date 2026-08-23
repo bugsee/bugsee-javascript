@@ -87,13 +87,13 @@ const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T =>
 };
 
 describe('@bugsee/bun launch', () => {
-  it('reports the Bun platform identity in the environment envelope', () => {
+  it('reports the Bun RUNTIME identity in the environment envelope', () => {
     const { client, internals } = launchCore('tok', base());
     track(client);
     expect(internals).toBeDefined();
     const env = internals?.getEnvironment();
-    expect(env?.platform.type).toBe('bun');
-    expect(env?.platform.version).toBe(process.versions.bun ?? process.versions.node);
+    expect(env?.runtime.type).toBe('bun');
+    expect(env?.runtime.version).toBe(process.versions.bun ?? process.versions.node);
   });
 
   it('defaults the system probe to the Bun probe but lets the caller override it', () => {
@@ -105,8 +105,8 @@ describe('@bugsee/bun launch', () => {
     const { client, internals } = launchCore('tok', base({ systemProbe: nodeProbe }));
     track(client);
     // The caller-supplied probe wins over the Bun default (it spreads after it).
-    expect(internals?.getEnvironment().platform.type).toBe('node');
-    expect(internals?.getEnvironment().platform.version).toBe('20.0.0');
+    expect(internals?.getEnvironment().runtime.type).toBe('node');
+    expect(internals?.getEnvironment().runtime.version).toBe('20.0.0');
   });
 
   it('uploads a report carrying the Bun environment on the wire (end-to-end via the node composition)', async () => {
@@ -117,17 +117,17 @@ describe('@bugsee/bun launch', () => {
     expect(transport.mock.calls[0]?.[0]).toMatch(/\/v2\/sessions$/);
     const session = JSON.parse(
       String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body),
-    ) as { environment: { platform: { type: string } } };
-    expect(session.environment.platform.type).toBe('bun');
+    ) as { environment: { runtime: { type: string } } };
+    expect(session.environment.runtime.type).toBe('bun');
     // … and the actual report BUNDLE (the signed PUT zip) embeds the Bun environment in request.json.
     const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
     expect(put).toBeDefined();
     const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
     const requestJson = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
-      environment: { platform: { type: string; version: string } };
+      environment: { runtime: { type: string; version: string } };
     };
-    expect(requestJson.environment.platform.type).toBe('bun');
-    expect(requestJson.environment.platform.version).toBe(
+    expect(requestJson.environment.runtime.type).toBe('bun');
+    expect(requestJson.environment.runtime.version).toBe(
       process.versions.bun ?? process.versions.node,
     );
   });

@@ -217,6 +217,7 @@ const pendingBundle = (summary: string): Uint8Array => {
     created_on: '2026-06-02T00:00:00Z',
     environment: {
       platform: { type: 'web', version: '1' },
+      runtime: { type: 'web', version: '' },
       sdk: { version: '0', type: 'javascript' },
     },
   };

@@ -238,6 +238,7 @@ describe('buildCrashJson', () => {
 describe('stampCrashProvenance', () => {
   const env: EnvironmentEnvelope = {
     platform: { type: 'node', version: '22.1.0' },
+    runtime: { type: 'node', version: '' },
     sdk: { version: '1.2.3', type: 'javascript' },
   };
   const crash: CrashJson = {
@@ -311,6 +312,7 @@ describe('stampCrashProvenance', () => {
     const stamped = stampCrashProvenance(native, {
       ...env,
       platform: { type: 'electron-main', version: '30' },
+      runtime: { type: 'electron-main', version: '' },
     });
     expect(stamped.source_sdk).toBe('javascript');
     expect(stamped.source_platform).toBe('electron-main');

@@ -14,6 +14,7 @@ const bundle = (name = 'b.bundle.zip'): Bundle => ({
     created_on: 'x',
     environment: {
       platform: { type: 'web', version: '1' },
+      runtime: { type: 'web', version: '' },
       sdk: { version: '0', type: 'javascript' },
     },
   },

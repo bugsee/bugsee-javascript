@@ -87,13 +87,13 @@ const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T =>
 };
 
 describe('@bugsee/deno launch', () => {
-  it('reports the Deno platform identity in the environment envelope', () => {
+  it('reports the Deno RUNTIME identity in the environment envelope', () => {
     const { client, internals } = launchCore('tok', base());
     track(client);
     expect(internals).toBeDefined();
     const env = internals?.getEnvironment();
-    expect(env?.platform.type).toBe('deno');
-    expect(env?.platform.version).toBe(process.versions.node); // Deno global absent under vitest → fallback
+    expect(env?.runtime.type).toBe('deno');
+    expect(env?.runtime.version).toBe(process.versions.node); // Deno global absent under vitest → fallback
   });
 
   it('defaults the system probe to the Deno probe but lets the caller override it', () => {
@@ -105,8 +105,8 @@ describe('@bugsee/deno launch', () => {
     const { client, internals } = launchCore('tok', base({ systemProbe: nodeProbe }));
     track(client);
     // The caller-supplied probe wins over the Deno default (it spreads after it).
-    expect(internals?.getEnvironment().platform.type).toBe('node');
-    expect(internals?.getEnvironment().platform.version).toBe('20.0.0');
+    expect(internals?.getEnvironment().runtime.type).toBe('node');
+    expect(internals?.getEnvironment().runtime.version).toBe('20.0.0');
   });
 
   it('uploads a report carrying the Deno environment on the wire (end-to-end via the node composition)', async () => {
@@ -117,17 +117,17 @@ describe('@bugsee/deno launch', () => {
     expect(transport.mock.calls[0]?.[0]).toMatch(/\/v2\/sessions$/);
     const session = JSON.parse(
       String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body),
-    ) as { environment: { platform: { type: string } } };
-    expect(session.environment.platform.type).toBe('deno');
+    ) as { environment: { runtime: { type: string } } };
+    expect(session.environment.runtime.type).toBe('deno');
     // … and the actual report BUNDLE (the signed PUT zip) embeds the Deno environment in request.json.
     const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
     expect(put).toBeDefined();
     const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
     const requestJson = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
-      environment: { platform: { type: string; version: string } };
+      environment: { runtime: { type: string; version: string } };
     };
-    expect(requestJson.environment.platform.type).toBe('deno');
-    expect(requestJson.environment.platform.version).toBe(process.versions.node); // node-compat fallback under vitest
+    expect(requestJson.environment.runtime.type).toBe('deno');
+    expect(requestJson.environment.runtime.version).toBe(process.versions.node); // node-compat fallback under vitest
   });
 
   it('launch() returns the working public client launchCore() builds', () => {

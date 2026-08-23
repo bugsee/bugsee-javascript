@@ -13,8 +13,8 @@ import type {
   NetworkMechanism,
   NetworkStage,
   NoBodyReason,
-  PlatformType,
   RequestJson,
+  RuntimeType,
 } from './index';
 
 type Equal<A, B> =
@@ -24,6 +24,7 @@ type Expect<T extends true> = T;
 // --- Minimal instances: only required fields present. ---
 const env: EnvironmentEnvelope = {
   platform: { type: 'web', version: '124', locale: 'en-US' }, // locale exercises the index signature
+  runtime: { type: 'web', version: '' },
   sdk: { version: '0.0.0', type: 'javascript' },
 };
 
@@ -55,7 +56,8 @@ const networkEvent: NetworkEvent = {
 
 // --- Fully-populated instances: every optional field present and correctly typed. ---
 const fullEnv: EnvironmentEnvelope = {
-  platform: { type: 'node', version: '22', arch: 'arm64' },
+  platform: { type: 'macos', version: '25.6.0', arch: 'arm64' },
+  runtime: { type: 'node', version: '22' },
   hardware: { cores: 8 },
   app: { name: 'demo' },
   sdk: { version: '1.0.0', type: 'javascript', build: 'abc123', options: { autoStart: true } },
@@ -187,7 +189,10 @@ export const feNoType: ManifestFileEntry = { filename: 'x' };
 // @ts-expect-error `platform` is required on EnvironmentEnvelope
 export const envNoPlatform: EnvironmentEnvelope = { sdk: { version: '0', type: 'javascript' } };
 // @ts-expect-error `sdk` is required on EnvironmentEnvelope
-export const envNoSdk: EnvironmentEnvelope = { platform: { type: 'web', version: '1' } };
+export const envNoSdk: EnvironmentEnvelope = {
+  platform: { type: 'web', version: '1' },
+  runtime: { type: 'web', version: '' },
+};
 
 // NetworkEvent: timestamp, id, sequence, mechanism, url, method, type.
 // @ts-expect-error `timestamp` is required on NetworkEvent
@@ -293,7 +298,7 @@ export type WireAssertions = [
   >,
   Expect<
     Equal<
-      PlatformType,
+      RuntimeType,
       | 'web'
       | 'node'
       | 'bun'

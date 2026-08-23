@@ -32,7 +32,7 @@ import {
   setCarrierClient,
   TransportToken,
 } from '@bugsee/core';
-import { BugseeOption, type PlatformType } from '@bugsee/protocol';
+import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -138,7 +138,7 @@ export interface BugseeEdgeLaunchOptions {
 
   // Edge platform identity — vercel-edge passes 'edge-light'; @bugsee/cloudflare passes 'workers'.
   /** environment.platform.type. Default 'edge-light'. */
-  platformType?: PlatformType;
+  platformType?: RuntimeType;
   /** environment.platform.version. Default '' (edge exposes none). */
   runtimeVersion?: string;
 

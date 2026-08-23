@@ -13,6 +13,7 @@ import {
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'web', version: '1' },
+  runtime: { type: 'web', version: '' },
   sdk: { version: '0.0.0', type: 'javascript' },
 };
 const request: RequestJson = {

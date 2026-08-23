@@ -25,6 +25,7 @@ interface ReportEnvelope {
   context_id?: string;
   environment: {
     platform: { type: string; version: string };
+    runtime: { type: string; version: string };
     sdk: { type: string; version: string };
   };
 }
@@ -82,7 +83,7 @@ describe('the umbrella install path (Wave 3b.1)', () => {
         // identity probe, so it names which implementation the umbrella actually resolved — a customer on
         // Bun whose reports say `node` is being told the wrong runtime, with the wrong version alongside it.
         const bundles = await runUmbrella(target);
-        expect(bundles[0]?.request.environment.platform.type).toBe(target.name);
+        expect(bundles[0]?.request.environment.runtime.type).toBe(target.name);
       });
 
       it('reports the runtime’s OWN version', async () => {
@@ -91,7 +92,7 @@ describe('the umbrella install path (Wave 3b.1)', () => {
         // whenever that compat version happens to differ from the harness's own node — which is exactly how
         // my first version of this test passed on Bun while the defect was present.
         const bundles = await runUmbrella(target);
-        expect(bundles[0]?.request.environment.platform.version).toBe(runtimeOwnVersion(target));
+        expect(bundles[0]?.request.environment.runtime.version).toBe(runtimeOwnVersion(target));
       });
 
       it('carries the same capture the platform-direct entry produces — the canary', async () => {

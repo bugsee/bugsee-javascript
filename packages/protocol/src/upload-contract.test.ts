@@ -5,7 +5,7 @@
 // bridge-protocol.schema.json). Hand-written means it CAN drift from wire.ts/constants.ts — and a schema
 // that has silently drifted is worse than none, because it validates the wrong contract while looking
 // authoritative. These tests pin every enum in the schema to its TS union, so adding a FileType or a
-// PlatformType without updating the schema fails here rather than in production.
+// RuntimeType without updating the schema fails here rather than in production.
 //
 // Introduced with Wave V0 (docs/review/REMEDIATION-PLAN.md): the adversarial review found the e2e mock
 // collector "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1
@@ -60,10 +60,29 @@ describe('upload-contract.schema.json ↔ TypeScript wire contract', () => {
     );
   });
 
-  it('lists the platform types the SDK actually reports', () => {
+  it('requires the runtime block — every tier fills it, so a missing one is a defect', () => {
+    expect(schema.definitions.environmentEnvelope.required).toContain('runtime');
+    expect(schema.definitions.environmentEnvelope.properties.runtime.required).toEqual([
+      'type',
+      'version',
+    ]);
+  });
+
+  it('leaves platform.type OPEN, because it is an OS name and not an SDK-side enum', () => {
+    // The host tiers report the OS ('macos'/'linux'/'windows' — the set bugsee-rust reports), and node
+    // can name OSes beyond those three. Enumerating them here would reject a legitimate host rather
+    // than catch a defect; the enum that must stay closed is the runtime one below.
+    const platformType = schema.definitions.environmentEnvelope.properties.platform.properties
+      .type as { type: string; minLength: number; enum?: unknown };
+    expect(platformType.type).toBe('string');
+    expect(platformType.enum).toBeUndefined();
+    expect(platformType.minLength).toBe(1); // but never blank — the backend rejects a session without it
+  });
+
+  it('lists the RUNTIME types the SDK actually reports', () => {
     // Pinned explicitly: these are the values docs/design/sdk-design.md §8.6 defines, and a new runtime
     // must be added here deliberately.
-    expect([...enumAt(['definitions', 'platformType'])].sort()).toEqual(
+    expect([...enumAt(['definitions', 'runtimeType'])].sort()).toEqual(
       [
         'web',
         'node',

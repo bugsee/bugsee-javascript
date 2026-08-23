@@ -12,6 +12,7 @@ import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
 const environment: EnvironmentEnvelope = {
   platform: { type: 'node', version: '1' },
+  runtime: { type: 'node', version: '' },
   sdk: { version: '0', type: 'javascript' },
 };
 const request = (summary: string): RequestJson => ({

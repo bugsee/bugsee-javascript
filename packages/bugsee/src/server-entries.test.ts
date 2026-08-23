@@ -33,11 +33,11 @@ const jsonBody = (obj: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.s
 
 /** A transport that keeps the `environment` the session-create POST carried — the runtime identity. */
 function recordingTransport() {
-  const sessions: Array<{ platform: { type: string; version: string } }> = [];
+  const sessions: Array<{ runtime: { type: string; version: string } }> = [];
   const fn = vi.fn<HttpTransport>(async (url: string, opts: HttpRequestOptions = {}) => {
     if (url.endsWith('/v2/sessions')) {
       const body = JSON.parse(String(opts.body)) as {
-        environment: { platform: { type: string; version: string } };
+        environment: { runtime: { type: string; version: string } };
       };
       sessions.push(body.environment);
       return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
@@ -82,30 +82,30 @@ const base = (transport: HttpTransport) => ({
  * Read from the session-create POST rather than from the client object, because that is where it actually
  * reaches the collector — and therefore what a customer sees.
  */
-const platformFromWire = async (
+const runtimeFromWire = async (
   launch: (token: string, options: ReturnType<typeof base>) => Bugsee,
 ): Promise<{ type: string; version: string }> => {
   const { fn, sessions } = recordingTransport();
   const client = track(launch('tok', base(fn)));
   client.logException(new Error('x'));
   await client.flush(5000);
-  return sessions[0]?.platform ?? { type: '', version: '' };
+  return sessions[0]?.runtime ?? { type: '', version: '' };
 };
 
-describe('the umbrella server entries bind their OWN platform', () => {
+describe('the umbrella server entries bind their OWN runtime', () => {
   it('the bun entry runs @bugsee/bun’s composition root', async () => {
     // `@bugsee/bun` differs from `@bugsee/node` in its DEFAULTS — the identity probe among them — so the
-    // reported platform type is what distinguishes which launchCore actually ran.
-    expect((await platformFromWire(launchBun)).type).toBe('bun');
+    // reported runtime type is what distinguishes which launchCore actually ran.
+    expect((await runtimeFromWire(launchBun)).type).toBe('bun');
   });
 
   it('the deno entry runs @bugsee/deno’s composition root', async () => {
-    expect((await platformFromWire(launchDeno)).type).toBe('deno');
+    expect((await runtimeFromWire(launchDeno)).type).toBe('deno');
   });
 
   it('the node entry still runs @bugsee/node’s — the canary', async () => {
     // Without this, "each entry binds its own" would also be satisfied by all three binding to bun.
-    expect((await platformFromWire(launchNode)).type).toBe('node');
+    expect((await runtimeFromWire(launchNode)).type).toBe('node');
   });
 
   it('every entry returns a usable client', () => {

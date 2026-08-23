@@ -12,6 +12,7 @@ import type { Bundle, UploadResult } from './transport';
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'node', version: '20' },
+  runtime: { type: 'node', version: '' },
   sdk: { version: '1.0.0', type: 'javascript' },
 };
 const clock = { wallNow: () => 1_700_000_000_000, monotonicNow: () => 0 };

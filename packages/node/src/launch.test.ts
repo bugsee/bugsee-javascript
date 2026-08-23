@@ -119,7 +119,9 @@ const probe: SystemProbe = {
   platformType: () => 'node',
   runtimeVersion: () => '20.1.2',
   osType: () => 'Linux',
+  osPlatform: () => 'darwin',
   osRelease: () => '6.0',
+  osArch: () => 'arm64',
   machine: () => 'x86_64',
   cpuCount: () => 8,
   totalMemory: () => 16_000,
@@ -223,6 +225,7 @@ const pendingBundle = (summary: string): Uint8Array => {
     created_on: '2026-05-29T00:00:00Z',
     environment: {
       platform: { type: 'node', version: '1' },
+      runtime: { type: 'node', version: '' },
       sdk: { version: '0', type: 'javascript' },
     },
   };
@@ -802,8 +805,8 @@ describe('launch', () => {
       String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body),
     ) as { environment: EnvironmentEnvelope };
     const env = sessionBody.environment;
-    expect(env.platform.type).toBe('node');
-    expect(env.platform.version).toBe('20.1.2'); // from the injected probe
+    expect(env.runtime.type).toBe('node');
+    expect(env.runtime.version).toBe('20.1.2'); // from the injected probe
     // friendly captureNetwork:false → canonical com.bugsee.option.capture.network → colon wire form
     expect(env.sdk.options).toMatchObject({
       [optionKeyToWire(BugseeOption.CaptureLogs)]: true,
@@ -1669,7 +1672,7 @@ describe('launch — native-crash recovery', () => {
       ndkCrash: true,
       minidumpFile: 'main.dmp',
       source_sdk: 'javascript',
-      source_platform: 'node',
+      source_platform: 'macos',
     });
     expect(Array.from(files['main.dmp'] as Uint8Array)).toEqual([4, 5, 6]); // the .dmp attachment
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual([

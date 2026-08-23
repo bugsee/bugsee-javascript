@@ -80,6 +80,14 @@ export function buildBrowserEnvironment(
       locale: probe.locale(),
       ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
+    // A page cannot read its host OS without parsing the user agent, which this tier deliberately
+    // defers to the backend — so `platform` keeps the web sandbox's own tag and the OS is derived
+    // server-side from the UA in platform.version. `runtime` still names what is executing, which is
+    // what distinguishes a page from a worker or a server runtime.
+    runtime: {
+      type: 'web',
+      version: '',
+    },
     hardware: {
       screen_width: probe.screenWidth(),
       screen_height: probe.screenHeight(),

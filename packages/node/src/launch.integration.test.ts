@@ -117,7 +117,7 @@ describe('launch — loopback end-to-end', () => {
     const session = received.find((r) => r.url.endsWith('/v2/sessions'));
     const issue = received.find((r) => r.url.endsWith('/v2/issues'));
     expect(session?.method).toBe('POST');
-    expect(JSON.parse(session?.body.toString() ?? '{}').environment.platform.type).toBe('node');
+    expect(JSON.parse(session?.body.toString() ?? '{}').environment.runtime.type).toBe('node');
     expect(JSON.parse(issue?.body.toString() ?? '{}').summary).toBe('integration boom');
 
     // The signed PUT delivered the *.bundle.zip — a real zip starts with the "PK" local-file magic.
@@ -142,6 +142,7 @@ describe('launch — loopback end-to-end', () => {
         created_on: '2026-05-29T00:00:00Z',
         environment: {
           platform: { type: 'node', version: '1' },
+          runtime: { type: 'node', version: '' },
           sdk: { version: '0', type: 'javascript' },
         },
       };

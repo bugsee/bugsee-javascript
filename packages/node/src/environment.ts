@@ -5,7 +5,7 @@ import {
   bytesToMegabytes,
   type EnvironmentEnvelope,
   optionsToWire,
-  type PlatformType,
+  type RuntimeType,
 } from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for Node from process/os. System reads go through an
@@ -15,12 +15,18 @@ import {
 // server treats dots as nested-document paths (§2.4).
 
 export interface SystemProbe {
-  /** The runtime tag for environment.platform.type ('node' here; a sibling tier supplies e.g. 'bun'). */
-  platformType(): PlatformType;
-  /** The runtime's own version string for environment.platform.version (process.versions.node here). */
+  /** The runtime tag for environment.runtime.type ('node' here; a sibling tier supplies e.g. 'bun'). */
+  platformType(): RuntimeType;
+  /** The runtime's own version string for environment.runtime.version (process.versions.node here). */
   runtimeVersion(): string;
+  /** os.type() — the kernel name ('Darwin'/'Linux'/'Windows_NT'); surfaces as hardware.manufacturer. */
   osType(): string;
+  /** os.platform() — the OS id ('darwin'/'linux'/'win32'), mapped to the wire's platform.type. */
+  osPlatform(): string;
+  /** os.release() — platform.version + platform.kernel_version. */
   osRelease(): string;
+  /** os.arch() — platform.arch. */
+  osArch(): string;
   machine(): string;
   cpuCount(): number;
   /** Total system memory in BYTES (os.totalmem); the builder converts to the wire's megabytes. */
@@ -40,7 +46,9 @@ export const realSystemProbe: SystemProbe = {
   platformType: () => 'node',
   runtimeVersion: () => process.versions.node,
   osType: () => os.type(),
+  osPlatform: () => os.platform(),
   osRelease: () => os.release(),
+  osArch: () => os.arch(),
   machine: () => os.machine(),
   cpuCount: () => os.cpus().length,
   totalMemory: () => os.totalmem(),
@@ -68,6 +76,15 @@ export interface NodeEnvironmentInput {
   deviceId?: string;
 }
 
+// os.platform() → the wire's platform.type. Named for the OS as a user knows it, and matching the set
+// bugsee-rust already reports for the same hosts ('macos' | 'linux' | 'windows'); anything else passes
+// through as node names it, which is still an OS name and still better than a runtime tag.
+export function osPlatformToWire(osPlatform: string): string {
+  if (osPlatform === 'darwin') return 'macos';
+  if (osPlatform === 'win32') return 'windows';
+  return osPlatform;
+}
+
 export function buildNodeEnvironment(
   input: NodeEnvironmentInput,
   probe: SystemProbe = realSystemProbe,
@@ -78,14 +95,24 @@ export function buildNodeEnvironment(
   const memoryTotal = bytesToMegabytes(probe.totalMemory());
   const memoryFree = bytesToMegabytes(probe.freeMemory());
   return {
+    // The OS, not the runtime. `type` matches what Bugsee's other host-level SDK reports
+    // ('macos'/'linux'/'windows' — bugsee-rust asserts exactly that set), and `version` is the OS
+    // release, which the backend indexes as `os_version`. Node exposes no portable PRODUCT version, so
+    // os.release() serves as both: it is the true kernel release on macOS/Linux and the actual OS
+    // build on Windows. The runtime that used to occupy these two fields now has its own block below.
     platform: {
-      type: probe.platformType(),
-      version: probe.runtimeVersion(),
+      type: osPlatformToWire(probe.osPlatform()),
+      version: probe.osRelease(),
       kernel_version: probe.osRelease(),
+      arch: probe.osArch(),
       utc_offset: probe.utcOffsetMinutes(),
       memory_total: memoryTotal,
       memory_free: memoryFree,
       locale: probe.locale(),
+    },
+    runtime: {
+      type: probe.platformType(),
+      version: probe.runtimeVersion(),
     },
     hardware: {
       model: probe.machine(),

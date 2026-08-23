@@ -9,6 +9,7 @@ import { createReportingRequest } from './reporting';
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'web', version: '124' },
+  runtime: { type: 'web', version: '' },
   sdk: { version: '1.0.0', type: 'javascript' },
 };
 
@@ -471,6 +472,7 @@ describe('assembleBundle — crash.json', () => {
     // passes on the default fixture and this one fails — the platform must track its environment.
     const edge: EnvironmentEnvelope = {
       platform: { type: 'edge-light', version: '1' },
+      runtime: { type: 'edge-light', version: '' },
       sdk: { version: '1.0.0', type: 'javascript' },
     };
     const request = createReportingRequest({ source: { type: 'crash' }, id: 'r1', crash });

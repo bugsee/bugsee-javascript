@@ -1,4 +1,4 @@
-import { type EnvironmentEnvelope, optionsToWire, type PlatformType } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, optionsToWire, type RuntimeType } from '@bugsee/protocol';
 
 // The §8.6 environment envelope for edge runtimes (Vercel Edge / Cloudflare Workers). MINIMAL by necessity:
 // an edge isolate has no os/process/hardware access — no cpu/memory/kernel reads — so we omit the `hardware`
@@ -11,7 +11,7 @@ export interface EdgeEnvironmentInput {
   /** SDK package version (sdk.version). */
   sdkVersion: string;
   /** environment.platform.type — 'edge-light' (Vercel Edge) or 'workers' (Cloudflare). */
-  platformType: PlatformType;
+  platformType: RuntimeType;
   /** platform.version — the edge runtime version, if any. Default '' (edge exposes none cleanly). */
   runtimeVersion?: string;
   /** app.package_id (default 'unknown'). */
@@ -39,6 +39,12 @@ export function buildEdgeEnvironment(input: EdgeEnvironmentInput): EnvironmentEn
       version: input.runtimeVersion ?? '',
       utc_offset: input.utcOffsetMinutes ?? -new Date().getTimezoneOffset(),
       locale: input.locale ?? new Intl.DateTimeFormat().resolvedOptions().locale,
+    },
+    // An edge isolate has no OS to report at all, so `platform` stays the isolate's own tag; `runtime`
+    // carries the same identity in the field every tier fills, which is what consumers read.
+    runtime: {
+      type: input.platformType,
+      version: input.runtimeVersion ?? '',
     },
     app: {
       package_id: input.appId ?? 'unknown',

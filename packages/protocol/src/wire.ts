@@ -20,8 +20,16 @@ export type Mechanism =
   | 'snapshot'
   | 'manual-dialog';
 
-/** Runtime tag in environment.platform.type (design §8.6 / §0.5). */
-export type PlatformType =
+/**
+ * JS runtime tag in `environment.runtime.type` (design §8.6 / §0.5).
+ *
+ * This is the RUNTIME, not the platform. `platform` is the OS the runtime is hosted on — that is what
+ * every other Bugsee SDK puts there (iOS/Android send the OS name; the Rust SDK sends
+ * macos/linux/windows) and what the backend indexes as `os_version`. The JS SDK used to put the
+ * runtime's name and version in those two fields, which left `os_version` reading e.g. "24.15.0" —
+ * the Node version — and scattered the real OS across `kernel_version` and `hardware.manufacturer`.
+ */
+export type RuntimeType =
   | 'web'
   | 'node'
   | 'bun'
@@ -52,8 +60,24 @@ export type ReportingTriggerType =
 
 /** environment envelope (design §8.6). Metadata bags carry an index signature for optional fields. */
 export interface EnvironmentEnvelope {
+  /**
+   * The OS the runtime is hosted on. `type` is the OS name and `version` its release — the pair the
+   * backend reads as the platform key and `os_version`. Runtimes with real OS access (node/bun/deno,
+   * Electron main) fill these from `os`; the web and edge tiers have no OS to read, so they keep the
+   * sandbox's own tag ('web', 'workers', …) and let the backend derive the OS from the user agent.
+   */
   platform: {
-    type: PlatformType;
+    type: string;
+    version: string;
+    [key: string]: unknown;
+  };
+  /**
+   * The JS runtime itself — always present, on every tier. The sibling of `browser` (which the web SDK
+   * fills with the browser identity) for runtimes that are not browsers.
+   */
+  runtime: {
+    type: RuntimeType;
+    /** The runtime's own version ('24.15.0'); '' where the runtime exposes none (edge isolates). */
     version: string;
     [key: string]: unknown;
   };
