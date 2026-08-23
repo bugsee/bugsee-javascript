@@ -113,24 +113,30 @@ describe('runBugseeCli — properties', () => {
     );
   });
 
+  // The secret and the caller's args are drawn from the same string generator, so they can collide —
+  // fast-check duly produced `token: "toString"` alongside `args: ["toString"]`, and the leak
+  // assertion fired on an argv that contained the token only because the CALLER passed it. A leak is
+  // "argv carries the secret when args did not", so the collision is excluded by construction here;
+  // that is the property, not a convenience.
+  const leakInputs = fc
+    .tuple(
+      argv,
+      fc.string({ minLength: 8, maxLength: 20 }),
+      fc.string({ minLength: 8, maxLength: 30 }),
+    )
+    .filter(([args, token, endpoint]) => !args.includes(token) && !args.includes(endpoint));
+
   it('never puts the token or the endpoint on argv, whatever the args are', async () => {
     await fc.assert(
-      fc.asyncProperty(
-        argv,
-        fc.string({ minLength: 8, maxLength: 20 }),
-        fc.string({ minLength: 8, maxLength: 30 }),
-        async (args, token, endpoint) => {
-          const { spawn, calls } = recordingSpawn({ code: 0 });
-          await runBugseeCli(args, { spawn, env: {}, token, endpoint });
-          // Forwarded verbatim, nothing appended. The launcher path is argv[0] when the resolved
-          // target is the package's `.js` launcher, which node runs for us.
-          expect(calls[0]?.args?.slice(calls[0]?.command === process.execPath ? 1 : 0)).toEqual(
-            args,
-          );
-          expect(calls[0]?.args).not.toContain(token);
-          expect(calls[0]?.args).not.toContain(endpoint);
-        },
-      ),
+      fc.asyncProperty(leakInputs, async ([args, token, endpoint]) => {
+        const { spawn, calls } = recordingSpawn({ code: 0 });
+        await runBugseeCli(args, { spawn, env: {}, token, endpoint });
+        // Forwarded verbatim, nothing appended. The launcher path is argv[0] when the resolved
+        // target is the package's `.js` launcher, which node runs for us.
+        expect(calls[0]?.args?.slice(calls[0]?.command === process.execPath ? 1 : 0)).toEqual(args);
+        expect(calls[0]?.args).not.toContain(token);
+        expect(calls[0]?.args).not.toContain(endpoint);
+      }),
       { numRuns: 300 },
     );
   });
