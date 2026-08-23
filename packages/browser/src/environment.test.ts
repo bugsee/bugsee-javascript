@@ -35,7 +35,7 @@ describe('buildBrowserEnvironment — platform', () => {
       version: 'Mozilla/5.0 (Test) Browser/1.0',
       utc_offset: -480,
       locale: 'en-GB',
-      memory_total: 8 * 1024 ** 3,
+      memory_total: 8192, // MB on the wire, from an 8 GiB deviceMemory reading
     });
   });
 
@@ -60,7 +60,7 @@ describe('buildBrowserEnvironment — hardware', () => {
       pixel_ratio: 2,
       device_id: 'dev-1',
       cpu_count: 16,
-      memory_total: 8 * 1024 ** 3,
+      memory_total: 8192, // MB on the wire, from an 8 GiB deviceMemory reading
     });
   });
 

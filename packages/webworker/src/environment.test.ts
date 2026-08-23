@@ -29,12 +29,12 @@ describe('buildWorkerEnvironment', () => {
       version: 'Mozilla/5.0 Worker',
       utc_offset: 120,
       locale: 'en-US',
-      memory_total: 8 * 1024 ** 3,
+      memory_total: 8192, // MB on the wire
     });
     expect(env.hardware).toEqual({
       device_id: null,
       cpu_count: 4,
-      memory_total: 8 * 1024 ** 3,
+      memory_total: 8192, // MB on the wire
     });
     expect(env.hardware).not.toHaveProperty('screen_width'); // a worker has no screen
     expect(env.app).toMatchObject({

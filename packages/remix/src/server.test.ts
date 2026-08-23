@@ -32,6 +32,7 @@ const probe: SystemProbe = {
   machine: () => 'x86_64',
   cpuCount: () => 8,
   totalMemory: () => 16_000,
+  freeMemory: () => 4_000,
   utcOffsetMinutes: () => 0,
   locale: () => 'en-US',
 };

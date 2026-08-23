@@ -11,6 +11,7 @@ const fakeProbe: SystemProbe = {
   machine: () => 'arm64',
   cpuCount: () => 8,
   totalMemory: () => 17_179_869_184,
+  freeMemory: () => 3_221_225_472,
   utcOffsetMinutes: () => 120,
   locale: () => 'en-US',
 };
@@ -23,7 +24,9 @@ describe('buildNodeEnvironment — platform', () => {
       version: '24.0.0',
       kernel_version: '25.5.0',
       utc_offset: 120,
-      memory_total: 17_179_869_184,
+      // MEGABYTES, not bytes — the unit every SDK puts on the wire and the viewer renders as GB.
+      memory_total: 16_384,
+      memory_free: 3072,
       locale: 'en-US',
     });
   });
@@ -39,6 +42,37 @@ describe('buildNodeEnvironment — platform', () => {
   });
 });
 
+describe('buildNodeEnvironment — memory units', () => {
+  // The probe is a raw OS read (os.totalmem/os.freemem are BYTES); the builder owns the wire mapping,
+  // exactly as Android's EnvironmentInfoProvider divides before putting the value in the envelope.
+  it('converts the probe’s BYTES into wire MEGABYTES', () => {
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0' },
+      { ...fakeProbe, totalMemory: () => 8 * 1024 ** 3, freeMemory: () => 512 * 1024 ** 2 },
+    );
+    expect(env.platform.memory_total).toBe(8192);
+    expect(env.platform.memory_free).toBe(512);
+    expect((env.hardware as { memory_total: number }).memory_total).toBe(8192);
+  });
+
+  it('emits memory_free even when the system is nearly full (0 MB free, not an omitted field)', () => {
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0' },
+      { ...fakeProbe, freeMemory: () => 1024 },
+    );
+    expect(env.platform.memory_free).toBe(0);
+  });
+
+  it('does not put a probe’s NaN/negative reading on the wire', () => {
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0' },
+      { ...fakeProbe, totalMemory: () => Number.NaN, freeMemory: () => -1 },
+    );
+    expect(env.platform.memory_total).toBe(0);
+    expect(env.platform.memory_free).toBe(0);
+  });
+});
+
 describe('buildNodeEnvironment — hardware', () => {
   it('maps the probe into the hardware section, with device_id from input', () => {
     const env = buildNodeEnvironment({ sdkVersion: '1.0.0', deviceId: 'dev-1' }, fakeProbe);
@@ -46,7 +80,7 @@ describe('buildNodeEnvironment — hardware', () => {
       model: 'arm64',
       manufacturer: 'Darwin',
       cpu_count: 8,
-      memory_total: 17_179_869_184,
+      memory_total: 16_384,
       device_id: 'dev-1',
     });
   });
@@ -119,7 +153,9 @@ describe('realSystemProbe', () => {
     expect(env.platform.type).toBe('node');
     expect(env.platform.version).toBe(process.versions.node);
     expect((env.hardware as { cpu_count: number }).cpu_count).toBe(os.cpus().length);
-    expect((env.hardware as { memory_total: number }).memory_total).toBe(os.totalmem());
+    expect((env.hardware as { memory_total: number }).memory_total).toBe(
+      Math.floor(os.totalmem() / 1024 / 1024),
+    );
   });
 
   it('exposes individual probe readers returning the live system values', () => {
@@ -129,7 +165,9 @@ describe('realSystemProbe', () => {
     expect(realSystemProbe.osRelease()).toBe(os.release());
     expect(realSystemProbe.machine()).toBe(os.machine());
     expect(realSystemProbe.cpuCount()).toBe(os.cpus().length);
-    expect(realSystemProbe.totalMemory()).toBe(os.totalmem());
+    expect(realSystemProbe.totalMemory()).toBe(os.totalmem()); // BYTES — the raw OS read
+    expect(realSystemProbe.freeMemory()).toBeGreaterThan(0);
+    expect(realSystemProbe.freeMemory()).toBeLessThanOrEqual(os.totalmem());
     expect(typeof realSystemProbe.utcOffsetMinutes()).toBe('number');
     expect(typeof realSystemProbe.locale()).toBe('string');
   });

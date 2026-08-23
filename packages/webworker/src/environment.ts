@@ -1,4 +1,4 @@
-import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // The §8.6 environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
 // (WorkerNavigator: userAgent, language, hardwareConcurrency, and deviceMemory on Chromium) but NO `screen`
@@ -57,7 +57,10 @@ export function buildWorkerEnvironment(
   input: WorkerEnvironmentInput,
   probe: WorkerProbe = realWorkerProbe,
 ): EnvironmentEnvelope {
-  const deviceMemory = probe.deviceMemoryBytes();
+  // MEGABYTES on the wire (see @bugsee/protocol bytesToMegabytes) — navigator.deviceMemory is a
+  // GiB figure the probe hands back as bytes, and the viewer divides by 1024 to render GB.
+  const bytes = probe.deviceMemoryBytes();
+  const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
   return {
     platform: {

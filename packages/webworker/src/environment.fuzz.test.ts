@@ -78,8 +78,11 @@ describe('buildWorkerEnvironment — properties', () => {
         expect('memory_total' in platform).toBe(expected);
         expect('memory_total' in hardware).toBe(expected);
         if (expected) {
-          expect(platform.memory_total).toBe(values.deviceMemoryBytes);
-          expect(hardware.memory_total).toBe(values.deviceMemoryBytes);
+          // ...and in MEGABYTES, not the probe's raw bytes — restated here independently of the
+          // builder's own helper so a change to that helper cannot make this pass vacuously.
+          const megabytes = Math.floor((values.deviceMemoryBytes as number) / 1024 / 1024);
+          expect(platform.memory_total).toBe(megabytes);
+          expect(hardware.memory_total).toBe(megabytes);
         }
       }),
     );

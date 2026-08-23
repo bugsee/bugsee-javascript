@@ -1,5 +1,5 @@
 import { serviceToken } from '@bugsee/core';
-import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for the browser from navigator/screen/window/Intl. System reads
 // go through an injectable BrowserProbe so the mapping is testable deterministically (the DOM globals
@@ -67,7 +67,10 @@ export function buildBrowserEnvironment(
   input: BrowserEnvironmentInput,
   probe: BrowserProbe = realBrowserProbe,
 ): EnvironmentEnvelope {
-  const deviceMemory = probe.deviceMemoryBytes();
+  // MEGABYTES on the wire (see @bugsee/protocol bytesToMegabytes) — navigator.deviceMemory is a
+  // GiB figure the probe hands back as bytes, and the viewer divides by 1024 to render GB.
+  const bytes = probe.deviceMemoryBytes();
+  const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
   return {
     platform: {

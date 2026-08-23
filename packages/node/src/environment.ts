@@ -1,7 +1,12 @@
 import os from 'node:os';
 import process from 'node:process';
 import { serviceToken } from '@bugsee/core';
-import { type EnvironmentEnvelope, optionsToWire, type PlatformType } from '@bugsee/protocol';
+import {
+  bytesToMegabytes,
+  type EnvironmentEnvelope,
+  optionsToWire,
+  type PlatformType,
+} from '@bugsee/protocol';
 
 // Builds the §8.6 environment envelope for Node from process/os. System reads go through an
 // injectable SystemProbe so the mapping is testable deterministically; realSystemProbe is the
@@ -18,7 +23,10 @@ export interface SystemProbe {
   osRelease(): string;
   machine(): string;
   cpuCount(): number;
+  /** Total system memory in BYTES (os.totalmem); the builder converts to the wire's megabytes. */
   totalMemory(): number;
+  /** Free system memory in BYTES (os.freemem); the builder converts to the wire's megabytes. */
+  freeMemory(): number;
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
   locale(): string;
@@ -36,6 +44,7 @@ export const realSystemProbe: SystemProbe = {
   machine: () => os.machine(),
   cpuCount: () => os.cpus().length,
   totalMemory: () => os.totalmem(),
+  freeMemory: () => os.freemem(),
   utcOffsetMinutes: () => -new Date().getTimezoneOffset(),
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
 };
@@ -63,7 +72,11 @@ export function buildNodeEnvironment(
   input: NodeEnvironmentInput,
   probe: SystemProbe = realSystemProbe,
 ): EnvironmentEnvelope {
-  const memoryTotal = probe.totalMemory();
+  // MEGABYTES on the wire (see @bugsee/protocol bytesToMegabytes): every Bugsee SDK reports
+  // platform.memory_* in MB and the viewer divides by 1024 again to render GB. `memory_free` is the
+  // Android-canonical sibling of `memory_total`, which the viewer already renders as "Free RAM".
+  const memoryTotal = bytesToMegabytes(probe.totalMemory());
+  const memoryFree = bytesToMegabytes(probe.freeMemory());
   return {
     platform: {
       type: probe.platformType(),
@@ -71,6 +84,7 @@ export function buildNodeEnvironment(
       kernel_version: probe.osRelease(),
       utc_offset: probe.utcOffsetMinutes(),
       memory_total: memoryTotal,
+      memory_free: memoryFree,
       locale: probe.locale(),
     },
     hardware: {
