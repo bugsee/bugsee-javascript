@@ -462,7 +462,7 @@ const SCENARIOS: ScenarioDef[] = [
     detail: 'Confirms the dedicated worker launched its own client (module-level singleton inside the worker).',
     run: () => {
       workerLog('scenario-panel: worker session ping');
-      return 'sent a log message into the price-worker session (its own environment.platform=web-worker)';
+      return 'sent a log message into the price-worker session (its own environment.runtime.type=web-worker)';
     },
   },
   {

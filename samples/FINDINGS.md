@@ -9,65 +9,117 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
 
 ## Open
 
-### F-X10 · The collector's CORS policy makes the browser SDK unusable for any customer
+### F-X20 · The browser tier reports a user-agent string where the backend expects an OS version
 
-- **Severity:** blocker (backend, not this repo)
-- **Status:** **fixed in appserver, awaiting deploy to staging.** Pushed to appserver `main`
-  (`c632f5a7`, `19099ecb`, `e4b94dfe`, `4db0e059`).
-- **Scenario:** any browser-family sample against `apidev.bugsee.com`
-- **Observed:** `Access-Control-Allow-Origin` is answered from an allowlist
-  (`cfg.web.cors.trusted_origins`) with a hardcoded fallback of `https://appdev.bugsee.com`, never
-  reflecting the requesting origin — and `Access-Control-Allow-Headers` omits `x-app-token` and
-  `x-bugsee-internal`, which the SDK sends on every call. A customer's domain can never be on that
-  allowlist, so a browser session cannot be created at all. Verified with a direct preflight.
-- **Scope (measured, not assumed):** the browser-origin surface is exactly three appserver routes —
-  `POST /v2/sessions`, `POST /v2/issues` (`packages/core/src/bugsee-api.ts:81,108`) and
-  `POST /v2/performance/transactions` (`packages/performance/src/performance-send.ts:23`).
-  Nothing else in the SDK builds a URL. The fourth hop, the bundle PUT, goes to a presigned S3 URL
-  and needs **no change**: `bugsee-upload-west2` already answers a customer-origin preflight with
-  `Access-Control-Allow-Origin: *`, `Allow-Methods: GET, HEAD, PUT`, `Allow-Headers: filename`.
-- **Fix applied:** an open policy — `ACAO: *`, no `Allow-Credentials`, the SDK's headers allowed,
-  `Max-Age: 86400`, CORP `cross-origin` — that the **route declares** rather than a middleware
-  sniffs. `middleware.common.publicCors` is listed on exactly the three ingest POSTs (and their two
-  `/v1` twins); `GenericRouter` lifts it to the route's `onRequest` hook and auto-registers a
-  matching `OPTIONS` route answered from the same hook, which is what makes it win over the global
-  dashboard policy (route `onRequest` runs before global `preValidation`). The dashboard policy is
-  untouched everywhere else and stands aside only when the route opted in. All of it writes through
-  one module, `code/cors.js`, shared by the middleware, the router and `error.router.js` — so a
-  rejected ingest call stays readable and the SDK can surface the collector's reason instead of an
-  opaque network error. Config lives in `config/default.js` under `web.cors.public`.
-- **Impact on the samples:** until the fix is deployed, `browser-vanilla` keeps its same-origin
-  relay and `react-spa`/`vue-spa` keep the Chromium `--disable-web-security` flag. **All three
-  workarounds should be stripped and the samples re-verified once staging carries the fix** — that
-  re-verification is the real end-to-end proof, which no local test can stand in for.
+- **Severity:** major (wrong data, every browser-family session)
+- **Status:** OPEN. Found while re-verifying wave 1 after the node/edge tiers were split.
+- **Observed:** `SBROWSER-34`'s environment reads
+
+  ```yaml
+  platform: { type: web, version: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 …" }
+  runtime:  { type: web, version: "" }
+  ```
+
+  `platform.type` is the runtime tag, not the OS, and `platform.version` — which the backend indexes as
+  `os_version` — is a whole user-agent string. This is the same conflation the node tier had before
+  `e215a97`; that commit fixed node, bun, deno and edge and left the browser family as it was.
+- **Why it is deliberate, and why that is not the end of it:** `packages/browser/src/environment.ts:84`
+  documents the choice — a page cannot read its host OS without parsing the UA, and a client-side UA
+  parser is fragile under UA reduction/freezing, so parsing is deferred to the backend. That reasoning
+  is sound. What is not sound is the CURRENT state: the backend is not visibly doing that parse (the raw
+  UA is what `get_issue` renders), so no consumer gets an OS out of a browser session at all, and
+  `runtime.version` is left empty when the UA has the browser version in it.
+- **Not fixed here** because the options trade off against each other and the choice is not the sample
+  sweep's to make: (a) have the backend parse the UA into `platform.{type,version}` — keeps the client
+  dumb, needs appserver work; (b) use `navigator.userAgentData.platform`, which is synchronous and gives
+  `"macOS"`/`"Windows"`/`"Linux"` but is Chromium-only, with a UA-parse fallback for Safari/Firefox;
+  (c) leave `platform` as the sandbox tag and accept that browser sessions have no OS. Needs a decision.
 
 ### F-X18 · One issue displayed a message and a stack trace from different events
 
 - **Severity:** major if real — **not reproduced**
 - **Observed once** by `samples/express-api` on a merged issue. Recorded so it is not lost; it needs a
   deliberate reproduction before it can be acted on.
-
-### F-X19 · Two sample harness checks measure timing, not SDK behaviour
-
-- **Severity:** major, **and not yet attributed** — the SDK measures clean in isolation
-- **Scenario:** 50 concurrent requests that throw, against real staging
-- **What the SDK does now**, measured three ways after the F-X8 work:
-  - direct `logException` × 20 → 20 uploaded; × 50 with realistic upload latency → 50 uploaded;
-    × 200 → 100 uploaded, which is exactly the capture rate limiter's 100-per-60s budget doing its job;
-  - a minimal Express app with the default `setupExpress(app)` → 50 of 50 requests reported.
-- **What this sample does:** 21 of 50, reproducibly, and 21 of ~280 across the full sweep. Both the
-  `/v2/issues` count and the bundle-PUT count are 21, so the loss is upstream of the network.
-- **Therefore:** something in this sample's own wiring — its router mounting, its second client, or
-  its scenario routes — and not the SDK path the isolated app exercises. It needs bisecting against
-  the minimal app rather than more SDK changes.
-- **Consequence:** four of `express-api`'s wire checks (`S4.dedupe`, `S8.report-mutate`, `S2 attribute
-  after`, `concurrency isolation`) fail for this reason, and `react-spa`'s `react-report-error` check
-  fails the same way — it asserts that a `/v2/issues` request happens within 1500 ms of a click, which
-  a backlog draining behind it can miss. They are left failing rather than relaxed: a green check that
-  measures the wrong thing is worse than a red one, and these should be rewritten to wait for the
-  evidence rather than for a clock.
+- **Still not reproduced** in the wave-1 re-verification (2026-08-24), which ran the full express-api
+  sweep again. Not evidence of absence — the original sighting was a one-off on a merged issue.
 
 ## Resolved
+
+### F-X19 · Sample harness checks measured a clock, not the SDK — **fixed** (harness), and its premise was wrong
+
+- **Severity:** was major. **Closed 2026-08-24.**
+- **The recorded diagnosis was wrong.** This entry claimed `express-api` reported "21 of 50,
+  reproducibly" and concluded the loss was "something in this sample's own wiring". Neither half
+  survived measurement. Isolating the 50-concurrent block gives **50 of 50**; reproducing the full
+  sweep gives 103 uploads, which decomposes exactly as 23 + 50 + 30 — the capture rate limiter's
+  100-per-60s budget doing its job, not a leak. The original "21" was a drain snapshot read while
+  uploads were still in flight.
+- **What was actually wrong** was the harness, in two places, both now fixed:
+  - `express-api/scripts/verify.ts` gave every route a flat 10 s client budget while asking S1.flush
+    for a **15 s** flush, so a flush that was working still had to fail. The call now gets a budget
+    that exceeds what it requests.
+  - `react-spa/scripts/verify.mjs` asserted that a `/v2/issues` request appeared within a fixed
+    1500 ms of a click. Replaced by two evidence-driven waits — `waitForCalls` (resolves the moment
+    the evidence arrives, so the common case is faster than the sleep it replaced) and `waitForQuiet`
+    (for upper-bound checks, which are only meaningful once an extra call would have had time to show
+    up).
+- **The four express-api checks this entry left failing now pass**, including
+  `concurrency isolation: 50/50 bundles arrived, each with its OWN req_index`. Full sweep: **114/114**.
+  The SDK-side credit belongs to `4381b86` (stop discarding a burst of incidents), `d15a777` (wait for
+  an upload slot) and `f17baa8` (snapshot attributes at submit).
+- **Lesson worth keeping:** a fixed evidence window fails in BOTH directions. It can miss a real report
+  that a backlog delayed, and it can pass on a *neighbouring* scenario's late upload — which is exactly
+  how it hid F-X21 below.
+
+### F-X21 · `react-spa` relaunched onto a private carrier, silently disabling every carrier-resolved API — **fixed** (sample)
+
+- **Severity:** was blocker for the React adapter's public surface, in this sample.
+- **Found** by the F-X19 harness fix: once `react-report-error` waited for evidence instead of a clock,
+  it failed honestly.
+- **Cause:** `samples/react-spa/src/bugsee.ts` set `carrier = {}` before relaunching, commented "a fresh
+  carrier bypasses the 'already launched' guard". The guard did not need bypassing — `stop()` clears the
+  carrier's client slot **synchronously** (`packages/browser/src/launch.ts:569`) before it awaits the
+  drain. The private object meant `globalThis.__BUGSEE__['0.1.0'].client` stayed `undefined` from the
+  first relaunch onward, so every adapter API that resolves the client from the carrier by default —
+  `reportReactError`, `createBugseeErrorHandlers`, `reportRouteError`, `BugseeErrorBoundary` — became a
+  silent no-op for the rest of the session. Confirmed directly: the carrier read `hasClient: false`, and
+  the two carrier-resolved controls produced **no network calls at all** while the sample's own
+  `client.logException` worked.
+- **Two checks were hiding it.** `react-report-error` passed on a neighbour's late upload inside its
+  fixed window, and `react-root-handlers` was `record(..., true)` — an assertion that could not fail.
+  Both now assert real wire evidence.
+- **The SDK is not at fault**, but the sharp edge is real and worth noting: passing a custom `carrier`
+  to `launch()` silently decouples every adapter helper that defaults to `globalThis`, with no
+  diagnostic. Worth a doc note, or an `onError` warning, if a customer is ever expected to pass one.
+
+### F-X10 · The collector's CORS policy made the browser SDK unusable for any customer — **fixed** (appserver) and **verified deployed**
+
+- **Severity:** was blocker (backend, not this repo)
+- **Fix:** appserver `c632f5a7`, `19099ecb`, `e4b94dfe`, `4db0e059` — an open, route-declared policy
+  (`ACAO: *`, no `Allow-Credentials`, the SDK's headers allowed, `Max-Age: 86400`, CORP `cross-origin`)
+  on exactly the three browser-origin ingest POSTs, written through one module (`code/cors.js`). The
+  dashboard policy is untouched everywhere else.
+- **Verified live on staging 2026-08-24**, by preflight from a third-party origin:
+
+  | route | `access-control-allow-origin` |
+  | --- | --- |
+  | `POST /v2/sessions` | `*` |
+  | `POST /v2/issues` | `*` |
+  | `POST /v2/performance/transactions` | `*` |
+
+  with `access-control-allow-headers` carrying `x-app-token`, `x-client-type` and `x-bugsee-internal`.
+  The fourth hop needed no change and was re-confirmed too: `bugsee-upload-west2` answers a
+  customer-origin `PUT` preflight with `ACAO: *`, `Allow-Methods: GET, HEAD, PUT`,
+  `Allow-Headers: filename` — and the bundle PUT sends only `fileName` and `Content-Length`.
+- **All three sample workarounds are gone**, which is the part no local test could stand in for:
+  - `browser-vanilla` — `server/bugsee-proxy.ts` DELETED; the SDK now points at the real endpoint and
+    the browser makes the genuine cross-origin call.
+  - `react-spa` — `scripts/staging-workarounds.mjs` DELETED; stock Chromium, no flags.
+  - `vue-spa` — `--disable-web-security` removed from `scripts/verify.mts`.
+- **Re-verified end to end** against real staging with those workarounds removed: `browser-vanilla`
+  48/48, `react-spa` 46/46, `vue-spa` 49/49, with new issues arriving on `SBROWSER`, `SREACT` and
+  `SVUE`. `vue-spa`, whose every scenario was previously recorded as "BLOCKED", now reaches backend
+  depth for the first time.
 
 ### F-X17 · MCP `get_issue` did not surface labels, mechanism or attributes — **fixed** (appserver `b103f2cf`)
 

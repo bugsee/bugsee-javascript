@@ -36,12 +36,12 @@ pnpm typecheck
 | Type / subtype | `javascript` / `express` |
 | Endpoint | `https://apidev.bugsee.com` (staging — never production) |
 
-**Getting real data to actually arrive required three wire-level workarounds for SDK defects found
-while building this sample** — see `FINDINGS.md` F-1/F-2/F-3. Without them, no report from any Node/Bun/
-Deno SDK build in this monorepo can reach the staging backend at all. The workarounds live entirely in
-`src/bugsee-transport.ts` (a "tee" transport that forwards every SDK call to the real endpoint, patches
-the three defects on the wire, and records a parsed summary locally for verification) — nothing in
-`packages/` was touched.
+Getting real data to arrive once required three wire-level workarounds for SDK defects this sample
+found (`FINDINGS.md` F-1/F-2/F-3) — a hardcoded `x-client-type: web`, the unparsed `{ok, result}`
+response envelope, and an `x-amz-checksum-sha256` header the presigned S3 url was never signed for.
+**All three are fixed in `@bugsee/core` and the patching is gone.** `src/bugsee-transport.ts` remains,
+but only as a "tee": it forwards every SDK call to the real endpoint untouched and records a parsed
+summary locally, which is what the wire-level checks in `pnpm verify` assert against.
 
 ## What the API does
 

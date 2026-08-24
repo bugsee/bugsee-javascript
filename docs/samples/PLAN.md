@@ -99,7 +99,24 @@ This path is itself pre-publish verification. It exercises the `exports` map, th
 and the declared runtime dependencies — all things only the artifact can prove.
 
 After changing anything under `packages/`, re-run `pack-local.mjs` (`--only @bugsee/x` for one
-package) and `pnpm install` in the sample.
+package) and **clean-install** the sample:
+
+```bash
+node scripts/pack-local.mjs
+cd samples/<name> && rm -rf node_modules pnpm-lock.yaml && pnpm install
+```
+
+**`pnpm install` on its own is not enough, and fails silently.** A `file:` dependency is keyed by its
+PATH, and re-packing does not change the path — so pnpm resolves it from the lockfile and its store and
+reuses the tarball it already has. `pnpm install --force` does not help either ("Already up to date").
+There is no warning; the sample simply keeps running the SDK from whenever it was last clean-installed.
+
+This is not hypothetical: the wave-1 re-verification first ran against a four-commit-stale SDK and
+"passed", and it was caught only because a wire assertion showed the OLD environment envelope. If a
+sample's behaviour does not change after a fix you know landed, check this before anything else — the
+one-line check is `grep -c <a-symbol-you-just-added> samples/<name>/node_modules/.pnpm/@bugsee+<pkg>@*/node_modules/@bugsee/<pkg>/dist/index.js`.
+
+The sample lockfiles are gitignored, so deleting them costs nothing.
 
 ## 3. Shared conventions
 

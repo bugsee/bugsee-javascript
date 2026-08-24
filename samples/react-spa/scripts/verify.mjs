@@ -4,13 +4,13 @@
 // request left the process). Backend (MCP) verification is a SEPARATE step the build agent runs by hand
 // against the printed evidence — see scenarios.md.
 //
-// IMPORTANT: this script installs the diagnostic-only staging workarounds (staging-workarounds.mjs) for
-// four independent SDK/backend defects (FINDINGS.md F-1..F-4) that otherwise block 100% of delivery to
-// the staging collector. Without them every WIRE check below would read "blocked" and no scenario could
-// ever reach level 3 (Backend) verification. A real customer cannot apply these workarounds — see the
-// header comment in staging-workarounds.mjs.
+// This script runs a STOCK Chromium against the real staging collector, with no workarounds of any
+// kind. It used to need four: an `x-client-type` rewrite, an `{ok, result}` envelope unwrap, an
+// `x-amz-checksum-sha256` strip on the bundle PUT (all three fixed in @bugsee/core), and
+// `--disable-web-security` for the collector's CORS policy, which now answers a third-party origin
+// correctly on all three ingest routes. What this sweep exercises is therefore exactly what a
+// customer's browser does.
 import { chromium } from 'playwright';
-import { CHROMIUM_ARGS, installStagingWorkarounds } from './staging-workarounds.mjs';
 
 const BASE = 'http://localhost:5302';
 const results = [];
@@ -25,9 +25,8 @@ async function click(page, testid, { wait = 350 } = {}) {
 }
 
 async function main() {
-  const browser = await chromium.launch({ args: CHROMIUM_ARGS });
+  const browser = await chromium.launch();
   const page = await browser.newPage({ ignoreHTTPSErrors: true });
-  await installStagingWorkarounds(page);
 
   const pageErrors = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
@@ -56,6 +55,60 @@ async function main() {
     checkpoint = bugseeCalls.length;
     return slice;
   };
+  /** A bugsee/S3 call that created (or attempted) an issue — the evidence a report left the process. */
+  const isIssueCall = (c) => c.url.includes('issues');
+
+  /**
+   * Wait until the evidence ARRIVES, instead of for a fixed number of milliseconds.
+   *
+   * Every check below used to be `click(..., {wait: 1500})` followed by "was an issue call seen in that
+   * window?". That asserts a CLOCK, not the SDK: the upload pipeline caps in-flight operations, and a
+   * backlog draining ahead of a report pushes it past any fixed window, so a correct SDK failed the
+   * check on a slow network or a busy run. It fails the other way too — a late response from an earlier
+   * unrelated click lands inside the window and passes a check that should have failed.
+   *
+   * Resolves as soon as `min` matching calls have appeared, so the common case is FASTER than the sleep
+   * it replaces, and only a genuine absence of evidence costs the full timeout. Advances the checkpoint
+   * either way, so it is a drop-in for the `sinceCheckpoint()` it replaces.
+   */
+  const waitForCalls = async (match, { timeout = 20_000, min = 1, poll = 100 } = {}) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const slice = bugseeCalls.slice(checkpoint);
+      if (slice.filter(match).length >= min || Date.now() >= deadline) {
+        checkpoint = bugseeCalls.length;
+        return slice;
+      }
+      await page.waitForTimeout(poll);
+    }
+  };
+
+  /**
+   * Wait until bugsee traffic SETTLES — no new call for `quietMs` — then return everything seen.
+   *
+   * This is the right wait for a check asserting an upper BOUND ("at most one issue", "fewer than 200"):
+   * such a check is only meaningful once enough time has passed that an extra call would have shown up,
+   * which a fixed sleep only approximates. Capped by `timeout` so a continuously-retrying pipeline
+   * cannot hang the sweep.
+   */
+  const waitForQuiet = async ({ quietMs = 1500, timeout = 25_000, poll = 100 } = {}) => {
+    const deadline = Date.now() + timeout;
+    let lastSeen = bugseeCalls.length;
+    let lastChange = Date.now();
+    for (;;) {
+      if (bugseeCalls.length !== lastSeen) {
+        lastSeen = bugseeCalls.length;
+        lastChange = Date.now();
+      }
+      if (Date.now() - lastChange >= quietMs || Date.now() >= deadline) {
+        const slice = bugseeCalls.slice(checkpoint);
+        checkpoint = bugseeCalls.length;
+        return slice;
+      }
+      await page.waitForTimeout(poll);
+    }
+  };
+
   let errorCheckpoint = 0;
   const newPageErrors = () => {
     const count = pageErrors.length - errorCheckpoint;
@@ -130,8 +183,8 @@ async function main() {
   // 0.0.0 being rejected server-side, see FINDINGS.md F-2/F-3 note), then full (restores a working
   // client with sdkVersion override for everything below).
   sinceCheckpoint();
-  await click(page, 's1-relaunch-minimal', { wait: 1500 });
-  const minimalCalls = sinceCheckpoint();
+  await click(page, 's1-relaunch-minimal', { wait: 0 });
+  const minimalCalls = await waitForQuiet();
   record('s1-relaunch-minimal', 'launch({}) — every default', true, JSON.stringify(minimalCalls.map((c) => c.status)));
 
   await click(page, 's1-relaunch-full', { wait: 800 });
@@ -159,20 +212,23 @@ async function main() {
 
   // S4 exceptions
   sinceCheckpoint();
-  await click(page, 's4-error', { wait: 1800 }); // first report since relaunch — session create + issue create
-  record('s4-error', 'logException(new Error)', sinceCheckpoint().some((c) => c.url.includes('issues') && c.ok));
-  await click(page, 's4-string', { wait: 1300 });
-  record('s4-string', 'logException(string)', sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's4-object', { wait: 1300 });
-  record('s4-object', 'logException(object)', sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's4-null', { wait: 1300 });
-  record('s4-null', 'logException(null)', sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's4-cause', { wait: 1300 });
-  record('s4-cause', 'logException with chained cause', sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's4-options', { wait: 1300 });
-  record('s4-options', 'logException with LogExceptionOptions', sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's4-dedupe', { wait: 1200 });
-  const dedupeCalls = sinceCheckpoint().filter((c) => c.url.includes('issues'));
+  // The first report since the relaunch also creates the session, so it is the slowest of the group —
+  // which is precisely why waiting for the evidence beats guessing a window for it.
+  await click(page, 's4-error', { wait: 0 });
+  record('s4-error', 'logException(new Error)', (await waitForCalls(isIssueCall)).some((c) => isIssueCall(c) && c.ok));
+  await click(page, 's4-string', { wait: 0 });
+  record('s4-string', 'logException(string)', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  await click(page, 's4-object', { wait: 0 });
+  record('s4-object', 'logException(object)', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  await click(page, 's4-null', { wait: 0 });
+  record('s4-null', 'logException(null)', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  await click(page, 's4-cause', { wait: 0 });
+  record('s4-cause', 'logException with chained cause', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  await click(page, 's4-options', { wait: 0 });
+  record('s4-options', 'logException with LogExceptionOptions', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  // An upper bound: only meaningful once a SECOND call would have had time to appear, so settle first.
+  await click(page, 's4-dedupe', { wait: 0 });
+  const dedupeCalls = (await waitForQuiet()).filter(isIssueCall);
   record('s4-dedupe', 'same instance twice — should dedupe (1 issue, not 2)', dedupeCalls.length <= 1, `${dedupeCalls.length} issue calls`);
   // s4-storm (200 logException calls) is run LAST in the sweep, not here: it deliberately trips the
   // capture-storm rate limiter, and that limiter's ~60s window would otherwise silently swallow several
@@ -182,10 +238,11 @@ async function main() {
 
   // S5 crashes
   sinceCheckpoint();
-  await click(page, 's5-uncaught', { wait: 900 });
-  record('s5-uncaught', 'uncaught exception -> window.onerror', pageErrors.length > 0 || sinceCheckpoint().some((c) => c.url.includes('issues')));
-  await click(page, 's5-rejection', { wait: 900 });
-  record('s5-rejection', 'unhandled promise rejection', sinceCheckpoint().some((c) => c.url.includes('issues')));
+  await click(page, 's5-uncaught', { wait: 0 });
+  const uncaughtCalls = await waitForCalls(isIssueCall);
+  record('s5-uncaught', 'uncaught exception -> window.onerror', pageErrors.length > 0 || uncaughtCalls.some(isIssueCall));
+  await click(page, 's5-rejection', { wait: 0 });
+  record('s5-rejection', 'unhandled promise rejection', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
   // S6 console
   for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
@@ -215,8 +272,8 @@ async function main() {
   await click(page, 's8-log', { wait: 300 });
   await click(page, 's8-breadcrumb', { wait: 300 });
   await click(page, 's8-report-mutate', { wait: 900 });
-  await click(page, 's8-report-veto', { wait: 900 });
-  const filterCalls = sinceCheckpoint().filter((c) => c.url.includes('issues'));
+  await click(page, 's8-report-veto', { wait: 0 });
+  const filterCalls = (await waitForQuiet()).filter(isIssueCall);
   record('s8-filters', 'network/log/breadcrumb/report before-mutate/before-veto', true, `${filterCalls.length} issue calls while filters installed (veto should reduce this)`);
   await click(page, 's8-uninstall');
 
@@ -233,14 +290,22 @@ async function main() {
   record('react-error-boundary-hoc', 'withBugseeErrorBoundary — local fallback catches render throw', guardedFallback === 1);
   await click(page, 'disarm-guarded');
 
-  await click(page, 's-root-handlers');
-  record('react-root-handlers', 'createBugseeErrorHandlers().onUncaughtError called directly', true);
+  // Asserted on EVIDENCE, not on `true`. This check was `record(..., true)` — it could not fail, and it
+  // sat directly on top of a real defect: the sample's relaunch moved the client to a private carrier,
+  // so this handler (which resolves the client from the GLOBAL carrier) silently reported nothing.
   sinceCheckpoint();
-  await click(page, 's-report-react-error', { wait: 1500 });
-  record('react-report-error', 'reportReactError direct call', sinceCheckpoint().some((c) => c.url.includes('issues')));
+  await click(page, 's-root-handlers', { wait: 0 });
+  record(
+    'react-root-handlers',
+    'createBugseeErrorHandlers().onUncaughtError called directly',
+    (await waitForCalls(isIssueCall)).some(isIssueCall),
+  );
   sinceCheckpoint();
-  await click(page, 's-link-stack', { wait: 2200 });
-  record('react-link-component-stack', 'linkComponentStack + logException', sinceCheckpoint().some((c) => c.url.includes('issues')));
+  await click(page, 's-report-react-error', { wait: 0 });
+  record('react-report-error', 'reportReactError direct call', (await waitForCalls(isIssueCall)).some(isIssueCall));
+  sinceCheckpoint();
+  await click(page, 's-link-stack', { wait: 0 });
+  record('react-link-component-stack', 'linkComponentStack + logException', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
   await click(page, 's-toggle-slow-list', { wait: 700 });
   const slowListVisible = await page.locator('[data-testid="slow-list"]').count();
@@ -289,7 +354,7 @@ async function main() {
   await click(page, 'arm-global', { wait: 900 });
   const globalFallback = await page.locator('[data-testid="error-fallback"]').count();
   const reactRouterOwnFallback = await page.locator('text=Unexpected Application Error!').count();
-  const globalReportCalls = sinceCheckpoint().filter((c) => c.url.includes('issues'));
+  const globalReportCalls = (await waitForQuiet()).filter(isIssueCall);
   // The issue-calls count is diagnostic only, not part of the pass condition: a late response from an
   // UNRELATED prior click can land inside this window in a script that fires this many actions back to
   // back (observed: the count varies 0-1 run to run depending on exactly where earlier network activity
@@ -306,8 +371,9 @@ async function main() {
   // any other check since nothing follows it but flush + the S12 reload.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   sinceCheckpoint();
-  await click(page, 's4-storm', { wait: 2500 });
-  const stormCalls = sinceCheckpoint().filter((c) => c.url.includes('issues'));
+  await click(page, 's4-storm', { wait: 0 });
+  // An upper bound over 200 attempted reports: settle (generously) so the count is the real one.
+  const stormCalls = (await waitForQuiet({ quietMs: 3000, timeout: 60_000 })).filter(isIssueCall);
   record('s4-storm', '200 exceptions in ~1s — rate-limited, app stays responsive', stormCalls.length < 200, `${stormCalls.length} issue calls (of 200 attempted)`);
 
   // Final flush + S12 persistence probe: logException then hard-reload before it can settle.

@@ -6,11 +6,12 @@ callback), **Wire** (the right thing left the process — an intercepted request
 output), **Backend** (checked over the Bugsee staging MCP tools, `mcp__bugsee-staging__list_issues` /
 `get_issue`).
 
-**Read this first:** F-1 through F-5 in `FINDINGS.md` are blockers that, unworked-around, mean **no
-report from this SDK has ever reached the real staging backend**. Every "Backend: verified" row below
-depended on `server/bugsee-proxy.ts` (a same-origin reverse proxy + response-reshaping relay this
-sample runs) compensating for all five. Every issue key cited below (`SBROWSER-1` .. `SBROWSER-12`)
-was produced and inspected during this verification pass.
+**Read this first:** the "Backend: verified" rows below were originally obtained through
+`server/bugsee-proxy.ts`, a same-origin relay this sample ran to compensate for five blockers
+(F-1..F-5). All five are now fixed, the relay is **deleted**, and the 2026-08-24 re-verification ran
+the whole sweep against staging with no workaround of any kind — 48/48, with new issues arriving on
+`SBROWSER`. The issue keys cited below (`SBROWSER-1` .. `SBROWSER-12`) are from the original pass and
+are kept as the evidence trail for each row.
 
 A note on session pollution: several scenario runs happened back-to-back in the SAME long-lived
 browser session while iterating. Two of the S4/S8 rows below initially showed unexpected `ok:false`
@@ -149,7 +150,7 @@ crash the app"** given time constraints.
 
 | Control | Expected | Status |
 | --- | --- | --- |
-| Web Worker: separate `@bugsee/webworker` session | `price-worker.ts` launches its own client; `environment.platform.type: 'web-worker'` | **Backend: verified.** `SBROWSER-10`, `platform.type: "web-worker"`. |
+| Web Worker: separate `@bugsee/webworker` session | `price-worker.ts` launches its own client; `environment.runtime.type: 'web-worker'` | **Backend: verified.** `SBROWSER-10` (recorded when the runtime tag still lived at `platform.type`; `e215a97` moved it to `runtime.type`). |
 | Web Worker: uncaught throw | Worker's own session reports a crash | **Backend: verified** (same issue, `SBROWSER-10`). |
 | Web Worker: postMessage round trip survives capture | Discount computation returns correct totals with capture on | **Local: verified** — `pnpm verify` → `APP-worker` PASS, correct arithmetic ($22.49 total on a $24.99 line at 10% off). |
 | Service Worker: `withBugseeEvent` wraps fetch/sync; a throw inside a handler | `/__sw-throw__` throws inside the wrapped fetch handler, captured + flushed before any kill | **Backend: verified.** `SBROWSER-11`, message "service-worker: deliberate throw inside fetch handler (scenario panel)", correct stack pointing at `service-worker.ts:42`. |

@@ -97,11 +97,15 @@ export function saveSettings(settings: SampleSettings): void {
 let currentClient: Bugsee | undefined;
 export const sdkErrors: Array<{ at: number; error: unknown }> = [];
 
-// See server/bugsee-proxy.ts + FINDINGS.md F-2 (blocker): the real staging endpoint's CORS config
-// rejects every third-party browser origin outright, so the SDK is pointed at this sample's own
-// same-origin reverse proxy instead — which relays byte-for-byte to the real BUGSEE_ENDPOINT
-// server-side (not subject to browser CORS). The data still lands on the real staging app.
-const PROXIED_ENDPOINT = `${window.location.origin}/bugsee-proxy`;
+// The real collector, called DIRECTLY from the browser — exactly as a customer's page calls it.
+//
+// This used to be a same-origin relay (`server/bugsee-proxy.ts`) because the collector's CORS policy
+// answered a hardcoded `Access-Control-Allow-Origin: https://appdev.bugsee.com` and omitted the
+// `x-app-token` / `x-bugsee-internal` headers the SDK sends, so no third-party page could reach it
+// at all (samples/FINDINGS.md F-X10). The policy now answers a third-party origin correctly on all
+// three ingest routes, and the bundle bucket already allowed a cross-origin PUT, so the relay is gone
+// and this sample exercises the genuine browser->collector hop.
+const ENDPOINT = import.meta.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
 
 // See FINDINGS.md F-3 (blocker): every packed package is version 0.0.0 (pre-publish; see the
 // cross-cutting samples/FINDINGS.md F-X2), and the staging backend's `isSupportedSdkVersion` floor for
@@ -114,7 +118,7 @@ const SDK_VERSION_OVERRIDE = '1.0.0';
 
 function toLaunchOptions(s: SampleSettings): BugseeLaunchOptionsWithPerformance {
   return {
-    endpoint: PROXIED_ENDPOINT,
+    endpoint: ENDPOINT,
     sdkVersion: SDK_VERSION_OVERRIDE,
     appVersion: APP_VERSION,
     appBuild: APP_BUILD,

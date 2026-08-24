@@ -3,14 +3,13 @@
 Every scenario in `docs/samples/PLAN.md` §4, plus react-spa's own (§5.2 "Beyond the catalog"). Verified
 against Bugsee staging app **`SREACT`** (`6a86d8e8990cb94c0b8e8ef8`).
 
-**Read this first:** as documented in `FINDINGS.md` (F-1..F-4), the staging backend rejects 100% of
-real-browser JS SDK traffic today, for reasons that have nothing to do with this sample's code
-(CORS, a hardcoded client-type header, a session-response decode bug, and an S3 signature mismatch).
-Every "Backend (MCP)" verification below was obtained with `scripts/staging-workarounds.mjs`'s
-diagnostic-only bypasses installed (`pnpm verify` and `scripts/prod-sourcemap-check.mjs` both install
-them automatically). **A real customer's browser cannot apply these bypasses** — so "verified" below
-means "the SDK and the rest of the pipeline are correct", not "this works today, unmodified, against
-staging". That gap is F-1..F-4, not a per-scenario gap, and is not repeated on every row.
+**Read this first:** the "Backend (MCP)" verifications below were originally obtained with
+`scripts/staging-workarounds.mjs`'s diagnostic-only bypasses installed, because four stacked defects
+(CORS, a hardcoded client-type header, a session-response decode bug, and an S3 signature mismatch)
+then rejected 100% of real-browser JS SDK traffic. All four are fixed and that script is **deleted**:
+the 2026-08-24 re-verification ran the whole sweep on stock Chromium against staging, 46/46, with new
+issues arriving on `SREACT`. The caveat that used to sit here — "verified means the SDK is correct,
+not that it works unmodified against staging" — no longer applies.
 
 Depth key (PLAN §4 "Verification depth"): **L** = local (no throw, app behaved) · **W** = wire (the
 right request left the process, inspected via Playwright) · **B** = backend (confirmed via MCP

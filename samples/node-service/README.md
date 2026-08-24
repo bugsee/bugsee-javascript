@@ -38,9 +38,10 @@ build step, no `tsx`/`ts-node`). On Node 18–23 the sample would need `tsx`; th
 | Type / subtype | `javascript` / `node` |
 | Endpoint | `https://apidev.bugsee.com` (staging — never production) |
 
-**Read `FINDINGS.md` first — F-1.** As of this build, staging rejects every session-create call for
-this app (`ApplicationTypeMismatchError` / `UnsupportedSdkError`), so **no data from this sample
-currently reaches the Bugsee dashboard**. Every scenario below was still driven and verified at the
+**F-1 is fixed (2026-08-24).** Staging used to reject every session-create call for this app
+(`ApplicationTypeMismatchError` / `UnsupportedSdkError`), so no data from this sample reached the
+dashboard at all. The re-verified sweep now reports `collector: 73/73 session+issue calls accepted`
+and issues arrive on `SNODE`. Every scenario below was still driven and verified at the
 LOCAL and WIRE depths (§4 of `docs/samples/PLAN.md`) — HTTP responses, the SDK's own request/response
 traffic (via an injectable `transport` wire-tap), and the assembled bundle **files themselves**
 (`data/**/pending/*.bundle` are real zip archives containing `crash.json`, `profile.json`,
@@ -114,9 +115,10 @@ See `scenarios.md` for the full table. Headline:
 - OTel **produce** (`otelExportUrl`) verified end-to-end against a real local OTLP/HTTP-JSON collector
   — valid `resourceSpans`/`scopeSpans` received. OTel **consume** (`onOtelSpanProcessor`) verified by
   feeding a structurally-valid external `ReadableSpanLike` root+child pair into the wired processor.
-- Backend (MCP) confirmation is blocked for the **entire sample** by `FINDINGS.md` F-1 (staging
-  `javascript` app-type session rejection) — every scenario that depends on it is marked
-  "unverified — blocked by F-1", not silently skipped.
+- Backend (MCP) confirmation was blocked for the **entire sample** by `FINDINGS.md` F-1 (staging
+  `javascript` app-type session rejection). That block is gone; delivery is confirmed. Individual
+  scenarios still carry their "blocked by F-1" marker because they have not been re-walked one by one
+  at backend depth — the marker now means "not yet re-verified", not "cannot be verified".
 
 ## Findings
 

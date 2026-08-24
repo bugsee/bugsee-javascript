@@ -10,11 +10,10 @@ import { chromium, type Page } from 'playwright';
 // correlating the RUN_ID / marker strings this script prints — MCP is not reachable from a plain node
 // script.
 //
-// WORKAROUND for FINDINGS.md F-2 (blocker): the staging collector's CORS policy hardcodes
-// Access-Control-Allow-Origin to https://appdev.bugsee.com, so a real browser at localhost:5303 cannot
-// reach it at all. `--disable-web-security` bypasses that here ONLY so this sample's own scenarios can
-// be exercised against staging for verification — this is not something a real customer/deployment can
-// rely on.
+// This sweep runs a STOCK Chromium: no `--disable-web-security`, no request patching. It used to need
+// the former for the collector's CORS policy (FINDINGS.md F-2 / samples/FINDINGS.md F-X10), which now
+// answers a third-party origin correctly on all three ingest routes — so a browser at localhost:5303
+// reaches staging exactly the way a customer's browser reaches production.
 
 const PORT = 5303;
 const BASE = `http://localhost:${PORT}`;
@@ -227,9 +226,7 @@ async function main(): Promise<void> {
   try {
     await waitForServer();
 
-    const browser = await chromium.launch({
-      args: ['--disable-web-security', '--disable-features=IsolateOrigins,site-per-process'],
-    });
+    const browser = await chromium.launch();
     try {
       const context = await browser.newContext();
       const page = await context.newPage();

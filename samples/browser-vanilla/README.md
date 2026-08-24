@@ -67,26 +67,19 @@ shape. The app token is never committed.
 
 ## Known backend defect — why there's a reverse proxy in `server/`
 
-**Read `FINDINGS.md` first** — five compounding blocker-severity defects (F-1 through F-5) mean that,
-unworked-around, **no report from any browser-family Bugsee JS SDK sample can ever reach the real
-staging backend at all**: a hardcoded CORS origin on the collector, a hardcoded `x-client-type: 'web'`
-header that doesn't match the `javascript` app-type family, a response-envelope shape mismatch, a
-snake_case/camelCase field-naming mismatch, and a presigned-S3-PUT header that invalidates its own
-signature. `server/bugsee-proxy.ts` is a same-origin relay this sample's OWN dev/preview server runs
-that works around all five — full explanation of each defect is in that file's module comment and in
-`FINDINGS.md`. **Nothing under `packages/` was touched**; the data that lands on staging is byte-for-
-byte what the real SDK produced, just relayed through a hop that isn't a browser (so it isn't subject
-to the browser's CORS enforcement) and reshaped to the wire contract the SDK actually expects.
+**All five of the blocker-severity defects this sample originally found (F-1..F-5) are fixed**, and as
+of the 2026-08-24 re-verification this sample talks to the real staging collector **directly** — no
+proxy, no relay, no browser flags. `server/bugsee-proxy.ts` has been deleted.
 
-If you're reading this because you're building the NEXT web sample in the sweep (`react-spa`,
-`vue-spa`, …): you almost certainly need the same proxy. Copy `server/bugsee-proxy.ts` verbatim (it
-takes only the real endpoint URL as a parameter) rather than rediscovering F-2 through F-5 from
-scratch.
+For the record, what they were and where they were fixed: the hardcoded `x-client-type: 'web'` header,
+the unparsed `{ok, result}` response envelope with its snake_case ids, and the `x-amz-checksum-sha256`
+header that invalidated the presigned PUT's own signature — all in `@bugsee/core` (`0318229`,
+`84976f7`); the missing `publishConfig` on the replay packages (`3921760`); and the collector's CORS
+policy, fixed in appserver and **confirmed deployed on staging** (`samples/FINDINGS.md` F-X10, which
+records the preflight evidence).
 
-**Update:** F-3 and F-4 were fixed upstream on `main` (commit `0318229`, landed during this same
-session, not by this sample) — see `FINDINGS.md`'s "Resolved" section. This sample's own tarballs
-predate that fix, so the proxy still carries the (now harmless/no-op) workaround for them. F-1, F-2
-and F-5 are still open.
+If you are building the next web sample: you need none of this. Point `endpoint` at the collector and
+the browser reaches it, exactly as a customer's page does.
 
 ## Scenario coverage
 

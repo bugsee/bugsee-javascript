@@ -19,13 +19,15 @@ Because of that, every scenario below is verified at:
 - **wire** — for the scenarios where it mattered, the actual outgoing HTTP request (method, URL,
   payload shape) was captured via Playwright network interception and inspected by hand; see the
   "Wire evidence" column.
-- **backend** — not reachable for ANY scenario. Marked "BLOCKED (F-5)" throughout, not "unverified" —
-  that would imply it might just not have been checked.
+- **backend** — the rows below were written when F-5 made the backend unreachable for EVERY scenario,
+  and each is marked "BLOCKED (F-5)".
 
-This is the correct, honest state of verification for this build: two additional blockers had to be
-worked around first (F-1 replay packaging, F-2 CORS, F-4 SDK version), and even past all three, the
-backend itself refuses the session. Nothing above the wire boundary can be shown correct or incorrect
-until F-5 is fixed.
+  **F-5 is now fixed** (2026-08-24). This sample delivers to `SVUE`: the re-verified sweep is 49/49 and
+  new issues arrive on the app, so the blanket block is gone. The per-row markers are deliberately left
+  as they are, because re-walking each scenario at backend depth over MCP is work that has not been
+  done — and rewriting them to "verified" without doing it would be exactly the false certainty the
+  original marker was so careful to avoid. Read "BLOCKED (F-5)" below as **"not yet re-verified at
+  backend depth"**, not as "cannot be".
 
 ## Common catalog (§4)
 

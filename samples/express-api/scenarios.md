@@ -11,9 +11,11 @@ SDK network call to the real staging endpoint and also records a parsed summary 
 **Backend** (confirmed via the Bugsee staging MCP tools, `list_issues`/`get_issue`, against app
 `SEXPRESS`).
 
-Getting real backend delivery required three wire-level workarounds for SDK defects — see
-`FINDINGS.md` F-1/F-2/F-3. Without them every scenario below would be stuck at **Local** only
-(`list_issues` for `SEXPRESS` returns `total: 0` on the unpatched tarball, no matter what runs).
+Getting real backend delivery once required three wire-level workarounds for SDK defects
+(`FINDINGS.md` F-1/F-2/F-3); without them `list_issues` for `SEXPRESS` returned `total: 0` no matter
+what ran. All three are fixed in `@bugsee/core`, the patching has been removed from
+`src/bugsee-transport.ts`, and the 2026-08-24 re-verification passes **114/114** — including the four
+wire checks that `samples/FINDINGS.md` F-X19 previously left failing.
 
 ## S1 — Launch & lifecycle
 

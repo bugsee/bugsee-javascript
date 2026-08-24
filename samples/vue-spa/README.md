@@ -71,7 +71,7 @@ See `scenarios.md` for the full id → control → expected → verified table. 
 | --- | --- |
 | **Local** (the SDK call didn't throw, the app kept working) | 50/50 automated checks pass (`pnpm verify`) |
 | **Wire** (the right request, shape, left the process) | verified by hand for the scenarios where it mattered (session creation, `logException`, network filters, performance transactions) |
-| **Backend** (the data arrived and is correct, via MCP) | **blocked for every scenario** — `FINDINGS.md` F-5: the staging collector rejects every session for the `SVUE` app with `ApplicationTypeMismatchError` |
+| **Backend** (the data arrived and is correct, via MCP) | **unblocked and confirmed reaching the backend** — F-5 is fixed; the 2026-08-24 re-verification delivered to `SVUE` (49/49 local, new issues on the app). Per-scenario backend depth has **not** been re-walked row by row — the rows below still say so individually |
 
 S10 (distributed tracing) and S13 (OpenTelemetry) are N/A for this sample (no peer server / package
 not under test — see `scenarios.md`). S11 (session replay) is N/A because it is architecturally
@@ -85,9 +85,10 @@ the app running and its data verified:
 1. **F-1** — `@bugsee/replay`/`@bugsee/replay-canvas` ship without `publishConfig.exports`, breaking
    `vite dev`/`vite build` for ANY consumer, unconditionally (worked around via `vite.config.ts`
    externals + `replay: false`).
-2. **F-2** — the staging collector's CORS policy hardcodes `Access-Control-Allow-Origin` to
-   `https://appdev.bugsee.com`, blocking every browser-based sample from its own dev server (worked
-   around for verification only via `--disable-web-security`, never a real fix).
+2. **F-2** — the staging collector's CORS policy hardcoded `Access-Control-Allow-Origin` to
+   `https://appdev.bugsee.com`, blocking every browser-based sample from its own dev server. **Fixed in
+   appserver and confirmed deployed**; `--disable-web-security` has been removed from
+   `scripts/verify.mts` and the sweep now runs a stock Chromium.
 3. **F-3** (minor) — `installBugseeErrorHandler(app)` doesn't typecheck against a real Vue `App`.
 4. **F-4** — the SDK's default `sdk.version` (`0.0.0`) is rejected outright by staging as
    `UnsupportedSdkError` (worked around via an explicit `sdkVersion` override).

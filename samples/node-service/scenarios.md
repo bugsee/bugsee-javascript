@@ -3,10 +3,13 @@
 Every catalog scenario (`docs/samples/PLAN.md` §4) plus §5.13's "beyond the catalog" list, mapped to
 the route/command that triggers it, what should appear in Bugsee, and its verification status.
 
-**Read this first: `FINDINGS.md` F-1.** Staging (`apidev.bugsee.com`) currently rejects every
-session-create call for the `SNODE` app (`javascript`/`node` type), so **BACKEND depth (§4 point 3 —
-`list_issues`/`get_issue` via MCP) is blocked for every single scenario below**, confirmed by
-`list_issues(SNODE)` → `{"issues":[],"total":0}` after this entire sweep. Every row is therefore
+**Read this first — F-1 is FIXED (2026-08-24).** Staging used to reject every session-create call for
+the `SNODE` app (`javascript`/`node` type), so the "BACKEND: blocked by F-1" markers throughout this
+file were literally true: `list_issues(SNODE)` returned `{"issues":[],"total":0}` after a whole sweep.
+It no longer does — the re-verified sweep reports `collector: 73/73 session+issue calls accepted` and
+`SNODE` now carries issues from it. The per-row markers are left in place because each row's backend
+depth has not been individually re-walked over MCP; read them as **"not yet re-verified at backend
+depth"**. The paragraph below still describes why that gap is narrow for this sample. Every row is therefore
 verified at LOCAL depth (the SDK behaved, the app kept working) and, mostly, at WIRE depth (§4 point
 2) — either the SDK's own control-plane traffic (via the `BUGSEE_WIRE_LOG` transport tap) or, more
 decisively, **the assembled bundle file itself** (`data/**/pending/*.bundle` is a real zip; every

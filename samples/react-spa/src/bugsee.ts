@@ -121,7 +121,16 @@ export async function relaunch(
   if (client !== undefined) {
     await client.stop(stopTimeoutMs);
   }
-  carrier = {}; // a fresh carrier bypasses the "already launched" guard for a genuine new instance
+  // Relaunch on the SAME (global) carrier. `stop()` clears the carrier's client slot SYNCHRONOUSLY
+  // (packages/browser/src/launch.ts:569) before it awaits the drain, so the "already launched" guard is
+  // already satisfied and no second carrier is needed.
+  //
+  // This used to be `carrier = {}` — a private object — and that quietly broke every adapter API that
+  // resolves the client from the carrier by DEFAULT: `reportReactError`, `createBugseeErrorHandlers`,
+  // `reportRouteError` and `BugseeErrorBoundary` all call `getCarrierClient()` against `globalThis`.
+  // From the first relaunch onward they found nothing there and became silent no-ops, so the scenario
+  // panel's React reporting controls did nothing at all — while the sweep still reported PASS, because
+  // it was reading a neighbouring scenario's late upload inside a fixed time window.
   client = doLaunch(
     { endpoint: ENDPOINT, appId: 'com.bugsee.sample.react-spa', appVersion: APP_VERSION, appBuild: APP_BUILD, onError: reportInternalError, ...options },
     carrier,

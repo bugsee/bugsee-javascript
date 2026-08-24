@@ -35,17 +35,29 @@ function expectOk(status: number, expected: number | number[]): boolean {
   return Array.isArray(expected) ? expected.includes(status) : status === expected;
 }
 
+/**
+ * Default client-side budget for one scenario route. Deliberately generous: these routes talk to REAL
+ * staging, not a mock.
+ *
+ * A route that asks the SDK to do timed work must be given MORE than the time it asks for — see the
+ * `timeoutMs` override at the S1.flush call site. This used to be a flat 10s for every route while
+ * S1.flush requested a 15s flush, so the client aborted five seconds before the server could
+ * legitimately answer, and the resulting failure was indistinguishable from a real flush defect.
+ */
+const DEFAULT_HIT_TIMEOUT_MS = 10_000;
+
 async function hit(
   id: string,
   method: string,
   path: string,
   expected: number | number[] = 200,
   init?: RequestInit,
+  timeoutMs: number = DEFAULT_HIT_TIMEOUT_MS,
 ): Promise<Result> {
   const sep = path.includes('?') ? '&' : '?';
   const url = `${BASE}${path}${sep}marker=${RUN_MARKER}`;
   try {
-    const res = await fetch(url, { method, signal: AbortSignal.timeout(10_000), ...init });
+    const res = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs), ...init });
     let body: unknown;
     try {
       body = await res.json();
@@ -106,6 +118,13 @@ async function main(): Promise<void> {
   server.on('exit', (code) => {
     if (code !== null && code !== 0) console.error(`server exited early with code ${code}`);
   });
+
+  // Captured mid-run, written to the artifact at the very end so the artifact can carry the wire
+  // checks and the crash-child checks as well — both of which run after this snapshot is taken.
+  let wireSnapshot: { bundleCount: number; transactions: unknown } = {
+    bundleCount: 0,
+    transactions: [],
+  };
 
   try {
     await waitForHealth(20_000);
@@ -247,11 +266,21 @@ async function main(): Promise<void> {
     // in-flight operations (packages/core/src/upload-pipeline.ts bufferSize), so draining the whole
     // sweep's backlog against the REAL staging endpoint takes real wall-clock time. Poll the local
     // bundle-count instead of a fixed sleep: wait until it stops growing (drained) or a hard cap.
-    await hit('S1.flush', 'POST', '/scenarios/s1/flush', 200, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ timeoutMs: 15_000 }),
-    });
+    // The client budget must EXCEED the flush the route is being asked to perform, with headroom for
+    // the request itself — otherwise a flush that is working correctly still reads as a failure.
+    const FLUSH_TIMEOUT_MS = 15_000;
+    await hit(
+      'S1.flush',
+      'POST',
+      '/scenarios/s1/flush',
+      200,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ timeoutMs: FLUSH_TIMEOUT_MS }),
+      },
+      FLUSH_TIMEOUT_MS + 5_000,
+    );
     console.log('\ndraining the upload backlog against the real staging endpoint...');
     let lastCount = -1;
     let stableTicks = 0;
@@ -272,11 +301,8 @@ async function main(): Promise<void> {
     }>;
     const transactionsRes = await fetch(`${BASE}/scenarios/_debug/transactions`);
     const transactions = await transactionsRes.json();
-
-    writeFileSync(
-      join(ROOT, 'data', 'verify-run.json'),
-      JSON.stringify({ runMarker: RUN_MARKER, at: new Date().toISOString(), results, bundleCount: bundles.length, transactions }, null, 2),
-    );
+    // Held for the artifact, which is written at the END of the run — see the note at that write.
+    wireSnapshot = { bundleCount: bundles.length, transactions };
 
     // ---- wire-only assertions on the tee'd bundles ----
     console.log('\n== wire-level checks (from the tee transport) ==');
@@ -381,6 +407,41 @@ async function main(): Promise<void> {
   if (failed.length > 0) {
     console.log('FAILED:', failed.map((f) => f.id).join(', '));
   }
+
+  // This artifact is COMMITTED as the evidence trail for a run, so nothing credential-shaped may go
+  // into it. The `_debug/transactions` records carry the SDK's own `requestHeaders`, and those include
+  // `authorization: Bearer <session access token>` — a real, if short-lived, credential that was being
+  // committed on every run. Headers are dropped entirely rather than pattern-redacted: nothing in the
+  // wire checks reads them, so there is no reason to keep any of them.
+  const withoutHeaders = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withoutHeaders);
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== 'requestHeaders' && key !== 'responseHeaders')
+        .map(([key, v]) => [key, withoutHeaders(v)]),
+    );
+  };
+
+  // Written HERE, last, and not at the point the wire snapshot is taken. `wireCheck` appends to the
+  // same `results` array the local checks use, and both the wire checks and the crash-child checks run
+  // after that snapshot — so writing the artifact there recorded the local checks only. The agent
+  // cross-references this file against `list_issues`/`get_issue` to fill in the BACKEND depth in
+  // scenarios.md, which means a check missing from it is a check that silently never gets verified.
+  writeFileSync(
+    join(ROOT, 'data', 'verify-run.json'),
+    JSON.stringify(
+      {
+        runMarker: RUN_MARKER,
+        at: new Date().toISOString(),
+        results,
+        bundleCount: wireSnapshot.bundleCount,
+        transactions: withoutHeaders(wireSnapshot.transactions),
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`\nrun marker: ${RUN_MARKER} (see data/verify-run.json)`);
 }
 

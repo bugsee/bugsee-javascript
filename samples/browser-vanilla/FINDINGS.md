@@ -1,17 +1,17 @@
 # Findings — samples/browser-vanilla
 
-> **Status update (after the wave-1 fix round).** The wire-contract defects this sample found —
-> `x-client-type: web`, the unparsed `{ok, result}` response envelope with its snake_case ids, the
-> HTTP-200 rejection read as success, and the `x-amz-checksum-sha256` header on the signed S3 PUT —
-> are FIXED in `@bugsee/core` (`0318229`, `84976f7`). The missing `publishConfig` on
-> `@bugsee/replay`/`replay-canvas`/`rrweb` and friends is fixed in `3921760`, and the `0.0.0` SDK
-> version the collector rejected is fixed in `6d63ba8`. The workarounds this sample carried for those
-> have been removed, and it was re-verified against real staging with the SDK as a customer gets it.
+> **Status update (wave-1 re-verification, 2026-08-24).** Everything this sample originally found is
+> now FIXED and re-verified against real staging with the SDK installed the way a customer installs it:
+> the wire-contract defects (`x-client-type: web`, the unparsed `{ok, result}` envelope, the HTTP-200
+> rejection read as success, `x-amz-checksum-sha256` on the signed PUT) in `@bugsee/core` (`0318229`,
+> `84976f7`); the missing `publishConfig` in `3921760`; the rejected `0.0.0` SDK version in `6d63ba8`;
+> the >4-concurrent-report deferral (F-X8) in `5a46942`, `4381b86` and `d15a777`; and the collector's
+> CORS policy (F-X10) in appserver, **now confirmed deployed** — every workaround this sample carried
+> for it has been deleted and the sweep re-run without any.
 >
-> What remains open here is tracked in `samples/FINDINGS.md`: the collector's CORS policy (which no
-> browser sample can work around honestly), and the upload pipeline deferring bursts of more than four
-> concurrent reports to the next process start (F-X8) — which is what several remaining "wire" checks
-> in this sample are actually measuring.
+> Entries below are kept as the historical record of what this sample found. Their **current** status is
+> in `samples/FINDINGS.md`, which is the single triage list — an entry still sitting under "Open" here
+> is not evidence that it is still open.
 
 
 

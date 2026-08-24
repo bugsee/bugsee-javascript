@@ -33,11 +33,9 @@ pnpm verify
 
 Drives the app + every Scenario-panel control headlessly via Playwright and prints a pass/fail table
 (LOCAL/WIRE level — see `scenarios.md` for the backend/MCP verification this repo's author did by hand
-against the results). **Requires `pnpm dev` running in another terminal first**, and installs
-diagnostic-only workarounds for four backend/SDK defects that otherwise block 100% of delivery — see
-`scripts/staging-workarounds.mjs` and `FINDINGS.md` F-1..F-4. Without them every scenario would show
-"blocked", not because the app is broken, but because the current staging backend rejects every JS SDK
-upload today, regardless of app or scenario.
+against the results). **Requires `pnpm dev` running in another terminal first.** It runs a stock
+Chromium with no flags and no request patching: the four defects that once blocked 100% of delivery
+(F-1..F-4) are fixed, and `scripts/staging-workarounds.mjs` has been deleted.
 
 ## What the app does
 
@@ -95,9 +93,10 @@ verified/unverified with evidence).
 
 ## Findings
 
-See `FINDINGS.md`. Headline: this repo's own sample plan (`docs/samples/PLAN.md` §6) instructs every
-sample to create its staging app with `type: "javascript"` — and, as shipped, **no data from any such
-app can ever reach the backend from a real browser**, for four independent, stacked reasons (CORS,
-a hardcoded client-type header, a response-shape mismatch that silently corrupts the session token, and
-an S3 signature mismatch on the bundle upload). `scripts/staging-workarounds.mjs` documents and bypasses
-all four so the rest of the pipeline — including full source-map resolution — could still be verified.
+See `FINDINGS.md`. Headline, historical: this sample found that **no data from a `type: "javascript"`
+app could reach the backend from a real browser**, for four independent, stacked reasons (CORS, a
+hardcoded client-type header, a response-shape mismatch that silently corrupted the session token, and
+an S3 signature mismatch on the bundle upload). All four are fixed; the 2026-08-24 re-verification ran
+46/46 against staging with no workarounds. One finding of this sample's own was found DURING that
+re-verification and fixed here: the relaunch helper moved the client to a private carrier, which
+silently disabled `reportReactError` and friends (`samples/FINDINGS.md` F-X21).

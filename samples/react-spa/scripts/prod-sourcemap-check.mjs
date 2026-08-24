@@ -5,11 +5,9 @@
 // Prereqs: `pnpm build` (with BUGSEE_CLI_PATH set — see README.md's F-6 note) then
 // `pnpm preview:app` + `pnpm dev:api` running on :5302 / :5330.
 import { chromium } from 'playwright';
-import { CHROMIUM_ARGS, installStagingWorkarounds } from './staging-workarounds.mjs';
 
-const browser = await chromium.launch({ args: CHROMIUM_ARGS });
+const browser = await chromium.launch();
 const page = await browser.newPage({ ignoreHTTPSErrors: true });
-await installStagingWorkarounds(page);
 
 await page.goto('http://localhost:5302/scenarios', { waitUntil: 'networkidle' });
 await page.click('[data-testid="s4-error"]');

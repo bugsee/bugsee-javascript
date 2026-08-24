@@ -1,6 +1,6 @@
 // A dedicated Web Worker that does real work (price/discount computation for the cart) AND runs its
 // own Bugsee session via @bugsee/webworker — a SEPARATE session from the main-thread one (workers get
-// their own environment.platform.type = 'web-worker'). Exercises: worker launch, console→log capture,
+// their own environment.runtime.type = 'web-worker'). Exercises: worker launch, console→log capture,
 // fetch capture from inside a worker, an uncaught throw, and a postMessage round trip that must survive
 // capture (interceptors must not alter app behaviour).
 import { launch } from '@bugsee/webworker';

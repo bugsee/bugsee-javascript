@@ -2,8 +2,14 @@
 // transport, drives every HTTP-triggerable scenario with a unique marker, gives the fire-and-forget
 // uploads time to leave the process, then prints a LOCAL / WIRE pass-fail table and writes
 // data/verify-run.json (scenario -> marker -> timestamp) for cross-referencing against the backend by
-// hand (see scripts/README in scenarios.md and FINDINGS.md — backend delivery is currently blocked by
-// a staging-side gap, F-1, so this script cannot assert BACKEND arrival itself).
+// hand (see scripts/README in scenarios.md and FINDINGS.md).
+//
+// The BACKEND column reports what the COLLECTOR answered for the request carrying each marker. It used
+// to be the constant string "BLOCKED (see FINDINGS.md F-1)" — true when staging rejected every session
+// for a `javascript` application, and quietly false ever since that was fixed, which is the worst thing
+// a verification column can be. It is derived from the wire log now, so it can go back to saying
+// blocked if delivery ever breaks again. It is still not the whole story: only MCP can confirm what the
+// backend PARSED, which is the by-hand step scenarios.md records.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -128,9 +134,34 @@ async function main(): Promise<void> {
     ? readFileSync(wireLog, 'utf8')
         .split('\n')
         .filter(Boolean)
-        .map((l) => JSON.parse(l) as { requestBody: string | null })
+        .map(
+          (l) =>
+            JSON.parse(l) as {
+              url?: string;
+              status?: string;
+              requestBody: string | null;
+            },
+        )
     : [];
   const wireText = wireLines.map((l) => l.requestBody ?? '').join('\n');
+
+  // Did the COLLECTOR accept the report carrying this marker? Keyed on the issue-create call, because
+  // that is the hop that either creates the issue or refuses it.
+  const collectorVerdict = (marker: string): string => {
+    const carrying = wireLines.filter(
+      (l) => (l.url ?? '').includes('/v2/issues') && (l.requestBody ?? '').includes(marker),
+    );
+    // Only some scenarios put their marker in the report SUMMARY; for the rest it rides inside the
+    // bundle zip, which this log cannot search. That is "cannot tell from here", NOT "did not arrive" —
+    // claiming the latter would be the same false certainty the hardcoded BLOCKED had, pointed the
+    // other way.
+    if (carrying.length === 0) return 'n/a (marker not in any issue-create)';
+    const statuses = [...new Set(carrying.map((l) => Number(l.status)))];
+    const rejected = statuses.filter((code) => !(code >= 200 && code < 300));
+    return rejected.length > 0
+      ? `REJECTED (${rejected.join(', ')})`
+      : `accepted (${carrying.length}x ${statuses.join('/')})`;
+  };
 
   const table = results.map((r) => {
     const wireHit = wireText.includes(r.marker) || JSON.stringify(r.body ?? '').includes(r.marker);
@@ -138,8 +169,19 @@ async function main(): Promise<void> {
       id: r.id,
       local: r.httpOk ? 'PASS' : `FAIL (${r.error ?? r.status})`,
       wire: wireHit ? 'PASS' : 'no-evidence',
-      backend: 'BLOCKED (see FINDINGS.md F-1)',
+      backend: collectorVerdict(r.marker),
     };
+  });
+
+  // The run-level collector verdict — the signal that used to be hardcoded as "BLOCKED". If the
+  // collector starts refusing sessions or issues again, it surfaces here regardless of which scenario
+  // happened to carry its marker in a searchable field.
+  const controlPlane = wireLines.filter(
+    (l) => (l.url ?? '').includes('/v2/sessions') || (l.url ?? '').includes('/v2/issues'),
+  );
+  const refused = controlPlane.filter((l) => {
+    const code = Number(l.status);
+    return !(code >= 200 && code < 300);
   });
 
   console.log('\n' + '='.repeat(100));
@@ -150,7 +192,13 @@ async function main(): Promise<void> {
   }
   console.log('='.repeat(100));
   const passLocal = table.filter((r) => r.local === 'PASS').length;
-  console.log(`\n[verify] LOCAL: ${passLocal}/${table.length} passed`);
+  console.log(
+    `\n[verify] collector: ${controlPlane.length - refused.length}/${controlPlane.length} session+issue calls accepted` +
+      (refused.length > 0
+        ? ` — ${refused.length} REFUSED (${[...new Set(refused.map((l) => l.status))].join(', ')})`
+        : ''),
+  );
+  console.log(`[verify] LOCAL: ${passLocal}/${table.length} passed`);
   console.log(`[verify] wire log: ${wireLog} (${wireLines.length} SDK control-plane request(s) captured)`);
   console.log(`[verify] server output tail:\n${out.split('\n').slice(-20).join('\n')}`);
 
