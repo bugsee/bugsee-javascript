@@ -158,7 +158,7 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
   window: fakeWindow().win,
   transport: uploadTransport(),
   systemProbe: probe,
-  systemMetricsSampler: () => [{ name: 'browser_memory_used_heap', value: 42 }],
+  systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
   ...over,
 });
@@ -456,9 +456,7 @@ describe('launch', () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store }));
     const traces = await drain(store, 'traces.system');
-    expect(traces?.map((e) => (e.data as { name: string }).name)).toContain(
-      'browser_memory_used_heap',
-    );
+    expect(traces?.map((e) => (e.data as { name: string }).name)).toContain('ram_js_heap_used');
   });
 
   it('does not capture system traces when disabled', async () => {

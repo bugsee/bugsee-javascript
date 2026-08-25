@@ -137,7 +137,7 @@ const base = (
   window: fakeWindow().win,
   transport: recordingTransport().fn,
   systemProbe: probe,
-  systemMetricsSampler: () => [{ name: 'browser_memory_used_heap', value: 42 }],
+  systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
   ...over,
 });
