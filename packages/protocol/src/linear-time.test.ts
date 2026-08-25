@@ -38,8 +38,20 @@ describe('timePerCall', () => {
       () => burn(800_000),
     );
 
+    // The LOWER bound is the assertion. If `timePerCall` returned the batch time instead of the
+    // per-call cost, both sizes would land on the same ~25 ms sample floor and the ratio would collapse
+    // to ~1 — so `> 2` is what actually catches the defect this test exists for.
     expect(four / one).toBeGreaterThan(2);
-    expect(four / one).toBeLessThan(8);
+    // The upper bound is a loose sanity net, and it has to STAY loose. This file's own helper documents
+    // why: the CI runner inflates a real ratio by ~2.1x, because macOS migrates its low-QoS threads
+    // between performance and efficiency cores. 4 x 2.1 ~= 8.4, so a ceiling of 8 sits underneath the
+    // healthy band and duly failed at 8.31, then 9.15 — twice, on healthy code. It is the same trap
+    // SIZE_SEPARATION was widened from 4x to 16x to escape, left behind in this self-test.
+    //
+    // Nothing real is lost by widening: no defect in `timePerCall` drives this ratio UP. Over-dividing
+    // pushes it below the lower bound; under-dividing pins it near 1. This only catches a wholly
+    // unhinged reading.
+    expect(four / one).toBeLessThan(20);
   });
 
   it('repeats cheap work rather than trusting a single unmeasurable reading', () => {
