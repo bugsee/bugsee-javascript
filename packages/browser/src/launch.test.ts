@@ -102,7 +102,11 @@ const viewEl = (tag: string, extra: Record<string, unknown> = {}) => ({
 const fakeDocument = (body: unknown) => ({ ...fakeWindow().win, body }) as unknown as Document;
 
 const probe: BrowserProbe = {
-  userAgent: () => 'Mozilla/5.0 (Test) Browser/9.0',
+  // A real Chrome-on-macOS agent: the environment builder now derives the OS and the browser from
+  // this, so a synthetic string would make every environment assertion below meaningless.
+  userAgent: () =>
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  uaDataPlatform: () => 'macOS',
   locale: () => 'en-US',
   utcOffsetMinutes: () => 0,
   screenWidth: () => 1280,
@@ -553,8 +557,12 @@ describe('launch', () => {
         environment: EnvironmentEnvelope;
       }
     ).environment;
-    expect(env.platform.type).toBe('web');
-    expect(env.platform.version).toBe('Mozilla/5.0 (Test) Browser/9.0');
+    // The OS, derived in-browser — `platform` is no longer the sandbox tag with a UA string for a
+    // version, and the runtime/browser identity has its own blocks (F-X20).
+    expect(env.platform.type).toBe('macos');
+    expect(env.platform.version).toBe('10.15.7');
+    expect(env.browser).toEqual({ type: 'Chrome', version: '119.0.0.0' });
+    expect(env.runtime).toEqual({ type: 'web', version: '119.0.0.0' });
     expect(env.sdk.options).toMatchObject({
       [optionKeyToWire(BugseeOption.CaptureLogs)]: true,
       [optionKeyToWire(BugseeOption.CaptureNetwork)]: false,
@@ -1039,7 +1047,8 @@ describe('launchCore', () => {
     expect(typeof internals?.transport).toBe('function');
     expect(internals?.api).toBeDefined();
     expect(typeof internals?.getEnvironment).toBe('function');
-    expect(internals?.getEnvironment().platform.type).toBe('web'); // a real browser envelope
+    expect(internals?.getEnvironment().platform.type).toBe('macos'); // a real browser envelope: the OS
+    expect(internals?.getEnvironment().runtime.type).toBe('web'); // ...and the runtime, separately
     expect(internals?.network.interceptor).toBeDefined(); // the listenable network source for http spans
     expect(internals?.onError).toBeUndefined();
   });

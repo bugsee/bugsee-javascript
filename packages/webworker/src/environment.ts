@@ -1,3 +1,4 @@
+import { detectBrowser, detectOs } from '@bugsee/browser';
 import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // The §8.6 environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
@@ -5,13 +6,17 @@ import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugs
 // and NO `window` — so this is the browser envelope MINUS the screen/pixel-ratio hardware reads. System reads
 // go through an injectable WorkerProbe so the mapping is testable deterministically (the worker globals are
 // stubbed in tests); realWorkerProbe is the default. platform.type is the worker variant ('web-worker' /
-// 'service-worker'); platform.version carries the raw userAgent (parsed server-side, as on the browser).
+// 'service-worker') and rides in `runtime`; `platform` carries the OS, identified in-worker from the same
+// navigator the browser tier reads (see @bugsee/browser's user-agent.ts). It used to carry the worker tag
+// and the raw userAgent — the same conflation fixed for the page tier in samples/FINDINGS.md F-X20.
 
 /** The worker platform identity. */
 export type WorkerPlatformType = 'web-worker' | 'service-worker';
 
 export interface WorkerProbe {
   userAgent(): string;
+  /** `navigator.userAgentData.platform` — Chromium-only; undefined elsewhere. See BrowserProbe. */
+  uaDataPlatform(): string | undefined;
   locale(): string;
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
@@ -23,6 +28,8 @@ export interface WorkerProbe {
 
 export const realWorkerProbe: WorkerProbe = {
   userAgent: () => navigator.userAgent,
+  uaDataPlatform: () =>
+    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform,
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
   utcOffsetMinutes: () => -new Date().getTimezoneOffset(),
   deviceMemoryBytes: () => {
@@ -62,19 +69,23 @@ export function buildWorkerEnvironment(
   const bytes = probe.deviceMemoryBytes();
   const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
+  const userAgent = probe.userAgent();
+  const os = detectOs(userAgent, probe.uaDataPlatform());
+  const browser = detectBrowser(userAgent);
   return {
     platform: {
-      type: input.platformType,
-      version: probe.userAgent(),
+      type: os.type,
+      version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),
       ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
-    // No OS read from a worker either (see @bugsee/browser) — `platform` keeps the sandbox tag and
-    // `runtime` names which kind of worker this is.
+    // Omitted rather than half-filled — see the same guard in @bugsee/browser.
+    ...(browser.type !== '' ? { browser: { type: browser.type, version: browser.version } } : {}),
+    // Which KIND of worker this is; the browser's version is the nearest thing it has to a runtime one.
     runtime: {
       type: input.platformType,
-      version: '',
+      version: browser.version,
     },
     hardware: {
       // No screen on a worker — only the navigator-derived hardware + the caller's device id.

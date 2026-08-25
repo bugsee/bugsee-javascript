@@ -3,8 +3,14 @@ import { buildWorkerEnvironment, realWorkerProbe, type WorkerProbe } from './env
 
 afterEach(() => vi.restoreAllMocks());
 
+// A real Chrome-on-Windows agent: the builder derives the OS and the browser from this now, so a
+// synthetic string would make the platform assertions meaningless.
+const CHROME_WIN_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 const probe = (over: Partial<WorkerProbe> = {}): WorkerProbe => ({
-  userAgent: () => 'Mozilla/5.0 Worker',
+  userAgent: () => CHROME_WIN_UA,
+  uaDataPlatform: () => 'Windows',
   locale: () => 'en-US',
   utcOffsetMinutes: () => 120,
   deviceMemoryBytes: () => 8 * 1024 ** 3,
@@ -24,13 +30,19 @@ describe('buildWorkerEnvironment', () => {
       },
       probe(),
     );
+    // The OS, exactly as the browser tier reports it. `platform` used to carry the WORKER tag and the
+    // raw user agent — the same F-X20 conflation, and a worker's `navigator` is just as readable.
     expect(env.platform).toMatchObject({
-      type: 'web-worker',
-      version: 'Mozilla/5.0 Worker',
+      type: 'windows',
+      version: '10',
       utc_offset: 120,
       locale: 'en-US',
       memory_total: 8192, // MB on the wire
     });
+    expect(env.platform.version).not.toContain('Mozilla');
+    // The worker variant keeps its own slot, which is what `runtime` is for.
+    expect(env.runtime).toEqual({ type: 'web-worker', version: '120.0.0.0' });
+    expect(env.browser).toEqual({ type: 'Chrome', version: '120.0.0.0' });
     expect(env.hardware).toEqual({
       device_id: null,
       cpu_count: 4,
@@ -46,11 +58,13 @@ describe('buildWorkerEnvironment', () => {
     expect(env.sdk).toMatchObject({ version: '1.2.3', type: 'javascript' });
   });
 
-  it('supports the service-worker platform type', () => {
-    expect(
-      buildWorkerEnvironment({ sdkVersion: '1', platformType: 'service-worker' }, probe()).platform
-        .type,
-    ).toBe('service-worker');
+  it('supports the service-worker runtime type, without disturbing the OS', () => {
+    const env = buildWorkerEnvironment(
+      { sdkVersion: '1', platformType: 'service-worker' },
+      probe(),
+    );
+    expect(env.runtime.type).toBe('service-worker');
+    expect(env.platform.type).toBe('windows'); // still the OS — the worker kind does not overwrite it
   });
 
   it('omits cpu_count + memory_total when the probe does not expose them', () => {

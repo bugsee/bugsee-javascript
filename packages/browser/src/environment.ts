@@ -1,5 +1,6 @@
 import { serviceToken } from '@bugsee/core';
 import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { detectBrowser, detectOs } from './user-agent';
 
 // Builds the §8.6 environment envelope for the browser from navigator/screen/window/Intl. System reads
 // go through an injectable BrowserProbe so the mapping is testable deterministically (the DOM globals
@@ -7,13 +8,22 @@ import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugs
 // (device_id) is the caller's concern. Canonical (dotted) option keys are translated to colon wire form
 // for sdk.options here, because the server treats dots as nested-document paths (§2.4).
 //
-// UA parsing is deliberately deferred: platform.version carries the raw navigator.userAgent and the
-// backend parses it (a client-side parser is fragile under UA reduction/freezing). hardware.model /
-// manufacturer are omitted for the same reason. deviceMemory + hardwareConcurrency are non-standard /
-// not-everywhere, so their readers are optional and the builder omits absent fields.
+// The OS and the browser are identified IN THE BROWSER (see ./user-agent.ts), from
+// `navigator.userAgentData.platform` where the browser declares it and a user-agent parse otherwise.
+// This used to be deferred to the backend — `platform.type: 'web'` with the raw UA string as
+// `platform.version` — which left a browser session as the only kind naming no OS at all, in the very
+// field the backend indexes as `os_version` (samples/FINDINGS.md F-X20). Doing it here also costs the
+// server nothing per report. hardware.model / manufacturer stay omitted: no browser exposes them.
+// deviceMemory + hardwareConcurrency are non-standard / not-everywhere, so their readers are optional
+// and the builder omits absent fields.
 
 export interface BrowserProbe {
   userAgent(): string;
+  /**
+   * `navigator.userAgentData.platform` — the browser's own declaration of its OS ('macOS', 'Windows',
+   * 'Android', …). Chromium-only; undefined on Firefox/Safari, where the UA parse is the only source.
+   */
+  uaDataPlatform(): string | undefined;
   locale(): string;
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
@@ -32,6 +42,8 @@ export const BrowserProbeToken = serviceToken<BrowserProbe>('systemProbe');
 
 export const realBrowserProbe: BrowserProbe = {
   userAgent: () => navigator.userAgent,
+  uaDataPlatform: () =>
+    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform,
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
   utcOffsetMinutes: () => -new Date().getTimezoneOffset(),
   screenWidth: () => screen.width,
@@ -72,21 +84,26 @@ export function buildBrowserEnvironment(
   const bytes = probe.deviceMemoryBytes();
   const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
+  const userAgent = probe.userAgent();
+  const os = detectOs(userAgent, probe.uaDataPlatform());
+  const browser = detectBrowser(userAgent);
   return {
+    // The OS, matching what every other Bugsee SDK puts here.
     platform: {
-      type: 'web',
-      version: probe.userAgent(),
+      type: os.type,
+      version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),
       ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
-    // A page cannot read its host OS without parsing the user agent, which this tier deliberately
-    // defers to the backend — so `platform` keeps the web sandbox's own tag and the OS is derived
-    // server-side from the UA in platform.version. `runtime` still names what is executing, which is
-    // what distinguishes a page from a worker or a server runtime.
+    // Omitted rather than half-filled: a `{type: '', version: ''}` block renders as an empty,
+    // icon-less Browser section in the viewer, which is worse than no section.
+    ...(browser.type !== '' ? { browser: { type: browser.type, version: browser.version } } : {}),
+    // `type` stays the closed RuntimeType enum ('web'); the browser's own version is the nearest
+    // thing a page has to a runtime version, and this field shipped empty until it had a parser.
     runtime: {
       type: 'web',
-      version: '',
+      version: browser.version,
     },
     hardware: {
       screen_width: probe.screenWidth(),

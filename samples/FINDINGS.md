@@ -9,32 +9,6 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
 
 ## Open
 
-### F-X20 · The browser tier reports a user-agent string where the backend expects an OS version
-
-- **Severity:** major (wrong data, every browser-family session)
-- **Status:** OPEN. Found while re-verifying wave 1 after the node/edge tiers were split.
-- **Observed:** `SBROWSER-34`'s environment reads
-
-  ```yaml
-  platform: { type: web, version: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 …" }
-  runtime:  { type: web, version: "" }
-  ```
-
-  `platform.type` is the runtime tag, not the OS, and `platform.version` — which the backend indexes as
-  `os_version` — is a whole user-agent string. This is the same conflation the node tier had before
-  `e215a97`; that commit fixed node, bun, deno and edge and left the browser family as it was.
-- **Why it is deliberate, and why that is not the end of it:** `packages/browser/src/environment.ts:84`
-  documents the choice — a page cannot read its host OS without parsing the UA, and a client-side UA
-  parser is fragile under UA reduction/freezing, so parsing is deferred to the backend. That reasoning
-  is sound. What is not sound is the CURRENT state: the backend is not visibly doing that parse (the raw
-  UA is what `get_issue` renders), so no consumer gets an OS out of a browser session at all, and
-  `runtime.version` is left empty when the UA has the browser version in it.
-- **Not fixed here** because the options trade off against each other and the choice is not the sample
-  sweep's to make: (a) have the backend parse the UA into `platform.{type,version}` — keeps the client
-  dumb, needs appserver work; (b) use `navigator.userAgentData.platform`, which is synchronous and gives
-  `"macOS"`/`"Windows"`/`"Linux"` but is Chromium-only, with a UA-parse fallback for Safari/Firefox;
-  (c) leave `platform` as the sandbox tag and accept that browser sessions have no OS. Needs a decision.
-
 ### F-X18 · One issue displayed a message and a stack trace from different events
 
 - **Severity:** major if real — **not reproduced**
@@ -44,6 +18,58 @@ Severity: **blocker** (ships broken / data lost) · **major** (feature broken or
   sweep again. Not evidence of absence — the original sighting was a one-off on a merged issue.
 
 ## Resolved
+
+### F-X22 · The viewer's context panel could not show an OS and a browser at once — **fixed** (viewer)
+
+- **Severity:** was major (display), surfaced by F-X20's fix.
+- `elements-recording-context.component.ts` read `if (env.browser) … else if (env.platform) …`, which
+  was correct only while nothing sent both. The moment the web tier began reporting a real OS, showing
+  the browser would have HIDDEN it. Two independent `if`s now.
+- Two more things the same code path had been hiding, both only reachable once an SDK filled `browser`:
+  the template rendered a **"Browser" heading with no browser row** (nothing referenced `browserInfo`
+  in that table), and `createBrowserInfo` dereferenced `browser.type` unguarded, so a `browser` object
+  without a `type` took the whole context panel down. Both fixed, plus a `chromeos` platform branch for
+  the Chromebooks the SDK can now identify.
+
+### F-X20 · The browser tier reported a user-agent string where the backend expects an OS version — **fixed** (in-browser)
+
+- **Severity:** was major (wrong data, every browser-family session). **Closed 2026-08-25.**
+- **Was:** `platform.type: 'web'` with the whole user-agent string as `platform.version` — the field the
+  backend indexes as `os_version` — so a browser session was the only kind of Bugsee session naming no
+  operating system at all.
+- **Decision: identify the OS and the browser IN THE BROWSER**, not on the collector. Chromium declares
+  its OS synchronously via `navigator.userAgentData.platform` (~70% of usage) and the user-agent string
+  covers the rest; doing it client-side costs the server nothing per report. UA reduction FROZE the
+  tokens this relies on rather than removing them, so they are more stable now than they have ever
+  been — at the cost of precision (Windows 11 reports as `10`, every recent macOS as `10.15.7`), which
+  is a better failure than reporting no OS.
+- **Built** as `packages/browser/src/user-agent.ts`: OS name from UA-CH where declared, OS version and
+  browser identity always parsed, and an empty `type` for anything unrecognised — never a guess.
+  Applied to `@bugsee/browser` AND `@bugsee/webworker`, which had the identical conflation and the same
+  readable `navigator`.
+- **`environment.browser` is now filled** — `{type, version}`, a block the appserver schema has declared
+  for far longer than any JS SDK populated it, so **no backend change was needed**. `runtime.version`,
+  which shipped empty on every web session, now carries the browser version.
+- **Verified end to end** on staging (`SBROWSER-40`):
+
+  ```yaml
+  platform: { type: macos, version: 10.15.7 }
+  browser:  { type: Chrome, version: 151.0.7922.34 }
+  runtime:  { type: web,    version: 151.0.7922.34 }
+  ```
+
+- **The real run caught a bug the unit tests did not.** The first end-to-end attempt reported
+  `browser: {type: Safari, version: ''}` — because the sweep's headless Chromium sends
+  `HeadlessChrome/151…`, and `\bChrome/` matches nothing inside `HeadlessChrome` (no word boundary), so
+  the trailing `Safari/537.36` claimed it. That is what every Playwright/Puppeteer/CI browser reports.
+  Fixed, along with `CriOS`/`FxiOS` (Chrome and Firefox on iOS, which are WebKit and would otherwise all
+  read as Safari). **A UA parser cannot be validated on a corpus its author chose** — the agents worth
+  testing are the ones you did not think of.
+- **Two of the parser's own tests were asserting protections that did not exist**, found by the mutator
+  loop: "iOS before macOS" and "ChromeOS before Linux" both survived reordering, because an iOS UA's
+  `like Mac OS X` carries no version (so the versioned macOS rule cannot match it) and a CrOS UA
+  contains no `Linux` at all. Only Android-before-Linux is a genuine ordering hazard. Rewritten to pin
+  what actually holds.
 
 ### F-X19 · Sample harness checks measured a clock, not the SDK — **fixed** (harness), and its premise was wrong
 

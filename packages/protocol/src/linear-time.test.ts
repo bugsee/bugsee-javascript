@@ -26,8 +26,17 @@ describe('timePerCall', () => {
     // The whole point: cheap work is repeated until the sample is trustworthy, and the reported
     // number is still per-call. Four times the work per call must cost about four times as much,
     // however many repetitions each needed.
-    const one = timePerCall(() => burn(200_000));
-    const four = timePerCall(() => burn(800_000));
+    //
+    // Measured through `measurePair` — interleaved rounds, best of each — rather than one bare
+    // `timePerCall` per size. This test USED to take a single sample of each, which made it strictly
+    // less noise-resistant than the helper it exists to validate, and it duly failed under the
+    // parallel load of the full per-package coverage run: it read 16.7x for 4x work because the
+    // small sample got a quiet moment and the large one did not. A guard against timing noise that
+    // is itself vulnerable to timing noise reports on the machine, not on the code.
+    const { small: one, large: four } = measurePair(
+      () => burn(200_000),
+      () => burn(800_000),
+    );
 
     expect(four / one).toBeGreaterThan(2);
     expect(four / one).toBeLessThan(8);

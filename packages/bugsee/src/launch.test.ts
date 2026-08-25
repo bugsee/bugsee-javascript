@@ -52,7 +52,10 @@ function stubPerformanceObserver() {
 }
 
 const probe: BrowserProbe = {
-  userAgent: () => 'Mozilla/5.0 (Test) Browser/9.0',
+  // A real agent — the environment builder derives the OS and browser from it.
+  userAgent: () =>
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  uaDataPlatform: () => 'macOS',
   locale: () => 'en-US',
   utcOffsetMinutes: () => 0,
   screenWidth: () => 1280,

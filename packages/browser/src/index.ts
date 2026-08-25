@@ -50,6 +50,16 @@ export {
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
+// The browser-family OS/browser identification, exported so the worker tier (which has the same
+// `navigator` and the same problem) derives its OS the same way rather than growing a second parser.
+export {
+  detectBrowser,
+  detectOs,
+  type Identity,
+  normalizeUaDataPlatform,
+  parseBrowserFromUserAgent,
+  parseOsFromUserAgent,
+} from './user-agent';
 export {
   createDomSnapshot,
   createViewtreeSnapshotSource,

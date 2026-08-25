@@ -4,6 +4,7 @@
 // fixed-schema translation properties are good at: the example tests pin one probe, these pin the mapping
 // for every probe. Each expectation is derived from the probe/input a SECOND time rather than restated
 // from the implementation.
+import { detectBrowser, detectOs } from '@bugsee/browser';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
@@ -13,9 +14,27 @@ import {
   type WorkerProbe,
 } from './environment';
 
+// Real agents alongside arbitrary strings: the OS/browser mapping is only exercised by UAs that parse,
+// while the arbitrary ones pin the "unidentifiable agent" path the real world also produces (bots,
+// embedded webviews, reduced agents).
+const userAgentArb = () =>
+  fc.oneof(
+    fc.string(),
+    fc.constantFrom(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36',
+    ),
+  );
+
 const probeArb = () =>
   fc.record({
-    userAgent: fc.string(),
+    userAgent: userAgentArb(),
+    uaDataPlatform: fc.option(
+      fc.constantFrom('macOS', 'Windows', 'Linux', 'Android', 'iOS', 'Chrome OS', 'Unknown'),
+      { nil: undefined },
+    ),
     locale: fc.string(),
     utcOffsetMinutes: fc.integer({ min: -720, max: 840 }),
     deviceMemoryBytes: fc.option(fc.integer({ min: 0, max: 64 * 1024 ** 3 }), { nil: undefined }),
@@ -24,12 +43,14 @@ const probeArb = () =>
 
 const asProbe = (values: {
   userAgent: string;
+  uaDataPlatform: string | undefined;
   locale: string;
   utcOffsetMinutes: number;
   deviceMemoryBytes: number | undefined;
   cpuCount: number | undefined;
 }): WorkerProbe => ({
   userAgent: () => values.userAgent,
+  uaDataPlatform: () => values.uaDataPlatform,
   locale: () => values.locale,
   utcOffsetMinutes: () => values.utcOffsetMinutes,
   deviceMemoryBytes: () => values.deviceMemoryBytes,
@@ -54,16 +75,34 @@ const inputArb = () =>
   });
 
 describe('buildWorkerEnvironment — properties', () => {
-  it('mirrors the probe verbatim into the platform block', () => {
+  it('puts the OS in platform, the worker kind in runtime, and never the raw agent in either', () => {
     fc.assert(
       fc.property(probeArb(), inputArb(), (values, input) => {
         const env = buildWorkerEnvironment(input as WorkerEnvironmentInput, asProbe(values));
-        expect(env.platform.type).toBe(input.platformType);
-        expect(env.platform.version).toBe(values.userAgent);
+        // Derived a second time from the probe rather than restated from the implementation.
+        const os = detectOs(values.userAgent, values.uaDataPlatform);
+        expect(env.platform.type).toBe(os.type);
+        expect(env.platform.version).toBe(os.version);
+        // The worker kind is `runtime`'s job — it is not an operating system.
+        expect(env.runtime.type).toBe(input.platformType);
         expect(env.platform).toMatchObject({
           utc_offset: values.utcOffsetMinutes,
           locale: values.locale,
         });
+      }),
+    );
+  });
+
+  it('fills the browser block exactly when the agent identifies one, never half of it', () => {
+    fc.assert(
+      fc.property(probeArb(), inputArb(), (values, input) => {
+        const env = buildWorkerEnvironment(input as WorkerEnvironmentInput, asProbe(values));
+        const browser = detectBrowser(values.userAgent);
+        expect('browser' in env).toBe(browser.type !== '');
+        if (browser.type !== '') {
+          expect(env.browser).toEqual({ type: browser.type, version: browser.version });
+        }
+        expect(env.runtime.version).toBe(browser.version);
       }),
     );
   });

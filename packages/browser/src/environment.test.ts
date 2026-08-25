@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserProbe, buildBrowserEnvironment, realBrowserProbe } from './environment';
 
 // A probe with every reader populated (the Chromium-rich case).
+const CHROME_MAC_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36';
+
 const fullProbe: BrowserProbe = {
-  userAgent: () => 'Mozilla/5.0 (Test) Browser/1.0',
+  userAgent: () => CHROME_MAC_UA,
+  uaDataPlatform: () => 'macOS',
   locale: () => 'en-GB',
   utcOffsetMinutes: () => -480,
   screenWidth: () => 1920,
@@ -27,27 +31,72 @@ const zeroProbe: BrowserProbe = {
   cpuCount: () => 0,
 };
 
-describe('buildBrowserEnvironment — platform', () => {
-  it('maps the probe into the web platform section', () => {
+describe('buildBrowserEnvironment — platform is the OS, not the runtime', () => {
+  it('reports the host OS and its version, not the sandbox tag and the user agent', () => {
+    // The defect this replaced (samples/FINDINGS.md F-X20): the web tier sent `type: 'web'` and the
+    // WHOLE user-agent string as `version` — the field the backend indexes as `os_version` — so a
+    // browser session was the only kind of Bugsee session that named no operating system at all.
     const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);
     expect(env.platform).toEqual({
-      type: 'web',
-      version: 'Mozilla/5.0 (Test) Browser/1.0',
+      type: 'macos',
+      version: '10.15.7',
       utc_offset: -480,
       locale: 'en-GB',
       memory_total: 8192, // MB on the wire, from an 8 GiB deviceMemory reading
     });
+    expect(env.platform.version).not.toContain('Mozilla'); // never the UA string again
   });
 
   it('omits memory_total when deviceMemory is unsupported', () => {
     const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, minimalProbe);
     expect(env.platform).toEqual({
-      type: 'web',
-      version: 'Mozilla/5.0 (Test) Browser/1.0',
+      type: 'macos',
+      version: '10.15.7',
       utc_offset: -480,
       locale: 'en-GB',
     });
     expect('memory_total' in env.platform).toBe(false);
+  });
+
+  it('falls back to the parsed user agent when UA-CH is unavailable (Firefox/Safari)', () => {
+    const firefoxProbe: BrowserProbe = {
+      ...fullProbe,
+      userAgent: () =>
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+      uaDataPlatform: () => undefined,
+    };
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, firefoxProbe);
+    expect(env.platform.type).toBe('windows');
+    expect(env.platform.version).toBe('10');
+  });
+
+  it('prefers the browser’s DECLARED platform over a disagreeing user agent', () => {
+    const spoofed: BrowserProbe = { ...fullProbe, uaDataPlatform: () => 'Windows' };
+    expect(buildBrowserEnvironment({ sdkVersion: '1.0.0' }, spoofed).platform.type).toBe('windows');
+  });
+});
+
+describe('buildBrowserEnvironment — browser identity', () => {
+  it('fills the browser block the backend has always declared', () => {
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);
+    expect(env.browser).toEqual({ type: 'Chrome', version: '119.0.0.0' });
+  });
+
+  it('puts the BROWSER version in runtime.version, which used to be empty', () => {
+    // `runtime.type` stays 'web' (it is a closed enum the schema pins); its version had nowhere to
+    // come from while the browser identity was unparsed, so every web session shipped ''.
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);
+    expect(env.runtime).toEqual({ type: 'web', version: '119.0.0.0' });
+  });
+
+  it('omits the browser block entirely when the agent cannot be identified', () => {
+    // A half-filled `{type: '', version: ''}` would render as an empty, icon-less Browser section in
+    // the viewer. Absent is better than blank.
+    const unknown: BrowserProbe = { ...fullProbe, userAgent: () => 'SomeRobot/1.0' };
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, unknown);
+    expect(env.browser).toBeUndefined();
+    expect('browser' in env).toBe(false);
+    expect(env.runtime).toEqual({ type: 'web', version: '' });
   });
 });
 
@@ -164,6 +213,19 @@ describe('realBrowserProbe', () => {
     vi.unstubAllGlobals();
   });
 
+  it('reads navigator.userAgentData.platform where the browser exposes it', () => {
+    vi.stubGlobal('navigator', { userAgent: 'UA/9', userAgentData: { platform: 'macOS' } });
+    expect(realBrowserProbe.uaDataPlatform()).toBe('macOS');
+  });
+
+  it('returns undefined for uaDataPlatform on a browser without UA-CH', () => {
+    vi.stubGlobal('navigator', { userAgent: 'UA/9' });
+    expect(realBrowserProbe.uaDataPlatform()).toBeUndefined();
+    // ...and when userAgentData exists but carries no platform (a partial/polyfilled shim).
+    vi.stubGlobal('navigator', { userAgent: 'UA/9', userAgentData: {} });
+    expect(realBrowserProbe.uaDataPlatform()).toBeUndefined();
+  });
+
   it('reads navigator / screen / window values (used by default)', () => {
     vi.stubGlobal('navigator', { userAgent: 'UA/9', hardwareConcurrency: 12, deviceMemory: 4 });
     vi.stubGlobal('screen', { width: 800, height: 600 });
@@ -198,12 +260,15 @@ describe('realBrowserProbe', () => {
   });
 
   it('is the default probe used by buildBrowserEnvironment', () => {
-    vi.stubGlobal('navigator', { userAgent: 'Default-UA' });
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    });
     vi.stubGlobal('screen', { width: 1024, height: 768 });
     vi.stubGlobal('window', { devicePixelRatio: 1 });
     const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' });
-    expect(env.platform.type).toBe('web');
-    expect(env.platform.version).toBe('Default-UA');
+    expect(env.platform.type).toBe('linux');
+    expect(env.browser).toEqual({ type: 'Chrome', version: '119.0.0.0' });
     expect((env.hardware as { screen_width: number }).screen_width).toBe(1024);
   });
 });

@@ -41,9 +41,22 @@
           "required": ["type", "version"],
           "properties": {
             "type": {
-              "description": "The OS the runtime is hosted on, NOT the runtime \u2014 'macos'/'linux'/'windows' from the host tiers (the set bugsee-rust reports), or the sandbox's own tag ('web', 'workers', ...) where no OS is readable.",
+              "description": "The OS the runtime is hosted on, NOT the runtime \u2014 'macos'/'linux'/'windows' from the host tiers (the set bugsee-rust reports), or 'ios'/'android'/'chromeos' where the web tier derives it in-browser. Only the edge tiers, which have no OS to name, send the isolate's own tag ('workers', \u2026).",
               "type": "string",
               "minLength": 1
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "browser": {
+          "description": "The browser identity, on the tiers that have one (web, Electron renderer). `type` is the display name ('Chrome'/'Firefox'/'Safari'/'Edge'), which the viewer lowercases into a Font Awesome brand class. Absent off-browser.",
+          "type": "object",
+          "required": ["type", "version"],
+          "properties": {
+            "type": {
+              "type": "string"
             },
             "version": {
               "type": "string"

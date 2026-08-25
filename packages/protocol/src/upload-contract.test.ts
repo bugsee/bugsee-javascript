@@ -68,6 +68,18 @@ describe('upload-contract.schema.json ↔ TypeScript wire contract', () => {
     ]);
   });
 
+  it('declares the browser block, and does NOT require it — only browser tiers have one', () => {
+    // The backend has had `environment.browser` declared for far longer than this SDK filled it
+    // (appserver _environment.js). The web tier fills it now; node/bun/deno/edge must keep omitting
+    // it, so it is a declared-but-optional property rather than a required one.
+    const env = schema.definitions.environmentEnvelope as {
+      required: string[];
+      properties: { browser: { required: string[]; properties: Record<string, unknown> } };
+    };
+    expect(env.required).not.toContain('browser');
+    expect(env.properties.browser.required).toEqual(['type', 'version']);
+  });
+
   it('leaves platform.type OPEN, because it is an OS name and not an SDK-side enum', () => {
     // The host tiers report the OS ('macos'/'linux'/'windows' — the set bugsee-rust reports), and node
     // can name OSes beyond those three. Enumerating them here would reject a legitimate host rather

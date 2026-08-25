@@ -177,6 +177,8 @@ const issueJson = (transport: ReturnType<typeof uploadTransport>) => {
     summary?: string;
     environment: {
       platform: { type: string; version: string };
+      runtime: { type: string; version: string };
+      browser?: { type: string; version: string };
       app?: { package_id: string; version: string; build: string };
     };
   };
@@ -493,12 +495,12 @@ describe('launch (webworker)', () => {
     expect(Object.keys(files).length).toBeGreaterThan(0);
   });
 
-  it('reports the web-worker platform type by default', async () => {
+  it('reports the web-worker runtime type by default', async () => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport }));
     await client.logException(new Error('x'));
     await client.flush();
-    expect(issueJson(transport).environment.platform.type).toBe('web-worker');
+    expect(issueJson(transport).environment.runtime.type).toBe('web-worker');
   });
 
   it('honors an overridden platformType (service-worker)', async () => {
@@ -506,7 +508,7 @@ describe('launch (webworker)', () => {
     const client = track('tok', baseOptions({ transport, platformType: 'service-worker' }));
     await client.logException(new Error('x'));
     await client.flush();
-    expect(issueJson(transport).environment.platform.type).toBe('service-worker');
+    expect(issueJson(transport).environment.runtime.type).toBe('service-worker');
   });
 
   it('threads the system probe (userAgent) into the environment', async () => {
@@ -516,7 +518,9 @@ describe('launch (webworker)', () => {
       baseOptions({
         transport,
         systemProbe: {
-          userAgent: () => 'CustomWorker/9',
+          userAgent: () =>
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+          uaDataPlatform: () => undefined,
           locale: () => 'en-GB',
           utcOffsetMinutes: () => 0,
           deviceMemoryBytes: () => undefined,
@@ -526,7 +530,11 @@ describe('launch (webworker)', () => {
     );
     await client.logException(new Error('x'));
     await client.flush();
-    expect(issueJson(transport).environment.platform.version).toBe('CustomWorker/9');
+    // The injected agent has to reach the envelope, and it now does so DERIVED rather than verbatim —
+    // asserting on the OS and the browser proves the probe was threaded AND that the parse ran on it.
+    const env = issueJson(transport).environment;
+    expect(env.platform.type).toBe('linux');
+    expect(env.browser).toEqual({ type: 'Chrome', version: '119.0.0.0' });
   });
 
   it('tags every SDK request with x-bugsee-internal', async () => {
@@ -808,13 +816,13 @@ describe('Service Worker detection (Wave 4.2)', () => {
     }
   };
 
-  it('reports platform.type `service-worker` without being told', async () => {
+  it('reports runtime.type `service-worker` without being told', async () => {
     await withGlobal(true, async () => {
       const transport = uploadTransport();
       const client = track('tok', baseOptions({ transport }));
       await client.logException(new Error('x'));
       await client.flush();
-      expect(issueJson(transport).environment.platform.type).toBe('service-worker');
+      expect(issueJson(transport).environment.runtime.type).toBe('service-worker');
     });
   });
 
@@ -824,12 +832,12 @@ describe('Service Worker detection (Wave 4.2)', () => {
       const client = track('tok', baseOptions({ transport }));
       await client.logException(new Error('x'));
       await client.flush();
-      expect(issueJson(transport).environment.platform.type).toBe('web-worker');
+      expect(issueJson(transport).environment.runtime.type).toBe('web-worker');
     });
   });
 
   it('turns PERSISTENCE on for a detected Service Worker — the half that actually matters', async () => {
-    // Reporting `platform.type: 'service-worker'` is cosmetic on its own. `persist` is what makes the
+    // Reporting `runtime.type: 'service-worker'` is cosmetic on its own. `persist` is what makes the
     // worker durable, and it must derive from the DETECTED type: deriving it from the raw option instead
     // leaves a detected Service Worker still running memory-only, which is the whole defect. A mutation
     // doing exactly that passed every other test in this block.
@@ -852,7 +860,7 @@ describe('Service Worker detection (Wave 4.2)', () => {
       const client = track('tok', baseOptions({ transport, platformType: 'web-worker' }));
       await client.logException(new Error('x'));
       await client.flush();
-      expect(issueJson(transport).environment.platform.type).toBe('web-worker');
+      expect(issueJson(transport).environment.runtime.type).toBe('web-worker');
     });
   });
 });

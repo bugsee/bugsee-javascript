@@ -63,10 +63,22 @@ export interface EnvironmentEnvelope {
   /**
    * The OS the runtime is hosted on. `type` is the OS name and `version` its release — the pair the
    * backend reads as the platform key and `os_version`. Runtimes with real OS access (node/bun/deno,
-   * Electron main) fill these from `os`; the web and edge tiers have no OS to read, so they keep the
-   * sandbox's own tag ('web', 'workers', …) and let the backend derive the OS from the user agent.
+   * Electron main) fill these from `os`; the WEB tier derives them in-browser from
+   * `navigator.userAgentData.platform` plus a user-agent parse (see @bugsee/browser's user-agent.ts).
+   * Only the EDGE tiers have no OS to name at all and keep the isolate's own tag ('workers', …).
    */
   platform: {
+    type: string;
+    version: string;
+    [key: string]: unknown;
+  };
+  /**
+   * The browser identity, on the tiers that HAVE one (the web tier and an Electron renderer). `type` is
+   * the display name — 'Chrome', 'Firefox', 'Safari', 'Edge' — which the viewer lowercases into a
+   * Font Awesome brand class, so it is load-bearing rather than cosmetic. Omitted entirely off-browser;
+   * the backend has declared this block for far longer than this SDK has filled it.
+   */
+  browser?: {
     type: string;
     version: string;
     [key: string]: unknown;
