@@ -48,6 +48,11 @@ export interface BrowserTracesEnv {
     getBattery?: () => Promise<BatteryManager>;
     /** navigator.onLine — the one connectivity fact every browser reports. */
     onLine?: boolean;
+    /**
+     * `navigator.deviceMemory` in BYTES. A deliberately coarse bucket, not a measurement — a 64 GB
+     * machine reports 32 — which is why it is a trace and not the environment's `memory_total`.
+     */
+    deviceMemoryBytes?: number;
   };
   screen?: { orientation?: ScreenOrientationLike };
 }
@@ -59,10 +64,26 @@ const realEnv = (): BrowserTracesEnv => {
       connection?: NetworkInformation;
       getBattery?: () => Promise<BatteryManager>;
       onLine?: boolean;
+      deviceMemory?: number;
     };
     screen?: { orientation?: ScreenOrientationLike };
   };
-  return { performance: global.performance, navigator: global.navigator, screen: global.screen };
+  const nav = global.navigator;
+  return {
+    performance: global.performance,
+    ...(nav !== undefined
+      ? {
+          navigator: {
+            ...nav,
+            // GiB → bytes, so the trace matches Android's ram_* traces and the viewer's dataSize measure.
+            ...(nav.deviceMemory !== undefined
+              ? { deviceMemoryBytes: nav.deviceMemory * 1024 ** 3 }
+              : {}),
+          },
+        }
+      : {}),
+    screen: global.screen,
+  };
 };
 
 /** Build a system-traces sampler over the browser context APIs (default the real globals). */
@@ -99,6 +120,11 @@ export function createBrowserSystemTracesSampler(
     // and Firefox have no `navigator.connection`, and this trace used to be omitted there entirely.
     // `onLine` alone is worth a row — it is the fact a reader most wants and every browser reports it.
     const navigator = env.navigator;
+    if (navigator?.deviceMemoryBytes !== undefined) {
+      // ADVERTISED, not total. See the type's doc: this is a rounded bucket, and Android already has
+      // the name for exactly that kind of figure.
+      samples.push({ name: 'ram_system_advertised', value: navigator.deviceMemoryBytes });
+    }
     if (navigator !== undefined) {
       const connection = navigator.connection;
       samples.push({

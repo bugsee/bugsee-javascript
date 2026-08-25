@@ -37,8 +37,8 @@ describe('buildWorkerEnvironment', () => {
       version: '10',
       utc_offset: 120,
       locale: 'en-US',
-      memory_total: 8192, // MB on the wire
     });
+    expect('memory_total' in env.platform).toBe(false); // a coarse bucket has no place in an exact field
     expect(env.platform.version).not.toContain('Mozilla');
     // The worker variant keeps its own slot, which is what `runtime` is for.
     expect(env.runtime).toEqual({ type: 'web-worker', version: '120.0.0.0' });
@@ -46,7 +46,6 @@ describe('buildWorkerEnvironment', () => {
     expect(env.hardware).toEqual({
       device_id: null,
       cpu_count: 4,
-      memory_total: 8192, // MB on the wire
     });
     expect(env.hardware).not.toHaveProperty('screen_width'); // a worker has no screen
     expect(env.app).toMatchObject({

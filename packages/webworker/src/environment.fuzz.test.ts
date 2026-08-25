@@ -107,22 +107,17 @@ describe('buildWorkerEnvironment — properties', () => {
     );
   });
 
-  it('reports device memory in BOTH blocks with the same value, or in neither', () => {
+  it('reports memory_total in NEITHER block, whatever the probe says', () => {
+    // It used to be reported in both, from navigator.deviceMemory. That is a deliberately coarse
+    // bucket — a 64 GB machine reports 32 — and `memory_total` means actual physical RAM on every
+    // other Bugsee SDK, so it was a confidently wrong number under an exact label. The reading now
+    // ships as the `ram_system_advertised` trace. Asserted for EVERY probe, including ones that do
+    // report a deviceMemory, so a re-introduction cannot slip through on the undefined path.
     fc.assert(
       fc.property(probeArb(), inputArb(), (values, input) => {
         const env = buildWorkerEnvironment(input as WorkerEnvironmentInput, asProbe(values));
-        const platform = env.platform as Record<string, unknown>;
-        const hardware = env.hardware as Record<string, unknown>;
-        const expected = values.deviceMemoryBytes !== undefined;
-        expect('memory_total' in platform).toBe(expected);
-        expect('memory_total' in hardware).toBe(expected);
-        if (expected) {
-          // ...and in MEGABYTES, not the probe's raw bytes — restated here independently of the
-          // builder's own helper so a change to that helper cannot make this pass vacuously.
-          const megabytes = Math.floor((values.deviceMemoryBytes as number) / 1024 / 1024);
-          expect(platform.memory_total).toBe(megabytes);
-          expect(hardware.memory_total).toBe(megabytes);
-        }
+        expect('memory_total' in (env.platform as Record<string, unknown>)).toBe(false);
+        expect('memory_total' in (env.hardware as Record<string, unknown>)).toBe(false);
       }),
     );
   });

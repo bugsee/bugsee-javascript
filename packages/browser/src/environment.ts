@@ -1,5 +1,5 @@
 import { serviceToken } from '@bugsee/core';
-import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 import { detectBrowser, detectOs } from './user-agent';
 
 // Builds the §8.6 environment envelope for the browser from navigator/screen/window/Intl. System reads
@@ -84,10 +84,13 @@ export function buildBrowserEnvironment(
   input: BrowserEnvironmentInput,
   probe: BrowserProbe = realBrowserProbe,
 ): EnvironmentEnvelope {
-  // MEGABYTES on the wire (see @bugsee/protocol bytesToMegabytes) — navigator.deviceMemory is a
-  // GiB figure the probe hands back as bytes, and the viewer divides by 1024 to render GB.
-  const bytes = probe.deviceMemoryBytes();
-  const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
+  // NO memory_total, on either block. `navigator.deviceMemory` is the only memory reading a page gets
+  // and it is a deliberately coarse bucket — a 64 GB machine reports 32 (measured, Chrome 151) —
+  // while `memory_total` means ACTUAL physical RAM on every other Bugsee SDK (node reads os.totalmem,
+  // Android reads MemoryInfo). The viewer synthesizes its "System memory (RAM) / Total" trace directly
+  // from this field (recording-helper.service.ts:186), so filling it with a bucket put a confidently
+  // wrong number under an exact label. The reading still ships, as the `ram_system_advertised` TRACE —
+  // Android's own name for "advertised memory ... might be different from getSystemTotalMemory()".
   const cpuCount = probe.cpuCount();
   const userAgent = probe.userAgent();
   const os = detectOs(userAgent, probe.uaDataPlatform?.());
@@ -99,7 +102,6 @@ export function buildBrowserEnvironment(
       version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),
-      ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
     // Omitted rather than half-filled: a `{type: '', version: ''}` block renders as an empty,
     // icon-less Browser section in the viewer, which is worse than no section.
@@ -116,7 +118,6 @@ export function buildBrowserEnvironment(
       pixel_ratio: probe.pixelRatio(),
       device_id: input.deviceId ?? null,
       ...(cpuCount !== undefined ? { cpu_count: cpuCount } : {}),
-      ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
     app: {
       package_id: input.appId ?? 'unknown',

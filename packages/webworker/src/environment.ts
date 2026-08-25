@@ -1,5 +1,5 @@
 import { detectBrowser, detectOs } from '@bugsee/browser';
-import { bytesToMegabytes, type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // The §8.6 environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
 // (WorkerNavigator: userAgent, language, hardwareConcurrency, and deviceMemory on Chromium) but NO `screen`
@@ -68,10 +68,9 @@ export function buildWorkerEnvironment(
   input: WorkerEnvironmentInput,
   probe: WorkerProbe = realWorkerProbe,
 ): EnvironmentEnvelope {
-  // MEGABYTES on the wire (see @bugsee/protocol bytesToMegabytes) — navigator.deviceMemory is a
-  // GiB figure the probe hands back as bytes, and the viewer divides by 1024 to render GB.
-  const bytes = probe.deviceMemoryBytes();
-  const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
+  // NO memory_total — same reasoning as @bugsee/browser: navigator.deviceMemory is a coarse bucket
+  // (64 GB reports 32), while this field means actual physical RAM on every other SDK. The reading
+  // ships as the `ram_system_advertised` trace instead.
   const cpuCount = probe.cpuCount();
   const userAgent = probe.userAgent();
   const os = detectOs(userAgent, probe.uaDataPlatform?.());
@@ -82,7 +81,6 @@ export function buildWorkerEnvironment(
       version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),
-      ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
     // Omitted rather than half-filled — see the same guard in @bugsee/browser.
     ...(browser.type !== '' ? { browser: { type: browser.type, version: browser.version } } : {}),
@@ -95,7 +93,6 @@ export function buildWorkerEnvironment(
       // No screen on a worker — only the navigator-derived hardware + the caller's device id.
       device_id: input.deviceId ?? null,
       ...(cpuCount !== undefined ? { cpu_count: cpuCount } : {}),
-      ...(deviceMemory !== undefined ? { memory_total: deviceMemory } : {}),
     },
     app: {
       package_id: input.appId ?? 'unknown',

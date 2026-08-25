@@ -44,6 +44,26 @@ describe('createBrowserSystemTracesSampler', () => {
     expect(values).toEqual([3, 2, 1]); // limit, limit-used, used — no 'committed' anywhere
   });
 
+  it('samples navigator.deviceMemory as ram_system_advertised, in BYTES', () => {
+    // deviceMemory is a rounded, deliberately-coarse bucket — 32 on a 64 GB machine — so it is NOT
+    // the environment's `memory_total` (which means real RAM everywhere else). Android already has
+    // the right name for a figure like this: `ram_system_advertised`, "the advertised memory of the
+    // system, as the end user would encounter in a retail display environment... might be different
+    // from getSystemTotalMemory()". The viewer already groups and titles it ("Advertised", under
+    // System memory (RAM)), so this needs no viewer or backend change.
+    expect(
+      sample({ navigator: { onLine: true, deviceMemoryBytes: 8 * 1024 ** 3 } }),
+    ).toContainEqual({
+      name: 'ram_system_advertised',
+      value: 8 * 1024 ** 3, // bytes, matching Android's ram_* traces and the dataSize measure
+    });
+  });
+
+  it('omits ram_system_advertised where deviceMemory is unsupported (Safari/Firefox)', () => {
+    const names = sample({ navigator: { onLine: true } }).map((t) => t.name);
+    expect(names).not.toContain('ram_system_advertised');
+  });
+
   it('samples navigator.connection with a TRANSPORT type the viewer can render', () => {
     // `type` must be a CONNECTION_STATES key. It used to carry effectiveType ('4g'), which is in no
     // table, so the row rendered as [object Object]. effectiveType survives as detail.

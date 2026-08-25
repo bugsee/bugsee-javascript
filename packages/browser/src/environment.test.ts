@@ -32,6 +32,19 @@ const zeroProbe: BrowserProbe = {
 };
 
 describe('buildBrowserEnvironment — platform is the OS, not the runtime', () => {
+  it('reports NO memory_total, because no browser API returns the real figure', () => {
+    // navigator.deviceMemory is the only memory reading a page gets, and it is deliberately coarse: a
+    // 64 GB machine reports 32 (measured, Chrome 151). `memory_total` means ACTUAL physical RAM on
+    // every other Bugsee SDK — node reads os.totalmem, Android reads MemoryInfo — and the viewer
+    // synthesizes a "System memory (RAM) / Total" trace straight from it
+    // (recording-helper.service.ts:186). Filling it with a rounded bucket puts a confidently wrong
+    // number under an exact label. The reading is not discarded: it goes out as the
+    // `ram_system_advertised` trace instead, which is exactly what Android means by "advertised".
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);
+    expect('memory_total' in env.platform).toBe(false);
+    expect('memory_total' in (env.hardware as object)).toBe(false);
+  });
+
   it('reports the host OS and its version, not the sandbox tag and the user agent', () => {
     // The defect this replaced (samples/FINDINGS.md F-X20): the web tier sent `type: 'web'` and the
     // WHOLE user-agent string as `version` — the field the backend indexes as `os_version` — so a
@@ -42,7 +55,6 @@ describe('buildBrowserEnvironment — platform is the OS, not the runtime', () =
       version: '10.15.7',
       utc_offset: -480,
       locale: 'en-GB',
-      memory_total: 8192, // MB on the wire, from an 8 GiB deviceMemory reading
     });
     expect(env.platform.version).not.toContain('Mozilla'); // never the UA string again
   });
@@ -121,7 +133,6 @@ describe('buildBrowserEnvironment — hardware', () => {
       pixel_ratio: 2,
       device_id: 'dev-1',
       cpu_count: 16,
-      memory_total: 8192, // MB on the wire, from an 8 GiB deviceMemory reading
     });
   });
 
@@ -138,12 +149,13 @@ describe('buildBrowserEnvironment — hardware', () => {
     expect('memory_total' in (env.hardware as object)).toBe(false);
   });
 
-  it('keeps a defined-but-zero memory_total / cpu_count (omit guard is !== undefined, not falsy)', () => {
+  it('keeps a defined-but-zero cpu_count (omit guard is !== undefined, not falsy)', () => {
+    // memory_total is gone from both blocks (see the OS section above), so only cpu_count is left to
+    // guard here — and the falsy-vs-undefined distinction still matters for it.
     const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, zeroProbe);
-    expect('memory_total' in env.platform).toBe(true);
-    expect(env.platform.memory_total).toBe(0);
-    expect((env.hardware as { memory_total: unknown }).memory_total).toBe(0);
     expect((env.hardware as { cpu_count: unknown }).cpu_count).toBe(0);
+    expect('memory_total' in env.platform).toBe(false);
+    expect('memory_total' in (env.hardware as object)).toBe(false);
   });
 });
 
