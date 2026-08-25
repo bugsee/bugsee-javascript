@@ -18,7 +18,23 @@ export default defineConfig({
       // `@bugsee/node-utils` source leaks into coverage because vitest's external-file check is a
       // string-prefix test and "node-utils" starts with this package's dir name "node". It has its
       // own suite — exclude it so only @bugsee/node's own files count.
-      exclude: ['src/**/*.test.ts', 'src/**/*.test-d.ts', 'src/**/*.d.ts', '**/node-utils/**'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.test-d.ts',
+        'src/**/*.d.ts',
+        '**/node-utils/**',
+        // `src/index.ts` is a PURE re-export barrel — 19 `export … from` lines and no logic — and v8
+        // instruments it non-deterministically. Locally it reports zero executable lines and passes;
+        // on CI it has repeatedly reported ~19 uncovered ones and failed the package at 96.52%,
+        // including on runs where `index.test.ts` imports the whole surface (it passed one run and
+        // failed the next with that test in place). A gate that flips on identical code is worse than
+        // no gate on a file with nothing to execute.
+        //
+        // The export surface is still guarded, and better than coverage ever guarded it, by
+        // `src/index.test.ts` — which asserts the exact set of exports in both directions. If this
+        // barrel ever gains real logic, that logic belongs in its own module, not here.
+        'src/index.ts',
+      ],
       thresholds: {
         lines: 100,
         functions: 100,
