@@ -28,29 +28,54 @@ export const ANDROID_ORIENTATION = {
 } as const;
 
 /**
- * Angle → Android orientation, following Android's own `Orientation.fromDisplayRotation(int)`:
- * ROTATION_0 → Portrait, ROTATION_90 → LandscapeRight, ROTATION_180 → PortraitUpsideDown,
- * ROTATION_270 → LandscapeLeft.
+ * Angle → Android orientation, following `Orientation.fromAngle` for a PORTRAIT-natural device — the
+ * only kind that reaches this fallback, since it exists for legacy engines exposing only
+ * `window.orientation`, i.e. old phones.
+ *
+ * ⚠️ `fromAngle` is the right source, not the one-arg `Orientation.fromDisplayRotation(int)` overload
+ * sitting beside it in the same file. Those two DISAGREE (the one-arg maps ROTATION_90 to
+ * LandscapeRight, fromAngle maps angle 90 to LandscapeLeft), and only `fromAngle` is on Android's
+ * production path: BugseeTrackerUI.getScreenOrientation calls the THREE-arg fromDisplayRotation, which
+ * delegates to fromAngle. Reading the wrong overload is how this table shipped inverted once already.
  */
 const BY_ANGLE: Record<number, number> = {
   0: ANDROID_ORIENTATION.Portrait,
-  90: ANDROID_ORIENTATION.LandscapeRight,
+  90: ANDROID_ORIENTATION.LandscapeLeft,
   180: ANDROID_ORIENTATION.PortraitUpsideDown,
-  270: ANDROID_ORIENTATION.LandscapeLeft,
+  270: ANDROID_ORIENTATION.LandscapeRight,
 };
 
 /**
  * Screen Orientation API type → Android orientation.
  *
- * `landscape-primary` is the position a portrait-natural device reaches by rotating +90°, which is what
- * Android calls LandscapeRight — hence the pairing, which looks inverted until you check
- * Orientation.java's rotation mapping.
+ * This is EXACT rather than approximate, and pleasingly so: the web's four `type` values line up with
+ * `Orientation.fromAngle`'s output one-for-one whatever the device's natural orientation is, because
+ * both abstractions already account for it.
+ *
+ *   type                | portrait-natural | landscape-natural | fromAngle
+ *   portrait-primary    | angle 0          | angle 90          | Portrait (1)
+ *   landscape-primary   | angle 90         | angle 0           | LandscapeLeft (3)
+ *   portrait-secondary  | angle 180        | angle 270         | PortraitUpsideDown (2)
+ *   landscape-secondary | angle 270        | angle 180         | LandscapeRight (4)
+ *
+ * Derived from what our SDKs actually write into the trace, not from the platform docs:
+ *   Android — TraceOrientation: `entry.value = orientation.getIntValue()` (the Orientation enum, 0..4),
+ *             sourced from BugseeTrackerUI.getScreenOrientation → fromDisplayRotation(w,h,rot) → fromAngle.
+ *   iOS     — BGSEventManager.m:511: the raw `(int) UIInterfaceOrientation`, no mapping applied.
+ * Both therefore put a 0..4 int on the wire with 3 and 4 as the two landscape positions.
+ *
+ * The two platforms NAME those ints oppositely — Android's enum is named for the device orientation,
+ * UIKit's for the interface orientation, and UIKit aliases each to the other's value. That is why the
+ * viewer labels 3 "LandscapeRight" while Android's enum calls 3 LandscapeLeft; it is a naming
+ * difference between the platforms, not a defect in either. This table follows Android, because
+ * `fromAngle` is the one path traceable end-to-end in our own code from a display rotation — which is
+ * what the web's `angle` is — to a trace value.
  */
 const BY_TYPE: Record<string, number> = {
   'portrait-primary': ANDROID_ORIENTATION.Portrait,
   'portrait-secondary': ANDROID_ORIENTATION.PortraitUpsideDown,
-  'landscape-primary': ANDROID_ORIENTATION.LandscapeRight,
-  'landscape-secondary': ANDROID_ORIENTATION.LandscapeLeft,
+  'landscape-primary': ANDROID_ORIENTATION.LandscapeLeft,
+  'landscape-secondary': ANDROID_ORIENTATION.LandscapeRight,
 };
 
 /**

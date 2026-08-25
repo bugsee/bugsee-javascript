@@ -104,7 +104,7 @@ describe('createBrowserSystemTracesSampler', () => {
 
   it('samples screen.orientation as the Android-enum INT, not the browser object', () => {
     expect(sample({ screen: { orientation: { type: 'landscape-primary', angle: 90 } } })).toEqual([
-      { name: 'orientation', value: 4 }, // LandscapeRight
+      { name: 'orientation', value: 3 }, // Android Orientation.LandscapeLeft — see system-trace-values
     ]);
     expect(sample({ screen: { orientation: { type: 'portrait-primary', angle: 0 } } })).toEqual([
       { name: 'orientation', value: 1 }, // Portrait

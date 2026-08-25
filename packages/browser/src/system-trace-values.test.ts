@@ -15,14 +15,47 @@ import {
 
 describe('orientationToWire', () => {
   it('maps every Screen Orientation API type onto the Android enum', () => {
+    // Derived from Android's `Orientation.fromAngle`, which is what actually feeds its `orientation`
+    // trace (BugseeTrackerUI.getScreenOrientation → the THREE-arg fromDisplayRotation → fromAngle).
+    // Note the one-arg `fromDisplayRotation(int)` overload in the same file disagrees with it — it is
+    // a fallback and is NOT the production path; reading that one is how this mapping was inverted.
+    //
+    // The web's `type` lines up with fromAngle 1:1 REGARDLESS of the device's natural orientation,
+    // which is what makes this exact rather than approximate:
+    //
+    //   type                 | portrait-natural | landscape-natural | fromAngle
+    //   portrait-primary     | angle 0          | angle 90          | Portrait (1)
+    //   landscape-primary    | angle 90         | angle 0           | LandscapeLeft (3)
+    //   portrait-secondary   | angle 180        | angle 270         | PortraitUpsideDown (2)
+    //   landscape-secondary  | angle 270        | angle 180         | LandscapeRight (4)
     expect(orientationToWire('portrait-primary', 0)).toBe(ANDROID_ORIENTATION.Portrait);
     expect(orientationToWire('portrait-secondary', 180)).toBe(
       ANDROID_ORIENTATION.PortraitUpsideDown,
     );
-    // A portrait-natural device rotated +90° is `landscape-primary`, which is the same physical
-    // position Android calls LandscapeRight (its ROTATION_90 → LandscapeRight, Orientation.java).
-    expect(orientationToWire('landscape-primary', 90)).toBe(ANDROID_ORIENTATION.LandscapeRight);
-    expect(orientationToWire('landscape-secondary', 270)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
+    expect(orientationToWire('landscape-primary', 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
+    expect(orientationToWire('landscape-secondary', 270)).toBe(ANDROID_ORIENTATION.LandscapeRight);
+  });
+
+  it('emits the same 0-4 vocabulary both mobile SDKs put on the wire', () => {
+    // What each SDK ACTUALLY writes into the trace, read from our own code rather than inferred from
+    // the platform docs:
+    //   Android — TraceOrientation.sendValue: `entry.value = orientation.getIntValue()`, the
+    //             Orientation enum, 0..4.
+    //   iOS     — BGSEventManager.m:511: `[NSNumber numberWithInt:(int) bugsee_getInterfaceOrientation()]`,
+    //             the raw UIInterfaceOrientation int, with no mapping applied. Also 0..4.
+    // So the wire vocabulary is a small int in 0..4 on both, and the two landscape positions are 3
+    // and 4. This pins that the web tier speaks the same vocabulary.
+    //
+    // NOTE the two SDKs use OPPOSITE NAMES for those ints — Android's enum is named after the device
+    // orientation, UIKit's after the interface orientation, and UIKit aliases the two to each other's
+    // values. This mapping is derived from Android's `fromAngle`, which is the only path traceable
+    // end-to-end in our own code from a display rotation (the web's `angle`) to a trace value.
+    const landscape = [
+      orientationToWire('landscape-primary', 90),
+      orientationToWire('landscape-secondary', 270),
+    ];
+    expect(landscape.sort()).toEqual([3, 4]);
+    expect(orientationToWire('landscape-primary', 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
   });
 
   it('is an INT, never the {type, angle} object the Screen Orientation API hands out', () => {
@@ -56,10 +89,11 @@ describe('orientationToWire', () => {
   it('falls back to the ANGLE when the type is missing but the angle is not', () => {
     // Older WebKit exposes `window.orientation` (an angle) and no `screen.orientation.type`. An angle
     // alone still identifies the position, so it is worth more than Unknown.
+    // Same table as fromAngle's portrait-natural column, which is the only case this path serves.
     expect(orientationToWire(undefined, 0)).toBe(ANDROID_ORIENTATION.Portrait);
-    expect(orientationToWire(undefined, 90)).toBe(ANDROID_ORIENTATION.LandscapeRight);
+    expect(orientationToWire(undefined, 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
     expect(orientationToWire(undefined, 180)).toBe(ANDROID_ORIENTATION.PortraitUpsideDown);
-    expect(orientationToWire(undefined, 270)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
+    expect(orientationToWire(undefined, 270)).toBe(ANDROID_ORIENTATION.LandscapeRight);
     expect(orientationToWire(undefined, 45)).toBe(ANDROID_ORIENTATION.Unknown);
     expect(orientationToWire(undefined, undefined)).toBe(ANDROID_ORIENTATION.Unknown);
   });
