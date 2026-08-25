@@ -8,7 +8,7 @@
 //
 // NOTE: jsdom is a real DOM but NOT a real browser engine; a cross-browser Playwright run (+ the Bugsee rrweb
 // fork wired) is a documented follow-up — this validates the real rrweb integration + the full launch path.
-import { type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
+import { type BrowserProbe, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import { createMemoryCaptureStore } from '@bugsee/core';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { gunzipSync } from 'fflate';
@@ -42,7 +42,11 @@ function captureTransport() {
   return { transport: transport as BugseeLaunchOptions['transport'], getBundle: () => bundle };
 }
 
-const fakeProbe = {
+// Typed as the REAL BrowserProbe, and passed WITHOUT a cast. It used to be `as never` at the call
+// site, which silenced the compiler at exactly the point it was protecting this: when BrowserProbe
+// gained a reader, this fixture kept typechecking and threw at runtime instead — inside report
+// assembly, so the whole suite saw only "no bundle arrived".
+const fakeProbe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 (jsdom) Test',
   locale: () => 'en-US',
   utcOffsetMinutes: () => 0,
@@ -78,7 +82,7 @@ describe('@bugsee/replay — real rrweb integration (jsdom)', () => {
     const client = launchCore('tok', {
       replay: true, // → lazy-load the REAL @bugsee/replay → REAL rrweb record on the jsdom DOM
       transport: cap.transport,
-      systemProbe: fakeProbe as never,
+      systemProbe: fakeProbe,
       systemMetricsSampler: () => [],
       captureNetwork: false,
       detectCrashes: false,

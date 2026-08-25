@@ -15,8 +15,12 @@ export type WorkerPlatformType = 'web-worker' | 'service-worker';
 
 export interface WorkerProbe {
   userAgent(): string;
-  /** `navigator.userAgentData.platform` — Chromium-only; undefined elsewhere. See BrowserProbe. */
-  uaDataPlatform(): string | undefined;
+  /**
+   * `navigator.userAgentData.platform` — Chromium-only; undefined elsewhere. Optional and called
+   * optionally, for the same reason as BrowserProbe's: `systemProbe` is a public launch option and a
+   * probe missing this must degrade to the UA parse, not throw during report assembly.
+   */
+  uaDataPlatform?(): string | undefined;
   locale(): string;
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
@@ -70,7 +74,7 @@ export function buildWorkerEnvironment(
   const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
   const userAgent = probe.userAgent();
-  const os = detectOs(userAgent, probe.uaDataPlatform());
+  const os = detectOs(userAgent, probe.uaDataPlatform?.());
   const browser = detectBrowser(userAgent);
   return {
     platform: {

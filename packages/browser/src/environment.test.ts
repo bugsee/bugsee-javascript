@@ -70,6 +70,18 @@ describe('buildBrowserEnvironment — platform is the OS, not the runtime', () =
     expect(env.platform.version).toBe('10');
   });
 
+  it('survives a probe with NO uaDataPlatform at all, falling back to the user agent', () => {
+    // `systemProbe` is a PUBLIC launch option (packages/browser/src/launch.ts:212), so a caller can
+    // hand us a probe built against an older shape of this interface. Calling a method it does not
+    // have threw a TypeError inside the environment build — which happens during report ASSEMBLY, so
+    // the symptom was every report silently vanishing, not a visible crash. Found by the replay e2e,
+    // whose fixture was cast `as never` and so escaped the compiler entirely.
+    const { uaDataPlatform: _omitted, ...withoutUaData } = fullProbe;
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, withoutUaData as BrowserProbe);
+    expect(env.platform.type).toBe('macos'); // parsed from the UA instead
+    expect(env.platform.version).toBe('10.15.7');
+  });
+
   it('prefers the browser’s DECLARED platform over a disagreeing user agent', () => {
     const spoofed: BrowserProbe = { ...fullProbe, uaDataPlatform: () => 'Windows' };
     expect(buildBrowserEnvironment({ sdkVersion: '1.0.0' }, spoofed).platform.type).toBe('windows');
@@ -214,16 +226,21 @@ describe('realBrowserProbe', () => {
   });
 
   it('reads navigator.userAgentData.platform where the browser exposes it', () => {
+    // The reader is OPTIONAL on the interface (a caller's own probe may predate it), but the REAL
+    // probe must implement it — asserted explicitly, so `?.()` below cannot pass by short-circuiting
+    // if the method were ever dropped.
+    expect(typeof realBrowserProbe.uaDataPlatform).toBe('function');
     vi.stubGlobal('navigator', { userAgent: 'UA/9', userAgentData: { platform: 'macOS' } });
-    expect(realBrowserProbe.uaDataPlatform()).toBe('macOS');
+    expect(realBrowserProbe.uaDataPlatform?.()).toBe('macOS');
   });
 
   it('returns undefined for uaDataPlatform on a browser without UA-CH', () => {
+    expect(typeof realBrowserProbe.uaDataPlatform).toBe('function');
     vi.stubGlobal('navigator', { userAgent: 'UA/9' });
-    expect(realBrowserProbe.uaDataPlatform()).toBeUndefined();
+    expect(realBrowserProbe.uaDataPlatform?.()).toBeUndefined();
     // ...and when userAgentData exists but carries no platform (a partial/polyfilled shim).
     vi.stubGlobal('navigator', { userAgent: 'UA/9', userAgentData: {} });
-    expect(realBrowserProbe.uaDataPlatform()).toBeUndefined();
+    expect(realBrowserProbe.uaDataPlatform?.()).toBeUndefined();
   });
 
   it('reads navigator / screen / window values (used by default)', () => {

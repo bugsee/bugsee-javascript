@@ -215,8 +215,16 @@ describe('BugseeProfiler produces spans through a real render', () => {
       expect(endTimestampMs).toBeGreaterThanOrEqual(startTimestampMs);
       // and it is a real wall-clock epoch, not a value relative to some other origin: the whole span has
       // to sit inside the window this test ran in.
-      expect(startTimestampMs).toBeGreaterThanOrEqual(before);
-      expect(endTimestampMs).toBeLessThanOrEqual(after + 1);
+      //
+      // CLOCK_SKEW_MS, not a 1 ms slack. `before`/`after` come from `Date.now()`, while these
+      // timestamps are `performance.timeOrigin + performance.now()` — two clocks that drift apart, and
+      // `Date.now()` is additionally subject to NTP steps. The 1 ms form failed on CI at 1.0046 ms past
+      // `after`, which is drift, not a defect. The property being tested survives a generous tolerance
+      // untouched: a timestamp on the WRONG origin is out by ~1.7e12 ms, eight orders of magnitude
+      // beyond this, so nothing that this used to catch escapes it now.
+      const CLOCK_SKEW_MS = 1_000;
+      expect(startTimestampMs).toBeGreaterThanOrEqual(before - CLOCK_SKEW_MS);
+      expect(endTimestampMs).toBeLessThanOrEqual(after + CLOCK_SKEW_MS);
     }
     cleanup();
   });

@@ -22,8 +22,13 @@ export interface BrowserProbe {
   /**
    * `navigator.userAgentData.platform` — the browser's own declaration of its OS ('macOS', 'Windows',
    * 'Android', …). Chromium-only; undefined on Firefox/Safari, where the UA parse is the only source.
+   *
+   * OPTIONAL, and called optionally, because `systemProbe` is a public launch option: a caller may hand
+   * us a probe written against an older shape of this interface, and a missing method must degrade to
+   * the user-agent parse rather than throw. It threw once — inside report ASSEMBLY, so every report
+   * silently disappeared instead of failing visibly.
    */
-  uaDataPlatform(): string | undefined;
+  uaDataPlatform?(): string | undefined;
   locale(): string;
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
@@ -85,7 +90,7 @@ export function buildBrowserEnvironment(
   const deviceMemory = bytes === undefined ? undefined : bytesToMegabytes(bytes);
   const cpuCount = probe.cpuCount();
   const userAgent = probe.userAgent();
-  const os = detectOs(userAgent, probe.uaDataPlatform());
+  const os = detectOs(userAgent, probe.uaDataPlatform?.());
   const browser = detectBrowser(userAgent);
   return {
     // The OS, matching what every other Bugsee SDK puts here.

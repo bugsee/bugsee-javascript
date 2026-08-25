@@ -272,10 +272,25 @@ describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
     // Moving the bound into this function silently raised it from 8192 to 32768, widening the reachable
     // DoS window 4×: a 16 KB `eyJ`-dense URL cost 38 ms of synchronous app-thread CPU, and Node's default
     // maxHeaderSize is 16384 — reachable by default via server-instrument on every inbound request.
-    const hostile = 'eyJ'.repeat(5_500); // ~16.5 KB, the exact worst case
-    const started = Date.now();
-    redactShapes(hostile);
-    expect(Date.now() - started).toBeLessThan(5);
+    //
+    // A RATIO, for the same reason the test above is one — and this test is why that reason is worth
+    // repeating: it was left in the `toBeLessThan(5)` wall-clock form when its neighbour was converted,
+    // and it duly failed on the self-hosted CI runner at 11 ms for healthy code. Machine speed divides
+    // out of a ratio; it does not divide out of a millisecond budget.
+    const hostile = 'eyJ'.repeat(5_500); // ~16.5 KB — above the bound, so the superset pass is skipped
+    const processed = 'eyJ'.repeat(2_600); // 7.8 KB — below it, so the pass DOES run
+    const time = (value: string): number => {
+      const started = Date.now();
+      for (let i = 0; i < 5; i += 1) {
+        redactShapes(value);
+      }
+      return Date.now() - started;
+    };
+    time(hostile); // warm up
+    time(processed);
+    // The hostile input is more than TWICE the length of the one that is actually processed, so this
+    // is a conservative comparison: were it not being skipped, it would cost far more, not less.
+    expect(time(hostile) + 1).toBeLessThan(time(processed) / 10);
   });
 
   it('still redacts a JWT just under the bound', () => {
