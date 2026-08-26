@@ -222,6 +222,33 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
     }
   });
 
+  it('returns no frames when the engine produces no stack at all', () => {
+    // Very old engines (and some embedded ones) leave `error.stack` undefined. `?? ''` keeps that a
+    // frameless report rather than a thrown SDK — the same outcome as before this existed.
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const noStack = new Error();
+      Object.defineProperty(noStack, 'stack', { value: undefined });
+      expect(callSiteFrames(noStack, function boundary() {}, parseV8Stack)).toEqual([]);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('returns no frames when the engine produces no stack, WITH captureStackTrace present', () => {
+    // Symmetric case: the capture runs but the engine still yields nothing readable.
+    const noStack = new Error();
+    Object.defineProperty(noStack, 'stack', { value: undefined, writable: true });
+    const capture = (Error as { captureStackTrace?: (t: object, f: unknown) => void })
+      .captureStackTrace;
+    if (typeof capture === 'function') {
+      // captureStackTrace would normally REPLACE .stack; pin the non-writable case instead.
+      Object.defineProperty(noStack, 'stack', { value: undefined, writable: false });
+    }
+    expect(callSiteFrames(noStack, function boundary() {}, parseV8Stack)).toEqual([]);
+  });
+
   it('never throws and never leaves the caller without an array', () => {
     const frames = callSiteFrames(
       new Error(),
