@@ -73,6 +73,12 @@ export interface BuildCrashOptions {
   globalObject?: unknown;
   /** Whether this was a handled (logException) vs an uncaught crash. Default false. */
   handled?: boolean;
+  /**
+   * The CALLER's frames, for a thrown value that carries no stack of its own (see
+   * {@link callSiteFrames}). Ignored for a real Error, which has its own. Absent or empty keeps the
+   * previous frameless behaviour rather than losing the crash.
+   */
+  syntheticFrames?: StackFrame[];
 }
 
 /** The Android cause-chain depth cap (matches the mobile serializer). */
@@ -172,11 +178,19 @@ function buildException(
  * `logException` accepts them. Returning nothing here meant the bundle carried no `crash.json` at
  * all, so the report had a summary and nothing else and the backend answered "Crash data for the
  * issue was not found": an issue that exists, is counted, and cannot be acted on. A synthetic
- * exception makes it usable. There are no frames: the value never had a stack, and the SDK's own
- * call frames would describe the SDK rather than the fault.
+ * exception makes it usable.
+ *
+ * The frames are the CALLER's, supplied by {@link callSiteFrames}. The value never had a stack, and the
+ * SDK's own frames would describe the SDK rather than the fault — but strip those and what remains is
+ * the application code that called us, which IS the fault site. Without them the backend emits no
+ * grouping signature at all (worker/crash/managed/common.py:88), so every occurrence became a new
+ * issue instead of another event on an existing one.
  */
-function syntheticException(value: unknown): CrashException {
-  const exception: CrashException = { name: typeTag(value), frames: [] };
+function syntheticException(value: unknown, frames: StackFrame[] = []): CrashException {
+  // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
+  // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
+  // same way.
+  const exception: CrashException = { name: typeTag(value), frames: frames.map(toCrashFrame) };
   const reason = renderThrowable(value);
   if (reason !== '') {
     exception.reason = reason;
@@ -219,7 +233,7 @@ export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}):
       exception_type: 'error',
       ndkCrash: false,
       handled: options.handled ?? false,
-      exception: syntheticException(error),
+      exception: syntheticException(error, options.syntheticFrames),
     };
   }
   const parseStack = options.parseStack ?? parseV8Stack;

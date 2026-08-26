@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatStack, parseLocation, parseV8Stack } from './stack';
+import { callSiteFrames, formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
 
 describe('parseV8Stack', () => {
   it('parses a typical Node stack into structured frames', () => {
@@ -172,5 +172,64 @@ describe('formatStack', () => {
     expect(formatStack([{ function: 'f', file: '/a.js', line: 1, column: 2 }])).not.toContain(
       'debugId',
     );
+  });
+});
+
+describe('callSiteFrames — a stack for a value that never had one', () => {
+  // A thrown non-Error (a string, a plain object, null) carries no stack, so `crash.json` shipped
+  // `frames: []`. That costs more than a location: worker/crash/managed/common.py:88 only emits
+  // grouping signatures when it has a top frame, so EVERY occurrence became a new issue. Four
+  // identical `logException('...')` calls produced SBROWSER-32/35/38/41, one event each.
+  //
+  // The caller's own frames are the fault site; only the SDK's frames have to go.
+
+  it('drops the boundary and everything the SDK called above it (Error.captureStackTrace)', () => {
+    const parse = (stack: string) =>
+      stack
+        .split('\n')
+        .filter((l) => l.trim().startsWith('at '))
+        .map((l) => ({ file: 'f', function: l.trim().slice(3).split(' ')[0] }) as StackFrame);
+
+    function boundary(): StackFrame[] {
+      return callSiteFrames(new Error(), boundary, parse);
+    }
+    function applicationCode(): StackFrame[] {
+      return boundary();
+    }
+
+    const frames = applicationCode();
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0]?.function).toBe('applicationCode'); // the caller, not the SDK
+    expect(frames.map((f) => f.function)).not.toContain('boundary');
+  });
+
+  it('falls back to dropping exactly the boundary frame where captureStackTrace is absent', () => {
+    // Measured 2026-08-26: Chromium, Firefox AND WebKit all expose Error.captureStackTrace, so this
+    // path is for older engines only. It stays deterministic by construction rather than by matching
+    // function names (which minification renames): the Error is created INSIDE the boundary, so the
+    // boundary is always frame 0 and dropping one frame is exact.
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const parse = (): StackFrame[] => [
+        { file: 'sdk', function: 'boundary' },
+        { file: 'app', function: 'applicationCode' },
+      ];
+      const frames = callSiteFrames(new Error(), function boundary() {}, parse);
+      expect(frames.map((f) => f.function)).toEqual(['applicationCode']);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('never throws and never leaves the caller without an array', () => {
+    const frames = callSiteFrames(
+      new Error(),
+      function boundary() {},
+      () => {
+        throw new Error('parser exploded');
+      },
+    );
+    expect(frames).toEqual([]);
   });
 });

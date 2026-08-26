@@ -48,7 +48,7 @@ import {
   type ReportHandler,
   runFilter,
 } from './filters';
-import type { StackFrame } from './stack';
+import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
 export type { Breadcrumb, BreadcrumbInput } from './events';
 
@@ -624,7 +624,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       );
     },
 
-    logException(error: unknown, exceptionOptions?: LogExceptionOptions): Promise<UploadResult> {
+    logException: function logException(
+      error: unknown,
+      exceptionOptions?: LogExceptionOptions,
+    ): Promise<UploadResult> {
       // After stop() (§1501) or in the kill-state (§1435), logException is a silent no-op.
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
@@ -641,7 +644,19 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
       // Structured crash.json (SC3): built from the Error's stack + per-frame debug-ids. handled: true —
       // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.
-      const crash = buildCrashJson(error, { parseStack: options.stackParser, handled: true });
+      // A thrown non-Error has no stack of its own, and shipping `frames: []` cost grouping, not just a
+      // location (see callSiteFrames). The Error is constructed HERE, inside the public boundary, which
+      // is what both capture strategies depend on; `logException` is a named function expression purely
+      // so it can name itself as that boundary.
+      const syntheticFrames =
+        error instanceof Error
+          ? undefined
+          : callSiteFrames(new Error(), logException, options.stackParser ?? parseV8Stack);
+      const crash = buildCrashJson(error, {
+        parseStack: options.stackParser,
+        handled: true,
+        ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
+      });
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,

@@ -543,6 +543,28 @@ describe('createClient — crash.json (SC3)', () => {
     });
   });
 
+  it('gives a thrown NON-Error the caller\u2019s frames, not an empty list', async () => {
+    // `logException('a string')` shipped `frames: []`, and the backend only emits a grouping
+    // signature when it has a top frame (worker/crash/managed/common.py:88) \u2014 so each occurrence
+    // became a new issue rather than another event. This test calls through a named function so the
+    // caller is identifiable in the resulting frames.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    async function applicationCode(): Promise<void> {
+      await client.logException('a string throwable');
+    }
+    await applicationCode();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    expect(crash.exception.name).toBe('String');
+    expect(crash.exception.frames.length).toBeGreaterThan(0);
+    // The caller is present and the SDK boundary is not.
+    const members = crash.exception.frames.map(
+      (f: { data?: { member?: string } }) => f.data?.member,
+    );
+    expect(members).toContain('applicationCode');
+    expect(members).not.toContain('logException');
+  });
+
   it('uses the injected stackParser (browser passes its multi-engine parser)', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const stackParser = vi.fn(() => [{ function: 'fn', file: 'x.js', line: 5, column: 6 }]);

@@ -154,6 +154,42 @@ describe('buildCrashJson', () => {
       expect(crash?.exception_type).toBe('error');
     });
 
+    it('carries the CALLER\u2019s frames when given a synthetic call site', () => {
+      // `frames: []` cost more than a location. The backend only emits grouping signatures when it
+      // has a top frame (worker/crash/managed/common.py:88), so every occurrence of the same
+      // `logException('...')` became a NEW issue \u2014 SBROWSER-32/35/38/41, one event each.
+      const frames = [
+        { file: 'app.js', line: 10, column: 2, function: 'checkout' },
+        { file: 'app.js', line: 3, column: 1, function: 'main' },
+      ];
+      const crash = buildCrashJson('a string throwable', { syntheticFrames: frames });
+      // Converted through the same path a real Error's frames take, so they are indistinguishable
+      // downstream — `trace` for the symbolicator, `data` for the backend's location/signature.
+      expect(crash?.exception.frames?.[0]?.data).toEqual({
+        source: 'app.js',
+        member: 'checkout',
+        line: 10,
+        column: 2,
+      });
+      expect(crash?.exception.frames?.[0]?.trace).toBe('at checkout (app.js:10:2)');
+      expect(crash?.exception.frames).toHaveLength(2);
+    });
+
+    it('still synthesises an exception when no call site could be captured', () => {
+      // The capture is best-effort; losing it must not lose the crash.
+      const crash = buildCrashJson('a string throwable', { syntheticFrames: [] });
+      expect(crash?.exception.name).toBe('String');
+      expect(crash?.exception.frames).toEqual([]);
+    });
+
+    it('does NOT put synthetic frames on a real Error \u2014 it has its own', () => {
+      const real = new Error('boom');
+      const crash = buildCrashJson(real, {
+        syntheticFrames: [{ file: 'wrong.js', line: 1, column: 1, function: 'nope' }],
+      });
+      expect(crash?.exception.frames?.some((f) => f.data?.member === 'nope')).toBe(false);
+    });
+
     it('renders a plain object with no message as JSON, so its fields survive', () => {
       const crash = buildCrashJson({ code: 'E_SCENARIO', status: 503 });
       expect(crash?.exception.name).toBe('Object');

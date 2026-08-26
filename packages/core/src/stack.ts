@@ -93,3 +93,46 @@ export function formatStack(frames: StackFrame[]): string {
     })
     .join('\n');
 }
+
+/**
+ * The CALLER's frames, for a thrown value that never carried a stack of its own.
+ *
+ * JS throws non-Errors routinely — a string, a plain object, a rejected promise's value — and
+ * `logException` accepts them. Those shipped `frames: []`, which costs more than a missing location:
+ * the backend only emits grouping signatures when it has a top frame
+ * (worker/crash/managed/common.py:88), so every occurrence became a NEW issue rather than another
+ * event on an existing one.
+ *
+ * The SDK's own frames genuinely would describe the SDK rather than the fault — but strip those and
+ * what remains is the application code that called us, which is exactly the fault site.
+ *
+ * `error` MUST be constructed inside `boundary` itself. Both paths below depend on it:
+ *   - `Error.captureStackTrace(error, boundary)` removes every frame up to AND including `boundary`,
+ *     so the SDK disappears however many helpers deep the capture happens to be. Measured 2026-08-26:
+ *     Chromium, Firefox and WebKit all provide it.
+ *   - Without it, the boundary is frame 0 by construction, so dropping exactly one frame is exact —
+ *     and stays exact under minification, which any function-name matching would not.
+ *
+ * `Error.stackTraceLimit` is deliberately NOT raised. It is app-observable global state, and the
+ * default (10 in V8) is ample for a location and a grouping signature; quietly mutating a global to
+ * enrich our own telemetry is the kind of thing the SDK does not do to its host.
+ */
+export function callSiteFrames(
+  error: Error,
+  boundary: (...args: never[]) => unknown,
+  parseStack: (stack: string) => StackFrame[],
+): StackFrame[] {
+  // Contained: `parseStack` is injected, and a report must never be lost to a parser that throws on
+  // an engine whose stack format it did not expect. No frames is the pre-existing behaviour.
+  try {
+    const capture = (Error as { captureStackTrace?: (target: object, fn: unknown) => void })
+      .captureStackTrace;
+    if (typeof capture === 'function') {
+      capture(error, boundary);
+      return parseStack(error.stack ?? '');
+    }
+    return parseStack(error.stack ?? '').slice(1);
+  } catch {
+    return [];
+  }
+}
