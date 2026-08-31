@@ -107,6 +107,183 @@ under real launch wiring, 1 and 2 dead subtrees, concurrent recoverers). 0 viola
 REPORTS the 72 accepted R2-2 legacy double-reports and the known concurrent-recoverer duplicate rather
 than hiding them.
 
+## Round 5 review — DID NOT CONVERGE. 1 SEV1, 4 SEV2, 3 SEV3 from 4 reviewers
+
+**But the streak broke: round 4 introduced NO new loss path.** Rounds 1-3 each did. Round 5's SEV1 and
+two of its SEV2s are PRE-EXISTING defects that round 4 made visible by unifying everything around them;
+the rest are test-coverage gaps, not breakage.
+
+### R5-1 · SEV1 · The LIVE report path retires the marker on a retryable failure
+
+`packages/core/src/client.ts:517-524` — `result.then(clear, clear)` retires the report marker on ANY
+settlement, justified by `client.ts:487` ("by which point the durable bundle queue owns delivery").
+`durable-upload-pipeline.ts:403-407` falsifies that: it catches a throwing `store.put` and continues.
+So a failed durable write (ENOSPC / EROFS / EACCES / EDQUOT, a `RangeError` from `serializeBundle`, or
+any integrator `options.bundleStore`) PLUS a **retryable** upload failure erases everything — no blob,
+no marker, and the next launch's sweep (`capture-recovery.ts:216-225`) frees the orphaned capture
+generation because nothing names it. CONFIRMED against a real `launch()`:
+
+```
+before settle:        markers = 1
+after RETRYABLE 503:  markers = 0, generations = 1, PUT attempts = 4
+launch 2, accepting:  uploads = 0
+```
+
+This is the ONLY marker-retirement site that gates on nothing — `capture-recovery.ts:101,196` and
+`native-crash-recovery.ts:138` all use `isUploadSettled`. **`client.test.ts:834` asserts the defect**
+("clears the marker even when the upload fails (the durable bundle queue then owns delivery)") with a
+bare `vi.fn` pipeline that stages nothing, so its own parenthetical is false — the same pattern as the
+six in `REMEDIATION-PLAN.md`. Fix: gate `clear` on "blob actually staged, or `isUploadSettled(result)`";
+keeping the marker on a retryable failure is already the reconciled case.
+
+### R5-2 · SEV2 · A transient 401/403 permanently disables the SDK, and core holds two opposite verdicts
+
+`upload-pipeline.ts:106-107` turns a 401 or 403 from `ensureSession` into `fatal: true` →
+`client.ts:440` → `enterKillState` (`client.ts:469-475`): capture and detection stopped, `launch()` a
+permanent no-op (`client.ts:690-694`). Meanwhile `transport.ts:171`, eighty lines away, asserts as
+Android parity that 401 is retryable. Android agrees with the second: `BugseeCommunicationManager.java:624-635`
+treats 401 as session expiry → invalidate + retry once (`:615-618`), and the app-token blacklist fires
+ONLY on server error code `KILL_SDK` (`:776-781`), never on an HTTP status.
+
+### R5-3 · SEV2 · Collector error codes are unclassified AND share a numeric field with HTTP statuses
+
+`bugsee-api.ts:49-51` throws `BugseeError(msg, code)` carrying the COLLECTOR's error code — and a v2
+rejection arrives with **HTTP 200** (`:38-42`). `upload-pipeline.ts:106` then reads `err.code` as an HTTP
+status. Two consequences: Android's permanent codes (14019 InvalidAppToken, 11004 ApplicationTypeMismatch,
+99098 UnsupportedSdk, 99099 KILL_SDK — `CommunicationErrorClassifier.java:46-53`) have NO JS analogue
+(`classifyServerErrorCode`: 0 hits) and are retried forever; and an envelope code that happens to be
+401/403 is misread as an auth status and kills the SDK. `bugsee-api.ts:66-70` records that
+`ApplicationTypeMismatchError` once rejected every session, so these codes occur in production.
+
+### R5-4 · SEV2 · R3-4's PLATFORM exposure is not closed — identical survival numbers to round 3
+
+`node/src/launch.ts:777`, `browser/src/launch.ts:566`, `webworker/src/launch.ts:348`. Mutating
+`pipeline: baseUploadPipeline` → `pipeline: durable ?? baseUploadPipeline`: **node SURVIVED 109/109,
+browser SURVIVED 88/88, webworker SURVIVED 66/66** — byte-identical to round 3. Found independently by
+two reviewers, one with mutation proof. Core's guard (`launch-recovery.test.ts:164`) IS falsifiable
+because it uses a **503**, so the re-staged copy persists and is visible; all three platform tests use an
+**OK** transport, where the copy is removed on success and the duplicate never materialises. The hazard is
+retryable-failure-only. `tsc` cannot help: `DurableUploadPipeline` structurally satisfies `UploadPipeline`.
+Round 4's claim that "the three places a platform could get it wrong" died is FALSE for this parameter.
+Fix: one platform test with a retryable transport, or narrow `LaunchRecoveryOptions.pipeline`.
+
+### R5-5 · SEV2 · The harness cannot see the R2-3/R3-6 class it was rebuilt to guard
+
+Re-injecting exactly "a permanently-refused bundle is never freed, so it is re-uploaded every launch
+forever" produces **zero** violations:
+
+```
+DEFECT RE-INJECTED:  231 cases swept, 0 invariant violations
+CURRENT:      PUTs per launch  L1:1 L2:0 L3:0 L4:0 L5:0
+RE-INJECTED:  PUTs per launch  L1:1 L2:1 L3:1 L4:1 L5:1
+```
+
+Four structural reasons: **(1)** P3 counts a delivery only for `harnessVerdict === 'accept'`
+(`invariants.mts:187-190`) and `:380` supplies exactly one 2xx, so at-most-once is inert in 10 of 11
+status columns; **(2)** P3 is per-launch everywhere (A creates a fresh collector inside the pass loop at
+`:415`; B/C/D/F/G/H are single-launch; E set-dedupes via `judgeEventual`), so "again on every launch" is
+unrepresentable; **(3)** capture generations are never observed (`readNodeState:333-345`,
+`browserLeft:829-849`), so `capture-recovery.ts:224`'s `removeGeneration` — the call that destroys a
+session's recording — is invisible to P1/P2; **(4)** **the live report path is never exercised**, which is
+exactly how R5-1 escaped five rounds. Fifth, narrower: `harnessVerdict(403) = 'refuse'` while the SDK
+never settles a 403, so a regression to "delete on the first 403" sweeps clean across all 33 403 cases.
+
+**And the independence is of PROVENANCE, not outcome.** `harnessVerdict` imports no SDK predicate
+(verified) but agrees with `isRetryableHttpStatus` bit-for-bit, so a shared mis-transcription of the Java
+would be undetectable by construction.
+
+### R5-6 · SEV3 · `shared:` true-direction untested in all three platforms
+
+Same three sites, one line up. `shared: false` → CAUGHT everywhere; `shared: true` → **SURVIVED**
+109/109, 88/88, 66/66. Timing/ordering only, not loss.
+
+### R5-7 · SEV3 · The release pass is unconditional against a THROW, not against a HANG
+
+`launch-recovery.ts:130` `await scan(...)` gates the release pass at `:136-139`. At `36ec616` the
+own-queue recover fired independently. A scan that never settles (a wedged IDB transaction, or an upload
+against a transport with no timeout) holds the shared queue's release for the whole launch, and deferred
+blobs stay withheld from the pump. Fail-safe — everything is kept — and the unavoidable price of R2-1,
+but the docstring at `:64-75` calls the release pass "unconditional", which is true only for a throwing
+scan. One sentence closes it.
+
+### R5-8 · SEV3 · Three more `as unknown as Transaction` doubles, inside `@bugsee/performance` itself
+
+`interactions.test.ts:36-41` (3 of 16 members), `idle-transaction.test.ts:34-39` (2 of 16),
+`navigations.test.ts:36-41` (3 of 16). **Mitigating, and checked rather than assumed:** those three
+source files contain no `try`/`catch` on the span path, so a missing member throws loudly instead of
+degrading silently — the opposite of what `server-instrument.ts`'s outer catch did. They are one added
+`try/catch` away from being the sixteenth. Also `node/src/launch.test.ts:2326` is outside the `tsc` net
+for the same `registerExt(name, api: unknown)` reason as bun/deno (behaviourally falsifiable, N1-N5 all
+caught).
+
+### R5-9 · LOW · Documentation defects, several in code this wave wrote
+
+`transport.ts:167` and `invariants.mts:81` cite `toJobResult` at `:63-74`; it is at
+`CommunicationErrorClassifier.java:60-71` — the same class R3-13 recorded as resolved · `transport.ts:161`
+claims to be "THE classifier — the single place that decides `retryable`", which is false
+(`bundle-uploader.ts:41-46`, `upload-pipeline.ts:106-107,177-193` each decide independently) ·
+`transport.ts:183-184`'s sub-400 rationale misdescribes Android (`ReportUploadExecutor.java:605,638`
+treats 200≤code<400 as DELIVERY, not retry; the JS choice is the safe direction, the justification is
+wrong) · `launch-recovery.ts:41-48` states "every recovered blob … NEVER the durable queue" as a global
+invariant, which node's `uploadPipeline = durable ?? base` (`node/src/launch.ts:484,763`) contradicts ·
+`docs/review/electron.md:180` reads `settled` with the old `delivered` meaning ·
+`docs/design/browser-multi-instance-coexistence.md:66` states the R2-1 defect as the design ·
+`docs/design/multi-instance-disk-coexistence.md:84-86,114-115` describes a `recoverInstances` that no
+longer exists · **`docs/PROGRESS.md` has zero record of round 4's architecture delta** (0 hits for
+`launch-recovery`, `isRetryableHttpStatus`, `isUploadSettled`) despite being the designated hand-off doc.
+
+### R5-10 · LOW · Barrel bookkeeping, and my own error
+
+The wave **added** two consumerless exports while stripping others: `isRetryableHttpStatus`
+(`core/src/index.ts:233`) and `recoverSiblingBundleQueue` (`browser-utils/src/index.ts:44`). Widening the
+public surface of the one classifier that decides whether a crash report is deleted is the part worth
+reconsidering. `@bugsee/core`'s barrel has ~72 of 207 exports with no consumer outside core and no
+internal/public convention. Three DI tokens leak, not one: `RequestContextStoreToken` plus
+`EdgeContextStoreToken` twice via `export *` (`bugsee/src/index.edge-light.ts:13`, `index.workerd.ts:9`).
+
+**And the "unexported 8 consumerless symbols" claim in §Round 4 above is WRONG** — the barrel diff vs
+`36ec616` removed only 4 (`createUserEventsProvider`, `UserEvent`, `UserEventSource`,
+`UserEventsProviderOptions`); the 8 were never in the committed barrel, being new files never added to
+it. This doc also said "seven" in one place and "8" in another. No functional impact (nothing outside
+used them; `@bugsee/capture` is `private: true`) — but the record was wrong.
+
+### R5-11 · The Android correlation-key insight (reopens R2-2)
+
+Review item 6's premise was wrong: "staged bundle wins, marker retired" is **not** a JS invention —
+Android does exactly it at `BugseeIssueReportingCoordinator.java:1286-1300`, and `ReportUploadExecutor`'s
+`FileLock` is a different mechanism (cross-PROCESS exclusion on one file). **The real divergence is the
+key.** Android NAMES the bundle file from its snapshot id, so the correlation IS the storage key and can
+never be absent (`bundleCorrelationId`, `:1360-1371`; the reconciliation at `:1287` is a filename lookup).
+JS keys blobs by `newId()` (`durable-upload-pipeline.ts:102,404`) and carries the correlation INSIDE the
+frame as an optional header field. So R2-2's "no sound fallback key exists" is a consequence of that
+storage-key choice, not a law of nature — **R2-2 is fixable, not merely acceptable.**
+
+### Verified clean in round 5 (do not re-check)
+
+`isRetryableHttpStatus` transcription exhaustively compared against an independent re-transcription over
+every status −5..1000: **0 mismatches** · `transport.test.ts` took 14 mutations, all caught, every table
+entry individually pinned · the hoist is correct for all three platforms, no silent ordering or
+error-handling change · `deferred.delete` at hand-over closes the gap under every reachable interleaving
+(4 walked) · both R3-2 layers independently correct · the `settled` rename complete in code and tests ·
+the de-cast doubles do not pass incidentally (proven positively) · the `tsc` mechanism works, including
+the hand-edited `satisfies Transaction` · tsup guard falsifiable per target, all 10 red when reverted ·
+`.session-artifacts/invariants.mts` runs clean in-tree (283 cases, 17.4 s) and imports no SDK predicate ·
+`skipReportIds` complete on return · 403 renew not broken by the new classifier · Stryker leftovers inert ·
+bun recovery verified as genuinely bun's file, diff shape-identical to deno's.
+
+### Round 6 shape (proposed, not started)
+
+1. **R5-1 first** — it is a live-path report loss and the fix is small.
+2. **R5-2 + R5-3 together** — they are one problem: the SDK has no classification of collector error
+   codes and conflates their namespace with HTTP statuses. Fix with the harness case, not before it.
+3. **The harness must start at `logException`.** Every version so far seeds pre-staged artifacts and runs
+   recovery, which is precisely how R5-1 survived five rounds. Also: make P3 cross-launch, observe capture
+   generations, and derive the oracle from a different source than the implementation so provenance
+   independence becomes outcome independence.
+4. **R5-4** — a platform test with a retryable transport, or narrow the type.
+5. Documentation (R5-9) is a real deliverable here, not tidying: `PROGRESS.md` is the designated hand-off
+   doc and has no record of the current architecture.
+
 ## Round 4 — DONE (2026-08-31). Gates: lint 0 · typecheck 100/100 · cycles clean · 425 files / 5793 tests
 
 **Resolved:** R3-1 (new `isRetryableHttpStatus`, `core/src/transport.ts:158-193`, Android-parity
