@@ -1,0 +1,23 @@
+{
+  "name": "@bugsee-samples/fastify-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "verify": "tsx scripts/verify.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bugsee/fastify": "file:../../.local-registry/bugsee-fastify.tgz",
+    "@bugsee/node": "file:../../.local-registry/bugsee-node.tgz",
+    "@bugsee/util": "file:../../.local-registry/bugsee-util.tgz",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,47 @@
+<h2>Settings</h2>
+
+<section class="scenario-section">
+  <h3>Profile</h3>
+  <p class="desc">setUserIdentifier / getUserIdentifier / clearUserIdentifier (S2)</p>
+  <div class="control-row">
+    <input [(ngModel)]="userId" data-testid="user-id-input" />
+    <button data-testid="set-user-id" (click)="setUserId()">Save display name</button>
+    <button class="secondary" data-testid="clear-user-id" (click)="clearUserId()">Clear</button>
+  </div>
+  <div class="control-row">
+    <label class="label" for="pat">Personal access token (masking target for replay)</label>
+    <input id="pat" type="password" [(ngModel)]="pat" placeholder="bgs_live_••••••••" data-testid="pat-input" />
+  </div>
+  <p class="status-line">{{ status() }}</p>
+</section>
+
+<section class="scenario-section">
+  <h3>Custom attributes</h3>
+  <p class="desc">
+    setAttribute / getAttribute / clearAttribute / clearAllAttributes / getAllAttributes, every
+    AttributeValue type (string, number, boolean, string[]) (S2)
+  </p>
+  <div class="control-row">
+    <input [(ngModel)]="attrKey" placeholder="key" data-testid="attr-key" />
+    <select [(ngModel)]="attrType" data-testid="attr-type">
+      <option value="string">string</option>
+      <option value="number">number</option>
+      <option value="boolean">boolean</option>
+      <option value="string[]">string[]</option>
+    </select>
+    <input
+      [(ngModel)]="attrValue"
+      [placeholder]="attrType === 'string[]' ? 'a, b, c' : 'value'"
+      data-testid="attr-value"
+    />
+    <button data-testid="set-attribute" (click)="setAttribute()">Set attribute</button>
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="clear-attribute" (click)="clearAttribute()">Clear "{{ attrKey }}"</button>
+    <button class="secondary" data-testid="clear-all-attributes" (click)="clearAllAttributes()">
+      Clear all attributes
+    </button>
+    <button class="secondary" (click)="refreshAttrs()">Refresh</button>
+  </div>
+  <pre data-testid="attrs-dump" style="background: #f5f6fa; padding: 8px; font-size: 12px;">{{ attrsJson() }}</pre>
+</section>

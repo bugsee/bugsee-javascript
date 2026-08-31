@@ -1,0 +1,37 @@
+@if (denied()) {
+  <div class="denied-banner" data-testid="denied-banner">
+    You're not a manager — redirected away from /approvals ("Manager mode" toggle is in the sidebar).
+  </div>
+}
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2>Expenses</h2>
+    <a routerLink="/expenses/new"><button data-testid="new-expense-link">New expense</button></a>
+  </div>
+
+  @if (loading()) {
+    <p>Loading…</p>
+  } @else {
+    <table class="expense-table" data-testid="expenses-table">
+      <thead>
+        <tr><th>Title</th><th>Category</th><th>Amount</th><th>Date</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        @for (e of expenses(); track e.id) {
+          <tr class="clickable" [attr.data-testid]="'expense-row-' + e.id" [routerLink]="['/expenses', e.id]">
+            <td>{{ e.title }}</td>
+            <td>{{ e.category }}</td>
+            <td>{{ formatAmount(e.amount) }}</td>
+            <td>{{ e.date }}</td>
+            <td><span class="badge" [class]="e.status">{{ e.status }}</span></td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</div>
+
+<div class="card">
+  <app-activity-feed></app-activity-feed>
+</div>

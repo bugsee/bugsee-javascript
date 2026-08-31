@@ -1,0 +1,351 @@
+<h2>Scenario panel</h2>
+<p class="desc">
+  One control per scenario in docs/samples/PLAN.md §4. Every control here calls the real SDK API —
+  see scenarios.md for what should appear in Bugsee for each.
+</p>
+
+<!-- ---------------------------------------------------------------- S1 launch & lifecycle -->
+<section class="scenario-section">
+  <h3>S1 — Launch &amp; lifecycle</h3>
+  <div class="control-row">
+    <span class="label">isLaunched()</span>
+    <span data-testid="is-launched">{{ client?.isLaunched() }}</span>
+  </div>
+  <div class="control-row">
+    <span class="label">flush(5000)</span>
+    <button data-testid="s1-flush" (click)="flush()">Flush</button>
+    @if (statuses()['s1-flush']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Second launch() on the same carrier (must be ignored)</span>
+    <button data-testid="s1-duplicate-launch" (click)="duplicateLaunch()">Call launch() again</button>
+    @if (statuses()['s1-dup']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Relaunch with MINIMAL options (fresh carrier)</span>
+    <button data-testid="s1-relaunch-minimal" (click)="relaunchMinimal()">Relaunch minimal</button>
+    @if (statuses()['s1-min']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">stop(2000) — direct call (result otherwise discarded inside relaunch())</span>
+    <button class="secondary" data-testid="s1-stop" (click)="stopDirect()">Stop</button>
+    @if (statuses()['s1-stop']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Relaunch with FULL options (fresh carrier)</span>
+    <button data-testid="s1-relaunch-full" (click)="relaunchFull()">Relaunch full</button>
+    @if (statuses()['s1-full']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  @if (internalErrors().length > 0) {
+    <div>
+      <p class="desc">onError sink (relaunch/provider diagnostics):</p>
+      <ul class="activity-feed">
+        @for (e of internalErrors(); track $index) { <li>{{ e }}</li> }
+      </ul>
+    </div>
+  }
+</section>
+
+<!-- ---------------------------------------------------------------- S3 manual telemetry -->
+<section class="scenario-section">
+  <h3>S3 — Manual telemetry</h3>
+  <div class="control-row">
+    <span class="label">log() at every level</span>
+    <button class="secondary" data-testid="s3-log-error" (click)="log('error')">error</button>
+    <button class="secondary" data-testid="s3-log-warning" (click)="log('warning')">warning</button>
+    <button class="secondary" data-testid="s3-log-info" (click)="log('info')">info</button>
+    <button class="secondary" data-testid="s3-log-debug" (click)="log('debug')">debug</button>
+    <button class="secondary" data-testid="s3-log-verbose" (click)="log('verbose')">verbose</button>
+    @if (statuses()['s3-log']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">event() with / without params</span>
+    <button class="secondary" data-testid="s3-event-params" (click)="eventWithParams()">With params</button>
+    <button class="secondary" data-testid="s3-event-no-params" (click)="eventWithoutParams()">Without params</button>
+    @if (statuses()['s3-event']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">trace(name, value)</span>
+    <button class="secondary" data-testid="s3-trace" (click)="trace()">Trace</button>
+    @if (statuses()['s3-trace']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">addBreadcrumb() — every field</span>
+    <button class="secondary" data-testid="s3-breadcrumb" (click)="breadcrumb()">Add breadcrumb</button>
+    @if (statuses()['s3-crumb']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S4 exceptions -->
+<section class="scenario-section">
+  <h3>S4 — Exceptions</h3>
+  <div class="control-row">
+    <button data-testid="s4-error" (click)="logError()">logException(new Error)</button>
+    @if (statuses()['s4-error']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Non-Error throwables</span>
+    <button class="secondary" data-testid="s4-string" (click)="logString()">string</button>
+    <button class="secondary" data-testid="s4-object" (click)="logObject()">object</button>
+    <button class="secondary" data-testid="s4-null" (click)="logNull()">null</button>
+    @if (statuses()['s4-nonerror']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Nested cause</span>
+    <button data-testid="s4-cause" (click)="logCause()">logException(with cause chain)</button>
+    @if (statuses()['s4-cause']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">LogExceptionOptions (mechanism/severity/labels)</span>
+    <button data-testid="s4-options" (click)="logWithOptions()">logException with options</button>
+    @if (statuses()['s4-options']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Same instance twice (must dedupe)</span>
+    <button data-testid="s4-dedupe" (click)="logDedupe()">logException(sameInstance) x2</button>
+    @if (statuses()['s4-dedupe']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">Storm: 200 exceptions in ~1s (must rate-limit, not crash)</span>
+    <button data-testid="s4-storm" (click)="logStorm()">Fire storm</button>
+    @if (statuses()['s4-storm']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S5 crashes -->
+<section class="scenario-section">
+  <h3>S5 — Crashes</h3>
+  <div class="control-row">
+    <button data-testid="s5-uncaught" (click)="throwUncaught()">Throw uncaught (window.onerror)</button>
+    @if (statuses()['s5-uncaught']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <button data-testid="s5-rejection" (click)="rejectUncaught()">Unhandled promise rejection</button>
+    @if (statuses()['s5-rejection']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S6 console capture -->
+<section class="scenario-section">
+  <h3>S6 — Console capture</h3>
+  <div class="control-row">
+    <button class="secondary" data-testid="s6-log" (click)="consoleCall('log')">console.log</button>
+    <button class="secondary" data-testid="s6-info" (click)="consoleCall('info')">console.info</button>
+    <button class="secondary" data-testid="s6-warn" (click)="consoleCall('warn')">console.warn</button>
+    <button class="secondary" data-testid="s6-error" (click)="consoleCall('error')">console.error</button>
+    <button class="secondary" data-testid="s6-debug" (click)="consoleCall('debug')">console.debug</button>
+    <button class="secondary" data-testid="s6-trace" (click)="consoleCall('trace')">console.trace</button>
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="s6-circular" (click)="consoleCircular()">console.log(circular object)</button>
+    @if (statuses()['s6']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S7 network capture -->
+<section class="scenario-section">
+  <h3>S7 — Network capture</h3>
+  <div class="control-row">
+    <button class="secondary" data-testid="s7-get" (click)="s7Get()">fetch GET</button>
+    <button class="secondary" data-testid="s7-post-json" (click)="s7PostJson()">fetch POST JSON</button>
+    <button class="secondary" data-testid="s7-post-text" (click)="s7PostText()">fetch POST text</button>
+    <button class="secondary" data-testid="s7-4xx" (click)="s7Get4xx()">4xx</button>
+    <button class="secondary" data-testid="s7-5xx" (click)="s7Get5xx()">5xx</button>
+    <button class="secondary" data-testid="s7-connfail" (click)="s7ConnFail()">Connection failure</button>
+    <button class="secondary" data-testid="s7-large-body" (click)="s7LargeBody()">Body over maxNetworkBodySize</button>
+    <button class="secondary" data-testid="s7-no-content-type" (click)="s7NoContentType()">No Content-Type</button>
+    <button class="secondary" data-testid="s7-slow" (click)="s7Slow()">Slow (2.5s)</button>
+    <button class="secondary" data-testid="s7-xhr" (click)="s7Xhr()">XHR GET</button>
+    <button class="secondary" data-testid="s7-sse" (click)="s7Sse()">SSE (EventSource)</button>
+    <button class="secondary" data-testid="s7-send-beacon" (click)="s7SendBeacon()">sendBeacon</button>
+  </div>
+  @if (statuses()['s7']; as s) { <p class="status-line ok" data-testid="s7-status">{{ s.text }}</p> }
+</section>
+
+<!-- ---------------------------------------------------------------- S8 filters & redaction -->
+<section class="scenario-section">
+  <h3>S8 — Filters &amp; redaction</h3>
+  <p class="desc">
+    Network-filter verification is LOCAL only — the backend surface (`get_issue`) does not expose
+    network entries. Log/breadcrumb/report-handler filters ARE verifiable on the backend.
+  </p>
+  <div class="control-row">
+    <button data-testid="s8-install" (click)="installFilters()" [disabled]="filtersInstalled()">Install filters</button>
+    <button class="secondary" data-testid="s8-uninstall" (click)="uninstallFilters()" [disabled]="!filtersInstalled()">Uninstall filters</button>
+    <span class="label">installed: {{ filtersInstalled() }}</span>
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="s8-network" (click)="s8Network()">POST with secret header + ssn body field</button>
+    <button class="secondary" data-testid="s8-veto-network" (click)="s8VetoNetwork()">GET a vetoed URL</button>
+    <button class="secondary" data-testid="s8-log" (click)="s8Log()">log() with a secret</button>
+    <button class="secondary" data-testid="s8-breadcrumb" (click)="s8Breadcrumb()">addBreadcrumb() with secret data</button>
+    <button class="secondary" data-testid="s8-report-mutate" (click)="s8ReportMutate()">logException — should be mutated (label added)</button>
+    <button class="secondary" data-testid="s8-report-veto" (click)="s8ReportVeto()">logException — should be VETOED</button>
+  </div>
+  @if (filterLog().length > 0) {
+    <ul class="activity-feed" data-testid="filter-log">
+      @for (l of filterLog(); track $index) { <li>{{ l }}</li> }
+    </ul>
+  }
+</section>
+
+<!-- ---------------------------------------------------------------- S9 performance / APM -->
+<section class="scenario-section">
+  <h3>S9 — Performance / APM</h3>
+  <p class="desc">
+    Page-load + navigation transactions are automatic (traceNavigations on by default) — just browsing
+    the app exercises them. This control adds a manual transaction with a child span per SpanStatus.
+  </p>
+  <div class="control-row">
+    <button data-testid="s9-manual-transaction" (click)="manualTransaction()">Manual transaction + every SpanStatus</button>
+    @if (statuses()['s9']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">setRouteName (direct call)</span>
+    <button class="secondary" data-testid="s9-set-route-name" (click)="setRouteNameDirect()">setRouteName</button>
+    @if (statuses()['s9-route']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <span class="label">performanceSampleRate: 0 (relaunches, checks isSampled(), restores rate 1)</span>
+    <button class="secondary" data-testid="s9-rate-zero" (click)="performanceSampleRateZero()">Relaunch with rate 0</button>
+    @if (statuses()['s9-rate-zero']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S10 distributed tracing -->
+<section class="scenario-section">
+  <h3>S10 — Distributed tracing (outbound leg only)</h3>
+  <p class="desc">
+    `propagateTrace: true` + `tracePropagationTargets: ['/api/']` (FULL_LAUNCH_OPTIONS): the local API
+    echoes back every header it received, so a `traceparent` header actually leaving the process is
+    checkable in-sample. THREE probes fire, because same-origin alone cannot exercise the allowlist —
+    the decorator allows any same-origin url before consulting it. (1) same-origin `/api/scenario/echo-headers`
+    (proxied) — decorated, falsifies `propagateTrace`; (2) cross-origin `:5336/api/scenario/echo-headers`
+    — matches `/api/`, must be decorated (the INCLUDE half); (3) cross-origin `:5336/echo-headers-unmatched`
+    — no `/api/` in the url, must NOT be decorated (the EXCLUDE half). No second hop / backend join is
+    attempted here.
+  </p>
+  <div class="control-row">
+    <button data-testid="s10-echo-headers" (click)="echoOutboundTraceHeaders()">echo headers x3 (same-origin + cross-origin include/exclude)</button>
+    @if (statuses()['s10-echo-headers']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- S11 session replay -->
+<section class="scenario-section">
+  <h3>S11 — Session replay</h3>
+  <p class="desc">
+    `&#64;bugsee/replay` (+ `&#64;bugsee/replay-canvas`) are transitive dependencies of `&#64;bugsee/browser`,
+    lazily imported whenever replay is enabled — which is <strong>by default</strong>: the browser tier
+    records unless `replay: false` is passed, so the app's own baseline launch (no `replay` key at all) is
+    already recording before any control below is clicked. What these controls change is the replay
+    CONFIGURATION, not whether recording happens; `replay.bin` is therefore present in every bundle this
+    app uploads, and only the `replay: false` control makes it disappear. `get_issue` does not expose
+    replay CONTENTS, so the verification is local/wire (`replay.bin` presence, plus the decoded masking
+    pair below).
+  </p>
+  <div class="control-row">
+    <button data-testid="s11-replay-defaults" (click)="replayDefaults()">replay: true (defaults)</button>
+    <button class="secondary" data-testid="s11-replay-masking" (click)="replayMasking()">replay: masking options</button>
+    <button class="secondary" data-testid="s11-replay-canvas-fixed" (click)="replayCanvasFixed()">replay: canvas fps=2</button>
+    <button class="secondary" data-testid="s11-replay-canvas-all" (click)="replayCanvasAll()">replay: canvas fps='all'</button>
+    <button class="secondary" data-testid="s11-replay-off" (click)="replayOptOut()">replay: false (opt-out)</button>
+    <button class="secondary" data-testid="s11-replay-baseline" (click)="replayRestoreBaseline()">Restore baseline (no replay key)</button>
+  </div>
+  <div class="field-row">
+    <!-- The opt-out class for an INPUT VALUE is `.bugsee-unmask`, NOT `.bugsee-show`. This markup said
+         `.bugsee-show` until round 6, which is the media/canvas un-BLOCK mark and does nothing for an
+         input's value — `packages/replay/src/masking.ts:544-548` builds `unmaskInputSelector` from
+         `.bugsee-unmask` (+ a sensitive-input guard) and feeds `.bugsee-show` to `unblockSelector`.
+         The wrong class was a SAMPLE defect, and it was verified by markup inspection alone; the
+         decoded replay showed both fields masked. `verify.mjs`'s `s11-replay-masking-wire` now decodes
+         `replay.bin` and asserts the pair (masked value absent / opted-out value present). -->
+    <label for="s11-masked">.bugsee-unmask opt-out demo — inputs are masked by default (maskAllInputs), the second one is NOT</label>
+    <input id="s11-masked" placeholder="masked by default" data-testid="s11-masked-field" />
+    <input id="s11-shown" class="bugsee-unmask" placeholder="opted OUT of input masking via .bugsee-unmask" data-testid="s11-shown-field" />
+  </div>
+  @if (statuses()['s11']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+</section>
+
+<!-- ---------------------------------------------------------------- S12 persistence -->
+<section class="scenario-section">
+  <h3>S12 — Persistence &amp; recovery</h3>
+  <p class="desc">
+    Logs an exception, then force-reloads the page immediately (before the upload can settle) —
+    `persist`/`recover` (both on in FULL_LAUNCH_OPTIONS) should re-upload it from IndexedDB on the next
+    launch.
+  </p>
+  <div class="control-row">
+    <button data-testid="s12-crash-and-reload" (click)="crashAndReload()">logException then hard-reload immediately</button>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- Angular: error seam -->
+<section class="scenario-section">
+  <h3>Angular — BugseeErrorHandler / createAngularErrorHandler / reportAngularError / originalError unwrap</h3>
+  <p class="desc">
+    `{{ '{ provide: ErrorHandler, useClass: BugseeErrorHandler }' }}` is registered app-wide in
+    app.config.ts (every uncaught error below already flows through it). These controls exercise the
+    lower-level primitives directly.
+  </p>
+  <div class="control-row">
+    <button data-testid="s-create-handler" (click)="callCreateAngularErrorHandler()">createAngularErrorHandler(...).handleError(err)</button>
+    @if (statuses()['s-create-handler']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="s-report-direct" (click)="callReportAngularErrorDirect()">reportAngularError(error, options)</button>
+    @if (statuses()['s-report-direct']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="s-unwrap" (click)="callOriginalErrorUnwrap()">new BugseeErrorHandler().handleError({{ '{ngOriginalError}' }})</button>
+    @if (statuses()['s-unwrap']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- Angular: error in component/service/rxjs/http -->
+<section class="scenario-section">
+  <h3>Angular — error in a component, a service, an RxJS pipeline, an HttpClient call</h3>
+  <div class="control-row">
+    <span class="label">Component (ngOnInit throw)</span>
+    <button data-testid="arm-widget" (click)="armThrowingWidget()">Arm + throw</button>
+    <button class="secondary" data-testid="reset-widget" (click)="resetThrowingWidget()">Reset</button>
+  </div>
+  @if (armWidget()) { <app-throwing-widget label="scenario-panel"></app-throwing-widget> }
+
+  <div class="control-row">
+    <span class="label">Service (synchronous throw from a method)</span>
+    <button data-testid="throw-service" (click)="throwFromService()">Throw from service</button>
+  </div>
+
+  <div class="control-row">
+    <span class="label">RxJS pipeline (throw inside a `map` operator, no error callback)</span>
+    <button data-testid="throw-rxjs" (click)="throwFromRxjsPipeline()">Throw from RxJS pipeline</button>
+    @if (statuses()['s-rxjs']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+
+  <div class="control-row">
+    <span class="label">HttpClient call (5xx, no error callback)</span>
+    <button data-testid="throw-httpclient" (click)="throwFromHttpClient()">Throw from HttpClient call</button>
+    @if (statuses()['s-http-throw']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------- Angular: router naming primitives -->
+<section class="scenario-section">
+  <h3>Angular — routePatternFromSnapshot / setRouteNameFromRouter (direct)</h3>
+  <p class="desc">
+    The live app already auto-names every navigation by route pattern via the `NavigationEnd`
+    subscription in main.ts (`setRouteNameFromRouter(router)`) — including the lazy `/approvals/:id`
+    route and a guard redirect (navigate to /approvals while NOT a manager). These controls call the
+    lower-level primitives directly against a SYNTHETIC snapshot/router, the way an app not using the
+    real Router would.
+  </p>
+  <div class="control-row">
+    <button data-testid="s-route-pattern" (click)="routePatternDirect()">routePatternFromSnapshot({{ '{approvals -> :id}' }})</button>
+    @if (statuses()['s-route-pattern']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
+  </div>
+  <div class="control-row">
+    <button class="secondary" data-testid="s-route-router" (click)="setRouteNameFromRouterDirect()">setRouteNameFromRouter(fakeRouter)</button>
+    @if (statuses()['s-route-router']; as s) { <p class="status-line ok">{{ s.text }}</p> }
+  </div>
+</section>

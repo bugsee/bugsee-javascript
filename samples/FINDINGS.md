@@ -206,15 +206,33 @@ _(none yet)_
 ### F-X4 · Captured logs never reach the issue — **not an SDK defect**
 
 - **Severity:** major
-- **Package:** unknown — not yet isolated to the SDK or the backend
+- **Package:** **backend/viewer** — the SDK side is confirmed correct (see "Next step" below: the
+  uploaded bundle carries populated `logs.json`/`breadcrumbs`/`network.json`). Previously recorded as
+  "unknown — not yet isolated to the SDK or the backend"; that attribution was superseded by this
+  entry's own closure and is now corrected in place rather than only noted at the bottom.
 - **Scenario:** S3/S6 — manual `log()` and `console.*` before an exception
 - **Expected:** `get_issue` with `include_logs` shows the console lines, manual log lines and
   breadcrumbs captured in the session.
 - **Observed:** the `# Logs` section is absent for every issue checked, on node and in the browser,
   even when the scenario provably logged first. Reproduced independently by `samples/browser-vanilla`
   (its F-6, 3× across session types) and on `SNODE-1` with `entries: "all"`.
-- **Next step:** unzip an uploaded bundle and check whether `log.json` is present and populated. That
-  splits it cleanly into "the SDK did not send it" vs "the backend did not surface it".
+- **Next step:** ~~unzip an uploaded bundle and check whether `log.json` is present and populated. That
+  splits it cleanly into "the SDK did not send it" vs "the backend did not surface it".~~ **CLOSED by
+  `samples/solid-spa` (round-3 review pass).** Both halves were measured there:
+  - the SDK DOES send them — an intercepted S3 bundle PUT from `solid-spa` (a session with real
+    `console.*`, `log()` and `addBreadcrumb()` activity before the throw) is an 11-entry zip carrying
+    `logs.json` (816 B uncompressed / 219 B stored), `breadcrumbs` (208 B / 157 B) and `network.json`
+    (1081 B / 425 B), alongside `request.json`, `manifest.json`, `apptoken`, `traces.system.json`,
+    `events.system.json`, `events.user.json`, `viewtree.json` and `crash.json` — all present and
+    populated. (Sizes are per-session, so exact byte counts vary run to run; presence and non-emptiness
+    are the finding.) Entry names/sizes read from the zip central directory, no decompression needed;
+  - MCP still shows nothing — `get_issue("SSOLID-76", include_logs: { entries: "all" })`, on an issue
+    from a session with real console activity, returns **no `# Logs` section at all**.
+
+  **Verdict: the backend/MCP does not surface them.** The package attribution above has been updated to
+  backend/viewer accordingly. Samples must stop attributing their log-visibility
+  gaps to "MCP has no per-call surface" and cite this finding instead (`samples/solid-spa/scenarios.md`
+  S3 row is corrected accordingly).
 
 ### F-X5 · SDK frames are attributed to the user — **fixed** (`5a46942`)
 

@@ -1,0 +1,28 @@
+{
+  "name": "@bugsee-samples/solid-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:api": "node server/api-server.mjs",
+    "dev:app": "vite --port 5307",
+    "dev": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:app\"",
+    "build": "vite build",
+    "preview:app": "vite preview --port 5307 --strictPort",
+    "preview": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm preview:app\"",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@bugsee/solid": "file:../../.local-registry/bugsee-solid.tgz",
+    "@solidjs/router": "^1.0.0",
+    "solid-js": "^1.9.15"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4",
+    "playwright": "^1.62.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vite-plugin-solid": "^2.11.14",
+    "ws": "^8.21.3"
+  }
+}

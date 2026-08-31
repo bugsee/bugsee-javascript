@@ -1,0 +1,25 @@
+@if (notFound()) {
+  <div class="card"><p>No such expense.</p><a routerLink="/expenses">Back to expenses</a></div>
+} @else {
+  @if (expense(); as e) {
+    <div class="card" data-testid="expense-detail">
+      <h2>{{ e.title }}</h2>
+      <p><span class="badge" [class]="e.status">{{ e.status }}</span></p>
+      <p>Amount: ${{ e.amount.toFixed(2) }}</p>
+      <p>Category: {{ e.category }}</p>
+      <p>Date: {{ e.date }}</p>
+      @if (e.notes) { <p>Notes: {{ e.notes }}</p> }
+      @if (attachmentUrl(); as url) {
+        <p><a [href]="url" [download]="e.attachment?.name" data-testid="attachment-download">Download attachment ({{ e.attachment?.name }})</a></p>
+      } @else {
+        <p><em>No attachment.</em></p>
+      }
+      <div style="display:flex; gap:8px;">
+        <a routerLink="/expenses"><button class="secondary">Back</button></a>
+        <button class="danger" data-testid="delete-expense" (click)="delete()">Delete</button>
+      </div>
+    </div>
+  } @else {
+    <p>Loading…</p>
+  }
+}

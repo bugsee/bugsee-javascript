@@ -1,0 +1,64 @@
+# This file makes samples/webpack-sourcemaps a standalone pnpm project and pins every @bugsee/*
+# dependency — including transitive ones — to the local pre-publish tarball produced by
+# `node scripts/pack-local.mjs`. That is what makes this sample a real pre-publish test: it
+# installs dist/ through the published `exports` map, exactly as a customer will.
+#
+# Re-run `node scripts/pack-local.mjs` after ANY change to packages/, then `pnpm install` here.
+overrides:
+  '@bugsee/adapter-kit': 'file:../../.local-registry/bugsee-adapter-kit.tgz'
+  '@bugsee/angular': 'file:../../.local-registry/bugsee-angular.tgz'
+  '@bugsee/astro': 'file:../../.local-registry/bugsee-astro.tgz'
+  '@bugsee/babel-plugin-component-annotate': 'file:../../.local-registry/bugsee-babel-plugin-component-annotate.tgz'
+  '@bugsee/browser': 'file:../../.local-registry/bugsee-browser.tgz'
+  '@bugsee/browser-utils': 'file:../../.local-registry/bugsee-browser-utils.tgz'
+  '@bugsee/bugsee': 'file:../../.local-registry/bugsee-bugsee.tgz'
+  '@bugsee/bun': 'file:../../.local-registry/bugsee-bun.tgz'
+  '@bugsee/bundler-plugin-core': 'file:../../.local-registry/bugsee-bundler-plugin-core.tgz'
+  '@bugsee/capture': 'file:../../.local-registry/bugsee-capture.tgz'
+  '@bugsee/cloudflare': 'file:../../.local-registry/bugsee-cloudflare.tgz'
+  '@bugsee/core': 'file:../../.local-registry/bugsee-core.tgz'
+  '@bugsee/deno': 'file:../../.local-registry/bugsee-deno.tgz'
+  '@bugsee/electron': 'file:../../.local-registry/bugsee-electron.tgz'
+  '@bugsee/elysia': 'file:../../.local-registry/bugsee-elysia.tgz'
+  '@bugsee/express': 'file:../../.local-registry/bugsee-express.tgz'
+  '@bugsee/fastify': 'file:../../.local-registry/bugsee-fastify.tgz'
+  '@bugsee/hapi': 'file:../../.local-registry/bugsee-hapi.tgz'
+  '@bugsee/hono': 'file:../../.local-registry/bugsee-hono.tgz'
+  '@bugsee/integration-shims': 'file:../../.local-registry/bugsee-integration-shims.tgz'
+  '@bugsee/koa': 'file:../../.local-registry/bugsee-koa.tgz'
+  '@bugsee/logger': 'file:../../.local-registry/bugsee-logger.tgz'
+  '@bugsee/nestjs': 'file:../../.local-registry/bugsee-nestjs.tgz'
+  '@bugsee/nextjs': 'file:../../.local-registry/bugsee-nextjs.tgz'
+  '@bugsee/node': 'file:../../.local-registry/bugsee-node.tgz'
+  '@bugsee/node-utils': 'file:../../.local-registry/bugsee-node-utils.tgz'
+  '@bugsee/nuxt': 'file:../../.local-registry/bugsee-nuxt.tgz'
+  '@bugsee/opentelemetry': 'file:../../.local-registry/bugsee-opentelemetry.tgz'
+  '@bugsee/performance': 'file:../../.local-registry/bugsee-performance.tgz'
+  '@bugsee/protocol': 'file:../../.local-registry/bugsee-protocol.tgz'
+  '@bugsee/react': 'file:../../.local-registry/bugsee-react.tgz'
+  '@bugsee/remix': 'file:../../.local-registry/bugsee-remix.tgz'
+  '@bugsee/replay': 'file:../../.local-registry/bugsee-replay.tgz'
+  '@bugsee/replay-canvas': 'file:../../.local-registry/bugsee-replay-canvas.tgz'
+  '@bugsee/rrweb': 'file:../../.local-registry/bugsee-rrweb.tgz'
+  '@bugsee/service': 'file:../../.local-registry/bugsee-service.tgz'
+  '@bugsee/solid': 'file:../../.local-registry/bugsee-solid.tgz'
+  '@bugsee/svelte': 'file:../../.local-registry/bugsee-svelte.tgz'
+  '@bugsee/svelte-plugin-component-annotate': 'file:../../.local-registry/bugsee-svelte-plugin-component-annotate.tgz'
+  '@bugsee/sveltekit': 'file:../../.local-registry/bugsee-sveltekit.tgz'
+  '@bugsee/types': 'file:../../.local-registry/bugsee-types.tgz'
+  '@bugsee/util': 'file:../../.local-registry/bugsee-util.tgz'
+  '@bugsee/vercel-edge': 'file:../../.local-registry/bugsee-vercel-edge.tgz'
+  '@bugsee/vite-plugin': 'file:../../.local-registry/bugsee-vite-plugin.tgz'
+  '@bugsee/vue': 'file:../../.local-registry/bugsee-vue.tgz'
+  '@bugsee/web-adapter': 'file:../../.local-registry/bugsee-web-adapter.tgz'
+  '@bugsee/webpack-plugin': 'file:../../.local-registry/bugsee-webpack-plugin.tgz'
+  '@bugsee/webview': 'file:../../.local-registry/bugsee-webview.tgz'
+  '@bugsee/webworker': 'file:../../.local-registry/bugsee-webworker.tgz'
+
+# @bugsee/bugsee-cli's postinstall downloads the prebuilt Rust `bugsee-cli` binary the bundler
+# plugins (@bugsee/webpack-plugin -> @bugsee/bundler-plugin-core) spawn for the source-map/debug-id
+# upload step. This is its own pnpm workspace root (new-sample.mjs), so the root allowBuilds list
+# does not apply here — repeat it.
+allowBuilds:
+  '@bugsee/bugsee-cli': true
+  esbuild: true

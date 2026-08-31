@@ -1,0 +1,48 @@
+{
+  "name": "@bugsee-samples/webpack-sourcemaps",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:api": "node server/api-server.mjs",
+    "dev:app": "webpack serve --mode development --port 5321",
+    "dev": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:app\"",
+    "build": "webpack --mode production",
+    "build:dry-run": "cross-env BUGSEE_DRY_RUN=true webpack --mode production",
+    "build:disabled": "cross-env BUGSEE_DISABLED=true webpack --mode production",
+    "build:keep-maps": "cross-env BUGSEE_KEEP_MAPS=true webpack --mode production",
+    "build:bad-token-loud": "cross-env BUGSEE_APP_TOKEN=00000000-0000-4000-8000-badc0ffee000 BUGSEE_FAIL_ON_ERROR=true webpack --mode production",
+    "build:bad-token-soft": "cross-env BUGSEE_APP_TOKEN=00000000-0000-4000-8000-badc0ffee000 BUGSEE_FAIL_ON_ERROR=false webpack --mode production",
+    "build:signal-kill": "cross-env BUGSEE_CLI_PATH=./scripts/fake-cli-self-kill.js BUGSEE_FAIL_ON_ERROR=true webpack --mode production",
+    "serve:dist": "node scripts/serve-dist.mjs",
+    "preview": "concurrently -k -n api,dist -c yellow,cyan \"pnpm dev:api\" \"pnpm serve:dist\"",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs",
+    "verify:sourcemaps": "node scripts/prod-sourcemap-check.mjs"
+  },
+  "dependencies": {
+    "@bugsee/bundler-plugin-core": "file:../../.local-registry/bugsee-bundler-plugin-core.tgz",
+    "@bugsee/bugsee": "file:../../.local-registry/bugsee-bugsee.tgz",
+    "@bugsee/util": "file:../../.local-registry/bugsee-util.tgz",
+    "@bugsee/webpack-plugin": "file:../../.local-registry/bugsee-webpack-plugin.tgz",
+    "marked": "^12.0.2"
+  },
+  "devDependencies": {
+    "@bugsee/performance": "file:../../.local-registry/bugsee-performance.tgz",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "css-loader": "^7.1.2",
+    "dotenv": "^16.4.5",
+    "html-webpack-plugin": "^5.6.3",
+    "mini-css-extract-plugin": "^2.9.2",
+    "playwright": "^1.49.1",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.7.2",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.2.0",
+    "ws": "^8.18.0"
+  }
+}

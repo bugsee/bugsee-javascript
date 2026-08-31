@@ -1,0 +1,34 @@
+{
+  "name": "@bugsee-samples/svelte-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:api": "node server/api-server.mjs",
+    "dev:app": "vite --port 5304",
+    "dev": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:app\"",
+    "build": "vite build",
+    "preview:app": "vite preview --port 5304 --strictPort",
+    "preview": "concurrently -k -n api,app -c yellow,cyan \"pnpm dev:api\" \"pnpm preview:app\"",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@bugsee/svelte": "file:../../.local-registry/bugsee-svelte.tgz",
+    "@bugsee/svelte-plugin-component-annotate": "file:../../.local-registry/bugsee-svelte-plugin-component-annotate.tgz",
+    "@bugsee/util": "file:../../.local-registry/bugsee-util.tgz",
+    "svelte": "^5.2.7"
+  },
+  "devDependencies": {
+    "@bugsee/performance": "file:../../.local-registry/bugsee-performance.tgz",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@tsconfig/svelte": "^5.0.4",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.1.2",
+    "playwright": "^1.49.1",
+    "svelte-check": "^4.1.1",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.2",
+    "ws": "^8.18.0"
+  }
+}

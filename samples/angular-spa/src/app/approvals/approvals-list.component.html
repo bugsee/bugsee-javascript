@@ -1,0 +1,29 @@
+<div class="card">
+  <h2>Approvals</h2>
+  <p class="desc" style="color: var(--muted); font-size: 13px;">
+    Manager-only (route guard: <code>managerGuard</code>) — a lazy-loaded feature, its own chunk fetched
+    only when this route is visited.
+  </p>
+  @if (loading()) {
+    <p>Loading…</p>
+  } @else if (pending().length === 0) {
+    <p>Nothing pending.</p>
+  } @else {
+    <table class="expense-table" data-testid="approvals-table">
+      <thead><tr><th>Title</th><th>Amount</th><th>Category</th><th></th></tr></thead>
+      <tbody>
+        @for (e of pending(); track e.id) {
+          <tr>
+            <td><a [routerLink]="['/approvals', e.id]">{{ e.title }}</a></td>
+            <td>${{ e.amount.toFixed(2) }}</td>
+            <td>{{ e.category }}</td>
+            <td style="display:flex; gap:6px;">
+              <button [attr.data-testid]="'approve-' + e.id" (click)="decide(e.id, 'approved')">Approve</button>
+              <button class="danger" [attr.data-testid]="'reject-' + e.id" (click)="decide(e.id, 'rejected')">Reject</button>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</div>

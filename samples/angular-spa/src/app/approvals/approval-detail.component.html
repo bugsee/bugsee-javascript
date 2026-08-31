@@ -1,0 +1,15 @@
+@if (expense(); as e) {
+  <div class="card" data-testid="approval-detail">
+    <h2>{{ e.title }}</h2>
+    <p>Amount: ${{ e.amount.toFixed(2) }}</p>
+    <p>Category: {{ e.category }}</p>
+    <p>Status: <span class="badge" [class]="e.status">{{ e.status }}</span></p>
+    <div style="display:flex; gap:8px;">
+      <button data-testid="approval-approve" (click)="decide('approved')">Approve</button>
+      <button class="danger" data-testid="approval-reject" (click)="decide('rejected')">Reject</button>
+      <a routerLink="/approvals"><button class="secondary">Back</button></a>
+    </div>
+  </div>
+} @else {
+  <p>Loading…</p>
+}
