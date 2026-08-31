@@ -36,9 +36,11 @@ import {
   type HttpResponse,
   type HttpTransport,
   type NativeCrashSource,
+  type ReconcileOwnQueue,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
   resolveLaunchOptions,
+  runLaunchRecovery,
   type Scheduler,
   SchedulerToken,
   setCarrierClient,
@@ -710,10 +712,6 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       }, CAPTURE_FLUSH_MS)
     : undefined;
 
-  // Re-upload any bundles THIS instance's own subtree left persisted (durable queue recovery — a no-op on a
-  // fresh per-launch subtree, kept for symmetry/safety).
-  durable?.recover();
-
   // Disk hygiene (D3): with disk capture default-on, reclaim ABANDONED sibling subtrees (a dead process,
   // aged past the TTL) so os.tmpdir()/bugsee doesn't accumulate. Runs synchronously BEFORE recovery (so the
   // two never race on the same subtree) and regardless of `recoverEnabled` — it's pure hygiene. The TTL is
@@ -727,12 +725,6 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     });
   }
 
-  // Multi-instance recovery: scan the SIBLING instance subtrees under the shared dataDir and recover each
-  // dead one's pending bundles + detected-incident markers (rebuilt from its capture chunks) through THIS
-  // instance's upload pipeline, then remove the fully-delivered subtree. This subsumes the old "recover my
-  // own prior generations" — a prior crashed run is just a dead sibling. Best-effort; never throws into
-  // launch. (Liveness skip + atomic-rename claim land in slice 4; for now every non-own subtree is recovered,
-  // correct while no live siblings exist.)
   // Native-crash harvesting (Electron/Crashpad): persist THIS launch's crashpad-session marker at START so
   // the next launch can tie a harvested `.dmp` to this session's capture generation. A native crash kills
   // the process instantly (no incident handler runs), so the link MUST exist before the crash. Attributes /
@@ -751,18 +743,41 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     }
   }
 
-  if (recoverEnabled && instanceLayout !== undefined && effectiveDataDir !== undefined) {
-    void recoverInstances({
-      dataDir: effectiveDataDir,
-      ownInstanceId: instanceLayout.instanceId,
-      uploadPipeline,
-      context: () => ({ appToken, environment: getEnvironment(), clock }),
-      ...(options.nativeCrash !== undefined
-        ? { nativeCrashSource: options.nativeCrash.source }
-        : {}),
-      ...(options.onError !== undefined ? { onError: options.onError } : {}),
-    });
-  }
+  // The launch's recovery SEQUENCE — own queue, dead-sibling scan, release pass — is core's
+  // `runLaunchRecovery`: ONE definition, which the browser and worker tiers had copied verbatim. It
+  // never rejects, and it runs the release pass even when the scan throws — which an unreadable
+  // `owner.json` makes a persistent, every-launch condition rather than a one-off.
+  //
+  // The scan itself is this tier's own: walk the SIBLING instance subtrees under the shared dataDir and
+  // recover each DEAD one's pending bundles + detected-incident markers (rebuilt from its capture
+  // chunks) through THIS instance's upload pipeline, then remove the fully-delivered subtree. It
+  // subsumes the old "recover my own prior generations" — a prior crashed run is just a dead sibling. A
+  // LIVE sibling is skipped by the liveness gate; the atomic-rename claim that would also stop two
+  // SIMULTANEOUS launches recovering one subtree is still open (`recover-instances.ts`).
+  const scan =
+    recoverEnabled && instanceLayout !== undefined && effectiveDataDir !== undefined
+      ? (reconcileOwnQueue?: ReconcileOwnQueue): Promise<void> =>
+          recoverInstances({
+            dataDir: effectiveDataDir,
+            ownInstanceId: instanceLayout.instanceId,
+            uploadPipeline,
+            context: () => ({ appToken, environment: getEnvironment(), clock }),
+            ...(options.nativeCrash !== undefined
+              ? { nativeCrashSource: options.nativeCrash.source }
+              : {}),
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
+          })
+      : (): Promise<void> => Promise.resolve();
+  void runLaunchRecovery({
+    ...(durable !== undefined ? { queue: durable } : {}),
+    // An INJECTED `bundleStore` is the integrator's, outside the per-instance layout and stable across
+    // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
+    shared: options.bundleStore !== undefined,
+    pipeline: baseUploadPipeline,
+    scan,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
 
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
   // was registered during launch, so BEFORE this one) submits the crash report; flush() now awaits

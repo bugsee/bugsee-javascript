@@ -9,6 +9,7 @@ export {
   type FileType,
   MANIFEST_JSON_FILENAME,
   MANIFEST_VERSION,
+  NAME_SOURCE_ATTRIBUTE,
   REQUEST_JSON_FILENAME,
 } from './constants';
 export {

@@ -176,6 +176,46 @@ describe('assembleBundle — manifest.json & files', () => {
     expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'a' }, { url: 'b' }]);
   });
 
+  // THE SEPARATION, in the assembled bundle itself. `events.user.json` is the application's own
+  // `client.event()` data; SDK-captured device input is a DIFFERENT FILE, `input.json`. Two streams in,
+  // two files out, nothing crossing over.
+  it('writes SDK-captured input to input.json and leaves events.user.json to client.event()', () => {
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      [
+        'events.user',
+        [entry('events.user', 1, { timestamp: 1, name: 'checkout', params: { t: 9 } })],
+      ],
+      [
+        'input',
+        [
+          entry('input', 2, { timestamp: 2, id: 'g1', type: 'begin', x: 4, y: 5, tool: 1 }),
+          entry('input', 3, { timestamp: 3, id: 'g1', type: 'end', x: 4, y: 5, tool: 1 }),
+        ],
+      ],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    expect(out.names).toContain('input.json');
+    expect(out.names).toContain('events.user.json');
+    expect(JSON.parse(out.text('input.json'))).toEqual([
+      { timestamp: 2, id: 'g1', type: 'begin', x: 4, y: 5, tool: 1 },
+      { timestamp: 3, id: 'g1', type: 'end', x: 4, y: 5, tool: 1 },
+    ]);
+    // The user stream carries the app's event and NOTHING the SDK observed.
+    expect(JSON.parse(out.text('events.user.json'))).toEqual([
+      { timestamp: 1, name: 'checkout', params: { t: 9 } },
+    ]);
+    expect(out.text('events.user.json')).not.toContain('begin');
+    // ...and the manifest routes them as two distinct file types.
+    const routed = (out.manifest.files as Array<{ type: string; filename: string }>)
+      .filter((f) => ['input', 'events.user'].includes(f.type))
+      .map((f) => [f.type, f.filename])
+      .sort();
+    expect(routed).toEqual([
+      ['events.user', 'events.user.json'],
+      ['input', 'input.json'],
+    ]);
+  });
+
   it('wraps the performance file type as { transactions: [...] } (§8.8), not a bare array', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       [

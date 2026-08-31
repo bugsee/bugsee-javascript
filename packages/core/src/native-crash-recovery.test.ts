@@ -80,14 +80,14 @@ function fakeSource(dumps: HarvestedDump[]): NativeCrashSource & { claims: strin
 }
 
 /** A fake upload pipeline recording every enqueued bundle; `ok` toggles delivery success. */
-function fakePipeline(ok = true) {
+function fakePipeline(ok = true, permanent?: boolean) {
   const enqueued: Bundle[] = [];
   return {
     enqueued,
     pipeline: {
       enqueue: vi.fn((bundle: Bundle) => {
         enqueued.push(bundle);
-        return Promise.resolve({ ok });
+        return Promise.resolve(permanent === undefined ? { ok } : { ok, permanent });
       }),
     },
   };
@@ -128,7 +128,7 @@ describe('recoverNativeCrashes', () => {
       generateId: () => 'nc-1',
     });
 
-    expect(result).toEqual({ harvested: 1, delivered: 1, complete: true });
+    expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
     expect(enqueued).toHaveLength(1);
     const out = unzip((enqueued[0] as Bundle).body);
     // request.json is a native crash.
@@ -166,7 +166,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    expect(result).toEqual({ harvested: 2, delivered: 2, complete: true });
+    expect(result).toEqual({ harvested: 2, settled: 2, complete: true });
     expect(enqueued).toHaveLength(2);
     // ONE snapshot, over generation 7's parts.
     expect(snapshotCalls).toHaveLength(1);
@@ -187,7 +187,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    expect(result).toEqual({ harvested: 0, delivered: 0, complete: true });
+    expect(result).toEqual({ harvested: 0, settled: 0, complete: true });
     expect(snapshotCalls).toHaveLength(0); // never drained
     expect(enqueued).toHaveLength(0);
   });
@@ -205,8 +205,73 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    expect(result).toEqual({ harvested: 1, delivered: 0, complete: false });
+    expect(result).toEqual({ harvested: 1, settled: 0, complete: false });
     expect(source.claims).toEqual([]); // not claimed → re-harvestable next launch
+  });
+
+  it('CLAIMS a permanently-refused dump and reports complete — the fourth leg, unified', async () => {
+    // This leg used to gate on `result.ok` alone while the other three used `isUploadSettled`. A
+    // collector that REFUSES a synthesized native-crash bundle (400/404/…) therefore left the dump
+    // unclaimed → complete stayed false → recover-instances kept the crashpad marker, set
+    // `nativePending`, and never reclaimed the subtree → the SAME dump was re-harvested,
+    // re-synthesized with a FRESH request id, and re-uploaded on EVERY launch, forever. There is no
+    // retention TTL that fixes it: each launch mints a new incident.
+    const { backend } = fakeBackend();
+    const source = fakeSource([dump('main.dmp', 9)]);
+    const { pipeline, enqueued } = fakePipeline(false, true); // refused, permanently
+
+    const result = await recoverNativeCrashes({
+      backend,
+      marker: marker(),
+      source,
+      context: baseContext,
+      uploadPipeline: pipeline,
+    });
+
+    expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
+    expect(source.claims).toEqual(['main.dmp']); // refused for good → never offered again
+    expect(enqueued).toHaveLength(1); // and it was attempted exactly once
+  });
+
+  it('does NOT claim a dump whose failure is retryable, even when `permanent` is present-but-false', async () => {
+    const { backend } = fakeBackend();
+    const source = fakeSource([dump('main.dmp', 9)]);
+    const { pipeline } = fakePipeline(false, false); // a 5xx / offline failure
+
+    const result = await recoverNativeCrashes({
+      backend,
+      marker: marker(),
+      source,
+      context: baseContext,
+      uploadPipeline: pipeline,
+    });
+
+    expect(result).toEqual({ harvested: 1, settled: 0, complete: false });
+    expect(source.claims).toEqual([]);
+  });
+
+  it('mixes settled and unsettled dumps in one session: only the settled one is claimed', async () => {
+    const { backend } = fakeBackend();
+    const source = fakeSource([dump('a.dmp', 1), dump('b.dmp', 2)]);
+    let n = 0;
+    const pipeline = {
+      enqueue: vi.fn(() => {
+        n += 1;
+        // a.dmp is permanently refused (settled); b.dmp hits a 5xx (retryable).
+        return Promise.resolve(n === 1 ? { ok: false, permanent: true } : { ok: false });
+      }),
+    };
+
+    const result = await recoverNativeCrashes({
+      backend,
+      marker: marker(),
+      source,
+      context: baseContext,
+      uploadPipeline: pipeline,
+    });
+
+    expect(result).toEqual({ harvested: 2, settled: 1, complete: false });
+    expect(source.claims).toEqual(['a.dmp']); // …and b.dmp stays for the next launch
   });
 
   it("stamps the marker's snapshot attributes + user identifier onto the recovered bundle", async () => {
@@ -248,7 +313,7 @@ describe('recoverNativeCrashes', () => {
       onError,
     });
 
-    expect(result).toEqual({ harvested: 0, delivered: 0, complete: false });
+    expect(result).toEqual({ harvested: 0, settled: 0, complete: false });
     expect(onError).toHaveBeenCalledWith(boom);
     expect(snapshotCalls).toHaveLength(0);
     expect(enqueued).toHaveLength(0);
@@ -283,7 +348,7 @@ describe('recoverNativeCrashes', () => {
     });
 
     expect(onError).toHaveBeenCalledWith(boom);
-    expect(result).toEqual({ harvested: 2, delivered: 1, complete: false });
+    expect(result).toEqual({ harvested: 2, settled: 1, complete: false });
     expect(source.claims).toEqual(['good.dmp']); // only the delivered one
   });
 
@@ -305,7 +370,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    expect(result).toEqual({ harvested: 1, delivered: 0, complete: false });
+    expect(result).toEqual({ harvested: 1, settled: 0, complete: false });
     expect(source.claims).toEqual([]);
   });
 
@@ -328,7 +393,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    expect(result).toEqual({ harvested: 1, delivered: 1, complete: true });
+    expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
     expect(enqueued).toHaveLength(1);
     expect(source.claims).toEqual(['main.dmp']);
   });

@@ -1,20 +1,61 @@
-import type { UserEvent } from '@bugsee/capture';
-import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import type { InputEventDetail } from '@bugsee/capture';
+import { InputTool, type Interceptor, InterceptorBase, isSensitiveInput } from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
 
-// Browser INPUT SOURCE for @bugsee/capture's userEventsProvider (the DOM analog of the node lifecycle
-// source). A listenable InterceptorBase: on activate it attaches capture-phase, passive listeners for the
-// discrete interactions and maps each to an events.user entry; on deactivate it removes them. Captured
-// (Android input/gesture parity, web-native — the DOM hands us the target element directly):
-//   click     → click  { target, x, y, button }
-//   keydown   → key    { target, key, ctrl?/meta?/alt?/shift? }  (control keys + shortcuts ONLY)
-//   change    → change { target }                                (field committed — never its value)
-//   submit    → submit { target }
-//   focusin   → focus  { target }
+// Browser INPUT SOURCE for @bugsee/capture's input provider (the DOM analog of the node lifecycle
+// source). A listenable InterceptorBase: on activate it attaches capture-phase, passive listeners and
+// maps each interaction to an `input`-stream entry (`InputEvent`, mobile-canonical); on deactivate it
+// removes them.
+//
+// It feeds the `input` stream, NOT `events.user`: `events.user`/`traces.user` carry only what the app
+// supplied through `client.event()`/`client.trace()`, and SDK code must not write into a `user.*`
+// stream. This source used to; that was the bug this file was rewritten to fix.
+//
+// THE MODEL (product owner): input devices have BUTTONS, and we record presses. Mobile has taps and
+// builds every gesture from them; desktop adds keyboards, mice and touchpads, each with buttons whose
+// presses we track.
+//
+// WHY POINTER EVENTS, not click / mousedown+mouseup / touchstart+touchend:
+//   - `pointerType` gives the tool for free ('mouse' | 'touch' | 'pen'), which is exactly the wire's
+//     `tool` field. A TOUCHPAD reports 'mouse', which is the classification we want anyway.
+//   - one listener pair covers finger, stylus and mouse. Listening for both mouse and touch events
+//     means handling the browser's compatibility mouse events, which fire AFTER a tap and would
+//     double-count every touch as a second mouse press.
+//   - `pointerId` is the gesture key the wire's `id` needs (concurrent touches stay separate);
+//     `pressure` is `force`; `width`/`height` are the contact geometry (`majorRadius`/`minorRadius`).
+//   - `button` distinguishes primary / middle / secondary, which `click` alone cannot (a plain `click`
+//     never fires for the secondary button).
+// Pointer Events are supported by every browser this SDK targets. `click` is deliberately dropped: it
+// is a synthesis of a down and an up we now record directly.
+//
+// DELIBERATELY NOT CAPTURED: `pointermove`. A move stream is orders of magnitude larger than the press
+// stream and would dominate the capture ring; the viewer's gesture classification runs off the first
+// and last event of a gesture, which down/up already provide. Drags therefore render as their two
+// endpoints, not their path. `keyup` likewise: a press is recorded once, on the way down.
+//
+// Emitted per interaction:
+//   pointerdown   → { type:'begin', id, x, y, force, majorRadius?, minorRadius?, tool, button, view* }
+//   pointerup     → { type:'end',   …the same, closing the gesture id }
+//   pointercancel → { type:'end',   …the gesture was aborted by the browser }
+//   keydown       → { type:'keydown', tool:Key, key, ctrl?/meta?/alt?/shift?, view* }
+//   change/submit/focusin → { type:'change'|'submit'|'focus', tool:Other, view* }
+// `type:'keydown'` is Android's InputEventStage.KeyDown (interception/input/InputEventStage.java) —
+// distinct from the pointer 'begin'/'end' stages, so a consumer can tell a key press apart from a
+// pointer-down without inspecting `tool`.
+//
+// The last group (change/submit/focus) is NOT device input — it is a semantic DOM signal, and none of
+// the three values is a member of Android's InputEventStage (which is exactly
+// unknown|begin|move|end|scroll|keydown|keyup) — so it rides the stream under `tool: Other`, which the
+// viewer's input renderer ignores (it renders tools 1/2/3 only). That keeps today's captured signal
+// without letting it disturb the touch/mouse/pen rendering path. See the OPEN QUESTION note on
+// `#semantic` below for whether these three belong in the shared stage enum at all.
+//
 // PII discipline (binding — never alter app behavior, never exfiltrate typed text): listeners are
 // capture-phase + passive and never preventDefault/stopPropagation; plain typed characters are dropped
 // (only named/modified keys survive); input VALUES and the text of editable/masked elements are never
-// read. `describeTarget` masks a password field or anything under the mask selector to `{ tag, masked }`.
+// read. `describeTarget` masks anything the SHARED sensitive-input definition matches, or anything
+// under the app's mask selector, to `{ tag, masked }`. And a keystroke aimed at either is dropped
+// OUTRIGHT — see THE SECURE-FIELD EXCLUSION in the keydown handler.
 
 /** A structural, PII-safe description of an interaction's target element. */
 export interface TargetDescriptor {
@@ -30,7 +71,7 @@ export interface TargetDescriptor {
   /** The nearest annotated framework component name (`data-bugsee-component`, D2) — not PII (the component
    *  name, never a value), so it is reported even for a masked target. */
   component?: string;
-  /** True when the element was fully masked (password / mask-selector subtree); no value-bearing fields. */
+  /** True when the element was fully masked (sensitive field / mask-selector subtree); no value-bearing fields. */
   masked?: boolean;
 }
 
@@ -86,9 +127,11 @@ export function describeTarget(node: unknown, maskSelector: string): TargetDescr
   if (el === undefined || tag === undefined) return {};
   const component = componentNameFromElement(node); // D2: nearest data-bugsee-component (not PII)
   const type = typeof el.type === 'string' ? el.type : undefined;
+  // Two independent reasons to mask: the app marked this subtree hidden, or the field holds secret
+  // content by the SHARED definition (@bugsee/core's SENSITIVE_INPUT_MATCHERS — the same list
+  // @bugsee/replay masks with and @bugsee/webview obscures with, so the three cannot drift apart).
   const masked =
-    (typeof el.closest === 'function' && el.closest(maskSelector) != null) ||
-    (tag === 'input' && type === 'password');
+    (typeof el.closest === 'function' && el.closest(maskSelector) != null) || isSensitiveInput(el);
   if (masked) return { tag, masked: true, ...(component !== undefined ? { component } : {}) };
   const desc: TargetDescriptor = { tag };
   if (component !== undefined) desc.component = component;
@@ -101,6 +144,24 @@ export function describeTarget(node: unknown, maskSelector: string): TargetDescr
   if (text) desc.text = text;
   desc.selector = buildSelector(tag, id, cls);
   return desc;
+}
+
+/**
+ * Split a descriptor into the wire's `view`/`view_id`/`view_tag` contract fields plus whatever is left
+ * over. The viewer reads `view`→target.class, `view_id`→target.id, `view_tag`→target.tag, so those
+ * three carry the identity; the remainder (control type, label, component, masked, selector) rides in
+ * `target`, an SDK-ahead-of-contract field. Nothing is emitted twice, and `target` is omitted when the
+ * remainder is empty.
+ */
+function targetFields(desc: TargetDescriptor): Partial<InputEventDetail> {
+  const { tag, id, class: cls, ...rest } = desc;
+  const extra = Object.keys(rest).length > 0 ? { target: rest as Record<string, unknown> } : {};
+  return {
+    ...(cls !== undefined ? { view: cls } : {}),
+    ...(id !== undefined ? { view_id: id } : {}),
+    ...(tag !== undefined ? { view_tag: tag } : {}),
+    ...extra,
+  };
 }
 
 /** The add/remove-listener surface the source attaches to (window or document). */
@@ -129,7 +190,31 @@ export interface BrowserInputEnv {
 // preventDefault. We never call stopPropagation/preventDefault — the event reaches the app untouched.
 const ADD_OPTIONS: AddEventListenerOptions = { capture: true, passive: true };
 const REMOVE_OPTIONS: EventListenerOptions = { capture: true };
-const INTERACTIONS = ['click', 'keydown', 'change', 'submit', 'focusin'] as const;
+const INTERACTIONS = [
+  'pointerdown',
+  'pointerup',
+  'pointercancel',
+  'keydown',
+  'change',
+  'submit',
+  'focusin',
+] as const;
+
+/** `pointerType` → the wire tool. An unrecognised (but present) type is a real device we cannot name. */
+const TOOL_BY_POINTER_TYPE: Readonly<Record<string, InputTool>> = {
+  touch: InputTool.Touch,
+  mouse: InputTool.Mouse, // a TOUCHPAD reports 'mouse' — it is a mouse on the wire, as intended
+  pen: InputTool.Pen,
+};
+
+const toolFor = (pointerType: unknown): InputTool => {
+  if (typeof pointerType !== 'string' || pointerType === '') return InputTool.Unknown;
+  return TOOL_BY_POINTER_TYPE[pointerType] ?? InputTool.Other;
+};
+
+/** Emit a rounded coordinate only when the event actually carried one. */
+const coord = (value: unknown, key: 'x' | 'y'): Partial<InputEventDetail> =>
+  typeof value === 'number' && Number.isFinite(value) ? { [key]: Math.round(value) } : {};
 
 // Is this keydown plain typed text (which must never be captured) rather than a navigation/control key
 // or a deliberate shortcut? A typed character is a SINGLE Unicode grapheme — [...key].length counts code
@@ -146,55 +231,61 @@ const isTypedText = (e: KeyboardEvent): boolean => {
   return !shortcut;
 };
 
-class BrowserInputSource extends InterceptorBase<{ event: UserEvent }> {
+interface PointerEventLike {
+  pointerId?: unknown;
+  pointerType?: unknown;
+  clientX?: unknown;
+  clientY?: unknown;
+  button?: unknown;
+  pressure?: unknown;
+  width?: unknown;
+  height?: unknown;
+  target?: unknown;
+}
+
+class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   readonly name = 'browser-input';
   readonly #target: InputEventTarget | undefined;
   readonly #mask: string;
+  /** Open gestures: pointerId → the wire `id` its stages share. */
+  readonly #openGestures = new Map<unknown, string>();
+  #nextGestureId = 1;
 
-  // Each handler is wrapped by #dispatch: it builds the UserEvent (returning undefined to skip) inside a
+  // Each handler is wrapped by #dispatch: it builds the entry (returning undefined to skip) inside a
   // try/catch, so a malformed/exotic event, an instrumented DOM target, or an invalid app-supplied
   // maskSelector (Element.closest throws) can NEVER propagate out of the capture-phase listener into the
   // app's own dispatch. A build throw drops the whole event — fail-safe, never a partial/unmasked leak.
   readonly #handlers: Record<(typeof INTERACTIONS)[number], (event: Event) => void> = {
-    click: this.#dispatch((event) => {
-      const e = event as MouseEvent;
-      return {
-        name: 'click',
-        params: {
-          target: describeTarget(e.target, this.#mask),
-          x: e.clientX,
-          y: e.clientY,
-          button: e.button,
-        },
-      };
-    }),
+    pointerdown: this.#dispatch((event) => this.#pointer(event, 'begin')),
+    pointerup: this.#dispatch((event) => this.#pointer(event, 'end')),
+    pointercancel: this.#dispatch((event) => this.#pointer(event, 'end')),
     keydown: this.#dispatch((event) => {
       const e = event as KeyboardEvent;
       if (isTypedText(e)) return undefined; // typed text (incl. AltGr / emoji / IME) → never captured
+      const desc = describeTarget(e.target, this.#mask);
+      // THE SECURE-FIELD EXCLUSION. Focus is in a field whose content is secret (or in a subtree the
+      // app marked hidden): withhold the keystroke ENTIRELY, not just its character. Even named keys
+      // leak here — the Tab/Enter/Backspace rhythm inside a password box describes what was typed, and
+      // `masked` already means "we may report nothing about this element's content".
+      if (desc.masked === true) return undefined;
       return {
-        name: 'key',
-        params: {
-          target: describeTarget(e.target, this.#mask),
-          key: e.key,
-          ...(e.ctrlKey ? { ctrl: true } : {}),
-          ...(e.metaKey ? { meta: true } : {}),
-          ...(e.altKey ? { alt: true } : {}),
-          ...(e.shiftKey ? { shift: true } : {}),
-        },
+        // Android's InputEventStage (interception/input/InputEventStage.java) carries a dedicated
+        // 'keydown' stage, distinct from the pointer 'begin'/'end' stages, precisely so a consumer can
+        // tell a key press apart from a pointer-down without inspecting `tool`. Emitting 'begin' here
+        // collided the two.
+        type: 'keydown',
+        tool: InputTool.Key,
+        key: e.key,
+        ...(e.ctrlKey ? { ctrl: true as const } : {}),
+        ...(e.metaKey ? { meta: true as const } : {}),
+        ...(e.altKey ? { alt: true as const } : {}),
+        ...(e.shiftKey ? { shift: true as const } : {}),
+        ...targetFields(desc),
       };
     }),
-    change: this.#dispatch((event) => ({
-      name: 'change',
-      params: { target: describeTarget(event.target, this.#mask) },
-    })),
-    submit: this.#dispatch((event) => ({
-      name: 'submit',
-      params: { target: describeTarget(event.target, this.#mask) },
-    })),
-    focusin: this.#dispatch((event) => ({
-      name: 'focus',
-      params: { target: describeTarget(event.target, this.#mask) },
-    })),
+    change: this.#dispatch((event) => this.#semantic(event, 'change')),
+    submit: this.#dispatch((event) => this.#semantic(event, 'submit')),
+    focusin: this.#dispatch((event) => this.#semantic(event, 'focus')),
   };
 
   constructor(target: InputEventTarget | undefined, mask: string) {
@@ -203,11 +294,69 @@ class BrowserInputSource extends InterceptorBase<{ event: UserEvent }> {
     this.#mask = mask;
   }
 
-  #dispatch(build: (event: Event) => UserEvent | undefined): (event: Event) => void {
+  /** The gesture id for this stage: reuse the open one, else mint a new one (an `up` whose `down`
+   *  predates our listeners still gets a well-formed, unique gesture). `end` releases it. */
+  #gestureId(pointerId: unknown, stage: 'begin' | 'end'): string {
+    const open = this.#openGestures.get(pointerId);
+    const id = open ?? String(this.#nextGestureId++);
+    if (stage === 'end') this.#openGestures.delete(pointerId);
+    else this.#openGestures.set(pointerId, id);
+    return id;
+  }
+
+  #pointer(event: Event, stage: 'begin' | 'end'): InputEventDetail {
+    const e = event as PointerEventLike;
+    const tool = toolFor(e.pointerType);
+    // Contact geometry is a finger/stylus property. A mouse reports a nominal 1x1 box, which would
+    // serialise as a meaningless 0.5-pixel radius, so it is omitted for a mouse — mobile-canonical
+    // (Android records 0 there).
+    const geometry =
+      tool !== InputTool.Mouse &&
+      typeof e.width === 'number' &&
+      typeof e.height === 'number' &&
+      Number.isFinite(e.width) &&
+      Number.isFinite(e.height)
+        ? { majorRadius: e.width / 2, minorRadius: e.height / 2 }
+        : {};
+    return {
+      id: this.#gestureId(e.pointerId, stage),
+      type: stage,
+      ...coord(e.clientX, 'x'),
+      ...coord(e.clientY, 'y'),
+      ...(typeof e.pressure === 'number' && Number.isFinite(e.pressure)
+        ? { force: e.pressure }
+        : {}),
+      ...geometry,
+      tool,
+      ...(typeof e.button === 'number' ? { button: e.button } : {}),
+      ...targetFields(describeTarget(e.target, this.#mask)),
+    };
+  }
+
+  /**
+   * A semantic DOM signal (not a device press): `tool: Other`, no coordinates, no gesture id.
+   *
+   * OPEN QUESTION (R2-11, not resolved unilaterally — the `type` field is shared wire vocabulary
+   * downstream of `packages/webview/bridge-protocol.schema.json` and two native receivers): `'change'`
+   * `'submit'`/`'focus'` are not members of Android's `InputEventStage` (`unknown|begin|move|end|
+   * scroll|keydown|keyup`), which core/src/events.ts documents `InputEvent.type` as. Two shapes were
+   * considered — extend the shared stage enum with three new web-only members, or move these three
+   * onto a separate field (e.g. `semantic?: 'change'|'submit'|'focus'`) leaving `type` a pure
+   * `InputEventStage` — see the round-2 fix-wave report for the trade-off write-up.
+   */
+  #semantic(event: Event, type: 'change' | 'submit' | 'focus'): InputEventDetail {
+    return {
+      type,
+      tool: InputTool.Other,
+      ...targetFields(describeTarget(event.target, this.#mask)),
+    };
+  }
+
+  #dispatch(build: (event: Event) => InputEventDetail | undefined): (event: Event) => void {
     return (event) => {
       try {
-        const userEvent = build(event);
-        if (userEvent !== undefined) this.emit('event', userEvent);
+        const detail = build(event);
+        if (detail !== undefined) this.emit('input', detail);
       } catch {
         // Observe-only: a throwing event/target/selector must never disrupt the application.
       }
@@ -224,12 +373,15 @@ class BrowserInputSource extends InterceptorBase<{ event: UserEvent }> {
     for (const type of INTERACTIONS) {
       this.#target?.removeEventListener(type, this.#handlers[type], REMOVE_OPTIONS);
     }
+    // Gestures cannot span a deactivation: their `up` will never be observed, so holding the ids would
+    // leak one Map entry per pointer and let a stale id resurface on the next activation.
+    this.#openGestures.clear();
   }
 }
 
 export function createBrowserInputSource(
   env: BrowserInputEnv = {},
-): Interceptor<{ event: UserEvent }> {
+): Interceptor<{ input: InputEventDetail }> {
   const target =
     env.target ?? (typeof document !== 'undefined' ? (document as InputEventTarget) : undefined);
   return new BrowserInputSource(target, env.maskSelector ?? '[data-bugsee-hidden]');

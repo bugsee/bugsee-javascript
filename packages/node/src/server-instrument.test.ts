@@ -1,5 +1,6 @@
 import type { BugseeClient } from '@bugsee/core';
 import type { Transaction } from '@bugsee/performance';
+import { NAME_SOURCE_ATTRIBUTE } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeRequestContextStore, type RequestContextStore } from './request-context-store';
 import {
@@ -16,17 +17,34 @@ const SERVER_SPAN = Symbol.for('bugsee.server.span');
 const stashed = (ctx: unknown): unknown =>
   ctx === undefined ? undefined : (ctx as Record<symbol, unknown>)[SERVER_SPAN];
 
-const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transaction =>
-  ({
+// Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
+// bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
+// fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
+// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
+  const txn: Transaction = {
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
     isSampled: () => true,
     isFinished: vi.fn(() => false),
-    setName: vi.fn(),
-    setAttribute: vi.fn(),
+    setName: vi.fn(() => txn),
+    setDescription: vi.fn(() => txn),
+    setAttribute: vi.fn(() => txn),
+    setStatus: vi.fn(() => txn),
+    startChildSpan: vi.fn(() => txn),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK',
+    getOperation: () => 'http.server',
+    getDescription: () => undefined,
+    // Required so finishWith's F-4 manual-rename check (transaction.getAttributes()) runs for real
+    // instead of falling through a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+    getAttributes: vi.fn(() => ({})),
+    getName: () => 'name',
     finish: vi.fn(),
     ...over,
-  }) as unknown as Transaction;
+  };
+  return txn;
+};
 
 // A minimal fake store (getCurrent → undefined) for the owner-path / decoupled unit tests.
 const fakeStore = (): RequestContextStore & {
@@ -217,6 +235,100 @@ describe('openServerRequest', () => {
     const c2 = fakeClient({ perf: { startTransaction: vi.fn(() => txn2) } });
     openServerRequest(info(), { getClient: () => c2 }).finish(500);
     expect(txn2.finish).toHaveBeenCalledWith('ERROR');
+  });
+
+  // F-4: `setRouteName()`/`setActiveTransactionName()` (the performance controller) rename the ACTIVE
+  // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source'). finishWith() used to
+  // unconditionally call `transaction.setName(spanName(info, route))` on finish, clobbering that manual
+  // rename with the route-derived name every time. The fix: skip the automatic setName call once the
+  // transaction already carries a name-source attribute (a manual rename happened this request) — but
+  // still set the other attributes and finish normally.
+  it('does NOT clobber a manual rename (setRouteName/setActiveTransactionName) with the route name', () => {
+    const txn = fakeTxn({
+      getAttributes: vi.fn(() => ({ [NAME_SOURCE_ATTRIBUTE]: 'route' })),
+    });
+    const client = fakeClient({ store: fakeStore(), perf: { startTransaction: vi.fn(() => txn) } });
+    const span = openServerRequest(info({ method: 'POST', route: '/o/:id' }), {
+      getClient: () => client,
+    });
+    span.finish(201);
+    expect(txn.setName).not.toHaveBeenCalled(); // the manual rename wins
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'POST');
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 201);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
+  it('sets the automatic route-derived name when NO manual rename happened (name-source attribute absent)', () => {
+    const txn = fakeTxn({ getAttributes: vi.fn(() => ({})) });
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    openServerRequest(info({ method: 'GET', route: '/o/:id' }), { getClient: () => client }).finish(
+      200,
+    );
+    expect(txn.setName).toHaveBeenCalledWith('GET /o/:id');
+  });
+
+  // D2 (round 2) / R3 S1: `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
+  // production `Transaction` can throw from it, so `finishWith` reads it directly (no bespoke inner
+  // try/catch around just that call), and the outer try/catch is NOT proven through it (a throwing
+  // `getAttributes` is not a reachable production trigger). The outer try/catch around the whole
+  // finishWith block exists for a genuine reason instead: a broken 3rd-party APM shim's `Transaction` can
+  // throw from a member it actually implements and finishWith actually calls — `setAttribute` is exactly
+  // that (every real shim implements it; finishWith calls it twice per finish). Provoke the catch through
+  // THAT, not through the unreachable `getAttributes` throw: finishWith still never lets the exception
+  // escape into the response lifecycle, even though the steps that already ran before the throwing call
+  // (here, the automatic rename) have already taken effect — this is a partial no-op, not a full one.
+  it('a Transaction whose setAttribute throws (a broken 3rd-party APM shim) is swallowed by the outer catch, never throws out', () => {
+    const txn = fakeTxn({
+      setAttribute: vi.fn(() => {
+        throw new Error('hostile setAttribute');
+      }),
+    });
+    const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
+    const span = openServerRequest(info({ method: 'GET', route: '/o/:id' }), {
+      getClient: () => client,
+    });
+    expect(() => span.finish(200)).not.toThrow();
+    expect(txn.setName).toHaveBeenCalledWith('GET /o/:id'); // ran before the throwing call
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'GET'); // the call that throws
+    expect(txn.finish).not.toHaveBeenCalled(); // never reached — the throw short-circuits the block
+  });
+
+  // F-4 integration: the REAL @bugsee/performance controller + real Transaction — not the fakeTxn/fakePerf
+  // structural doubles above — so the fix is proven against the actual setRouteName/getAttributes/setName
+  // implementation this file's own NAME_SOURCE_ATTRIBUTE-based check depends on, not merely against a
+  // hand-rolled mock's assumption about that contract.
+  it("F-4 integration (real performance controller): setRouteName's rename survives finish()", async () => {
+    const { createPerformanceController, createTransactionStore } = await import(
+      '@bugsee/performance'
+    );
+    const clock = { wallNow: () => 1000, monotonicNow: () => 0 };
+    const txnStore = createTransactionStore();
+    const perf = createPerformanceController({ clock, store: txnStore });
+    const client = fakeClient({ store: fakeStore(), perf: perf as never });
+    const span = openServerRequest(info({ method: 'GET', route: '/o/:id' }), {
+      getClient: () => client,
+    });
+    // The app renames the active transaction mid-request — the exact call a route handler makes via
+    // `client.ext('performance').setRouteName(...)`.
+    perf.setRouteName('/o/custom-name');
+    span.finish(200);
+    const [buffered] = txnStore.drain();
+    expect(buffered?.name).toBe('/o/custom-name'); // the manual rename won, not the route-derived name
+  });
+
+  it('F-4 integration (real performance controller): with NO manual rename, the route name is used', async () => {
+    const { createPerformanceController, createTransactionStore } = await import(
+      '@bugsee/performance'
+    );
+    const clock = { wallNow: () => 1000, monotonicNow: () => 0 };
+    const txnStore = createTransactionStore();
+    const perf = createPerformanceController({ clock, store: txnStore });
+    const client = fakeClient({ perf: perf as never });
+    openServerRequest(info({ method: 'GET', route: '/o/:id' }), { getClient: () => client }).finish(
+      200,
+    );
+    const [buffered] = txnStore.drain();
+    expect(buffered?.name).toBe('GET /o/:id');
   });
 
   it('finish(status, outcome) honors an EXPLICIT outcome over the status-derived one (D10)', () => {

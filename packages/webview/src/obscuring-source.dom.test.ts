@@ -56,6 +56,18 @@ describe('the WebView secure-input floor', () => {
     expect(matches(html)).toBe(false);
   });
 
+  // The floor is FORM-CONTROL scoped: it hit-tests `input` elements. Nothing pinned that, so shaping the
+  // shared `@bugsee/core` matcher list without the `input` prefix (which widens the floor to any node
+  // carrying a `type`/`autocomplete`/`data-rr-is-password` attribute) went unnoticed. Over-masking is
+  // fail-safe but it is not the contract, and a rect over an unrelated `<div type="tel">` blanks real UI.
+  it('scopes every matcher to an input element', () => {
+    for (const fragment of SECURE_INPUT_SELECTOR.split(',')) {
+      expect(fragment.trim().startsWith('input[')).toBe(true);
+    }
+    document.body.innerHTML = '<div type="tel"></div><span data-rr-is-password="true"></span>';
+    for (const el of document.body.children) expect(el.matches(SECURE_INPUT_SELECTOR)).toBe(false);
+  });
+
   it('is a selector the DOM can actually parse', () => {
     expect(() => document.createElement('div').matches(SECURE_INPUT_SELECTOR)).not.toThrow();
   });

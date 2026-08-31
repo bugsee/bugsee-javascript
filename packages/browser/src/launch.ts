@@ -8,10 +8,10 @@ import {
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
-  createUserEventsProvider,
   installNetworkCapture,
   type NetworkCapture,
   type TraceSample,
@@ -42,6 +42,7 @@ import {
   ReportMarkerStoreToken,
   recoverReports,
   resolveLaunchOptions,
+  runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
   TransportToken,
@@ -152,16 +153,24 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process_started + pagehide). Default true. */
   captureSystemEvents?: boolean;
-  /** Capture user interactions (clicks/keys/changes/focus → events.user). Default true. */
+  /** Capture user interactions (clicks/keys/changes/focus → the SDK-captured `input` stream — never
+   * `events.user`, which is reserved for application-supplied `client.event()` data). Default true. */
   captureInteractions?: boolean;
   /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
   captureViewHierarchy?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /**
-   * Session replay (rrweb). `true` or an options object enables it; `@bugsee/replay` is lazy-`import()`ed
-   * only then, so the errors-only bundle is unaffected (design D2/D8). Masking is FAIL-CLOSED (mask all
-   * text/inputs, block all media). Default off.
+   * Session replay (rrweb). **On by default** — parity with the iOS/Android SDKs, which record by default.
+   * An options object customises it; `false` opts out entirely. Masking is FAIL-CLOSED (mask all
+   * text/inputs, block all media) whether or not the option is given.
+   *
+   * `@bugsee/replay` is lazy-`import()`ed, so it is a separate chunk that is fetched only when replay runs
+   * (design D2/D8): `replay: false` therefore keeps the errors-only bundle genuinely free of it.
+   *
+   * Replay also requires a DOM. In a DOM-less host — an SSR / pre-render pass of any of the five
+   * meta-framework adapters — the chunk is not fetched and nothing is recorded, whatever this option
+   * says, silently. See the gate in `launchCore` for why the skip does not report through `onError`.
    */
   replay?: boolean | ReplayLaunchOptions;
 
@@ -402,7 +411,28 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
 
   // Session replay (lazy). When enabled, a shared fileEncoders map is threaded into the client's report
   // assembly (RP5a) — @bugsee/replay writes its `replay.bin` encoder into it after the lazy import resolves.
-  const replayEnabled = options.replay !== undefined && options.replay !== false;
+  // ON BY DEFAULT (an opt-OUT): video is Bugsee's headline feature and both mobile SDKs record by default,
+  // so a web integrator who never sets the option gets a session recording too. `replay: false` is the
+  // explicit errors-only path — the value that keeps @bugsee/replay out of the loaded bundle.
+  //
+  // …AND a DOM must exist. rrweb records the DOM, so replay is meaningless without one. This matters
+  // BECAUSE the option is now an opt-out: `@bugsee/browser` is launched in DOM-less hosts for real — all
+  // five meta-framework adapters (nextjs/nuxt/remix/sveltekit/astro) server-render — and without this gate
+  // every server render would dynamic-`import()` ~56KB of rrweb, call `record()`, throw, and have the
+  // rejection swallowed by the `.catch(onError)` below whenever no onError is configured. The probe is the
+  // SAME `domDocument` binding the input source and the viewtree snapshot already gate on (resolved just
+  // above), not a bespoke `typeof window` test: one definition of "this host has a DOM" for the whole file,
+  // and it honours the injected `document` seam. `@bugsee/replay` self-skips too (defence in depth, for a
+  // consumer that imports it directly) — but only THIS gate keeps the chunk from being fetched at all,
+  // which is the entire point of the import being dynamic.
+  //
+  // The skip is SILENT — no onError. A DOM-less host is a supported environment, not a misconfiguration,
+  // and this is now the DEFAULT path: reporting it would fire an internal "error" on every single server
+  // render. It is also not actionable, since meta-framework integrations share one options object across
+  // the server and client renders — an explicit `replay: true` legitimately reaches the server render, and
+  // the correct behaviour there is to record nothing and say nothing. This matches how every cross-runtime
+  // capture interceptor treats a missing global (see @bugsee/capture's sse/web-socket interceptors).
+  const replayEnabled = options.replay !== false && domDocument !== undefined;
   const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
@@ -438,7 +468,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // events (process_started + pagehide). Each global-patching interceptor is shared via the Carrier.
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
-    () => createConsoleInterceptor(),
+    // Same dialect-dispatching parser the client's `logException` path uses above. Without it the
+    // interceptor falls back to core's V8-only parser, and `console.trace()`'s stack — the entire point
+    // of that method — is silently dropped on Firefox and Safari: `Error.captureStackTrace` EXISTS on
+    // both, so a stack is produced, just in the `fn@loc` dialect that the V8 parser yields zero frames
+    // for. One parser per platform, chosen once, used by every stack-reading path in it.
+    () => createConsoleInterceptor({ stackParser: parseStack }),
     carrier,
   );
   client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
@@ -455,16 +490,20 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   client.addCaptureProvider(
     createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
   );
-  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.
+  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
+  // `input` stream (`input.json`). NOT `events.user` — that stream belongs to the application's own
+  // `client.event()` data and SDK capture must never be written into a `user.*` stream.
   const inputSource = getOrCreateInterceptor(
     'browser-input',
     () => createBrowserInputSource({ target: domDocument }),
     carrier,
   );
-  client.addCaptureProvider(createUserEventsProvider(inputSource));
+  client.addCaptureProvider(createInputProvider(inputSource));
 
-  // Session replay: lazy-`import()` @bugsee/replay ONLY when enabled (a separate chunk → errors bundle
-  // stays ≤15KB), then install the recorder + register the replay.bin encoder into the shared map. The
+  // Session replay: lazy-`import()` @bugsee/replay unless it was opted OUT (`replay: false`) or this host
+  // has no DOM (SSR / pre-render) — a separate chunk, so the errors-only opt-out keeps its ≤15KB bundle,
+  // nobody pays for rrweb who turned replay off, and no server render pays for it at all. Then install the
+  // recorder + register the replay.bin encoder into the shared map. The
   // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
   if (replayEnabled && fileEncoders !== undefined) {
     const replayOptions: ReplayLaunchOptions =
@@ -501,40 +540,56 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // Recovery on the next launch. Self's own namespaces are empty (a fresh instanceId per launch), so the
   // prior crashed session is just a DEAD SIBLING — ALL recovery is dead-sibling recovery (BD9), gated by each
   // sibling's Web Lock so a LIVE tab's data is never read, recovered, or swept (this is what closes the
-  // multi-tab capture-sweep hazard). (1) self's durable bundle recover() — a no-op over its fresh prefix for
-  // the persist path, but real work for an injected bundleStore override (which bypasses coexistence).
-  if (durable !== undefined) {
-    void ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
-      durable.recover(),
-    );
-  }
-  // (2) Per DEAD sibling, under its lock: re-upload its leftover bundles AND — when recovery is enabled —
-  // rebuild + deliver its detected incidents from its preserved capture chunks (core `recoverReports` over
-  // the sibling's prefixed views, `currentGeneration: -1` ⇒ every one of its generations is eligible). The
-  // recovered report uploads via the BASE pipeline (its marker + chunks ARE the durability — kept + retried
-  // on failure). The coordinator reads the shared stores directly (no mirror hydration needed).
-  void coexistence.recoverDeadSiblings({
-    uploadPipeline: baseUploadPipeline,
-    ...(recoverEnabled
-      ? {
-          recoverReportsForViews: async (deadCaptureView, deadMarkerView) => {
-            const markers = createPersistentReportMarkerStore(deadMarkerView, options.onError);
-            await markers.whenReady;
-            await recoverReports({
-              backend: createIdbChunkBackend(deadCaptureView, {
-                generation: -1,
-                cleanOtherGenerations: false,
-                ...(options.onError !== undefined ? { onError: options.onError } : {}),
-              }),
-              currentGeneration: -1,
-              markers,
-              context: () => ({ appToken, environment: getEnvironment(), clock }),
-              uploadPipeline: baseUploadPipeline,
-              ...(options.onError !== undefined ? { onError: options.onError } : {}),
-            });
-          },
-        }
-      : {}),
+  // multi-tab capture-sweep hazard).
+  //
+  // The SEQUENCE — own queue, dead-sibling scan, release pass — is core's `runLaunchRecovery`: ONE
+  // definition, which the node and worker tiers had copied verbatim. This tier supplies only what is
+  // genuinely its own: the IndexedDB scan, and the mirror-hydration promise below.
+  //
+  // The queue is only readable once its mirror has hydrated — an IndexedDB-backed store serves list()
+  // from RAM, so reading it earlier simply sees nothing. A synchronous (injected) store has none.
+  const queueReady = (bundleStore as { whenReady?: Promise<void> } | undefined)?.whenReady;
+  // The scan: per DEAD sibling, under its lock, re-upload its leftover bundles AND — when recovery is
+  // enabled — rebuild + deliver its detected incidents from its preserved capture chunks (core
+  // `recoverReports` over the sibling's prefixed views, `currentGeneration: -1` ⇒ every one of its
+  // generations is eligible). A recovered report uploads via the BASE pipeline (its marker + chunks ARE
+  // the durability — kept + retried on failure). The coordinator reads the shared stores directly (no
+  // mirror hydration needed) and hands this callback the sibling's hydrated marker store plus the
+  // incidents its bundle-queue leg already settled with (`skipReportIds`), so one incident is delivered
+  // once even when the sibling left BOTH a staged bundle and that incident's marker (the SEV1
+  // double-upload — reconciled in browser-utils).
+  void runLaunchRecovery({
+    ...(durable !== undefined ? { queue: durable } : {}),
+    // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
+    // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
+    shared: options.bundleStore !== undefined,
+    pipeline: baseUploadPipeline,
+    ...(queueReady !== undefined ? { whenReady: queueReady } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    scan: (reconcileOwnQueue) =>
+      coexistence.recoverDeadSiblings({
+        uploadPipeline: baseUploadPipeline,
+        ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
+        ...(recoverEnabled
+          ? {
+              recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                await recoverReports({
+                  backend: createIdbChunkBackend(captureView, {
+                    generation: -1,
+                    cleanOtherGenerations: false,
+                    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                  }),
+                  currentGeneration: -1,
+                  markers,
+                  context: () => ({ appToken, environment: getEnvironment(), clock }),
+                  uploadPipeline: baseUploadPipeline,
+                  skipReportIds,
+                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                });
+              },
+            }
+          : {}),
+      }),
   });
 
   // Flush on page hide (Wave 6.2). The browser is the one runtime with no shutdown hook at all — no

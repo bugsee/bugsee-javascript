@@ -9,6 +9,14 @@ export type {
   BreadcrumbInput,
   LogExceptionOptions,
 } from '@bugsee/core';
-export type { Bugsee } from '@bugsee/node';
+// F-6: the `HttpTransport` primitive (+ its request/response option shapes), so a custom transport (a
+// proxy, a queueing shim, a test double) passed to the `transport` launch option types without an
+// unsafe cast.
+export type { Bugsee, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/node';
+// F-5: the per-request context store — needed by app code that wants to call `store.setAttribute()`
+// directly (e.g. the per-request-attribute concurrency pattern) without reaching into @bugsee/node's
+// internal DI container (`client.getServiceProvider(...)`) or taking a direct dependency on it purely
+// to reach this token, as every framework adapter's own hooks.ts already does internally.
+export { type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 export { type BugseeNodeLaunchOptions, launch } from './node';

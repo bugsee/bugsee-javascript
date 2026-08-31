@@ -39,13 +39,34 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
 
 /**
  * Wire session replay into a launched client: install the rrweb recorder (fail-closed masking) + register
- * the `replay.bin` encoder. Returns the recorder (its `startBlackout`/`stopBlackout` for the caller to wire).
+ * the `replay.bin` encoder. Returns the recorder (its `startBlackout`/`stopBlackout` for the caller to wire),
+ * or `undefined` in a DOM-less host, where there is nothing to record and nothing to blackout.
  */
 export function registerReplay(
   client: ReplayClientLike,
   fileEncoders: ReplayFileEncoders,
   options: RegisterReplayOptions = {},
-): ReplayRecorder {
+): ReplayRecorder | undefined {
+  // Self-skip where the global this source depends on is absent — the same contract every cross-runtime
+  // capture interceptor honours (@bugsee/capture's sse/web-socket interceptors return from onActivate when
+  // their constructor is missing). rrweb records the DOM, so without a `document` there is nothing to
+  // record and `record()` would throw on the first call.
+  //
+  // This is DEFENCE IN DEPTH: `@bugsee/browser`'s launch already refuses to `import()` this module without
+  // a DOM, and that gate — not this one — is what keeps the ~56KB rrweb chunk off an SSR render. This one
+  // covers the paths that reach the module anyway: a consumer calling `registerReplay` directly, or a
+  // bundler that resolves the dependency eagerly instead of code-splitting it.
+  //
+  // SILENT, deliberately — no `onError`. Replay is ON BY DEFAULT (an opt-OUT), so a DOM-less host is a
+  // supported environment rather than a misconfiguration, and reporting it would fire an internal error on
+  // every single server render of every SSR framework. It is not actionable either: meta-framework
+  // integrations share one options object across the server and the client render, so an explicit
+  // `replay: true` legitimately arrives here on the server.
+  //
+  // The check comes FIRST, before the masking resolver — selector validation parses against the DOM.
+  if ((globalThis as unknown as { document?: unknown }).document === undefined) {
+    return undefined;
+  }
   const provider = createReplayCaptureProvider({
     record: options.record ?? rrwebRecord,
     masking: resolveReplayMaskingOptions(options, { onError: options.onError }),

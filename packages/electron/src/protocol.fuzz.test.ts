@@ -15,7 +15,14 @@ import { decodeReport, decodeStreamEntry, encodeStreamEntry, isReport } from './
  * hold the line over generated input.
  */
 
-const KNOWN_TYPES = ['log', 'network', 'events.user', 'events.system', 'traces.system'] as const;
+const KNOWN_TYPES = [
+  'log',
+  'network',
+  'events.user',
+  'events.system',
+  'traces.system',
+  'input',
+] as const;
 
 /** Characters that would break out of the tab-separated, newline-terminated frame format. */
 const FRAME_BREAKERS = ['\n', '\r', '\t', '\r\n', ' ', ' '];

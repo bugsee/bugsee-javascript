@@ -18,13 +18,17 @@ transcode** (mobile's `video` path is unchanged; this is the web analogue).
 **Why.** Replay is the single biggest visual-context gap vs the mobile SDKs and vs competitors. It turns "an error
 happened" into "here's exactly what the user saw and did in the last ~60 s."
 
-**Who.** Browser (`@bugsee/browser` + the umbrella) apps that opt in via the `replay` launch option. Framework
-adapters inherit it (they compose the browser tier).
+**Who.** Browser (`@bugsee/browser` + the umbrella) apps — **all of them by default**. Replay is ON unless the app
+passes `replay: false`; an options object customises it. Framework adapters inherit it (they compose the browser tier).
+Rationale: video is Bugsee's headline feature and both mobile SDKs record by default, so a JS SDK that shipped it off
+was a parity divergence a web integrator would never discover. `replay: false` keeps a genuinely errors-only path.
 
 **Key constraints (from sdk-design.md, binding):**
-- **Option-driven, not an integration** (§0.5#6). `replay: boolean | ReplayOptions`; `@bugsee/replay` is
-  **lazy-`import()`ed only when `replay` is truthy** — the errors-only bundle stays ≤15 KB gzipped; the replay add-on
-  has its own **≤90 KB gzipped** budget.
+- **Option-driven, not an integration** (§0.5#6). `replay: boolean | ReplayOptions`, **default ON** (opt out with
+  `replay: false`). `@bugsee/replay` is **lazy-`import()`ed, and skipped entirely when `replay` is `false`** — the
+  bundle-size budget is what the lazy chunk and the opt-out exist for, NOT a reason to default off: an app that opts
+  out keeps the ≤15 KB errors-only bundle, and the replay add-on has its own **≤90 KB gzipped** budget that only
+  recording apps pay (as a separate chunk fetched after launch).
 - **Privacy fail-closed** (§27#10, §92): `maskAllText` / `maskAllInputs` / `blockAllMedia` all default `true`;
   `<input type=password>` + `autocomplete=cc-*` **always** masked (never unmaskable); iframes + shadow DOM excluded by
   default.
@@ -101,8 +105,8 @@ own slice) and Tier-3 size trimming.
 ## 5. Architecture
 
 ```
- replay option (truthy)
-      │  lazy import('@bugsee/replay')  ← keeps errors bundle ≤15KB
+ replay option (default ON; skipped only on `replay: false`)
+      │  lazy import('@bugsee/replay')  ← separate chunk; `replay:false` keeps the errors bundle ≤15KB
       ▼
  registerReplay(client, options)
       ├─ ReplayEncoder service  (EXPLICIT init w/ masking opts; container.getProvider('replay-encoder'))
@@ -122,7 +126,7 @@ own slice) and Tier-3 size trimming.
 3. **`ReplayCaptureProvider`** — extends `CaptureProviderBase`; `onStart` calls `record({ emit: e => this.capture('replay', e.timestamp, e) , …masking})`, `onStop` calls the stopFn; `controllingOption` = the replay option; `checkoutEveryNms` bounds the ring (D4/D7). `startBlackout`/`stopBlackout` pause/resume.
 4. **`ReplayEncoder` service** — `encode(events): Promise<Uint8Array>` = fflate gzip in a Worker (D5); registered under `ReplayEncoderToken`; EXPLICIT-init with the masking/worker options.
 5. **`FileType 'replay'` + assembler special-case** — `fileNameForType('replay') = 'replay.bin'`; `serializeFileData('replay', …)` routes through the encoder to bytes (D6). Requires the assembler to support a binary (async) file producer — a small, well-scoped core change.
-6. **Launch wiring** (`@bugsee/browser` + umbrella) — when `replay` truthy: `await import('@bugsee/replay')`, `registerReplay(client, resolvedReplayOptions)`; `includeVideo` gates inclusion at report time (D4). Non-DOM: shim warn (D8).
+6. **Launch wiring** (`@bugsee/browser` + umbrella) — unless `replay` is `false`: `await import('@bugsee/replay')`, `registerReplay(client, resolvedReplayOptions)`; `includeVideo` gates inclusion at report time (D4). Non-DOM: shim warn (D8).
 7. **`@bugsee/replay-canvas`** (separate, opt-in) — passes rrweb's `getCanvasManager` into `record()`; own budget.
 
 **Report-time coupling.** The recorder runs continuously; the ring holds the last window. `includeVideo` (default per

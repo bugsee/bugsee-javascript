@@ -4,6 +4,7 @@ import {
   type BundleStore,
   createDurableUploadPipeline,
   deserializeBundle,
+  type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
@@ -54,6 +55,29 @@ function fakePipeline(result: UploadResult = { ok: true }) {
 }
 
 describe('serializeBundle / deserializeBundle', () => {
+  // The report id rides in the frame HEADER (local storage), never in `request` (the wire envelope). It is
+  // what lets recovery reconcile a staged blob against a still-pending report marker for the SAME incident.
+  it('round-trips the report id in the frame header, out of the wire request', () => {
+    const original: IdentifiedBundle = { ...bundle(), reportId: 'inc-42' };
+    const framed = serializeBundle(original);
+
+    expect(deserializeBundle(framed).reportId).toBe('inc-42');
+    // …and it is NOT smuggled into request.json, which is uploaded verbatim
+    expect(deserializeBundle(framed).request).toEqual(original.request);
+    expect(JSON.stringify(deserializeBundle(framed).request)).not.toContain('inc-42');
+  });
+
+  it('leaves a frame written with no report id (older SDK) without one, rather than inventing it', () => {
+    const restored = deserializeBundle(serializeBundle(bundle()));
+    expect(restored.reportId).toBeUndefined();
+    expect(Object.hasOwn(restored, 'reportId')).toBe(false); // absent, not present-and-undefined
+  });
+
+  it('keeps the report id independent of the staging timestamp', () => {
+    const framed = serializeBundle({ ...bundle(), reportId: 'inc-7' }, 1234);
+    expect(deserializeBundle(framed).reportId).toBe('inc-7');
+  });
+
   it('round-trips request, fileName and body bytes', () => {
     const original = bundle();
     const restored = deserializeBundle(serializeBundle(original));
@@ -260,7 +284,7 @@ describe('createDurableUploadPipeline', () => {
 // Android is the parity target and answers the policy question directly (measured, not assumed):
 //   · CommunicationErrorClassifier.java:14-33 — 401 → AUTH_EXPIRED, 408/425/429 → TRANSIENT, every OTHER
 //     4xx (400 and 413 included) → PERMANENT; 5xx → TRANSIENT.
-//   · ReportUploadExecutor.java:182-199 — a PERMANENT result DELETES the bundle immediately.
+//   · ReportUploadExecutor.java:258-268 — a non-SHOULD_RETRY result DELETES the bundle file.
 //   · IssueReportingTaskUpload.java:27 — MAX_RETRIES = 60, then delete.
 // Android's report queue has no count/size/TTL cap, but its sibling queues do and that is the idiom to
 // follow: NotificationRelayStorage.java:47-49 (1 MB / 500 entries / 72 h), PerformanceUploadStorage.java:35
@@ -423,6 +447,228 @@ describe('retention (Wave 6.4)', () => {
     }).recover();
     await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
     expect(map.size).toBe(1);
+  });
+});
+
+// A recovery pass can be aimed: delivered through a caller-supplied wrapper, and narrowed to the blobs
+// that pass owns. Both exist for the injected-`bundleStore` case, where ONE store is shared by every dead
+// instance while the queue-vs-marker reconciliation is per instance.
+describe('createDurableUploadPipeline — an aimed recover() pass', () => {
+  const staged = (id: string, summary: string, reportId?: string): [string, Uint8Array] => [
+    id,
+    serializeBundle({
+      ...bundle({ request: request(summary) }),
+      ...(reportId !== undefined ? { reportId } : {}),
+    }),
+  ];
+
+  it('delivers through the supplied pipeline instead of the wrapped one, and still frees the blob', async () => {
+    const { store, map } = memStore();
+    const [id, bytes] = staged('s1', 'aimed');
+    map.set(id, bytes);
+    const { pipeline, enqueue } = fakePipeline();
+    const via = fakePipeline();
+
+    createDurableUploadPipeline({ store, pipeline }).recover({ via: via.pipeline });
+
+    await vi.waitFor(() => expect(map.size).toBe(0)); // settled ⇒ the durable copy is gone
+    expect(via.enqueue).toHaveBeenCalledTimes(1);
+    expect(via.enqueue.mock.calls[0]?.[0].request.summary).toBe('aimed');
+    expect(enqueue).not.toHaveBeenCalled(); // the wrapped pipeline was bypassed entirely
+  });
+
+  it('replays only the selected blobs and leaves the rest staged for a later pass', async () => {
+    const { store, map } = memStore();
+    map.set(...staged('mine', 'mine', 'inc-mine'));
+    map.set(...staged('theirs', 'theirs', 'inc-theirs'));
+    const { pipeline, enqueue } = fakePipeline();
+    const durable = createDurableUploadPipeline({ store, pipeline });
+
+    durable.recover({ select: (b) => b.reportId === 'inc-mine' });
+
+    // Settle 'mine' and let the completion pump run — the pump fires on EVERY completion and would
+    // otherwise hand 'theirs' straight over, through the plain pipeline, unreconciled. Draining the
+    // microtask queue is what makes that visible; a bare waitFor(1) passes before the pump ever runs.
+    await vi.waitFor(() => expect(map.size).toBe(1));
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue.mock.calls[0]?.[0].request.summary).toBe('mine');
+    expect([...map.keys()]).toEqual(['theirs']); // untouched, not freed, not dropped
+
+    durable.recover(); // the unfiltered pass that follows releases + takes what is left
+    await vi.waitFor(() => expect(map.size).toBe(0));
+    expect(enqueue.mock.calls.map((c) => c[0].request.summary)).toEqual(['mine', 'theirs']);
+  });
+
+  // Several selective passes then an unfiltered one must add up to exactly one delivery per blob — the
+  // guarantee that lets each dead instance reconcile the shared store in turn.
+  it('never hands the same blob over twice across passes', async () => {
+    const { store, map } = memStore();
+    map.set(...staged('kept', 'kept', 'inc'));
+    const { pipeline, enqueue } = fakePipeline({
+      ok: false,
+      error: new BugseeError('net down', 503),
+    });
+    const durable = createDurableUploadPipeline({ store, pipeline });
+
+    durable.recover({ select: () => true });
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(map.size).toBe(1); // retryable ⇒ still staged
+
+    durable.recover();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(enqueue).toHaveBeenCalledTimes(1); // and NOT replayed a second time in the same process
+  });
+
+  // recover() is fire-and-forget, so a pipeline that REJECTS rather than resolving `{ok:false}` would
+  // escape as an unhandled rejection out of launch — on node a process-level event a host may treat as
+  // fatal. It must reach onError instead, and the blob must survive for the next launch.
+  it('routes a REJECTING pipeline to onError instead of an unhandled rejection, and keeps the blob', async () => {
+    const { store, map } = memStore();
+    map.set(...staged('boom', 'boom', 'inc'));
+    const boom = new Error('transport exploded');
+    const pipeline: UploadPipeline = {
+      enqueue: () => Promise.reject(boom),
+      flush: () => Promise.resolve(true),
+      drop: () => {},
+    };
+    const onError = vi.fn();
+    const unhandled = vi.fn();
+    // core has no node lib (it is runtime-portable), so reach the host through a cast — the same idiom the
+    // implementation uses for every runtime global.
+    const host = globalThis as unknown as {
+      process: { on(e: string, f: () => void): void; off(e: string, f: () => void): void };
+      setTimeout(f: () => void, ms: number): unknown;
+    };
+    host.process.on('unhandledRejection', unhandled);
+    try {
+      createDurableUploadPipeline({ store, pipeline, onError }).recover();
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(boom));
+      await new Promise((resolve) => host.setTimeout(() => resolve(undefined), 10)); // a macrotask later
+    } finally {
+      host.process.off('unhandledRejection', unhandled);
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+    expect([...map.keys()]).toEqual(['boom']); // nothing settled ⇒ kept for the next launch
+  });
+
+  // A BundleStore is a platform component — node:fs, IndexedDB, or one the integrator injected. `recover()`
+  // is called straight from launch, so an unreadable one must NOT throw out of `Bugsee.launch()` and take
+  // the host application's startup with it.
+  it('reports a throwing store instead of throwing out of launch', () => {
+    const boom = new Error('pending is not a directory');
+    const store: BundleStore = {
+      put: () => {},
+      list: () => {
+        throw boom;
+      },
+      read: () => undefined,
+      remove: () => {},
+    };
+    const onError = vi.fn();
+
+    expect(() =>
+      createDurableUploadPipeline({ store, pipeline: fakePipeline().pipeline, onError }).recover(),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('swallows a throwing store with the default (no onError) sink', () => {
+    const store: BundleStore = {
+      put: () => {},
+      list: () => {
+        throw new Error('boom');
+      },
+      read: () => undefined,
+      remove: () => {},
+    };
+    expect(() =>
+      createDurableUploadPipeline({ store, pipeline: fakePipeline().pipeline }).recover(),
+    ).not.toThrow();
+  });
+
+  // The pump runs inside every upload's COMPLETION handler — including a LIVE `enqueue()`, whose promise the
+  // client awaits to decide whether the report was delivered. A store that throws there must not turn a
+  // successful upload into a rejected enqueue.
+  it('keeps a live enqueue’s result intact when the completion pump’s store throws', async () => {
+    const boom = new Error('database closed');
+    const store: BundleStore = {
+      put: () => {},
+      list: () => {
+        throw boom;
+      },
+      read: () => undefined,
+      remove: () => {},
+    };
+    const onError = vi.fn();
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline: fakePipeline().pipeline,
+      onError,
+    });
+
+    await expect(durable.enqueue(bundle())).resolves.toEqual({ ok: true });
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  // The pump runs inside an upload's COMPLETION handler, so a store that starts throwing after launch
+  // would surface as an unhandled rejection rather than an error report.
+  it('reports a store that starts throwing between the recover pass and the pump', async () => {
+    const map = new Map<string, Uint8Array>();
+    map.set(...staged('first', 'first', 'inc-1'));
+    map.set(...staged('second', 'second', 'inc-2'));
+    const boom = new Error('database closed');
+    let listCalls = 0;
+    const store: BundleStore = {
+      put: (id, bytes) => {
+        map.set(id, bytes);
+      },
+      list: () => {
+        listCalls += 1;
+        if (listCalls > 1) throw boom; // the recover pass reads fine; the pump does not
+        return [...map.keys()];
+      },
+      read: (id) => map.get(id),
+      remove: (id) => {
+        map.delete(id);
+      },
+    };
+    const onError = vi.fn();
+    const unhandled = vi.fn();
+    const host = globalThis as unknown as {
+      process: { on(e: string, f: () => void): void; off(e: string, f: () => void): void };
+      setTimeout(f: () => void, ms: number): unknown;
+    };
+    host.process.on('unhandledRejection', unhandled);
+    try {
+      createDurableUploadPipeline({ store, pipeline: fakePipeline().pipeline, onError }).recover();
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(boom));
+      await new Promise((resolve) => host.setTimeout(() => resolve(undefined), 10));
+    } finally {
+      host.process.off('unhandledRejection', unhandled);
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  // Retention is a global bound on the pending store, so a narrowed pass must still apply it to every
+  // staged blob — otherwise a caller that only ever runs selective passes would never evict anything.
+  it('applies the retention bounds to every staged blob, not just the selected ones', async () => {
+    const { store, map } = memStore();
+    map.set('old', serializeBundle(bundle({ request: request('old') }), 1000));
+    map.set('new', serializeBundle(bundle({ request: request('new') }), 9000));
+    const { pipeline, enqueue, drop } = fakePipeline();
+
+    createDurableUploadPipeline({
+      store,
+      pipeline,
+      now: () => 9500,
+      retention: { maxAgeMs: 2000 },
+    }).recover({ select: (b) => b.request.summary === 'new' });
+
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(drop).toHaveBeenCalledWith('retention_expired', 'issue');
+    expect([...map.keys()]).toEqual([]); // 'old' evicted, 'new' delivered
   });
 });
 

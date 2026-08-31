@@ -31,6 +31,10 @@
 // `unmask`/`unblock` selectors — the Bugsee rrweb fork (docs/design/replay.md §4, Tier 1) adds attribute
 // masking + sensitive-input hardening + opt-out selectors; this config stays fail-closed on upstream in the
 // meantime.
+import {
+  SENSITIVE_INPUT_MATCHERS as CORE_SENSITIVE_INPUT_MATCHERS,
+  SENSITIVE_INPUT_SELECTOR as CORE_SENSITIVE_INPUT_SELECTOR,
+} from '@bugsee/core';
 import type { recordOptions } from '@bugsee/rrweb';
 
 /** Media/embedded elements blocked (rendered as same-size placeholders, contents not recorded) when
@@ -72,36 +76,29 @@ const BUGSEE_SHOW = '.bugsee-show,[data-bugsee-show]';
 /**
  * Inputs that are ALWAYS masked, whatever the options or the markup say.
  *
+ * The list itself lives in `@bugsee/core` (`SENSITIVE_INPUT_MATCHERS`) because it is not replay's alone:
+ * `@bugsee/webview`'s obscuring source paints over the same fields in native video frames, and the browser
+ * input source withholds the keystrokes typed into them. It used to be copied per package, and the copies
+ * measurably DRIFTED — one had lost the ` i` flag on the card matcher, so an `autocomplete="CC-NUMBER"`
+ * field was legible. One definition, three consumers, no drift.
+ *
  * Matched case-insensitively (` i`): `type` and `autocomplete` values are ASCII-case-insensitive in HTML, and
  * a `type="PASSWORD"` must not slip the floor. `autocomplete*="cc-"` covers the whole credit-card family
  * (`cc-number`, `cc-name`, `cc-csc`, …), which is broader than the eight literal tokens the rrweb fork's own
  * sensitive set carries.
  */
-const SENSITIVE_INPUT_MATCHERS = [
-  '[type="password" i]',
-  '[type="tel" i]',
-  '[autocomplete*="password" i]',
-  '[autocomplete*="cc-" i]',
-  // `~=`, not `=`. `autocomplete` is a TOKEN LIST, so the exact-value form did not match
-  // `autocomplete="webauthn one-time-code"` — spec-valid, and the documented pairing for WebAuthn-assisted
-  // OTP autofill. The field fell outside the floor entirely and `.bugsee-unmask` could lift it. `~=` matches
-  // a strict superset of what `=` matched (the bare value is a one-token list), so nothing is lost.
-  // The two matchers above use `*=` and were already token-list safe, which is why only this one leaked.
-  '[autocomplete~="one-time-code" i]',
-  // rrweb stamps this when a field's `type` was flipped away from `password` — its own memory of what the
-  // field is. Without it here, a `.bugsee-unmask` show-password toggle un-masked a field that rrweb was
-  // still protecting: measured raw on the snapshots after the flip, and protected when the mark was absent.
-  // PARTIAL: the stamp is applied when rrweb OBSERVES the flip, so a checkout snapshot that lands first
-  // still sees a plain `type=text` field. Closing that fully needs the fork to stamp synchronously.
-  '[data-rr-is-password]',
-];
+const SENSITIVE_INPUT_MATCHERS = CORE_SENSITIVE_INPUT_MATCHERS;
 
 /** `:not(…)` chain excluding every sensitive input, appended to each un-mask fragment. Chained rather than
  *  `:not(a, b)` because the selector-list form of `:not()` is newer than the browsers we support. */
 const SENSITIVE_INPUT_GUARD = SENSITIVE_INPUT_MATCHERS.map((m) => `:not(${m})`).join('');
 
-/** The same sensitive inputs as a positive selector, for the IGNORE set. */
-const SENSITIVE_INPUT_SELECTOR = SENSITIVE_INPUT_MATCHERS.join(',');
+/** The same sensitive inputs as a positive selector, for the IGNORE set. Imported from `@bugsee/core`
+ *  rather than re-derived here (`SENSITIVE_INPUT_MATCHERS.join(',')`) — that join is the exact rule
+ *  this module's own header warns against restating: core already computes it once
+ *  (`core/src/sensitive-input.ts`) and every consumer, this one included, should read that value, not
+ *  recompute it. */
+const SENSITIVE_INPUT_SELECTOR = CORE_SENSITIVE_INPUT_SELECTOR;
 
 /**
  * The input un-mask selector: Bugsee's opt-out marks, each guarded so a sensitive input can never match.
@@ -463,10 +460,11 @@ function readBoolean(source: object, key: string, fallback: boolean): boolean {
  *  either — so the selector is passed through untouched. */
 function isValidSelector(selector: string): boolean {
   const doc = (globalThis as { document?: Document }).document;
-  /* v8 ignore next 3 -- unreachable in this package's jsdom suite: `document` is always present, and a
-     DOM-less runtime never reaches rrweb at all. The previous justification here claimed "covered by a
-     stubbed-global test"; no such test existed, and planting a throw in these lines left all 69 tests
-     green. A coverage exclusion must state what is true. */
+  /* v8 ignore next 3 -- unreachable: `registerReplay` self-skips before resolving any masking when there
+     is no `document` (register.ts), so the DOM-less tests never reach here, and every other test in this
+     package runs under jsdom. The justification before this one claimed "covered by a stubbed-global
+     test"; no such test existed, and planting a throw in these lines left all 69 tests green. A coverage
+     exclusion must state what is true. */
   if (doc === undefined) {
     return true;
   }

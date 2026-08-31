@@ -1,9 +1,14 @@
 import 'fake-indexeddb/auto';
-import { type Bundle, serializeBundle, type UploadPipeline } from '@bugsee/core';
+import {
+  type Bundle,
+  type IdentifiedBundle,
+  serializeBundle,
+  type UploadPipeline,
+} from '@bugsee/core';
 import { Severity } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCoexistence } from './coexistence';
+import { createCoexistence, type DeadSiblingRecovery } from './coexistence';
 import {
   type AsyncBlobStore,
   type AsyncKeyedStore,
@@ -21,7 +26,7 @@ import { createWebLockLiveness, type LockManagerLike } from './web-lock-liveness
 
 const TOK = 'app-token';
 
-const aBundle = (summary: string): Bundle => ({
+const aBundle = (summary: string, reportId?: string): IdentifiedBundle => ({
   request: {
     type: 'crash',
     summary,
@@ -36,6 +41,7 @@ const aBundle = (summary: string): Bundle => ({
   },
   body: new Uint8Array([0x50, 0x4b, 1]),
   fileName: 'b.zip',
+  ...(reportId !== undefined ? { reportId } : {}),
 });
 
 // In-memory Web Locks fake (node has no navigator.locks). `held()` exposes the lifetime-held (live) locks.
@@ -74,13 +80,24 @@ async function seedSibling(idb: IDBFactory, instanceId: string, bundleId: string
   const shared = createIdbBlobStore({ databaseName: coexistenceDatabaseName(TOK), indexedDB: idb });
   await shared.put(`${instanceId}/${bundleId}`, serializeBundle(b));
 }
-// Seed a report marker into a sibling's prefix within the per-token marker database.
-const seedMarker = (idb: IDBFactory, instanceId: string, markerId: string) =>
+// Seed a report marker into a sibling's prefix within the per-token marker database. The bytes are a
+// REAL serialized ReportMarker — coexistence now hydrates these to reconcile them against the bundle queue.
+const seedMarker = (idb: IDBFactory, instanceId: string, markerId: string, generation = 9) =>
   createIdbBlobStore({
     databaseName: markerDatabaseName(TOK),
     storeName: 'markers',
     indexedDB: idb,
-  }).put(`${instanceId}/${markerId}`, new Uint8Array([1]));
+  }).put(
+    `${instanceId}/${markerId}`,
+    new TextEncoder().encode(
+      JSON.stringify({
+        generation,
+        request: { id: markerId, source: { type: 'crash' }, report: { id: markerId } },
+        attributes: {},
+        userIdentifier: null,
+      }),
+    ),
+  );
 // Seed a capture chunk into a sibling's prefix within the per-token capture database.
 const seedCapture = (idb: IDBFactory, instanceId: string, innerKey: string) =>
   createIdbKeyedStore({
@@ -314,9 +331,10 @@ describe('createCoexistence — capture + marker recovery', () => {
     await seedCapture(idb, 'livesib', 'm/9/0');
 
     const recovered: string[] = [];
-    const recoverReportsForViews = vi.fn(async (_cap: AsyncKeyedStore, markers: AsyncBlobStore) => {
-      const keys = (await markers.loadAll()).map(([k]) => k);
-      recovered.push(keys.length > 0 ? `markers:${keys.join(',')}` : 'capture-only');
+    const recoverReportsForSibling = vi.fn(({ markers }: DeadSiblingRecovery) => {
+      const ids = markers.list().map((m) => m.request.id);
+      recovered.push(ids.length > 0 ? `markers:${ids.join(',')}` : 'capture-only');
+      return Promise.resolve();
     });
 
     const coex = createCoexistence({
@@ -326,9 +344,9 @@ describe('createCoexistence — capture + marker recovery', () => {
       indexedDB: idb,
       locks: locks.manager,
     });
-    await coex.recoverDeadSiblings({ uploadPipeline: okPipeline(), recoverReportsForViews });
+    await coex.recoverDeadSiblings({ uploadPipeline: okPipeline(), recoverReportsForSibling });
 
-    expect(recoverReportsForViews).toHaveBeenCalledTimes(2); // deadsib + caponly, NOT livesib
+    expect(recoverReportsForSibling).toHaveBeenCalledTimes(2); // deadsib + caponly, NOT livesib
     expect(recovered.sort()).toEqual(['capture-only', 'markers:mk1']); // each got ITS OWN prefixed view
   });
 
@@ -346,7 +364,7 @@ describe('createCoexistence — capture + marker recovery', () => {
       indexedDB: idb,
       locks: fakeLocks().manager,
     });
-    await coex.recoverDeadSiblings({ uploadPipeline: pipeline, recoverReportsForViews: reports });
+    await coex.recoverDeadSiblings({ uploadPipeline: pipeline, recoverReportsForSibling: reports });
 
     expect(pipeline.enqueue).toHaveBeenCalledTimes(1); // its bundle re-uploaded
     expect(reports).toHaveBeenCalledTimes(1); // AND its reports recovered (one dead sibling, deduped)
@@ -370,7 +388,7 @@ describe('createCoexistence — capture + marker recovery', () => {
     });
     await coex.recoverDeadSiblings({
       uploadPipeline: okPipeline(),
-      recoverReportsForViews: reports,
+      recoverReportsForSibling: reports,
     });
     expect(reports).not.toHaveBeenCalled(); // B's per-token marker db never sees A's marker
   });
@@ -382,12 +400,13 @@ describe('createCoexistence — capture + marker recovery', () => {
     await seedMarker(idb, 'good', 'mk2'); // this one must still recover
 
     const recovered: string[] = [];
-    const recoverReportsForViews = vi.fn(async (_cap: AsyncKeyedStore, markers: AsyncBlobStore) => {
-      const keys = (await markers.loadAll()).map(([k]) => k);
-      if (keys.includes('mk1')) {
-        throw new Error('boom on bad sibling'); // one sibling's recovery rejects
+    const recoverReportsForSibling = vi.fn(({ markers }: DeadSiblingRecovery) => {
+      const ids = markers.list().map((m) => m.request.id);
+      if (ids.includes('mk1')) {
+        return Promise.reject(new Error('boom on bad sibling')); // one sibling's recovery rejects
       }
-      recovered.push(keys.join(','));
+      recovered.push(ids.join(','));
+      return Promise.resolve();
     });
 
     const coex = createCoexistence({
@@ -399,9 +418,9 @@ describe('createCoexistence — capture + marker recovery', () => {
       onError,
     });
     await expect(
-      coex.recoverDeadSiblings({ uploadPipeline: okPipeline(), recoverReportsForViews }),
+      coex.recoverDeadSiblings({ uploadPipeline: okPipeline(), recoverReportsForSibling }),
     ).resolves.toBeUndefined(); // never throws into launch
-    expect(recoverReportsForViews).toHaveBeenCalledTimes(2); // both attempted
+    expect(recoverReportsForSibling).toHaveBeenCalledTimes(2); // both attempted
     expect(recovered).toEqual(['mk2']); // the good sibling recovered despite the bad one failing
     expect(onError).toHaveBeenCalledTimes(1); // the bad one's rejection isolated to onError
     expect((onError.mock.calls[0]?.[0] as Error).message).toBe('boom on bad sibling');
@@ -428,10 +447,235 @@ describe('createCoexistence — capture + marker recovery', () => {
     });
     await coex.recoverDeadSiblings({
       uploadPipeline: okPipeline(),
-      recoverReportsForViews: reports,
+      recoverReportsForSibling: reports,
     });
 
     expect(onError).toHaveBeenCalled(); // the capture-store keys() discovery failure routed to onError
     expect(reports).toHaveBeenCalledTimes(1); // 'msib' (from the working marker db) still recovered
+  });
+
+  // SEV1 (recovery double-upload). A tab/worker killed between the durable stage and the upload settling
+  // leaves BOTH a staged bundle and its incident's report marker; recovering the two legs independently
+  // reported it twice. Reconciliation is PER INCIDENT, on the report id the durable frame carries — the
+  // browser and the (service) worker share this one implementation.
+  describe('bundle-queue ↔ report-marker reconciliation', () => {
+    it('uploads an incident ONCE when a dead sibling left both its staged bundle and its marker', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+      await seedSibling(idb, 'deadsib', 'b1', aBundle('inc1 (pre-crash assembly)', 'inc1'));
+
+      const pipeline = okPipeline();
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: pipeline,
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect(pipeline.enqueue).toHaveBeenCalledTimes(1); // NOT twice
+      expect(pipeline.enqueue.mock.calls[0]?.[0].request.summary).toBe('inc1 (pre-crash assembly)');
+      expect([...(seen?.skipReportIds ?? [])]).toEqual(['inc1']); // withheld from the marker leg
+      expect(seen?.markers.list()).toEqual([]); // …and retired, since its bundle really uploaded
+      expect(await rawKeys(idb)).toEqual([]); // the delivered blob is gone
+    });
+
+    // The case the `hadMarkers` set-emptiness key silently deleted: the staged bundle belongs to a
+    // DIFFERENT incident than the marker (its own marker was cleared on a non-ok upload settle).
+    it('replays a staged bundle whose incident has NO marker, even when the sibling has other markers', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+      await seedSibling(
+        idb,
+        'deadsib',
+        'b2',
+        aBundle('inc2 (staged, marker already cleared)', 'inc2'),
+      );
+
+      const pipeline = okPipeline();
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: pipeline,
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+      expect(pipeline.enqueue.mock.calls[0]?.[0].request.summary).toBe(
+        'inc2 (staged, marker already cleared)',
+      ); // uploaded, NOT dropped
+      expect([...(seen?.skipReportIds ?? [])]).toEqual([]); // inc1 is still the marker leg's to deliver
+      expect(seen?.markers.list().map((m) => m.request.id)).toEqual(['inc1']);
+    });
+
+    it('keeps both traces (and skips the marker leg) when the staged bundle fails to upload', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+      await seedSibling(idb, 'deadsib', 'b1', aBundle('inc1 (pre-crash assembly)', 'inc1'));
+
+      const failing: UploadPipeline = {
+        enqueue: vi.fn(() => Promise.resolve({ ok: false })),
+        flush: vi.fn(() => Promise.resolve(true)),
+        drop: vi.fn(),
+      };
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: failing,
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect([...(seen?.skipReportIds ?? [])]).toEqual(['inc1']); // not attempted twice in one pass
+      expect(seen?.markers.list().map((m) => m.request.id)).toEqual(['inc1']); // still owed
+      expect(await rawKeys(idb)).toEqual(['deadsib/b1']); // the blob is kept for the next launch
+    });
+
+    it('replays a frame with no report id (older SDK) without reconciling it against any marker', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+      await seedSibling(idb, 'deadsib', 'legacy', aBundle('legacy frame'));
+
+      const pipeline = okPipeline();
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: pipeline,
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect(pipeline.enqueue).toHaveBeenCalledTimes(1); // uploaded, never freed
+      expect([...(seen?.skipReportIds ?? [])]).toEqual([]);
+      expect(seen?.markers.list().map((m) => m.request.id)).toEqual(['inc1']);
+    });
+
+    // R2-1: an explicit `bundleStore` override BYPASSES coexistence, so its blobs live in a store that is
+    // stable across launches while the incident's marker sits in this dead sibling's namespace. The launch
+    // reconciles that store through `reconcileOwnQueue`; whatever it settles with is withheld from the
+    // marker leg alongside the coexisting queue's own ids.
+    it('withholds the incidents an OUTSIDE queue reconciled, unioned with the coexisting one’s', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+      await seedMarker(idb, 'deadsib', 'inc2');
+      await seedSibling(idb, 'deadsib', 'b1', aBundle('inc1 (staged)', 'inc1'));
+
+      const pipeline: UploadPipeline & { enqueue: ReturnType<typeof vi.fn> } = {
+        enqueue: vi.fn(() => Promise.resolve({ ok: false })), // NOT ok, so the marker survives the queue leg
+        flush: vi.fn(() => Promise.resolve(true)),
+        drop: vi.fn(),
+      };
+      const handed: Array<string[]> = [];
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: pipeline,
+        reconcileOwnQueue: (markers) => {
+          handed.push(
+            markers
+              .list()
+              .map((m) => m.request.id)
+              .sort(),
+          ); // the SAME hydrated store
+          return Promise.resolve(new Set(['inc2']));
+        },
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect(handed).toEqual([['inc1', 'inc2']]);
+      expect([...(seen?.skipReportIds ?? [])].sort()).toEqual(['inc1', 'inc2']); // the UNION
+    });
+
+    it('withholds an OUTSIDE queue’s incidents even when this sibling has no coexisting queue', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1');
+
+      let seen: DeadSiblingRecovery | undefined;
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: false, // no coexisting bundle queue at all — an injected store took its place
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({
+        uploadPipeline: okPipeline(),
+        reconcileOwnQueue: () => Promise.resolve(new Set(['inc1'])),
+        recoverReportsForSibling: (recovery) => {
+          seen = recovery;
+          return Promise.resolve();
+        },
+      });
+
+      expect([...(seen?.skipReportIds ?? [])]).toEqual(['inc1']);
+    });
+
+    it('replays the queue untouched when the launch has no marker leg at all', async () => {
+      const idb = new IDBFactory();
+      await seedMarker(idb, 'deadsib', 'inc1'); // a marker from an earlier, recovery-enabled run
+      await seedSibling(idb, 'deadsib', 'b1', aBundle('staged', 'inc1'));
+
+      const pipeline = okPipeline();
+      const coex = createCoexistence({
+        appToken: TOK,
+        persist: true,
+        captureRecovery: true,
+        indexedDB: idb,
+        locks: fakeLocks().manager,
+      });
+      await coex.recoverDeadSiblings({ uploadPipeline: pipeline }); // no recoverReportsForSibling
+
+      expect(pipeline.enqueue).toHaveBeenCalledTimes(1); // the only leg that runs — no double report
+      expect(await rawKeys(idb)).toEqual([]);
+      // the marker is left alone: with no marker leg, nothing here vouches for having delivered it
+      const markerKeys = await createIdbBlobStore({
+        databaseName: markerDatabaseName(TOK),
+        storeName: 'markers',
+        indexedDB: idb,
+      }).loadAll();
+      expect(markerKeys.map(([k]) => k)).toEqual(['deadsib/inc1']);
+    });
   });
 });

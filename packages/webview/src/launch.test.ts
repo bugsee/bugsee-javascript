@@ -9,6 +9,7 @@ import {
   setCarrierClient,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import bridgeSchema from '../bridge-protocol.schema.json' with { type: 'json' };
 import { type BugseeWebViewLaunchOptions, launch, SDK_VERSION } from './launch';
 import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
@@ -149,10 +150,23 @@ describe('launch (webview)', () => {
     expect(hello.k).toBe('hello');
     expect(hello.sdk).toBe(SDK_VERSION); // the version the native receiver negotiates against
     expect([...hello.caps].sort()).toEqual(
-      ['crash', 'events.system', 'events.user', 'log', 'network', 'traces.system'].sort(),
-    ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this
+      ['crash', 'events.system', 'events.user', 'input', 'log', 'network', 'traces.system'].sort(),
+    ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this.
+    // `input` joined it when SDK-captured interactions moved off `events.user`: native routes records
+    // by fileType, so an undeclared stream is a stream native was never told to expect.
     expect(typeof hello.session).toBe('string');
     expect(hello.session.length).toBeGreaterThan(0);
+  });
+
+  // The hello's capabilities and the machine-checkable bridge schema are two hand-maintained lists of
+  // the same thing. Nothing tied them together, so adding a stream to one and forgetting the other
+  // shipped records native's schema rejects. This is that tie.
+  it('declares no capability the bridge schema cannot route', () => {
+    const fake = fakeGlobal();
+    track('tok', baseOptions({ global: fake.global }));
+    const hello = fake.msgs()[0] as HelloMessage;
+    const routable = new Set(bridgeSchema.definitions.fileType.enum);
+    for (const cap of hello.caps) expect([cap, routable.has(cap)]).toStrictEqual([cap, true]);
   });
 
   it('handshakes and streams over a WKWebView (iOS) host, stamping the capture nonce', () => {
@@ -302,7 +316,11 @@ describe('launch (webview)', () => {
     expect(events.some((e) => JSON.stringify(e.p).includes('process_started'))).toBe(true);
   });
 
-  it('streams a document interaction (click) as an events.user entry', () => {
+  // Re-pointed from "streams a document interaction (click) as an events.user entry". What it was
+  // protecting: launch() wires the DOM input source through to the NATIVE bridge, so an interaction in
+  // the WebView reaches the host. Still true — but it must arrive on the `input` stream, because
+  // `events.user` carries the embedded app's own `client.event()` data.
+  it('streams a document interaction (pointer press) as an `input` record to native', () => {
     const fake = fakeGlobal();
     const doc = fakeEventTarget();
     const win = fakeEventTarget(); // also a window → the system-events source gets the injected document seam
@@ -314,19 +332,29 @@ describe('launch (webview)', () => {
         document: doc.target as unknown as Document,
       }),
     );
-    doc.emit('click', {
+    doc.emit('pointerdown', {
+      pointerId: 1,
+      pointerType: 'touch',
       target: {
         tagName: 'BUTTON',
         getAttribute: () => null,
         closest: () => null,
+        matches: () => false,
         textContent: 'Buy',
       },
       clientX: 3,
       clientY: 4,
       button: 0,
+      pressure: 1,
     });
-    const events = entriesOfType(fake.msgs(), 'events.user');
-    expect(events.some((e) => JSON.stringify(e.p).includes('click'))).toBe(true);
+    const input = entriesOfType(fake.msgs(), 'input');
+    expect(input).toHaveLength(1);
+    // The bridge wraps each entry as `{ timestamp, data }` — the interaction itself is `p.data`.
+    expect(input[0]?.p).toMatchObject({
+      data: { type: 'begin', x: 3, y: 4, tool: 1, view_tag: 'button', target: { text: 'Buy' } },
+    });
+    // ...and NOT onto the app's own event stream.
+    expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
   });
 
   it('streams a sampled system metric as a traces.system entry on a scheduler tick', () => {

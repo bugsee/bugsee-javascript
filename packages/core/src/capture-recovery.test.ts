@@ -1,14 +1,15 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
-import { recoverReports } from './capture-recovery';
+import { createMarkerAwareBundleReplay, recoverReports } from './capture-recovery';
 import type { ChunkBackend, PartRef } from './chunk-backend';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { StoredEntry } from './contracts';
+import type { IdentifiedBundle } from './durable-upload-pipeline';
 import { createFileChunkBackend } from './file-chunk-backend';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import { createReportingRequest } from './reporting';
-import type { Bundle, UploadResult } from './transport';
+import type { Bundle, UploadPipeline, UploadResult } from './transport';
 
 const env: EnvironmentEnvelope = {
   platform: { type: 'node', version: '20' },
@@ -32,6 +33,19 @@ const marker = (id: string, generation: number): ReportMarker => ({
   attributes: { plan: 'pro' },
   userIdentifier: 'u@e.com',
 });
+
+// A marker whose store KEY (`request.id`) deliberately differs from the co-located `request.report.id`.
+// `createReportingRequest` always makes the two equal, which is exactly why a test built on it cannot see
+// the difference — this one can.
+const skewedMarker = (id: string, reportId: string, generation: number): ReportMarker => {
+  const request = createReportingRequest({ source: { type: 'crash' }, id });
+  return {
+    generation,
+    request: { ...request, report: { ...request.report, id: reportId } },
+    attributes: {},
+    userIdentifier: null,
+  };
+};
 
 // Seed a prior generation's chunk (one closed part) into the shared storage.
 function seedGen(
@@ -397,5 +411,328 @@ describe('recoverReports', () => {
       }),
     ).resolves.toBeUndefined();
     expect(pipe.enqueue).not.toHaveBeenCalled();
+  });
+
+  // SEV1 (recovery double-upload): a bundle that already reached the durable queue was staged only AFTER
+  // its incident's marker was written (client.ts submitReport) and cleared only once that upload SETTLED,
+  // so a process dying inside that window leaves BOTH traces of the SAME incident. `skipReportIds` is how
+  // the bundle-queue leg tells this pass which incidents it already settled with.
+  describe('skipReportIds', () => {
+    it('does not rebuild a marker whose incident the bundle-queue leg already settled', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      const markers = fakeMarkers([marker('inc1', 100)]);
+      const pipe = fakePipeline();
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers,
+        context: baseContext,
+        uploadPipeline: pipe,
+        skipReportIds: new Set(['inc1']),
+      });
+
+      expect(pipe.enqueue).not.toHaveBeenCalled(); // the queue leg delivered it — not twice
+      expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']); // left for the retry
+      // and its capture generation survives the sweep, so a later launch can still rebuild it
+      expect(await readBackend(storage).listGenerations()).toEqual([100]);
+    });
+
+    it('still rebuilds the markers it was NOT told to skip', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      seedGen(storage, 200, [logRecord(2, { m: 'y' })]);
+      const markers = fakeMarkers([marker('inc1', 100), marker('inc2', 200)]);
+      const pipe = fakePipeline();
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers,
+        context: baseContext,
+        uploadPipeline: pipe,
+        skipReportIds: new Set(['inc1']),
+      });
+
+      expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+      expect(logsOf(pipe.bundles[0] as Bundle)).toEqual([{ m: 'y' }]); // inc2's generation, not inc1's
+      expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']);
+    });
+
+    // The stamp must be the MARKER KEY — `request.id`, what `markers.remove()` and the durable frame's
+    // `reportId` are both keyed on — and not the co-located `request.report.id`. `createReportingRequest`
+    // makes the two identical, so only a deliberately skewed marker can tell them apart; without this the
+    // mutation `marker.request.id` → `marker.request.report.id` is invisible in every package.
+    it('stamps the recovered bundle with the marker KEY, not the co-located report id', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      const pipe = fakePipeline();
+      const markers = fakeMarkers([skewedMarker('key-1', 'report-1', 100)]);
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers,
+        context: baseContext,
+        uploadPipeline: pipe,
+      });
+
+      expect((pipe.bundles[0] as IdentifiedBundle).reportId).toBe('key-1');
+      expect(markers.list()).toEqual([]); // …and the SAME key retired it on delivery
+    });
+
+    // A collector refusal is settled, exactly as the live durable pipeline treats it: rebuilding the same
+    // bundle every launch would be a self-DoS, and the marker (plus the generation it pins) would never be
+    // freed — unbounded on browser/worker, where no retention sweep exists.
+    it('retires a permanently-refused incident instead of rebuilding it forever', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      const pipe = fakePipeline({ ok: false, permanent: true });
+      const markers = fakeMarkers([marker('inc1', 100)]);
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers,
+        context: baseContext,
+        uploadPipeline: pipe,
+      });
+
+      expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+      expect(markers.list()).toEqual([]); // settled ⇒ retired
+      expect(await readBackend(storage).listGenerations()).toEqual([]); // …and its generation swept
+    });
+
+    // The sibling of the above: a RETRYABLE failure is not settled, so both the marker and its capture
+    // survive for the next launch.
+    it('keeps a retryably-failed incident and its generation for the next launch', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      const pipe = fakePipeline({ ok: false });
+      const markers = fakeMarkers([marker('inc1', 100)]);
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers,
+        context: baseContext,
+        uploadPipeline: pipe,
+      });
+
+      expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']);
+      expect(await readBackend(storage).listGenerations()).toEqual([100]);
+    });
+
+    it('stamps the recovered bundle with its incident id so a re-staged copy stays reconcilable', async () => {
+      const storage = createInMemoryChunkStorage();
+      seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+      const pipe = fakePipeline();
+
+      await recoverReports({
+        backend: readBackend(storage),
+        currentGeneration: 999,
+        markers: fakeMarkers([marker('inc1', 100)]),
+        context: baseContext,
+        uploadPipeline: pipe,
+      });
+
+      expect((pipe.bundles[0] as IdentifiedBundle).reportId).toBe('inc1');
+    });
+  });
+});
+
+// The single definition of the queue-vs-marker reconciliation policy (used by node's `recoverInstances`
+// and browser-utils' `Coexistence`): the staged bundle wins, its marker is retired only once that bundle
+// really uploaded, and nothing is ever dropped un-uploaded.
+describe('createMarkerAwareBundleReplay', () => {
+  const staged = (summary: string, reportId?: string): IdentifiedBundle => ({
+    request: { summary } as Bundle['request'],
+    body: new Uint8Array([1]),
+    fileName: 'p.zip',
+    ...(reportId !== undefined ? { reportId } : {}),
+  });
+
+  function innerPipeline(result: UploadResult = { ok: true }) {
+    const seen: Array<[Bundle, unknown]> = [];
+    const pipeline: UploadPipeline = {
+      enqueue: (bundle, hint) => {
+        seen.push([bundle, hint]);
+        return Promise.resolve(result);
+      },
+      flush: vi.fn((timeout?: number) => Promise.resolve(timeout === 5)),
+      drop: vi.fn(),
+    };
+    return { seen, pipeline };
+  }
+
+  it('delivers the staged bundle and retires the marker its incident was still holding open', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const inner = innerPipeline();
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+
+    const result = await replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'));
+
+    expect(result).toEqual({ ok: true });
+    expect(inner.seen.map(([b]) => b.request.summary)).toEqual(['inc1 bundle']); // really uploaded
+    expect(markers.list()).toEqual([]); // …and only THEN is the marker retired
+    expect([...replay.skipReportIds]).toEqual(['inc1']); // the marker leg must not rebuild it
+  });
+
+  it('keeps the marker when the staged bundle fails to upload, and still skips the marker leg this pass', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const inner = innerPipeline({ ok: false });
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+
+    const result = await replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'));
+
+    expect(result).toEqual({ ok: false });
+    expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']); // nothing delivered ⇒ nothing retired
+    expect([...replay.skipReportIds]).toEqual(['inc1']); // but not attempted twice in ONE pass either
+  });
+
+  it('leaves an unrelated incident alone — the case the old set-emptiness key silently deleted', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const inner = innerPipeline();
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+
+    await replay.pipeline.enqueue(staged('inc2 bundle', 'inc2')); // a DIFFERENT incident's staged bundle
+
+    expect(inner.seen).toHaveLength(1); // uploaded, never dropped
+    expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']); // inc1 is untouched
+    expect([...replay.skipReportIds]).toEqual([]); // …and still owed by the marker leg
+  });
+
+  it('uploads a frame that carries no report id (older SDK) without reconciling anything', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const inner = innerPipeline();
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+
+    await replay.pipeline.enqueue(staged('legacy bundle'));
+
+    expect(inner.seen).toHaveLength(1);
+    expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']);
+    expect([...replay.skipReportIds]).toEqual([]);
+  });
+
+  it('reconciles against the markers present when the replay STARTED, not ones written later', async () => {
+    const markers = fakeMarkers([]);
+    const inner = innerPipeline();
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+    markers.put(marker('inc1', 100)); // appears after the snapshot
+
+    await replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'));
+
+    expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']); // not retired by a blob it never shadowed
+    expect([...replay.skipReportIds]).toEqual([]);
+  });
+
+  it('passes the hint through and returns the inner result verbatim', async () => {
+    const inner = innerPipeline({ ok: false, permanent: true });
+    const replay = createMarkerAwareBundleReplay({
+      markers: fakeMarkers([]),
+      pipeline: inner.pipeline,
+    });
+
+    const result = await replay.pipeline.enqueue(staged('b'), { category: 'issue' });
+
+    expect(result).toEqual({ ok: false, permanent: true });
+    expect(inner.seen[0]?.[1]).toEqual({ category: 'issue' });
+  });
+
+  it('delegates flush and drop to the wrapped pipeline', async () => {
+    const inner = innerPipeline();
+    const replay = createMarkerAwareBundleReplay({
+      markers: fakeMarkers([]),
+      pipeline: inner.pipeline,
+    });
+
+    await expect(replay.pipeline.flush(5)).resolves.toBe(true);
+    expect(inner.pipeline.flush).toHaveBeenCalledWith(5);
+    replay.pipeline.drop('retention_count', 'issue');
+    expect(inner.pipeline.drop).toHaveBeenCalledWith('retention_count', 'issue');
+  });
+
+  it('routes a marker-store failure to onError and still reports the delivery as ok', async () => {
+    const boom = new Error('marker remove boom');
+    const markers: ReportMarkerStore = {
+      put: () => {},
+      list: () => [marker('inc1', 100)],
+      remove: () => {
+        throw boom;
+      },
+    };
+    const onError = vi.fn();
+    const replay = createMarkerAwareBundleReplay({
+      markers,
+      pipeline: innerPipeline().pipeline,
+      onError,
+    });
+
+    await expect(replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'))).resolves.toEqual({
+      ok: true,
+    });
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect([...replay.skipReportIds]).toEqual(['inc1']);
+  });
+
+  // A collector refusal is SETTLED — the durable pipeline frees the blob for it (a re-upload would just be
+  // refused again, forever). The marker must go with it, or the incident is rebuilt on every later launch
+  // and its capture generation is pinned for good (unbounded on browser/worker: no retention sweep there).
+  it('retires the marker when the collector permanently refuses the staged bundle', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const inner = innerPipeline({ ok: false, permanent: true });
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: inner.pipeline });
+
+    const result = await replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'));
+
+    expect(result).toEqual({ ok: false, permanent: true });
+    expect(markers.list()).toEqual([]);
+    expect([...replay.skipReportIds]).toEqual(['inc1']);
+  });
+
+  // The id must be recorded BEFORE the upload is attempted. Both callers wrap the replay in a try/catch, so
+  // an id recorded only after the await is LOST when the pipeline throws — and the marker leg then rebuilds
+  // and delivers the very incident the blob still holds, which is the duplicate this class exists to stop.
+  it('records the skip before the upload, so a throwing pipeline cannot lose it', async () => {
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const boom = new Error('transport exploded');
+    const pipeline: UploadPipeline = {
+      enqueue: () => Promise.reject(boom),
+      flush: () => Promise.resolve(true),
+      drop: () => {},
+    };
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline });
+
+    await expect(replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'))).rejects.toBe(boom);
+
+    expect([...replay.skipReportIds]).toEqual(['inc1']); // still withheld from the marker leg
+    expect(markers.list().map((m) => m.request.id)).toEqual(['inc1']); // nothing settled ⇒ nothing retired
+  });
+
+  // The snapshot the reconciliation keys on, published so a caller draining a SECOND store (an injected
+  // `bundleStore`, which is not per-instance) can select exactly the blobs this dead instance still owes.
+  it('publishes the pending report ids it reconciles against', () => {
+    const replay = createMarkerAwareBundleReplay({
+      markers: fakeMarkers([marker('inc1', 100), marker('inc2', 101)]),
+      pipeline: innerPipeline().pipeline,
+    });
+
+    expect([...replay.pendingReportIds].sort()).toEqual(['inc1', 'inc2']);
+  });
+
+  it('swallows a marker-store failure with no onError configured', async () => {
+    const markers: ReportMarkerStore = {
+      put: () => {},
+      list: () => [marker('inc1', 100)],
+      remove: () => {
+        throw new Error('boom');
+      },
+    };
+    const replay = createMarkerAwareBundleReplay({ markers, pipeline: innerPipeline().pipeline });
+
+    await expect(replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'))).resolves.toEqual({
+      ok: true,
+    });
   });
 });

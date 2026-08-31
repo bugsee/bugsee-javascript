@@ -226,6 +226,7 @@
                   "traces.user",
                   "events.system",
                   "events.user",
+                  "input",
                   "viewtree",
                   "log",
                   "log.internal",

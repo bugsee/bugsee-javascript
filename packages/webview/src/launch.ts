@@ -4,14 +4,15 @@ import {
   createBrowserSystemTracesSampler,
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
+  parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
 import {
   createConsoleInterceptor,
+  createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
-  createUserEventsProvider,
   installNetworkCapture,
   type TraceSample,
 } from '@bugsee/capture';
@@ -95,6 +96,7 @@ const CAPABILITIES = [
   'traces.system',
   'events.system',
   'events.user',
+  'input',
   'crash',
 ] as const;
 
@@ -448,7 +450,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   }
 
   // Capture providers: console→log; network umbrella (fetch/xhr/ws/sse); system traces (performance.memory);
-  // system events (process_started + pagehide); user input (clicks/keys → events.user). Each carrier-shared
+  // system events (process_started + pagehide); user input (clicks/keys → the SDK-captured `input` stream,
+  // never events.user — that stream is reserved for application-supplied client.event() data). Each carrier-shared
   // interceptor self-skips when its controllingOption is off. (The DOM viewtree + obscuring + error/crash +
   // performance streams land in later slices.)
   const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
@@ -507,7 +510,11 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
-    () => createConsoleInterceptor(),
+    // A WebView IS a real browser engine — WKWebView is JavaScriptCore, Android WebView is V8 — so this
+    // tier spans both stack dialects and needs the dispatching parser. Core's V8-only default yields
+    // zero frames for JavaScriptCore's `fn@loc` stacks, silently dropping `console.trace()`'s stack on
+    // every iOS WebView.
+    () => createConsoleInterceptor({ stackParser: parseStack }),
     carrier,
   );
   client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
@@ -531,13 +538,15 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       ),
     );
   }
-  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → events.user.
+  // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
+  // `input` stream. NOT `events.user`: that stream carries the embedded app's own `client.event()` data,
+  // and SDK code must never write into a `user.*` stream.
   const inputSource = getOrCreateInterceptor(
     'webview-input',
     () => createBrowserInputSource({ target: domDocument }),
     carrier,
   );
-  client.addCaptureProvider(createUserEventsProvider(inputSource));
+  client.addCaptureProvider(createInputProvider(inputSource));
 
   // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path
   // (triggerPipeline above) ALWAYS streams the incident as a `crash` entry; whether it ALSO opens a native bug

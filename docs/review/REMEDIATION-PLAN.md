@@ -314,7 +314,7 @@ Each fix was verified against the behaviour, not only the tests:
 ### Decisions taken (and why)
 
 - **6.4 retention policy is Android's, read from Android's code** — `CommunicationErrorClassifier.java:14-33`
-  treats every non-401/408/425/429 4xx as PERMANENT and `ReportUploadExecutor.java:182-199` deletes on that
+  treats every non-401/408/425/429 4xx as PERMANENT and `ReportUploadExecutor.java:258-268` deletes on that
   outcome. The count/byte/TTL caps follow the idiom of Android's *sibling* queues
   (`NotificationRelayStorage.java:47-49`, `PerformanceUploadStorage.java:35`), since its report queue has no
   such bound either.

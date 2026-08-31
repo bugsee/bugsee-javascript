@@ -21,8 +21,19 @@ const fakeTxn = (): Transaction =>
     isFinished: vi.fn(() => false),
     setName: vi.fn(),
     setAttribute: vi.fn(),
+    setDescription: vi.fn(),
+    setStatus: vi.fn(),
+    startChildSpan: vi.fn(),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK' as const,
+    getOperation: () => 'http.server',
+    getDescription: () => undefined,
+    getName: () => 'name',
+    // Required so server-instrument's F-4 manual-rename check (transaction.getAttributes()) runs for
+    // real instead of degrading via a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+    getAttributes: vi.fn(() => ({})),
     finish: vi.fn(),
-  }) as unknown as Transaction;
+  }) satisfies Transaction;
 
 const finishedWith = (t: Transaction | undefined, outcome: string): boolean =>
   t !== undefined &&

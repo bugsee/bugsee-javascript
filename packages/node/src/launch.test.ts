@@ -216,7 +216,7 @@ function bundleMemStore() {
   return { store, map, puts };
 }
 // A serialized pending bundle (as a prior crashed run would have left on disk).
-const pendingBundle = (summary: string): Uint8Array => {
+const pendingBundle = (summary: string, reportId?: string): Uint8Array => {
   const request: RequestJson = {
     type: 'crash',
     summary,
@@ -233,6 +233,9 @@ const pendingBundle = (summary: string): Uint8Array => {
     request,
     body: new Uint8Array([0x50, 0x4b, 1]),
     fileName: 'recovered.zip',
+    // The incident this blob IS — the durable frame's own field, so recovery can reconcile it against a
+    // still-pending report marker instead of reporting both.
+    ...(reportId !== undefined ? { reportId } : {}),
   });
 };
 
@@ -845,8 +848,10 @@ describe('launch', () => {
     expect(reg.get('console')).toBeDefined();
     expect(reg.get('node-http')).toBeDefined();
     expect(reg.get('fetch')).toBeDefined();
-    // console + node-http + the 5 cross-runtime network leaves = 7 process-global interceptors.
-    expect(reg.size).toBe(7);
+    // console + node-http + the 6 cross-runtime network leaves = 8 process-global interceptors.
+    // The sendBeacon leaf is registered on every runtime; on node it self-skips (no navigator).
+    expect(reg.get('sendbeacon')).toBeDefined();
+    expect(reg.size).toBe(8);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first client', async () => {
@@ -854,7 +859,7 @@ describe('launch', () => {
     const onError = vi.fn();
     const first = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
     const console1 = getCarrier(carrier).interceptors.get('console');
-    expect(getCarrier(carrier).interceptors.size).toBe(7);
+    expect(getCarrier(carrier).interceptors.size).toBe(8);
 
     const second = launchTracked(
       'tok',
@@ -863,7 +868,7 @@ describe('launch', () => {
     expect(second).toBe(first); // the repeat launch built nothing new — same client back
     expect(onError).toHaveBeenCalledTimes(1); // warned once
     expect(getCarrier(carrier).interceptors.get('console')).toBe(console1); // not re-wired
-    expect(getCarrier(carrier).interceptors.size).toBe(7); // not doubled
+    expect(getCarrier(carrier).interceptors.size).toBe(8); // not doubled
 
     // After stop() the singleton is released, so a later launch() builds a fresh client.
     await first.stop();
@@ -1404,6 +1409,119 @@ describe('launch — capture recovery', () => {
     const marker = putSpy.mock.calls[0]?.[0];
     expect(marker?.generation).toBe(1000); // fixedClock.wallNow() = this launch's capture generation
     expect(marker?.request.report.summary).toBe('live boom');
+  });
+
+  // R2-1. An injected `bundleStore` is the integrator's own store: stable across launches and OUTSIDE the
+  // per-instance subtree, so it holds the previous launch's staged bundle while that incident's report
+  // marker still sits in the (now dead) subtree the launch left behind. Replaying the queue blind and then
+  // rebuilding from the marker reported that incident TWICE, with differing payloads — the staged bundle's
+  // body vs a freshly assembled zip — so nothing downstream could collapse them.
+  it('uploads an incident ONCE when an injected bundle store holds the blob a dead sibling’s marker covers', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-shared-'));
+    seedPriorGeneration(dir, 500, { m: 'pre-crash' }, true); // marker inc-1 + chunks, dead subtree
+    const { store, map } = bundleMemStore();
+    map.set('staged', pendingBundle('inc-1 (staged pre-crash)', 'inc-1'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        bundleStore: store,
+        instanceIdentity: FIXED_INSTANCE,
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    await new Promise((resolve) => setTimeout(resolve, 30)); // let a second (wrong) upload land
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toEqual(new Uint8Array([0x50, 0x4b, 1])); // the staged body verbatim, not a rebuild
+    await vi.waitFor(() => expect(map.size).toBe(0)); // delivered → the integrator's copy freed
+    // …and the now-redundant marker went with it, so no LATER launch rebuilds it either. (The subtree
+    // itself is reclaimed by that next launch: the retirement lands on the upload's settle, which is after
+    // this pass's "is it fully drained?" check.)
+    await vi.waitFor(() =>
+      expect(createNodeReportMarkerStore(join(dir, PRIOR_INSTANCE, 'incidents')).list()).toEqual(
+        [],
+      ),
+    );
+  });
+
+  // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
+  // a pass that grabs the whole store delivers the other sibling's blob through a replay that knows nothing
+  // about that sibling's marker, and the marker leg then rebuilds and uploads it a second time.
+  it('gives each dead sibling only its own blobs out of a shared injected store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-two-'));
+    for (const [sub, incident, gen] of [
+      ['9-9-deadA', 'inc-A', 500],
+      ['9-9-deadB', 'inc-B', 501],
+    ] as const) {
+      const root = join(dir, sub);
+      writeDeadOwner(root);
+      const backend = createFileChunkBackend(createFsChunkStorage(join(root, 'capture')), {
+        generation: gen,
+        cleanOtherGenerations: false,
+      });
+      backend.openPart({ generation: gen, number: 0 }, gen);
+      backend.appendEntry({ generation: gen, number: 0 }, logRecord({ m: incident }));
+      backend.closePart({ generation: gen, number: 0 }, gen + 100, 0);
+      createNodeReportMarkerStore(join(root, 'incidents')).put({
+        generation: gen,
+        request: createReportingRequest({ source: { type: 'crash' }, id: incident }),
+        attributes: {},
+        userIdentifier: null,
+      });
+    }
+    const { store, map } = bundleMemStore();
+    map.set('sA', pendingBundle('inc-A (staged)', 'inc-A'));
+    map.set('sB', pendingBundle('inc-B (staged)', 'inc-B'));
+    const { fn: transport, puts } = recordingTransport();
+    const onError = vi.fn();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        bundleStore: store,
+        instanceIdentity: FIXED_INSTANCE,
+        onError, // threaded into the per-sibling reconciling replay too
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0)); // both staged blobs settled
+    await new Promise((resolve) => setTimeout(resolve, 30)); // let any third (wrong) upload land
+    expect(puts).toHaveLength(2); // exactly one per incident — NOT three
+    // Both uploads are staged bodies, so neither incident was rebuilt from its chunks.
+    expect(puts).toEqual([new Uint8Array([0x50, 0x4b, 1]), new Uint8Array([0x50, 0x4b, 1])]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  // The other half of the same wiring: the unfiltered pass that follows the sibling scan must still take
+  // the blobs NO dead sibling's markers claimed, or an injected store would silently stop being recovered.
+  it('still replays an injected store’s unclaimed blob after the dead-sibling scan', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-shared2-'));
+    seedPriorGeneration(dir, 500, { m: 'pre-crash' }, true); // an unrelated incident, inc-1
+    const { store, map } = bundleMemStore();
+    map.set('orphan', pendingBundle('nobody-claims-me', 'inc-other'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        bundleStore: store,
+        instanceIdentity: FIXED_INSTANCE,
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0)); // the orphan blob WAS replayed and delivered
+    await vi.waitFor(() => expect(puts).toHaveLength(2)); // …alongside inc-1's rebuild
   });
 
   it('sweeps a no-incident prior generation without uploading anything', async () => {
@@ -2198,14 +2316,34 @@ describe('launch — incoming-server instrumentation wiring', () => {
     );
     // Register a minimal performance ext on the (carrier) client so the http.server txn — hence the return
     // headers — exists (the bare node launch omits performance; the umbrella wires it).
+    // A CONFORMING `Transaction` double. The short version of this (method shorthand, and no
+    // `getAttributes`) took `finishWith`'s degraded path — `setName`, both `setAttribute` calls and
+    // `finish()` never ran — while the test stayed green only because `fetch-server-wrap.ts:90` sets
+    // the return headers BEFORE `finish`. A double that cannot exist in production tests nothing.
+    const attributes: Record<string, unknown> = {};
+    let finished = false;
     const txn = {
       getTraceId: () => 'trace-1',
       getSpanId: () => 'span-1',
+      getName: () => 'http.server',
+      getStatus: () => 'OK' as const,
+      getOperation: () => 'http.server',
+      getDescription: () => undefined,
+      getAttributes: () => ({ ...attributes }),
       isSampled: () => true,
-      isFinished: () => false,
-      setName() {},
-      setAttribute() {},
-      finish() {},
+      isFinished: () => finished,
+      setName: () => txn,
+      setDescription: () => txn,
+      setStatus: () => txn,
+      setAttribute: (key: string, value: unknown) => {
+        attributes[key] = value;
+        return txn;
+      },
+      startChildSpan: () => txn,
+      recordChildSpan: () => {},
+      finish: () => {
+        finished = true;
+      },
     };
     (client as unknown as { registerExt: (n: string, api: unknown) => void }).registerExt(
       'performance',
@@ -2213,6 +2351,7 @@ describe('launch — incoming-server instrumentation wiring', () => {
     );
     try {
       const set: Record<string, string> = {};
+      const closers: Array<() => void> = [];
       const res = {
         statusCode: 200,
         writableFinished: false,
@@ -2220,7 +2359,9 @@ describe('launch — incoming-server instrumentation wiring', () => {
         setHeader: (n: string, v: string) => {
           set[n] = v;
         },
-        once: () => {},
+        once: (event: string, listener: () => void) => {
+          if (event === 'close') closers.push(listener);
+        },
       };
       // Drive the REAL patched http.Server.prototype.emit (no socket needed).
       new http.Server().emit('request', { method: 'GET', url: '/x', headers: {} }, res);
@@ -2228,6 +2369,13 @@ describe('launch — incoming-server instrumentation wiring', () => {
         traceresponse: '00-trace-1-span-1-01',
         'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
       });
+      // …and drive the response to a COMPLETED 'close', which is what finishes the transaction.
+      // Without this the test never reaches `finishWith` at all — which is exactly how a Transaction
+      // double missing `getAttributes` stayed green here while taking a degraded path in production.
+      res.writableFinished = true;
+      for (const close of closers) close();
+      expect(finished).toBe(true);
+      expect(attributes['http.status_code']).toBe(200);
     } finally {
       await client.stop();
     }

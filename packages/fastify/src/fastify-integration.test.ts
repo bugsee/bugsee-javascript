@@ -145,3 +145,62 @@ describe('fastify adapter — real-server concurrency isolation (e2e)', () => {
     }
   });
 });
+
+describe('fastify adapter — F-1/F-3: shouldReport against REAL Fastify Ajv schema validation (e2e)', () => {
+  it('does not report a genuine Fastify schema-validation 400, but does report a thrown 500', async () => {
+    const { transport, bundles } = recordingTransport();
+    const client = launch('tok', {
+      endpoint: 'https://api.test',
+      transport: transport as never,
+      process: fakeProcess(),
+      detectHangs: false,
+      captureNetwork: false,
+      capturedDataStore: 'memory',
+      recover: false,
+    });
+    clients.push(client);
+
+    const app = Fastify({ logger: false });
+    setupFastify(app); // default shouldReport — no override
+    app.post(
+      '/metrics',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['value'],
+            properties: { name: { type: 'string' }, value: { type: 'number' } },
+          },
+        },
+      },
+      async () => ({ ok: true }),
+    );
+    app.get('/boom', async () => {
+      throw new Error('genuine failure');
+    });
+
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const port = (app.server.address() as AddressInfo).port;
+      // Missing the required `value` field: real fastify@5's own Ajv-compiled validator raises
+      // FST_ERR_VALIDATION (statusCode 400) BEFORE the handler runs — not a structural fake's behavior.
+      const validationRes = await fetchWithDeadline(`http://127.0.0.1:${port}/metrics`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'x' }),
+      });
+      expect(validationRes.status).toBe(400);
+
+      const boomRes = await fetchWithDeadline(`http://127.0.0.1:${port}/boom`);
+      expect(boomRes.status).toBe(500);
+
+      await client.flush(5000);
+      const parsed = bundles.map(parseBundle);
+      // ONLY the genuine throw produced an incident — the schema-validation 400 did not (F-1/F-3).
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.request.source.mechanism).toBe('http-error');
+    } finally {
+      await app.close();
+    }
+  });
+});

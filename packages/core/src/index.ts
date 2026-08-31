@@ -28,7 +28,13 @@ export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry'
 export { drainReified } from './capture-drain';
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
-export { type RecoverReportsOptions, recoverReports } from './capture-recovery';
+export {
+  createMarkerAwareBundleReplay,
+  type MarkerAwareBundleReplay,
+  type MarkerAwareBundleReplayOptions,
+  type RecoverReportsOptions,
+  recoverReports,
+} from './capture-recovery';
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
@@ -108,6 +114,7 @@ export {
   type DurableUploadPipeline,
   type DurableUploadPipelineOptions,
   deserializeBundle,
+  type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
 export {
@@ -121,6 +128,7 @@ export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
 export type { InputEvent, LogEvent } from './events';
+export { InputTool } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 export { createFileChunkBackend, type FileChunkBackendOptions } from './file-chunk-backend';
@@ -135,6 +143,11 @@ export {
   runFilter,
 } from './filters';
 export { InterceptorBase } from './interceptor-base';
+export {
+  type LaunchRecoveryOptions,
+  type ReconcileOwnQueue,
+  runLaunchRecovery,
+} from './launch-recovery';
 export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,
@@ -188,6 +201,11 @@ export {
   type RequestContext,
 } from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export {
+  isSensitiveInput,
+  SENSITIVE_INPUT_MATCHERS,
+  SENSITIVE_INPUT_SELECTOR,
+} from './sensitive-input';
 export type { ServiceRegistrar, ServiceResolver } from './services';
 export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
 export {
@@ -211,7 +229,12 @@ export type {
   UploadPipeline,
   UploadResult,
 } from './transport';
-export { TransportToken, UploadPipelineToken } from './transport';
+export {
+  isRetryableHttpStatus,
+  isUploadSettled,
+  TransportToken,
+  UploadPipelineToken,
+} from './transport';
 export {
   createTriggerPipeline,
   type TriggerPipeline,

@@ -179,14 +179,19 @@ describe('@bugsee/deno launch', () => {
       'tok',
       base({ traceResponse: { traceresponse: true, serverTiming: true } }),
     );
+    // getAttributes is a REQUIRED, non-throwing member of Span (server-instrument.ts's finishWith reads it
+    // for the F-4 manual-rename check) — omitting it makes finishWith's getAttributes() call throw, which
+    // is swallowed by finishWith's own try/catch, so setName/setAttribute/finish never run. See the
+    // matching comment in express/src/middleware.test.ts's fakeTransaction.
     const txn = {
       getTraceId: () => 'trace-1',
       getSpanId: () => 'span-1',
       isSampled: () => true,
       isFinished: () => false,
-      setName() {},
-      setAttribute() {},
-      finish() {},
+      setName: vi.fn(),
+      setAttribute: vi.fn(),
+      getAttributes: vi.fn(() => ({})),
+      finish: vi.fn(),
     };
     (client as unknown as { registerExt: (n: string, api: unknown) => void }).registerExt(
       'performance',
@@ -208,6 +213,11 @@ describe('@bugsee/deno launch', () => {
         traceresponse: '00-trace-1-span-1-01',
         'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
       });
+      // Proves finishWith actually ran end to end (not just the pre-finish header write): a
+      // non-conforming double with no getAttributes() degrades finishWith silently (TypeError swallowed
+      // by its own try/catch), so finish()/setName() never run — see R3-7.
+      expect(txn.setName).toHaveBeenCalledWith('GET /x');
+      expect(txn.finish).toHaveBeenCalledWith('OK');
     } finally {
       await client.stop();
       delete (globalThis as G).Deno;

@@ -1,4 +1,5 @@
 import type { Clock } from '@bugsee/core';
+import { NAME_SOURCE_ATTRIBUTE } from '@bugsee/protocol';
 import {
   createTransaction,
   type Span,
@@ -7,6 +8,12 @@ import {
   type TransactionWire,
 } from './span';
 import type { TransactionStore } from './transaction-store';
+
+// R2-8: NAME_SOURCE_ATTRIBUTE is a plain wire attribute KEY, not APM logic — it now lives in
+// @bugsee/protocol (constants.ts) so @bugsee/node's server-instrument.ts can read it off a Transaction's
+// attributes without a runtime (value-level) dependency on this opt-in extension. Re-exported here for
+// every existing @bugsee/performance consumer (this file's own setters below, navigations.ts, index.ts).
+export { NAME_SOURCE_ATTRIBUTE };
 
 // The performance controller — the runtime-portable implementation of the ext('performance') API. It
 // starts transactions (head-sampled, stamped with the app version/build), tracks the active span, and
@@ -35,9 +42,6 @@ export interface StartTransactionOptions {
  *  name. Stamped on the transaction as `bugsee.name_source`. */
 export type TransactionNameSource = 'url' | 'route' | 'custom';
 
-/** The attribute key the naming seam stamps to record {@link TransactionNameSource}. */
-export const NAME_SOURCE_ATTRIBUTE = 'bugsee.name_source';
-
 /** The public ext('performance') surface. */
 export interface PerformanceApi {
   /** Begin a transaction (the root of a trace). */
@@ -46,6 +50,18 @@ export interface PerformanceApi {
    * The active span: the most recently STARTED transaction, cleared when it finishes. A minimal
    * single-slot tracker (starting a second transaction overwrites the first; no span stack) — proper
    * async-context nesting is a later slice.
+   *
+   * CONCURRENCY (round-2 D2, tracked, not yet fixed): this slot is process-wide, not per-request. On a
+   * Node server handling concurrent requests, a second `startTransaction` (a second in-flight request)
+   * overwrites the slot before the first request calls this — so a call intended for request A can read/
+   * name request B's transaction. Android's parity implementation (`SpanContextHolder`) avoids this by
+   * keying the active span off a `ThreadLocal`, i.e. per execution context, not one shared variable — the
+   * fix here is the JS equivalent (per-async-context tracking, e.g. via the same `AsyncLocalStorage`-backed
+   * `RequestContext` `@bugsee/node` already threads through `server-instrument.ts`). SAFE today: no
+   * built-in server adapter calls `setActiveTransactionName`/`setRouteName` — they all refine their OWN
+   * request's span via the request-scoped `ServerRequestSpan.setRoute()` (`@bugsee/node`), which reads the
+   * per-request context, NOT this slot. Prefer that request-scoped path over this API from concurrent
+   * server code; this API remains correct for a browser's single in-flight navigation/interaction.
    */
   getActiveSpan(): Span | undefined;
   /**
@@ -54,10 +70,16 @@ export interface PerformanceApi {
    * framework adapter (or the app) refines the raw-URL navigation name to the resolved route once routing
    * has run — the second phase of two-phase naming. A NO-OP when no transaction is active (nothing to
    * name). Default `source` is `custom`.
+   *
+   * See the {@link getActiveSpan} CONCURRENCY note: on a Node server with requests in flight
+   * concurrently, this can rename a DIFFERENT request's transaction than the caller intended. Server-side
+   * route naming should go through the request-scoped `ServerRequestSpan.setRoute()` instead (what every
+   * built-in adapter does); this method is safe for a browser's single active navigation.
    */
   setActiveTransactionName(name: string, opts?: { source?: TransactionNameSource }): void;
   /** Sugar for {@link setActiveTransactionName}(name, { source: 'route' }) — the manual route-naming
-   *  escape hatch (D5); what a router adapter calls on navigation resolve. */
+   *  escape hatch (D5); what a router adapter calls on navigation resolve. See the {@link getActiveSpan}
+   *  CONCURRENCY note before calling this from concurrent Node server-request code. */
   setRouteName(name: string): void;
 }
 

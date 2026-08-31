@@ -4,16 +4,33 @@ import { describe, expect, it, vi } from 'vitest';
 import { type FetchHandler, type FetchRequestLike, wrapFetchHandler } from './fetch-server-wrap';
 import { createNodeRequestContextStore, type RequestContextStore } from './request-context-store';
 
-const fakeTxn = (): Transaction =>
-  ({
+// Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
+// bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
+// fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
+// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+const fakeTxn = (): Transaction => {
+  const txn: Transaction = {
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
     isSampled: () => true,
     isFinished: vi.fn(() => false),
-    setName: vi.fn(),
-    setAttribute: vi.fn(),
+    setName: vi.fn(() => txn),
+    setDescription: vi.fn(() => txn),
+    setAttribute: vi.fn(() => txn),
+    setStatus: vi.fn(() => txn),
+    startChildSpan: vi.fn(() => txn),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK',
+    getOperation: () => 'http.server',
+    getDescription: () => undefined,
+    // Required so finishWith's F-4 manual-rename check (transaction.getAttributes()) runs for real
+    // instead of falling through a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+    getAttributes: vi.fn(() => ({})),
+    getName: () => 'name',
     finish: vi.fn(),
-  }) as unknown as Transaction;
+  };
+  return txn;
+};
 
 const fakeClient = (opts: {
   store?: RequestContextStore;

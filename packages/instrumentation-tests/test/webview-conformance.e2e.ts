@@ -131,6 +131,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
         'traces.system',
         'events.system',
         'events.user',
+        'input',
         'crash',
         'obscuring',
       ]),
@@ -151,7 +152,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('streams each capture FileType as a schema-valid entry (log / traces.system / events.* )', () => {
+  it('streams each capture FileType as a schema-valid entry (log / traces.system / events.system / input)', () => {
     const { rx } = track(boot());
     console.log('conformance-log-marker');
     // The system-traces provider emits an initial snapshot at start AND on each scheduler tick — assert the tick
@@ -160,11 +161,25 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     const beforeTick = rx.entries('traces.system').length;
     tickScheduler();
     expect(rx.entries('traces.system').length).toBeGreaterThan(beforeTick);
-    // a real DOM interaction -> an events.user entry
+    // A real DOM interaction -> an `input` entry. Re-pointed from `events.user`: what this assertion is
+    // for is that a genuine DOM press survives the whole SDK->bridge path and validates against the
+    // shipped schema. It must do so on the dedicated input stream — `events.user` is the embedded app's
+    // own `client.event()` data, and a schema-valid record on the wrong stream is still the wrong stream.
     const button = document.createElement('button');
     button.textContent = 'Buy';
     document.body.appendChild(button);
-    button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    // jsdom has no PointerEvent constructor; a MouseEvent typed `pointerdown` carries the coordinates and
+    // button, and the pointer-specific fields are attached explicitly.
+    const press = new window.MouseEvent('pointerdown', {
+      bubbles: true,
+      clientX: 3,
+      clientY: 4,
+      button: 0,
+    });
+    for (const [k, value] of Object.entries({ pointerId: 1, pointerType: 'touch', pressure: 1 })) {
+      Object.defineProperty(press, k, { value });
+    }
+    button.dispatchEvent(press);
 
     expect(
       rx.entries('log').some((e) => JSON.stringify(e.p).includes('conformance-log-marker')),
@@ -175,7 +190,13 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(
       rx.entries('events.system').some((e) => JSON.stringify(e.p).includes('process_started')),
     ).toBe(true);
-    expect(rx.entries('events.user').some((e) => JSON.stringify(e.p).includes('click'))).toBe(true);
+    const pressed = rx.entries('input');
+    expect(pressed).toHaveLength(1);
+    expect(pressed[0]?.p).toMatchObject({
+      data: { type: 'begin', x: 3, y: 4, tool: 1, view_tag: 'button', target: { text: 'Buy' } },
+    });
+    // ...and the app's own event stream stayed empty: nothing SDK-captured leaked into it.
+    expect(rx.entries('events.user')).toStrictEqual([]);
     rx.assertAllConform();
   });
 

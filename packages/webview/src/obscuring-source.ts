@@ -1,3 +1,4 @@
+import { SENSITIVE_INPUT_MATCHERS } from '@bugsee/core';
 import type { SecureArea } from './protocol';
 
 // The obscuring source — the WebView-specific capability that lets the
@@ -15,25 +16,14 @@ import type { SecureArea } from './protocol';
  * mark such a field `.bugsee-show` to keep it visible in the capture.
  *
  * This is the NATIVE-side masking floor: these rects are what native paints over in its captured video
- * frames, so anything missing here is legible in the recording. It is the structural sibling of
- * `@bugsee/replay`'s `SENSITIVE_INPUT_MATCHERS`, and it had drifted badly behind it — carrying only
- * `type=password` and `autocomplete*="cc-"`, with no ` i` flag. Measured in jsdom:
- * `input[autocomplete*="cc-"]` does NOT match `autocomplete="CC-NUMBER"`, so an uppercase card field was
- * visible in the native frames. `one-time-code`, `type=tel`, `autocomplete*="password"` and rrweb's
- * `data-rr-is-password` stamp were absent outright.
- *
- * `type` values are ASCII-case-insensitive per HTML, so `[type=password]` needs no flag; `autocomplete`
- * values are not, which is why every autocomplete matcher carries ` i`. `~=` is the token-list operator —
- * `autocomplete` is a LIST, so `webauthn one-time-code` must match.
+ * frames, so anything missing here is legible in the recording. It used to be a hand-kept COPY of
+ * `@bugsee/replay`'s list, and it had drifted badly behind it — carrying only `type=password` and
+ * `autocomplete*="cc-"`, with no ` i` flag, so an `autocomplete="CC-NUMBER"` card field was visible in the
+ * native frames while replay masked it. There is now ONE list, in `@bugsee/core`; this module only shapes
+ * it, prefixing each attribute matcher with `input` (the obscuring source hit-tests form controls, not
+ * arbitrary nodes).
  */
-const SECURE_INPUT_MATCHERS = [
-  'input[type=password]',
-  'input[type=tel i]',
-  'input[autocomplete*="password" i]',
-  'input[autocomplete*="cc-" i]',
-  'input[autocomplete~="one-time-code" i]',
-  'input[data-rr-is-password]',
-];
+const SECURE_INPUT_MATCHERS = SENSITIVE_INPUT_MATCHERS.map((m) => `input${m}`);
 
 export const SECURE_INPUT_SELECTOR = SECURE_INPUT_MATCHERS.map(
   (m) => `${m}:not(.bugsee-show)`,

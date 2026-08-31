@@ -212,7 +212,7 @@ function bundleMemStore() {
   return { store, map, puts };
 }
 
-const pendingBundle = (summary: string): Uint8Array => {
+const pendingBundle = (summary: string, reportId?: string): Uint8Array => {
   const request: RequestJson = {
     type: 'crash',
     summary,
@@ -229,8 +229,29 @@ const pendingBundle = (summary: string): Uint8Array => {
     request,
     body: new Uint8Array([0x50, 0x4b, 1]),
     fileName: 'recovered.zip',
+    // The incident this blob IS — what the durable frame records so recovery can reconcile it against a
+    // still-pending report marker instead of guessing from set sizes.
+    ...(reportId !== undefined ? { reportId } : {}),
   });
 };
+
+// An IDBFactory that fails EVERY `.open(brokenDbName, …)` (via onerror) while delegating every other
+// database name to `real` untouched — simulates one discovery source's IndexedDB read failing.
+function brokenDbFactory(real: IDBFactory, brokenDbName: string): IDBFactory {
+  return {
+    open: ((name: string, version?: number) => {
+      if (name !== brokenDbName) {
+        return real.open(name, version);
+      }
+      const request: Partial<IDBOpenDBRequest> & { error: DOMException | null } = { error: null };
+      queueMicrotask(() => {
+        request.error = new DOMException('forced failure', 'UnknownError');
+        request.onerror?.call(request as IDBOpenDBRequest, new Event('error'));
+      });
+      return request as IDBOpenDBRequest;
+    }) as IDBFactory['open'],
+  } as unknown as IDBFactory;
+}
 
 describe('launch', () => {
   it('returns a launched client', () => {
@@ -342,6 +363,30 @@ describe('launch', () => {
     );
   });
 
+  // The console interceptor is built with the BROWSER's dialect-dispatching `parseStack`, not core's
+  // V8-only default. `Error.captureStackTrace` exists on Firefox and Safari too, so a stack IS produced
+  // there — just in the `fn@loc` dialect, which the V8 parser yields ZERO frames for, silently dropping
+  // exactly the thing `console.trace()` is called for. Only a non-V8 stack can tell the two parsers apart.
+  it('parses a console.trace stack in the Firefox/Safari dialect (the injected stackParser)', async () => {
+    // `Error.captureStackTrace` is a V8 extension the DOM lib does not declare — cast to reach it (it is
+    // the same object, so vi.restoreAllMocks() puts the real one back).
+    const errorCtor = Error as unknown as { captureStackTrace: (target: object) => void };
+    vi.spyOn(errorCtor, 'captureStackTrace').mockImplementation((target: object) => {
+      (target as { stack?: string }).stack =
+        'handler@https://app.test/x.js:4:2\n@https://app.test/y.js:9:1';
+    });
+    const store = memStore();
+    launchTracked('tok', baseOptions({ captureStore: store }));
+
+    console.trace('traced-in-firefox');
+
+    const logs = await drain(store, 'log');
+    const message = String((logs?.[0]?.data as { message?: string }).message);
+    expect(message).toContain('traced-in-firefox');
+    expect(message).toContain('at handler (https://app.test/x.js:4:2)'); // frames recovered, not dropped
+    expect(message).toContain('at <anonymous> (https://app.test/y.js:9:1)');
+  });
+
   it('applies a log filter set on the returned client', async () => {
     const store = memStore();
     const client = launchTracked('tok', baseOptions({ captureStore: store }));
@@ -366,32 +411,101 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
-  it('captures a document interaction (click) as an events.user entry', async () => {
+  // Re-pointed from "captures a document interaction (click) as an events.user entry". What that test
+  // was really protecting: launch() actually WIRES the DOM input source into the client, so a real
+  // document interaction lands in the bundle. That still matters — but the stream it lands in was the
+  // defect: `events.user` is the app's own `client.event()` stream and SDK capture must stay out of it.
+  it('captures a document interaction (pointer press) as an `input` entry', async () => {
     const store = memStore();
     const doc = fakeWindow();
     launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
-    doc.emit('click', {
+    doc.emit('pointerdown', {
+      pointerId: 1,
+      pointerType: 'mouse',
       target: {
         tagName: 'BUTTON',
         getAttribute: () => null,
         closest: () => null,
+        matches: () => false,
         textContent: 'Buy',
       },
       clientX: 3,
       clientY: 4,
       button: 0,
+      pressure: 0.5,
     });
-    const events = await drain(store, 'events.user');
-    const click = events?.find((e) => (e.data as { name: string }).name === 'click');
-    expect((click?.data as { params: unknown }).params).toEqual({
-      target: { tag: 'button', text: 'Buy', selector: 'button' },
+    const events = await drain(store, 'input');
+    expect(events).toHaveLength(1);
+    const data = events?.[0]?.data as Record<string, unknown>;
+    expect(data).toMatchObject({
+      type: 'begin',
       x: 3,
       y: 4,
+      tool: 2, // mouse
       button: 0,
+      view_tag: 'button',
+      target: { text: 'Buy', selector: 'button' },
     });
+    expect(typeof data.timestamp).toBe('number');
+  });
+
+  // THE SEPARATION, end to end through launch(): after this change `events.user.json` may contain
+  // client.event() output and NOTHING else. A regression here is the whole bug coming back.
+  it('keeps events.user for client.event() ONLY — captured interactions never land there', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+    );
+    const el = {
+      tagName: 'BUTTON',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+    doc.emit('pointerdown', {
+      pointerId: 1,
+      pointerType: 'touch',
+      target: el,
+      clientX: 1,
+      clientY: 2,
+      button: 0,
+      pressure: 1,
+    });
+    doc.emit('pointerup', {
+      pointerId: 1,
+      pointerType: 'touch',
+      target: el,
+      clientX: 1,
+      clientY: 2,
+      button: 0,
+      pressure: 0,
+    });
+    doc.emit('keydown', { target: el, key: 'Enter' });
+    doc.emit('change', { target: el });
+    client.event('checkout_started', { total: 42 });
+
+    const userEvents = await drain(store, 'events.user');
+    expect(userEvents?.map((e) => e.data)).toMatchObject([
+      { name: 'checkout_started', params: { total: 42 } },
+    ]);
+    // Nothing SDK-captured leaked in: no interaction vocabulary anywhere in the user stream.
+    const asJson = JSON.stringify(userEvents?.map((e) => e.data));
+    for (const marker of ['begin', 'end', 'change', 'view_tag', 'tool', 'Enter']) {
+      expect(asJson).not.toContain(marker);
+    }
+    // ...and the interactions are all present on the input stream instead.
+    const input = await drain(store, 'input');
+    expect(input?.map((e) => (e.data as { type: string }).type)).toStrictEqual([
+      'begin',
+      'end',
+      'keydown', // the keydown
+      'change',
+    ]);
   });
 
   it('does not capture interactions when captureInteractions is disabled', async () => {
@@ -405,12 +519,21 @@ describe('launch', () => {
         document: doc.win as unknown as Document,
       }),
     );
-    doc.emit('click', {
-      target: { tagName: 'BUTTON', getAttribute: () => null, closest: () => null },
+    doc.emit('pointerdown', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      target: {
+        tagName: 'BUTTON',
+        getAttribute: () => null,
+        closest: () => null,
+        matches: () => false,
+      },
       clientX: 0,
       clientY: 0,
       button: 0,
+      pressure: 0.5,
     });
+    expect(await drain(store, 'input')).toBeUndefined();
     expect(await drain(store, 'events.user')).toBeUndefined();
   });
 
@@ -616,9 +739,10 @@ describe('launch', () => {
     expect(reg.get('console')).toBeDefined();
     expect(reg.get('fetch')).toBeDefined();
     expect(reg.get('browser-input')).toBeDefined();
-    // console + browser-input + the 5 cross-runtime network leaves (fetch/xhr/websocket/sse/
-    // webtransport) = 7. No node-http.
-    expect(reg.size).toBe(7);
+    // console + browser-input + the 6 cross-runtime network leaves (fetch/xhr/sendBeacon/websocket/
+    // sse/webtransport) = 8. No node-http.
+    expect(reg.get('sendbeacon')).toBeDefined();
+    expect(reg.size).toBe(8);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', () => {
@@ -926,6 +1050,351 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
   });
 
+  // SEV1 (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): the
+  // process can die AFTER a crash bundle reaches the durable bundle queue but BEFORE the upload settles —
+  // client.ts's submitReport clears the report marker only once that upload settles — leaving a dead
+  // sibling with BOTH a pending bundle AND its incident's still-present marker for the SAME crash. Both
+  // used to be recovered independently. Exactly one upload must reach the pipeline.
+  it('uploads an incident exactly ONCE when its bundle reached the durable queue before the crash', async () => {
+    const idb = new IDBFactory();
+    const bundleShared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker + chunks for inc-deadsib
+    // The SAME incident's bundle also reached the durable queue before the process died.
+    await bundleShared.put(
+      'deadsib/already-staged',
+      pendingBundle('pre-crash (staged bundle)', 'inc-deadsib'),
+    );
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 20)); // give a (erroneous) second delivery a chance to land
+    expect(puts).toHaveLength(1); // NOT twice
+    // …and the ONE delivery is the already-assembled bundle, not a rebuild: the staged artifact wins, so
+    // nothing that was never uploaded is ever discarded.
+    expect(puts[0]).toEqual(new Uint8Array([0x50, 0x4b, 1]));
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+    await vi.waitFor(async () =>
+      expect((await bundleShared.loadAll()).some(([k]) => k === 'deadsib/already-staged')).toBe(
+        false,
+      ),
+    ); // the delivered durable copy is dropped only AFTER its upload confirmed
+  });
+
+  // The case the previous fix's set-emptiness key silently DELETED: the staged bundle belongs to a
+  // DIFFERENT incident than the pending marker (its own marker was cleared on a non-ok upload settle, or
+  // it was re-staged by an earlier recovery). Both incidents must be delivered — nothing may be dropped.
+  it('delivers BOTH a marker-only incident and a staged bundle that belongs to another incident', async () => {
+    const idb = new IDBFactory();
+    const bundleShared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker + chunks for inc-deadsib
+    await bundleShared.put('deadsib/other', pendingBundle('a DIFFERENT incident', 'inc-other'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts).toHaveLength(2)); // both, never one
+    // one upload is the staged blob verbatim; the other is the rebuilt marker bundle (a real zip)
+    expect(puts.some((p) => p.length === 3)).toBe(true);
+    const rebuilt = puts.find((p) => p.length > 3) as Uint8Array;
+    expect(JSON.parse(strFromU8(unzipSync(rebuilt)['logs.json'] as Uint8Array))).toEqual([
+      { m: 'pre-crash' },
+    ]);
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+    await vi.waitFor(async () => expect(await bundleShared.loadAll()).toEqual([]));
+  });
+
+  // Pins the `skipReportIds` pass-through from this launch into core's `recoverReports`. It is only
+  // observable when the queue leg FAILED: the incident is then still owed, and the marker leg must NOT
+  // attempt the same one again in the same pass (that second attempt is what became a duplicate upload
+  // the moment either attempt actually landed). A 403 on /v2/sessions fails the upload immediately and
+  // without retry backoff, so each attempt is exactly one session call.
+  it('does not re-attempt an incident the failed bundle-queue leg already owns', async () => {
+    const idb = new IDBFactory();
+    const bundleShared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker + chunks for inc-deadsib
+    await bundleShared.put('deadsib/staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+
+    const transport = vi.fn<HttpTransport>(async (url: string) => ({
+      status: url.endsWith('/v2/sessions') ? 403 : 200,
+      headers: {},
+      body: new Uint8Array(),
+    }));
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
+    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 30)); // let a (wrong) second attempt land if it is going to
+    expect(sessions()).toHaveLength(1); // the queue leg's attempt only — the marker leg stood down
+    // …and both durable traces survive, so the next launch retries from the staged bundle.
+    expect((await bundleShared.loadAll()).map(([k]) => k)).toEqual(['deadsib/staged']);
+    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
+  });
+
+  // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
+  // page loads, so it holds the previous session's staged bundle while that incident's marker still sits in
+  // the dead session's IndexedDB namespace. Replaying it blind and then rebuilding from the marker uploaded
+  // the incident twice, with DIFFERING payloads (the staged frame vs a freshly assembled zip).
+  it('uploads an incident ONCE when an injected bundle store holds the blob a dead sibling’s marker covers', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker inc-deadsib + chunks
+    const { store, map } = bundleMemStore();
+    map.set('staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        bundleStore: store,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0)); // the staged blob was delivered and freed
+    await new Promise((r) => setTimeout(r, 30)); // let a second (wrong) upload land if it is going to
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toEqual(new Uint8Array([0x50, 0x4b, 1])); // the staged body verbatim, not a rebuild
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
+  });
+
+  // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
+  // a pass that grabs the whole store delivers the other sibling's blob through a replay that knows nothing
+  // about that sibling's marker, and the marker leg then rebuilds and uploads it a second time.
+  it('gives each dead sibling only its own blobs out of a shared injected store', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadA', 500, { m: 'A' }, true);
+    await seedSibling(idb, 'deadB', 501, { m: 'B' }, true);
+    const { store, map } = bundleMemStore();
+    map.set('sA', pendingBundle('inc-deadA (staged)', 'inc-deadA'));
+    map.set('sB', pendingBundle('inc-deadB (staged)', 'inc-deadB'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        bundleStore: store,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0));
+    await new Promise((r) => setTimeout(r, 30)); // let a third (wrong) upload land if it is going to
+    expect(puts).toHaveLength(2); // exactly one per incident — NOT three
+    expect(puts).toEqual([new Uint8Array([0x50, 0x4b, 1]), new Uint8Array([0x50, 0x4b, 1])]);
+  });
+
+  // The reconciliation reads the injected store through the SAME sync BundleStore contract the browser's own
+  // IndexedDB queue uses — an in-memory mirror that is empty until it has hydrated. Reconciling before that
+  // sees no blobs at all, so the marker leg rebuilds the incident and the later unfiltered pass then replays
+  // the blob: the duplicate, restored by a missing await.
+  it('waits for an injected ASYNC store to hydrate before reconciling it', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const staged = pendingBundle('inc-deadsib (staged)', 'inc-deadsib');
+    const blob: AsyncBlobStore = {
+      // Deliberately slow: the dead-sibling scan finishes long before the mirror is populated.
+      loadAll: () => new Promise((resolve) => setTimeout(() => resolve([['left', staged]]), 25)),
+      put: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    };
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        bundleStore: createPersistentBundleStore(blob),
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1), { timeout: 2000 });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toEqual(new Uint8Array([0x50, 0x4b, 1])); // the staged body, not a rebuild
+  });
+
+  // The other half of the same wiring: the unfiltered pass that follows the sibling scan must still take
+  // the blobs NO dead sibling's markers claimed, or an injected store would stop being recovered at all.
+  it('still replays an injected store’s unclaimed blob after the dead-sibling scan', async () => {
+    const idb = new IDBFactory();
+    const { store, map } = bundleMemStore();
+    map.set('orphan', pendingBundle('nobody-claims-me', 'inc-other'));
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        bundleStore: store,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0));
+    expect(puts).toHaveLength(1);
+  });
+
+  it('routes a dead-sibling discovery-source failure to onError, still recovering via the other sources', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'discoverable via markers/capture' }, true);
+    // The bundle-queue database is the ONE discovery source that fails; markers/capture still find
+    // 'deadsib' and recover it normally — a single broken source must not sink the whole scan.
+    const broken = brokenDbFactory(idb, coexistenceDatabaseName('tok'));
+    const onError = vi.fn();
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: broken,
+        locks: fakeWebLocks(),
+        onError,
+      }),
+    );
+
+    // THREE independent readers of that one broken database fail, and they are NOT interchangeable:
+    //   1. the launch's OWN durable bundle store fails to HYDRATE (idb-bundle-store),
+    //   2. the dead-sibling SCAN fails to read it for discovery ids — the catch this test is about,
+    //   3. 'deadsib' (discovered via the working marker/capture databases) then fails its bundle-queue
+    //      replay (`recoverSiblingBundleQueue`'s own loadAll).
+    // A bare `toHaveBeenCalled()` is satisfied by (1) alone, so deleting the discovery catch left it
+    // green. All three report the same underlying open failure, so identity cannot separate them; the
+    // arity can.
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onError).toHaveBeenCalledTimes(3); // and no more — one per reader, none retried
+    expect(
+      JSON.parse(strFromU8(unzipSync(puts[0] as Uint8Array)['logs.json'] as Uint8Array)),
+    ).toEqual([{ m: 'discoverable via markers/capture' }]);
+  });
+
+  it('swallows a discovery-source failure with the DEFAULT (no onError given) sink: recovery still completes', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'default sink' }, true);
+    const broken = brokenDbFactory(idb, coexistenceDatabaseName('tok'));
+    const { fn: transport, puts } = recordingTransport();
+
+    // No `onError` in baseOptions: the internal default no-op sink swallows the broken source's
+    // failure without throwing into launch, and the other (working) sources still recover normally.
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: broken,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    expect(
+      JSON.parse(strFromU8(unzipSync(puts[0] as Uint8Array)['logs.json'] as Uint8Array)),
+    ).toEqual([{ m: 'default sink' }]);
+  });
+
+  it('routes a discovery-source failure to onError even when it is the ONLY recovery source', async () => {
+    const idb = new IDBFactory();
+    // captureStore overrides the persistent capture backend → capture recovery is off (no marker/capture
+    // shared stores at all) — the durable bundle queue is the ONLY discovery source this launch has, so
+    // its failure is the ONE thing that can call onError here (isolates the discovery catch, not a
+    // downstream purge failure sharing the same broken database).
+    const broken = brokenDbFactory(idb, coexistenceDatabaseName('tok'));
+    const onError = vi.fn();
+    const { fn: transport, puts } = recordingTransport();
+
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        captureStore: memStore(),
+        clock: recoveryClock,
+        indexedDB: broken,
+        locks: fakeWebLocks(),
+        onError,
+      }),
+    );
+
+    // TWO independent readers of that one broken database fail, and they are NOT interchangeable: the
+    // launch's OWN durable bundle store fails to HYDRATE (idb-bundle-store), and the dead-sibling scan
+    // fails to READ it (the discovery catch). Asserting merely "onError was called" passes on the
+    // hydration failure alone, so deleting the discovery catch would leave the test green — the count is
+    // what actually pins it. Both report the same underlying open failure, so identity cannot separate
+    // them; the arity can.
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onError).toHaveBeenCalledTimes(2); // and no more — one per reader, neither retried
+    expect(puts).toEqual([]); // nothing was discoverable, so nothing was (mis)recovered either
+  });
+
   it('recovers a DEAD sibling even when its generation equals the live launch generation', async () => {
     // Per-instance namespacing means two tabs can share a wall-clock generation (1000) without colliding;
     // the dead sibling's recovery must use a `currentGeneration: -1` sentinel so its gen is NOT excluded.
@@ -1086,8 +1555,63 @@ describe('launchCore', () => {
 });
 
 describe('launch — session replay (lazy)', () => {
+  // Replay needs a DOM to record, and launch gates the lazy import on the SAME `domDocument` binding the
+  // report-time viewtree uses. `baseOptions`' fake window deliberately has NO `document` — that is the SSR /
+  // pre-render shape, exercised by the DOM-less tests at the end of this block — so every "replay is on"
+  // case has to supply one explicitly.
+  const domReplayOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions =>
+    baseOptions({ document: fakeDocument(viewEl('body')), ...over });
+
+  // Replay is ON BY DEFAULT (parity with the iOS/Android SDKs, which record by default): the option is an
+  // opt-OUT. `replay: false` is what carries the errors-only guarantees the old default used to carry.
+  it('records by DEFAULT — replay is enabled when the option is absent', async () => {
+    launchTracked('tok', domReplayOptions());
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    const call = registerReplay.mock.calls[0] as unknown[];
+    expect(typeof (call[0] as { addCaptureProvider?: unknown }).addCaptureProvider).toBe(
+      'function',
+    );
+    expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
+    expect(call[2]).toEqual({}); // no caller overrides → replay's own fail-closed defaults apply
+  });
+
+  it('records when the document arrives via window.document (the real-browser path)', async () => {
+    // The gate must read the RESOLVED `domDocument` — `options.document ?? win.document` — not just the
+    // injected seam. In a real browser nobody passes `document`; it comes off the window.
+    const win = Object.assign(fakeWindow().win, { document: fakeDocument(viewEl('body')) });
+    launchTracked('tok', baseOptions({ window: win })); // no `document` option at all
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+  });
+
+  it('the DEFAULT path resolves to FAIL-CLOSED masking (mask all text/inputs, block all media)', async () => {
+    // The default now applies to EVERY integration that does not opt out, so "fail-closed" has to hold on
+    // the default path and not merely on the opted-in one. Asserting the forwarded options object is `{}`
+    // proves nothing on its own — what matters is what `{}` RESOLVES to, so run the real resolver over
+    // exactly what launch forwards (importActual: this module is mocked for the rest of the file).
+    launchTracked('tok', domReplayOptions());
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    const forwarded = registerReplay.mock.calls[0]?.[2] as Record<string, unknown>;
+    const { MEDIA_SELECTOR, resolveReplayMaskingOptions } =
+      await vi.importActual<typeof import('@bugsee/replay')>('@bugsee/replay');
+    const masking = resolveReplayMaskingOptions(forwarded);
+    expect(masking.maskAllText).toBe(true);
+    expect(masking.maskAllInputs).toBe(true);
+    expect(masking.blockSelector).toContain(MEDIA_SELECTOR);
+  });
+
+  it('does NOT load @bugsee/replay-canvas on the DEFAULT path — canvas stays opt-in', async () => {
+    launchTracked('tok', domReplayOptions());
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
+    expect(opts.canvas).toBeUndefined();
+  });
+
   it('lazy-loads @bugsee/replay + registers it when replay is enabled, forwarding the options', async () => {
-    launchTracked('tok', baseOptions({ replay: { maskAllText: false, checkoutEveryNms: 5000 } }));
+    launchTracked(
+      'tok',
+      domReplayOptions({ replay: { maskAllText: false, checkoutEveryNms: 5000 } }),
+    );
     // The dynamic import resolves on a microtask.
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const call = registerReplay.mock.calls[0] as unknown[];
@@ -1102,21 +1626,26 @@ describe('launch — session replay (lazy)', () => {
     // Wave 1.4. @bugsee/replay reports an invalid selector it had to drop; that report needs a sink on the
     // production path, or the fix is only reachable from replay's own tests.
     const onError = vi.fn();
-    launchTracked('tok', baseOptions({ replay: { blockSelector: 'div[' }, onError }));
+    launchTracked('tok', domReplayOptions({ replay: { blockSelector: 'div[' }, onError }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect((registerReplay.mock.calls[0]?.[2] as { onError?: unknown }).onError).toBe(onError);
   });
 
   it('enables replay with default options when replay is `true`', async () => {
-    launchTracked('tok', baseOptions({ replay: true }));
+    launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({}); // no options object → {}
   });
 
-  it('does NOT load @bugsee/replay when replay is off (default) — errors bundle unaffected', async () => {
-    launchTracked('tok', baseOptions());
+  // `replay: false` is now THE errors-only path — it inherits the guarantee the old default carried: no
+  // recorder, no replay.bin encoder, and (below) no @bugsee/replay in the bundle at all.
+  it('does NOT register replay when replay is `false` — the errors-only opt-out', async () => {
+    // A DOM IS present here: this asserts the OPT-OUT, so it must not pass merely for want of a document
+    // (with `baseOptions` it would pass even if the opt-out were deleted — the DOM-less gate would carry it).
+    launchTracked('tok', domReplayOptions({ replay: false }));
     await new Promise((r) => setTimeout(r, 10));
-    expect(registerReplay).not.toHaveBeenCalled();
+    expect(registerReplay).not.toHaveBeenCalled(); // no recorder, and no replay.bin encoder registered
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
   });
 
   it('routes a replay load/registration failure to onError (never breaks launch)', async () => {
@@ -1124,13 +1653,13 @@ describe('launch — session replay (lazy)', () => {
       throw new Error('replay boom');
     });
     const onError = vi.fn();
-    launchTracked('tok', baseOptions({ replay: true, onError }));
+    launchTracked('tok', domReplayOptions({ replay: true, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });
 
   it('wires canvas when replay.canvas is set — resolves the config + threads it into registerReplay', async () => {
-    launchTracked('tok', baseOptions({ replay: { canvas: { fps: 4 } } }));
+    launchTracked('tok', domReplayOptions({ replay: { canvas: { fps: 4 } } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).toHaveBeenCalledWith({ fps: 4 });
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1142,12 +1671,12 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('enables canvas with default options when replay.canvas is `true`', async () => {
-    launchTracked('tok', baseOptions({ replay: { canvas: true } }));
+    launchTracked('tok', domReplayOptions({ replay: { canvas: true } }));
     await vi.waitFor(() => expect(createCanvasRecordConfig).toHaveBeenCalledWith({}));
   });
 
   it('does NOT load @bugsee/replay-canvas when canvas is off (replay without canvas)', async () => {
-    launchTracked('tok', baseOptions({ replay: true }));
+    launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).not.toHaveBeenCalled();
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1155,7 +1684,7 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('does NOT load @bugsee/replay-canvas when replay.canvas is explicitly false', async () => {
-    launchTracked('tok', baseOptions({ replay: { canvas: false } }));
+    launchTracked('tok', domReplayOptions({ replay: { canvas: false } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).not.toHaveBeenCalled(); // explicit opt-out must not load the add-on
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1163,10 +1692,99 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('forwards blockAllCanvas through to the replay masking options', async () => {
-    launchTracked('tok', baseOptions({ replay: { blockAllCanvas: true } }));
+    launchTracked('tok', domReplayOptions({ replay: { blockAllCanvas: true } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const opts = registerReplay.mock.calls[0]?.[2] as { blockAllCanvas?: boolean };
     expect(opts.blockAllCanvas).toBe(true); // not stripped by the canvas destructure; flows to masking
+  });
+
+  // --- SSR / pre-render: no DOM ------------------------------------------------------------------
+  //
+  // `@bugsee/browser` is launched in DOM-less hosts for real: all five meta-framework adapters
+  // (nextjs/nuxt/remix/sveltekit/astro) server-render. Now that replay is an opt-OUT, a missing DOM check
+  // means every server render dynamic-imports ~56KB of rrweb, calls record(), throws, and the rejection is
+  // swallowed by `.catch(onError)` when no onError is configured.
+  it('does NOT register replay when there is no DOM (SSR / pre-render), and stays silent', async () => {
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ onError })); // the default path — and no document anywhere
+    await new Promise((r) => setTimeout(r, 10));
+    expect(registerReplay).not.toHaveBeenCalled();
+    // Silence is deliberate: a DOM-less host is not a misconfiguration, and this is the DEFAULT path — an
+    // onError here would fire on every single server render for behaving exactly as designed.
+    expect(onError).not.toHaveBeenCalled();
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+  });
+
+  it('does NOT register replay without a DOM even when replay is explicitly opted IN', async () => {
+    // Meta-framework integrations share ONE options object across the server and the client render, so an
+    // explicit `replay: true` reaches the server render too. It cannot conjure a DOM — skip, silently.
+    const onError = vi.fn();
+    launchTracked('tok', baseOptions({ replay: { canvas: true }, onError }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(registerReplay).not.toHaveBeenCalled();
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled(); // nor the canvas add-on chunk
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  // Kept LAST in this block: it swaps the module mocks out and back around a fresh module registry.
+  //
+  // What makes both the opt-out and the SSR gate worth having is that rrweb (~56KB) is never even loaded —
+  // the reason the import is dynamic in the first place. `registerReplay` not having been called would ALSO
+  // pass if the chunk were fetched and the registration merely skipped (that is precisely what the self-skip
+  // inside @bugsee/replay does), so count module EVALUATIONS. The positive control at the end is what makes
+  // the zeros meaningful.
+  //
+  // All three cases share ONE fresh registry deliberately: a second `vi.resetModules()` + `vi.doMock()` pass
+  // in a follow-up test does not reliably re-run a factory for a module the first pass already
+  // instantiated, so a split would count evaluations against a stale mock (observed: replay stuck at 0
+  // while canvas counted 1).
+  it('never EVALUATES @bugsee/replay unless replay is on AND there is a DOM (bundle guarantee)', async () => {
+    vi.resetModules();
+    const evaluated = { canvas: 0, replay: 0 };
+    vi.doMock('@bugsee/replay', () => {
+      evaluated.replay += 1;
+      return { registerReplay: vi.fn() };
+    });
+    vi.doMock('@bugsee/replay-canvas', () => {
+      evaluated.canvas += 1;
+      return { createCanvasRecordConfig: vi.fn(() => ({})) };
+    });
+    try {
+      const fresh = await import('./launch');
+
+      // (1) The errors-only opt-out, with a DOM present — so this measures the opt-out and nothing else.
+      const off = fresh.launch('tok', domReplayOptions({ carrier: {}, replay: false }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(evaluated.replay).toBe(0); // the chunk was never fetched/evaluated
+      await off.stop();
+
+      // (2) SSR / pre-render: opted IN explicitly (the shared server+client config case) and DOM-less.
+      const ssr = fresh.launch('tok', baseOptions({ carrier: {}, replay: { canvas: true } }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(evaluated.replay).toBe(0); // no rrweb chunk fetched on a server render
+      expect(evaluated.canvas).toBe(0); // nor the canvas add-on
+      await ssr.stop();
+
+      // (3) Positive control: the SAME fresh module DOES evaluate both once a document is present — so the
+      // zeros above are real absences, not a broken counter or a launch that died before the import.
+      const dom = fresh.launch('tok', domReplayOptions({ carrier: {}, replay: { canvas: true } }));
+      // ONE wait covering both: the canvas add-on is imported inside replay's own `.then()`, so it lands
+      // strictly after replay does — reading it inline races. The explicit budget follows the repo's
+      // slow-runner convention (vitest's 1 s waitFor default is short under a loaded parallel `turbo run`).
+      await vi.waitFor(
+        () => {
+          expect(evaluated.replay).toBe(1);
+          expect(evaluated.canvas).toBe(1);
+        },
+        { timeout: 5000 },
+      );
+      await dom.stop();
+    } finally {
+      // Restore the file-level mocks for the tests that follow (doUnmock would hand them the REAL module).
+      vi.doMock('@bugsee/replay', () => ({ registerReplay }));
+      vi.doMock('@bugsee/replay-canvas', () => ({ createCanvasRecordConfig }));
+      vi.resetModules();
+    }
   });
 });
 

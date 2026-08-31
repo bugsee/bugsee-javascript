@@ -1,17 +1,21 @@
-import type {
-  BundleUploader,
-  HttpResponse,
-  HttpTransport,
-  PutBundleOptions,
-  PutResult,
+import {
+  type BundleUploader,
+  type HttpResponse,
+  type HttpTransport,
+  isRetryableHttpStatus,
+  type PutBundleOptions,
+  type PutResult,
 } from './transport';
 
 // The data-plane BundleUploader (design §7.5/§8.3) — platform-agnostic logic over an injected
 // HttpTransport. It builds the signed-PUT headers (Content-Length, fileName; NO Authorization — the
-// signed URL self-auths — and NO Content-Type, and NO `x-amz-*`, see below) and maps the
-// response to a PutResult: 2xx → ok; 5xx → retryable; other 4xx (incl. 403, which the UploadPipeline
-// recovers via renewUpload) → non-retryable; a network error (transport reject) → retryable. The
-// only platform-specific piece is the transport (node:http(s) / fetch), supplied by the platform.
+// signed URL self-auths — and NO Content-Type, and NO `x-amz-*`, see below) and maps the response to
+// a PutResult: 2xx → ok; a network error (transport reject) → retryable; anything else is classified
+// by `isRetryableHttpStatus`, the ONE Android-parity classifier (5xx + 401/408/425/429 retryable, any
+// other 4xx — incl. 403, which the UploadPipeline recovers via renewUpload — permanent). This is not
+// a local judgement call: `retryable:false` becomes `permanent:true` in the pipeline, which becomes
+// "delete the blob, the marker, the capture chunks and the instance subtree" in every recovery leg.
+// The only platform-specific piece is the transport (node:http(s) / fetch), supplied by the platform.
 
 export function createBundleUploader(transport: HttpTransport): BundleUploader {
   return {
@@ -42,7 +46,11 @@ export function createBundleUploader(transport: HttpTransport): BundleUploader {
       if (response.status >= 200 && response.status < 300) {
         return { ok: true };
       }
-      return { ok: false, status: response.status, retryable: response.status >= 500 };
+      return {
+        ok: false,
+        status: response.status,
+        retryable: isRetryableHttpStatus(response.status),
+      };
     },
   };
 }

@@ -12,25 +12,45 @@ import {
 
 // --- structural fakes (fastify is a peer; the client is faked) -----------------------------------
 
-const fakeTransaction = (traceId = 'tid-1', spanId = 'sid-1') => {
+// Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
+// bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
+// fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
+// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+type SpiedTransaction = Transaction & {
+  setName: ReturnType<typeof vi.fn>;
+  setAttribute: ReturnType<typeof vi.fn>;
+  finish: ReturnType<typeof vi.fn>;
+};
+
+const fakeTransaction = (
+  traceId = 'tid-1',
+  spanId = 'sid-1',
+  attributes: Record<string, unknown> = {},
+): SpiedTransaction => {
   let finished = false;
-  const txn = {
+  const txn: SpiedTransaction = {
     getTraceId: () => traceId,
     getSpanId: () => spanId,
     isSampled: () => true,
     isFinished: () => finished,
     setName: vi.fn(() => txn),
+    setDescription: vi.fn(() => txn),
     setAttribute: vi.fn(() => txn),
     setStatus: vi.fn(() => txn),
+    startChildSpan: vi.fn(() => txn),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK',
+    getOperation: () => 'http.server',
+    getDescription: () => undefined,
+    // Required so server-instrument's F-4 manual-rename check (transaction.getAttributes()) runs for
+    // real instead of degrading via a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+    getAttributes: vi.fn(() => attributes),
+    getName: () => 'name',
     finish: vi.fn(() => {
       finished = true;
     }),
   };
-  return txn as unknown as Transaction & {
-    setName: ReturnType<typeof vi.fn>;
-    setAttribute: ReturnType<typeof vi.fn>;
-    finish: ReturnType<typeof vi.fn>;
-  };
+  return txn;
 };
 
 const fakePerf = (txn = fakeTransaction()) => {
@@ -247,6 +267,81 @@ describe('onError hook', () => {
     throwing.onError(fakeReq(), fakeReply(), new Error('e'), d2);
     expect(d2).toHaveBeenCalledTimes(1);
   });
+
+  // F-1/F-3: a Fastify schema-validation failure (FST_ERR_VALIDATION) carries `statusCode: 400` and must
+  // NOT be reported like a thrown 5xx by default; and the app must be able to override the decision.
+  it('skips a genuine Fastify schema-validation 4xx by default (F-1)', () => {
+    const { client, logException } = fakeClient();
+    const app = fakeApp({ getClient: () => client });
+    // The real shape Fastify's Ajv validation raises (verified against fastify@5.12.1's compileValidator
+    // codegen — instantiated as a plain Error here since fastify is a peer, not a dependency of this test).
+    const validationError = Object.assign(new Error("body must have required property 'value'"), {
+      code: 'FST_ERR_VALIDATION',
+      statusCode: 400,
+      validation: [{ keyword: 'required', message: "must have required property 'value'" }],
+    });
+    const done = vi.fn();
+    app.onError(
+      fakeReq({ routeOptions: { url: '/api/v1/metrics' } }),
+      fakeReply(400),
+      validationError,
+      done,
+    );
+    expect(logException).not.toHaveBeenCalled();
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a 5xx and skips a 4xx by default, like every other backend adapter (F-3)', () => {
+    const { client, logException } = fakeClient();
+    const app = fakeApp({ getClient: () => client });
+    const notFound = Object.assign(new Error('nope'), { statusCode: 404 });
+    const boom = Object.assign(new Error('boom'), { statusCode: 503 });
+    app.onError(fakeReq(), fakeReply(404), notFound, vi.fn());
+    expect(logException).not.toHaveBeenCalled();
+    app.onError(fakeReq(), fakeReply(503), boom, vi.fn());
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an error with no status at all (a plain throw)', () => {
+    const { client, logException } = fakeClient();
+    const app = fakeApp({ getClient: () => client });
+    app.onError(fakeReq(), fakeReply(500), new Error('e'), vi.fn());
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours a custom shouldReport override (F-3)', () => {
+    const { client, logException } = fakeClient();
+    const app = fakeApp({ getClient: () => client, shouldReport: () => false });
+    const boom = Object.assign(new Error('boom'), { statusCode: 503 });
+    const done = vi.fn();
+    app.onError(fakeReq(), fakeReply(503), boom, done);
+    expect(logException).not.toHaveBeenCalled();
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('a custom shouldReport can opt IN a 4xx that the default would skip', () => {
+    const { client, logException } = fakeClient();
+    const app = fakeApp({ getClient: () => client, shouldReport: () => true });
+    const notFound = Object.assign(new Error('nope'), { statusCode: 404 });
+    app.onError(fakeReq(), fakeReply(404), notFound, vi.fn());
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not enrich http.route when the error is not reported (shouldReport false)', () => {
+    const store = createNodeRequestContextStore();
+    const { client } = fakeClient({ store });
+    const app = fakeApp({ getClient: () => client, shouldReport: () => false });
+    const ctx = { contextId: 'c', attributes: {} as Record<string, AttributeValue> };
+    store.run(ctx, () => {
+      app.onError(
+        fakeReq({ routeOptions: { url: '/x' } }),
+        fakeReply(400),
+        new Error('e'),
+        vi.fn(),
+      );
+    });
+    expect('http.route' in ctx.attributes).toBe(false);
+  });
 });
 
 describe('onResponse hook', () => {
@@ -433,6 +528,23 @@ describe('refactor: route refinement, abort guard, re-entrancy', () => {
     req.routeOptions = { url: '/users/:id' }; // routing matches AFTER onRequest
     app.onResponse(req, fakeReply(200), vi.fn());
     expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
+  });
+
+  // F-4 (round-2 D2): a manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
+  // with the automatic route-derived name. This exercises the check against a Transaction double whose
+  // getAttributes() actually reports the stamp, not one that omits the method entirely.
+  it('does NOT clobber a manual rename (name-source attribute present) with the automatic route name', () => {
+    const txn = fakeTransaction('tid-1', 'sid-1', { 'bugsee.name_source': 'route' });
+    const { perf } = fakePerf(txn);
+    const { client } = fakeClient({ perf });
+    const app = fakeApp({ getClient: () => client });
+    const req = fakeReq({ method: 'GET', url: '/users/7', routeOptions: { url: '/users/:id' } });
+    app.onRequest(req, fakeReply(), vi.fn());
+    app.onResponse(req, fakeReply(200), vi.fn());
+    expect(txn.setName).not.toHaveBeenCalled(); // the manual rename wins
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 200);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
   it('onRequestAbort is a safe no-op when no span was opened (no onRequest)', () => {

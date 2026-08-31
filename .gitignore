@@ -21,3 +21,11 @@ tsup.config.bundled_*.mjs
 # Sample apps are standalone pnpm projects with their own (dev-only) lockfiles.
 samples/*/node_modules/
 samples/*/pnpm-lock.yaml
+
+# Session scratch: review harnesses, benchmarks and file backups. Not part of the SDK.
+.session-artifacts/
+
+# Agent worktrees + local session files. A worktree here contains a full copy of the repo,
+# INCLUDING its biome.json — which Biome treats as a nested root and refuses to lint past,
+# taking down `pnpm lint` for the whole repo.
+.claude/

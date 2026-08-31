@@ -3,18 +3,22 @@ import {
   type CaptureStore,
   createCaptureAggregator,
   createCaptureExporter,
+  createFilterStore,
   createMemoryCaptureStore,
   createMultiKeyEmitter,
   createOperationDispatcher,
   createOptionsContainer,
+  type FilterStore,
   getCarrier,
   type MultiKeyEmitter,
   type OptionsContainer,
+  setCarrierClient,
 } from '@bugsee/core';
 import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FetchTarget } from './fetch-interceptor';
 import { installNetworkCapture } from './install-network-capture';
+import type { SendBeaconTarget } from './send-beacon-interceptor';
 
 // installNetworkCapture now registers its network leaves on the process Carrier (default the real
 // globalThis). Reset it between tests so each gets fresh interceptors (no cross-test reuse).
@@ -320,8 +324,146 @@ describe('installNetworkCapture', () => {
   });
 });
 
+// navigator.sendBeacon does not exist in the node test runtime, so the beacon leaf is driven through an
+// injected target (the same seam fetchTarget/xhrTarget use). Calling `nav.sendBeacon(...)` after the
+// provider starts exercises the installed wrapper exactly as an application would.
+type BeaconFn = (url: unknown, data?: unknown) => boolean;
+const beaconHost = (result = true) => {
+  const nav = { sendBeacon: ((): boolean => result) as BeaconFn };
+  const target: SendBeaconTarget = {
+    get: () => nav.sendBeacon,
+    set: (fn) => {
+      nav.sendBeacon = fn;
+    },
+  };
+  return { nav, target };
+};
+// Publish a filter store as the singleton client's `filters` service (the provider reads getFilters()).
+const publishFilters = (store: FilterStore): void => {
+  setCarrierClient({
+    getService: (token: { name: string }) => (token.name === 'filters' ? store : undefined),
+    getServiceProvider: () => undefined as never,
+  });
+};
+
+describe('installNetworkCapture — sendBeacon', () => {
+  it('captures a beacon end-to-end: before + complete carrying mechanism "sendBeacon"', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(options); // provider → umbrella → sendbeacon sub activates → wraps the target
+    expect(nav.sendBeacon('https://api/collect', 'a=1')).toBe(true);
+    const events = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent);
+    expect(events?.map((e) => e.type)).toEqual(['before', 'complete']);
+    expect(events?.map((e) => e.mechanism)).toEqual(['sendBeacon', 'sendBeacon']);
+    expect(events?.[0]?.method).toBe('POST');
+    expect(events?.[0]?.custom?.body).toBe('a=1');
+  });
+
+  it('redacts a beacon URL and body with the built-in sanitizer (the privacy half of the gap)', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(options);
+    nav.sendBeacon(
+      'https://api/collect?token=super-secret',
+      new (
+        globalThis as unknown as { URLSearchParams: new (i: Record<string, string>) => object }
+      ).URLSearchParams({ user: 'bob', password: 'hunter2' }),
+    );
+    const before = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent)[0];
+    expect(before?.url).not.toContain('super-secret'); // the URL went through sanitizeUrl
+    expect(before?.custom?.body).not.toContain('hunter2'); // …and the body through sanitizeBody
+    expect(before?.custom?.body).toContain('user=bob'); // non-sensitive fields survive
+  });
+
+  it('lets a user network filter REPLACE the sanitizer for beacon entries (Android XOR rule)', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const filters = createFilterStore(vi.fn());
+    let seen: NetworkEvent | undefined;
+    filters.network = (e) => {
+      seen = e; // identity: from here on the user owns redaction of beacon traffic
+      return e;
+    };
+    publishFilters(filters);
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(options);
+    nav.sendBeacon('https://api/collect?token=super-secret', 'x');
+    const before = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent)[0];
+    expect(seen?.mechanism).toBe('sendBeacon'); // the user filter saw the beacon…
+    // …and the default sanitizer did NOT also run: the secret the identity filter kept is still there.
+    expect(before?.url).toBe('https://api/collect?token=super-secret');
+  });
+
+  it('drops a beacon entry the user network filter vetoes', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const filters = createFilterStore(vi.fn());
+    filters.network = () => null;
+    publishFilters(filters);
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(options);
+    expect(nav.sendBeacon('https://api/collect', 'x')).toBe(true); // still sent
+    expect((await createCaptureExporter(store).drain()).size).toBe(0);
+  });
+
+  it('applies the shared body policy to beacon bodies (size limit → size_too_large)', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(createOptionsContainer({ [BugseeOption.CaptureNetworkBodySizeLimit]: 3 }));
+    nav.sendBeacon('https://api/collect', 'way too long');
+    const before = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent)[0];
+    expect(before?.custom?.body).toBeNull();
+    expect(before?.custom?.no_body_reason).toBe('size_too_large');
+  });
+
+  it('applies the master body toggle to beacon bodies (captureNetworkBodies off → null)', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const { provider } = installNetworkCapture({ now: () => 1, sendBeaconTarget: target });
+    provider.init(buildInit(store));
+    provider.start(createOptionsContainer({ [BugseeOption.CaptureNetworkBodies]: false }));
+    nav.sendBeacon('https://api/collect', 'a=1');
+    const before = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent)[0];
+    expect(before?.custom?.body).toBeNull();
+  });
+
+  it('threads isInternal through to the sendBeacon leaf (self-isolated beacons skipped)', async () => {
+    const store = mkStore();
+    const { nav, target } = beaconHost();
+    const { provider } = installNetworkCapture({
+      now: () => 1,
+      sendBeaconTarget: target,
+      isInternal: (url) => url.includes('bugsee'),
+    });
+    provider.init(buildInit(store));
+    provider.start(options);
+    expect(nav.sendBeacon('https://collector.bugsee.com/upload', 'x')).toBe(true); // still sent
+    expect((await createCaptureExporter(store).drain()).size).toBe(0);
+  });
+
+  it('does not patch sendBeacon before the provider starts, and unpatches when it stops', () => {
+    const { nav, target } = beaconHost();
+    const original = nav.sendBeacon;
+    const { provider } = installNetworkCapture({ sendBeaconTarget: target });
+    provider.init(buildInit(mkStore()));
+    expect(nav.sendBeacon).toBe(original); // idle → the global is untouched
+    provider.start(options);
+    expect(nav.sendBeacon).not.toBe(original);
+    provider.stop();
+    expect(nav.sendBeacon).toBe(original);
+  });
+});
+
 describe('installNetworkCapture — carrier (process-global leaf singletons)', () => {
-  const LEAF_NAMES = ['fetch', 'sse', 'websocket', 'webtransport', 'xhr'];
+  const LEAF_NAMES = ['fetch', 'sendbeacon', 'sse', 'websocket', 'webtransport', 'xhr'];
 
   it('registers each network leaf on the carrier by name', () => {
     const carrier = {};
@@ -335,7 +477,7 @@ describe('installNetworkCapture — carrier (process-global leaf singletons)', (
     const first = getCarrier(carrier).interceptors.get('fetch');
     installNetworkCapture({ carrier }); // a duplicated copy installs again
     expect(getCarrier(carrier).interceptors.get('fetch')).toBe(first); // not a second instance
-    expect(getCarrier(carrier).interceptors.size).toBe(5); // leaves not doubled
+    expect(getCarrier(carrier).interceptors.size).toBe(6); // leaves not doubled
   });
 
   it('builds fresh leaves for a different carrier', () => {

@@ -1,6 +1,7 @@
 import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
+  defaultShouldReport,
   neverThrow,
   openServerRequest,
   type RequestContextStore,
@@ -16,7 +17,9 @@ import {
 //                    since the hook returns before the route handler) — or REFINE the node:http-layer
 //                    owner's span when that auto-instrument also runs (first-owner-wins re-entrancy; the
 //                    core handles it). The span is held per-request in a WeakMap.
-//   onError        — report an unhandled route error against the request's span (fastify reports EVERY one).
+//   onError        — report an unhandled route error against the request's span, gated by `shouldReport`
+//                    (default: skip 4xx, incl. Fastify's own FST_ERR_VALIDATION schema-validation errors —
+//                    F-1/F-3, same status-based default every other backend adapter uses).
 //   onResponse     — finish the transaction (route-parametrized name + status).
 //   onRequestAbort — cancel the transaction (a client abort fires this, not onResponse).
 // Fully defensive: a hook failure never breaks the request, and done() is always called. The client is the
@@ -50,6 +53,13 @@ export interface FastifyAdapterOptions {
   getClient?: () => Bugsee | undefined;
   /** Mint a context id; default a portable random id. Injectable for tests. */
   newContextId?: () => string;
+  /**
+   * Override the report decision. Default {@link defaultShouldReport}: report errors with no status / a
+   * 5xx status, skip 4xx — the same default every other backend adapter uses. Fastify's own Ajv-based
+   * schema validation raises `FST_ERR_VALIDATION` with `statusCode: 400`, which this default duck-types
+   * out — a routine client-input mistake no longer floods the issue list like a thrown 5xx would.
+   */
+  shouldReport?: (err: unknown) => boolean;
   /**
    * Where an SDK-internal failure in the adapter is reported. It is never thrown into the host: setup runs
    * at server bootstrap, where a throw would stop the app starting. Without a sink the containment is
@@ -124,6 +134,7 @@ function setupFastifyUnsafe(app: FastifyInstance, options: FastifyAdapterOptions
   };
 
   const getClient = options.getClient ?? defaultGetClient;
+  const shouldReport = options.shouldReport ?? defaultShouldReport;
   const onError = (
     req: FastifyRequest,
     _reply: FastifyReply,
@@ -132,9 +143,12 @@ function setupFastifyUnsafe(app: FastifyInstance, options: FastifyAdapterOptions
   ): void => {
     try {
       const client = getClient();
-      if (client !== undefined) {
+      // F-1/F-3: gate the report on shouldReport (default: skip 4xx, incl. Fastify's own
+      // FST_ERR_VALIDATION schema-validation errors, which carry statusCode: 400) — a client mistake is
+      // not an application defect, and the app can override the decision entirely via `shouldReport`.
+      if (client !== undefined && shouldReport(error)) {
         // Report against the active context (the in-flight request's — the http-layer owner's under
-        // re-entrancy), enriched with the matched route. Fastify reports EVERY unhandled route error.
+        // re-entrancy), enriched with the matched route.
         const store = resolveStore(client);
         const route = routeOf(req);
         if (store !== undefined && route !== undefined) {

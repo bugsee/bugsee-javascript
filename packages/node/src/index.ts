@@ -2,6 +2,11 @@
 // unhandledRejection detection, console/network capture. Built test-first per
 // docs/implementation-standards.md.
 
+// F-6: the `HttpTransport` primitive (+ its request/response option shapes) — used internally by the
+// `transport` launch option (launch.ts) but never re-exported, forcing a consumer wiring a custom
+// transport (a proxy, a queueing shim, a test double) into an unsafe `as never` cast to satisfy the
+// type checker. Type-only: no runtime footprint, no new dependency surface.
+export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 // Re-exported so the backend adapters can contain their OWN pre-request work (header reads, route
 // extraction, the application-supplied `user` callback) without each taking a direct @bugsee/core
 // dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.

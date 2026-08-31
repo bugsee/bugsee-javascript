@@ -129,13 +129,67 @@ export interface UploadResult {
    * otherwise tell apart: both arrive as `{ok:false}` with a status. The durable queue uses it to delete
    * a bundle instead of retrying it at every launch forever (Android parity —
    * `CommunicationErrorClassifier.java:14-33` classifies non-401/408/425/429 4xx as PERMANENT, and
-   * `ReportUploadExecutor.java:182-199` deletes on that outcome).
+   * `ReportUploadExecutor.java:258-268` deletes the bundle file on any non-SHOULD_RETRY outcome).
    *
    * Absent on a `queue_overflow` drop: that bundle was never ATTEMPTED, so nothing is known about whether
    * the collector would take it.
    */
   permanent?: boolean;
 }
+
+/**
+ * Is this upload attempt FINISHED — nothing left for any queue to carry forward?
+ *
+ * Delivered → nothing to keep. REFUSED (`permanent`) → keeping it means uploading it again at the next
+ * launch, getting the same refusal, and repeating for the life of the installation: a self-DoS against our
+ * own collector that no retention TTL fixes, because the bundle is re-staged every time. Anything else
+ * (5xx, timeout, offline) is exactly what a durable queue exists to carry forward.
+ *
+ * ONE definition, because three separately-written copies of it drifted: the live durable pipeline treated
+ * `permanent` as settled while both recovery legs gated on `ok` alone, so a 4xx-refused bundle recovered
+ * from a dead instance was re-uploaded on every launch forever — bounded at 7 days on node by the instance
+ * sweep, unbounded on browser/worker, which has no retention pass at all.
+ *
+ * Android parity: `CommunicationErrorClassifier.java:14-33` + `ReportUploadExecutor.java:258-268`.
+ */
+export const isUploadSettled = (result: UploadResult): boolean =>
+  result.ok || result.permanent === true;
+
+/**
+ * Can a request that answered `status` still succeed if we send it again?
+ *
+ * THE classifier — the single place that decides `retryable`, and therefore (through `permanent` and
+ * {@link isUploadSettled}) whether a crash report's blob, its report marker, its capture chunks and its
+ * whole instance subtree are DELETED. It lives here, beside `isUploadSettled`, because the two are one
+ * policy: this says whether the collector's answer is final, that says what to do when it is.
+ *
+ * Android parity, member for member, with `CommunicationErrorClassifier.classifyHttpStatus`
+ * (`:14-33`) composed with `toJobResult` (`:63-74`):
+ *
+ * | status            | Android category | Android job result | here          |
+ * |-------------------|------------------|--------------------|---------------|
+ * | `401`             | `AUTH_EXPIRED`   | `SHOULD_RETRY`     | retryable     |
+ * | `408`/`425`/`429` | `TRANSIENT`      | `SHOULD_RETRY`     | retryable     |
+ * | any other `4xx`   | `PERMANENT`      | `FAILURE`          | NOT retryable |
+ * | `5xx`, and anything else (incl. `< 400`) | `TRANSIENT` | `SHOULD_RETRY` | retryable |
+ *
+ * The exemptions are the whole point, and this SDK once shipped without them (`status >= 500`): a
+ * single `429` from a rate-limiting edge — the one status a collector under load is MOST likely to
+ * answer, and the one it answers to EVERY client at once — classified the report `permanent` and freed
+ * every trace of it. Android's own comment names the same hazard for `408`: *"Without this, a
+ * gateway/upstream timeout (408) on a report or bundle upload would be classified PERMANENT and the
+ * report dropped."* `401` is the token expiring mid-upload, which the next launch simply re-mints.
+ *
+ * A sub-400 status is reached only for a non-2xx answer (a 3xx on a signed PUT): the request did not
+ * complete, so like Android's fall-through it is retryable.
+ */
+export const isRetryableHttpStatus = (status: number): boolean =>
+  status < 400 ||
+  status >= 500 ||
+  status === 401 ||
+  status === 408 ||
+  status === 425 ||
+  status === 429;
 
 /** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes (§7.5/§7.8). */
 export interface UploadPipeline {

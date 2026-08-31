@@ -11,6 +11,11 @@ const fakeTxn = () => ({
   isFinished: vi.fn(() => false),
   setName: vi.fn(),
   setAttribute: vi.fn(),
+  // Required so server-instrument's F-4 manual-rename check (transaction.getAttributes()) runs for
+  // real instead of degrading via a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+  // `getAttributes` is a required Span member; a double omitting it does not satisfy the interface it
+  // claims, and used to be masked by an inner try/catch that has since been removed.
+  getAttributes: vi.fn(() => ({})),
   finish: vi.fn(),
 });
 

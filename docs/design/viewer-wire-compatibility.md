@@ -80,7 +80,6 @@ Same for SSE (`direction: "in"` always) and WebTransport session stages.
 |---|---|
 | WS/SSE **payloads** | Interceptors never attach frame bodies; frames show empty body in the UI |
 | `size` | Optional on wire; never set by interceptors (viewer derives from body when present) |
-| `sendBeacon` | In `NetworkMechanism` / design; **no interceptor** |
 | Rich timings | Only `{ duration }` on complete today; no dns/connect Resource Timing |
 | Mobile envelope | Optional `{ version: 2, events: [...] }` would match `report-bundle-structure`; not required while viewer wraps arrays |
 

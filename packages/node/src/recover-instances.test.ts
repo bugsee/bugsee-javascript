@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,6 +7,7 @@ import {
   createFileChunkBackend,
   createReportingRequest,
   type HarvestedDump,
+  type IdentifiedBundle,
   type NativeCrashSource,
   type StoredEntry,
   serializeBundle,
@@ -52,7 +53,7 @@ function fakePipeline(result: UploadResult = { ok: true }) {
   return { bundles, enqueue, flush: () => Promise.resolve(true), drop: () => {} };
 }
 
-const aBundle = (summary: string): Bundle => ({
+const aBundle = (summary: string, reportId?: string): IdentifiedBundle => ({
   request: {
     type: 'crash',
     summary,
@@ -63,6 +64,7 @@ const aBundle = (summary: string): Bundle => ({
   } as Bundle['request'],
   body: new Uint8Array([1, 2, 3]),
   fileName: 'p.zip',
+  ...(reportId !== undefined ? { reportId } : {}),
 });
 
 const DEAD_PID = 999_999; // ESRCH → the owner process is gone
@@ -154,6 +156,36 @@ const crashJsonOf = (bundle: Bundle): unknown =>
   JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
 
 describe('recoverInstances', () => {
+  it('is THROW-SAFE per subtree: an unreadable owner.json cannot abort the whole scan', async () => {
+    // `readOwner` → `readFileBytes` re-throws every non-ENOENT errno, and it used to sit outside every
+    // try in the loop. A single unreadable `owner.json` (EACCES when a root-started and a dropped-
+    // privilege process share one dataDir; EISDIR, as staged here, without needing privileges) then
+    // rejected `recoverInstances` — and the launch's release pass hung off a bare `.then()`, so a
+    // held-back bundle was never delivered on ANY launch. The trigger is persistent on-disk state.
+    const dir = mkDir();
+    // The bad subtree sorts FIRST, so a throw here would take the good one with it.
+    mkdirSync(join(dir, '9-9-abad'), { recursive: true });
+    mkdirSync(join(dir, '9-9-abad', 'owner.json')); // a directory where the file belongs → EISDIR
+    writeOwner(dir, '9-9-bgood', DEAD_PID);
+    seedPendingBundle(dir, '9-9-bgood', 'b1', aBundle('survivor'));
+    const pipeline = fakePipeline();
+    const errors: unknown[] = [];
+
+    await expect(
+      recoverInstances({
+        dataDir: dir,
+        ownInstanceId: '1-0-live',
+        uploadPipeline: pipeline,
+        context,
+        onError: (e) => errors.push(e),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(pipeline.bundles.map((b) => b.request.summary)).toEqual(['survivor']);
+    expect(errors).toHaveLength(1); // the unreadable subtree is REPORTED, not silently skipped
+    expect(existsSync(join(dir, '9-9-abad'))).toBe(true); // …and left alone for a later launch
+  });
+
   it('re-uploads a dead sibling’s pending bundle and removes its subtree', async () => {
     const dir = mkDir();
     seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
@@ -184,6 +216,256 @@ describe('recoverInstances', () => {
     });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  // SEV1 (recovery double-upload): the process can die AFTER the crash bundle reaches the durable
+  // `pending/` queue but BEFORE the upload settles — client.ts's submitReport clears the report marker
+  // only once that upload settles, so a dead sibling can leave BOTH a pending bundle AND its incident's
+  // still-present marker for the SAME crash. Both used to be recovered independently (events_count +2
+  // per incident, confirmed on 4 samples). Exactly one upload must reach the pipeline.
+  it('uploads an incident exactly ONCE when its bundle reached the durable queue before the crash', async () => {
+    const dir = mkDir();
+    // Same incident, both traces left behind: the marker + chunks (seedIncident) AND the already-
+    // assembled bundle that reached `pending/` before the process died (the crash window).
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'already-staged',
+      serializeBundle(aBundle('inc-1 (pre-crash assembly)', 'inc-1')),
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    // ONE upload, and it is the ALREADY-ASSEMBLED bundle: the staged blob is the incident's primary
+    // artifact, so it is delivered and its now-redundant marker retired — nothing is ever dropped
+    // un-uploaded.
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // NOT twice
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['inc-1 (pre-crash assembly)']);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully drained → subtree removed
+  });
+
+  // The case NEITHER suite had, and the one the `hadMarkers` proxy key silently lost: the staged bundle
+  // belongs to a DIFFERENT incident than the pending marker. It happens for real two ways — client.ts's
+  // `result.then(clear, clear)` clears a marker on a 5xx `{ok:false}` while durable-upload-pipeline.ts's
+  // `settled()` KEEPS that blob; and node/launch.ts hands `recoverInstances` the DURABLE pipeline, so every
+  // bundle recovered from a dead sibling is re-staged into this instance's `pending/` with no marker ever.
+  // Both incidents must be delivered.
+  // A REFUSED bundle is settled, exactly as the live durable pipeline treats it: gating on `ok` alone
+  // re-uploaded a 4xx-rejected bundle at every launch forever, and never retired its marker either — on
+  // node bounded only by the 7-day instance sweep, on browser/worker by nothing at all.
+  it('frees a PERMANENTLY refused bundle and its marker instead of retrying it every launch', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'refused',
+      serializeBundle(aBundle('inc-1 (pre-crash assembly)', 'inc-1')),
+    );
+    const pipe = fakePipeline({ ok: false, permanent: true });
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // blob AND marker gone → subtree removed
+  });
+
+  it('KEEPS a retryably-refused bundle (the sibling of the above)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('retry me'));
+    const pipe = fakePipeline({ ok: false });
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(createNodeBundleStore(join(dir, '9-9-dead', 'pending')).list()).toEqual(['b1']);
+  });
+
+  // R2-1: an injected `bundleStore` is the integrator's own, stable across launches and outside the
+  // per-instance layout — so it can hold a dead sibling's staged bundle while that sibling's marker is
+  // still here. The scan hands each sibling's marker store to `reconcileOwnQueue` and withholds whatever
+  // it settled with, so the marker leg does not rebuild the same incident a second time.
+  it('withholds the incidents an injected queue reconciled from the marker leg', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    const pipe = fakePipeline();
+    const seen: Array<string[]> = [];
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      reconcileOwnQueue: (markers) => {
+        seen.push(markers.list().map((m) => m.request.id)); // THIS sibling's markers, hydrated
+        return Promise.resolve(new Set(['inc-1'])); // …settled with, but deliberately NOT retired here
+      },
+    });
+
+    expect(seen).toEqual([['inc-1']]);
+    expect(pipe.enqueue).not.toHaveBeenCalled(); // the marker leg stood down — no rebuild
+    // The marker is untouched by the withholding itself, so a queue attempt that failed is retried next
+    // launch, and the subtree survives for it.
+    expect(
+      createNodeReportMarkerStore(join(dir, '9-9-dead', 'incidents'))
+        .list()
+        .map((m) => m.request.id),
+    ).toEqual(['inc-1']);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true);
+  });
+
+  // Both queue legs can withhold at once — this subtree's own `pending/` covers one incident and the
+  // injected store covers another. The marker leg must stand down for the UNION, not for either alone.
+  //
+  // Every upload FAILS here on purpose: a delivered blob retires its marker, which would mask the skip set
+  // entirely. Only an undelivered one leaves the marker standing, so `skipReportIds` is what stops the
+  // second attempt.
+  it('withholds the union of both queue legs from the marker leg', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1'); // staged in this subtree's own pending/
+    seedIncident(dir, '9-9-dead', 501, 'inc-2'); // staged in the injected store
+    seedIncident(dir, '9-9-dead', 502, 'inc-3'); // owed to nobody but the marker leg
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'staged-1',
+      serializeBundle(aBundle('inc-1 (staged)', 'inc-1')),
+    );
+    const pipe = fakePipeline({ ok: false });
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      reconcileOwnQueue: () => Promise.resolve(new Set(['inc-2'])),
+    });
+
+    // inc-1 attempted from its blob, inc-2 owned by the injected queue, inc-3 the only rebuild.
+    expect(pipe.bundles.map((b) => (b as IdentifiedBundle).reportId)).toEqual(['inc-1', 'inc-3']);
+    expect(pipe.bundles[0]?.request.summary).toBe('inc-1 (staged)'); // the blob verbatim, not a rebuild
+  });
+
+  it('still rebuilds the incidents an injected queue did NOT claim', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    seedIncident(dir, '9-9-dead', 501, 'inc-2');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      reconcileOwnQueue: () => Promise.resolve(new Set(['inc-1'])),
+    });
+
+    expect(pipe.bundles.map((b) => (b as IdentifiedBundle).reportId)).toEqual(['inc-2']);
+  });
+
+  it('replays a pending bundle whose incident has NO marker, even when the sibling has other markers', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1'); // marker + chunks for inc-1
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'blob-inc-2',
+      serializeBundle(aBundle('inc-2 (staged, its marker already cleared)', 'inc-2')),
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    const summaries = pipe.bundles.map((b) => b.request.summary).sort();
+    expect(summaries).toEqual(['Crash', 'inc-2 (staged, its marker already cleared)']); // BOTH, never one
+    expect(pipe.enqueue).toHaveBeenCalledTimes(2);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  it('replays a pending bundle written by an older SDK (no report id in its frame) rather than freeing it', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'legacy-blob',
+      serializeBundle(aBundle('legacy frame — no report id')), // pre-upgrade frame: nothing ties it to a marker
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary).sort()).toEqual([
+      'Crash',
+      'legacy frame — no report id',
+    ]);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  it('leaves the redundant pending bundle for retry when marker-based recovery does not fully drain', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 500, 'inc-1');
+    createNodeBundleStore(join(dir, '9-9-dead', 'pending')).put(
+      'already-staged',
+      serializeBundle(aBundle('inc-1 (pre-crash assembly)', 'inc-1')),
+    );
+    const pipe = fakePipeline({ ok: false }); // marker-based delivery fails
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    // The staged bundle's upload failed → BOTH traces of inc-1 are kept (blob + marker) and the marker
+    // leg does not attempt the same incident a second time in this pass. Next launch retries from the blob.
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1); // the bundle-queue attempt only — NOT the marker leg too
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['inc-1 (pre-crash assembly)']);
+    expect(createNodeBundleStore(join(dir, '9-9-dead', 'pending')).list()).toEqual([
+      'already-staged',
+    ]);
+    expect(
+      createNodeReportMarkerStore(join(dir, '9-9-dead', 'incidents'))
+        .list()
+        .map((m) => m.request.id),
+    ).toEqual(['inc-1']); // the marker survives too — the incident is still owed
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // kept for retry
+  });
+
+  it('still recovers an ordinary pending bundle when its sibling has NO report marker at all', async () => {
+    const dir = mkDir();
+    // A sibling that never had capture recovery (or crashed before any incident) — bundle-queue
+    // recovery remains the sole, unaffected path (existing behavior, no marker to defer to).
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('no marker for this one'));
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(pipe.bundles[0]?.request.summary).toBe('no marker for this one');
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
   });
 

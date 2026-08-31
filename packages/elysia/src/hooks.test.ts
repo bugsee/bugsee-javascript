@@ -11,17 +11,34 @@ import {
   setupElysia,
 } from './hooks';
 
-const fakeTxn = (over: Partial<Record<keyof Transaction, unknown>> = {}): Transaction =>
-  ({
+// Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
+// bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
+// fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
+// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
+  const txn: Transaction = {
     getTraceId: () => 'trace-1',
     getSpanId: () => 'span-1',
     isSampled: () => true,
     isFinished: vi.fn(() => false),
-    setName: vi.fn(),
-    setAttribute: vi.fn(),
+    setName: vi.fn(() => txn),
+    setDescription: vi.fn(() => txn),
+    setAttribute: vi.fn(() => txn),
+    setStatus: vi.fn(() => txn),
+    startChildSpan: vi.fn(() => txn),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK',
+    getOperation: () => 'http.server',
+    getDescription: () => undefined,
+    // Required so server-instrument's F-4 manual-rename check (transaction.getAttributes()) runs for
+    // real instead of degrading via a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
+    getAttributes: vi.fn(() => ({})),
+    getName: () => 'name',
     finish: vi.fn(),
     ...over,
-  }) as unknown as Transaction;
+  };
+  return txn;
+};
 
 const fakeStore = (): RequestContextStore & {
   enterWith: ReturnType<typeof vi.fn>;
@@ -183,6 +200,23 @@ describe('setupElysia hooks', () => {
     expect(txn.setName).toHaveBeenCalledWith('POST /o/:id');
     expect(txn.setAttribute).toHaveBeenCalledWith('http.method', 'POST');
     expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 201);
+    expect(txn.finish).toHaveBeenCalledWith('OK');
+  });
+
+  // F-4 (round-2 D2): a manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
+  // with the automatic route-derived name. This exercises the check against a Transaction double whose
+  // getAttributes() actually reports the stamp, not one that omits the method entirely.
+  it('does NOT clobber a manual rename (name-source attribute present) with the automatic route name', () => {
+    const store = fakeStore();
+    const txn = fakeTxn({ getAttributes: vi.fn(() => ({ 'bugsee.name_source': 'route' })) });
+    const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => txn) } });
+    const cap = wire({ getClient: () => client, newContextId: () => 'cid-1' });
+    const c = ctx({ method: 'POST', url: 'http://x/o/7', route: '/o/:id', status: 200 });
+    cap.onRequest?.(c);
+    cap.mapResponse?.(c);
+    expect(txn.setName).not.toHaveBeenCalled(); // the manual rename wins
+    expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 200);
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 

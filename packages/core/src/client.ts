@@ -36,6 +36,7 @@ import {
 import { buildCrashJson } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
+import type { IdentifiedBundle } from './durable-upload-pipeline';
 import { createEnvironment } from './environment';
 import type { BugseeError } from './errors';
 import type { BreadcrumbInput, LogEvent } from './events';
@@ -398,16 +399,24 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       // come through submitReport, where reading the Environment live is the previous behaviour and a
       // strictly better degrade than shipping no attributes at all.
       const identity = reportIdentity.get(request) ?? liveIdentity();
-      return assembleBundle(request, capturedByType, {
-        appToken,
-        environment: getEnvironment(),
-        attributes: identity.attributes,
-        userIdentifier: identity.userIdentifier,
-        clock,
-        ...(captured !== undefined ? { requestContext: captured } : {}),
-        ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
-        ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
-      });
+      // Stamp the incident's id onto the bundle (NOT onto `request.json` — this never goes on the wire).
+      // The durable queue writes it into its frame header, which is the only thing that later lets
+      // recovery tell "this staged blob IS the incident that marker is still holding open" from "this
+      // staged blob is an incident nothing has uploaded yet". See IdentifiedBundle.
+      const bundle: IdentifiedBundle = {
+        ...assembleBundle(request, capturedByType, {
+          appToken,
+          environment: getEnvironment(),
+          attributes: identity.attributes,
+          userIdentifier: identity.userIdentifier,
+          clock,
+          ...(captured !== undefined ? { requestContext: captured } : {}),
+          ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
+          ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
+        }),
+        reportId: request.id,
+      };
+      return bundle;
     };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }

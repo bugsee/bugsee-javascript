@@ -48,7 +48,8 @@ export const BugseeOption = {
   CaptureSystemTraces: 'com.bugsee.option.capture.system-traces',
   /** Capture system events (process / app lifecycle). */
   CaptureSystemEvents: 'com.bugsee.option.capture.system-events',
-  /** Capture user interactions (clicks/keys/changes/focus → events.user). Browser/DOM only. */
+  /** Capture user interactions (clicks/keys/changes/focus → the SDK-captured `input` stream — never
+   * `events.user`, which is reserved for application-supplied `client.event()` data). Browser/DOM only. */
   CaptureInteractions: 'com.bugsee.option.capture.interactions',
   /** Capture a view hierarchy (DOM tree → viewtree) at report time. Browser/DOM only. */
   CaptureViewHierarchy: 'com.bugsee.option.capture.view-hierarchy',

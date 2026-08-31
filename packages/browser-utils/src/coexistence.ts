@@ -1,4 +1,9 @@
-import type { BundleStore, UploadPipeline } from '@bugsee/core';
+import {
+  type BundleStore,
+  createMarkerAwareBundleReplay,
+  type ReportMarkerStore,
+  type UploadPipeline,
+} from '@bugsee/core';
 import {
   type AsyncBlobStore,
   type AsyncKeyedStore,
@@ -6,6 +11,7 @@ import {
   createIdbKeyedStore,
 } from './idb';
 import { createPersistentBundleStore } from './idb-bundle-store';
+import { createPersistentReportMarkerStore } from './idb-report-marker-store';
 import {
   captureDatabaseName,
   coexistenceDatabaseName,
@@ -49,16 +55,38 @@ export interface CoexistenceOptions {
   indexedDB?: IDBFactory;
 }
 
+/** What a launch's per-sibling capture/marker recovery is handed (see {@link RecoverDeadSiblingsOptions}). */
+export interface DeadSiblingRecovery {
+  /** The dead sibling's prefixed capture-chunk view — wrap it in `createIdbChunkBackend`. */
+  captureView: AsyncKeyedStore;
+  /** Its report-marker store, ALREADY hydrated — and the same handle the bundle-queue leg reconciled
+   *  against, so the two legs cannot disagree about which incidents are still owed. */
+  markers: ReportMarkerStore;
+  /** Incidents the bundle-queue leg already settled with; pass straight to `recoverReports`. */
+  skipReportIds: ReadonlySet<string>;
+}
+
 export interface RecoverDeadSiblingsOptions {
   /** The base (direct) upload pipeline a dead sibling's already-assembled bundles are re-uploaded through. */
   uploadPipeline: UploadPipeline;
-  /** Launch-provided capture/marker recovery for ONE dead sibling, given its prefixed store views. The launch
-   *  builds the chunk backend + marker store over these and calls core `recoverReports` with its own context.
-   *  Omitted ⇒ only the bundle queue is recovered (e.g. the webworker, which has no capture-recovery path). */
-  recoverReportsForViews?: (
-    captureView: AsyncKeyedStore,
-    markerView: AsyncBlobStore,
-  ) => Promise<void>;
+  /**
+   * Reconcile a bundle queue that lives OUTSIDE coexistence — an explicit `bundleStore` override, which the
+   * integrator keeps stable across launches — against ONE dead sibling's pending markers. Called (under that
+   * sibling's lock, with its hydrated marker store) after its own prefixed queue has been replayed and BEFORE
+   * its marker leg runs; the ids it returns are withheld from that leg exactly like the coexisting queue's.
+   *
+   * Without it an overridden store replays launch N−1's staged bundle while the marker leg rebuilds the SAME
+   * incident from its still-pending marker — two uploads with differing payloads. Absent (the per-instance
+   * IndexedDB queue) ⇒ nothing outside coexistence to reconcile.
+   */
+  reconcileOwnQueue?: (
+    markers: Pick<ReportMarkerStore, 'list' | 'remove'>,
+  ) => Promise<ReadonlySet<string>>;
+  /** Launch-provided capture/marker recovery for ONE dead sibling. The launch builds the chunk backend over
+   *  {@link DeadSiblingRecovery.captureView} and calls core `recoverReports` with its own context, passing
+   *  the supplied `markers` + `skipReportIds` through unchanged.
+   *  Omitted ⇒ only the bundle queue is recovered (a launch with capture recovery off). */
+  recoverReportsForSibling?: (recovery: DeadSiblingRecovery) => Promise<void>;
 }
 
 export interface Coexistence {
@@ -135,7 +163,11 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
     bundleStore,
     captureView,
     markerView,
-    recoverDeadSiblings: async ({ uploadPipeline, recoverReportsForViews }) => {
+    recoverDeadSiblings: async ({
+      uploadPipeline,
+      recoverReportsForSibling,
+      reconcileOwnQueue,
+    }) => {
       if (!coexisting) {
         return;
       }
@@ -173,22 +205,68 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
       // Recover each dead sibling under its lock (a live sibling holds it ⇒ skipped). Re-upload its bundles
       // directly (no re-persist into our queue) + run its capture/marker recovery. Per-sibling failures are
       // isolated so one bad sibling doesn't abort the others.
+      //
+      // SEV1 (recovery double-upload): those two legs can both hold the SAME incident. `client.ts`'s
+      // submitReport writes an incident's report marker before assembly and clears it only once the upload
+      // SETTLES, while the durable queue stages the assembled bundle before that upload — a tab/worker
+      // killed inside that window leaves both. Core's `createMarkerAwareBundleReplay` reconciles them PER
+      // INCIDENT (on the report id the durable frame carries): the staged bundle is delivered and its
+      // now-redundant marker retired, and only that id is withheld from the marker leg. Everything else —
+      // a blob whose incident has no pending marker, or a frame too old to carry an id — replays exactly
+      // as before. This lives HERE, not in a tier above, so the browser and the (service) worker share one
+      // implementation; both drive their queue replay through the same wrapped pipeline.
       await Promise.all(
         [...ids].map((deadId) =>
           liveness
             .recoverIfDead(instanceLockName(appToken, deadId), async () => {
-              if (bundleShared !== undefined) {
-                await recoverSiblingBundleQueue(bundleShared, deadId, uploadPipeline, onError);
-              }
+              // The sibling's markers, read ONCE and shared by both legs. Built only when the launch has a
+              // marker leg at all — with none, the queue is the only path and there is nothing to dedup.
+              let markers: ReportMarkerStore | undefined;
               if (
-                recoverReportsForViews !== undefined &&
+                recoverReportsForSibling !== undefined &&
                 captureShared !== undefined &&
                 markerShared !== undefined
               ) {
-                await recoverReportsForViews(
-                  createPrefixedKeyedStore(captureShared, deadId),
+                const store = createPersistentReportMarkerStore(
                   createPrefixedBlobStore(markerShared, deadId),
+                  onError,
                 );
+                await store.whenReady; // list() must reflect what the dead instance actually left
+                markers = store;
+              }
+
+              const skipReportIds = new Set<string>();
+              if (bundleShared !== undefined) {
+                const replay =
+                  markers !== undefined
+                    ? createMarkerAwareBundleReplay({ markers, pipeline: uploadPipeline, onError })
+                    : undefined;
+                await recoverSiblingBundleQueue(
+                  bundleShared,
+                  deadId,
+                  replay?.pipeline ?? uploadPipeline,
+                  onError,
+                );
+                if (replay !== undefined) {
+                  for (const id of replay.skipReportIds) {
+                    skipReportIds.add(id);
+                  }
+                }
+              }
+              // …and the same reconciliation for a queue OUTSIDE coexistence (an explicit `bundleStore`),
+              // which is shared by every launch and so can hold this dead sibling's staged bundles.
+              if (markers !== undefined && reconcileOwnQueue !== undefined) {
+                for (const id of await reconcileOwnQueue(markers)) {
+                  skipReportIds.add(id);
+                }
+              }
+
+              if (markers !== undefined && captureShared !== undefined) {
+                await recoverReportsForSibling?.({
+                  captureView: createPrefixedKeyedStore(captureShared, deadId),
+                  markers,
+                  skipReportIds,
+                });
               }
             })
             .catch(onError),

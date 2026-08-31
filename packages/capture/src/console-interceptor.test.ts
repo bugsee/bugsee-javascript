@@ -1,4 +1,4 @@
-import type { LogEvent } from '@bugsee/core';
+import { type LogEvent, parseV8Stack, type StackFrame } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type ConsoleInterceptorOptions,
@@ -305,6 +305,252 @@ describe('createConsoleInterceptor — activation', () => {
     con().warn('later');
     expect(logs).toEqual([{ timestamp: 5, level: 'warning', source: 'console', message: 'later' }]);
     ic.stop();
+  });
+});
+
+// console.trace() default level + stack capture. `trace` is deliberately absent from CONSOLE_METHODS/
+// installFakeConsole (a pre-existing test proves the interceptor skips a configured method the runtime
+// console lacks), so these tests build their own fake console carrying a `trace` method.
+function installFakeConsoleWithTrace() {
+  const calls: RecordedCall[] = [];
+  const real = (globalThis as unknown as { console: unknown }).console;
+  const f: Record<string, (...args: unknown[]) => void> = {};
+  for (const method of [...CONSOLE_METHODS, 'trace']) {
+    f[method] = (...args: unknown[]) => calls.push({ method, args });
+  }
+  (globalThis as unknown as { console: unknown }).console = f;
+  return { calls, restore: () => ((globalThis as unknown as { console: unknown }).console = real) };
+}
+const traceFake = () => {
+  const f = installFakeConsoleWithTrace();
+  restores.push(f.restore);
+  return f;
+};
+const traceCon = () =>
+  (globalThis as unknown as { console: FakeConsole & { trace: (...a: unknown[]) => void } })
+    .console;
+
+describe('createConsoleInterceptor — console.trace()', () => {
+  it('is captured by DEFAULT (no options) at level "verbose"', () => {
+    // Grounding for "verbose": the viewer maps BOTH "verbose" and "trace" to the same numeric severity
+    // (5) in LOG_LEVEL_NAME_TO_NUMBER (viewer/src/app/features/recording/shared/
+    // js-sdk-resource-normalize.ts) — "verbose" is the one @bugsee/types#LogLevelName actually declares,
+    // so it is the correct captured level for a console.trace() call.
+    traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    traceCon().trace('hi');
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.level).toBe('verbose');
+    expect(logs[0]?.source).toBe('console');
+  });
+
+  it('still passes through to the original console.trace (app behavior preserved)', () => {
+    const f = traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    ic.on('log', () => {});
+    traceCon().trace('hi');
+    expect(f.calls).toEqual([{ method: 'trace', args: ['hi'] }]);
+  });
+
+  it('appends the caller stack after the formatted message (not just the args)', () => {
+    traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    function callSiteMarker() {
+      traceCon().trace('hi');
+    }
+    callSiteMarker();
+    const message = logs[0]?.message ?? '';
+    expect(message.startsWith('hi\n')).toBe(true);
+    // Pin the TOP frame, not merely "some 'at' line and 'callSiteMarker' appear somewhere in the
+    // message" — a boundary that fails to trim the interceptor's own wrapper frame would still satisfy
+    // a looser assertion (the wrapper frame is `at ... (console-interceptor.ts:...)`, and
+    // 'callSiteMarker' would still appear one line further down). Line 2 (index 1, right after the
+    // formatted message on line 1) must be the application's real call site.
+    expect(message.split('\n')[1]).toMatch(/^ {4}at callSiteMarker \(/);
+  });
+
+  it('does NOT append a stack to non-trace methods (regression: no scope creep)', () => {
+    traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1 });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    traceCon().log('hi');
+    expect(logs[0]?.message).toBe('hi');
+  });
+
+  it('falls back to the message alone when Error.captureStackTrace is unavailable', () => {
+    traceFake();
+    const original = (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace;
+    delete (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace;
+    try {
+      const ic = createConsoleInterceptor({ now: () => 1 });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+      traceCon().trace('hi');
+      expect(logs[0]?.message).toBe('hi');
+    } finally {
+      (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('falls back to the message alone when the captured stack has no parseable frames', () => {
+    traceFake();
+    const original = (Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void })
+      .captureStackTrace;
+    (
+      Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void }
+    ).captureStackTrace = (target: { stack?: string }) => {
+      target.stack = 'Error';
+    };
+    try {
+      const ic = createConsoleInterceptor({ now: () => 1 });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+      traceCon().trace('hi');
+      expect(logs[0]?.message).toBe('hi');
+    } finally {
+      (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('falls back to the message alone when captureStackTrace leaves .stack undefined', () => {
+    traceFake();
+    const original = (Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void })
+      .captureStackTrace;
+    (
+      Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void }
+    ).captureStackTrace = (target: { stack?: string }) => {
+      // A real `new Error()` auto-populates `.stack`, so the mock must explicitly blank it to
+      // exercise the `error.stack ?? ''` fallback (not merely leave the call a no-op).
+      target.stack = undefined;
+    };
+    try {
+      const ic = createConsoleInterceptor({ now: () => 1 });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+      traceCon().trace('hi');
+      expect(logs[0]?.message).toBe('hi');
+    } finally {
+      (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('does not throw into the caller and still forwards when Error.captureStackTrace itself throws', () => {
+    const f = traceFake();
+    const original = (Error as unknown as { captureStackTrace?: (t: object, fn: unknown) => void })
+      .captureStackTrace;
+    (
+      Error as unknown as { captureStackTrace?: (t: object, fn: unknown) => void }
+    ).captureStackTrace = () => {
+      throw new Error('capture exploded');
+    };
+    try {
+      const ic = createConsoleInterceptor({ now: () => 1 });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+      expect(() => traceCon().trace('hi')).not.toThrow();
+      expect(f.calls).toEqual([{ method: 'trace', args: ['hi'] }]);
+      expect(logs[0]?.message).toBe('hi');
+    } finally {
+      (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('honors a custom level mapping for trace (overriding the verbose default)', () => {
+    traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1, levels: { trace: 'debug' } });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    traceCon().trace('hi');
+    expect(logs[0]?.level).toBe('debug');
+  });
+});
+
+// A minimal SpiderMonkey/JavaScriptCore ("fn@loc" or "@loc") stack parser, standing in for the
+// browser tier's real dispatching `parseStack` (packages/browser/src/stack.ts) without this package
+// taking a dependency on it. Deliberately NOT reused from core: the whole point of these tests is that
+// the SEAM accepts an arbitrary caller-supplied parser.
+const parseFirefoxSafariStack = (stack: string): StackFrame[] => {
+  const frames: StackFrame[] = [];
+  for (const raw of stack.split('\n')) {
+    const line = raw.trim();
+    const at = line.indexOf('@');
+    if (at === -1) {
+      continue;
+    }
+    const location = line.slice(at + 1);
+    if (location === '') {
+      continue;
+    }
+    const fn = line.slice(0, at);
+    const frame: StackFrame = { file: location };
+    if (fn !== '') {
+      frame.function = fn;
+    }
+    frames.push(frame);
+  }
+  return frames;
+};
+
+// Finding 1: on Firefox/Safari, `Error.captureStackTrace` exists (the interceptor tries it) but
+// `error.stack` comes back in the `fn@loc` dialect, not V8's `at fn (loc)` — so the hardcoded
+// `parseV8Stack` silently parses zero frames and the trace is lost. The fix is an injectable
+// `stackParser` option (defaulting to today's `parseV8Stack`, so behavior is unchanged when unset).
+describe('createConsoleInterceptor — console.trace() stackParser seam (Finding 1)', () => {
+  // A real Firefox/Safari stack, mocked via the same captureStackTrace seam the other fallback tests
+  // above use — the interceptor cannot tell a mocked engine dialect from a real one.
+  const FIREFOX_STYLE_STACK =
+    'callSiteMarker@https://app.example/app.js:10:5\n@https://app.example/app.js:20:1';
+
+  // A test asserting "with the DEFAULT stackParser, a Firefox/Safari stack yields no frames" was
+  // removed here: it is unfalsifiable against the exact bug this seam guards (hardcoding
+  // `this.#stackParser = parseV8Stack` regardless of `options.stackParser`) — that mutation leaves
+  // the DEFAULT path byte-for-byte identical, so no default-only assertion can ever distinguish
+  // "correctly wired ?? fallback" from "hardcoded to the same function". It was also fully redundant
+  // with 'falls back to the message alone when the captured stack has no parseable frames' above,
+  // which already exercises the same `frames.length === 0` branch. The seam itself — that an
+  // INJECTED, non-default parser actually takes effect — is what the next test proves, and it is the
+  // only shape of test that can: it was run against the hardcode mutation (`this.#stackParser =
+  // parseV8Stack;` unconditionally) and failed red, while the removed test stayed green.
+  it('honors an injected stackParser, recovering a Firefox/Safari "fn@loc" stack the default V8-only parser would lose', () => {
+    traceFake();
+    const original = (Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void })
+      .captureStackTrace;
+    (
+      Error as unknown as { captureStackTrace?: (t: object, f: unknown) => void }
+    ).captureStackTrace = (target: { stack?: string }) => {
+      target.stack = FIREFOX_STYLE_STACK;
+    };
+    try {
+      const ic = createConsoleInterceptor({ now: () => 1, stackParser: parseFirefoxSafariStack });
+      const logs: LogEvent[] = [];
+      ic.on('log', (e) => logs.push(e));
+      traceCon().trace('hi');
+      const message = logs[0]?.message ?? '';
+      expect(message.startsWith('hi\n')).toBe(true);
+      expect(message.split('\n')[1]).toContain('callSiteMarker');
+      expect(message.split('\n')[2]).toContain('app.js:20:1');
+    } finally {
+      (Error as unknown as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it("still parses a V8-style stack when the injected stackParser is explicitly core's own parseV8Stack (both dialects covered by the same seam)", () => {
+    traceFake();
+    const ic = createConsoleInterceptor({ now: () => 1, stackParser: parseV8Stack });
+    const logs: LogEvent[] = [];
+    ic.on('log', (e) => logs.push(e));
+    function callSiteMarker() {
+      traceCon().trace('hi');
+    }
+    callSiteMarker();
+    const message = logs[0]?.message ?? '';
+    expect(message.startsWith('hi\n')).toBe(true);
+    expect(message.split('\n')[1]).toMatch(/^ {4}at callSiteMarker \(/);
   });
 });
 

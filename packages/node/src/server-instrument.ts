@@ -1,7 +1,7 @@
 import { parseTraceparent } from '@bugsee/capture';
 import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
-import { sanitizeUrl } from '@bugsee/protocol';
+import { NAME_SOURCE_ATTRIBUTE, sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
@@ -468,7 +468,17 @@ function makeSpan(
       if (transaction === undefined || transaction.isFinished()) {
         return;
       }
-      transaction.setName(spanName(info, route));
+      // F-4: `client.ext('performance').setRouteName()` / `setActiveTransactionName()` rename the
+      // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source') — the caller's
+      // explicit rename. Without this check, the automatic route-derived name below ran unconditionally
+      // on every finish and silently overwrote it. Skip the automatic name ONLY when a manual rename
+      // happened this request; the manual name wins. `getAttributes()` is a REQUIRED, non-throwing member
+      // of `Span` (span.ts: a plain `Object.fromEntries` read) — reading it needs no defensive try/catch of
+      // its own; the outer try/catch around this whole block already covers a genuinely hostile Transaction.
+      const manuallyRenamed = transaction.getAttributes()[NAME_SOURCE_ATTRIBUTE] !== undefined;
+      if (!manuallyRenamed) {
+        transaction.setName(spanName(info, route));
+      }
       transaction.setAttribute('http.method', info.method);
       transaction.setAttribute('http.status_code', status);
       transaction.finish(outcome);

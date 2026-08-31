@@ -6,7 +6,7 @@ import type { ChunkBackend, FrozenPart } from './chunk-backend';
 import type { CaptureEntryFactory } from './contracts';
 import type { NativeCrashJson } from './crash';
 import { createReportingRequest } from './reporting';
-import type { UploadPipeline } from './transport';
+import { isUploadSettled, type UploadPipeline } from './transport';
 
 // Native-crash recovery (session-stitched harvest-and-bundle — docs/design/electron-native-crashes.md §6.1).
 // A native crash (Electron/Crashpad, V8 or native-addon segfault) kills the process INSTANTLY, so no JS
@@ -44,7 +44,8 @@ export interface HarvestedDump {
 export interface NativeCrashSource {
   /** Pending dumps belonging to the marker's session (matched by the seam, e.g. via `extra.session_id`). */
   harvest(marker: CrashpadSessionMarker): Promise<HarvestedDump[]> | HarvestedDump[];
-  /** Drop a harvested dump once its bundle is delivered (so it is never re-uploaded). */
+  /** Drop a harvested dump once its bundle has SETTLED — delivered, or permanently refused (so it is
+   *  never re-uploaded). */
   claim(marker: CrashpadSessionMarker, name: string): void;
 }
 
@@ -71,12 +72,16 @@ export interface RecoverNativeCrashesOptions {
 export interface NativeCrashRecoveryResult {
   /** How many pending dumps the session yielded. */
   readonly harvested: number;
-  /** How many were assembled + delivered (and claimed). */
-  readonly delivered: number;
+  /**
+   * How many were assembled and SETTLED (and therefore claimed) — delivered, or permanently refused by
+   * the collector. The same rule the live durable pipeline and both other recovery legs apply
+   * ({@link isUploadSettled}); this leg is the fourth, and it once gated on `ok` alone.
+   */
+  readonly settled: number;
   /**
    * True when the session is FULLY processed and its marker may be cleared: either no dumps existed
-   * (nothing to recover) or every harvested dump was delivered. False on any infrastructure failure or a
-   * partial delivery — the caller then KEEPS the marker so a later launch retries.
+   * (nothing to recover) or every harvested dump settled. False on any infrastructure failure or a
+   * partial one — the caller then KEEPS the marker so a later launch retries.
    */
   readonly complete: boolean;
 }
@@ -88,14 +93,14 @@ export async function recoverNativeCrashes(
   const entryFactory = options.entryFactory ?? defaultEntryFactory;
   const { backend, marker, source, uploadPipeline } = options;
   let harvested = 0;
-  let delivered = 0;
+  let settled = 0;
 
   try {
     const dumps = await source.harvest(marker);
     harvested = dumps.length;
     // No native crash this session (clean exit / non-native death) — nothing to recover, marker clearable.
     if (dumps.length === 0) {
-      return { harvested, delivered, complete: true };
+      return { harvested, settled, complete: true };
     }
 
     const base = options.context();
@@ -130,11 +135,15 @@ export async function recoverNativeCrashes(
           userIdentifier: marker.userIdentifier,
         });
         const result = await uploadPipeline.enqueue(bundle);
-        if (result.ok) {
-          source.claim(marker, dump.name); // confirmed delivered — never re-upload
-          delivered += 1;
+        if (isUploadSettled(result)) {
+          // Delivered, or PERMANENTLY REFUSED — settled either way, so the dump is claimed and the
+          // session's marker becomes clearable. Gating on `ok` alone (as this leg used to) meant a
+          // refused bundle kept the marker, kept `nativePending`, held the whole dead subtree, and had
+          // the SAME dump re-harvested and re-uploaded under a FRESH request id on every launch for
+          // the life of the installation. A RETRYABLE failure still leaves it unclaimed.
+          source.claim(marker, dump.name);
+          settled += 1;
         }
-        // On !ok the dump is LEFT unclaimed → re-harvested + retried on a later launch.
       } catch (error) {
         onError(error);
       }
@@ -142,8 +151,8 @@ export async function recoverNativeCrashes(
   } catch (error) {
     // Harvest / listParts / snapshot failure: keep the marker (complete stays false) so a launch retries.
     onError(error);
-    return { harvested, delivered, complete: false };
+    return { harvested, settled, complete: false };
   }
 
-  return { harvested, delivered, complete: delivered === harvested };
+  return { harvested, settled, complete: settled === harvested };
 }

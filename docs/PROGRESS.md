@@ -75,9 +75,9 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 - `buildBrowserEnvironment(input, probe)` — §8.6 envelope (`platform.type: 'web'`) via injectable `BrowserProbe` (navigator/screen/Intl; raw UA as `platform.version` — backend parses; deviceMemory/hardwareConcurrency optional). `optionsToWire` on `sdk.options`.
 - `createWindowErrorProvider` / `createUnhandledRejectionProvider` — window `error` → crash / `unhandledrejection` → error; `parseStack` dispatches V8 (`at fn (loc)`) vs SpiderMonkey/JSC (`fn@loc`) dialects (core's `parseLocation` reused).
 - `createBrowserSystemTracesSampler` (traces: `ram_js_heap_*` (grouped, Android `ram_jvm_heap` parity) + `connection` (transport name from the viewer's CONNECTION_STATES vocabulary, `navigator.onLine` first) + `orientation` (the Android/iOS `Orientation` int, never the browser's `{type, angle}`) + `battery`/`charging`, each degrading where its API is absent) + `createBrowserSystemEventsSource` (events: `process_started`, `pagehide`→`process_exiting`, `visibilitychange`→`process_foreground`/`process_background`, `online`/`offline`, `orientationchange`→`orientation_changed`). See the capture-completeness milestone in §7.
-- `createBrowserInputSource` (input: capture-phase/passive DOM listeners → `events.user` via the runtime-agnostic `createUserEventsProvider`) — click/keydown/change/submit/focusin with a PII-safe `describeTarget` (tag/id/class/type/text/selector, masking password + `[data-bugsee-hidden]`); typed text never captured (AltGr/emoji/IME-robust); throw-isolated. See the capture-completeness milestone in §7.
+- `createBrowserInputSource` (input: capture-phase/passive DOM listeners → the dedicated **`input`** stream (`input.json`) via the runtime-agnostic `createInputProvider`) — **pointerdown/pointerup/pointercancel** (Pointer Events, so `pointerType` gives the wire `tool` for free and a touchpad correctly reports Mouse; `pointerId` keys the gesture; `button` covers secondary/middle) + **keydown** + change/submit/focusin, emitting the viewer's `RecordingTouchEvent` shape. PII-safe `describeTarget` (tag/id/class/type/text/selector) masks anything matching the SHARED sensitive-input definition or `[data-bugsee-hidden]`; typed text never captured (AltGr/emoji/IME-robust); **every keystroke aimed at a sensitive/masked field is dropped outright**; throw-isolated. **It does NOT write to `events.user`** — see the `*.user` rule below. See the capture-completeness milestone in §7.
 - `createDomSnapshot` / `createViewtreeSnapshotSource` (view hierarchy: an at-report DOM-tree snapshot → `viewtree`, via the core `reportSnapshots` pull-seam) — reuses `describeTarget` per node + rounded `getBoundingClientRect`; masked subtrees collapse to `{tag, masked, rect}`; bounded (maxNodes/maxDepth) + per-node throw-isolated. Gated by `captureViewHierarchy`. See §7.
-- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; system traces; system events; user-interaction input) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. Returns the started `BugseeClient`.
+- **`launch(appToken, options)`** — the browser composition root (fetch/DOM analog of node's): fetch transport (internal-tagged), api/uploader/upload pipeline, browser env, in-memory store (or IndexedDB-backed when `persist:true`), gated capture providers (console→log; network umbrella, NO `node:http`; system traces; system events; user-interaction input) + detection providers, `client.launch()`. **No `process.exit` path** (the browser flushes via the pipeline/`pagehide`; `stop()` only clears the carrier). `persist:true` builds an IndexedDB durable bundle queue (crash recovery across reload — `recover()` deferred to the store's `whenReady`) + the durable IndexedDB chunk capture store (`createIdbChunkCaptureStore` in its own `bugsee-capture` db). `maxDataSize` defaults to 10 MB. **Session replay is ON by default** (2026-08-27) — parity with the iOS/Android SDKs, which record by default; `replay: false` is the opt-out and is the ONLY value on which `import('@bugsee/replay')` is never evaluated, so an errors-only integration still pays nothing for rrweb (the lazy chunk + the opt-out carry the bundle-size budget, not the default). Masking stays fail-closed on the default path (mask all text/inputs, block all media); `replay.canvas` stays opt-in. Returns the started `BugseeClient`.
 
 ### Integration shims — `@bugsee/integration-shims` (tier-3 leaf, slice #13)
 No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §372). `createNoopCaptureProvider`/`createNoopInterceptor` (extend `CaptureProviderBase`/`InterceptorBase`) + named shims `createViewHierarchyProviderShim`/`createBreadcrumbsProviderShim`/`createXhrInterceptorShim`. Each is a structurally-valid provider/interceptor that captures nothing and warns ONCE (`logger.warnOnce`, keyed `shim:<name>`, message `<name> is a no-op on <runtime>; ignored`) on ACTIVATION (provider start / interceptor activate) — construction is side-effect-free. Logger (`Pick<Logger,'warnOnce'>`) + runtime label are injected by the platform (runtime-agnostic). **`replay` is intentionally NOT a shim** (design §372: option-driven, ignored-with-warn at option resolution). Per-platform named re-exports land with the platform packages.
@@ -114,7 +114,7 @@ Pluggable extensions (APM/replay/etc.) remain the contract for non-core features
 | HTTP primitive | `HttpTransport` (type) | `httpRequest` (node:http/https) | fetch/XHR wrapper |
 | Capture store | `createMemoryCaptureStore`; `createFileCaptureStore(adapter)` | `createNodeFileStorageAdapter` | `createIndexedDbCaptureStore` (shared by browser + workers) |
 | Durable bundle queue | `BundleStore` (type) + `createDurableUploadPipeline` | `createNodeBundleStore` (fs files) | IndexedDB-backed |
-| Capture sources | `console`, `fetch`, `xhr`, `ws`, `sse`, `webtransport` (self-skip if absent) | `node:http` added via `installNetworkCapture({ additionalSources })` | DOM-specific sources |
+| Capture sources | `console`, `fetch`, `xhr`, `sendBeacon`, `ws`, `sse`, `webtransport` (self-skip if absent) | `node:http` added via `installNetworkCapture({ additionalSources })` | DOM-specific sources |
 | Process events | — | `process` (`uncaughtException`, `unhandledRejection`, `exit`, `warning`) | `window.onerror`, `unhandledrejection` |
 | System metrics | `TraceSample[]` sampler injected | `createNodeSystemMetricsSampler` | `performance.memory` etc. |
 | Clock / Scheduler / SystemProbe | injectable interfaces in core | real defaults (`Date.now`, `setInterval`, `os.*`) | platform defaults |
@@ -183,6 +183,21 @@ Pre-commit: run `pnpm lint && pnpm typecheck && pnpm check:cycles && pnpm test` 
 
 ## 6. Conventions (binding)
 
+- **`*.user` streams are the APPLICATION's, never the SDK's** (binding, product owner, verbatim):
+  > *"'events.user' is totally the wrong target for it. SDK code MUST NOT write anything into 'user.\*'
+  > streams. These are for user supplied data."*
+
+  `events.user` / `traces.user` carry ONLY what the app wrote through `client.event()` / `client.trace()`.
+  Anything the SDK OBSERVES gets its own stream — device input goes to **`input` → `input.json`**
+  (`createInputProvider` in `@bugsee/capture`), never `events.user`. If you find yourself reaching for a
+  `user.*` FileType from SDK code, register a new FileType instead (`packages/protocol/src/constants.ts`,
+  plus `upload-contract.schema.json` — a drift test enforces the pair — plus, for a stream a WebView emits,
+  `packages/webview/bridge-protocol.schema.json` and the webview `CAPABILITIES` list). Design §8.4.1.
+- **One definition of "sensitive field"**: `SENSITIVE_INPUT_MATCHERS` / `isSensitiveInput` in
+  `@bugsee/core` (`sensitive-input.ts`). `@bugsee/replay`'s masking floor, `@bugsee/webview`'s obscuring
+  source and the browser input source all derive from it. It was copied three ways once and the copies
+  drifted — an `autocomplete="CC-NUMBER"` field was legible in native video frames while replay masked it.
+  Shape it (prefix an element name, build a `:not()` guard) but never restate it.
 - **Git remote is GitHub** (migrated from Gerrit 2026-07-16): `origin = https://github.com/bugsee/bugsee-javascript` (sole remote), default branch `main`. Use the `gh` CLI / PR flow; direct `git push origin main` also works. A **GitHub Actions CI gate** (`.github/workflows/ci.yml`) runs lint → typecheck → cycles → per-package coverage on every push to `main` + every PR — keep it green.
 - **Commit trailer**: every commit ends with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - **TDD / mutator loop** (binding, §2): no implementation without a failing test first; for every new/changed entity inject a mutation, confirm a test fails, restore; never commit a mutation. Hard limit 10 iterations per entity — if a mutation survives, strengthen the test.
@@ -367,9 +382,11 @@ solid), in slices:
 - **CE2 — system TRACES breadth (DONE, `main`):** `createBrowserSystemTracesSampler` adds `connection`
   (navigator.connection), `orientation` (screen.orientation), `battery`/`charging` (cached BatteryManager)
   to the existing `ram_js_heap_*`. Android trace-name parity; degrades per-API.
-- **CE3 — input capture (DONE, `main`):** `createBrowserInputSource` (browser) — capture-phase,
-  passive, observe-only DOM listeners for click/keydown/change/submit/focusin → `events.user`, via the
-  runtime-agnostic `createUserEventsProvider` (capture, mirrors system-events-provider) gated by the new
+- **CE3 — input capture (DONE, `main`; re-based onto the `input` stream 2026-08-27):**
+  `createBrowserInputSource` (browser) — capture-phase, passive, observe-only DOM listeners for
+  pointerdown/pointerup/pointercancel/keydown/change/submit/focusin → the dedicated **`input`** stream
+  (`input.json`), via the runtime-agnostic `createInputProvider` (capture, mirrors
+  system-events-provider) gated by the new
   `captureInteractions` option (protocol). `describeTarget` produces a PII-safe target descriptor
   (tag/id/class/type/text/selector) and **masks** password fields + `[data-bugsee-hidden]` subtrees to
   `{tag, masked}`. PII discipline (multi-agent-reviewed): typed text is NEVER captured — plain printable

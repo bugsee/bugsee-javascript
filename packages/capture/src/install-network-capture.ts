@@ -4,14 +4,15 @@ import { createFetchInterceptor, type FetchTarget } from './fetch-interceptor';
 import { createNetworkInterceptor } from './network-interceptor';
 import { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
 import type { RequestDecoratable } from './request-decorator';
+import { createSendBeaconInterceptor, type SendBeaconTarget } from './send-beacon-interceptor';
 import { createSseInterceptor } from './sse-interceptor';
 import { createWebSocketInterceptor } from './web-socket-interceptor';
 import { createWebTransportInterceptor } from './web-transport-interceptor';
 import { createXhrInterceptor, type XhrTarget } from './xhr-interceptor';
 
 // One-call network capture wiring: build every cross-runtime network sub-interceptor (fetch / xhr /
-// websocket / sse / webtransport), aggregate them under the NetworkInterceptor umbrella, and create the
-// networkProvider subscribed to it. Each sub self-skips when its global is absent, so this is safe on
+// sendBeacon / websocket / sse / webtransport), aggregate them under the NetworkInterceptor umbrella,
+// and create the networkProvider subscribed to it. Each sub self-skips when its global is absent, so this is safe on
 // any runtime — no detection needed here. Platform-specific sources (e.g. Node's node:http) are folded
 // in via `additionalSources`. The provider is registered with the client (captureNetwork-gated; its
 // subscription activates the umbrella → the available subs); the returned umbrella is the single source
@@ -28,12 +29,15 @@ type NetworkUmbrella = Interceptor<Record<NetworkStage, NetworkEvent>>;
 export interface InstallNetworkCaptureOptions {
   /** Wall-clock source shared by the sub-interceptors; injectable. Default each uses Date.now. */
   now?: () => number;
-  /** SDK self-isolation predicate for request/response transports (fetch/xhr). Default X-Bugsee-Internal. */
+  /** SDK self-isolation predicate for the request/response transports (fetch/xhr/sendBeacon).
+   *  Default X-Bugsee-Internal. */
   isInternal?: (url: string, requestHeaders: Record<string, string>) => boolean;
   /** Override the fetch target (a custom/library fetch, or for tests). Default globalThis.fetch. */
   fetchTarget?: FetchTarget;
   /** Override the XMLHttpRequest target (a custom impl, or for tests). Default globalThis.XMLHttpRequest. */
   xhrTarget?: XhrTarget;
+  /** Override the sendBeacon target (a custom impl, or for tests). Default navigator.sendBeacon. */
+  sendBeaconTarget?: SendBeaconTarget;
   /** Extra platform-specific network sources to aggregate (e.g. Node's node:http interceptor). */
   additionalSources?: readonly NetworkSource[];
   /** Carrier host for the leaf singletons; injectable for tests. Default the real `globalThis`. */
@@ -81,6 +85,14 @@ export function installNetworkCapture(options: InstallNetworkCaptureOptions = {}
         ...httpOpts,
         ...bodyOpts,
         ...(options.xhrTarget !== undefined ? { target: options.xhrTarget } : {}),
+      }),
+    ),
+    // A request/response transport like fetch/xhr (so it takes httpOpts), but with no response to read:
+    // its body policy is the provider's shared gate, so it takes no bodyOpts.
+    leaf('sendbeacon', () =>
+      createSendBeaconInterceptor({
+        ...httpOpts,
+        ...(options.sendBeaconTarget !== undefined ? { target: options.sendBeaconTarget } : {}),
       }),
     ),
     leaf('websocket', () => createWebSocketInterceptor(nowOpt)),

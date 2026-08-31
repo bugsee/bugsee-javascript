@@ -5,6 +5,7 @@ import {
   DEFAULT_FILENAMES,
   MANIFEST_JSON_FILENAME,
   MANIFEST_VERSION,
+  NAME_SOURCE_ATTRIBUTE,
   REQUEST_JSON_FILENAME,
 } from './index';
 
@@ -40,5 +41,22 @@ describe('wire constants', () => {
 
   it('video default filename is the encoded pixel-capture stream (Electron)', () => {
     expect(DEFAULT_FILENAMES.video).toBe('video.webm');
+  });
+
+  // The DEDICATED input stream (mobile-canonical `<random>.input.json`). It exists so SDK-captured
+  // device input never has to be written into `events.user`, which is reserved for app-supplied
+  // `client.event()` data.
+  it('input default filename is the mobile-canonical input stream', () => {
+    expect(DEFAULT_FILENAMES.input).toBe('input.json');
+  });
+
+  it('input is a distinct stream from events.user (they never share a file name)', () => {
+    expect(DEFAULT_FILENAMES.input).not.toBe(DEFAULT_FILENAMES['events.user']);
+  });
+
+  // R2-8: the transaction-naming-provenance wire attribute lives here (not in @bugsee/performance) so
+  // @bugsee/node can read it off a Transaction without a runtime dependency on the opt-in APM extension.
+  it('the transaction name-source attribute is the wire key @bugsee/performance stamps', () => {
+    expect(NAME_SOURCE_ATTRIBUTE).toBe('bugsee.name_source');
   });
 });

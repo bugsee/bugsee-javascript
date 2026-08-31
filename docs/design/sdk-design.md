@@ -47,7 +47,7 @@ v3 unifies the public API with the **Bugsee Android SDK** (`/Users/alexeykarimov
 3. **`beforeSend` removed.** No Android equivalent. Event/report mutation goes through `setReportHandler({before, after})`; per-event drops via `ignoreErrors`/`denyUrls`/typed filters.
 4. **Capture hooks are methods, not options.** `beforeSend`/`beforeBreadcrumb`/`beforeBundle`/`reportHandler`/`beforeNetworkEvent`/`beforeLogEvent`/`attachments`/`lifecycleListener` **removed from `BugseeOptions`**; set imperatively via `setNetworkEventFilter`/`setLogEventFilter`/`setBreadcrumbFilter`/`setReportHandler`/`setAdditionalDataCapture`/`setLifecycleListener` (Android parity). Because `launch()` is synchronous, call these immediately after `launch()` to cover early events.
 5. **Consent API removed.** `grantConsent`/`revokeConsent`/`requireConsent`/`isCapturing` dropped (no Android equivalent; redundant with `launch`/`stop` for capture and `startBlackout`/`endBlackout` for visual). GDPR erasure stays via `deleteCollectedDataOnDevice()`.
-6. **Replay is option-driven, not an integration.** `replayIntegration()` **removed** from the public API. Visual capture is configured via the `replay: boolean | ReplayOptions` launch option (mobile DX). `@bugsee/replay` (rrweb) is **lazy-`import()`ed only when `replay` is truthy**, preserving the ≤15 KB errors-only budget; CDN keeps the `bugsee.replay.min.js` add-on. `addIntegration()` remains for custom/third-party integrations.
+6. **Replay is option-driven, not an integration — and ON BY DEFAULT.** `replayIntegration()` **removed** from the public API. Visual capture is configured via the `replay: boolean | ReplayOptions` launch option (mobile DX), which **defaults to enabled**, matching the iOS/Android SDKs; `replay: false` opts out. `@bugsee/replay` (rrweb) is **lazy-`import()`ed** and skipped entirely on `replay: false` — the lazy chunk plus the opt-out are what preserve the ≤15 KB errors-only budget for apps that want errors only, rather than a reason to default the feature off; CDN keeps the `bugsee.replay.min.js` add-on. `addIntegration()` remains for custom/third-party integrations.
 7. **`LogExceptionOptions` matches Android `ExceptionOptions`:** `{ domain, skipFrames, labels, includeVideo }`. `domain` is canonical (not `category`); `skipFrames` **added** (was missing); `includeVideo` kept (Android key) — on JS it gates **rrweb replay** inclusion.
 
 **Backend questions resolved (§18):**
@@ -293,7 +293,7 @@ packages/
 
 > **Platform packages MUST NOT register services at import time.** `@bugsee/{platform}` exports a `launch()` (or `register()`) function that imperatively builds the service list. This is the contract that keeps `sideEffects: false` safe across the monorepo and that makes tree-shaking predictable.
 
-This rule applies to integrations too: importing `@bugsee/replay` must NOT install rrweb hooks. In v3 (§0.5) the SDK lazy-`import()`s and registers the replay recorder internally only when the `replay` launch option is truthy — there is no public `replayIntegration()` to construct. Resolves **[R:mod C2]**.
+This rule applies to integrations too: importing `@bugsee/replay` must NOT install rrweb hooks. In v3 (§0.5) the SDK lazy-`import()`s and registers the replay recorder internally — on by default, and skipped entirely when the `replay` launch option is `false`. There is no public `replayIntegration()` to construct. Resolves **[R:mod C2]**.
 
 `@bugsee/protocol` and tier-0 packages are bound to zero runtime side effects (types + pure functions only).
 
@@ -629,7 +629,7 @@ Mapping from the old Sentry shape:
 - This is independent of mobile error codes `12003`/`12004` (server-side dedup) — we still upload, server still dedups, but we self-protect.
 
 **Buffer policy**:
-- One ring buffer per wire file type: `logs`, `network`, `events.user`, `events.system`, `breadcrumbs`, `traces.user`, `traces.system`, `errors`, `performance`.
+- One ring buffer per wire file type: `logs`, `network`, `events.user`, `events.system`, `input`, `breadcrumbs`, `traces.user`, `traces.system`, `errors`, `performance`.
 - Each buffer is capped (`maxBreadcrumbs` for breadcrumbs at 100; other buffers cap at `maxRecordingTime`-bounded count).
 - `logException` lands in `errors`; `log` lands in `logs`; `event`/`trace` route to `events.user`/`traces.user`. (Sentry's polymorphic `captureEvent` entry removed in v3, §0.5.)
 
@@ -702,7 +702,8 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | `traces.system` | `traces.system.json` | JSON array of `{timestamp, name, value}` |
 | `traces.user` | `traces.user.json` | same |
 | `events.system` | `events.system.json` | JSON array of `{timestamp, name, params?}` |
-| `events.user` | `events.user.json` | same |
+| `events.user` | `events.user.json` | same — **application-supplied only** (`client.event()`); SDK code never writes here |
+| `input` | `input.json` | JSON array of device-input events — see §8.4.1 |
 | `viewtree` | `viewtree.json` | DOM snapshot |
 | `log` | `logs.json` | `{timestamp, level (1-5), source, tag?, message}` |
 | `log.internal` | `internal.logs.json` | SDK self-diagnostics (only if `debug: true`) |
@@ -710,6 +711,48 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | `breadcrumbs` | `breadcrumbs` | **NO `.json` extension** — mobile contract |
 | `performance` | `performance.json` | `{transactions: [...]}` |
 | `crash` | `crash.json` | (JS: best-effort, mostly empty — no native dump) |
+
+#### 8.4.1 `input` — the device-input stream (and the `*.user` rule)
+
+**BINDING RULE.** `events.user` and `traces.user` are for **user-supplied data** — what the application
+writes through `client.event()` / `client.trace()`. **SDK code MUST NOT write anything into a `user.*`
+stream.** Mixing SDK-captured interactions into `events.user` makes an application's own analytics stream
+unreadable and unfilterable, and it is the reason this stream exists.
+
+SDK-captured device input goes to **`input` → `input.json`** instead. Mobile-canonical: Android's exporter
+emits `<random>.input.json`, and the viewer already has an `input` case that splits entries by `tool`
+(rendering 1 = touch, 2 = mouse, 3 = pen, ignoring everything else).
+
+Entry shape — the viewer's `RecordingTouchEvent`, so web and mobile render through one path:
+
+| field | meaning |
+| --- | --- |
+| `timestamp` | wall-clock ms |
+| `id` | groups the stages of one gesture |
+| `type` | `begin` \| `move` \| `end` for device input; the semantic name for `tool: Other` |
+| `x`, `y` | viewport CSS pixels (rounded) |
+| `force` | normalised pressure 0..1 |
+| `majorRadius`, `minorRadius` | contact geometry (touch/pen only) |
+| `tool` | `InputTool`: 0 Unknown, 1 Touch, 2 Mouse, 3 Pen, 4 Remote, 5 Other, 6 Eraser, **7 Key** |
+| `view`, `view_id`, `view_tag` | target class / id / tag (the viewer maps these to `target.class/.id/.tag`) |
+
+**SDK-ahead-of-contract fields.** The viewer's `RecordingTouchEvent` has no `button` and no keyboard
+representation, because it was shaped for mobile. Desktop input has both. The SDK therefore emits, as an
+ADDITIVE superset that JSON consumers ignore until the backend/viewer adopt it:
+
+- `button` — the device button (0 primary, 1 middle, 2 secondary…);
+- `key` — the key's identity, and only ever a NAMED key (printable characters are never recorded);
+- `ctrl`/`meta`/`alt`/`shift` — modifier flags on a key press;
+- `target` — the richer PII-safe descriptor (control type, label, component name, `masked`).
+
+Nothing may be moved OUT of the contract fields into these; they are additions only. `tool: 7` (Key) is
+Android's `TOOL_KEY` and is likewise ahead of the viewer's `RecordingTouchTool` enum.
+
+**Privacy.** The keystroke path never records printable characters, and it records NOTHING at all while
+focus is in a sensitive field — the definition being `@bugsee/core`'s single `SENSITIVE_INPUT_MATCHERS`
+list, shared with `@bugsee/replay`'s masking floor and `@bugsee/webview`'s obscuring source. Pointer
+COORDINATES over a sensitive field are still recorded (on the web the keypad is the OS keyboard, not page
+pixels, so a press on a password box leaks no content) with the target collapsed to `{ masked: true }`.
 
 ### 8.5 `request.json` schema (JS-emitted)
 
@@ -1206,7 +1249,7 @@ Mobile's `video` file type stays mobile-only. JS never emits `video`.
 
 ### 11.4 Runtime support
 
-Replay works only on browser + Electron renderer. It is enabled via the **`replay` launch option** — *not* a user-constructed integration (`replayIntegration()` was removed in v3, §0.5). The platform package **lazy-`import()`s `@bugsee/replay` only when `replay` is truthy**, so rrweb stays out of the base bundle and the ≤15 KB errors-only budget is preserved; bundlers code-split it into a separate chunk, and the CDN keeps the standalone `bugsee.replay.min.js` add-on. On non-browser runtimes the `replay` option is ignored with a one-time `debug.warn`.
+Replay works only on browser + Electron renderer. It is configured via the **`replay` launch option** — *not* a user-constructed integration (`replayIntegration()` was removed in v3, §0.5) — and is **on by default**; `replay: false` opts out. The platform package **lazy-`import()`s `@bugsee/replay`, and never evaluates that import on the `replay: false` path**, so rrweb stays out of the base bundle and an errors-only app keeps its ≤15 KB budget; bundlers code-split it into a separate chunk that recording apps fetch after launch, and the CDN keeps the standalone `bugsee.replay.min.js` add-on. On non-browser runtimes the `replay` option is ignored with a one-time `debug.warn`.
 
 ---
 
@@ -1805,7 +1848,7 @@ Driven by user review against the Bugsee Android SDK. Full rationale in §0.5.
 - **`beforeSend` removed** (no Android equivalent) — mutate via `setReportHandler({before})`.
 - **Capture hooks moved from options to methods**: `beforeNetworkEvent`/`beforeLogEvent`/`beforeBreadcrumb`/`reportHandler`/`attachments`/`lifecycleListener`/`beforeBundle` → `setNetworkEventFilter`/`setLogEventFilter`/`setBreadcrumbFilter`/`setReportHandler`/`setAdditionalDataCapture`/`setLifecycleListener`.
 - **Consent API removed** (`grantConsent`/`revokeConsent`/`requireConsent`/`isCapturing`); gate via `launch`/`stop`. Erasure stays via `deleteCollectedDataOnDevice()`.
-- **Replay is option-driven**: `replayIntegration()` removed from the public API; enabled via the `replay` launch option; `@bugsee/replay` lazy-`import()`ed only when truthy.
+- **Replay is option-driven and ON by default**: `replayIntegration()` removed from the public API; configured via the `replay` launch option (opt out with `replay: false`); `@bugsee/replay` lazy-`import()`ed, and not evaluated at all when it is `false`.
 - **`LogExceptionOptions`** now matches Android `ExceptionOptions`: `{ domain, skipFrames, labels, includeVideo }` (`domain` canonical; `skipFrames` added).
 - Sentry→Bugsee migration map **removed entirely**. We do not ship migration guides; Sentry and Firebase are internal design references only, not migration sources. (Error-semantics table is now §15.1.)
 

@@ -1,12 +1,13 @@
 import type { RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import { strFromU8, strToU8 } from '@bugsee/util';
-import type {
-  Bundle,
-  OutcomeCategory,
-  UploadHint,
-  UploadPipeline,
-  UploadResult,
+import {
+  type Bundle,
+  isUploadSettled,
+  type OutcomeCategory,
+  type UploadHint,
+  type UploadPipeline,
+  type UploadResult,
 } from './transport';
 import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
@@ -17,6 +18,32 @@ import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 // flush-then-exit best-effort delivery alone can lose it if the process dies before the upload lands.
 // The pipeline LOGIC is platform-agnostic over a BundleStore blob adapter; the storage (node:fs,
 // IndexedDB, …) is the platform's. Wrap a real UploadPipeline; it is itself an UploadPipeline.
+
+/**
+ * A {@link Bundle} that still knows which report it was assembled for.
+ *
+ * `Bundle.request` is the WIRE envelope (`RequestJson`) and deliberately carries no SDK-internal report
+ * id, so once a bundle is serialized into the durable queue nothing ties the blob back to the incident
+ * that produced it. Recovery needs exactly that link: a dead instance can leave BOTH a staged blob and
+ * the still-pending report marker for the SAME incident (the process died between the durable `put` and
+ * the upload settling), and the two must be reconciled per INCIDENT — not by any set-level proxy, which
+ * cannot tell a redundant blob from one nothing has ever uploaded. So the id rides in the durable FRAME
+ * HEADER (below), which is local storage, never the wire.
+ *
+ * Optional because a frame written by an older SDK has no id, and because bundles that never came from
+ * `submitReport` (a synthesized native-crash report) have no marker to reconcile against. Absent ⇒ the
+ * blob is treated as unreconcilable, i.e. always replayed and never freed.
+ *
+ * The consequence for a pre-id frame is exact and worth stating plainly: if that incident's report marker
+ * is still pending, the upgrade launch uploads it TWICE — once from the blob, once rebuilt from the marker
+ * — with differing payloads (the rebuild carries the recovery timestamp, since `bundle-assembler` sets
+ * `created_on` at assembly time), so nothing downstream collapses them. That is accepted rather than
+ * fixed: see {@link deserializeBundle}'s frame reader for why no fallback identity is sound.
+ */
+export interface IdentifiedBundle extends Bundle {
+  /** The `ReportingRequest.id` this bundle was assembled for; matches its {@link ReportMarker} key. */
+  readonly reportId?: string;
+}
 
 /** A durable blob store for serialized bundles, keyed by an opaque id. */
 export interface BundleStore {
@@ -34,9 +61,36 @@ export interface BundleStore {
 // store); the platform registers it so it is resolvable.
 export const BundleStoreToken = serviceToken<BundleStore>('bundleStore');
 
+/** How one {@link DurableUploadPipeline.recover} pass should deliver — and choose — the staged bundles. */
+export interface DurableRecoverOptions {
+  /**
+   * Deliver the recovered bundles through THIS pipeline instead of the wrapped one — the seam a caller
+   * uses to interpose a reconciling wrapper (`createMarkerAwareBundleReplay`). The durable bookkeeping
+   * (the blob is freed once the attempt settles, and never handed over twice) is unchanged.
+   */
+  via?: UploadPipeline;
+  /**
+   * Replay only the staged bundles this predicate accepts. The rest are HELD BACK — left staged, and
+   * withheld from the completion pump too — until a pass with no `select` releases them. Default: take
+   * everything (and release anything a previous selective pass held).
+   *
+   * This exists because the queue-vs-marker reconciliation is PER DEAD INSTANCE while an injected
+   * `bundleStore` is shared by all of them: each dead instance's pass must take only the blobs ITS markers
+   * cover (`MarkerAwareBundleReplay.pendingReportIds`), or a blob whose incident a LATER instance's marker
+   * leg is still about to rebuild gets uploaded unreconciled — the very duplicate being reconciled away.
+   * Holding the others back from the pump is what makes that airtight: the pump fires on every completion
+   * and would otherwise pick up the next staged blob mid-scan, through the plain pipeline.
+   */
+  select?: (bundle: IdentifiedBundle) => boolean;
+}
+
 export interface DurableUploadPipeline extends UploadPipeline {
-  /** Re-enqueue every bundle left persisted by a prior run (crash / kill / failed upload). */
-  recover(): void;
+  /**
+   * Re-enqueue every bundle left persisted by a prior run (crash / kill / failed upload), applying the
+   * retention bounds first. A bundle already handed over in this process is never handed over again, so
+   * several selective passes followed by an unfiltered one together replay each blob exactly once.
+   */
+  recover(options?: DurableRecoverOptions): void;
 }
 
 export interface DurableUploadPipelineOptions {
@@ -83,7 +137,7 @@ const DEFAULT_RETENTION: Required<DurableQueueRetention> = {
 
 // Durable frame: [4-byte LE header length][header JSON (utf8)][bundle body bytes]. The header carries
 // the request.json + fileName so the full Bundle can be reconstructed for re-upload from the blob.
-export function serializeBundle(bundle: Bundle, firstSeenMs?: number): Uint8Array {
+export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number): Uint8Array {
   const header = strToU8(
     JSON.stringify({
       request: bundle.request,
@@ -91,6 +145,10 @@ export function serializeBundle(bundle: Bundle, firstSeenMs?: number): Uint8Arra
       // When the bundle was first staged, so the TTL can be applied at recovery without a `stat` on the
       // BundleStore contract (which IndexedDB would have to fake anyway).
       ...(firstSeenMs !== undefined ? { firstSeenMs } : {}),
+      // Which INCIDENT this blob is (see IdentifiedBundle): the only thing that lets recovery tell a blob
+      // already covered by a pending report marker from one nothing has ever uploaded. Frame-local — it is
+      // not part of `request`, so it never reaches the collector.
+      ...(bundle.reportId !== undefined ? { reportId: bundle.reportId } : {}),
     }),
   );
   const out = new Uint8Array(4 + header.length + bundle.body.length);
@@ -100,12 +158,12 @@ export function serializeBundle(bundle: Bundle, firstSeenMs?: number): Uint8Arra
   return out;
 }
 
-export function deserializeBundle(bytes: Uint8Array): Bundle {
+export function deserializeBundle(bytes: Uint8Array): IdentifiedBundle {
   return readFrame(bytes).bundle;
 }
 
 /** Parse a durable frame into its bundle plus the staging metadata the retention policy needs. */
-function readFrame(bytes: Uint8Array): { bundle: Bundle; firstSeenMs?: number } {
+function readFrame(bytes: Uint8Array): { bundle: IdentifiedBundle; firstSeenMs?: number } {
   const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
     0,
     true,
@@ -114,12 +172,26 @@ function readFrame(bytes: Uint8Array): { bundle: Bundle; firstSeenMs?: number } 
     request: RequestJson;
     fileName: string;
     firstSeenMs?: number;
+    reportId?: string;
   };
   return {
     bundle: {
       request: header.request,
       fileName: header.fileName,
       body: bytes.subarray(4 + headerLength),
+      // A frame written before the id existed simply has none, and is therefore never reconciled against a
+      // marker. Be precise about the cost: for an incident whose marker is STILL PENDING that is not "a
+      // possible duplicate" but a GUARANTEED one, once per such incident, on the single launch that
+      // upgrades across this SDK version. Accepted, deliberately, because:
+      //   • the only candidate fallback key is the request's content (type/summary/severity/source) —
+      //     `created_on` is stamped at assembly time, so a rebuild never matches the blob's — and two
+      //     genuinely distinct incidents routinely share all of it (the same bug crashing twice). Keying
+      //     on it converts a bounded, one-time duplicate into a SILENT LOSS of a real crash, which is the
+      //     one outcome this whole policy exists to prevent;
+      //   • the window is a single launch and self-clearing: every frame this SDK writes carries an id;
+      //   • a frame with no id also covers bundles that never had a marker at all (a synthesized native
+      //     crash), for which replay-and-never-reconcile is simply correct.
+      ...(typeof header.reportId === 'string' ? { reportId: header.reportId } : {}),
     },
     ...(typeof header.firstSeenMs === 'number' ? { firstSeenMs: header.firstSeenMs } : {}),
   };
@@ -148,38 +220,44 @@ export function createDurableUploadPipeline(
     }
   };
 
-  /**
-   * Whether the durable copy should be dropped after an upload attempt.
-   *
-   * Delivered → nothing left to keep. REFUSED → keeping it means uploading it again at the next launch,
-   * getting the same refusal, and repeating for the life of the installation: a self-DoS against our own
-   * collector that no amount of retention TTL fixes, because the bundle is re-staged every time. Anything
-   * else (5xx, timeout, offline) is exactly what the durable queue exists to carry forward.
-   *
-   * Android parity: `CommunicationErrorClassifier.java:14-33` + `ReportUploadExecutor.java:182-199`.
-   */
-  const settled = (result: UploadResult): boolean => result.ok || result.permanent === true;
-
   // Every id this process has really ATTEMPTED — i.e. handed to the pipeline and not turned away for
   // want of capacity. The pump skips them, which is what makes it terminate: a bundle that failed for
   // a reason worth retrying (5xx, offline) is exactly what the durable queue carries to the next
   // launch, and retrying it again immediately would only spin.
   const attempted = new Set<string>();
 
+  // Staged ids a SELECTIVE recover() pass is currently HOLDING BACK for a later one (see
+  // DurableRecoverOptions.select). Consulted ONLY by the pump, which runs on every completion and would
+  // otherwise hand a later instance's blob over unreconciled mid-scan.
+  //
+  // The invariant is exact, and getting it wrong cost a report: an id is in `deferred` iff it has been
+  // held back and NOT YET HANDED OVER. `recover()` itself ignores the set (so the unfiltered pass that
+  // closes the scan takes every held-back blob), but it must also RETRACT the id as it hands it over —
+  // otherwise a blob released by that pass and then refused for CAPACITY (`attempted.delete` below, so
+  // it is eligible again) stays marked deferred, the pump gate `attempted.has(id) || deferred.has(id)`
+  // skips it for the rest of the launch, and the starvation fix the pump exists to be is disabled for
+  // precisely the blob that needed it.
+  const deferred = new Set<string>();
+
   /** Was this refused for CAPACITY (worth handing back as soon as a slot frees) rather than failed? */
   const refusedForCapacity = (result: UploadResult): boolean =>
     !result.ok && result.error?.code === QUEUE_OVERFLOW_CODE;
 
-  const attempt = (id: string, bundle: Bundle, hint?: UploadHint): Promise<UploadResult> => {
+  const attempt = (
+    id: string,
+    bundle: Bundle,
+    hint?: UploadHint,
+    via: UploadPipeline = pipeline,
+  ): Promise<UploadResult> => {
     attempted.add(id);
-    return pipeline.enqueue(bundle, hint).then((result) => {
+    return via.enqueue(bundle, hint).then((result) => {
       if (refusedForCapacity(result)) {
         // It never occupied a slot, so nothing has freed and there is nothing to pump — but it was
         // not really attempted either, so it stays eligible for whenever a slot does free.
         attempted.delete(id);
         return result;
       }
-      if (settled(result)) {
+      if (isUploadSettled(result)) {
         removeSafe(id); // delivered, or refused — either way there is nothing left to retry
       }
       // This upload held a slot and has now released it: hand the next staged bundle over.
@@ -207,26 +285,116 @@ export function createDurableUploadPipeline(
    * own admission limit.
    */
   const pump = (): void => {
-    for (const id of store.list()) {
-      if (attempted.has(id)) continue;
-      const bytes = store.read(id);
-      if (bytes === undefined) continue; // removed between list() and read()
-      let bundle: Bundle;
-      try {
-        bundle = readFrame(bytes).bundle;
-      } catch (error) {
-        onError(error);
-        removeSafe(id); // unparseable leftover — purge so it can't wedge the pump forever
-        continue;
+    // The store is a PLATFORM component (node:fs, IndexedDB, or one the integrator injected): its list/read
+    // can throw on a permission error, a `pending` path that is not a directory, a closed database. The pump
+    // runs inside an upload's completion handler, so an escaping throw becomes an unhandled rejection.
+    try {
+      for (const id of store.list()) {
+        if (attempted.has(id) || deferred.has(id)) continue;
+        const bytes = store.read(id);
+        if (bytes === undefined) continue; // removed between list() and read()
+        let bundle: Bundle;
+        try {
+          bundle = readFrame(bytes).bundle;
+        } catch (error) {
+          onError(error);
+          removeSafe(id); // unparseable leftover — purge so it can't wedge the pump forever
+          continue;
+        }
+        replay(id, bundle);
+        return;
       }
-      void attempt(id, bundle);
-      return;
+    } catch (error) {
+      onError(error);
     }
   };
 
   // Re-upload a recovered bundle; drop the durable copy once it is delivered — or refused.
-  const replay = (id: string, bundle: Bundle): void => {
-    void attempt(id, bundle);
+  //
+  // The `.catch` is load-bearing: `recover()` and `pump()` are fire-and-forget, so a pipeline that REJECTS
+  // (rather than resolving `{ok:false}`) escapes as an UNHANDLED REJECTION out of launch — which on node
+  // is a process-level event the host may be configured to treat as fatal. Recovery must never do that.
+  // The blob is simply kept, exactly as for a retryable failure, and retried on the next launch.
+  const replay = (id: string, bundle: Bundle, via?: UploadPipeline): void => {
+    void attempt(id, bundle, undefined, via).catch(onError);
+  };
+
+  /** One recovery pass: apply the retention bounds to every staged blob, then hand the survivors over. */
+  const recoverPass = (options?: DurableRecoverOptions): void => {
+    const at = now();
+    const pending: Array<{
+      id: string;
+      bundle: IdentifiedBundle;
+      firstSeenMs: number;
+      bytes: number;
+    }> = [];
+
+    for (const id of store.list()) {
+      const bytes = store.read(id);
+      if (bytes === undefined) {
+        continue; // removed between list() and read()
+      }
+      let frame: { bundle: IdentifiedBundle; firstSeenMs?: number };
+      try {
+        frame = readFrame(bytes);
+      } catch (error) {
+        onError(error);
+        removeSafe(id); // unparseable leftover — purge so it can't wedge recovery forever
+        continue;
+      }
+      // A blob written before `firstSeenMs` existed reads as "staged now". Treating unknown as the epoch
+      // would delete every pending bundle on the upgrade launch — losing exactly the crash reports the
+      // user upgraded to get. Such a bundle is still bounded by the count and byte caps.
+      pending.push({
+        id,
+        bundle: frame.bundle,
+        firstSeenMs: frame.firstSeenMs ?? at,
+        bytes: bytes.length,
+      });
+    }
+
+    // Oldest first, so eviction takes the least valuable end: a fresh crash report beats a week-old one
+    // that has already failed to upload many times.
+    pending.sort((a, b) => a.firstSeenMs - b.firstSeenMs);
+
+    let totalBytes = pending.reduce((sum, p) => sum + p.bytes, 0);
+    let count = pending.length;
+    const kept: typeof pending = [];
+    for (const item of pending) {
+      const expired = at - item.firstSeenMs > retention.maxAgeMs;
+      const overCount = count > retention.maxBundles;
+      const overBytes = totalBytes > retention.maxBytes;
+      if (expired || overCount || overBytes) {
+        // Announced, not silent: a bundle that vanishes without an outcome is indistinguishable from one
+        // that was delivered.
+        pipeline.drop(
+          expired ? 'retention_expired' : overCount ? 'retention_count' : 'retention_bytes',
+          'issue',
+        );
+        removeSafe(item.id);
+        count -= 1;
+        totalBytes -= item.bytes;
+        continue;
+      }
+      kept.push(item);
+    }
+
+    for (const item of kept) {
+      // The retention pass above deliberately spans EVERY staged blob — it is a global bound, and a
+      // bundle this process already tried is exactly the kind that would otherwise sit forever. Only the
+      // hand-over is filtered: never twice (the same rule `pump` follows), and never one another pass owns.
+      if (attempted.has(item.id)) {
+        continue;
+      }
+      if (options?.select?.(item.bundle) === false) {
+        deferred.add(item.id); // another pass's — held back from this one AND from the pump
+        continue;
+      }
+      // Handed over ⇒ no longer held back. Without this the pump's gate keeps skipping it after a
+      // capacity refusal hands it back (see `deferred` above).
+      deferred.delete(item.id);
+      replay(item.id, item.bundle, options?.via);
+    }
   };
 
   return {
@@ -240,62 +408,14 @@ export function createDurableUploadPipeline(
       return attempt(id, bundle, hint);
     },
 
-    recover(): void {
-      const at = now();
-      const pending: Array<{ id: string; bundle: Bundle; firstSeenMs: number; bytes: number }> = [];
-
-      for (const id of store.list()) {
-        const bytes = store.read(id);
-        if (bytes === undefined) {
-          continue; // removed between list() and read()
-        }
-        let frame: { bundle: Bundle; firstSeenMs?: number };
-        try {
-          frame = readFrame(bytes);
-        } catch (error) {
-          onError(error);
-          removeSafe(id); // unparseable leftover — purge so it can't wedge recovery forever
-          continue;
-        }
-        // A blob written before `firstSeenMs` existed reads as "staged now". Treating unknown as the epoch
-        // would delete every pending bundle on the upgrade launch — losing exactly the crash reports the
-        // user upgraded to get. Such a bundle is still bounded by the count and byte caps.
-        pending.push({
-          id,
-          bundle: frame.bundle,
-          firstSeenMs: frame.firstSeenMs ?? at,
-          bytes: bytes.length,
-        });
-      }
-
-      // Oldest first, so eviction takes the least valuable end: a fresh crash report beats a week-old one
-      // that has already failed to upload many times.
-      pending.sort((a, b) => a.firstSeenMs - b.firstSeenMs);
-
-      let totalBytes = pending.reduce((sum, p) => sum + p.bytes, 0);
-      let count = pending.length;
-      const kept: typeof pending = [];
-      for (const item of pending) {
-        const expired = at - item.firstSeenMs > retention.maxAgeMs;
-        const overCount = count > retention.maxBundles;
-        const overBytes = totalBytes > retention.maxBytes;
-        if (expired || overCount || overBytes) {
-          // Announced, not silent: a bundle that vanishes without an outcome is indistinguishable from one
-          // that was delivered.
-          pipeline.drop(
-            expired ? 'retention_expired' : overCount ? 'retention_count' : 'retention_bytes',
-            'issue',
-          );
-          removeSafe(item.id);
-          count -= 1;
-          totalBytes -= item.bytes;
-          continue;
-        }
-        kept.push(item);
-      }
-
-      for (const item of kept) {
-        replay(item.id, item.bundle);
+    recover(options?: DurableRecoverOptions): void {
+      // Same reason as `pump` above, and it matters more here: recover() is called STRAIGHT FROM LAUNCH, so
+      // an unreadable store would throw out of `Bugsee.launch()` and take the host application's startup
+      // with it. Recovery is best-effort by contract — it reports and stands down.
+      try {
+        recoverPass(options);
+      } catch (error) {
+        onError(error);
       }
     },
 

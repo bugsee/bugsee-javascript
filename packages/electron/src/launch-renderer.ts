@@ -6,7 +6,8 @@
 // Call it from renderer code:
 //
 //   import { launchRenderer } from '@bugsee/electron/renderer';
-//   launchRenderer(appToken, { replay: true });   // replay rides the same stream (D8 default video)
+//   launchRenderer(appToken, {});                 // replay is ON by default and rides the same stream (D8);
+//                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';

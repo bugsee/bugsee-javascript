@@ -13,6 +13,7 @@ import {
   CaptureStoreToken,
   type DetectionProvider,
 } from './contracts';
+import type { IdentifiedBundle } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
@@ -673,6 +674,52 @@ describe('createClient — report identity is snapshotted at submit time', () =>
     const assembled = assembledFrom(enqueue);
     expect(assembled.attrs).toEqual(marker.attributes);
     expect(assembled.email).toBe(marker.userIdentifier);
+  });
+
+  it('stamps the assembled bundle with the SAME report id its recovery marker is keyed by', async () => {
+    // The durable queue writes this id into its frame header; recovery matches a staged blob to a still-
+    // pending marker on it. If the two disagree, the blob is unreconcilable and the incident is reported
+    // twice (or, worse, a blob is mistaken for one that was already delivered).
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+
+    await client.logException(new Error('boom'));
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const bundle = enqueue.mock.calls[0]?.[0] as IdentifiedBundle;
+    expect(bundle.reportId).toBe(marker.request.id);
+    expect(bundle.reportId).toBeTypeOf('string');
+    expect(JSON.stringify(bundle.request)).not.toContain(bundle.reportId); // never on the wire
+  });
+
+  it('stamps the ReportingRequest id, not the nested Report id, when the two differ', async () => {
+    // `createReportingRequest` happens to set both to the same value, but the marker store — and
+    // submitReport's clear — are keyed on the ReportingRequest id alone. Pinning the field, not the
+    // coincidence, is what keeps a hand-built request (a detection provider's) reconcilable.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    const { provider, fire } = capturingDetector('crash');
+    client.addDetectionProvider(provider);
+    client.launch();
+
+    const base = createReportingRequest({ source: { type: 'crash' }, id: 'request-id' });
+    fire({ ...base, report: { ...base.report, id: 'nested-report-id' } });
+
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect((enqueue.mock.calls[0]?.[0] as IdentifiedBundle).reportId).toBe('request-id');
+    expect((put.mock.calls[0]?.[0] as ReportMarker).request.id).toBe('request-id'); // the same key
   });
 
   it('snapshots a DETECTION report at submit too', async () => {

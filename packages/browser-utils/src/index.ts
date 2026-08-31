@@ -41,11 +41,7 @@ export {
   markerDatabaseName,
   splitInstanceKey,
 } from './instance-coexistence';
-export {
-  type RecoverDeadInstancesOptions,
-  recoverDeadInstances,
-  recoverSiblingBundleQueue,
-} from './recover-dead-instances';
+export { recoverSiblingBundleQueue } from './recover-dead-instances';
 export {
   createWebLockLiveness,
   type LockManagerLike,

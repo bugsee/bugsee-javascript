@@ -14,7 +14,7 @@ import {
   type OptionsContainer,
   setCarrierClient,
 } from '@bugsee/core';
-import { BugseeOption, type NetworkEvent, type NetworkStage } from '@bugsee/protocol';
+import { BugseeOption, type NetworkEvent, type NetworkStage, sanitizeUrl } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetworkCaptureProvider } from './network-provider';
 
@@ -587,6 +587,114 @@ describe('createNetworkCaptureProvider', () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------------
+// FINDING 2 (solid-spa F-1) — investigated, NOT changed. A user network filter's veto is applied per
+// NetworkStage-ENTRY, not per logical request: vetoing the `complete` stage does not retroactively or
+// prospectively veto the `before` stage of the SAME request (shared `id`), so `before`'s URL/request
+// body still ships. Verified this is Android-canonical (CLAUDE.md's binding parity target), not a JS-only
+// defect: Android's NetworkEventsProducer dispatches `postBeforeEvent`/`postCompleteEvent` as two
+// SEPARATE NetworkEvent objects (sharing only `getId()`), each independently run through
+// BugseeCaptureDataProviderNetwork#filterEntry — there is no id-based lookup/merge before filtering, so
+// Android's own EventFilter<NetworkEvent> has exactly the same per-stage granularity this test documents.
+// A filter author who wants a whole-request veto must recognize and drop every stage sharing an `id`
+// themselves (this provider does not do it for them, matching Android).
+// ---------------------------------------------------------------------------------------------------
+describe('network filter veto granularity — per stage-entry, not per request (Android parity)', () => {
+  it('vetoing the "complete" stage does NOT suppress the "before" stage of the same request', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    // Vetoes ONLY the response/complete phase — e.g. "hide the response, but not what was sent".
+    filters.network = (e) => (e.type === 'complete' ? null : e);
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'before',
+      netEvent({
+        id: 'shared-req',
+        type: 'before',
+        url: 'https://api/x?token=SECRET',
+        custom: { headers: { 'content-type': 'text/plain' }, body: 'request-body' },
+      }),
+    );
+    source.emit('complete', netEvent({ id: 'shared-req', type: 'complete', status: 200 }));
+    const entries = await drainNetwork(store);
+    // The "complete" entry was vetoed…
+    expect(entries?.map((e) => (e.data as NetworkEvent).type)).toEqual(['before']);
+    // …but the "before" entry — same request id — still carries its URL and body verbatim (raw, since a
+    // filter is installed and therefore supersedes the default sanitizer too, per the XOR rule).
+    const before = entries?.[0]?.data as NetworkEvent;
+    expect(before.id).toBe('shared-req');
+    expect(before.url).toBe('https://api/x?token=SECRET');
+    expect(before.custom?.body).toBe('request-body');
+  });
+
+  it('a filter CAN achieve a whole-request veto by tracking ids itself across stages', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    const vetoedIds = new Set<string>();
+    filters.network = (e) => {
+      if (e.type === 'complete' && e.status === 403) {
+        vetoedIds.add(e.id);
+        return null;
+      }
+      return vetoedIds.has(e.id) ? null : e;
+    };
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    // Stage order matters for this hand-rolled example: the veto is only learned once `complete` (with
+    // status 403) is SEEN, so a `before` stage arriving BEFORE it is not retroactively covered — which is
+    // exactly the per-stage granularity the test above documents, just worked around by the caller.
+    source.emit('complete', netEvent({ id: 'blocked-req', type: 'complete', status: 403 }));
+    source.emit('before', netEvent({ id: 'blocked-req', type: 'before' }));
+    const entries = await drainNetwork(store);
+    expect(entries).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// FINDING 3 (solid-spa finding C) — documentation only, behaviour unchanged (deliberate Android XOR
+// rule; see the doc comments on `onStart` and `createNetworkCaptureProvider` above). This test guards
+// that the (now-documented) behaviour itself doesn't drift: installing ANY network filter — even a pure
+// pass-through identity filter that redacts nothing — disables the default PII sanitizer, silently, for
+// every network entry from then on.
+// ---------------------------------------------------------------------------------------------------
+describe('network filter XOR — installing a filter silently disables the default sanitizer (documented, not changed)', () => {
+  it('a no-op passthrough filter still turns off the default sanitizer (PII ships unredacted)', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    filters.network = (e) => e; // does NOT redact anything itself
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit(
+      'complete',
+      netEvent({
+        url: 'https://api/x?api_key=QUERYAPIKEYSECRET',
+        custom: {
+          headers: { authorization: 'secret-token', 'content-type': 'application/json' },
+          body: '{"password":"x"}',
+        },
+      }),
+    );
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    // None of the default redactions ran: URL, headers, and body all ship exactly as captured.
+    expect(captured.url).toBe('https://api/x?api_key=QUERYAPIKEYSECRET');
+    expect(captured.custom?.headers).toEqual({
+      authorization: 'secret-token',
+      'content-type': 'application/json',
+    });
+    expect(captured.custom?.body).toBe('{"password":"x"}');
+  });
+});
+
 describe('network sanitize — custom.error as the ONLY dirty field', () => {
   it('redacts it even when url, headers and body are all clean', async () => {
     // Review finding: no test covered `custom.error` being the sole field needing redaction, and the
@@ -606,5 +714,133 @@ describe('network sanitize — custom.error as the ONLY dirty field', () => {
     );
     const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
     expect(captured.custom?.error).toBe('failed http://u:%3Credacted%3E@h/x');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// URL ABSOLUTIZATION. Sources record whatever the caller passed, so a same-origin `fetch('/api/x')` was
+// stored as `/api/x` while a cross-origin call was stored in full. The provider is the ONE choke point
+// every mechanism passes through (fetch/xhr/sse/sendBeacon/ws/webtransport, and node:http via
+// `additionalSources`), so absolutizing here covers all of them and anything added later.
+//
+// These tests drive the REAL integration path — the provider reads the ambient globals, exactly as it
+// does in a browser — so the realm is installed on `globalThis` and torn down after. `absolutize-url.
+// test.ts` covers realm SELECTION against injected realm objects; what is proven here is the WIRING:
+// which branch it runs on, and where it sits relative to the sanitizer and the user filter.
+// ---------------------------------------------------------------------------------------------------
+const withPageRealm = async <T>(baseURI: string, run: () => Promise<T>): Promise<T> => {
+  const g = globalThis as unknown as { document?: unknown };
+  const had = 'document' in g;
+  const prev = g.document;
+  g.document = { baseURI };
+  try {
+    return await run();
+  } finally {
+    if (had) {
+      g.document = prev;
+    } else {
+      delete g.document;
+    }
+  }
+};
+
+describe('network URL absolutization', () => {
+  const emitAndDrain = async (
+    event: NetworkEvent,
+    opts: OptionsContainer = options,
+  ): Promise<NetworkEvent> => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(opts);
+    source.emit('complete', event);
+    return (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+  };
+
+  it('stores a same-origin relative URL with protocol, host and port', async () => {
+    const captured = await withPageRealm('http://localhost:5398/index.html', () =>
+      emitAndDrain(netEvent({ url: '/api/scenario/get' })),
+    );
+    expect(captured.url).toBe('http://localhost:5398/api/scenario/get');
+  });
+
+  it('does not mutate the source event', async () => {
+    const event = netEvent({ url: '/api/scenario/get' });
+    await withPageRealm('http://localhost:5398/index.html', () => emitAndDrain(event));
+    expect(event.url).toBe('/api/scenario/get');
+  });
+
+  it('leaves an already-absolute cross-origin URL byte-identical', async () => {
+    const captured = await withPageRealm('http://localhost:5398/index.html', () =>
+      emitAndDrain(netEvent({ url: 'http://localhost:5399/nope' })),
+    );
+    expect(captured.url).toBe('http://localhost:5399/nope');
+  });
+
+  it('applies on the branch where the default sanitizer is DISABLED', async () => {
+    // Absolutization is normalization, not redaction, so it runs before the filter/sanitizer XOR rather
+    // than inside `sanitize()`. Putting it inside would leave this branch storing bare paths.
+    const captured = await withPageRealm('https://app.example.com/', () =>
+      emitAndDrain(
+        netEvent({ url: '/api/x' }),
+        createOptionsContainer({ [BugseeOption.CaptureNetworkDefaultSanitizer]: false }),
+      ),
+    );
+    expect(captured.url).toBe('https://app.example.com/api/x');
+  });
+
+  it('hands the ABSOLUTE url to a user network filter', async () => {
+    // The filter supersedes the sanitizer (XOR), so if absolutization sat inside `sanitize()` a user
+    // filter would both see and store a bare path — and origin-based allow/deny rules could not work.
+    const seen: string[] = [];
+    const filters = createFilterStore(vi.fn());
+    filters.network = (e) => {
+      seen.push(e.url as string);
+      return e;
+    };
+    publishFilters(filters);
+    const captured = await withPageRealm('https://app.example.com/', () =>
+      emitAndDrain(netEvent({ url: '/api/x' })),
+    );
+    expect(seen).toEqual(['https://app.example.com/api/x']);
+    expect(captured.url).toBe('https://app.example.com/api/x');
+  });
+
+  it('leaves the URL relative on a location-less host (node/bun/deno server capture)', async () => {
+    // node:http incoming requests fold into this same provider via `additionalSources` and carry a
+    // path-only target. There is no client origin on a server, and inventing one would be a worse
+    // defect than the missing one — so `/api/x` must stay `/api/x`.
+    expect((globalThis as unknown as { document?: unknown }).document).toBeUndefined();
+    expect((globalThis as unknown as { location?: unknown }).location).toBeUndefined();
+    expect((await emitAndDrain(netEvent({ url: '/api/x' }))).url).toBe('/api/x');
+  });
+
+  it('survives a non-string url without dropping the entry', async () => {
+    const captured = await withPageRealm('https://app.example.com/', () =>
+      emitAndDrain(netEvent({ url: undefined as unknown as string })),
+    );
+    expect(captured).toBeDefined();
+    expect(captured.url).toBeUndefined();
+  });
+
+  // PRIVACY ORDERING — the reason absolutization runs BEFORE `sanitizeUrl` and not after.
+  // `sanitizeUrl` scans the PATH for `;`-delimited matrix parameters, and it locates the path as "the
+  // first `/` at or after the authority". On a schemeless, path-relative target the authority window is
+  // empty, so the path is taken to start at the first `/` IN THE STRING — which is AFTER the matrix
+  // parameter. The secret then falls outside the scan window and ships in the clear. Absolutizing first
+  // gives the sanitizer a real authority, the path window starts where the path really starts, and the
+  // secret is redacted. Verified against the current sanitizer:
+  //   sanitizeUrl('products;api_key=S/list')                     -> unchanged (LEAK)
+  //   sanitizeUrl('https://app.example.com/products;api_key=S/list') -> api_key=<redacted>
+  it('redacts a path secret that the sanitizer could not see while the URL was relative', async () => {
+    const raw = 'products;api_key=MATRIXPATHSECRET/list';
+    // Establish the "before" behaviour as part of the test, so this cannot quietly stop being a proof.
+    expect(sanitizeUrl(raw)).toBe(raw); // the sanitizer alone does NOT catch it
+    const captured = await withPageRealm('https://app.example.com/shop/', () =>
+      emitAndDrain(netEvent({ url: raw })),
+    );
+    expect(captured.url).toBe('https://app.example.com/shop/products;api_key=%3Credacted%3E/list');
+    expect(captured.url).not.toContain('MATRIXPATHSECRET');
   });
 });

@@ -1,6 +1,7 @@
 import {
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
+  parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
 import {
@@ -41,6 +42,7 @@ import {
   ReportMarkerStoreToken,
   recoverReports,
   resolveLaunchOptions,
+  runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
   TransportToken,
@@ -299,7 +301,10 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // Capture providers: console→log + network (fetch/ws; xhr/sse/webtransport self-skip where absent).
   const consoleInterceptor = getOrCreateInterceptor(
     'console',
-    () => createConsoleInterceptor(),
+    // A worker runs in the SAME engine as the page that spawned it, so it needs the browser tier's
+    // dialect-dispatching parser too — core's default is V8-only and yields zero frames for the
+    // `fn@loc` stacks Firefox and Safari produce, silently dropping `console.trace()`'s stack.
+    () => createConsoleInterceptor({ stackParser: parseStack }),
     carrier,
   );
   client.addCaptureProvider(createLogCaptureProvider(consoleInterceptor));
@@ -317,41 +322,56 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   client.launch();
 
-  // Recovery on the next activation: re-upload any bundle a prior activation assembled + persisted but didn't
-  // deliver (e.g. the worker was killed mid-upload). Waits for the IndexedDB mirror to hydrate so list() sees
-  // the leftovers; a synchronous (injected) store recovers at once.
-  if (durable !== undefined) {
-    void ((bundleStore as { whenReady?: Promise<void> }).whenReady ?? Promise.resolve()).then(() =>
-      durable.recover(),
-    );
-  }
-  // Then recover any DEAD sibling instance (a crashed/terminated activation or a crashed tab on the same
-  // origin), each under its own Web Lock so a LIVE sibling's data is never touched: re-upload its leftover
-  // bundles directly AND — when recovery is on — rebuild + deliver its detected incidents from its preserved
-  // capture chunks (core `recoverReports` over the sibling's prefixed views; `currentGeneration: -1` ⇒ every
-  // generation is eligible). A no-op without coexistence. Reads the shared stores directly (no mirror hydration).
-  void coexistence.recoverDeadSiblings({
-    uploadPipeline: baseUploadPipeline,
-    ...(recoverEnabled
-      ? {
-          recoverReportsForViews: async (deadCaptureView, deadMarkerView) => {
-            const markers = createPersistentReportMarkerStore(deadMarkerView, options.onError);
-            await markers.whenReady;
-            await recoverReports({
-              backend: createIdbChunkBackend(deadCaptureView, {
-                generation: -1,
-                cleanOtherGenerations: false,
-                ...(options.onError !== undefined ? { onError: options.onError } : {}),
-              }),
-              currentGeneration: -1,
-              markers,
-              context: () => ({ appToken, environment: getEnvironment(), clock }),
-              uploadPipeline: baseUploadPipeline,
-              ...(options.onError !== undefined ? { onError: options.onError } : {}),
-            });
-          },
-        }
-      : {}),
+  // Recovery on the next activation: re-upload any bundle a prior activation assembled + persisted but
+  // didn't deliver (e.g. the worker was killed mid-upload).
+  //
+  // The SEQUENCE — own queue, dead-sibling scan, release pass — is core's `runLaunchRecovery`: ONE
+  // definition, which the node and browser tiers had copied verbatim. This tier supplies only what is
+  // genuinely its own: the IndexedDB scan, and the mirror-hydration promise below.
+  //
+  // The queue is only readable once its mirror has hydrated — an IndexedDB-backed store serves list()
+  // from RAM, so reading it earlier simply sees nothing. A synchronous (injected) store has none.
+  const queueReady = (bundleStore as { whenReady?: Promise<void> } | undefined)?.whenReady;
+  // The scan: every DEAD sibling instance (a crashed/terminated activation or a crashed tab on the same
+  // origin), each under its own Web Lock so a LIVE sibling's data is never touched — re-upload its
+  // leftover bundles directly AND, when recovery is on, rebuild + deliver its detected incidents from
+  // its preserved capture chunks (core `recoverReports` over the sibling's prefixed views;
+  // `currentGeneration: -1` ⇒ every generation is eligible). A no-op without coexistence. Reads the
+  // shared stores directly (no mirror hydration). The coordinator hands this callback the sibling's
+  // hydrated marker store plus the incidents its bundle-queue leg already settled with, so an incident
+  // that left BOTH a staged bundle and a marker (the SEV1 double-upload) is delivered exactly once.
+  void runLaunchRecovery({
+    ...(durable !== undefined ? { queue: durable } : {}),
+    // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
+    // activations, so the dead-sibling scan must get first refusal on it (docs on the option in core).
+    shared: options.bundleStore !== undefined,
+    pipeline: baseUploadPipeline,
+    ...(queueReady !== undefined ? { whenReady: queueReady } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    scan: (reconcileOwnQueue) =>
+      coexistence.recoverDeadSiblings({
+        uploadPipeline: baseUploadPipeline,
+        ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
+        ...(recoverEnabled
+          ? {
+              recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                await recoverReports({
+                  backend: createIdbChunkBackend(captureView, {
+                    generation: -1,
+                    cleanOtherGenerations: false,
+                    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                  }),
+                  currentGeneration: -1,
+                  markers,
+                  context: () => ({ appToken, environment: getEnvironment(), clock }),
+                  uploadPipeline: baseUploadPipeline,
+                  skipReportIds,
+                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                });
+              },
+            }
+          : {}),
+      }),
   });
 
   // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.

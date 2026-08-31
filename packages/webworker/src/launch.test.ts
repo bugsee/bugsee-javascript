@@ -2,11 +2,13 @@ import { version as packageVersion } from '../package.json' with { type: 'json' 
 import 'fake-indexeddb/auto'; // polyfills indexedDB/IDBKeyRange for the persist (Service Worker) path
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  type AsyncBlobStore,
   captureDatabaseName,
   coexistenceDatabaseName,
   createIdbBlobStore,
   createIdbChunkBackend,
   createIdbKeyedStore,
+  createPersistentBundleStore,
   createPrefixedKeyedStore,
   createWebLockLiveness,
   instanceLockName,
@@ -61,7 +63,7 @@ function bundleMemStore() {
   return { store, map, puts };
 }
 
-const pendingBundle = (summary: string): Uint8Array =>
+const pendingBundle = (summary: string, reportId?: string): Uint8Array =>
   serializeBundle({
     request: {
       type: 'crash',
@@ -77,6 +79,8 @@ const pendingBundle = (summary: string): Uint8Array =>
     },
     body: new Uint8Array([0x50, 0x4b, 1]),
     fileName: 'recovered.zip',
+    // The incident this staged blob IS — what recovery reconciles against a still-pending report marker.
+    ...(reportId !== undefined ? { reportId } : {}),
   });
 
 const jsonBody = (o: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(o));
@@ -363,6 +367,226 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // marker swept
   });
 
+  // SEV1 (recovery double-upload). The worker gets the SAME reconciliation as the browser tier (one
+  // implementation, in `browser-utils`'s `Coexistence`): a sibling killed between the durable stage and the
+  // upload settling leaves BOTH a staged bundle and its incident's marker, and that must be ONE upload.
+  it('uploads an incident exactly ONCE when a dead sibling left both its staged bundle and its marker', async () => {
+    const idb = new IDBFactory();
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker + chunks for inc-deadsib
+    await shared.put('deadsib/staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    await new Promise((r) => setTimeout(r, 20)); // give an (erroneous) second delivery a chance to land
+    expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(1);
+    expect(issueJson(transport).summary).toBe('inc-deadsib (staged)'); // the staged artifact, not a rebuild
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+    await vi.waitFor(async () =>
+      expect((await shared.loadAll()).some(([k]) => k === 'deadsib/staged')).toBe(false),
+    );
+  });
+
+  // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
+  // activations, so it holds the previous one's staged bundle while that incident's marker still sits in the
+  // dead activation's IndexedDB namespace. Replaying it blind and then rebuilding from the marker uploaded
+  // the incident twice, with differing payloads.
+  it('uploads an incident ONCE when an injected bundle store holds the blob a dead sibling’s marker covers', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker inc-deadsib + chunks
+    const { store, map } = bundleMemStore();
+    map.set('staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        bundleStore: store,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0)); // the staged blob was delivered and freed
+    await new Promise((r) => setTimeout(r, 20)); // let a second (wrong) upload land if it is going to
+    expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(1);
+    expect(issueJson(transport).summary).toBe('inc-deadsib (staged)'); // the staged artifact, not a rebuild
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
+  });
+
+  // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
+  // a pass that grabs the whole store delivers the other sibling's blob through a replay that knows nothing
+  // about that sibling's marker, and the marker leg then rebuilds and uploads it a second time.
+  it('gives each dead sibling only its own blobs out of a shared injected store', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadA', 500, { m: 'A' }, true);
+    await seedSibling(idb, 'deadB', 501, { m: 'B' }, true);
+    const { store, map } = bundleMemStore();
+    map.set('sA', pendingBundle('inc-deadA (staged)', 'inc-deadA'));
+    map.set('sB', pendingBundle('inc-deadB (staged)', 'inc-deadB'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        bundleStore: store,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0));
+    await new Promise((r) => setTimeout(r, 20)); // let a third (wrong) upload land if it is going to
+    expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(2);
+  });
+
+  // The reconciliation reads the injected store through the SAME sync BundleStore contract the worker's own
+  // IndexedDB queue uses — an in-memory mirror that is empty until it has hydrated. Reconciling before that
+  // sees no blobs at all, so the marker leg rebuilds the incident and the later unfiltered pass then replays
+  // the blob: the duplicate, restored by a missing await.
+  it('waits for an injected ASYNC store to hydrate before reconciling it', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const staged = pendingBundle('inc-deadsib (staged)', 'inc-deadsib');
+    const blob: AsyncBlobStore = {
+      // Deliberately slow: the dead-sibling scan finishes long before the mirror is populated.
+      loadAll: () => new Promise((resolve) => setTimeout(() => resolve([['left', staged]]), 25)),
+      put: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    };
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        bundleStore: createPersistentBundleStore(blob),
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined(), { timeout: 2000 });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(1);
+    expect(issueJson(transport).summary).toBe('inc-deadsib (staged)'); // the staged artifact, not a rebuild
+  });
+
+  // The other half of the same wiring: the unfiltered pass that follows the scan must still take the blobs
+  // NO dead sibling's markers claimed, or an injected store would stop being recovered at all.
+  it('still replays an injected store’s unclaimed blob after the dead-sibling scan', async () => {
+    const idb = new IDBFactory();
+    const { store, map } = bundleMemStore();
+    map.set('orphan', pendingBundle('nobody-claims-me', 'inc-other'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        bundleStore: store,
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+      }),
+    );
+
+    await vi.waitFor(() => expect(map.size).toBe(0));
+    expect(issueJson(transport).summary).toBe('nobody-claims-me');
+  });
+
+  // Pins the `skipReportIds` pass-through into core's `recoverReports`: only observable when the queue
+  // leg FAILED, where the marker leg must NOT attempt the same incident again in the same pass. A 403 on
+  // /v2/sessions fails the upload immediately and without retry backoff (one session call per attempt).
+  it('does not re-attempt an incident the failed bundle-queue leg already owns', async () => {
+    const idb = new IDBFactory();
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    await shared.put('deadsib/staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+
+    const transport = vi.fn<HttpTransport>(async (url: string) => ({
+      status: url.endsWith('/v2/sessions') ? 403 : 200,
+      headers: {},
+      body: new Uint8Array(),
+    }));
+
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
+    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sessions()).toHaveLength(1); // the queue leg's attempt only — the marker leg stood down
+    expect((await shared.loadAll()).map(([k]) => k)).toEqual(['deadsib/staged']);
+    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
+  });
+
+  // The case the previous fix's set-emptiness key silently DELETED.
+  it('delivers BOTH a marker-only incident and a staged bundle belonging to another incident', async () => {
+    const idb = new IDBFactory();
+    const shared = createIdbBlobStore({
+      databaseName: coexistenceDatabaseName('tok'),
+      indexedDB: idb,
+    });
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker for inc-deadsib
+    await shared.put('deadsib/other', pendingBundle('a DIFFERENT incident', 'inc-other'));
+
+    const transport = uploadTransport();
+    track(
+      'tok',
+      baseOptions({
+        transport,
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.filter(([url]) => url === 'https://s3.test/put')).toHaveLength(2),
+    ); // both incidents, never one
+    await vi.waitFor(async () => expect(await shared.loadAll()).toEqual([]));
+    await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
+  });
+
   it('recovers a DEAD sibling incident but NEVER touches a LIVE one (SEV1)', async () => {
     const idb = new IDBFactory();
     const locks = fakeWebLocks();
@@ -557,6 +781,30 @@ describe('launch (webworker)', () => {
     const logsFile = Object.keys(files).find((n) => n.includes('log'));
     expect(logsFile).toBeDefined();
     expect(strFromU8(files[logsFile as string] as Uint8Array)).toContain('hello-worker');
+  });
+
+  // A worker runs in the SAME engine as the page that spawned it, so it needs the browser tier's
+  // dialect-dispatching `parseStack`, not core's V8-only default. `Error.captureStackTrace` exists on
+  // Firefox and Safari too, so a stack IS produced there — in the `fn@loc` dialect, which the V8 parser
+  // yields ZERO frames for, silently dropping exactly the thing `console.trace()` is called for.
+  it('parses a console.trace stack in the Firefox/Safari dialect (the injected stackParser)', async () => {
+    // `Error.captureStackTrace` is a V8 extension the DOM lib does not declare — cast to reach it (it is
+    // the same object, so vi.restoreAllMocks() puts the real one back).
+    const errorCtor = Error as unknown as { captureStackTrace: (target: object) => void };
+    vi.spyOn(errorCtor, 'captureStackTrace').mockImplementation((target: object) => {
+      (target as { stack?: string }).stack =
+        'handler@https://app.test/x.js:4:2\n@https://app.test/y.js:9:1';
+    });
+    const store = memStore();
+    track('tok', baseOptions({ captureStore: store }));
+
+    console.trace('traced-in-firefox');
+
+    const logs = (await createCaptureExporter(store).drain()).get('log');
+    const message = String((logs?.[0]?.data as { message?: string }).message);
+    expect(message).toContain('traced-in-firefox');
+    expect(message).toContain('at handler (https://app.test/x.js:4:2)'); // frames recovered, not dropped
+    expect(message).toContain('at <anonymous> (https://app.test/y.js:9:1)');
   });
 
   it('detects a global error on the worker scope → uploads a crash report', async () => {
@@ -1219,11 +1467,12 @@ describe('launch — network capture wiring', () => {
     const registry = getCarrier(carrier).interceptors;
     expect(registry.get('console')).toBeDefined(); // the console→log source, keyed for cross-package reuse
     expect(registry.get('fetch')).toBeDefined();
-    // console + the 5 cross-runtime network leaves (fetch/xhr/websocket/sse/webtransport). No DOM input
-    // source and no node-http: this is the DOM-less worker composition.
+    // console + the 6 cross-runtime network leaves (fetch/xhr/sendBeacon/websocket/sse/webtransport).
+    // No DOM input source and no node-http: this is the DOM-less worker composition.
     expect([...registry.keys()].sort()).toEqual([
       'console',
       'fetch',
+      'sendbeacon',
       'sse',
       'websocket',
       'webtransport',

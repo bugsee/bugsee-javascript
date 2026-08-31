@@ -81,7 +81,7 @@ describe('createBundleUploader', () => {
     });
   });
 
-  it('treats the 2xx boundary correctly (299 ok, 300 not)', async () => {
+  it('treats the 2xx boundary correctly (299 ok, 300 not — and 300 is retryable)', async () => {
     const ok = await createBundleUploader(fakeTransport(() => res(299)).transport).putBundle(
       'u',
       body,
@@ -93,7 +93,39 @@ describe('createBundleUploader', () => {
       opts,
     );
     expect(ok).toEqual({ ok: true });
-    expect(notOk).toEqual({ ok: false, status: 300, retryable: false });
+    // A 3xx means the PUT did not complete — Android classifies everything under 400 as TRANSIENT.
+    expect(notOk).toEqual({ ok: false, status: 300, retryable: true });
+  });
+
+  // ── The retryable-4xx exemptions (Android CommunicationErrorClassifier.java:14-33) ──────────────
+  //
+  // These four statuses used to come back `retryable: false`, which the UploadPipeline turns into
+  // `permanent: true`, which `isUploadSettled` turns into "free the blob, the marker, the capture
+  // chunks and the whole instance subtree". One 429 from a rate-limiting edge — the single status a
+  // collector under load is most likely to answer, to every client at once — DELETED the crash report.
+  it.each([
+    [401, 'the session/edge token expired mid-upload; the next launch mints a fresh one'],
+    [408, 'a gateway or upstream timeout — the request never reached the collector'],
+    [425, 'Too Early: the peer asked us to replay this later'],
+    [429, 'rate limited — the definition of "try again"'],
+  ])('maps %i to a RETRYABLE failure (%s)', async (status) => {
+    const { transport } = fakeTransport(() => res(status));
+    expect(await createBundleUploader(transport).putBundle('u', body, opts)).toEqual({
+      ok: false,
+      status,
+      retryable: true,
+    });
+  });
+
+  it.each([
+    400, 402, 404, 409, 413, 422, 426, 428, 431, 451, 499,
+  ])('maps %i to a non-retryable failure — the collector refused this payload', async (status) => {
+    const { transport } = fakeTransport(() => res(status));
+    expect(await createBundleUploader(transport).putBundle('u', body, opts)).toEqual({
+      ok: false,
+      status,
+      retryable: false,
+    });
   });
 
   it('maps a network error (transport rejects) to a retryable failure without throwing', async () => {

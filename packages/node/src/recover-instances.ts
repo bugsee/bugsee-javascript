@@ -3,8 +3,11 @@ import {
   type BundleAssemblyContext,
   type BundleStore,
   createFileChunkBackend,
+  createMarkerAwareBundleReplay,
   deserializeBundle,
+  isUploadSettled,
   type NativeCrashSource,
+  type ReportMarkerStore,
   recoverNativeCrashes,
   recoverReports,
   type UploadPipeline,
@@ -61,9 +64,19 @@ export interface RecoverInstancesOptions {
   patientMs?: number;
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * Reconcile a bundle queue that lives OUTSIDE the per-instance layout — an injected `bundleStore`,
+   * which is a store the integrator keeps stable across launches — against ONE dead sibling's pending
+   * markers. Called with that sibling's marker store after its own `pending/` has been drained and
+   * BEFORE its marker leg runs; the ids it returns are withheld from that leg exactly like the
+   * subtree's own queue leg's. Absent (the default per-instance store) ⇒ there is nothing to reconcile.
+   */
+  reconcileOwnQueue?: (
+    markers: Pick<ReportMarkerStore, 'list' | 'remove'>,
+  ) => Promise<ReadonlySet<string>>;
 }
 
-/** Re-upload a dead instance's durable bundle queue, awaiting each delivery; drop a blob only once confirmed. */
+/** Re-upload a dead instance's durable bundle queue, awaiting each attempt; drop a blob only once settled. */
 async function drainBundles(
   store: BundleStore,
   uploadPipeline: UploadPipeline,
@@ -85,8 +98,10 @@ async function drainBundles(
     }
     try {
       const result = await uploadPipeline.enqueue(bundle);
-      if (result.ok) {
-        store.remove(id); // confirmed delivered — drop; a failure leaves it for a later launch
+      if (isUploadSettled(result)) {
+        // Delivered, or REFUSED — the same rule the live durable pipeline applies. Keeping a refused
+        // bundle means re-uploading it at every launch forever; a retryable failure leaves it in place.
+        store.remove(id);
       }
     } catch (error) {
       onError(error); // keep the blob for retry
@@ -100,7 +115,29 @@ async function recoverSubtree(
   onError: (error: unknown) => void,
 ): Promise<void> {
   const bundleStore = createNodeBundleStore(join(sub, 'pending'));
-  await drainBundles(bundleStore, options.uploadPipeline, onError);
+  const markers = createNodeReportMarkerStore(join(sub, 'incidents'), onError);
+
+  // SEV1 (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): a
+  // bundle can reach `pending/` and STILL leave its incident's report marker behind — the process can die
+  // after the durable put but before the upload settles, and client.ts's submitReport clears the marker
+  // only once that upload settles. Replaying `pending/` AND rebuilding the same incident from its marker +
+  // chunks reports it twice. The shared core policy (`createMarkerAwareBundleReplay`) reconciles the two
+  // PER INCIDENT, keyed on the report id the durable frame carries: the staged bundle is delivered, its
+  // now-redundant marker retired, and only that id is withheld from the marker leg below. A blob whose
+  // incident has no pending marker — its marker was cleared on a non-ok upload, or it was re-staged here
+  // by an earlier recovery, or it predates the id — is replayed exactly as before, never dropped.
+  const replay = createMarkerAwareBundleReplay({
+    markers,
+    pipeline: options.uploadPipeline,
+    onError,
+  });
+  await drainBundles(bundleStore, replay.pipeline, onError);
+
+  // …and the same reconciliation for a bundle store the caller owns outside this layout (an injected
+  // `bundleStore`): it is shared by every launch, so it can hold THIS dead sibling's staged bundles while
+  // its markers are still here, and the two legs would otherwise report each of those incidents twice with
+  // differing payloads. The callback takes only the blobs this sibling's markers cover.
+  const ownQueueSkip = await options.reconcileOwnQueue?.(markers);
 
   const backend = createFileChunkBackend(createFsChunkStorage(join(sub, 'capture')), {
     generation: NO_GENERATION,
@@ -135,7 +172,6 @@ async function recoverSubtree(
     }
   }
 
-  const markers = createNodeReportMarkerStore(join(sub, 'incidents'), onError);
   await recoverReports({
     backend,
     currentGeneration: NO_GENERATION, // excludes nothing → the whole dead subtree is recovered
@@ -144,6 +180,10 @@ async function recoverSubtree(
     uploadPipeline: options.uploadPipeline,
     keepGenerations,
     onError,
+    skipReportIds:
+      ownQueueSkip === undefined
+        ? replay.skipReportIds
+        : new Set([...replay.skipReportIds, ...ownQueueSkip]),
   });
 
   // Remove the subtree ONLY when fully drained (no bundles, no report markers, no pending native crash);
@@ -170,25 +210,31 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       continue;
     }
     const sub = join(options.dataDir, id);
-    // Liveness gate (D2): only recover a DEAD sibling. A subtree with no owner.json can't be
-    // liveness-checked — leave it (an early-crash dir has no incident, since owner.json is written before
-    // any capture); a LIVE owner (pid alive + fresh heartbeat) is never touched.
-    const owner = readOwner(join(sub, 'owner.json'));
-    if (owner === undefined) {
-      continue;
-    }
-    if (
-      !isSiblingDead(
-        pidAlive(owner.pid),
-        readLiveMtimeMs(join(sub, '.live')),
-        now(),
-        patientMs,
-        owner.threadId,
-      )
-    ) {
-      continue;
-    }
     try {
+      // Liveness gate (D2): only recover a DEAD sibling. A subtree with no owner.json can't be
+      // liveness-checked — leave it (an early-crash dir has no incident, since owner.json is written
+      // before any capture); a LIVE owner (pid alive + fresh heartbeat) is never touched.
+      //
+      // The probe is INSIDE the try because it reads the filesystem and can throw: `readOwner` →
+      // `readFileBytes` re-throws every non-ENOENT errno (EACCES on a root-written subtree, EISDIR on a
+      // corrupt one), and `pidAlive`'s injectable `kill` is a seam a host can make throw. Outside the
+      // try, one such subtree rejected the WHOLE scan — and with the launch's release pass hanging off
+      // a `.then()`, a held-back bundle was then delivered on no launch at all.
+      const owner = readOwner(join(sub, 'owner.json'));
+      if (owner === undefined) {
+        continue;
+      }
+      if (
+        !isSiblingDead(
+          pidAlive(owner.pid),
+          readLiveMtimeMs(join(sub, '.live')),
+          now(),
+          patientMs,
+          owner.threadId,
+        )
+      ) {
+        continue;
+      }
       await recoverSubtree(sub, options, onError);
     } catch (error) {
       onError(error); // a failed subtree is left in place to retry on a later launch

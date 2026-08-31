@@ -86,14 +86,19 @@ New components (all in `@bugsee/browser-utils`, pure/injectable where possible):
 - **`createPrefixedBlobStore(shared, instanceId)`** — a per-instance `AsyncBlobStore` VIEW over the shared one:
   `put`/`remove` prefix the key with `"<instanceId>/"`; `loadAll()` returns only this instance's pairs (prefix
   stripped). Pass to `createPersistentBundleStore` → the instance's own bundle store.
-- **`recoverDeadInstances({ shared, selfInstanceId, lockName, recoverOne, liveness, onError })`** — the
+- ~~**`recoverDeadInstances({ shared, selfInstanceId, lockName, recoverOne, liveness, onError })`**~~ — the
   coordinator: `shared.loadAll()` → group keys by instanceId prefix → for each ≠ self →
-  `liveness.recoverIfDead(lockNameFor(id), () => recoverOne(idsBundles))`. `recoverOne` re-uploads via the
-  durable pipeline + removes the keys. Idempotent + signature-deduped.
+  `liveness.recoverIfDead(lockNameFor(id), () => recoverOne(idsBundles))`.
+  **Build correction (2026-08-31): REMOVED.** Slice 5 widened discovery to the union of the bundle, marker and
+  capture stores, which this signature (one `shared` store) cannot express, so `createCoexistence`'s
+  `recoverDeadSiblings` grew its own scan-and-claim loop and the standalone coordinator was left with **zero
+  production callers** while still being publicly exported — two implementations of one invariant, only the
+  unused one covered by tests for self-exclusion. It and its tests are deleted; `recoverSiblingBundleQueue`
+  (the per-sibling queue replay) stays and is what `recoverDeadSiblings` calls.
 
 Integration (`@bugsee/browser` + `@bugsee/webworker` launch): build `instanceId`; open the shared
 token-namespaced blob store; wrap a per-instance view for the durable bundle store; `liveness.holdSelf(...)`;
-after `client.launch()`, run `recoverDeadInstances(...)` instead of the own `durable.recover()`.
+after `client.launch()`, run `coexistence.recoverDeadSiblings(...)` instead of the own `durable.recover()`.
 
 ### Instance state machine (mirrors the node subtree machine)
 ```
@@ -115,7 +120,8 @@ A peer that crashes mid-recovery releases the lock → the prefix is re-claimabl
    (Commit `f5b4c1b`; the `holdSelf` rejection→warn hardening added in the slice-4 review round.)
 2. ✅ **Per-instance blob view + sync token hash** — `makeInstanceId`, `hashToken` (sync), `createPrefixedBlobStore`
    (prefix put/remove, prefix-filtered loadAll). Unit coverage (isolation: instance A never sees B's keys). (`2df27ae`.)
-3. ✅ **`recoverDeadInstances` coordinator** + `recoverSiblingBundleQueue` (awaitable dead-sibling bundle recovery) —
+3. ✅ **dead-sibling coordinator** (built as `recoverDeadInstances`, later absorbed into `recoverDeadSiblings`
+   — see the build correction above) + `recoverSiblingBundleQueue` (awaitable dead-sibling bundle recovery) —
    scan → group → recoverIfDead → re-upload + delete. Tests: dead sibling recovered once; live sibling untouched;
    own-prior-crash recovered; degrade (no locks) → no cross-recovery. (`2df27ae` + `086b8bd`.)
 4. ✅ **Wire into `@bugsee/browser` + `@bugsee/webworker` launch** via `createCoexistentBundleQueue` — instanceId +
@@ -144,7 +150,7 @@ A peer that crashes mid-recovery releases the lock → the prefix is re-claimabl
 - **Startup lock-grant TOCTOU.** `holdSelf` returns synchronously but the real `navigator.locks` grants on a
   later microtask, so for a brief window after launch the instance's lock is not yet held. Harmless: a fresh
   instance has **no bundles under its prefix until an actual incident** (an incident bundle is `put` far later
-  than launch, never synchronously), and `recoverDeadInstances` only forms sibling-ids from EXISTING keys — so a
+  than launch, never synchronously), and the scan only forms sibling-ids from EXISTING keys — so a
   peer never targets a young instance with an empty prefix. The signature-dedup is the backstop even if it did.
 - **`holdSelf` lock-request rejection** (invalid lock name / sandboxed context) is caught and routed to the
   liveness `warn` sink — it must never float as an `unhandledrejection` (Bugsee would self-report its own
