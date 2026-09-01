@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BugseeError } from './errors';
-import { isRetryableHttpStatus, isUploadSettled } from './transport';
+import { classifyServerErrorCode, isRetryableHttpStatus, isUploadSettled } from './transport';
 
 // The upload-settlement POLICY, tested directly rather than only through its consumers.
 //
@@ -95,5 +95,63 @@ describe('isUploadSettled', () => {
   it('is NOT settled when `permanent` is merely truthy-adjacent (the flag is read strictly)', () => {
     expect(isUploadSettled({ ok: false } as never)).toBe(false);
     expect(isUploadSettled({ ok: false, permanent: undefined } as never)).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// The COLLECTOR's own error codes — a numeric namespace that is NOT HTTP statuses.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A `/v2/*` rejection arrives with **HTTP 200** and an `{ ok: false, error: { code } }` envelope, so the
+// status never reveals it and the code is the only signal there is. The SDK had no analogue of Android's
+// `CommunicationErrorClassifier.classifyServerErrorCode` (`:35-58`) at all, so an InvalidAppToken or an
+// ApplicationTypeMismatch — a payload the collector will refuse for the life of the installation — was
+// retried at every launch forever, while a code that happens to READ like an auth status (403, 401) was
+// misread as one and permanently disabled the SDK.
+//
+// The two namespaces overlap numerically and mean nothing to each other; that overlap is the finding.
+
+describe('classifyServerErrorCode', () => {
+  it('classifies ServerTooBusy as transient — the collector is asking us to come back', () => {
+    expect(classifyServerErrorCode(99013)).toBe('transient');
+  });
+
+  it('classifies KillSdk as kill_sdk — the ONE code that may disable the SDK', () => {
+    // Android blacklists the app token here and ONLY here
+    // (`BugseeCommunicationManager.java:776-781`) — never on an HTTP status.
+    expect(classifyServerErrorCode(99099)).toBe('kill_sdk');
+  });
+
+  it('classifies SessionNotFound as auth_expired — mint a new session and try again', () => {
+    expect(classifyServerErrorCode(14002)).toBe('auth_expired');
+  });
+
+  it.each([
+    [12003, 'SimilarCrashExists'],
+    [12004, 'TooManySimilarCrashes'],
+    [14019, 'InvalidAppToken'],
+    [11004, 'ApplicationTypeMismatch'],
+    [99098, 'UnsupportedSdk'],
+    [99003, 'MissingParameter'],
+    [99002, 'EmptyBody'],
+  ])('classifies %i (%s) as permanent', (code) => {
+    expect(classifyServerErrorCode(code)).toBe('permanent');
+  });
+
+  it('classifies an unknown code as transient (Android’s `default:` arm)', () => {
+    // Fail-safe: an unrecognised code must never delete a report. A new collector code the SDK has
+    // not learned about yet costs a retry, not an incident.
+    for (const code of [0, 1, 42, 12005, 14000, 99000, 123456]) {
+      expect(classifyServerErrorCode(code)).toBe('transient');
+    }
+  });
+
+  it('does NOT read a collector code as an HTTP status — the namespaces are disjoint', () => {
+    // 401/403 are AUTH_EXPIRED / PERMANENT as HTTP statuses and mean nothing in the collector's
+    // namespace. Reading one as the other is what killed the SDK on a transient rejection.
+    expect(classifyServerErrorCode(401)).toBe('transient');
+    expect(classifyServerErrorCode(403)).toBe('transient');
+    expect(classifyServerErrorCode(500)).toBe('transient');
+    expect(isRetryableHttpStatus(403)).toBe(false); // …while the SAME number IS permanent as a status
   });
 });

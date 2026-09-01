@@ -154,7 +154,11 @@ describe('createBugseeApi — createIssue', () => {
     );
     const a = api(transport);
     await a.ensureSession(env);
-    await expect(a.createIssue(requestJson)).rejects.toMatchObject({ code: 401 });
+    // …and a real HTTP failure still puts the STATUS on `code`, with no collector code at all.
+    await expect(a.createIssue(requestJson)).rejects.toMatchObject({
+      code: 401,
+      serverCode: undefined,
+    });
   });
 
   it('throws when there is no active session', async () => {
@@ -190,10 +194,25 @@ describe('createBugseeApi — the v2 response envelope', () => {
     const { transport } = recorder(() =>
       rejected('ApplicationTypeMismatchError', 'Application type does not match', 11004),
     );
+    // The code lands on `serverCode`, NOT on `code`. `code` is where an HTTP status lives, and this
+    // rejection arrived with HTTP 200 — there is no status to put there. Carrying the collector's code
+    // in the status field is how 11004 was retried forever while a collector code that happened to read
+    // `403` was mistaken for an auth status and permanently disabled the SDK.
     await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
-      code: 11004,
+      code: 0,
+      serverCode: 11004,
       message: expect.stringContaining('ApplicationTypeMismatchError'),
     });
+  });
+
+  it.each([
+    401, 403, 500,
+  ])('keeps a collector code of %i OFF the HTTP-status field, so it can never be read as one', async (code) => {
+    const { transport } = recorder(() => rejected('SomeCollectorError', 'no', code));
+    const error: unknown = await api(transport)
+      .ensureSession(env)
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ serverCode: code, code: 0 });
   });
 
   it('does not cache a session when the envelope carries no access token', async () => {
@@ -232,7 +251,7 @@ describe('createBugseeApi — the v2 response envelope', () => {
     );
     const a = api(transport);
     await a.ensureSession(env);
-    await expect(a.createIssue(requestJson)).rejects.toMatchObject({ code: 12003 });
+    await expect(a.createIssue(requestJson)).rejects.toMatchObject({ code: 0, serverCode: 12003 });
   });
 
   it('passes a non-object body straight through rather than reading `ok` off it', async () => {
@@ -246,6 +265,7 @@ describe('createBugseeApi — the v2 response envelope', () => {
     const { transport } = recorder(() => ({ status: 200, headers: {}, body: enc({ ok: false }) }));
     await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
       code: 0,
+      serverCode: 0,
       message: expect.stringContaining('CollectorError'),
     });
   });

@@ -496,6 +496,14 @@ function fakeUpload() {
   return { uploadPipeline, flush, enqueue };
 }
 
+/**
+ * Let every already-queued microtask run — enough for `submitReport`'s settle handler, which is a
+ * plain `.then` on the report promise. A `vi.waitFor` cannot express "and then nothing happened".
+ */
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+};
+
 function fakeMarkers() {
   const put = vi.fn<(marker: ReportMarker) => void>();
   const remove = vi.fn<(id: string) => void>();
@@ -831,22 +839,74 @@ describe('createClient — capture-recovery markers', () => {
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
   });
 
-  it('clears the marker even when the upload fails (the durable bundle queue then owns delivery)', async () => {
-    const enqueue = vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false }));
-    const uploadPipeline: UploadPipeline = {
-      enqueue,
-      flush: vi.fn(async () => true),
-      drop: vi.fn(),
-    };
+  // ── When may the marker be retired? ────────────────────────────────────────────────────────────
+  //
+  // The marker is the ONLY trace of an incident whose bundle never reached durable storage, and it is
+  // what keeps that incident's capture generation alive: `capture-recovery.ts`'s sweep frees every
+  // generation no marker still names. So retiring one is a deletion, and it needs the same
+  // justification every other deletion in the SDK needs.
+  //
+  // This used to be `result.then(clear, clear)` — retire on ANY settlement — justified by "the durable
+  // bundle queue owns delivery from here". It does not always: `durable-upload-pipeline.ts` CATCHES a
+  // throwing `store.put` and continues, so a full disk plus one 503 erased the blob, the marker and the
+  // recording of a crash that had already happened. The test that stood here asserted exactly that
+  // behaviour, with a bare `vi.fn` pipeline that staged nothing — so its own parenthetical was false.
+
+  const failedUpload = (over: Partial<UploadResult> = {}): UploadPipeline => ({
+    enqueue: vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false, ...over })),
+    flush: vi.fn(async () => true),
+    drop: vi.fn(),
+  });
+
+  it('KEEPS the marker when the upload fails retryably and nothing durably retained the bundle', async () => {
     const { store, remove } = fakeMarkers();
     const client = createClient({
-      uploadPipeline,
+      uploadPipeline: failedUpload(),
       appToken: 'tok',
       getEnvironment,
       reportMarkers: { store, generation: 1 },
     });
     expect(await client.logException(new Error('x'))).toEqual({ ok: false });
-    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1)); // still cleared
+    await flushMicrotasks();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('retires the marker when the durable queue RETAINED the bundle, though the upload failed', async () => {
+    const { store, remove } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline: failedUpload({ retained: true }),
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.logException(new Error('x'));
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+  });
+
+  it('retires the marker when the collector PERMANENTLY refused the bundle', async () => {
+    const { store, remove } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline: failedUpload({ permanent: true }),
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.logException(new Error('x'));
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+  });
+
+  it('KEEPS the marker when the report path REJECTS — nothing at all is known about delivery', async () => {
+    const { store, remove } = fakeMarkers();
+    const client = createClient({
+      triggerPipeline: { report: () => Promise.reject(new Error('assembly exploded')) },
+      uploadPipeline: failedUpload(),
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    await expect(client.logException(new Error('x'))).rejects.toThrow('assembly exploded');
+    await flushMicrotasks();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('a vetoed report writes no marker', async () => {

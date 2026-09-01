@@ -48,7 +48,12 @@ function unwrap(body: Uint8Array, what: string): unknown {
   if (envelope.ok === undefined) return decoded;
   if (envelope.ok === false) {
     const { type = 'CollectorError', message = 'rejected', code = 0 } = envelope.error ?? {};
-    throw new BugseeError(`${what} rejected: ${type}: ${message}`, code);
+    // The code goes on `serverCode`, and `code` stays 0. This rejection arrived with HTTP 200, so there
+    // IS no status — and the collector's namespace overlaps HTTP statuses by accident, so putting it in
+    // the status field made `upload-pipeline` read a collector code of 403 as an auth failure and kill
+    // the SDK, while leaving Android's real permanent codes (14019, 11004, 99098, 99099) unclassified
+    // and retried at every launch forever. See classifyServerErrorCode.
+    throw new BugseeError(`${what} rejected: ${type}: ${message}`, 0, { serverCode: code });
   }
   return envelope.result;
 }

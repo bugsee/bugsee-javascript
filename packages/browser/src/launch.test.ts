@@ -1264,7 +1264,7 @@ describe('launch — capture recovery (multi-instance)', () => {
       body: new Uint8Array(),
     }));
 
-    launchTracked(
+    const client = launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1280,10 +1280,17 @@ describe('launch — capture recovery (multi-instance)', () => {
     const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
     await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
     await new Promise((r) => setTimeout(r, 30)); // let a (wrong) second attempt land if it is going to
-    expect(sessions()).toHaveLength(1); // the queue leg's attempt only — the marker leg stood down
+    // ONE attempt so far. Had the marker leg also run it would have enqueued a second bundle in the
+    // same turn, i.e. a second session call with no delay between them — which is what this counts.
+    // The queue leg's own RETRY ladder is a 5 s backoff away (a control-plane failure is retryable
+    // since round 6; it used to be fatal, which is what kept this count at 1 forever).
+    expect(sessions()).toHaveLength(1);
     // …and both durable traces survive, so the next launch retries from the staged bundle.
     expect((await bundleShared.loadAll()).map(([k]) => k)).toEqual(['deadsib/staged']);
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
+    // Bounded, because the failed upload is now mid-retry-ladder: an unbounded stop() would wait out
+    // three exponential backoffs. Retiring the client here makes the shared afterEach a no-op.
+    await client.stop(0);
   });
 
   // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
@@ -1315,6 +1322,50 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(puts).toHaveLength(1);
     expect(puts[0]).toEqual(new Uint8Array([0x50, 0x4b, 1])); // the staged body verbatim, not a rebuild
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
+  });
+
+  // R5-4. The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
+  // blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
+  // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
+  // platform test used an accepting transport: the second copy the durable queue stages on the way IN is
+  // removed the instant the upload succeeds, so the duplicate never outlives the pass. On a 503 it does —
+  // and the next page load uploads that incident twice, from two blobs, with differing payloads.
+  it('re-stages NOTHING in the injected store when a recovered blob’s upload fails retryably', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker inc-deadsib + chunks
+    const { store, map, puts } = bundleMemStore();
+    map.set('staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
+    // 503 on the session call: RETRYABLE, so the attempt never settles — the blob is kept, which is
+    // exactly when a re-staged second copy would survive to the next launch.
+    const transport = vi.fn<HttpTransport>(async (url: string) => ({
+      status: url.endsWith('/v2/sessions') ? 503 : 200,
+      headers: {},
+      body: new Uint8Array(),
+    }));
+
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        bundleStore: store,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        onError: vi.fn(),
+      }),
+    );
+
+    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
+    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 30)); // let a re-stage land if it is going to
+    expect(puts).toEqual([]); // NOTHING was written back into the integrator's store…
+    expect([...map.keys()]).toEqual(['staged']); // …so one incident is still exactly one blob
+    // The marker survives too (retryable ⇒ both durable traces kept), so the next launch retries once.
+    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
+    // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
+    await client.stop(0);
   });
 
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:

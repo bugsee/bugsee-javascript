@@ -291,6 +291,101 @@ bun recovery verified as genuinely bun's file, diff shape-identical to deno's.
 5. Documentation (R5-9) is a real deliverable here, not tidying: `PROGRESS.md` is the designated hand-off
    doc and has no record of the current architecture.
 
+## Round 6 — IN FLIGHT. R5-4, R5-6, R5-7, R5-8 fixed (platform + performance tiers)
+
+Gates re-run whole-tree after the change: `pnpm lint` exit 0 (the one pre-existing warning,
+`packages/node/src/index.test.ts:72`) · `pnpm typecheck` 100/100 · `pnpm check:cycles` clean ·
+`pnpm test` 430 files / 5869 tests. Per-package coverage on every package touched: node
+100/98.36, browser 100/98.72, webworker 100/100, performance 100/99.16, core 100/98.75
+(stmts/branch; lines + funcs 100 throughout).
+
+### R5-4 — CLOSED, by TEST, not by type. The type direction does not work; here is the proof
+
+The stronger-sounding option (narrow `LaunchRecoveryOptions.pipeline` so a `DurableUploadPipeline` cannot
+satisfy it) **cannot catch the mutation that is actually at issue**, and the reason is worth recording so
+nobody re-proposes it. The obvious brand is `pipeline: UploadPipeline & { recover?: never }`. It does
+reject a bare `DurableUploadPipeline` — but the mutation is `durable ?? baseUploadPipeline`, and TypeScript
+computes `??` with **subtype reduction**: `DurableUploadPipeline | UploadPipeline` collapses to
+`UploadPipeline` before the assignment is ever checked. Measured, not assumed:
+
+```
+const bad: BasePipeline = durable2;         // TS2322 — rejected
+const bad: BasePipeline = durable ?? base;  // COMPILES. Eq<typeof (durable ?? base), UploadPipeline> = true
+```
+
+The same reduction has already happened for `uploadPipeline` (`node/src/launch.ts:484`,
+`browser/src/launch.ts:354`, `webworker/src/launch.ts:233`), so `pipeline: uploadPipeline` — the most
+likely form of the mistake in real life — would be invisible to any such brand too. A positive brand
+(`UploadPipeline & { __nonDurable: true }`) WOULD survive reduction, but it has to be minted by
+`createUploadPipeline` in `core/src/upload-pipeline.ts`, which is outside this agent's scope and would
+push a test-only concern into the public return type. **So: tests.**
+
+**Two per site, one behavioural and one structural.**
+
+- **Behavioural** (`node/src/launch.test.ts:1459`, `browser/src/launch.test.ts:1326`,
+  `webworker/src/launch.test.ts:441` — "re-stages NOTHING in the injected store when a recovered blob's
+  upload fails retryably"). Each is its tier's existing R2-1 fixture with the transport changed to a **503
+  on `/v2/sessions`**, which is exactly the condition round 5 identified as missing: the attempt never
+  settles, so the second copy the durable queue stages on the way IN survives the pass instead of being
+  removed by the success. Asserts the integrator store's `put` log is empty and its keys are still exactly
+  `['staged']`. Each ends with `client.stop(0)` because the 5 s retry backoff is deliberately still running.
+- **Structural** (new `launch-recovery-wiring.test.ts` in each of the three packages). Partially mocks
+  `@bugsee/core` to spy `runLaunchRecovery`, then pins the arguments directly:
+  `pipeline !== queue` and `pipeline.recover === undefined` (the latter also rejects some OTHER durable
+  pipeline), for both the injected-store and the per-instance-queue launch.
+
+**Mutations re-injected, each verified as a real on-disk change (`diff` against `git show HEAD:<path>`):**
+
+| site | mutation | behavioural test | wiring test |
+|---|---|---|---|
+| `node/src/launch.ts:777` | `pipeline: durable ?? baseUploadPipeline` | FAIL — `expect(puts).toEqual([])` got `['1788261626165-1']` | FAIL ×2 |
+| `browser/src/launch.ts:586` | same | FAIL — got `['1788261704921-1']` | FAIL ×2 |
+| `webworker/src/launch.ts:348` | same | FAIL — got `['1788261776135-1']` | FAIL ×2 |
+| `node/src/launch.ts:777` | `pipeline: uploadPipeline` | — | FAIL ×2 |
+
+The behavioural failures are the finding made concrete: under the mutation the integrator's store ends the
+launch holding **two blobs for one incident**, which the next launch uploads twice with differing payloads.
+
+### R5-6 — CLOSED, structurally, and here is why not behaviourally
+
+`shared: true` has **no observable consequence** in browser or webworker: without an injected store the
+queue is the per-instance one, whose namespace is fresh every launch, so it is empty and holding it back
+for the scan only changes when an empty queue is read. In node it is observable only by seeding a blob
+whose `reportId` matches a dead sibling's marker into a per-instance `pending/` dir — a state that cannot
+occur (the dir is new each launch), and the "correct" assertion there would be *two* uploads. That is
+precisely the shape `REMEDIATION-PLAN.md` warns about, so it was not written. The predicate is pinned
+against the call instead, in both directions, in all three `launch-recovery-wiring.test.ts` files.
+
+**Mutations re-injected (all three sites, `diff`-verified):** `shared: true` → the `false`-direction test
+fails in all three; `shared: false` → the `true`-direction test fails in all three. `shared: false` was
+already caught behaviourally; both directions are now caught.
+
+### R5-7 — CLOSED as documentation, with no timeout added
+
+`core/src/launch-recovery.ts:76-85` now states that "unconditional" holds against a scan that REJECTS, not
+one that never settles, and says what a wedged scan costs. **No timeout was added, deliberately:** the
+release pass exists to hand over only what no dead sibling claimed, so releasing on a timer would hand over
+blobs whose incidents a still-running marker leg is about to rebuild — the R2-1 double upload, with
+differing payloads that nothing downstream can collapse. Holding costs one launch's delay on data that
+stays durably staged; releasing early costs a duplicated crash report. Nothing is lost either way, so the
+cheaper mistake wins.
+
+### R5-8 — CLOSED for `@bugsee/performance` (+ node); bun and deno are NOT closed
+
+`interactions.test.ts:40`, `idle-transaction.test.ts:39` and `navigations.test.ts:40` are now full
+16-member `const txn: Transaction = {…}` literals with the cast removed, matching the ten de-cast in round
+4. `node/src/launch.test.ts:2372` (the `registerExt` double round 5 flagged) is annotated too — node already
+depends on `@bugsee/performance`, so it needed no install.
+
+**Proven, not assumed:** adding `__probeMember(): void` to `Transaction` (`performance/src/span.ts:39`) makes
+`tsc --noEmit` reject all three performance doubles (TS2741) plus the real `TransactionImpl` (TS2420), and
+separately rejects the node double (TS2741 at `launch.test.ts:2372`). Probe removed and both packages
+re-verified green.
+
+**Still open:** `@bugsee/bun` and `@bugsee/deno` — see the narrowing note under §Round 4's enforcement
+mechanism. Four doubles, closable by adding `@bugsee/performance` as a devDependency to each package and
+annotating them; needs `pnpm install`, so it is reported rather than done.
+
 ## Round 4 — DONE (2026-08-31). Gates: lint 0 · typecheck 100/100 · cycles clean · 425 files / 5793 tests
 
 **Resolved:** R3-1 (new `isRetryableHttpStatus`, `core/src/transport.ts:158-193`, Android-parity
@@ -309,6 +404,19 @@ R3-10 · R3-11 · R3-13 (4 citations + 8 consumerless exports).
 Proven by adding a `__probeMember` to `Transaction`: all 10 failed with TS2322/TS2741, plus the real
 `TransactionImpl`. Fifteen instances were fixed across three rounds; this is the first change that stops
 the sixteenth.
+
+> **Narrowed in round 6.** "Stops the sixteenth" is broader than what was built. `tsc` only sees a double
+> that is (a) in a package that can NAME `Transaction`, and (b) annotated rather than passed through an
+> `unknown` parameter. Round 6 brought the last four in-net doubles inside it (the three in
+> `@bugsee/performance` itself — R5-8 — plus `node/src/launch.test.ts`'s `registerExt` double, which node
+> could always have annotated because it already depends on `@bugsee/performance`). **`@bugsee/bun` and
+> `@bugsee/deno` remain outside it**: their doubles in `bun-serve-interceptor.test.ts:7-20`,
+> `deno-serve-interceptor.test.ts:7-20`, `bun/src/launch.test.ts:194-203` and
+> `deno/src/launch.test.ts:186-195` are bare object literals in packages that deliberately do not depend on
+> `@bugsee/performance` ("avoids a @bugsee/performance dep in this Bun package"), and all four reach the SDK
+> through `registerExt(name, api: unknown)` / a structurally-typed client, which erases the type either way.
+> **Closing it needs `@bugsee/performance` added as a devDependency to both packages and each double
+> annotated `: Transaction`** — a `pnpm install`, so it was reported rather than run.
 
 **The harness rewrite is the load-bearing part.** `.session-artifacts/invariants.mts` no longer asks the
 SDK anything: it drives the REAL upload stack (`createBugseeApi` + `createBundleUploader` +
@@ -337,6 +445,13 @@ while an injected store is shared by all of them) but is now core-internal with 
 orchestrator as caller. `deferred`'s real defect was having no stated invariant; it now has one, enforced
 and tested. What did not survive is the triplicated orchestration and the three places a platform could
 get it wrong.
+
+> **Corrected in round 6.** The second half of that last sentence was wrong. The orchestration is indeed
+> one definition now, but the three call sites did not go away — they became three ARGUMENT LISTS, and two
+> of their arguments (`pipeline` and `shared`) were unpinned in all three. `pipeline: baseUploadPipeline` →
+> `pipeline: durable ?? baseUploadPipeline` survived 109/109 · 88/88 · 66/66 in rounds 3, 4 AND 5 (R5-4);
+> `shared: true` survived the same three suites (R5-6). Hoisting the orchestration made the SEMANTICS one
+> test; it did not make the WIRING one test. Both are pinned as of round 6.
 
 ### New open items from round 4
 

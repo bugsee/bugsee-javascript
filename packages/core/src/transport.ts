@@ -135,6 +135,25 @@ export interface UploadResult {
    * the collector would take it.
    */
   permanent?: boolean;
+  /**
+   * The bundle's bytes are DURABLY STAGED by the queue that answered, and will be carried to the next
+   * launch — so the caller's own copy of the incident is redundant and may be released (Round 6, R5-1).
+   *
+   * Set only by {@link DurableUploadPipeline}, and only on a result that has NOT settled: a delivered or
+   * refused bundle has just had its durable copy freed, so claiming it were retained would be a lie.
+   *
+   * Why the SDK needs this at all: `client.ts` retires an incident's REPORT MARKER when its report
+   * settles, and the marker is the only trace of an incident whose bundle never reached durable storage
+   * — it is also what keeps that incident's capture generation alive against the recovery sweep. The
+   * justification for retiring it was "the durable bundle queue owns delivery from here", but the queue
+   * deliberately CATCHES a throwing `BundleStore.put` (ENOSPC / EROFS / EACCES / EDQUOT, a `RangeError`
+   * out of `serializeBundle`, any integrator-supplied store) and continues, so the upload still goes out
+   * with nothing staged behind it. A retryable failure then erased the blob, the marker AND the
+   * recording of a crash that had already happened. This is how the caller tells the two apart.
+   *
+   * Absent ⇒ assume nothing is staged. A queue that does not stage anything never sets it.
+   */
+  retained?: boolean;
 }
 
 /**
@@ -158,10 +177,15 @@ export const isUploadSettled = (result: UploadResult): boolean =>
 /**
  * Can a request that answered `status` still succeed if we send it again?
  *
- * THE classifier — the single place that decides `retryable`, and therefore (through `permanent` and
- * {@link isUploadSettled}) whether a crash report's blob, its report marker, its capture chunks and its
+ * The classifier for an HTTP STATUS, and therefore (through `permanent` and {@link isUploadSettled}) one
+ * of the inputs that decides whether a crash report's blob, its report marker, its capture chunks and its
  * whole instance subtree are DELETED. It lives here, beside `isUploadSettled`, because the two are one
  * policy: this says whether the collector's answer is final, that says what to do when it is.
+ *
+ * It is NOT the only such input, and saying so here was wrong (R5-9): the DATA plane's verdict comes from
+ * here via `bundle-uploader.ts`, while the CONTROL plane's comes from {@link classifyServerErrorCode} via
+ * `upload-pipeline.ts` — a separate namespace carried in a `/v2/*` envelope on an HTTP 200, which no
+ * status function can see.
  *
  * Android parity, member for member, with `CommunicationErrorClassifier.classifyHttpStatus`
  * (`:14-33`) composed with `toJobResult` (`:63-74`):
@@ -190,6 +214,55 @@ export const isRetryableHttpStatus = (status: number): boolean =>
   status === 408 ||
   status === 425 ||
   status === 429;
+
+/**
+ * What the COLLECTOR's own error code means. A namespace disjoint from HTTP statuses.
+ *
+ * `transient`    — try again; the condition is on the collector's side, not in the payload.
+ * `permanent`    — this payload will never be accepted. Keeping it means re-uploading it at every
+ *                  launch for the life of the installation.
+ * `auth_expired` — the SESSION is stale, not the payload: mint a new one and retry.
+ * `kill_sdk`     — stop. The app token itself has been switched off.
+ */
+export type ServerErrorCategory = 'transient' | 'permanent' | 'auth_expired' | 'kill_sdk';
+
+/**
+ * Classify a `/v2/*` envelope's `error.code` — the collector's OWN code, NOT an HTTP status.
+ *
+ * The two are separate numeric namespaces that overlap by accident, and conflating them is a defect in
+ * both directions. A v2 rejection arrives with **HTTP 200** and the code inside the body
+ * (`bugsee-api.ts`), so the status says nothing; meanwhile a collector code that happens to read `401`
+ * or `403` means nothing about authentication. Reading one as the other both retried Android's
+ * permanent codes forever AND disabled the whole SDK on a transient rejection.
+ *
+ * Android parity, member for member, with `CommunicationErrorClassifier.classifyServerErrorCode`
+ * (`:35-58`). The `default` arm is deliberately TRANSIENT: an unrecognised code must never be a reason
+ * to delete a crash report, so a code this SDK has not learned about yet costs a retry, not an incident.
+ *
+ * `kill_sdk` is the ONLY verdict that may disable the SDK. Android blacklists an app token here and
+ * nowhere else (`BugseeCommunicationManager.java:776-781`) — never on an HTTP status, which is exactly
+ * what this SDK used to do.
+ */
+export const classifyServerErrorCode = (code: number): ServerErrorCategory => {
+  switch (code) {
+    case 99013: // ServerTooBusy
+      return 'transient';
+    case 99099: // KillSdk
+      return 'kill_sdk';
+    case 14002: // SessionNotFound
+      return 'auth_expired';
+    case 12003: // SimilarCrashExists
+    case 12004: // TooManySimilarCrashes
+    case 14019: // InvalidAppToken
+    case 11004: // ApplicationTypeMismatch
+    case 99098: // UnsupportedSdk
+    case 99003: // MissingParameter
+    case 99002: // EmptyBody
+      return 'permanent';
+    default:
+      return 'transient';
+  }
+};
 
 /** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes (§7.5/§7.8). */
 export interface UploadPipeline {

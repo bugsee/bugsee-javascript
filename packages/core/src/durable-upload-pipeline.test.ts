@@ -153,6 +153,75 @@ describe('createDurableUploadPipeline', () => {
     expect(map.has('b1')).toBe(true);
   });
 
+  // ── `retained`: telling the CALLER whether its own copy is still needed ──────────────────────────
+  //
+  // `client.ts` retires an incident's report marker — the only trace of an incident whose bundle never
+  // reached durable storage, and what keeps its capture generation alive — on the strength of "the
+  // durable bundle queue owns delivery from here". That is true only when the durable write ACTUALLY
+  // HAPPENED, and `enqueue` below deliberately swallows a throwing `put` so the upload still goes out.
+  // `retained` is how the caller learns which of the two it got.
+
+  it('reports `retained` on a non-settled result whose bundle IS durably staged', async () => {
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline({ ok: false });
+    const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'b1' });
+    expect(await durable.enqueue(bundle())).toEqual({ ok: false, retained: true });
+    expect(map.has('b1')).toBe(true); // …and the claim is true: the bytes are there
+  });
+
+  it('does NOT report `retained` when the durable write THREW — nothing is staged', async () => {
+    const { store, map } = memStore();
+    const onError = vi.fn();
+    const throwingStore: BundleStore = {
+      ...store,
+      put: () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    };
+    const { pipeline } = fakePipeline({ ok: false });
+    const durable = createDurableUploadPipeline({
+      store: throwingStore,
+      pipeline,
+      newId: () => 'b1',
+      onError,
+    });
+    const result = await durable.enqueue(bundle());
+    expect(result).toEqual({ ok: false });
+    expect(result.retained).toBeUndefined();
+    expect(map.size).toBe(0); // nothing was staged, so nothing carries this incident forward
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('does NOT report `retained` on a SETTLED result — the copy has just been freed', async () => {
+    const { store, map } = memStore();
+    const delivered = createDurableUploadPipeline({
+      store,
+      pipeline: fakePipeline({ ok: true }).pipeline,
+      newId: () => 'b1',
+    });
+    expect(await delivered.enqueue(bundle())).toEqual({ ok: true });
+
+    const refused = createDurableUploadPipeline({
+      store,
+      pipeline: fakePipeline({ ok: false, permanent: true }).pipeline,
+      newId: () => 'b2',
+    });
+    expect(await refused.enqueue(bundle())).toEqual({ ok: false, permanent: true });
+    expect(map.size).toBe(0); // both freed — a `retained: true` here would be a lie
+  });
+
+  it('reports `retained` on a CAPACITY refusal: the bytes are staged and the pump will retry them', async () => {
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline({
+      ok: false,
+      error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),
+    });
+    const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'b1' });
+    const result = await durable.enqueue(bundle());
+    expect(result.retained).toBe(true);
+    expect(map.has('b1')).toBe(true);
+  });
+
   it('recover() re-enqueues every pending bundle and removes each on success', async () => {
     const { store, map } = memStore();
     map.set('b1', serializeBundle(bundle({ fileName: 'one.zip' })));

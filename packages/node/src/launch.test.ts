@@ -46,6 +46,7 @@ import {
   createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
 } from '@bugsee/node-utils';
+import type { Transaction } from '@bugsee/performance';
 import {
   BugseeOption,
   type EnvironmentEnvelope,
@@ -1449,6 +1450,50 @@ describe('launch — capture recovery', () => {
     );
   });
 
+  // R5-4. The SAME wiring, but with a RETRYABLE failure — the only condition under which routing a
+  // recovered blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
+  // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
+  // platform test used an accepting transport: the second copy the durable queue stages on the way in is
+  // then removed the instant the upload succeeds, so the duplicate never outlives the pass. On a 503 it
+  // does — and the next launch uploads that incident twice, from two blobs, with differing payloads.
+  it('re-stages NOTHING in the injected store when a recovered blob’s upload fails retryably', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-retryable-'));
+    seedPriorGeneration(dir, 500, { m: 'pre-crash' }, true); // marker inc-1 + chunks, dead subtree
+    const { store, map, puts } = bundleMemStore();
+    map.set('staged', pendingBundle('inc-1 (staged pre-crash)', 'inc-1'));
+    // 503 on the session call: retryable, so the attempt settles unsettled — the blob is KEPT, which is
+    // exactly when a re-staged second copy would survive to the next launch.
+    const transport = vi.fn<HttpTransport>(async (url: string) => ({
+      status: url.endsWith('/v2/sessions') ? 503 : 200,
+      headers: {},
+      body: new Uint8Array(),
+    }));
+
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        bundleStore: store,
+        instanceIdentity: FIXED_INSTANCE,
+        onError: vi.fn(),
+      }),
+    );
+
+    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
+    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
+    await new Promise((resolve) => setTimeout(resolve, 30)); // let a re-stage land if it is going to
+    expect(puts).toEqual([]); // NOTHING was written back into the integrator's store…
+    expect([...map.keys()]).toEqual(['staged']); // …so one incident is still exactly one blob
+    // The marker survives too (retryable ⇒ both durable traces kept), so the next launch retries once.
+    expect(createNodeReportMarkerStore(join(dir, PRIOR_INSTANCE, 'incidents')).list()).toHaveLength(
+      1,
+    );
+    // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
+    await client.stop(0);
+  });
+
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
   // a pass that grabs the whole store delivers the other sibling's blob through a replay that knows nothing
   // about that sibling's marker, and the marker leg then rebuilds and uploads it a second time.
@@ -2322,7 +2367,9 @@ describe('launch — incoming-server instrumentation wiring', () => {
     // the return headers BEFORE `finish`. A double that cannot exist in production tests nothing.
     const attributes: Record<string, unknown> = {};
     let finished = false;
-    const txn = {
+    // Annotated, NOT cast: `registerExt(name, api: unknown)` erases the type on the way in, so the
+    // annotation is the only thing that keeps this double inside tsc's conformance net (R5-8).
+    const txn: Transaction = {
       getTraceId: () => 'trace-1',
       getSpanId: () => 'span-1',
       getName: () => 'http.server',

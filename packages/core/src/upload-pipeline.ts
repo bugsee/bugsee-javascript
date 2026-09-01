@@ -1,16 +1,17 @@
 import { computeBackoff, sha256Hex } from '@bugsee/util';
 import { BugseeError } from './errors';
-import type {
-  BugseeApi,
-  Bundle,
-  BundleUploader,
-  DropReason,
-  IssueCreateResult,
-  OutcomeCategory,
-  PutResult,
-  UploadHint,
-  UploadPipeline,
-  UploadResult,
+import {
+  type BugseeApi,
+  type Bundle,
+  type BundleUploader,
+  classifyServerErrorCode,
+  type DropReason,
+  type IssueCreateResult,
+  type OutcomeCategory,
+  type PutResult,
+  type UploadHint,
+  type UploadPipeline,
+  type UploadResult,
 } from './transport';
 
 // UploadPipeline orchestrator (design §7.5/§7.8). Per bundle it runs the 3-call operation
@@ -93,25 +94,55 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     return permanent ? { ok: false, error, permanent } : { ok: false, error };
   };
 
+  /**
+   * Is this control-plane failure FINAL, and if so how?
+   *
+   * The control plane has two numeric namespaces that look alike and mean nothing to each other: the
+   * HTTP status, and the collector's own `error.code` from a `{ ok: false, error }` envelope — which
+   * arrives with HTTP **200**, so the status never reveals it. Only the collector's code is a verdict
+   * about the PAYLOAD; a status is a verdict about the request that carried it.
+   *
+   * So classification here reads the collector code and nothing else (Android's own rule for the session
+   * obtain: `BugseeCommunicationManager.sessionObtainFailureResponse:770-792` switches on the server
+   * error code, and throws — i.e. retries — for "no internet, server-too-busy, unknown"):
+   *
+   *   permanent  → the payload can never be accepted. Fail without retrying, and mark the result
+   *                `permanent` so the durable queue frees the bundle instead of re-uploading it at every
+   *                launch for the life of the installation.
+   *   kill_sdk   → the same, PLUS `fatal`, which trips the client's kill state. This is the ONLY thing
+   *                that may disable the SDK — Android blacklists an app token here and nowhere else.
+   *   otherwise  → `null`: invalidate the session and retry. Transient, auth-expired, an unrecognised
+   *                code, and every HTTP status alike. This is the fail-safe direction, and it is what
+   *                replaces the old rule that read a 401 or 403 as "the app token is invalid" and
+   *                disabled the SDK for the rest of the process.
+   */
+  const finalControlPlaneFailure = (err: unknown): BugseeError | null => {
+    if (!(err instanceof BugseeError) || err.serverCode === undefined) {
+      return null;
+    }
+    const category = classifyServerErrorCode(err.serverCode);
+    if (category !== 'permanent' && category !== 'kill_sdk') {
+      return null;
+    }
+    return new BugseeError(err.message, err.code, {
+      permanent: true,
+      cause: err,
+      serverCode: err.serverCode,
+      ...(category === 'kill_sdk' ? { fatal: true } : {}),
+    });
+  };
+
   // Phase 1: ensure session + create the issue, retried as a unit (invalidate before each retry).
-  // EXCEPTION: a 401/403 from ensureSession is the APP TOKEN itself being rejected (session create is
-  // app-token-authenticated) — retrying can't recover it, so it fails FATALLY (no retry) and the
-  // client enters its kill-state. A 401 from createIssue is a stale ACCESS token → recoverable retry.
+  // EXCEPTION: a collector code the classifier calls final (see above) is not retried at all.
   const createIssue = async (bundle: Bundle): Promise<IssueCreateResult> => {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        try {
-          await api.ensureSession(bundle.request.environment);
-        } catch (err) {
-          if (err instanceof BugseeError && (err.code === 401 || err.code === 403)) {
-            throw new BugseeError('invalid app token', err.code, { fatal: true, cause: err });
-          }
-          throw err; // any other session failure falls through to the recoverable retry below
-        }
+        await api.ensureSession(bundle.request.environment);
         return await api.createIssue(bundle.request);
       } catch (err) {
-        if (err instanceof BugseeError && err.fatal) {
-          throw err; // do not retry / re-acquire — the app token is invalid
+        const final = finalControlPlaneFailure(err);
+        if (final !== null) {
+          throw final; // retrying cannot change the collector's mind about this payload
         }
         api.invalidateSession();
         if (attempt >= maxRetries) {
@@ -129,7 +160,10 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     try {
       issue = await createIssue(bundle);
     } catch (err) {
-      return fail(err as BugseeError, category);
+      const error = err as BugseeError;
+      // A control-plane verdict the collector will repeat forever is `permanent` for exactly the same
+      // reason a refused PUT is: keeping the bundle means re-sending it at every launch for good.
+      return fail(error, category, 'upload_failed', error.permanent === true);
     }
 
     let checksumSha256: string;

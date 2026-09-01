@@ -33,12 +33,31 @@ function fakeTimer() {
   };
 }
 
-const fakeTxn = () =>
-  ({
-    setAttribute: vi.fn(),
-    finish: vi.fn(),
+// Fully conforming — deliberately NOT cast (`as unknown as Transaction`). Left as a bare object literal
+// assigned to a `Transaction`-typed const, tsc's missing-property check on a fresh object literal rejects
+// this double at authoring time (a CI gate) the moment `Transaction` grows a member it does not implement.
+// R5-8: these three were the last casts left, and they sit in the package that OWNS the interface.
+const fakeTxn = (): Transaction => {
+  const txn: Transaction = {
+    getTraceId: () => 'trace-1',
+    getSpanId: () => 'span-1',
+    isSampled: () => true,
     isFinished: vi.fn(() => false),
-  }) as unknown as Transaction;
+    setName: vi.fn(() => txn),
+    setDescription: vi.fn(() => txn),
+    setAttribute: vi.fn(() => txn),
+    setStatus: vi.fn(() => txn),
+    startChildSpan: vi.fn(() => txn),
+    recordChildSpan: vi.fn(),
+    getStatus: () => 'OK',
+    getDescription: () => undefined,
+    getAttributes: vi.fn(() => ({})),
+    getName: () => 'name',
+    finish: vi.fn(),
+    getOperation: () => 'navigation',
+  };
+  return txn;
+};
 
 // A fake performance API recording each started transaction.
 function fakeApi() {

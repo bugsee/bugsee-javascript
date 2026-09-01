@@ -182,23 +182,43 @@ describe('launch — loopback end-to-end', () => {
     }
   });
 
-  it('enters the kill-state when the real transport gets 401 on /v2/sessions (invalid app token)', async () => {
-    // A loopback server that rejects the app token on session create.
+  // A control-plane server whose answer the test chooses. `hits` records every path it saw.
+  const controlPlane = async (answer: (url: string) => { status: number; body?: unknown }) => {
     const hits: string[] = [];
-    const authServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       req.on('data', () => {});
       req.on('end', () => {
-        hits.push(req.url ?? '');
-        res.writeHead((req.url ?? '').endsWith('/v2/sessions') ? 401 : 200);
-        res.end();
+        const url = req.url ?? '';
+        hits.push(url);
+        const { status, body } = answer(url);
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(body === undefined ? '' : JSON.stringify(body));
       });
     });
-    await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve));
-    const authOrigin = `http://127.0.0.1:${(authServer.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return {
+      hits,
+      origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  };
+
+  // An HTTP status on the control plane is a verdict about the REQUEST; only the collector's own error
+  // code is a verdict about the app token. This SDK used to read a 401 or a 403 out of `/v2/sessions` as
+  // "the app token is invalid" and enter the permanent kill state — capture and detection stopped,
+  // `launch()` a no-op for the life of the process — so one bad minute at an edge proxy silently ended
+  // recording. `transport.ts` asserts, as the Android parity target, that 401 is RETRYABLE, and Android
+  // agrees: session expiry, retried (`BugseeCommunicationManager.java:614-635`).
+  it.each([
+    401, 403,
+  ])('keeps recording when the real transport gets HTTP %i on /v2/sessions', async (status) => {
+    const server = await controlPlane((url) =>
+      url.endsWith('/v2/sessions') ? { status } : { status: 200 },
+    );
     const onError = vi.fn();
     try {
-      const client = launch('bad-token', {
-        endpoint: authOrigin,
+      const client = launch('tok', {
+        endpoint: server.origin,
         process: fakeProcess(),
         captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
         captureNetwork: false,
@@ -206,16 +226,56 @@ describe('launch — loopback end-to-end', () => {
         systemMetricsSampler: () => [],
         onError,
       });
-      await client.logException(new Error('boom')); // real transport → 401 sessions → fatal → kill
+      // NOT awaited: the report is now mid-retry-ladder behind exponential backoff, which is exactly
+      // the point — it is being retried rather than abandoned.
+      void client.logException(new Error('boom'));
+      await vi.waitFor(() =>
+        expect(server.hits.filter((u) => u.endsWith('/v2/sessions')).length).toBeGreaterThan(0),
+      );
+      expect(client.isLaunched()).toBe(true); // still capturing
+      expect(onError).not.toHaveBeenCalled(); // no kill-state notification
+      await client.stop(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // …and the one thing that DOES disable the SDK: the collector's KILL_SDK code. It arrives inside an
+  // HTTP 200 envelope, which is why a status can never stand in for it (Android blacklists an app token
+  // here and nowhere else, `BugseeCommunicationManager.java:776-781`).
+  it('enters the kill-state on the collector KILL_SDK code (99099), which arrives with HTTP 200', async () => {
+    const server = await controlPlane((url) =>
+      url.endsWith('/v2/sessions')
+        ? {
+            status: 200,
+            body: { ok: false, error: { type: 'KillSdkError', message: 'off', code: 99099 } },
+          }
+        : { status: 200 },
+    );
+    const onError = vi.fn();
+    try {
+      const client = launch('killed-token', {
+        endpoint: server.origin,
+        process: fakeProcess(),
+        captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+        captureNetwork: false,
+        captureSystemEvents: false,
+        systemMetricsSampler: () => [],
+        onError,
+      });
+      expect(await client.logException(new Error('boom'))).toMatchObject({
+        ok: false,
+        permanent: true, // …and the bundle is dropped, not re-sent at every launch forever
+      });
       expect(onError).toHaveBeenCalledTimes(1);
       expect(client.isLaunched()).toBe(false); // killed
 
-      const sessionsBefore = hits.filter((u) => u.endsWith('/v2/sessions')).length;
+      const sessionsBefore = server.hits.filter((u) => u.endsWith('/v2/sessions')).length;
       expect(await client.logException(new Error('again'))).toEqual({ ok: false }); // no-op
-      expect(hits.filter((u) => u.endsWith('/v2/sessions')).length).toBe(sessionsBefore); // no new call
-      expect(hits.some((u) => u.endsWith('/v2/issues'))).toBe(false); // never got past auth
+      expect(server.hits.filter((u) => u.endsWith('/v2/sessions')).length).toBe(sessionsBefore);
+      expect(server.hits.some((u) => u.endsWith('/v2/issues'))).toBe(false); // never got past auth
     } finally {
-      await new Promise<void>((resolve) => authServer.close(() => resolve()));
+      await server.close();
     }
   });
 });

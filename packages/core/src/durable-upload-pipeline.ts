@@ -239,6 +239,16 @@ export function createDurableUploadPipeline(
   // precisely the blob that needed it.
   const deferred = new Set<string>();
 
+  /**
+   * Report a staged bundle's bytes as still held by this queue — but only while they really are.
+   *
+   * `attempt` frees the blob the moment the result settles, so a settled result must NOT claim to be
+   * retained: by then there is nothing left on disk and the caller would release its own last copy of
+   * the incident against a promise nobody is keeping.
+   */
+  const retainedIfPending = (result: UploadResult): UploadResult =>
+    isUploadSettled(result) ? result : { ...result, retained: true };
+
   /** Was this refused for CAPACITY (worth handing back as soon as a slot frees) rather than failed? */
   const refusedForCapacity = (result: UploadResult): boolean =>
     !result.ok && result.error?.code === QUEUE_OVERFLOW_CODE;
@@ -400,12 +410,19 @@ export function createDurableUploadPipeline(
   return {
     enqueue(bundle: Bundle, hint?: UploadHint): Promise<UploadResult> {
       const id = newId();
+      // Whether the durable write ACTUALLY happened. The catch below is deliberate — a full or
+      // read-only disk must not stop the upload from being attempted — but it means "the durable queue
+      // owns delivery from here" is FALSE for this bundle, and the caller has no other way to find out.
+      // See UploadResult.retained.
+      let staged = false;
       try {
         store.put(id, serializeBundle(bundle, now())); // durable BEFORE the upload attempt
+        staged = true;
       } catch (error) {
         onError(error); // best-effort persistence must never block the upload
       }
-      return attempt(id, bundle, hint);
+      const result = attempt(id, bundle, hint);
+      return staged ? result.then(retainedIfPending) : result;
     },
 
     recover(options?: DurableRecoverOptions): void {

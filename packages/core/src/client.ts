@@ -64,6 +64,7 @@ import { type ContextProvider, ContextProviderToken, type RequestContext } from 
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
   type Bundle,
+  isUploadSettled,
   type UploadPipeline,
   UploadPipelineToken,
   type UploadResult,
@@ -484,8 +485,8 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
   // Submit a finalized (post-before-filter) report. When a capture-recovery marker hook is present,
   // persist a pending marker (with the incident-time attributes + user identifier) BEFORE assembly, then
-  // clear it on settle — by which point the durable bundle queue owns delivery, so capture recovery need
-  // not re-deliver it. All marker I/O is guarded; it must never block or throw the capture path.
+  // retire it once the incident is genuinely accounted for. All marker I/O is guarded; it must never
+  // block or throw the capture path.
   const reportMarkers = options.reportMarkers;
   const submitReport = (handled: ReportingRequest): Promise<UploadResult> => {
     // Capture the active request context NOW (submit is synchronous in the originating async context);
@@ -514,14 +515,41 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
     if (reportMarkers !== undefined) {
-      const clear = (): void => {
+      // WHEN MAY THIS MARKER BE RETIRED?
+      //
+      // Retiring it is a DELETION, and the most consequential one the SDK performs on the live path: the
+      // marker is the only trace of an incident whose bundle never reached durable storage, and it is
+      // what holds that incident's capture generation against `recoverReports`'s sweep — so retiring it
+      // early loses the report AND the recording of a crash that has already happened.
+      //
+      // It used to be `result.then(clear, clear)` — retire on ANY settlement, retryable failures and
+      // rejections included — justified by "by which point the durable bundle queue owns delivery". The
+      // durable queue does not always: it CATCHES a throwing `BundleStore.put` and attempts the upload
+      // anyway (durable-upload-pipeline.ts, deliberately, so a full disk still gets the crash out), and
+      // then nothing at all is staged. A read-only disk plus one 503 erased blob, marker and recording.
+      //
+      // So there are exactly two justifications, and this is the same rule every other retirement site in
+      // the SDK already follows (`capture-recovery.ts`, `native-crash-recovery.ts`):
+      //
+      //   • the upload SETTLED — delivered, or permanently refused. Nothing is left to carry forward.
+      //   • the queue RETAINED the bundle — the bytes are durably staged under this incident's id, so the
+      //     next launch replays them and reconciles this marker away. This is the case the old comment
+      //     was describing; it is now checked instead of assumed.
+      //
+      // Anything else — a retryable failure with nothing staged, or a rejection, where NOTHING is known —
+      // keeps the marker. That is not a leak: the next launch rebuilds the incident from it and retires it
+      // on settle, which is precisely what capture recovery exists to do.
+      const clear = (settled: UploadResult): void => {
+        if (!isUploadSettled(settled) && settled.retained !== true) {
+          return;
+        }
         try {
           reportMarkers.store.remove(handled.id);
         } catch (error) {
           onError(error);
         }
       };
-      result.then(clear, clear);
+      result.then(clear, () => {});
     }
     return result;
   };

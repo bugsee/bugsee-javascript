@@ -257,19 +257,117 @@ describe('createUploadPipeline — retries', () => {
     expect(result.error?.code).toBe(418);
   });
 
+  // ── The control plane's TWO numeric namespaces ─────────────────────────────────────────────────
+  //
+  // An HTTP STATUS and the collector's OWN error code are different things that happen to be numbers.
+  // This pipeline used to treat a 401 or a 403 out of `ensureSession` as "the app token is invalid",
+  // which entered the client's kill state: capture and detection stopped, `launch()` a permanent no-op.
+  // Two things were wrong with that.
+  //
+  //   1. `transport.ts` asserts, as the Android parity target, that 401 is RETRYABLE — and Android
+  //      agrees: `BugseeCommunicationManager.java:614-635` treats it as session expiry and retries once.
+  //      The app-token blacklist fires ONLY on the server error code KILL_SDK (`:776-781`), never on an
+  //      HTTP status. So one bad minute at an edge proxy disabled the SDK until the process restarted.
+  //   2. A `/v2/*` rejection arrives with HTTP **200** and its code in the BODY, and that code was being
+  //      carried in the same field as a status — so a collector code that happened to read 403 was
+  //      mistaken for an auth failure, and Android's real permanent codes (14019 InvalidAppToken, 11004
+  //      ApplicationTypeMismatch, 99098 UnsupportedSdk, 99099 KILL_SDK) matched nothing and were retried
+  //      at every launch for the life of the installation.
+  //
+  // The control plane is now classified by the COLLECTOR CODE alone (`classifyServerErrorCode`), and an
+  // HTTP status on it is retried — which is the fail-safe direction and Android's own behaviour for the
+  // session obtain (`sessionObtainFailureResponse`, `:770-792`).
+
+  const sessionRejecting = (error: unknown) =>
+    fakeApi({ ensureSession: vi.fn<BugseeApi['ensureSession']>().mockRejectedValue(error) });
+  const collectorError = (serverCode: number) => new BugseeError('rejected', 0, { serverCode });
+
   it.each([
     401, 403,
-  ])('fails FATALLY without retry when ensureSession is rejected with %i (invalid app token)', async (code) => {
-    const ensureSession = vi
-      .fn<BugseeApi['ensureSession']>()
-      .mockRejectedValue(new BugseeError('nope', code));
-    const api = fakeApi({ ensureSession });
+  ])('RETRIES an HTTP %i from ensureSession instead of disabling the SDK', async (status) => {
+    const api = sessionRejecting(new BugseeError('nope', status));
     const result = await createUploadPipeline(deps({ api, maxRetries: 3 })).enqueue(bundle);
     expect(result.ok).toBe(false);
+    expect(result.error?.fatal).toBe(false); // NOT the kill state
+    expect(result.permanent).toBeUndefined(); // …and the bundle is kept for the next launch
+    expect(api.ensureSession).toHaveBeenCalledTimes(4); // initial + 3 retries
+    expect(api.invalidateSession).toHaveBeenCalled();
+  });
+
+  it.each([
+    401, 403, 500,
+  ])('RETRIES collector code %i — a collector code is not an HTTP status', async (serverCode) => {
+    const api = sessionRejecting(collectorError(serverCode));
+    const result = await createUploadPipeline(deps({ api, maxRetries: 2 })).enqueue(bundle);
+    expect(result.error?.fatal).toBe(false);
+    expect(result.permanent).toBeUndefined();
+    expect(api.ensureSession).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    [14019, 'InvalidAppToken'],
+    [11004, 'ApplicationTypeMismatch'],
+    [99098, 'UnsupportedSdk'],
+    [12003, 'SimilarCrashExists'],
+  ])('drops the bundle PERMANENTLY on collector code %i (%s), without disabling the SDK', async (serverCode) => {
+    const api = sessionRejecting(collectorError(serverCode));
+    const result = await createUploadPipeline(deps({ api, maxRetries: 3 })).enqueue(bundle);
+    expect(result.permanent).toBe(true); // the durable queue frees it instead of retrying forever
+    expect(result.error?.fatal).toBe(false); // …but the SDK keeps running
+    expect(api.ensureSession).toHaveBeenCalledTimes(1); // no retry — it can never be accepted
+  });
+
+  it('enters the kill state ONLY on KILL_SDK (99099), and drops the bundle with it', async () => {
+    const api = sessionRejecting(collectorError(99099));
+    const result = await createUploadPipeline(deps({ api, maxRetries: 3 })).enqueue(bundle);
     expect(result.error?.fatal).toBe(true);
-    expect(result.error?.code).toBe(code);
-    expect(ensureSession).toHaveBeenCalledTimes(1); // no re-acquire — retrying can't recover
-    expect(api.invalidateSession).not.toHaveBeenCalled();
+    expect(result.permanent).toBe(true);
+    expect(api.ensureSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-mints the session on SessionNotFound (14002) and succeeds on the retry', async () => {
+    const ensureSession = vi
+      .fn<BugseeApi['ensureSession']>()
+      .mockRejectedValueOnce(collectorError(14002))
+      .mockResolvedValue('tok' as AccessToken);
+    const api = fakeApi({ ensureSession });
+    const result = await createUploadPipeline(deps({ api })).enqueue(bundle);
+    expect(result.ok).toBe(true);
+    expect(api.invalidateSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries ServerTooBusy (99013) rather than dropping the bundle', async () => {
+    const api = sessionRejecting(collectorError(99013));
+    const result = await createUploadPipeline(deps({ api, maxRetries: 2 })).enqueue(bundle);
+    expect(result.permanent).toBeUndefined();
+    expect(api.ensureSession).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads ONLY `serverCode` as a collector verdict — a number in `code` is a STATUS', async () => {
+    // `code` is where the HTTP status lives. Pointing the collector classifier at it would conflate the
+    // two namespaces again, just in the opposite direction from the original defect: a transport status
+    // would start deleting reports because it happened to match a collector code. Nothing but
+    // `serverCode` is a verdict about the payload.
+    const api = sessionRejecting(new BugseeError('nope', 14019)); // 14019 in the STATUS field
+    const result = await createUploadPipeline(deps({ api, maxRetries: 2 })).enqueue(bundle);
+    expect(result.permanent).toBeUndefined();
+    expect(result.error?.fatal).toBe(false);
+    expect(api.ensureSession).toHaveBeenCalledTimes(3); // retried, not dropped
+  });
+
+  it('retries an UNKNOWN collector code — a code we do not recognise must not delete a report', async () => {
+    const api = sessionRejecting(collectorError(123_456));
+    const result = await createUploadPipeline(deps({ api, maxRetries: 1 })).enqueue(bundle);
+    expect(result.permanent).toBeUndefined();
+    expect(api.ensureSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('classifies a permanent collector code from createIssue too, not just from ensureSession', async () => {
+    const createIssue = vi.fn<BugseeApi['createIssue']>().mockRejectedValue(collectorError(11004));
+    const api = fakeApi({ createIssue });
+    const result = await createUploadPipeline(deps({ api, maxRetries: 3 })).enqueue(bundle);
+    expect(result.permanent).toBe(true);
+    expect(createIssue).toHaveBeenCalledTimes(1);
   });
 
   it('treats a 401 from createIssue (stale access token) as recoverable, not fatal', async () => {

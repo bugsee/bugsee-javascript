@@ -72,6 +72,16 @@ export interface LaunchRecoveryOptions {
  *   3. the release pass hands over whatever the scan left — UNCONDITIONALLY, including when the scan
  *      threw. Anything else turns a transient scan failure into permanent non-delivery, and the scan's
  *      failures are on-disk state that repeats on every launch.
+ *
+ * "Unconditional" means against a scan that REJECTS, not against one that never settles. A scan wedged
+ * forever (a stuck IndexedDB transaction, an upload against a transport with no timeout) holds a SHARED
+ * queue's release for the whole launch, and its deferred blobs stay withheld from the pump until the next
+ * one. That is deliberate, and it is the price of the rule above it: the dead-sibling scan must get FIRST
+ * REFUSAL on an integrator's store, so releasing on a timeout would hand over blobs whose incidents a
+ * still-running marker leg is about to rebuild — the double upload, with differing payloads, that the
+ * hand-back exists to prevent. Holding costs a launch's delay on data that stays durably staged; releasing
+ * early costs a duplicated crash report that nothing downstream can collapse. Nothing is lost either way,
+ * so the cheaper mistake wins.
  */
 export async function runLaunchRecovery(options: LaunchRecoveryOptions): Promise<void> {
   const { queue, pipeline, whenReady, scan } = options;
