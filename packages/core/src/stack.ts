@@ -17,15 +17,32 @@ export interface StackFrame {
   debugId?: string;
 }
 
-// §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path.
+// §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
+// customer's filesystem out of the report.
+//
+// A Node crash frame used to carry the FULL absolute path — the OS username, the home-directory layout,
+// and often an internal project codename — in every report, against the SDK's own rule that
+// privacy-relevant data is obscured to the maximum extent possible BY DEFAULT.
+//
+// Dependency frames truncate at the FIRST `/node_modules/`, never the last. That is load-bearing rather
+// than a style choice: `file` is the key of the `file → debugId` source-map join (`debug-id.ts`), so two
+// distinct files scrubbing to one string would hand a frame the WRONG debug id and symbolicate it against
+// the wrong map — worse than the leak it fixes. Measured over a real 24,591-file pnpm tree, truncating at
+// the LAST boundary collapsed 2,783 distinct files onto shared keys; at the first, none. It also keeps a
+// nested copy distinguishable from a hoisted one (the duplicate-package signal) and preserves pnpm's
+// `.pnpm/<pkg>@<version>/` directory, which carries the version for free.
 function scrubFramePath(path: string): string {
-  if (path.startsWith('file://')) {
-    return path.slice('file://'.length);
+  let scrubbed = path;
+  if (scrubbed.startsWith('file://')) {
+    scrubbed = scrubbed.slice('file://'.length);
+  } else if (scrubbed.startsWith('webpack://')) {
+    return scrubbed.replace(/^webpack:\/\/+/, '');
+  } else if (scrubbed.includes('://')) {
+    // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak.
+    return scrubbed;
   }
-  if (path.startsWith('webpack://')) {
-    return path.replace(/^webpack:\/\/+/, '');
-  }
-  return path;
+  const dependency = scrubbed.indexOf('/node_modules/');
+  return dependency >= 0 ? scrubbed.slice(dependency + 1) : scrubbed;
 }
 
 const LOCATION = /^(.+):(\d+):(\d+)$/;

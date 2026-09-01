@@ -46,16 +46,24 @@ describe('parseV8Stack / formatStack (fuzz)', () => {
    * anything that cannot survive its own serialization is a frame the backend receives differently from
    * the one the SDK scrubbed.
    */
-  it('round-trips frames through format → parse', () => {
+  it('round-trips SCRUBBED frames through format → parse (scrubbing is idempotent)', () => {
     fc.assert(
       fc.property(fc.array(frame, { minLength: 1, maxLength: 8 }), (frames) => {
-        const parsed = parseV8Stack(formatStack(frames));
-        expect(parsed).toHaveLength(frames.length);
-        for (const [i, original] of frames.entries()) {
-          expect(parsed[i]?.function, `frame ${i} function`).toBe(original.function);
-          expect(parsed[i]?.line, `frame ${i} line`).toBe(original.line);
-          expect(parsed[i]?.column, `frame ${i} column`).toBe(original.column);
-          expect(parsed[i]?.file, `frame ${i} file`).toBe(original.file);
+        // Every frame the SDK holds has been through `parseV8Stack`, so that is the shape whose
+        // serialization has to be stable. Scrubbing is deliberately NOT the identity on a raw absolute
+        // path — truncating `/srv/app/node_modules/@scope/pkg/x.mjs` to `node_modules/@scope/pkg/x.mjs`
+        // is the privacy fix — so asserting that a RAW generated path survives would be asserting the
+        // absence of the scrub. The property that actually protects the report path is that scrubbing
+        // reaches a fixed point in one pass: what the backend receives is what the SDK scrubbed.
+        const scrubbed = parseV8Stack(formatStack(frames));
+        expect(scrubbed).toHaveLength(frames.length);
+        const reparsed = parseV8Stack(formatStack(scrubbed));
+        expect(reparsed).toHaveLength(scrubbed.length);
+        for (const [i, original] of scrubbed.entries()) {
+          expect(reparsed[i]?.function, `frame ${i} function`).toBe(original.function);
+          expect(reparsed[i]?.line, `frame ${i} line`).toBe(original.line);
+          expect(reparsed[i]?.column, `frame ${i} column`).toBe(original.column);
+          expect(reparsed[i]?.file, `frame ${i} file`).toBe(original.file);
         }
       }),
       { numRuns: 500 },

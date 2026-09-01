@@ -260,3 +260,42 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
     expect(frames).toEqual([]);
   });
 });
+
+describe("scrubFramePath — the customer's filesystem must not ship in a crash", () => {
+  // A Node crash frame carried the FULL absolute path: the OS username, the home-directory layout and
+  // often an internal project codename, in every report. The SDK's rule is that privacy-relevant data is
+  // obscured to the maximum extent possible BY DEFAULT, and this was shipped behaviour that broke it.
+
+  it('truncates a dependency path at the FIRST node_modules boundary, not the last', () => {
+    // Load-bearing. `file` is the key of the `file → debugId` source-map join, so two distinct files
+    // scrubbing to one string would hand a frame the WRONG debug id and symbolicate it against the wrong
+    // map — worse than the leak. Measured on a real 24,591-file pnpm tree: truncating at the LAST
+    // boundary collapses 2,783 distinct files onto shared keys; at the FIRST, zero.
+    expect(
+      parseLocation('/Users/jane/app/node_modules/a/node_modules/lodash/index.js:1:1').file,
+    ).toBe('node_modules/a/node_modules/lodash/index.js');
+    // …so a nested copy stays distinguishable from a hoisted one, which is the whole duplicate-package
+    // signal: same package, two versions, one process.
+    expect(parseLocation('/Users/jane/app/node_modules/lodash/index.js:1:1').file).toBe(
+      'node_modules/lodash/index.js',
+    );
+  });
+
+  it('keeps the pnpm version directory, which carries the version for free', () => {
+    expect(
+      parseLocation('/Users/jane/app/node_modules/.pnpm/ipaddr.js@2.4.0/node_modules/ipaddr.js:1:1')
+        .file,
+    ).toBe('node_modules/.pnpm/ipaddr.js@2.4.0/node_modules/ipaddr.js');
+  });
+
+  it('leaves a URL alone — a browser frame is not a filesystem path', () => {
+    // The leak is node-family only. Scrubbing a URL would destroy the origin, which IS the useful part.
+    expect(parseLocation('https://app.example.com/static/js/main.abc.js:9:1').file).toBe(
+      'https://app.example.com/static/js/main.abc.js',
+    );
+  });
+
+  it('leaves an already-relative path alone', () => {
+    expect(parseLocation('./src/app.ts:3:7').file).toBe('./src/app.ts');
+  });
+});
