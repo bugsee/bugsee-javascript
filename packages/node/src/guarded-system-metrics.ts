@@ -44,16 +44,18 @@ const realPerfHooks: PerfHooks = {
 
 /** ns → ms; 0 when non-finite (e.g. NaN before the first tick). */
 const lagMs = (ns: number): number => (Number.isFinite(ns) ? ns / 1e6 : 0);
-const zeroLoop = (): EventLoopSample => ({ meanMs: 0, maxMs: 0, p99Ms: 0 });
+const unavailableLoop = (): undefined => undefined;
 
-// Build a lag reader from the histogram primitive; if it throws at construction, degrade to a zero reader.
-function guardedEventLoop(monitor: () => DelayHistogram): () => EventLoopSample {
+// Build a lag reader from the histogram primitive. Answers `undefined` — never zero — when the runtime
+// cannot give a real reading: "0 ms of event-loop lag" is exactly what a perfectly healthy process
+// reports, so a fabricated zero is indistinguishable from good news.
+function guardedEventLoop(monitor: () => DelayHistogram): () => EventLoopSample | undefined {
   let histogram: DelayHistogram;
   try {
     histogram = monitor();
     histogram.enable();
   } catch {
-    return zeroLoop;
+    return unavailableLoop;
   }
   return () => {
     // Guard the READS too, not just construction: the system-traces provider runs its first sample
@@ -68,7 +70,7 @@ function guardedEventLoop(monitor: () => DelayHistogram): () => EventLoopSample 
       histogram.reset();
       return out;
     } catch {
-      return zeroLoop();
+      return undefined;
     }
   };
 }
@@ -99,15 +101,27 @@ function guardedElu(elu: PerfHooks['eventLoopUtilization']): () => number | unde
 export interface GuardedSystemMetricsDeps extends NodeSystemMetricsDeps {
   /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
+  /**
+   * Does this runtime's `monitorEventLoopDelay` actually observe a BLOCKED loop? Default `true`.
+   *
+   * Deno's does not. It answers, it never throws, and it never registers a stall — measured against a
+   * real 150 ms synchronous block: node 160.956 ms, bun 146.634 ms, deno 0.065 ms. There is no passive
+   * tell the way there is for ELU (where a zero `idle` gives it away), so the composition root that
+   * knows which runtime it is on passes `false` and the lag traces are omitted rather than reporting a
+   * healthy loop through a freeze. `@bugsee/deno` sets this; node and bun leave it alone.
+   */
+  measuresEventLoopDelay?: boolean;
 }
 
 export function createGuardedSystemMetricsSampler(
   deps: GuardedSystemMetricsDeps = {},
 ): () => TraceSample[] {
-  const { perfHooks, ...nodeDeps } = deps;
+  const { perfHooks, measuresEventLoopDelay = true, ...nodeDeps } = deps;
   const perf = perfHooks ?? realPerfHooks;
   return createNodeSystemMetricsSampler({
-    eventLoop: guardedEventLoop(perf.monitorEventLoopDelay),
+    eventLoop: measuresEventLoopDelay
+      ? guardedEventLoop(perf.monitorEventLoopDelay)
+      : unavailableLoop,
     eventLoopUtilization: guardedElu(perf.eventLoopUtilization),
     ...nodeDeps, // an explicit caller-supplied reader wins over the guarded default
   });

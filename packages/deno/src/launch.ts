@@ -21,7 +21,12 @@ import { denoSystemProbe } from './environment';
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: denoSystemProbe,
-    systemMetricsSampler: createGuardedSystemMetricsSampler(),
+    // `measuresEventLoopDelay: false` — Deno's `monitorEventLoopDelay` answers and never throws, but it
+    // does not observe a blocked loop at all. Measured against a real 150ms synchronous block: node
+    // 160.956ms, bun 146.634ms, deno 0.065ms. Reporting 0.065ms through a 150ms freeze reads as a
+    // healthy process, so the lag traces are omitted here rather than fabricated. ELU self-disables on
+    // its own tell (a zero `idle`), so it needs no flag.
+    systemMetricsSampler: createGuardedSystemMetricsSampler({ measuresEventLoopDelay: false }),
     ...options,
     // Deno's native serve wrap (instruments idiomatic Deno.serve apps that bypass node:http), CONCATENATED
     // before any caller-supplied server instrumentations — never spread-replaced. node still installs its

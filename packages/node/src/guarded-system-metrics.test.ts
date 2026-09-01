@@ -59,9 +59,10 @@ describe('createGuardedSystemMetricsSampler', () => {
         eventLoopUtilization: fakeElu(0.3),
       },
     })();
-    expect(metricValue(sample, 'event_loop_lag_ms')).toBe(0);
-    expect(metricValue(sample, 'event_loop_lag_max_ms')).toBe(0);
-    expect(metricValue(sample, 'event_loop_lag_p99_ms')).toBe(0);
+    // OMITTED, not zeroed: "0 ms of event-loop lag" is what a perfectly healthy process reports.
+    expect(metricValue(sample, 'event_loop_lag_ms')).toBeUndefined();
+    expect(metricValue(sample, 'event_loop_lag_max_ms')).toBeUndefined();
+    expect(metricValue(sample, 'event_loop_lag_p99_ms')).toBeUndefined();
     expect(metricValue(sample, 'event_loop_utilization')).toBe(0.3); // ELU still works → unaffected
   });
 
@@ -111,8 +112,9 @@ describe('createGuardedSystemMetricsSampler', () => {
         eventLoopUtilization: fakeElu(0),
       },
     })();
-    // The reader must NOT throw out of the sampler (it runs synchronously in launch()'s first sample).
-    expect(metricValue(sample, 'event_loop_lag_ms')).toBe(0);
+    // The reader must NOT throw out of the sampler (it runs synchronously in launch()'s first sample),
+    // and it must not invent a reading either.
+    expect(metricValue(sample, 'event_loop_lag_ms')).toBeUndefined();
   });
 
   it('OMITS utilization if the ELU delta READ throws (not just init)', () => {
@@ -179,5 +181,37 @@ describe('createGuardedSystemMetricsSampler — a runtime that ANSWERS but does 
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: idleButReal },
     })();
     expect(metricValue(sample, 'event_loop_utilization')).toBe(0);
+  });
+});
+
+describe('createGuardedSystemMetricsSampler — a runtime whose histogram cannot SEE a blocked loop', () => {
+  it('omits the lag traces when the runtime is declared unable to measure them', () => {
+    // Measured 2026-09-01 with the histogram sampling an idle loop first, then a real 150ms synchronous
+    // block:
+    //   node  idle floor 11.067ms -> 160.956ms   (sees it)
+    //   bun   idle floor  1.016ms -> 146.634ms   (sees it)
+    //   deno  idle floor  0.022ms ->   0.065ms   (BLIND)
+    // Deno's `monitorEventLoopDelay` answers, and does not throw, so there is no passive tell the way
+    // there is for ELU — it simply never registers a stall. Reporting 0.065ms through a 150ms freeze is
+    // the same lie as a 0% utilization, so the runtime that knows it cannot measure says so.
+    const { histogram } = fakeHistogram({ mean: 22_000, max: 65_000, p99: 40_000 });
+    const sample = createGuardedSystemMetricsSampler({
+      perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: fakeElu(0.4) },
+      measuresEventLoopDelay: false,
+    })();
+    expect(metricValue(sample, 'event_loop_lag_ms')).toBeUndefined();
+    expect(metricValue(sample, 'event_loop_lag_max_ms')).toBeUndefined();
+    expect(metricValue(sample, 'event_loop_lag_p99_ms')).toBeUndefined();
+    // …and everything the runtime CAN answer is still reported.
+    expect(metricValue(sample, 'event_loop_utilization')).toBe(0.4);
+    expect(metricValue(sample, 'process_memory_rss')).toBeGreaterThan(0);
+  });
+
+  it('reports the lag traces by default — the positive control', () => {
+    const { histogram } = fakeHistogram({ mean: 2e6, max: 2e6, p99: 2e6 });
+    const sample = createGuardedSystemMetricsSampler({
+      perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: fakeElu(0.4) },
+    })();
+    expect(metricValue(sample, 'event_loop_lag_ms')).toBe(2);
   });
 });

@@ -22,7 +22,16 @@ type MemoryReader = () => {
 };
 type CpuReader = () => { user: number; system: number };
 type SystemMemoryReader = () => { total: number; free: number };
-type EventLoopReader = () => { meanMs: number; maxMs: number; p99Ms: number };
+/**
+ * Reads event-loop lag over the interval, or `undefined` when this runtime cannot measure it.
+ *
+ * `undefined` has to be representable for the same reason as {@link eluUnavailable}: Deno's
+ * `monitorEventLoopDelay` answers and never throws, but it does not observe a blocked loop at all.
+ * Measured 2026-09-01 against a real 150ms synchronous block — node 160.956ms, bun 146.634ms, deno
+ * 0.065ms. Reporting 0.065ms through a 150ms freeze is a confident wrong answer, so the runtime that
+ * knows it cannot measure omits the traces instead.
+ */
+type EventLoopReader = () => { meanMs: number; maxMs: number; p99Ms: number } | undefined;
 
 export interface NodeSystemMetricsDeps {
   /** Reads process memory (bytes). Default process.memoryUsage. */
@@ -132,9 +141,13 @@ export function createNodeSystemMetricsSampler(
       { name: 'cpu_usage_user', value: userDelta },
       { name: 'cpu_usage_system', value: systemDelta },
       { name: 'cpu_usage_process', value: cpuProcessPct },
-      { name: 'event_loop_lag_ms', value: loop.meanMs },
-      { name: 'event_loop_lag_max_ms', value: loop.maxMs },
-      { name: 'event_loop_lag_p99_ms', value: loop.p99Ms },
+      ...(loop === undefined
+        ? []
+        : [
+            { name: 'event_loop_lag_ms', value: loop.meanMs },
+            { name: 'event_loop_lag_max_ms', value: loop.maxMs },
+            { name: 'event_loop_lag_p99_ms', value: loop.p99Ms },
+          ]),
       // OMITTED, never zeroed, when the runtime cannot answer: a metric that is absent prompts a
       // question, while a fabricated 0 answers one wrongly.
       ...(utilization === undefined

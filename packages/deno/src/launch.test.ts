@@ -7,11 +7,27 @@ import {
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import type { NodeRuntime, SystemProbe } from '@bugsee/node';
+import {
+  createGuardedSystemMetricsSampler,
+  type NodeRuntime,
+  type SystemProbe,
+} from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { denoSystemProbe } from './environment';
 import { launch, launchCore } from './launch';
+
+// The event-loop-lag OPT-OUT is pure WIRING from this tier: what the flag DOES (omitting the three lag
+// traces rather than reporting zeros) is pinned behaviourally in
+// `node/src/guarded-system-metrics.test.ts`. What only this tier can decide is that Deno is a runtime
+// that must set it, so that is what is pinned here — against the call.
+vi.mock('@bugsee/node', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/node')>();
+  return {
+    ...actual,
+    createGuardedSystemMetricsSampler: vi.fn(actual.createGuardedSystemMetricsSampler),
+  };
+});
 
 // --- fakes: no real process / network / timers --------------------------------------------------
 
@@ -249,5 +265,18 @@ describe('@bugsee/deno launch', () => {
       await client.stop();
       delete (globalThis as G).Deno;
     }
+  });
+});
+
+describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
+  it('declares that Deno cannot measure event-loop DELAY, so the lag traces are omitted', () => {
+    // Measured against a real 150ms synchronous block: node 160.956ms, bun 146.634ms, deno 0.065ms.
+    // Deno's `monitorEventLoopDelay` answers and never throws, so no lower layer can tell — unlike ELU,
+    // which gives itself away with a zero `idle`. A lag of ~0 is exactly what a healthy process reports,
+    // which is why fabricating one is worse than reporting nothing.
+    track(launchCore('tok', base()).client);
+    expect(createGuardedSystemMetricsSampler).toHaveBeenCalledWith(
+      expect.objectContaining({ measuresEventLoopDelay: false }),
+    );
   });
 });
