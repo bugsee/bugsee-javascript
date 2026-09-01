@@ -8,7 +8,7 @@ export { fromBase64, toBase64 } from './base64';
 export type { PlainObject } from './deep-merge';
 export { deepMerge } from './deep-merge';
 export type { Deferred } from './deferred';
-export { createDeferred } from './deferred';
+export { createDeferred, isThenable } from './deferred';
 export {
   isBrowser,
   isBun,

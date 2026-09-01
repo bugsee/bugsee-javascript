@@ -1,8 +1,12 @@
 import {
   appendFileSync,
+  closeSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -26,6 +30,35 @@ export function ensureDir(dir: string): void {
 /** Write `data` to `file`, replacing any existing content, owner-only. */
 export function writeFileSecure(file: string, data: Uint8Array | string): void {
   writeFileSync(file, data, { mode: FILE_MODE });
+}
+
+/**
+ * Write `data` to `file` ATOMICALLY and owner-only: a temp sibling, fsync'd, then renamed into place.
+ *
+ * For any file whose DETERMINISTIC final name is treated as proof of a complete artifact — a staged
+ * bundle above all, where recovery parses the header and uploads whatever body follows. `writeFileSync`
+ * truncates its target before writing, so a crash or an ENOSPC part-way leaves a parseable header over a
+ * truncated body, and recovery then uploads a corrupt bundle as though it were valid. A rename is atomic
+ * on POSIX, so the final name only ever refers to a file that was written in full. This is Android's
+ * invariant too (`IssueReportingRequest.publishFinalBundle` fsyncs, renames, and CHECKS the rename).
+ *
+ * The temp sibling carries the pid so two processes sharing a directory cannot collide on it.
+ */
+export function writeFileAtomic(file: string, data: Uint8Array | string): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  try {
+    const fd = openSync(temp, 'w', FILE_MODE);
+    try {
+      writeFileSync(fd, data);
+      fsyncSync(fd); // durable BEFORE the rename, so the rename cannot publish an empty file
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, file);
+  } catch (error) {
+    remove(temp); // best-effort: never leave a partial sibling behind
+    throw error;
+  }
 }
 
 /** Append `data` to `file`, creating it owner-only on first write. */

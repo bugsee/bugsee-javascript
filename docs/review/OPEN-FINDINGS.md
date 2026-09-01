@@ -157,17 +157,21 @@ Fixed in the follow-up commit unless marked OPEN.
   the gate, which reports 97 tasks. The gate passed; the number was presented as though it were the whole.
 - **OPEN · a pre-existing coverage flake can take CI red**: `@bugsee/protocol`'s wall-clock linearity
   self-test failed once under parallel load and turbo then cancelled 14 sibling tasks. Family of `9b0260f`.
-- **OPEN · the report-marker store is the remaining half.** `idb-report-marker-store.ts` still swallows
-  its `put`/`remove` failures, and `ReportMarkerStore.put` is still typed `: void`, so the contract
-  cannot carry the answer. Under quota exhaustion the MARKER write fails on the same database and the
-  marker then lives only in the in-memory mirror — so on the browser tier an incident can still be lost
-  even though `retained` is now truthful. The commit-semantics fix at least makes those failures visible
-  to `onError` for the first time. Widening the marker contract and awaiting it on the crash path is a
-  design change with latency implications, deliberately not attempted here.
-- **OPEN · `node-utils/src/bundle-store.ts` writes bundles non-atomically** — `writeFileSync` straight to
-  the final name, no temp+rename, no fsync — so a crash mid-write leaves a parseable header over a
-  truncated body, which recovery then uploads. Android does fsync + a CHECKED rename
-  (`IssueReportingRequest.publishFinalBundle`) so the final filename only ever names a complete artifact.
+- **FIXED · the report-marker store was the remaining half.** `ReportMarkerStore.put` is now
+  `void | Promise<void>`, `idb-report-marker-store.ts` returns its promise rather than swallowing it to
+  `onError` (with the same handled-rejection net as the bundle store), and `client.ts` reads the answer.
+  It does not change WHEN a marker is retired — it changes what the SDK knows about whether keeping one
+  means anything. When an upload neither settles nor stages a bundle AND the marker could not be
+  persisted, the incident is definitively unrecoverable, and the client now says so with a distinct
+  diagnostic instead of keeping a marker that exists only in a mirror which dies with the page. A failed
+  marker write whose bundle WAS retained is still reported, but not escalated — recovery rides the blob.
+  `isThenable` moved to `@bugsee/util` so the two store contracts share one definition.
+- **FIXED · `node-utils` wrote bundles non-atomically.** `writeFileSync` truncates its target before
+  writing, so a crash or ENOSPC part-way left a parseable frame header over a truncated body — and
+  `recover()` treats `<id>.bundle` as a complete artifact, so it uploaded the corrupt bundle as though it
+  were valid. New `writeFileAtomic` (temp sibling → fsync → rename, the invariant Android holds in
+  `IssueReportingRequest.publishFinalBundle`) backs the store's `put`; `list()` cannot see a `.tmp`
+  sibling, so a write in flight is invisible to recovery.
 - **OPEN · two more unbounded flushes** at `electron/src/launch-renderer.ts:106` and
   `webview/src/launch.ts:392`; `electron/src/launch-main.ts:203-204` forwards its timeout to its own
   flush but not to `control.flush()`.

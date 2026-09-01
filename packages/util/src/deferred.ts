@@ -39,3 +39,20 @@ export function createDeferred<T>(): Deferred<T> {
     },
   };
 }
+
+/**
+ * Does `value` carry a callable `then`, i.e. can it be awaited?
+ *
+ * The one definition. Several store contracts are deliberately `void | Promise<void>` — a synchronous
+ * medium (fs) returns nothing and throws, an asynchronous one (IndexedDB) hands back a promise — and the
+ * callers that must tell them apart decide durability from the answer, so this must not be restated per
+ * site. The `try` matters: the value comes from an integrator-supplied store, and a throwing `then`
+ * getter must not turn a probe into the failure.
+ */
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  try {
+    return typeof (value as PromiseLike<unknown> | null | undefined)?.then === 'function';
+  } catch {
+    return false;
+  }
+}

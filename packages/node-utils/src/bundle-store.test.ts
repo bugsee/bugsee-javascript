@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -60,5 +60,35 @@ describe('createNodeBundleStore', () => {
     store.remove('a');
     expect(store.read('a')).toBeUndefined();
     expect([...(store.read('b') ?? [])]).toEqual([20]); // b untouched
+  });
+});
+
+describe('createNodeBundleStore — a staged bundle is never half-written', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'bugsee-bundle-atomic-'));
+  });
+  afterEach(() => {
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps the previously staged bundle intact when a re-stage fails', () => {
+    // `recover()` reads `<id>.bundle` and uploads whatever body follows a parseable header, so a
+    // truncated file is a corrupt bundle delivered as though valid — worse than no bundle at all.
+    const store = createNodeBundleStore(dir);
+    store.put('b1', new Uint8Array([1, 2, 3]));
+    chmodSync(dir, 0o500); // no new entries → the temp write fails, though the file itself is writable
+    expect(() => store.put('b1', new Uint8Array([9, 9, 9, 9, 9]))).toThrow();
+    chmodSync(dir, 0o700);
+    expect(store.read('b1')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(store.list()).toEqual(['b1']);
+  });
+
+  it('never lists a temp sibling as a recoverable bundle', () => {
+    const store = createNodeBundleStore(dir);
+    writeFileSync(join(dir, 'b2.bundle.999.tmp'), new Uint8Array([7]));
+    expect(store.list()).toEqual([]);
+    expect(readdirSync(dir)).toContain('b2.bundle.999.tmp'); // it is there, just not offered to recovery
   });
 });

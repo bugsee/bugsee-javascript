@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
   listFiles,
   readFileBytes,
   remove,
+  writeFileAtomic,
   writeFileSecure,
 } from './fs-storage';
 
@@ -119,5 +120,52 @@ describe('remove', () => {
 
   it('does not throw when the path is missing', () => {
     expect(() => remove(join(root, 'ghost'))).not.toThrow();
+  });
+});
+
+describe('writeFileAtomic', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'bugsee-atomic-'));
+  });
+  afterEach(() => {
+    chmodSync(dir, 0o700); // restore so the temp dir can be cleaned up
+  });
+
+  it('writes the bytes, owner-only', () => {
+    const file = join(dir, 'a.bundle');
+    writeFileAtomic(file, new Uint8Array([1, 2, 3]));
+    expect(readFileBytes(file)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('leaves no temp file behind on success', () => {
+    writeFileAtomic(join(dir, 'a.bundle'), new Uint8Array([1]));
+    expect(readdirSync(dir)).toEqual(['a.bundle']);
+  });
+
+  it('does NOT damage the existing file when the write fails', () => {
+    // The property that matters. A bundle is written to a DETERMINISTIC final name, and recovery treats
+    // that name as a complete artifact: `readFrame` parses the header and uploads whatever body follows.
+    // A plain `writeFileSync` truncates the target before it writes, so a failure part-way leaves a
+    // parseable header over a truncated body — a corrupt bundle that recovery then uploads as if valid.
+    // Writing to a temp sibling and renaming means the final name only ever refers to a complete file.
+    const file = join(dir, 'a.bundle');
+    writeFileAtomic(file, new Uint8Array([1, 2, 3]));
+    chmodSync(dir, 0o500); // no new entries may be created — the temp write fails
+    expect(() => writeFileAtomic(file, new Uint8Array([9, 9, 9, 9]))).toThrow();
+    // The file itself is still writable (0o600), so a non-atomic write WOULD have clobbered it here.
+    expect(readFileBytes(file)).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('leaves no temp file behind on failure', () => {
+    const file = join(dir, 'a.bundle');
+    writeFileAtomic(file, new Uint8Array([1]));
+    const sub = join(dir, 'sub');
+    mkdirSync(sub, { mode: 0o700 });
+    chmodSync(sub, 0o500);
+    expect(() => writeFileAtomic(join(sub, 'b.bundle'), new Uint8Array([2]))).toThrow();
+    chmodSync(sub, 0o700);
+    expect(readdirSync(sub)).toEqual([]);
   });
 });

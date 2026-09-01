@@ -25,8 +25,18 @@ export interface ReportMarker {
  * process (a STABLE, not per-generation, location) so the next launch can read what a crashed run left.
  */
 export interface ReportMarkerStore {
-  /** Persist (or replace) the marker for `marker.request.id`. */
-  put(marker: ReportMarker): void;
+  /**
+   * Persist (or replace) the marker for `marker.request.id`.
+   *
+   * Return a promise if the write completes asynchronously (IndexedDB): the client reads it to know
+   * whether this incident is RECOVERABLE at all. The marker is the only trace of an incident whose
+   * bundle never reached durable storage, and it is what pins that incident's capture generation
+   * against the recovery sweep — so a marker that exists only in a store's in-memory mirror dies with
+   * the page and takes the incident with it. On the browser tier the marker shares a database with the
+   * bundle, which is precisely where quota exhaustion fails both at once. A synchronous store returns
+   * nothing and throws.
+   */
+  put(marker: ReportMarker): void | Promise<void>;
   /** Every marker currently persisted (for recovery on the next launch). */
   list(): ReportMarker[];
   /** Remove the marker for report `id`; a no-op if absent. */

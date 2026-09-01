@@ -509,7 +509,7 @@ const flushMicrotasks = async (): Promise<void> => {
 };
 
 function fakeMarkers() {
-  const put = vi.fn<(marker: ReportMarker) => void>();
+  const put = vi.fn<(marker: ReportMarker) => void | Promise<void>>();
   const remove = vi.fn<(id: string) => void>();
   const store: ReportMarkerStore = { put, list: () => [], remove };
   return { store, put, remove };
@@ -966,6 +966,75 @@ describe('createClient — capture-recovery markers', () => {
     // satisfied by either one alone, which would leave the other's guard unpinned.
     expect(onError).toHaveBeenCalledTimes(2);
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('REPORTS an incident that neither uploaded nor left any durable trace', async () => {
+    // The end of the line. Keeping the marker is the right answer when nothing settled and nothing was
+    // staged — but it is only worth anything if the MARKER itself persisted, and on the browser tier it
+    // shares a database with the bundle, so quota exhaustion fails both together. The marker then exists
+    // only in the store's in-memory mirror, dies with the page, and takes the incident with it. Silence
+    // there is the difference between a degraded install and an invisible one.
+    const { store, remove } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: failedUpload(), // retryable, nothing retained
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: {
+        store: { ...store, put: () => Promise.reject(new Error('QuotaExceededError')) },
+        generation: 1,
+      },
+    });
+    await client.logException(new Error('x'));
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('unrecoverable') }),
+      ),
+    );
+    expect(remove).not.toHaveBeenCalled(); // still not deleted — the mirror may yet serve this run
+  });
+
+  it('stays SILENT when the marker persisted, though the upload failed', async () => {
+    // The ordinary retryable failure: the marker is durable, so the next launch rebuilds. No alarm.
+    const { store } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: failedUpload(),
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store: { ...store, put: () => Promise.resolve() }, generation: 1 },
+    });
+    await client.logException(new Error('x'));
+    await flushMicrotasks();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call an incident unrecoverable when the queue RETAINED the bundle', async () => {
+    // Recovery then rides the staged blob, not the marker, so the failed marker write costs this
+    // incident nothing. The write failure is still reported — it is a real storage problem, and that is
+    // the diagnostic the store used to emit itself — but the far louder "unrecoverable" claim is not.
+    const { store } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: failedUpload({ retained: true }),
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: {
+        store: { ...store, put: () => Promise.reject(new Error('QuotaExceededError')) },
+        generation: 1,
+      },
+    });
+    await client.logException(new Error('x'));
+    await flushMicrotasks();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'QuotaExceededError' }),
+    );
+    expect(onError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('unrecoverable') }),
+    );
   });
 
   it('retires the marker when the durable queue RETAINED the bundle, though the upload failed', async () => {

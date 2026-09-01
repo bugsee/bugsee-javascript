@@ -1,6 +1,6 @@
 import type { RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
-import { strFromU8, strToU8 } from '@bugsee/util';
+import { isThenable, strFromU8, strToU8 } from '@bugsee/util';
 import {
   type Bundle,
   isUploadSettled,
@@ -44,10 +44,6 @@ export interface IdentifiedBundle extends Bundle {
   /** The `ReportingRequest.id` this bundle was assembled for; matches its {@link ReportMarker} key. */
   readonly reportId?: string;
 }
-
-// A store whose `put` completes asynchronously hands back a thenable; a synchronous one returns nothing.
-const isThenable = (value: void | Promise<void>): value is Promise<void> =>
-  typeof (value as Promise<void> | undefined)?.then === 'function';
 
 // Unref'd, so a pending staging deadline never keeps a process alive on its own.
 const defaultSleep = (ms: number): Promise<void> =>

@@ -19,6 +19,7 @@ import type {
   NameExtensionMapping,
   SeverityName,
 } from '@bugsee/types';
+import { isThenable } from '@bugsee/util';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
@@ -286,6 +287,16 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
   const onError = options.onError ?? (() => {});
+  // `onError` is the raw user callback, and the sites below call it from PROMISE callbacks where a throw
+  // would surface as an unhandled rejection in the host application. Reporting a failure must never
+  // become one.
+  const onErrorSafe = (error: unknown): void => {
+    try {
+      onError(error);
+    } catch {
+      // a throwing sink must not defeat the guard either
+    }
+  };
   // The internal service container (the "BugseeInternal" — the per-process DI registry, §7.4). Phase 1
   // stands it up; later phases migrate the hand-wired seams into it as registered services.
   const services = options.services ?? createServiceContainer();
@@ -511,16 +522,30 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     // same incident can never disagree.
     const identity = liveIdentity();
     reportIdentity.set(handled, identity);
+    // Did this incident's marker reach DURABLE storage? `true` when there was nothing async to wait for
+    // (a synchronous store that did not throw). It decides nothing about retirement — it decides whether
+    // keeping the marker actually preserves the incident, or only looks like it does.
+    let markerDurable: boolean | Promise<boolean> = true;
     if (reportMarkers !== undefined) {
       try {
-        reportMarkers.store.put({
+        const written = reportMarkers.store.put({
           generation: reportMarkers.generation,
           request: handled,
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
         });
+        markerDurable = isThenable(written)
+          ? Promise.resolve(written).then(
+              () => true,
+              (error: unknown) => {
+                onErrorSafe(error);
+                return false;
+              },
+            )
+          : true;
       } catch (error) {
         onError(error);
+        markerDurable = false;
       }
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
@@ -558,6 +583,21 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         // the upload, and the fail-safe answer to that is to KEEP the marker.
         try {
           if (!isUploadSettled(settled) && settled.retained !== true) {
+            // Keeping the marker is the right answer — but it only preserves the incident if the marker
+            // itself is durable. On the browser tier it shares a database with the bundle, so quota
+            // exhaustion fails both together and the marker survives only in the store's in-memory
+            // mirror, which dies with the page. Nothing can rescue the incident at that point; saying so
+            // is the difference between a degraded install and an invisible one.
+            void Promise.resolve(markerDurable).then((durable) => {
+              if (!durable) {
+                onErrorSafe(
+                  new Error(
+                    `Bugsee: incident ${handled.id} is unrecoverable — the upload did not complete, ` +
+                      'nothing was durably staged, and its report marker could not be persisted.',
+                  ),
+                );
+              }
+            });
             return;
           }
           reportMarkers.store.remove(handled.id);

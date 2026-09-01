@@ -67,7 +67,9 @@ const readBackend = (storage: ReturnType<typeof createInMemoryChunkStorage>): Ch
 function fakeMarkers(initial: ReportMarker[]): ReportMarkerStore {
   const map = new Map(initial.map((m) => [m.request.id, m]));
   return {
-    put: (m) => map.set(m.request.id, m),
+    put: (m) => {
+      map.set(m.request.id, m);
+    },
     list: () => [...map.values()],
     remove: (id) => {
       map.delete(id);

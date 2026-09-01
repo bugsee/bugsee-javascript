@@ -53,7 +53,13 @@ export function createPersistentReportMarkerStore(
       const id = marker.request.id;
       touched.add(id);
       mirror.set(id, marker);
-      blob.put(id, encode(marker)).catch(onError);
+      // RETURNED, not swallowed — see `ReportMarkerStore.put`. A `.catch(onError)` here hid the one
+      // fact the client needs: whether this incident survives the page.
+      const written = blob.put(id, encode(marker));
+      // Handled, so a caller that ignores the return cannot leak an `unhandledrejection` into the host
+      // page; `written` still rejects for a caller that keeps it.
+      written.catch(() => {});
+      return written;
     },
     list() {
       return [...mirror.values()];

@@ -151,7 +151,7 @@ describe('createPersistentReportMarkerStore', () => {
     expect(store.list()).toEqual([]);
   });
 
-  it('routes a persistence (put) failure to onError without throwing', async () => {
+  it('surfaces a persistence (put) failure to the CALLER, without throwing synchronously', async () => {
     const onError = vi.fn();
     const blob: AsyncBlobStore = {
       loadAll: () => Promise.resolve([]),
@@ -159,9 +159,13 @@ describe('createPersistentReportMarkerStore', () => {
       remove: () => Promise.resolve(),
     };
     const store = createPersistentReportMarkerStore(blob, onError);
-    store.put(marker('a')); // does not throw; the mirror still holds it
+    const written = store.put(marker('a')); // does not throw; the mirror still holds it
     expect(store.list().map((m) => m.request.id)).toEqual(['a']);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
+    // Reported through the RETURN value now, not swallowed to the sink — the client uses it to tell
+    // whether the incident survives the page. `remove` and hydration still route to `onError`, since
+    // neither has a caller that can act on the answer.
+    await expect(written).rejects.toThrow('quota exceeded');
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('routes a removal failure to onError without throwing', async () => {
@@ -200,5 +204,59 @@ describe('createPersistentReportMarkerStore', () => {
     const store = createPersistentReportMarkerStore(blob); // no onError
     expect(() => store.put(marker('a'))).not.toThrow();
     await Promise.resolve();
+  });
+});
+
+describe('createPersistentReportMarkerStore — a failed marker write reaches the CALLER', () => {
+  // The marker is the only trace of an incident whose bundle never reached durable storage, and it also
+  // pins that incident's capture generation against the recovery sweep. Swallowing its write failure to
+  // `onError` meant the client kept a marker that existed only in the in-memory mirror — which dies with
+  // the page. On the browser tier the dominant failure is quota exhaustion, and the marker lives in the
+  // SAME database as the bundle, so it is exactly the case where both writes fail together.
+  const failing = (error: Error): AsyncBlobStore => ({
+    loadAll: () => Promise.resolve([]),
+    put: () => Promise.reject(error),
+    remove: () => Promise.resolve(),
+  });
+
+  it('returns a promise that REJECTS when the durable marker write fails', async () => {
+    const onError = vi.fn();
+    const store = createPersistentReportMarkerStore(
+      failing(new Error('QuotaExceededError')),
+      onError,
+    );
+    await expect(store.put(marker('a'))).rejects.toThrow('QuotaExceededError');
+    expect(onError).not.toHaveBeenCalled(); // reported by the caller, once, not twice
+    expect(store.list()).toEqual([marker('a')]); // the mirror still serves this run
+  });
+
+  it('resolves once the marker is durable — the positive control', async () => {
+    const store = createPersistentReportMarkerStore({
+      loadAll: () => Promise.resolve([]),
+      put: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    });
+    await expect(store.put(marker('a'))).resolves.toBeUndefined();
+  });
+
+  it('survives put AND remove failures with no onError supplied', async () => {
+    // Two things, and only one of them is an assertion. (1) `put` is public API on an injectable store,
+    // so a caller that IGNORES the returned promise must not have the SDK emit an `unhandledrejection`
+    // into the host page — that property is enforced by the runner's unhandled-rejection reporter, not
+    // by the `not.toThrow()` below, which cannot fail because neither fake throws synchronously.
+    // (2) `remove` has no caller that can act on its failure, so it still routes to the sink — and with
+    // no `onError` supplied that is the DEFAULTED no-op, which is the only path that reaches it now that
+    // `put` reports through its return value.
+    const store = createPersistentReportMarkerStore({
+      loadAll: () => Promise.resolve([]),
+      put: () => Promise.reject(new Error('boom')),
+      remove: () => Promise.reject(new Error('remove boom')),
+    });
+    expect(() => store.put(marker('a'))).not.toThrow();
+    expect(() => store.remove('a')).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    // The put rejection IS observable to a caller that keeps it — that half is a real assertion.
+    await expect(store.put(marker('b'))).rejects.toThrow('boom');
   });
 });
