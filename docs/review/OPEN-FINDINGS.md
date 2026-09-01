@@ -98,14 +98,28 @@ that settles it.
   expectation is derived (only `kill_sdk` may silence the SDK). Verified by mutation: making KILL_SDK
   non-fatal now fails with "the client KEPT CAPTURING after the collector switched the SDK off", which
   was previously invisible.
-- **Data-safety F3 · SEV2 · `judgeCrossLaunch` flattens the log**, so a deletion in launch 2 is
-  licensed by an accept in launch 4. Injecting a sweep that destroys every pending incident's recording
-  produced 124 violations — ALL from single-launch sets; the cross-launch sets reported zero.
-- **Data-safety F4 · SEV2 · no invariant ever inspects a payload.** Making every recovered report ship
-  EMPTY sweeps clean at 0 violations. "The report arrived, the session is empty" is the failure users
-  actually notice.
-- **Data-safety F5 · SEV3** · a `serverCode ?? code` regression is invisible to the harness; no case
-  answers with a status that collides with a collector code.
+- **INVESTIGATED, and the diagnosis was wrong · `judgeCrossLaunch` flattens the log.** An ordered
+  variant of P2 was built and then MEASURED. Unrefined it fired 15 times on CLEAN code (a recording
+  dropped once its bundle is staged is correct housekeeping — the bundle already embeds the capture);
+  refined to allow that, it caught nothing any other invariant did not, producing 15 findings and **0**
+  unique ones against a premature-blob-release mutation. The reason is structural: you cannot settle
+  bytes you have already deleted, so "deleted, then settled later" is unreachable for one artifact, and
+  across artifacts of one incident it is exactly what `retained` licenses. The check was REMOVED rather
+  than shipped unfalsifiable, with the measurement recorded in the harness. The blindness that injection
+  really exposed was payload, not ordering — see below.
+- **FIXED · no invariant ever inspected a payload.** The collector now keeps the bytes of an ACCEPTED
+  PUT, and P8 asserts that a delivered live incident carries the capture that preceded it. Scoped to the
+  live sets on purpose: the pre-staged sets carry frames the harness built itself, so asserting on those
+  would only re-read its own fixture. Measured — with the recording sweep injected, set L goes from
+  reporting NOTHING to eight P8 violations, because a marker that survives its swept recording rebuilds
+  an EMPTY bundle which is then delivered and accepted, satisfying every structural invariant there was.
+- **FIXED (as far as it is reachable) · a `serverCode ?? code` regression is invisible to the harness.**
+  It is invisible for a reason that is pure luck: no collector code is also a valid HTTP status, so
+  feeding a status through the table always lands on the `transient` default and behaves identically.
+  That coincidence is now an ENFORCED invariant — a test asserts the SDK's table contains nothing in
+  100–599, and it runs everywhere (it needs no Android checkout). The day someone adds a three-digit
+  collector code, that is a failing test rather than a silently reachable data-loss path. The behaviour
+  itself stays pinned by the unit test that reads ONLY `serverCode`.
 - **Data-safety F6 · SEV3 (plausible)** · the retention pass evicts on `maxBundles`(32)/`maxBytes`/
   `maxAgeMs` with no marker awareness, so a burst over 32 incidents can discard a blob whose marker was
   already retired on the strength of `retained`.

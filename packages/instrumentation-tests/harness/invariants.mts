@@ -84,6 +84,7 @@ const { recoverInstances } = await import(`${R}/node/src/recover-instances`);
 const core: any = await import(`${R}/core/src/index`);
 const nu: any = await import(`${R}/node-utils/src/index`);
 const bu: any = await import(`${R}/browser-utils/src/index`);
+const u: any = await import(`${R}/util/src/index`);
 const fidb: any = await import(`${R}/browser-utils/node_modules/fake-indexeddb/build/esm/index.js`);
 
 const env = {
@@ -203,6 +204,14 @@ interface Answered {
   verdict: Verdict;
   /** Which call carried the answer — the signed PUT, or the control plane that gates it. */
   via: 'put' | 'issue' | 'session';
+  /**
+   * The bundle bytes the collector actually received, on an accepted PUT.
+   *
+   * Every structural invariant here asks WHETHER a report was delivered; none of them asked what was
+   * IN it. Making every recovered report ship an empty capture swept clean at 0 violations across 350
+   * cases — and "the report arrived, the session is empty" is the failure a user actually notices.
+   */
+  body?: Uint8Array;
 }
 
 /** A control-plane answer a case wants the collector to give instead of the happy path. */
@@ -270,7 +279,15 @@ function collector(
     const attempt = bySummary.get(summary) ?? 0;
     bySummary.set(summary, attempt + 1);
     const status = statusFor(summary, attempt);
-    puts.push({ summary, status, verdict: harnessVerdict(status), via: 'put' });
+    puts.push({
+      summary,
+      status,
+      verdict: harnessVerdict(status),
+      via: 'put',
+      // Kept only for an ACCEPTED delivery: that is the one the payload invariant judges, and holding
+      // every rejected attempt's bytes would grow with the retry ladder for nothing.
+      ...(harnessVerdict(status) === 'accept' ? { body: options?.body as Uint8Array } : {}),
+    });
     if (status === NETWORK_ERROR) throw new Error('ECONNRESET');
     return { status, headers: {}, body: new Uint8Array() };
   };
@@ -317,6 +334,66 @@ interface Observation {
   left: Set<string>;
   /** Incidents this case KNOWINGLY double-delivers (R2-2 legacy frames, unclaimed concurrent node). */
   expectedDuplicates?: Set<string>;
+}
+
+/** What the live sets log BEFORE the crash — the capture a delivered report must actually carry. */
+const PRE_CRASH_LOG = 'something happened just before the crash';
+
+/**
+ * The log messages inside an accepted bundle; `undefined` when the bytes are unreadable.
+ *
+ * P8 exists because every other invariant here judges DELIVERY and none judged CONTENT: making every
+ * recovered report ship an empty capture swept clean at 0 violations across all 350 cases. A report
+ * that arrives with an empty session is the failure a user actually notices, and it is also what a
+ * swept recording looks like from the outside — the marker survives, the rebuild finds no chunks, and
+ * an empty bundle is delivered and accepted.
+ */
+const bundleLogMessages = (body: Uint8Array | undefined): string[] | undefined => {
+  if (body === undefined) {
+    return undefined;
+  }
+  try {
+    const files = u.unzipSync(body);
+    const logs = files['logs.json'];
+    if (logs === undefined) {
+      return [];
+    }
+    return (JSON.parse(u.strFromU8(logs)) as Array<{ message?: unknown }>).map((e) =>
+      String(e.message ?? ''),
+    );
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * P8 — every ACCEPTED delivery of a live incident carries the capture that preceded it.
+ *
+ * Applied to the LIVE sets only (L and M), and deliberately: those are the ones where a real client
+ * produced a real bundle, so the content is the SDK's work. The pre-staged sets carry frames this
+ * harness built itself, and asserting on those would only re-read the harness's own fixture.
+ *
+ * Measured: with the sweep that destroys still-pending recordings injected, set L goes from reporting
+ * NOTHING to eight P8 violations — that injection was previously caught only in the single-launch sets,
+ * because a marker that survives its swept recording rebuilds an EMPTY bundle which is then delivered
+ * and accepted, satisfying every structural invariant here.
+ */
+function judgePayload(label: string, puts: Answered[]): void {
+  for (const put of puts) {
+    if (put.verdict !== 'accept' || put.via !== 'put') {
+      continue;
+    }
+    const messages = bundleLogMessages(put.body);
+    if (messages === undefined) {
+      failures.push(`${label} :: P8 an ACCEPTED bundle could not be read as a bundle at all`);
+      continue;
+    }
+    if (!messages.includes(PRE_CRASH_LOG)) {
+      failures.push(
+        `${label} :: P8 an ACCEPTED bundle carries NO pre-crash capture — the report arrived EMPTY :: ${JSON.stringify(messages)}`,
+      );
+    }
+  }
 }
 
 let cases = 0;
@@ -451,6 +528,25 @@ function judgeCrossLaunch(o: {
       }
     }
   });
+
+  // WHY THERE IS NO ORDERED VARIANT OF P2 HERE.
+  //
+  // A review round found that `judge` above sees the FLATTENED put log and the FINAL disk state, and
+  // concluded that "a deletion in launch 2 is licensed by an accept in launch 4". An ordered check was
+  // built for it, and then measured: with no refinement it fired 15 times on CLEAN code (a recording
+  // dropped once its bundle was staged is correct housekeeping, not a loss — the bundle already embeds
+  // the capture), and once refined to allow that it caught nothing any other invariant did not. Against
+  // a premature-blob-release mutation it produced 15 findings and **0** that were not already reported
+  // by P1/P2/P3/P4 on the same case.
+  //
+  // The reason is structural: you cannot settle bytes you have already deleted, so "deleted, then
+  // settled later" is unreachable for one artifact. Across artifacts of the same incident it IS
+  // reachable — a marker retired while its blob still carries the incident — but that is exactly what
+  // `UploadResult.retained` licenses, so it is correct rather than a defect.
+  //
+  // The blindness that review actually pointed at is real, but it is not about ordering: a swept
+  // recording whose marker survives yields a report that is DELIVERED AND EMPTY, which satisfies every
+  // structural invariant here. That is what the payload checks below exist for.
 
   // P4 — what the collector said it would take, it must have taken.
   if (o.mustDeliver) {
@@ -1337,7 +1433,7 @@ for (const answer of ANSWERS)
       onError: () => {},
     });
     client.launch();
-    client.log('something happened just before the crash');
+    client.log(PRE_CRASH_LOG);
     await client.logException(new Error(incident));
     await settle();
     await client.stop(50);
@@ -1378,6 +1474,7 @@ for (const answer of ANSWERS)
       left: readNodeState(dir, [sub]),
       mustDeliver: answer.intent !== 'refuse',
     });
+    judgePayload(`L live ${answer.status} (${answer.intent}) ${storeMode}`, perLaunch.flat());
     rmSync(dir, { recursive: true, force: true });
   }
 
@@ -1552,7 +1649,7 @@ for (const control of CONTROL_CASES) {
     onError: () => {},
   });
   client.launch();
-  client.log('something happened just before the crash');
+  client.log(PRE_CRASH_LOG);
   await client.logException(new Error(incident));
   await settle();
   const stillCapturing = client.isLaunched();
@@ -1604,6 +1701,7 @@ for (const control of CONTROL_CASES) {
     left: readNodeState(dir, [sub]),
     mustDeliver: control.intent !== 'refuse',
   });
+  judgePayload(label, perLaunch.flat());
   rmSync(dir, { recursive: true, force: true });
 }
 

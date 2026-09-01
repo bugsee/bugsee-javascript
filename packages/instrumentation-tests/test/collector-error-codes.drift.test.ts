@@ -89,3 +89,19 @@ describe.skipIf(!existsSync(JAVA))('collector error codes match the Android sour
     expect(fallback).toBe('TRANSIENT');
   });
 });
+
+// Deliberately OUTSIDE the Android-dependent block: this needs no checkout, so it runs everywhere.
+describe('the collector-code namespace is disjoint from HTTP statuses', () => {
+  it('holds for the SDK table the classifier actually reads', () => {
+    // `BugseeError.code` is an HTTP status and `.serverCode` is a collector code, and the SDK must never
+    // read one as the other. A regression to `classifyServerErrorCode(err.serverCode ?? err.code)` is
+    // invisible to the invariants harness for a reason that is pure luck: no collector code is also a
+    // valid status, so feeding a status through the table always lands on the `transient` default and
+    // behaves identically. Add a three-digit collector code and that quietly stops being true. This
+    // pins the luck, so the day it runs out is a failing test rather than a lost report.
+    const colliding = Object.keys(SERVER_ERROR_CATEGORIES)
+      .map(Number)
+      .filter((code) => code >= 100 && code <= 599);
+    expect(colliding, 'collector codes that are also valid HTTP statuses').toEqual([]);
+  });
+});
