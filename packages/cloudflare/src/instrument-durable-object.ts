@@ -33,6 +33,16 @@ const alarmAttributes = (): Record<string, AttributeValue> => ({
 export interface DurableObjectInstrumentOptions {
   /** Also instrument arbitrary RPC / prototype methods (default `false`): `true` = all, or a list of names. */
   instrumentRpcMethods?: boolean | string[];
+  /**
+   * Deadline in milliseconds for the incident flush, default 3 s (`AWAITED_FLUSH_TIMEOUT_MS`).
+   *
+   * A Durable Object's `ctx.waitUntil` is inert, so the flush is AWAITED in-request — it holds the
+   * response open, which is why the default is short. That also makes this the one path where the
+   * default reaches zero upload retries (the first backoff is ~10 s away), so raise it if your budget
+   * allows and delivery matters more than latency. `Number.POSITIVE_INFINITY` restores the old
+   * unbounded behaviour.
+   */
+  flushTimeoutMs?: number;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: the class-mixin constraint requires `any[]` constructor args (see instrument-class.ts) so the returned subclass can `super(...args)` over the user's DO base.
@@ -75,5 +85,6 @@ export function instrumentDurableObject<C extends DurableObjectClass>(
     // instances share one isolate. Without it their capture shares one ring and an incident in one uploads
     // every other tenant's data (docs/review/cloudflare.md SEV1 #2).
     durableObjectOwner,
+    options.flushTimeoutMs !== undefined ? { flushTimeoutMs: options.flushTimeoutMs } : undefined,
   );
 }

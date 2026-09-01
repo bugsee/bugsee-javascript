@@ -45,11 +45,20 @@ export interface IdentifiedBundle extends Bundle {
   readonly reportId?: string;
 }
 
-/** A durable blob store for serialized bundles, keyed by an opaque id. */
-/** A store whose `put` completes asynchronously hands back a thenable; a synchronous one returns nothing. */
+// A store whose `put` completes asynchronously hands back a thenable; a synchronous one returns nothing.
 const isThenable = (value: void | Promise<void>): value is Promise<void> =>
   typeof (value as Promise<void> | undefined)?.then === 'function';
 
+// Unref'd, so a pending staging deadline never keeps a process alive on its own.
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const handle = (
+      globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown }
+    ).setTimeout(resolve, ms);
+    (handle as { unref?: () => void }).unref?.();
+  });
+
+/** A durable blob store for serialized bundles, keyed by an opaque id. */
 export interface BundleStore {
   /**
    * Durably write a bundle blob under `id` (replacing any existing one).
@@ -116,6 +125,16 @@ export interface DurableUploadPipelineOptions {
   onError?: (error: unknown) => void;
   /** Wall clock, for the retention TTL. Default `Date.now`. */
   now?: () => number;
+  /**
+   * How long to wait for an ASYNCHRONOUS `BundleStore.put` before answering "not staged". Default 5s.
+   *
+   * A store that never answers must not hold the report open: the returned promise is a `pendingReports`
+   * member, so wedging it wedges every unbounded `flush()`/`stop()` too. Timing out answers `false`,
+   * which is the fail-safe direction — the client keeps the marker and the next launch rebuilds.
+   */
+  stagedWaitMs?: number;
+  /** Test seam for the {@link stagedWaitMs} deadline. Default an unref'd `setTimeout`. */
+  sleep?: (ms: number) => Promise<void>;
   /** Retention bounds for the on-disk queue. Each field defaults as documented on the interface. */
   retention?: DurableQueueRetention;
 }
@@ -214,7 +233,19 @@ export function createDurableUploadPipeline(
 ): DurableUploadPipeline {
   const { store, pipeline } = options;
   const onError = options.onError ?? (() => {});
+  // `onError` is the raw user callback. On the async staging path it is called from a REJECTION handler
+  // outside the try, so a throwing sink would turn a completed upload into a rejected `logException` —
+  // a behaviour the synchronous path never had. Reporting a failure must not change the outcome.
+  const report = (error: unknown): void => {
+    try {
+      onError(error);
+    } catch {
+      // a throwing sink must not defeat the guard either
+    }
+  };
   const now = options.now ?? (() => Date.now());
+  const stagedWaitMs = options.stagedWaitMs ?? 5_000;
+  const sleep = options.sleep ?? defaultSleep;
   const retention = { ...DEFAULT_RETENTION, ...options.retention };
   let counter = 0;
   const newId =
@@ -430,17 +461,20 @@ export function createDurableUploadPipeline(
       let staged: boolean | Promise<boolean> = false;
       try {
         const written = store.put(id, serializeBundle(bundle, now())); // durable BEFORE the attempt
+        // `Promise.resolve` normalizes a hand-rolled thenable whose `then` returns something other than
+        // a promise — otherwise `staged` lands on neither branch below and a working store is silently
+        // reported as unstaged forever.
         staged = isThenable(written)
-          ? written.then(
+          ? Promise.resolve(written).then(
               () => true,
               (error: unknown) => {
-                onError(error); // same contract as the synchronous throw below
+                report(error); // same contract as the synchronous throw below
                 return false;
               },
             )
           : true;
       } catch (error) {
-        onError(error); // best-effort persistence must never block the upload
+        report(error); // best-effort persistence must never block the upload
       }
       // The attempt does NOT wait on the durable write; only the `retained` VERDICT does.
       const result = attempt(id, bundle, hint);
@@ -450,9 +484,18 @@ export function createDurableUploadPipeline(
       if (staged === true) {
         return result.then(retainedIfPending);
       }
-      return Promise.all([result, staged]).then(([settled, ok]) =>
-        ok ? retainedIfPending(settled) : settled,
-      );
+      const pending = staged;
+      return result.then((settled) => {
+        // A SETTLED upload makes staging irrelevant — `retainedIfPending` hands a settled result straight
+        // back — so there is nothing to wait for, and waiting anyway is what wedged `enqueue` forever on
+        // a store whose `put` never settles.
+        if (isUploadSettled(settled)) {
+          return settled;
+        }
+        return Promise.race([pending, sleep(stagedWaitMs).then(() => false)]).then((ok) =>
+          ok ? retainedIfPending(settled) : settled,
+        );
+      });
     },
 
     recover(options?: DurableRecoverOptions): void {

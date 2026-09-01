@@ -219,6 +219,60 @@ describe('createDurableUploadPipeline', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it('does NOT wait on the durable write once the upload has SETTLED', async () => {
+    // Regression. Gating the returned promise on `Promise.all([result, staged])` made a store whose
+    // `put` never settles wedge `enqueue` FOREVER — and that promise is a `pendingReports` member, so
+    // an unbounded `client.flush()`/`stop()` never returned and the entry leaked. A settled upload makes
+    // staging irrelevant anyway (`retainedIfPending` hands a settled result straight back), so there is
+    // nothing to wait for.
+    const { store } = memStore();
+    const durable = createDurableUploadPipeline({
+      store: { ...store, put: () => new Promise<void>(() => {}) }, // accepted, never settles
+      pipeline: fakePipeline({ ok: true }).pipeline,
+      newId: () => 'b1',
+    });
+    expect(await durable.enqueue(bundle())).toEqual({ ok: true });
+  });
+
+  it('BOUNDS the wait on an unsettled durable write, and keeps the marker when it times out', async () => {
+    // The upload did NOT settle, so `retained` is the question — but a store that never answers must not
+    // hold the report open. Timing out answers "not staged", which is the fail-safe direction: the client
+    // keeps the marker and the next launch rebuilds the incident.
+    const { store } = memStore();
+    const slept: number[] = [];
+    const durable = createDurableUploadPipeline({
+      store: { ...store, put: () => new Promise<void>(() => {}) },
+      pipeline: fakePipeline({ ok: false }).pipeline,
+      newId: () => 'b1',
+      stagedWaitMs: 250,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const result = await durable.enqueue(bundle());
+    expect(result).toEqual({ ok: false });
+    expect(result.retained).toBeUndefined();
+    expect(slept).toEqual([250]);
+  });
+
+  it('does not reject the upload when the onError sink itself THROWS', async () => {
+    // `onError` is the raw user callback. On the async path it is called from a rejection handler that
+    // sits OUTSIDE the try, so a throwing sink turned a completed upload into a rejected `logException`.
+    // The synchronous path never had that behaviour.
+    const { store } = memStore();
+    const durable = createDurableUploadPipeline({
+      store: { ...store, put: () => Promise.reject(new Error('QuotaExceededError')) },
+      pipeline: fakePipeline({ ok: false }).pipeline,
+      newId: () => 'b1',
+      onError: () => {
+        throw new Error('sink blew up');
+      },
+    });
+    const result = await durable.enqueue(bundle());
+    expect(result).toEqual({ ok: false });
+    expect(result.retained).toBeUndefined();
+  });
+
   it('reports `retained` when an ASYNC durable write SUCCEEDS — the positive control', async () => {
     // Without this, the test above would also pass on an implementation that simply never stamps
     // `retained` for an async store, which would strand every browser marker forever.

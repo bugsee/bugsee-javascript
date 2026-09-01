@@ -9,6 +9,104 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/**
+ * An IDBFactory whose readwrite transactions let every request SUCCEED and then abort at commit — the
+ * shape a commit-time quota/IO failure takes. IndexedDB makes a write durable at COMMIT, not at request
+ * success, so a store that resolves on `request.onsuccess` reports a write that is then rolled back.
+ *
+ * Written as explicit shims rather than a Proxy: assigning `oncomplete`/`onabort` through a Proxy
+ * receiver does not reach fake-indexeddb's internals, so the handlers silently never fire and the test
+ * hangs instead of failing.
+ */
+function commitAbortingIdb(real: IDBFactory): IDBFactory {
+  const abortOnSuccess = (request: IDBRequest, tx: IDBTransaction): IDBRequest => {
+    request.addEventListener('success', () => tx.abort());
+    return request;
+  };
+  const wrapTx = (tx: IDBTransaction) => ({
+    objectStore: (name: string) => {
+      const store = tx.objectStore(name);
+      return {
+        put: (value: unknown, key?: IDBValidKey) =>
+          abortOnSuccess(store.put(value as Uint8Array, key), tx),
+        delete: (key: IDBValidKey) => abortOnSuccess(store.delete(key), tx),
+      };
+    },
+    get error() {
+      return tx.error;
+    },
+    set oncomplete(fn: (() => void) | null) {
+      tx.oncomplete = fn as IDBTransaction['oncomplete'];
+    },
+    set onabort(fn: (() => void) | null) {
+      tx.onabort = fn as IDBTransaction['onabort'];
+    },
+    set onerror(fn: (() => void) | null) {
+      tx.onerror = fn as IDBTransaction['onerror'];
+    },
+  });
+  const wrapDb = (db: IDBDatabase) => ({
+    transaction: (name: string, mode?: IDBTransactionMode) =>
+      mode === 'readwrite' ? wrapTx(db.transaction(name, mode)) : db.transaction(name, 'readonly'),
+    createObjectStore: (name: string) => db.createObjectStore(name),
+  });
+  return {
+    open: (name: string, version?: number) => {
+      const request = real.open(name, version);
+      return {
+        get result() {
+          return wrapDb(request.result);
+        },
+        get error() {
+          return request.error;
+        },
+        set onupgradeneeded(fn: (() => void) | null) {
+          request.onupgradeneeded = fn as IDBOpenDBRequest['onupgradeneeded'];
+        },
+        set onsuccess(fn: (() => void) | null) {
+          request.onsuccess = fn as IDBOpenDBRequest['onsuccess'];
+        },
+        set onerror(fn: (() => void) | null) {
+          request.onerror = fn as IDBOpenDBRequest['onerror'];
+        },
+      };
+    },
+  } as unknown as IDBFactory;
+}
+
+describe('createIdbBlobStore — durability is COMMIT, not request success', () => {
+  it('REJECTS a put whose transaction aborts at commit', async () => {
+    // Resolving on `request.onsuccess` told the durable queue a bundle was staged that IndexedDB then
+    // rolled back. The queue answers `UploadResult.retained` from that, and the client retires the
+    // incident's report marker on the strength of it — losing the report AND the recording, with no
+    // next launch able to rebuild them. `loadAll` in this same file always waited for the transaction;
+    // the two writers did not.
+    const real = new IDBFactory();
+    const store = createIdbBlobStore({ indexedDB: commitAbortingIdb(real) });
+    await expect(store.put('a', bytes(1, 2, 3))).rejects.toThrow();
+    // and the rejection is TRUE — nothing was persisted
+    const reader = createIdbBlobStore({ indexedDB: real });
+    expect(await reader.loadAll()).toEqual([]);
+  });
+
+  it('REJECTS a keyed-store put whose transaction aborts at commit', async () => {
+    // The durable-as-captured chunk store. "The entry is safely on disk" is its whole contract, so a
+    // write that resolves before commit is the same lie one layer down.
+    const real = new IDBFactory();
+    const store = createIdbKeyedStore({ indexedDB: commitAbortingIdb(real) });
+    await expect(store.put('k', bytes(1, 2))).rejects.toThrow();
+    expect(await createIdbKeyedStore({ indexedDB: real }).readPrefix('k')).toEqual([]);
+  });
+
+  it('REJECTS a remove whose transaction aborts at commit', async () => {
+    const real = new IDBFactory();
+    await createIdbBlobStore({ indexedDB: real }).put('a', bytes(9));
+    const store = createIdbBlobStore({ indexedDB: commitAbortingIdb(real) });
+    await expect(store.remove('a')).rejects.toThrow();
+    expect(await createIdbBlobStore({ indexedDB: real }).loadAll()).toEqual([['a', bytes(9)]]);
+  });
+});
+
 describe('createIdbBlobStore', () => {
   it('persists a value under an id and loads it back', async () => {
     const store = createIdbBlobStore({ indexedDB: new IDBFactory() });

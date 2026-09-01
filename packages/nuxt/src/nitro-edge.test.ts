@@ -164,11 +164,11 @@ describe('installBugseeNitroEdge — the flush deadline', () => {
   it('BOUNDS the flush, so a stuck upload cannot outlive the platform budget', async () => {
     // Held past the Response by waitUntil, which is finite: a bundle's retry ladder is 10s + 20s + 40s in
     // createIssue and again in the signed PUT, so an unbounded flush asks the isolate to stay alive ~140 s
-    // and is killed mid-flight instead. The fake resolves only when given a deadline, so an unbounded
-    // `flush()` fails this by hanging rather than by assertion.
+    // and is killed mid-flight instead. The fake resolves unconditionally and the assertion does the
+    // work, so a bare `flush()` fails in milliseconds rather than by a 30s test timeout.
     const client = {
       logException: vi.fn(async () => ({ ok: true }) as const),
-      flush: vi.fn((t?: number) => (t === undefined ? new Promise(() => {}) : Promise.resolve())),
+      flush: vi.fn(async (_t?: number) => true),
     };
     launchEdge.mockReturnValue(client);
     const { drain } = captureWaitUntil();
@@ -177,6 +177,21 @@ describe('installBugseeNitroEdge — the flush deadline', () => {
     fireError(Object.assign(new Error('boom'), { statusCode: 500 }));
     await drain();
     expect(client.flush).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it('REPORTS a flush that ran out of time rather than dropping it silently', async () => {
+    const onError = vi.fn();
+    const client = {
+      logException: vi.fn(async () => ({ ok: true }) as const),
+      flush: vi.fn(async () => false), // abandoned on the deadline
+    };
+    launchEdge.mockReturnValue(client);
+    const { drain } = captureWaitUntil();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitroEdge(nitroApp, { appToken: 'tok', onError });
+    fireError(Object.assign(new Error('boom'), { statusCode: 500 }));
+    await drain();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
   it('lets the caller choose the deadline via flushTimeoutMs', async () => {

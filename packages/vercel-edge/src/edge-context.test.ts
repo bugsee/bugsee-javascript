@@ -88,12 +88,13 @@ describe('runInEdgeContext', () => {
     // an unbounded flush can run ~140 s — and on the Durable Object path this one is holding the
     // CUSTOMER's HTTP response open for all of it. Bounding costs no delivery the platform would have
     // provided anyway: the isolate is killed at the platform's own budget regardless, so waiting longer
-    // buys nothing and risks the request. The fake resolves ONLY when given a deadline, so this test
-    // fails by hanging if the wrapper ever goes back to calling `flush()` bare.
+    // buys nothing and risks the request.
+    //
+    // The fake RESOLVES unconditionally and the assertion does the work. An earlier version resolved only
+    // when given a deadline, so removing the bound made this fail by 30s test timeout — no expected /
+    // received, 30s of CI wall clock per regression, and indistinguishable from runner flakiness, which
+    // is how a hanging test gets "fixed" by raising the timeout instead of read.
     const { client, flush } = fakeClient();
-    flush.mockImplementation((timeout?: number) =>
-      timeout === undefined ? new Promise<boolean>(() => {}) : Promise.resolve(false),
-    );
     await runInEdgeContext(client, { ctx: { waitUntil: vi.fn() }, awaitFlush: true }, () => 'ok');
     expect(flush).toHaveBeenCalledWith(expect.any(Number));
   });
@@ -106,6 +107,49 @@ describe('runInEdgeContext', () => {
       () => 'ok',
     );
     expect(flush).toHaveBeenCalledWith(1234);
+  });
+
+  it('honours flushTimeoutMs on the DEFERRED path too, not only the awaited one', async () => {
+    // The awaited path is the Durable Object one; `waitUntil` is the DEFAULT path, so an override that
+    // worked only under `awaitFlush` was unreachable for almost every caller — and replacing the
+    // deferred `??` with the bare constant passed the whole package suite.
+    const { client, flush } = fakeClient();
+    const held: Array<Promise<unknown>> = [];
+    await runInEdgeContext(
+      client,
+      { ctx: { waitUntil: (p) => held.push(p) }, flushTimeoutMs: 777 },
+      () => 'ok',
+    );
+    await Promise.all(held);
+    expect(flush).toHaveBeenCalledWith(777);
+  });
+
+  it('treats a non-finite flushTimeoutMs as genuinely UNBOUNDED', async () => {
+    // The TSDoc promised `Number.POSITIVE_INFINITY` restores the old unbounded behaviour. It did not:
+    // `flush` races `sleep(timeout)`, and `setTimeout(fn, Infinity)` coerces to 0 and fires IMMEDIATELY,
+    // so passing Infinity made the flush give up at once — the precise opposite of what was documented.
+    const { client, flush } = fakeClient();
+    await runInEdgeContext(
+      client,
+      { ctx: { waitUntil: vi.fn() }, awaitFlush: true, flushTimeoutMs: Number.POSITIVE_INFINITY },
+      () => 'ok',
+    );
+    expect(flush).toHaveBeenCalledWith(undefined); // no deadline reaches the client
+  });
+
+  it('REPORTS a flush that ran out of time instead of dropping the report silently', async () => {
+    // `client.flush(timeout)` is a race, not a cancel: it abandons and says so by returning false. On the
+    // edge tier there is no durable queue and no next launch, so an abandoned flush is a permanently lost
+    // incident. Nobody read the boolean, so the loss was invisible.
+    const onError = vi.fn();
+    const { client, flush } = fakeClient();
+    flush.mockResolvedValue(false); // deadline won the race
+    await runInEdgeContext(
+      client,
+      { ctx: { waitUntil: vi.fn() }, awaitFlush: true, onError },
+      () => 'ok',
+    );
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
   it('BOUNDS the deferred (waitUntil) flush too, with a longer deadline than the awaited one', async () => {

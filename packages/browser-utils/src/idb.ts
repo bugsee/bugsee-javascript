@@ -48,7 +48,15 @@ export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlob
     return dbPromise;
   };
 
-  // Run a single-request read/write transaction and resolve with the request result.
+  // Run a single-request read/write transaction and resolve with the request result — ON COMMIT.
+  //
+  // IndexedDB makes a write durable at COMMIT, not at request success: a transaction can report every
+  // request successful and still abort at commit (commit-time quota accounting, disk-full at flush, an
+  // I/O error, a UA-initiated abort). Resolving on `request.onsuccess` therefore told the durable bundle
+  // queue that a bundle was staged which IndexedDB then rolled back — and the queue answers
+  // `UploadResult.retained` from that, on the strength of which the client retires the incident's report
+  // marker. The report AND its recording were then gone, with no next launch able to rebuild them.
+  // `loadAll` below already waited for the transaction; the writers did not.
   const run = <T>(
     mode: IDBTransactionMode,
     exec: (store: IDBObjectStore) => IDBRequest<T>,
@@ -56,8 +64,10 @@ export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlob
     open().then(
       (db) =>
         new Promise<T>((resolve, reject) => {
-          const request = exec(db.transaction(storeName, mode).objectStore(storeName));
-          request.onsuccess = () => resolve(request.result);
+          const transaction = db.transaction(storeName, mode);
+          const request = exec(transaction.objectStore(storeName));
+          transaction.oncomplete = () => resolve(request.result);
+          transaction.onabort = () => reject(transaction.error ?? reqError(request));
           request.onerror = () => reject(reqError(request));
         }),
     );
@@ -129,15 +139,16 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
   const prefixRange = (prefix: string): IDBKeyRange => IDBKeyRange.bound(prefix, `${prefix}￿`);
 
   return {
+    // Resolved on COMMIT, for the same reason as `run` above — this is the durable-as-captured chunk
+    // store, where "the entry is safely on disk" is the whole contract.
     put: (key, bytes) =>
       open().then(
         (db) =>
           new Promise<void>((resolve, reject) => {
-            const request = db
-              .transaction(storeName, 'readwrite')
-              .objectStore(storeName)
-              .put(bytes, key);
-            request.onsuccess = () => resolve();
+            const transaction = db.transaction(storeName, 'readwrite');
+            const request = transaction.objectStore(storeName).put(bytes, key);
+            transaction.oncomplete = () => resolve();
+            transaction.onabort = () => reject(transaction.error ?? reqError(request));
             request.onerror = () => reject(reqError(request));
           }),
       ),

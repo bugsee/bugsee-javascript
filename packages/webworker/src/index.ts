@@ -12,8 +12,10 @@ export {
 // Service Worker event flush — keep the SW alive until an incident upload completes (the SW analog of edge's
 // ctx.waitUntil). Unneeded for a long-lived Web Worker.
 export {
+  type BugseeEventOptions,
   type ExtendableEventLike,
   type ServiceWorkerEventHandler,
+  SW_FLUSH_TIMEOUT_MS,
   withBugseeEvent,
 } from './event';
 export { type Bugsee, type BugseeWorkerLaunchOptions, launch } from './launch';

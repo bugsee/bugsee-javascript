@@ -1498,7 +1498,7 @@ describe('createClient — report path (built trigger pipeline)', () => {
   });
 });
 
-describe('createClient — kill-state (invalid app token)', () => {
+describe('createClient — kill-state (collector KILL_SDK)', () => {
   const killClient = (
     over: { enqueue?: UploadPipeline['enqueue']; onError?: (e: unknown) => void } = {},
   ) => {
@@ -1515,7 +1515,9 @@ describe('createClient — kill-state (invalid app token)', () => {
     });
     return { client, store, enqueue, onError };
   };
-  const fatal = () => new BugseeError('invalid app token', 401, { fatal: true });
+  // The kill-state is the collector's KILL_SDK verdict (99099), NOT an HTTP 401 and NOT an invalid
+  // app token (which is 14019 → `permanent`). `code` is 0 because no HTTP status carried it.
+  const fatal = () => new BugseeError('sdk switched off', 0, { fatal: true, serverCode: 99_099 });
 
   it('enters the kill-state on a fatal report result: onError once, halts, captures no-op', async () => {
     const err = fatal();

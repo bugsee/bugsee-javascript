@@ -31,8 +31,12 @@ export const AWAITED_FLUSH_TIMEOUT_MS = 3_000;
  * Flush deadline off the response path (`waitUntil`). Longer, because it costs the customer nothing —
  * but still finite, since the platform's extend-lifetime budget is finite and an upload that outlives
  * it is killed mid-flight regardless.
+ *
+ * Chosen to CLEAR the first retry rather than land on it: `computeBackoff(1)` is 10s ± 10% jitter, so a
+ * 10 000 ms deadline expired either just before the first retry began or just after — buying zero
+ * retries. 15 s covers the first retry to completion at no cost to the customer.
  */
-export const DEFERRED_FLUSH_TIMEOUT_MS = 10_000;
+export const DEFERRED_FLUSH_TIMEOUT_MS = 15_000;
 
 export interface EdgeInvocationOptions {
   /** Attributes stamped on the per-invocation context (merged into any incident report produced within it) —
@@ -121,7 +125,26 @@ export async function runInEdgeContext<T>(
     // to await. Both are async failures of the upload, which must never become the request's outcome.
     const flushed = async (timeoutMs: number): Promise<void> => {
       try {
-        await client.flush(timeoutMs);
+        // A non-finite deadline means NO deadline. `flush` races `sleep(timeout)`, and
+        // `setTimeout(fn, Infinity)` coerces to 0 and fires immediately, so passing Infinity through
+        // would abandon the flush at once — the exact opposite of the unbounded behaviour documented on
+        // `flushTimeoutMs`. Passing `undefined` is what actually reaches the unbounded path.
+        const delivered = await client.flush(
+          Number.isFinite(timeoutMs) ? timeoutMs : (undefined as unknown as number),
+        );
+        if (delivered === false) {
+          // `flush` ABANDONS on its deadline, it does not cancel — and this tier has no durable queue
+          // and no next launch, so an abandoned flush is a permanently lost incident. Saying so is the
+          // difference between a tuning problem and an invisible one.
+          neverThrow(() =>
+            options.onError?.(
+              new Error(
+                `Bugsee: incident upload did not finish within ${timeoutMs}ms and was abandoned; ` +
+                  'raise flushTimeoutMs if your platform budget allows.',
+              ),
+            ),
+          );
+        }
       } catch (error) {
         neverThrow(() => options.onError?.(error)); // a throwing sink must not defeat the guard either
       }

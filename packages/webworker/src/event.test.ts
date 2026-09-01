@@ -219,20 +219,42 @@ describe('withBugseeEvent — the flush deadline', () => {
     }) as unknown as Parameters<typeof withBugseeEvent>[0];
 
   it('BOUNDS the flush handed to waitUntil', async () => {
-    // Resolves only when given a deadline, so this fails by hanging if `flush()` is ever called bare.
-    const client = clientWith((t) =>
-      t === undefined ? new Promise(() => {}) : Promise.resolve(false),
-    );
+    // The fake resolves unconditionally and the assertion does the work: a bare `flush()` fails this in
+    // milliseconds with a readable diff, rather than by a 30s test timeout.
+    const client = clientWith(() => Promise.resolve(true));
     const held: Array<Promise<unknown>> = [];
     withBugseeEvent(client, () => undefined)({ waitUntil: (p) => held.push(p) });
     await Promise.all(held);
     expect(client.flush).toHaveBeenCalledWith(expect.any(Number));
   });
 
+  it('still accepts a bare onError function as the third argument', async () => {
+    // The documented form in the package README. Reshaping the third parameter into an options object
+    // must not break it.
+    const onError = vi.fn();
+    const client = clientWith(() => Promise.reject(new Error('flush blew up')));
+    const held: Array<Promise<unknown>> = [];
+    withBugseeEvent(client, () => undefined, onError)({ waitUntil: (p) => held.push(p) });
+    await Promise.all(held);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('REPORTS a flush that ran out of time rather than dropping it silently', async () => {
+    // `flush` abandons on its deadline and says so by returning false; nobody read it.
+    const onError = vi.fn();
+    const client = clientWith(() => Promise.resolve(false));
+    const held: Array<Promise<unknown>> = [];
+    withBugseeEvent(client, () => undefined, { onError })({ waitUntil: (p) => held.push(p) });
+    await Promise.all(held);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
   it('lets the caller choose the deadline', async () => {
     const client = clientWith(() => Promise.resolve(true));
     const held: Array<Promise<unknown>> = [];
-    withBugseeEvent(client, () => undefined, undefined, 4321)({ waitUntil: (p) => held.push(p) });
+    withBugseeEvent(client, () => undefined, { flushTimeoutMs: 4321 })({
+      waitUntil: (p) => held.push(p),
+    });
     await Promise.all(held);
     expect(client.flush).toHaveBeenCalledWith(4321);
   });

@@ -34,9 +34,15 @@ describe('BugseeError', () => {
     expect(new BugseeError('x', 1).cause).toBeUndefined();
   });
 
-  it('is non-fatal by default and carries the fatal flag when set (invalid-token kill-state)', () => {
+  it('is non-fatal by default and carries the fatal flag when set (collector KILL_SDK)', () => {
+    // `fatal` is the collector's KILL_SDK verdict — code 99099, carried in `serverCode`. Pairing it with
+    // a 401 in the status field, as this test used to, restated the exact conflation the wave removed:
+    // an HTTP 401 is an infrastructure answer and no longer kills the client, and an INVALID token
+    // arrives as 14019, which is `permanent`.
     expect(new BugseeError('x', 1).fatal).toBe(false);
-    expect(new BugseeError('bad token', 401, { fatal: true }).fatal).toBe(true);
+    const killed = new BugseeError('sdk switched off', 0, { fatal: true, serverCode: 99_099 });
+    expect(killed.fatal).toBe(true);
+    expect(killed.code).toBe(0); // no HTTP status reached a verdict
   });
 
   it('renders name and message via toString (standard Error formatting)', () => {

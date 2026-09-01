@@ -25,6 +25,17 @@ export interface ExtendableEventLike {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+/** Settings for {@link withBugseeEvent}. */
+export interface BugseeEventOptions {
+  /** Where an SDK-internal failure inside the wrapper is reported; never thrown into the handler. */
+  onError?: (error: unknown) => void;
+  /**
+   * Deadline in milliseconds for the incident flush. Default {@link SW_FLUSH_TIMEOUT_MS}.
+   * `Number.POSITIVE_INFINITY` restores the old unbounded behaviour.
+   */
+  flushTimeoutMs?: number;
+}
+
 /** A Service Worker event handler (it typically calls `event.respondWith(...)` and returns void). */
 export type ServiceWorkerEventHandler<E extends ExtendableEventLike> = (event: E) => unknown;
 
@@ -53,16 +64,36 @@ export type ServiceWorkerEventHandler<E extends ExtendableEventLike> = (event: E
 export function withBugseeEvent<E extends ExtendableEventLike>(
   client: Bugsee,
   handler: ServiceWorkerEventHandler<E>,
-  onError?: (error: unknown) => void,
-  flushTimeoutMs: number = SW_FLUSH_TIMEOUT_MS,
+  options?: BugseeEventOptions | ((error: unknown) => void),
 ): (event: E) => void {
+  // A bare function is the original third argument and still works; the object form is what the edge
+  // siblings take, so a second setting does not become a fourth positional parameter.
+  const resolved: BugseeEventOptions =
+    typeof options === 'function' ? { onError: options } : (options ?? {});
+  const onError = resolved.onError;
+  const flushTimeoutMs = resolved.flushTimeoutMs ?? SW_FLUSH_TIMEOUT_MS;
   const capture = (error: unknown): void => {
     neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), onError);
   };
   // A flush that can only resolve — see the note above on rejected extend-lifetime promises.
   const flushed = async (): Promise<void> => {
     try {
-      await client.flush(flushTimeoutMs);
+      const delivered = await client.flush(
+        Number.isFinite(flushTimeoutMs) ? flushTimeoutMs : (undefined as unknown as number),
+      );
+      if (delivered === false) {
+        // The flush ABANDONED on its deadline rather than completing. Persistence is on by default for
+        // a Service Worker, so the incident is normally replayed at the next activation — but saying so
+        // is the difference between a tuning problem and an invisible one.
+        neverThrow(() =>
+          onError?.(
+            new Error(
+              `Bugsee: incident upload did not finish within ${flushTimeoutMs}ms and was abandoned; ` +
+                'it will be retried on the next activation if persistence is enabled.',
+            ),
+          ),
+        );
+      }
     } catch (error) {
       neverThrow(() => onError?.(error)); // a throwing sink must not defeat the guard either
     }

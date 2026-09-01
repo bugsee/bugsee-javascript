@@ -65,6 +65,9 @@ export function instrumentEdgeClass<C extends AnyClass>(
    *  WorkerEntrypoint, which is single-tenant by construction. See
    *  docs/design/cloudflare-tenant-isolation.md §4.1. */
   resolveOwner?: (ctx: unknown) => string | undefined,
+  /** Further per-invocation settings forwarded verbatim to `runInEdgeContext`. An object rather than
+   *  yet another positional, so the next one does not extend this list again. */
+  extra?: { flushTimeoutMs?: number },
 ): C {
   const specs: InstrumentedMethod[] = [...methods];
   if (rpc !== false) {
@@ -129,6 +132,9 @@ export function instrumentEdgeClass<C extends AnyClass>(
             ctx: state.ctx,
             awaitFlush,
             ...(state.owner !== undefined ? { owner: state.owner } : {}),
+            ...(extra?.flushTimeoutMs !== undefined
+              ? { flushTimeoutMs: extra.flushTimeoutMs }
+              : {}),
           },
           () => method.apply(this, methodArgs),
         );

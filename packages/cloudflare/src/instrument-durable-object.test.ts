@@ -10,7 +10,7 @@ import * as cfLaunch from './launch';
 function fakeClient() {
   const store = createEdgeRequestContextStore();
   const logException = vi.fn((_e: unknown, _o?: unknown) => Promise.resolve({ ok: true }));
-  const flush = vi.fn(() => Promise.resolve(true));
+  const flush = vi.fn((_timeoutMs?: number) => Promise.resolve(true));
   const client = {
     logException,
     flush,
@@ -22,6 +22,40 @@ function fakeClient() {
 const ctxStub = () => ({ waitUntil: vi.fn() });
 
 afterEach(() => vi.restoreAllMocks());
+
+describe('instrumentDurableObject — the flush deadline', () => {
+  // A DO's `ctx.waitUntil` is inert, so the flush is AWAITED in-request and defaults to a short 3 s.
+  // That default was documented as overridable and was not: `DurableObjectInstrumentOptions` did not
+  // carry `flushTimeoutMs` and `instrumentEdgeClass` never forwarded one, so the only path that uses
+  // the aggressive deadline was the one path that could not change it.
+  const runFetch = async (options?: { flushTimeoutMs?: number }) => {
+    const { client, flush } = fakeClient();
+    vi.spyOn(cfLaunch, 'launch').mockReturnValue(client);
+    class MyDO {
+      constructor(
+        public ctx: unknown,
+        public env: unknown,
+      ) {}
+      async fetch(_request: Request): Promise<Response> {
+        return new Response('ok');
+      }
+    }
+    const Instrumented = instrumentDurableObject('tok', MyDO, options);
+    const instance = new Instrumented(ctxStub(), {}) as unknown as {
+      fetch(r: Request): Promise<Response>;
+    };
+    await instance.fetch(new Request('https://x.test/'));
+    return flush;
+  };
+
+  it('awaits the flush on the DEFAULT short deadline', async () => {
+    expect(await runFetch()).toHaveBeenCalledWith(3_000);
+  });
+
+  it('forwards an explicit flushTimeoutMs all the way to the client', async () => {
+    expect(await runFetch({ flushTimeoutMs: 25_000 })).toHaveBeenCalledWith(25_000);
+  });
+});
 
 describe('instrumentDurableObject', () => {
   it('instruments DO fetch with http + request.cf attributes and flushes via the DO ctx', async () => {

@@ -144,20 +144,25 @@ describe('createPersistentBundleStore', () => {
     expect(store.read('a')).toEqual(bytes(1));
   });
 
-  it('defaults onError to a no-op (a failure does not crash without an onError)', async () => {
+  it('survives failures with NO onError supplied, on both the put and remove paths', async () => {
+    // Honest scope: `not.toThrow()` cannot fail here — neither fake throws synchronously — so the
+    // assertions are a smoke test, and what this case really buys is (1) exercising the DEFAULTED sink
+    // parameter and (2) putting an IGNORING `put` caller on the record. The property that matters most,
+    // "an ignored `put` rejection does not surface as an unhandledrejection in the host page", is
+    // enforced by the runner's unhandled-rejection reporter rather than by anything asserted below:
+    // delete `written.catch(() => {})` in the implementation and this file still shows 10 passing tests,
+    // failing only via `Errors: 1` and a non-zero exit. The routing of a remove failure TO a sink is
+    // pinned by 'routes a removal failure to onError without throwing' above; this case deliberately
+    // does not restate it.
     const blob: AsyncBlobStore = {
       loadAll: () => Promise.resolve([]),
       put: () => Promise.reject(new Error('boom')),
       remove: () => Promise.reject(new Error('remove boom')),
     };
-    const store = createPersistentBundleStore(blob); // no onError
-    // `put` reports through its RETURN value, so an ignoring caller must neither throw nor leak an
-    // unhandled rejection …
+    const store = createPersistentBundleStore(blob); // no onError → the default no-op
     expect(() => store.put('a', bytes(1))).not.toThrow();
-    // … while `remove` has no caller that can act on it and so still routes to the sink — which is the
-    // path that actually exercises the defaulted no-op.
     expect(() => store.remove('a')).not.toThrow();
-    await Promise.resolve();
-    await Promise.resolve();
+    // The put rejection IS observable to a caller that keeps it — that half is a real assertion.
+    await expect(createPersistentBundleStore(blob).put('b', bytes(2))).rejects.toThrow('boom');
   });
 });

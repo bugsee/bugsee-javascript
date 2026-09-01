@@ -579,8 +579,9 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
   // and marker are visible to the same launch: "uploads an incident ONCE when an injected bundle store
   // holds the blob a dead sibling's marker covers", "gives each dead sibling only its own blobs out of a
   // shared injected store", and "waits for an injected ASYNC store to hydrate before reconciling it",
-  // plus `core/src/capture-recovery.test.ts` and `node/src/recover-instances.test.ts`. Deleting the
-  // guard fails 14 tests across those four packages.
+  // plus `core/src/capture-recovery.test.ts` (2), `node/src/recover-instances.test.ts` (4) and
+  // `node/src/launch.test.ts` (3). Deleting the guard fails 15 tests across those four packages —
+  // counted by deleting it, not estimated.
 
   // The case the previous fix's set-emptiness key silently DELETED.
   it('delivers BOTH a marker-only incident and a staged bundle belonging to another incident', async () => {

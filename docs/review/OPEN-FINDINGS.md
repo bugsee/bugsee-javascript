@@ -97,21 +97,80 @@ that settles it.
 - **Data-safety F6 · SEV3 (plausible)** · the retention pass evicts on `maxBundles`(32)/`maxBytes`/
   `maxAgeMs` with no marker awareness, so a burst over 32 incidents can discard a blob whose marker was
   already retired on the strength of `retained`.
-- **F8 / integration F6 · SEV2 · the `stop()`/`flush()` window is ~140 s per bundle, not ~35 s** — the
-  backoff ladder is 10/20/40, run twice (createIssue and the PUT loop) — and R5-2 made the control-plane
-  half strictly worse by making 401/403 retryable. This is NOT purely the caller's problem: the SDK
-  itself awaits `flush()` with no timeout at `vercel-edge/src/edge-context.ts:97-105` (which on the
-  Durable Object path holds the customer's HTTP request open), `webworker/src/event.ts:50-56` and
-  `nuxt/src/nitro-edge.ts:77`. Needs a default cap.
-- **Integration F3 · SEV3** · the harness is outside `tsc` (`instrumentation-tests/tsconfig.json`
-  includes `app`, `test`, `vitest.config.ts` — not `harness/`) as well as outside vitest and CI, and its
-  ~24 `any`s mute in-file type errors, so a `@bugsee/core` signature change rots it silently.
-- **Integration F5 · LOW** · docstrings in `errors.ts` (`:2`, `:8`, `:36`) and `client.ts`
-  (`:355-356`, `:440`, `:468`, `:719`) still describe an invalid app token as the kill-state case; it
-  now classifies as `permanent`. `errors.test.ts:16` still puts a collector code in the status field.
+> **Amended after round 7:** the three items that stood here — the SDK's own unbounded `flush()`
+> at three sites, the harness being outside `tsc`, and the stale kill-state docstrings — were all
+> closed by the very commit that wrote this list (`481a66d`). They are recorded under §Round 7.
 - **Test-quality F3 · SUSPECTED** · node's per-package coverage gate reported 96.54% lines under
   concurrent vitest load, and 100% run alone — the v8-instrumentation nondeterminism of commit
   `5f2f64b`. It can fail spuriously on a loaded CI runner.
+
+### Round 7's own review — four reviewers, and it found that round 7 shipped a HANG
+
+Fixed in the follow-up commit unless marked OPEN.
+
+- **SEV1 · round 7 introduced a hang.** `Promise.all([result, staged])` waited on the durable write even
+  when the upload had already SETTLED, so a store whose `put` never settles wedged `enqueue` forever —
+  and that promise is a `pendingReports` member, so every unbounded `flush()`/`stop()` hung with it and
+  the entry leaked. Found independently by the architecture and test-quality reviewers, reproduced by
+  both. Fixed: short-circuit on a settled upload, and bound the wait with `stagedWaitMs` (default 5 s)
+  answering `false`, the fail-safe direction.
+- **SEV1 · the round-7 fix was necessary but NOT sufficient: IndexedDB writes resolved before COMMIT.**
+  `browser-utils/src/idb.ts` resolved `put`/`remove` on `request.onsuccess`, but IDB is durable at
+  commit — a transaction can report every request successful and still abort there. Reproduced
+  end-to-end through the real stack: `retained: true` with the blob absent from IDB. `loadAll` in the
+  same file already waited for `transaction.oncomplete`; only the writers did not. Fixed for the blob
+  store AND the keyed (durable-as-captured chunk) store.
+- **SEV2 · a throwing `onError` sink rejected `enqueue`** on the new async path, whose rejection handler
+  sits outside the `try`. The synchronous path never behaved that way. Guarded on both paths.
+- **SEV2 · three defects in round 7's own flush bounds.** (1) `Number.POSITIVE_INFINITY`, documented as
+  restoring unbounded behaviour, did the OPPOSITE — `setTimeout(fn, Infinity)` coerces to 0 and fires at
+  once; non-finite now means no deadline. (2) `DEFERRED_FLUSH_TIMEOUT_MS = 10_000` landed inside
+  `computeBackoff(1)`'s jitter window (10 s ± 10%), buying ZERO retries; raised to 15 s, which costs
+  nothing off the response path. (3) The override was unreachable through `@bugsee/cloudflare` — the
+  only package using the aggressive 3 s awaited path — so `DurableObjectInstrumentOptions` now carries
+  `flushTimeoutMs` and `instrumentEdgeClass` forwards it.
+- **SEV2 · an abandoned flush was silent.** `client.flush(timeout)` ABANDONS on its deadline and reports
+  it by returning `false`; no caller read it. On the edge tier there is no durable queue and no next
+  launch, so that is a permanently lost incident. All three sites now route it to `onError`.
+- **SEV2 · `withBugseeEvent`'s fourth positional parameter** was inconsistent with both siblings in the
+  same commit, and `SW_FLUSH_TIMEOUT_MS` was unexported so a caller could not name the default. The
+  third parameter now takes the original bare `onError` OR a `BugseeEventOptions`; the constant is
+  exported.
+- **OPEN · SEV2 · the widened `BundleStore.put` is a source-level BREAKING CHANGE** for TypeScript
+  integrators: `() => void` accepts any return value, `() => void | Promise<void>` does not, so
+  `put: (id, b) => map.set(id, b)` no longer compiles. No in-repo or documented implementation is
+  affected, but it needs a changeset note for external users.
+- **SEV3 · docs and comments.** `BundleStore`'s summary was orphaned onto a private helper by the
+  `isThenable` insertion, stripping it from the published `.d.ts`. `client.ts` claimed its new
+  two-condition rule was "the same rule" as `capture-recovery.ts`/`native-crash-recovery.ts`, which gate
+  on `isUploadSettled` ALONE. `errors.test.ts` and `client.test.ts` still paired an HTTP 401 with
+  `fatal` — the exact conflation the wave removed. The `skipReportIds` replacement comment said 14 tests
+  where the true count is 15 (my count came from a truncated list) and omitted `node/src/launch.test.ts`.
+  All corrected.
+- **Test quality · my own new tests.** Three flush tests failed by 30 s TIMEOUT rather than by assertion
+  (their fakes resolved only when given a deadline): no expected/received, 30 s of CI wall clock per
+  regression, and indistinguishable from runner flakiness. The fakes now resolve unconditionally and the
+  assertions do the work — verified at 0–3 ms failures under mutation. The "defaults onError to a no-op"
+  test was NEAR-VACUOUS (I chased a function-coverage number) and is now honest about what it can
+  observe. The deferred-path `flushTimeoutMs` override was uncovered; now pinned.
+- **OPEN · the coverage figure in the round-7 commit message ("31/31") described a FILTERED run**, not
+  the gate, which reports 97 tasks. The gate passed; the number was presented as though it were the whole.
+- **OPEN · a pre-existing coverage flake can take CI red**: `@bugsee/protocol`'s wall-clock linearity
+  self-test failed once under parallel load and turbo then cancelled 14 sibling tasks. Family of `9b0260f`.
+- **OPEN · the report-marker store is the remaining half.** `idb-report-marker-store.ts` still swallows
+  its `put`/`remove` failures, and `ReportMarkerStore.put` is still typed `: void`, so the contract
+  cannot carry the answer. Under quota exhaustion the MARKER write fails on the same database and the
+  marker then lives only in the in-memory mirror — so on the browser tier an incident can still be lost
+  even though `retained` is now truthful. The commit-semantics fix at least makes those failures visible
+  to `onError` for the first time. Widening the marker contract and awaiting it on the crash path is a
+  design change with latency implications, deliberately not attempted here.
+- **OPEN · `node-utils/src/bundle-store.ts` writes bundles non-atomically** — `writeFileSync` straight to
+  the final name, no temp+rename, no fsync — so a crash mid-write leaves a parseable header over a
+  truncated body, which recovery then uploads. Android does fsync + a CHECKED rename
+  (`IssueReportingRequest.publishFinalBundle`) so the final filename only ever names a complete artifact.
+- **OPEN · two more unbounded flushes** at `electron/src/launch-renderer.ts:106` and
+  `webview/src/launch.ts:392`; `electron/src/launch-main.ts:203-204` forwards its timeout to its own
+  flush but not to `control.flush()`.
 
 ### Verified clean by round 6 (worth not re-checking)
 

@@ -538,8 +538,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       // anyway (durable-upload-pipeline.ts, deliberately, so a full disk still gets the crash out), and
       // then nothing at all is staged. A read-only disk plus one 503 erased blob, marker and recording.
       //
-      // So there are exactly two justifications, and this is the same rule every other retirement site in
-      // the SDK already follows (`capture-recovery.ts`, `native-crash-recovery.ts`):
+      // So there are exactly two justifications. The first is the rule every other retirement site in the
+      // SDK follows — `capture-recovery.ts:101,196` and `native-crash-recovery.ts:138` gate on
+      // `isUploadSettled` ALONE and never read `retained`, which is the conservative half of this one:
       //
       //   • the upload SETTLED — delivered, or permanently refused. Nothing is left to carry forward.
       //   • the queue RETAINED the bundle — the bytes are durably staged under this incident's id, so the

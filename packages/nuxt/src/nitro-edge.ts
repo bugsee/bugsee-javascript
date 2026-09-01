@@ -87,7 +87,22 @@ export function installBugseeNitroEdge(
       (async () => {
         try {
           await client.logException(error, { mechanism: 'http-error' });
-          await client.flush(flushTimeoutMs);
+          // A non-finite deadline means NO deadline: `flush` races `sleep(timeout)`, and
+          // `setTimeout(fn, Infinity)` coerces to 0 and fires at once, which would abandon immediately.
+          const delivered = await client.flush(
+            Number.isFinite(flushTimeoutMs) ? flushTimeoutMs : (undefined as unknown as number),
+          );
+          if (delivered === false) {
+            // Abandoned on the deadline rather than completed. The edge tier has no durable queue, so
+            // this incident is gone — reporting it is what makes that a tuning problem rather than an
+            // invisible one.
+            launchOptions.onError?.(
+              new Error(
+                `Bugsee: incident upload did not finish within ${flushTimeoutMs}ms and was abandoned; ` +
+                  'raise flushTimeoutMs if your platform budget allows.',
+              ),
+            );
+          }
         } catch {
           // swallow — the edge response is unaffected
         }
