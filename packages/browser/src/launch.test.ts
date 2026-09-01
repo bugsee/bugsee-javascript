@@ -486,7 +486,6 @@ describe('launch', () => {
       pressure: 0,
     });
     doc.emit('keydown', { target: el, key: 'Enter' });
-    doc.emit('change', { target: el });
     client.event('checkout_started', { total: 42 });
 
     const userEvents = await drain(store, 'events.user');
@@ -504,8 +503,109 @@ describe('launch', () => {
       'begin',
       'end',
       'keydown', // the keydown
-      'change',
     ]);
+  });
+
+  // THE SECOND SEPARATION: `change`/`submit`/`focus` are STATE-CHANGE signals, not device input. They
+  // are not (and cannot be) members of Android's InputEventStage, every consumer discarded them off the
+  // input stream, and Android routes its own recognised-interaction breadcrumbs through the gesture
+  // dispatcher → BreadcrumbInputGesture. They now land on `breadcrumbs`, in that producer's shape.
+  it('routes change / submit / focus to ui.* breadcrumbs, never to the input stream', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+    );
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      type: 'number',
+      getAttribute: (n: string) => (n === 'class' ? 'field' : null),
+      closest: () => null,
+      matches: () => false,
+    };
+    const form = {
+      tagName: 'FORM',
+      id: 'checkout',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+    doc.emit('focusin', { target: field });
+    doc.emit('change', { target: field });
+    doc.emit('submit', { target: form });
+
+    const crumbs = await drain(store, 'breadcrumbs');
+    expect(crumbs?.map((e) => e.data)).toStrictEqual([
+      {
+        type: 'user',
+        category: 'ui.focus',
+        level: 'info',
+        timestamp: expect.any(Number),
+        data: { 'view.id': 'qty', 'view.class': 'field', 'view.tag': 'input' },
+      },
+      {
+        type: 'user',
+        category: 'ui.change',
+        level: 'info',
+        timestamp: expect.any(Number),
+        data: { 'view.id': 'qty', 'view.class': 'field', 'view.tag': 'input' },
+      },
+      {
+        type: 'user',
+        category: 'ui.submit',
+        level: 'info',
+        timestamp: expect.any(Number),
+        data: { 'view.id': 'checkout', 'view.tag': 'form' },
+      },
+    ]);
+    // Not on the input stream, and not on the application's own user streams.
+    expect(await drain(store, 'input')).toBeUndefined();
+    expect(await drain(store, 'events.user')).toBeUndefined();
+  });
+
+  it('runs the app breadcrumb filter over a ui.* breadcrumb (it goes through addBreadcrumb)', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+    );
+    client.setBreadcrumbFilter((c) => (c.category === 'ui.focus' ? null : c));
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+    doc.emit('focusin', { target: field }); // dropped by the filter
+    doc.emit('change', { target: field });
+    const crumbs = await drain(store, 'breadcrumbs');
+    expect(crumbs?.map((e) => (e.data as { category: string }).category)).toStrictEqual([
+      'ui.change',
+    ]);
+  });
+
+  it('withholds a ui.* breadcrumb for a sensitive field (the secure-field exclusion)', async () => {
+    const store = memStore();
+    const doc = fakeWindow();
+    launchTracked(
+      'tok',
+      baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+    );
+    doc.emit('focusin', {
+      target: {
+        tagName: 'INPUT',
+        id: 'login-pw',
+        type: 'password',
+        getAttribute: () => null,
+        closest: () => null,
+        matches: () => false,
+      },
+    });
+    expect(await drain(store, 'breadcrumbs')).toBeUndefined();
   });
 
   it('does not capture interactions when captureInteractions is disabled', async () => {
@@ -533,8 +633,20 @@ describe('launch', () => {
       button: 0,
       pressure: 0.5,
     });
+    // The gate means "the SDK does not watch what I click and type" — which must hold whatever stream
+    // the observation lands on, so it covers the ui.* breadcrumb trail too.
+    doc.emit('change', {
+      target: {
+        tagName: 'INPUT',
+        id: 'qty',
+        getAttribute: () => null,
+        closest: () => null,
+        matches: () => false,
+      },
+    });
     expect(await drain(store, 'input')).toBeUndefined();
     expect(await drain(store, 'events.user')).toBeUndefined();
+    expect(await drain(store, 'breadcrumbs')).toBeUndefined();
   });
 
   it('captures a DOM viewtree into the report bundle at report time', async () => {
@@ -739,10 +851,11 @@ describe('launch', () => {
     expect(reg.get('console')).toBeDefined();
     expect(reg.get('fetch')).toBeDefined();
     expect(reg.get('browser-input')).toBeDefined();
-    // console + browser-input + the 6 cross-runtime network leaves (fetch/xhr/sendBeacon/websocket/
-    // sse/webtransport) = 8. No node-http.
+    expect(reg.get('browser-ui-breadcrumbs')).toBeDefined();
+    // console + browser-input + browser-ui-breadcrumbs + the 6 cross-runtime network leaves
+    // (fetch/xhr/sendBeacon/websocket/sse/webtransport) = 9. No node-http.
     expect(reg.get('sendbeacon')).toBeDefined();
-    expect(reg.size).toBe(8);
+    expect(reg.size).toBe(9);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', () => {

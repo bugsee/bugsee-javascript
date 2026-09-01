@@ -48,8 +48,13 @@ export const BugseeOption = {
   CaptureSystemTraces: 'com.bugsee.option.capture.system-traces',
   /** Capture system events (process / app lifecycle). */
   CaptureSystemEvents: 'com.bugsee.option.capture.system-events',
-  /** Capture user interactions (clicks/keys/changes/focus → the SDK-captured `input` stream — never
-   * `events.user`, which is reserved for application-supplied `client.event()` data). Browser/DOM only. */
+  /**
+   * Capture user interactions. Two destinations, ONE gate — the option means "do not watch what I click
+   * and type", which must hold whatever stream the observation lands on:
+   *   - device presses (pointer/key) → the SDK-captured `input` stream;
+   *   - state changes (change/submit/focus) → `ui.*` BREADCRUMBS (Android's gesture-dispatcher split).
+   * Never `events.user`, which is reserved for application-supplied `client.event()` data. Browser/DOM only.
+   */
   CaptureInteractions: 'com.bugsee.option.capture.interactions',
   /** Capture a view hierarchy (DOM tree → viewtree) at report time. Browser/DOM only. */
   CaptureViewHierarchy: 'com.bugsee.option.capture.view-hierarchy',

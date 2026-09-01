@@ -62,6 +62,7 @@ import { installPageHideFlush } from './page-lifecycle';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
+import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
 // @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
@@ -153,8 +154,11 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process_started + pagehide). Default true. */
   captureSystemEvents?: boolean;
-  /** Capture user interactions (clicks/keys/changes/focus → the SDK-captured `input` stream — never
-   * `events.user`, which is reserved for application-supplied `client.event()` data). Default true. */
+  /**
+   * Capture user interactions. Device presses (pointer/key) become entries on the SDK-captured `input`
+   * stream; state changes (change/submit/focus) become `ui.*` breadcrumbs. Never `events.user`, which is
+   * reserved for application-supplied `client.event()` data. Default true.
+   */
   captureInteractions?: boolean;
   /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
   captureViewHierarchy?: boolean;
@@ -499,6 +503,22 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     carrier,
   );
   client.addCaptureProvider(createInputProvider(inputSource));
+  // STATE-CHANGE signals (change / submit / focusin) are NOT input — they are breadcrumbs. Android draws
+  // the same line inside its input-interception coordinator: the INPUT dispatcher feeds `input.json`,
+  // while the GESTURE dispatcher feeds `BreadcrumbInputGesture`, whose `ui.<gesture>` breadcrumb shape
+  // this source reproduces. Emitted through `client.addBreadcrumb`, so the app's breadcrumb filter runs
+  // over them like any other crumb. Gated by `captureInteractions` (see the provider's own note): the
+  // option means "do not watch what I click and type", which must hold whatever stream it lands on.
+  const uiBreadcrumbSource = getOrCreateInterceptor(
+    'browser-ui-breadcrumbs',
+    () => createUiBreadcrumbSource({ target: domDocument }),
+    carrier,
+  );
+  client.addCaptureProvider(
+    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
+      client.addBreadcrumb(crumb);
+    }),
+  );
 
   // Session replay: lazy-`import()` @bugsee/replay unless it was opted OUT (`replay: false`) or this host
   // has no DOM (SSR / pre-render) — a separate chunk, so the errors-only opt-out keeps its ≤15KB bundle,

@@ -192,7 +192,8 @@ the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE 
 | `events.user` / `events.system` | native user/system events | ✅ |
 | `viewtree` (DOM hierarchy) | native view-hierarchy inspector | ✅ |
 | secure-areas (obscuring rects, D10) | `BugseeSecureViewsManager` (pixel masking) | ✅ |
-| `breadcrumbs` | native breadcrumbs | ✅ |
+| `input` (device presses: pointer/key) | native input records | ✅ |
+| `breadcrumbs` | native breadcrumbs — the app's own `addBreadcrumb()` **plus** the SDK's `ui.change`/`ui.submit`/`ui.focus` trail (state-change DOM signals are breadcrumbs, not input — they are not members of Android's `InputEventStage` and both native receivers drop them off `input`) | ✅ |
 | `profile` | native (JS CPU profile) | deferred |
 | `replay` / `screenshot` / `attachment` | native owns frames | deferred |
 

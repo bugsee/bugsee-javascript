@@ -2,6 +2,8 @@ import {
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTracesSampler,
+  createUiBreadcrumbProvider,
+  createUiBreadcrumbSource,
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
   parseStack,
@@ -97,6 +99,11 @@ const CAPABILITIES = [
   'events.system',
   'events.user',
   'input',
+  // `breadcrumbs` carries BOTH the embedded app's own `client.addBreadcrumb()` calls (which have always
+  // streamed here, undeclared) and the SDK's `ui.change`/`ui.submit`/`ui.focus` trail — the state-change
+  // half of the DOM interaction split (see the ui-breadcrumb wiring below). Native routes records by
+  // fileType, so an undeclared stream is one native was never told to expect.
+  'breadcrumbs',
   'crash',
 ] as const;
 
@@ -451,7 +458,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   // Capture providers: console→log; network umbrella (fetch/xhr/ws/sse); system traces (performance.memory);
   // system events (process_started + pagehide); user input (clicks/keys → the SDK-captured `input` stream,
-  // never events.user — that stream is reserved for application-supplied client.event() data). Each carrier-shared
+  // never events.user — that stream is reserved for application-supplied client.event() data) plus the
+  // state-change half of that split (change/submit/focus → `ui.*` breadcrumbs). Each carrier-shared
   // interceptor self-skips when its controllingOption is off. (The DOM viewtree + obscuring + error/crash +
   // performance streams land in later slices.)
   const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
@@ -547,6 +555,23 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     carrier,
   );
   client.addCaptureProvider(createInputProvider(inputSource));
+  // The STATE-CHANGE half of the same split: `change`/`submit`/`focusin` are not device presses (and are
+  // not members of Android's InputEventStage), so they ride the BREADCRUMB trail, not `input`. This tier
+  // gets it for the same reason it gets the input source: a WebView is exactly the surface the host SDK
+  // cannot see inside, and on a native screen the equivalent interaction WOULD produce Android's `ui.*`
+  // gesture breadcrumb. Both native receivers now drop the old semantic `input` records, so without this
+  // the signal is simply lost. It rides the existing `breadcrumbs` stream — no wire change — and goes
+  // through `client.addBreadcrumb`, so the host's `breadcrumbFilter` (slice 5 redaction) runs over it.
+  const uiBreadcrumbSource = getOrCreateInterceptor(
+    'webview-ui-breadcrumbs',
+    () => createUiBreadcrumbSource({ target: domDocument }),
+    carrier,
+  );
+  client.addCaptureProvider(
+    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
+      client.addBreadcrumb(crumb);
+    }),
+  );
 
   // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path
   // (triggerPipeline above) ALWAYS streams the incident as a `crash` entry; whether it ALSO opens a native bug

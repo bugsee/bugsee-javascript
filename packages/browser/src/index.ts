@@ -50,6 +50,12 @@ export {
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
+export {
+  createUiBreadcrumbProvider,
+  createUiBreadcrumbSource,
+  type UiBreadcrumbEnv,
+  type UiBreadcrumbSource,
+} from './ui-breadcrumb-source';
 // The browser-family OS/browser identification, exported so the worker tier (which has the same
 // `navigator` and the same problem) derives its OS the same way rather than growing a second parser.
 export {

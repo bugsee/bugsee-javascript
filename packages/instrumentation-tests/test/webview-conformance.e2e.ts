@@ -132,6 +132,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
         'events.system',
         'events.user',
         'input',
+        'breadcrumbs',
         'crash',
         'obscuring',
       ]),
@@ -198,6 +199,50 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     // ...and the app's own event stream stayed empty: nothing SDK-captured leaked into it.
     expect(rx.entries('events.user')).toStrictEqual([]);
     rx.assertAllConform();
+  });
+
+  // The OTHER half of the DOM interaction split, and the reason the native receivers may stop looking for
+  // semantic `input` records: `change`/`submit`/`focus` are state-change signals, not device presses, and
+  // are not members of Android's `InputEventStage`. They arrive as `breadcrumbs` entries in
+  // `BreadcrumbInputGesture`'s shape — `ui.<signal>`, type `user`, level `info`, `view.*` data.
+  it('streams change / submit / focus as schema-valid ui.* breadcrumb entries, never as input', () => {
+    const { rx } = track(boot());
+    const field = document.createElement('input');
+    field.type = 'number';
+    field.id = 'qty';
+    field.className = 'field';
+    document.body.appendChild(field);
+    field.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    field.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+    const crumbs = rx.entries('breadcrumbs');
+    expect(crumbs.map((e) => (e.p as { data: { category: string } }).data.category)).toStrictEqual([
+      'ui.focus',
+      'ui.change',
+    ]);
+    expect(crumbs[0]?.p).toMatchObject({
+      data: {
+        type: 'user', // user-ORIGINATED (Android's literal), NOT the `*.user` stream
+        category: 'ui.focus',
+        level: 'info',
+        data: { 'view.id': 'qty', 'view.class': 'field', 'view.tag': 'input' },
+      },
+    });
+    // Not device input, and not the app's own event stream.
+    expect(rx.entries('input')).toStrictEqual([]);
+    expect(rx.entries('events.user')).toStrictEqual([]);
+    rx.assertAllConform();
+  });
+
+  it('withholds the ui.* breadcrumb for a sensitive field (the secure-field exclusion)', () => {
+    const { rx } = track(boot());
+    const secret = document.createElement('input');
+    secret.type = 'password';
+    secret.id = 'login-pw';
+    document.body.appendChild(secret);
+    secret.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    expect(rx.entries('breadcrumbs')).toStrictEqual([]);
+    expect(JSON.stringify(rx.messages())).not.toContain('login-pw');
   });
 
   it('streams an incident as a crash entry (always) + a report trigger when gated on (D5)', async () => {

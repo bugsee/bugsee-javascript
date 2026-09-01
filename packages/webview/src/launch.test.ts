@@ -150,7 +150,16 @@ describe('launch (webview)', () => {
     expect(hello.k).toBe('hello');
     expect(hello.sdk).toBe(SDK_VERSION); // the version the native receiver negotiates against
     expect([...hello.caps].sort()).toEqual(
-      ['crash', 'events.system', 'events.user', 'input', 'log', 'network', 'traces.system'].sort(),
+      [
+        'breadcrumbs',
+        'crash',
+        'events.system',
+        'events.user',
+        'input',
+        'log',
+        'network',
+        'traces.system',
+      ].sort(),
     ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this.
     // `input` joined it when SDK-captured interactions moved off `events.user`: native routes records
     // by fileType, so an undeclared stream is a stream native was never told to expect.
@@ -355,6 +364,72 @@ describe('launch (webview)', () => {
     });
     // ...and NOT onto the app's own event stream.
     expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
+  });
+
+  // The other half of the input/state-change split: `change`/`submit`/`focus` are not device presses and
+  // are not members of Android's InputEventStage, so BOTH native receivers now DROP them off the `input`
+  // stream (bugsee-android#9, bugsee-cocoa#19). Without this source the WebView loses them entirely —
+  // and the WebView is precisely the surface native cannot see inside, where a native screen WOULD get
+  // an equivalent `ui.*` gesture breadcrumb.
+  it('streams change / submit / focus to native as ui.* breadcrumb records', () => {
+    const fake = fakeGlobal();
+    const doc = fakeEventTarget();
+    const win = fakeEventTarget();
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: win.target as unknown as WindowEvents,
+        document: doc.target as unknown as Document,
+      }),
+    );
+    doc.emit('change', {
+      target: {
+        tagName: 'INPUT',
+        id: 'qty',
+        getAttribute: () => null,
+        closest: () => null,
+        matches: () => false,
+      },
+    });
+    const crumbs = entriesOfType(fake.msgs(), 'breadcrumbs');
+    expect(crumbs).toHaveLength(1);
+    expect(crumbs[0]?.p).toMatchObject({
+      data: {
+        type: 'user',
+        category: 'ui.change',
+        level: 'info',
+        data: { 'view.id': 'qty', 'view.tag': 'input' },
+      },
+    });
+    // ...and never onto the input stream, nor the embedded app's own event stream.
+    expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
+    expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
+  });
+
+  it('withholds a WebView ui.* breadcrumb for a sensitive field', () => {
+    const fake = fakeGlobal();
+    const doc = fakeEventTarget();
+    const win = fakeEventTarget();
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: win.target as unknown as WindowEvents,
+        document: doc.target as unknown as Document,
+      }),
+    );
+    doc.emit('focusin', {
+      target: {
+        tagName: 'INPUT',
+        type: 'password',
+        id: 'pw',
+        getAttribute: () => null,
+        closest: () => null,
+        matches: () => false,
+      },
+    });
+    expect(entriesOfType(fake.msgs(), 'breadcrumbs')).toStrictEqual([]);
   });
 
   it('streams a sampled system metric as a traces.system entry on a scheduler tick', () => {

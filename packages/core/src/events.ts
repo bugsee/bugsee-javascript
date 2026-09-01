@@ -32,7 +32,7 @@ export type BreadcrumbInput = Omit<Breadcrumb, 'timestamp'> & { timestamp?: numb
  * SDKs: Android's `InputUtils` (`interception/input/InputUtils.java`) and iOS's `BGSInputEventTool`
  * (`Interception/Input/BGSInputEvent.h`) both produce them, and the viewer's `RecordingTouchTool`
  * switches on them (it renders 1/2/3 and ignores every other tool, which is what lets this one stream
- * carry keyboard and semantic entries without disturbing the touch/mouse/pen rendering path).
+ * carry keyboard entries without disturbing the touch/mouse/pen rendering path).
  *
  * `Key` (7) is Android's `TOOL_KEY` / iOS's `BGSInputEventToolKey` — present in both mobile SDKs, not
  * yet in the viewer's enum. `Gamepad` (8) / `Rotary` (9) / `Trackball` (10) complete the shared
@@ -78,11 +78,15 @@ export interface InputEvent {
   /**
    * The interaction STAGE for device input — Android's `InputEventStage`
    * (`interception/input/InputEventStage.java`): `'unknown'` | `'begin'` | `'move'` | `'end'` |
-   * `'scroll'` | `'keydown'` | `'keyup'` — or, for a `tool: Other` entry, a semantic DOM name
-   * (`'change'`, `'submit'`, `'focus'`), which is NOT a member of that enum (open question, R2-11: fold
-   * these into the shared stage vocabulary, or move them to a separate field — not yet decided, see
-   * `@bugsee/browser`'s `input-source.ts` `#semantic` for the trade-off). Typed as `string` because the
-   * viewer's contract types it as `string`.
+   * `'scroll'` | `'keydown'` | `'keyup'`. That is the COMPLETE set: the enum is produced by SDKs with no
+   * DOM, so a DOM-only value structurally cannot join it. Typed as `string` because the viewer's contract
+   * types it as `string` — not because the vocabulary is open.
+   *
+   * `'change'` / `'submit'` / `'focus'` used to ride here under `tool: Other`; they are STATE-CHANGE
+   * signals, not device input, and every consumer discarded them (both native WebView receivers drop
+   * them; the viewer's `processInput` renders tools 1/2/3 only). They are now BREADCRUMBS
+   * (`ui.change`/`ui.submit`/`ui.focus`, `@bugsee/browser`'s `ui-breadcrumb-source.ts`), matching
+   * Android's own split between its input dispatcher and its gesture dispatcher.
    */
   type: string;
   /** Groups the stages of ONE interaction (the viewer groups gestures by it). */

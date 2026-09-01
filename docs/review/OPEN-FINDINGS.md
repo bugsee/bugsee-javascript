@@ -46,6 +46,13 @@ native "records them nowhere and they decide nothing".
 to `events.user` until they do. Android's receiver is code-complete locally; iOS is on Gerrit
 (16606–16621). Cross-repo, so not a unilateral call.
 
+**Narrowed 2026-08-31 (not closed).** The `change`/`submit`/`focus` records are no longer on this
+stream at all — they are `ui.*` breadcrumbs now, on the already-routed `breadcrumbs` type (see the
+decided item under "New open items from round 2"). D1 still stands for the pointer/key records, which
+are genuinely device input and have nowhere else to go. `hello.caps` additionally now declares
+`breadcrumbs` (`packages/webview/src/launch.ts`), which it previously omitted even though the embedded
+app's own `client.addBreadcrumb()` calls have always streamed over the bridge.
+
 ### D2 · Fix D's two SEV2s were scoped out of every wave so far
 
 Confirmed independently by two reviewers, still unfixed:
@@ -505,12 +512,37 @@ F-4 falsifiable in both directions in all 7 adapters · 48/50 mutations caught.
   `PerformanceControllerDeps`/`PerformanceExtensionOptions`, behaviour-preserving default, wired from
   `packages/node/src/launch.ts`. No public API widening. Hazard is documented in
   `performance/src/controller.ts:42-73`; no built-in adapter calls the affected methods today.
-- **Input `'change'`/`'submit'`/`'focus'` — awaiting a product decision.** They are not in Android's
-  `InputEventStage` and never can be (no DOM at that layer). Recommendation is **B: a separate
-  `semantic?:` field**, leaving `type` a closed, native-producible enum — additive, no cross-repo wire
-  change, and it follows the file's own SDK-ahead-of-contract precedent for `button`/`key`/`target`.
-  Option A (extend the shared enum) would touch `bridge-protocol.schema.json` and both native receivers —
-  the same one-sided wire change that produced D1.
+- ~~**Input `'change'`/`'submit'`/`'focus'` — awaiting a product decision.**~~ **DECIDED (product owner)
+  and IMPLEMENTED 2026-08-31 — option C, neither A nor B: they are not input events at all, they are
+  STATE-CHANGE events, and they belong to BREADCRUMBS.** Both proposals on the table (A: extend the
+  shared stage enum; B: a separate `semantic?:` field) kept them on the `input` stream and so kept the
+  premise wrong. Grounds: (i) `InputEvent.type` is Android's `InputEventStage`
+  (`InputEventStage.java:27-44` = `unknown|begin|move|end|scroll|keydown|keyup`), an enum produced by
+  SDKs that have no DOM, which those three values structurally cannot join; (ii) every consumer already
+  discards them — both native WebView receivers now drop them (bugsee-android#9, bugsee-cocoa#19) and
+  the viewer's `processInput` renders tools 1/2/3 only, so they were captured, uploaded and thrown away
+  on every platform; (iii) **Android already draws this exact line**:
+  `BugseeInputInterceptionCoordinator` has TWO dispatchers — `getInputDispatcher()` (raw `InputEvent`s →
+  the input capture provider → `input.json`) and `getGestureDispatcher()` (recognised `GestureEvent`s →
+  `BreadcrumbInputGesture` → **breadcrumbs**).
+
+  **As built.** `packages/browser/src/input-source.ts` no longer listens for `change`/`submit`/`focusin`
+  at all (the `INTERACTIONS` entries, the three handlers and `#semantic` are gone), so `InputEvent.type`
+  is now a closed `InputEventStage` in fact as well as in its doc. The new
+  `packages/browser/src/ui-breadcrumb-source.ts` emits them through `client.addBreadcrumb` in
+  `BreadcrumbInputGesture.java:62-89`'s shape — `{type:'user', category:'ui.change'|'ui.submit'|
+  'ui.focus', level:'info', data:{'view.id','view.class','view.tag'}, timestamp: the DOM event's own
+  moment}` — reusing `describeTarget` for the descriptor (no second descriptor). `type:'user'` is
+  Android's literal, meaning a user-ORIGINATED breadcrumb; it is **not** the `*.user` stream and does not
+  touch the binding rule. Wired into both `@bugsee/browser` and `@bugsee/webview`, gated by
+  `captureInteractions` (Android gates on `Options.CaptureBreadcrumbs`, which this SDK has no equivalent
+  of — breadcrumbs enter via `client.addBreadcrumb`, the APPLICATION's own API, which must not be gated;
+  `captureInteractions` is the option that already means "do not watch what I click and type", and it
+  must keep meaning that whatever stream the observation lands on). A masked/sensitive target drops the
+  breadcrumb OUTRIGHT rather than emitting the tag-only descriptor — same secure-field exclusion the
+  keydown path applies, because the focus/change RHYTHM on one masked field is itself a side channel.
+  This also closes the `:275-277` half of the R2-11 "input stage vocabulary diverges" item below, and
+  removes three of the record types D1 is about.
 - **Node does not gate `recover()` on `whenReady`** (browser/worker do). `createNodeBundleStore` is
   synchronous fs and node never waited. Needs a decision only if an async injected store on node is ever
   supported.
@@ -629,10 +661,11 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
 - `core/src/events.ts:38-47` `InputTool` is a partial copy of a shared numeric wire contract —
   stops at `Key: 7`; Android `InputUtils.java:19-29` and iOS `BGSInputEvent.h:26-37` continue
   with `Gamepad=8`, `Rotary=9`, `Trackball=10`.
-- Input stage vocabulary diverges from Android's `InputEventStage`
-  (`InputEventStage.java:27-44` = `unknown|begin|move|end|scroll|keydown|keyup`):
-  `browser/src/input-source.ts:265` emits `'begin'` for a **keydown** where a canonical
-  `"keydown"` exists; `:275-277` emits `'change'`/`'submit'`/`'focus'`, absent from the enum.
+- ~~Input stage vocabulary diverges from Android's `InputEventStage`~~ — **both halves now closed.**
+  (`InputEventStage.java:27-44` = `unknown|begin|move|end|scroll|keydown|keyup`.) The keydown half was
+  fixed in round 2 (`'begin'` → the canonical `'keydown'`); the `'change'`/`'submit'`/`'focus'` half was
+  closed 2026-08-31 by moving those three off the stream entirely, to breadcrumbs — see the decided item
+  in "New open items from round 2" above.
 - Five vacuous viewer specs (2 new, 3 pre-existing) + a mutation-free zone in the gzip replay
   decoder path — detail in the round-1 test-quality report.
 - Vacuous runtime assertions in the export-surface tests (`bugsee/src/index.node.test.ts:24,36`,

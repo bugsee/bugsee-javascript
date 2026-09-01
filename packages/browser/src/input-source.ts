@@ -38,17 +38,17 @@ import { componentNameFromElement } from './component-name';
 //   pointerup     → { type:'end',   …the same, closing the gesture id }
 //   pointercancel → { type:'end',   …the gesture was aborted by the browser }
 //   keydown       → { type:'keydown', tool:Key, key, ctrl?/meta?/alt?/shift?, view* }
-//   change/submit/focusin → { type:'change'|'submit'|'focus', tool:Other, view* }
 // `type:'keydown'` is Android's InputEventStage.KeyDown (interception/input/InputEventStage.java) —
 // distinct from the pointer 'begin'/'end' stages, so a consumer can tell a key press apart from a
 // pointer-down without inspecting `tool`.
 //
-// The last group (change/submit/focus) is NOT device input — it is a semantic DOM signal, and none of
-// the three values is a member of Android's InputEventStage (which is exactly
-// unknown|begin|move|end|scroll|keydown|keyup) — so it rides the stream under `tool: Other`, which the
-// viewer's input renderer ignores (it renders tools 1/2/3 only). That keeps today's captured signal
-// without letting it disturb the touch/mouse/pen rendering path. See the OPEN QUESTION note on
-// `#semantic` below for whether these three belong in the shared stage enum at all.
+// DELIBERATELY NOT ON THIS STREAM: `change` / `submit` / `focus`. They are not device presses — they are
+// STATE-CHANGE DOM signals, and none of the three is (or structurally can be) a member of Android's
+// InputEventStage, which is exactly unknown|begin|move|end|scroll|keydown|keyup and is produced by SDKs
+// that have no DOM. `InputEvent.type` is that enum. They now ride the BREADCRUMB trail instead — see
+// `ui-breadcrumb-source.ts`, which mirrors Android's own split (BugseeInputInterceptionCoordinator has
+// two dispatchers: raw input events → the input provider → input.json, recognised gestures → the
+// BreadcrumbInputGesture producer → breadcrumbs).
 //
 // PII discipline (binding — never alter app behavior, never exfiltrate typed text): listeners are
 // capture-phase + passive and never preventDefault/stopPropagation; plain typed characters are dropped
@@ -190,15 +190,7 @@ export interface BrowserInputEnv {
 // preventDefault. We never call stopPropagation/preventDefault — the event reaches the app untouched.
 const ADD_OPTIONS: AddEventListenerOptions = { capture: true, passive: true };
 const REMOVE_OPTIONS: EventListenerOptions = { capture: true };
-const INTERACTIONS = [
-  'pointerdown',
-  'pointerup',
-  'pointercancel',
-  'keydown',
-  'change',
-  'submit',
-  'focusin',
-] as const;
+const INTERACTIONS = ['pointerdown', 'pointerup', 'pointercancel', 'keydown'] as const;
 
 /** `pointerType` → the wire tool. An unrecognised (but present) type is a real device we cannot name. */
 const TOOL_BY_POINTER_TYPE: Readonly<Record<string, InputTool>> = {
@@ -283,9 +275,6 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
         ...targetFields(desc),
       };
     }),
-    change: this.#dispatch((event) => this.#semantic(event, 'change')),
-    submit: this.#dispatch((event) => this.#semantic(event, 'submit')),
-    focusin: this.#dispatch((event) => this.#semantic(event, 'focus')),
   };
 
   constructor(target: InputEventTarget | undefined, mask: string) {
@@ -330,25 +319,6 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       tool,
       ...(typeof e.button === 'number' ? { button: e.button } : {}),
       ...targetFields(describeTarget(e.target, this.#mask)),
-    };
-  }
-
-  /**
-   * A semantic DOM signal (not a device press): `tool: Other`, no coordinates, no gesture id.
-   *
-   * OPEN QUESTION (R2-11, not resolved unilaterally — the `type` field is shared wire vocabulary
-   * downstream of `packages/webview/bridge-protocol.schema.json` and two native receivers): `'change'`
-   * `'submit'`/`'focus'` are not members of Android's `InputEventStage` (`unknown|begin|move|end|
-   * scroll|keydown|keyup`), which core/src/events.ts documents `InputEvent.type` as. Two shapes were
-   * considered — extend the shared stage enum with three new web-only members, or move these three
-   * onto a separate field (e.g. `semantic?: 'change'|'submit'|'focus'`) leaving `type` a pure
-   * `InputEventStage` — see the round-2 fix-wave report for the trade-off write-up.
-   */
-  #semantic(event: Event, type: 'change' | 'submit' | 'focus'): InputEventDetail {
-    return {
-      type,
-      tool: InputTool.Other,
-      ...targetFields(describeTarget(event.target, this.#mask)),
     };
   }
 

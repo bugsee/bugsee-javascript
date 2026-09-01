@@ -231,15 +231,9 @@ function fakeTarget() {
   };
 }
 
-const ALL_INTERACTIONS = [
-  'pointerdown',
-  'pointerup',
-  'pointercancel',
-  'keydown',
-  'change',
-  'submit',
-  'focusin',
-];
+const ALL_INTERACTIONS = ['pointerdown', 'pointerup', 'pointercancel', 'keydown'];
+/** The state-change DOM signals this source deliberately does NOT observe (they are breadcrumbs). */
+const NOT_INPUT = ['change', 'submit', 'focusin'];
 
 function activate(env: BrowserInputEnv) {
   const source = createBrowserInputSource(env);
@@ -621,26 +615,22 @@ describe('createBrowserInputSource', () => {
     expect(JSON.stringify(events)).not.toContain('"pw"');
   });
 
-  // ---- semantic (non-device) interactions ----
+  // ---- state-change DOM signals are NOT input ----
 
-  it('emits change / submit / focus as Other-tool entries with the masked target descriptor', () => {
+  // `change`/`submit`/`focus` are not device presses and are not members of Android's InputEventStage
+  // (`unknown|begin|move|end|scroll|keydown|keyup`), which `InputEvent.type` is. They moved to the
+  // breadcrumb trail (`ui-breadcrumb-source.ts`); this source must not observe them at all.
+  it('does not observe change / submit / focusin — they are breadcrumbs, not device input', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
+    for (const type of NOT_INPUT) {
+      expect(target.count(type)).toBe(0); // no listener attached at all
+    }
     const secret = el({ tag: 'input', type: 'password', id: 'pw' });
     target.emit('change', { target: secret });
     target.emit('submit', { target: el({ tag: 'form', id: 'f' }) });
     target.emit('focusin', { target: secret });
-    expect(events).toStrictEqual([
-      { type: 'change', tool: InputTool.Other, view_tag: 'input', target: { masked: true } },
-      {
-        type: 'submit',
-        tool: InputTool.Other,
-        view_tag: 'form',
-        view_id: 'f',
-        target: { selector: 'form#f' },
-      },
-      { type: 'focus', tool: InputTool.Other, view_tag: 'input', target: { masked: true } },
-    ]);
+    expect(events).toStrictEqual([]); // ...and nothing reaches the input stream if one ever fired
   });
 
   // ---- observe-only ----
