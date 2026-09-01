@@ -172,9 +172,20 @@ Fixed in the follow-up commit unless marked OPEN.
   were valid. New `writeFileAtomic` (temp sibling → fsync → rename, the invariant Android holds in
   `IssueReportingRequest.publishFinalBundle`) backs the store's `put`; `list()` cannot see a `.tmp`
   sibling, so a write in flight is invisible to recovery.
-- **OPEN · two more unbounded flushes** at `electron/src/launch-renderer.ts:106` and
-  `webview/src/launch.ts:392`; `electron/src/launch-main.ts:203-204` forwards its timeout to its own
-  flush but not to `control.flush()`.
+- **DISMISSED (checked, does not apply) · the "two more unbounded flushes"** at
+  `electron/src/launch-renderer.ts:106` and `webview/src/launch.ts:392`. The finding assumed both tiers
+  sit behind "the same ~140 s ladder". They do not: neither client has an HTTP upload pipeline at all.
+  Both route every report through a trigger pipeline that posts over IPC / the native bridge and, in
+  `renderer-report-pipeline.ts:42`'s words, "never upload locally" — there is no fallback to HTTP when
+  the bridge is down, it answers `{ok:false}`. `webview/src/launch.ts:333` states it outright: "No
+  transport / upload pipeline / bundle store / IndexedDB." So the calls are unbounded but nothing behind
+  them can retry, and adding a deadline would be cargo-culted from the edge tier. Left as-is
+  deliberately.
+- **OPEN (minor) · `electron/src/launch-main.ts:203-204` does not wait for renderers.** `control.flush()`
+  broadcasts and returns, so main's `flush()` resolves without any renderer having drained. Renderers
+  stream continuously, so this is a race at the margin rather than lost capture — but "flush" does not
+  mean what its name says across the process boundary. The control protocol broadcasts a bare command
+  with no payload, so carrying a deadline would be a wire change.
 
 ### Verified clean by round 6 (worth not re-checking)
 
