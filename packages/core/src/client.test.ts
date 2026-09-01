@@ -13,7 +13,11 @@ import {
   CaptureStoreToken,
   type DetectionProvider,
 } from './contracts';
-import type { IdentifiedBundle } from './durable-upload-pipeline';
+import {
+  type BundleStore,
+  createDurableUploadPipeline,
+  type IdentifiedBundle,
+} from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import { FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
@@ -869,6 +873,99 @@ describe('createClient — capture-recovery markers', () => {
     expect(await client.logException(new Error('x'))).toEqual({ ok: false });
     await flushMicrotasks();
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('KEEPS the marker when the durable queue could not stage the bundle ASYNCHRONOUSLY', async () => {
+    // COMPOSITION. Every other `retained` test on this path drives a STUB pipeline that stages nothing,
+    // so each pins this file's rule while being unable to see whether the queue's answer is TRUE. On the
+    // browser and worker tiers the durable write is an IndexedDB transaction that is accepted and then
+    // fails — quota exhaustion, the routine failure there — and a queue that could only observe a
+    // SYNCHRONOUS throw answered `retained: true` regardless. The marker was then retired here with
+    // nothing durable behind the incident, which is the one deletion that makes a crash unrecoverable.
+    const { store, remove } = fakeMarkers();
+    const persisted = new Map<string, Uint8Array>();
+    const asyncFailingStore: BundleStore = {
+      put: () => Promise.reject(new Error('QuotaExceededError')),
+      list: () => [...persisted.keys()],
+      read: (id) => persisted.get(id),
+      remove: (id) => {
+        persisted.delete(id);
+      },
+    };
+    const client = createClient({
+      uploadPipeline: createDurableUploadPipeline({
+        store: asyncFailingStore,
+        pipeline: failedUpload(), // retryable — nothing is settled either
+        onError: () => {},
+      }),
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    expect(await client.logException(new Error('x'))).toMatchObject({ ok: false });
+    await flushMicrotasks();
+    expect(persisted.size).toBe(0); // nothing durable carries this incident forward …
+    expect(remove).not.toHaveBeenCalled(); // … so the marker is the only trace, and MUST survive
+  });
+
+  it('retires the marker when an ASYNCHRONOUS durable write SUCCEEDS — the positive control', async () => {
+    // Without this the test above also passes on a queue that never reports `retained` for an async
+    // store at all, which would strand every browser marker forever and re-upload on every launch.
+    const { store, remove } = fakeMarkers();
+    const persisted = new Map<string, Uint8Array>();
+    const asyncStore: BundleStore = {
+      put: (id, bytes) => {
+        persisted.set(id, bytes);
+        return Promise.resolve();
+      },
+      list: () => [...persisted.keys()],
+      read: (id) => persisted.get(id),
+      remove: (id) => {
+        persisted.delete(id);
+      },
+    };
+    const client = createClient({
+      uploadPipeline: createDurableUploadPipeline({
+        store: asyncStore,
+        pipeline: failedUpload(),
+        onError: () => {},
+      }),
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.logException(new Error('x'));
+    expect(persisted.size).toBe(1); // durably staged ⇒ the next launch replays and reconciles it
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+  });
+
+  it('KEEPS the marker, and reports, when the pipeline resolves a NON-CONFORMING result', async () => {
+    // `triggerPipeline.report` is an injectable seam, so its answer is not guaranteed to be an
+    // `UploadResult`. Reading `.retained` off it before entering the try turned that into a THROW inside
+    // a `.then` whose only handler is for the upstream promise — an unhandled rejection surfacing in the
+    // host application, which the SDK must never cause. Nothing is known about the upload here, so the
+    // fail-safe direction is to keep the marker and let the next launch rebuild the incident.
+    const { store, remove } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: {
+        enqueue: vi.fn(async () => undefined as unknown as UploadResult),
+        flush: vi.fn(async () => true),
+        drop: vi.fn(),
+      },
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.logException(new Error('x'));
+    await flushMicrotasks();
+    expect(remove).not.toHaveBeenCalled();
+    // TWO sites read this result and both must survive it: the marker gate here, and `track`'s
+    // kill-state check. Counting pins them separately — asserting only "called with an Error" is
+    // satisfied by either one alone, which would leave the other's guard unpinned.
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
   it('retires the marker when the durable queue RETAINED the bundle, though the upload failed', async () => {

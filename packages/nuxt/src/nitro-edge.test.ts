@@ -5,7 +5,11 @@ const { launchEdge, resolveWaitUntil } = vi.hoisted(() => ({
   launchEdge: vi.fn(),
   resolveWaitUntil: vi.fn(),
 }));
-vi.mock('@bugsee/vercel-edge', () => ({ launchEdge, resolveWaitUntil }));
+vi.mock('@bugsee/vercel-edge', () => ({
+  launchEdge,
+  resolveWaitUntil,
+  DEFERRED_FLUSH_TIMEOUT_MS: 10_000, // the real value; this module shares the edge tier's deadline
+}));
 
 import {
   type EdgeNitroAppLike,
@@ -153,5 +157,36 @@ describe('installBugseeNitroEdge', () => {
 
     fireError(new Error('boom'));
     await expect(wu.drain()).resolves.toBeUndefined(); // the incident promise swallows the failure
+  });
+});
+
+describe('installBugseeNitroEdge — the flush deadline', () => {
+  it('BOUNDS the flush, so a stuck upload cannot outlive the platform budget', async () => {
+    // Held past the Response by waitUntil, which is finite: a bundle's retry ladder is 10s + 20s + 40s in
+    // createIssue and again in the signed PUT, so an unbounded flush asks the isolate to stay alive ~140 s
+    // and is killed mid-flight instead. The fake resolves only when given a deadline, so an unbounded
+    // `flush()` fails this by hanging rather than by assertion.
+    const client = {
+      logException: vi.fn(async () => ({ ok: true }) as const),
+      flush: vi.fn((t?: number) => (t === undefined ? new Promise(() => {}) : Promise.resolve())),
+    };
+    launchEdge.mockReturnValue(client);
+    const { drain } = captureWaitUntil();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitroEdge(nitroApp, { appToken: 'tok' });
+    fireError(Object.assign(new Error('boom'), { statusCode: 500 }));
+    await drain();
+    expect(client.flush).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it('lets the caller choose the deadline via flushTimeoutMs', async () => {
+    const client = fakeClient();
+    launchEdge.mockReturnValue(client);
+    const { drain } = captureWaitUntil();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitroEdge(nitroApp, { appToken: 'tok', flushTimeoutMs: 2222 });
+    fireError(Object.assign(new Error('boom'), { statusCode: 500 }));
+    await drain();
+    expect(client.flush).toHaveBeenCalledWith(2222);
   });
 });

@@ -25,6 +25,106 @@ Review harnesses, benchmarks and file backups are preserved in `.session-artifac
 
 ---
 
+## Round 7 — IN FLIGHT. Round 6's review did not converge; three of its findings were regressions round 6 introduced
+
+Four Opus reviewers (data-safety, test-quality-in-worktree, architecture, integration) against
+`e62ee2c..1222109`. **Round 6 introduced three defects of its own**, two of them in the review
+apparatus rather than the SDK.
+
+### Fixed in round 7
+
+- **F1 · SEV1 · `retained: true` was a lie on browser and webworker.** Found independently by the
+  data-safety and architecture reviewers, and REPRODUCED against real stores: `retained:true` with
+  `durable IDB rows = 0`, `markers left = 0` — the marker retired with nothing durable behind the
+  incident. Cause: `BundleStore.put` was typed `: void`, so the queue could only observe a failure that
+  threw SYNCHRONOUSLY, and `idb-bundle-store.ts` persists off the hot path and cannot. R5-1's fix was
+  therefore live on node only, on the one tier where quota exhaustion is routine. Fix: `put` returns
+  `void | Promise<void>`; the queue awaits it before deciding `retained` (never before ATTEMPTING the
+  upload); the IDB store returns its rejection instead of swallowing it, while marking it handled so an
+  ignoring caller cannot leak an `unhandledrejection` into the host page. Pinned by a COMPOSITION test
+  in `client.test.ts` driving the real durable queue — every prior `retained` test used a stub pipeline
+  that stages nothing, which is exactly why none of them could see this.
+- **F7 · SEV3 · `clear` read `settled` outside its `try`**, so a non-conforming pipeline result became
+  an unhandled rejection in the host application. Writing the test for it surfaced a SECOND site with
+  the same defect at `client.ts:441` (the kill-state check), whose own comment claims `track` is
+  "self-defending so a stray rejection can't surface as an unhandled rejection" — a fulfilment handler's
+  throw is not covered by the rejection handler beside it. Both guarded; the test counts `onError` calls
+  so each site is pinned separately.
+- **Integration F1 · SEV1 · CI was red at `HEAD`.** `pnpm lint` exited 1, and lint is the FIRST step of
+  the `check` job, so typecheck, cycles and coverage never ran. Cause: round 6 moved the invariants
+  harness out of gitignored `.session-artifacts/` into a path Biome lints, and the gates were run BEFORE
+  that copy rather than after it.
+- **Integration F2 · SEV2 · the committed harness hardcoded an absolute path** to one checkout, so it
+  ran only on its author's machine and — from a git worktree, the isolation this repo prescribes for
+  mutating agents — silently validated the MAIN tree instead of the tree under test. Now resolved from
+  `import.meta.url`. Proven: same worktree, same injected mutation, old harness `0 violations`, fixed
+  harness catches it.
+- **Test-quality F1 · SEV2 · two tests round 6 rewrote were VACUOUS**, and this one was mine. They
+  claimed to pin `skipReportIds` by counting /v2/sessions calls; `ensureSession` shares one in-flight
+  promise, so both legs await the same failing call and neither reaches /v2/issues. Verified directly:
+  with the guard deleted, session count, staged-blob keys and marker state are byte-identical — with a
+  failing session AND with a succeeding one. The fixture cannot observe this guard at all, so no
+  assertion over it could have worked; before round 6 it failed on the mutation only incidentally, via
+  the blob deletion a 403's PERMANENT verdict caused. **Removed rather than repaired**, with a comment
+  naming the 14 tests across four packages that do catch the guard (verified by injection, not assumed).
+
+### The instrument was the problem twice over
+
+Test-quality F2 reported the harness as non-deterministic — 2 violations in 23 runs on a clean tree.
+That is very likely NOT a harness defect: that reviewer ran the harness with the hardcoded path
+(integration F2), so it was reading the MAIN tree while other agents were injecting mutations into it —
+the round-1 hazard recorded in §Process notes. A 24-run sweep of my own reproduced the same shape and
+turned out to be self-inflicted in the same way: a worktree whose `node_modules` were symlinked to the
+main tree, so `@bugsee/core` resolved back to the tree I was mutating. **Isolation by worktree is not
+isolation unless the dependency graph is isolated too.** A clean 25-run determinism sweep is the check
+that settles it.
+
+### Still open from round 6
+
+- **Data-safety F2 · SEV2 · the harness's control-plane oracle is a second transcription of the same
+  Java table the SDK transcribes** (`CONTROL_CASES` cites `CommunicationErrorClassifier.java:46-53` in
+  its own comments). A SHARED mis-transcription is invisible: injecting one produced 350 cases, 0
+  violations. Costed against the real collector — `ServerTooBusyError` (99013) classified permanent
+  would delete crash reports exactly when the collector is shedding load.
+- **Data-safety F3 · SEV2 · `judgeCrossLaunch` flattens the log**, so a deletion in launch 2 is
+  licensed by an accept in launch 4. Injecting a sweep that destroys every pending incident's recording
+  produced 124 violations — ALL from single-launch sets; the cross-launch sets reported zero.
+- **Data-safety F4 · SEV2 · no invariant ever inspects a payload.** Making every recovered report ship
+  EMPTY sweeps clean at 0 violations. "The report arrived, the session is empty" is the failure users
+  actually notice.
+- **Data-safety F5 · SEV3** · a `serverCode ?? code` regression is invisible to the harness; no case
+  answers with a status that collides with a collector code.
+- **Data-safety F6 · SEV3 (plausible)** · the retention pass evicts on `maxBundles`(32)/`maxBytes`/
+  `maxAgeMs` with no marker awareness, so a burst over 32 incidents can discard a blob whose marker was
+  already retired on the strength of `retained`.
+- **F8 / integration F6 · SEV2 · the `stop()`/`flush()` window is ~140 s per bundle, not ~35 s** — the
+  backoff ladder is 10/20/40, run twice (createIssue and the PUT loop) — and R5-2 made the control-plane
+  half strictly worse by making 401/403 retryable. This is NOT purely the caller's problem: the SDK
+  itself awaits `flush()` with no timeout at `vercel-edge/src/edge-context.ts:97-105` (which on the
+  Durable Object path holds the customer's HTTP request open), `webworker/src/event.ts:50-56` and
+  `nuxt/src/nitro-edge.ts:77`. Needs a default cap.
+- **Integration F3 · SEV3** · the harness is outside `tsc` (`instrumentation-tests/tsconfig.json`
+  includes `app`, `test`, `vitest.config.ts` — not `harness/`) as well as outside vitest and CI, and its
+  ~24 `any`s mute in-file type errors, so a `@bugsee/core` signature change rots it silently.
+- **Integration F5 · LOW** · docstrings in `errors.ts` (`:2`, `:8`, `:36`) and `client.ts`
+  (`:355-356`, `:440`, `:468`, `:719`) still describe an invalid app token as the kill-state case; it
+  now classifies as `permanent`. `errors.test.ts:16` still puts a collector code in the status field.
+- **Test-quality F3 · SUSPECTED** · node's per-package coverage gate reported 96.54% lines under
+  concurrent vitest load, and 100% run alone — the v8-instrumentation nondeterminism of commit
+  `5f2f64b`. It can fail spuriously on a loaded CI runner.
+
+### Verified clean by round 6 (worth not re-checking)
+
+Removing the 401/403 kill rule was verified SAFE **by reading the appserver**: `error.router.js:50`
+calls `res.code(200)` unconditionally, so an invalid app token arrives as envelope code `14019` on an
+HTTP 200 and never as a 401. The rule that was removed guarded a response shape the collector does not
+produce. No sample, e2e harness or design doc still executes on the old assumption — `enterKillState`
+has two references, `fatal` one producer and one consumer. `UploadResult.retained` adds no public
+surface (not in the `@bugsee/core` barrel). The new marker rule is a strict SUBSET of the old one, so
+it can only keep more markers, never delete more. No configuration can hold markers nothing can retire.
+
+---
+
 ## Blocked on a human decision
 
 ### D1 · WebView `input` stream is dropped by both native receivers — **SEV1**
@@ -115,6 +215,11 @@ REPORTS the 72 accepted R2-2 legacy double-reports and the known concurrent-reco
 than hiding them.
 
 ## Round 5 review — DID NOT CONVERGE. 1 SEV1, 4 SEV2, 3 SEV3 from 4 reviewers
+
+> **Status, amended after rounds 6 and 7.** R5-4, R5-6, R5-7 and R5-8 were fixed in round 6.
+> R5-1 (the marker retired on a retryable failure) was fixed in round 6 for the NODE tier only —
+> round 6's own review found the same loss still live on browser/worker, and round 7 closed it
+> (see §Round 7). R5-2 and R5-3 were fixed in round 6. The heading is kept as it read at the time.
 
 **But the streak broke: round 4 introduced NO new loss path.** Rounds 1-3 each did. Round 5's SEV1 and
 two of its SEV2s are PRE-EXISTING defects that round 4 made visible by unifying everything around them;
@@ -274,7 +379,7 @@ error-handling change · `deferred.delete` at hand-over closes the gap under eve
 (4 walked) · both R3-2 layers independently correct · the `settled` rename complete in code and tests ·
 the de-cast doubles do not pass incidentally (proven positively) · the `tsc` mechanism works, including
 the hand-edited `satisfies Transaction` · tsup guard falsifiable per target, all 10 red when reverted ·
-`.session-artifacts/invariants.mts` runs clean in-tree (283 cases, 17.4 s) and imports no SDK predicate ·
+`packages/instrumentation-tests/harness/invariants.mts` runs clean in-tree (283 cases, 17.4 s) and imports no SDK predicate ·
 `skipReportIds` complete on return · 403 renew not broken by the new classifier · Stryker leftovers inert ·
 bun recovery verified as genuinely bun's file, diff shape-identical to deno's.
 
@@ -291,11 +396,11 @@ bun recovery verified as genuinely bun's file, diff shape-identical to deno's.
 5. Documentation (R5-9) is a real deliverable here, not tidying: `PROGRESS.md` is the designated hand-off
    doc and has no record of the current architecture.
 
-## Round 6 — IN FLIGHT. R5-4, R5-6, R5-7, R5-8 fixed (platform + performance tiers)
+## Round 6 — DONE, then REVIEWED (did not converge; see §Round 7). R5-4, R5-6, R5-7, R5-8 fixed
 
 Gates re-run whole-tree after the change: `pnpm lint` exit 0 (the one pre-existing warning,
 `packages/node/src/index.test.ts:72`) · `pnpm typecheck` 100/100 · `pnpm check:cycles` clean ·
-`pnpm test` 430 files / 5869 tests. Per-package coverage on every package touched: node
+`pnpm test` 430 files / 5906 tests. Per-package coverage on every package touched: node
 100/98.36, browser 100/98.72, webworker 100/100, performance 100/99.16, core 100/98.75
 (stmts/branch; lines + funcs 100 throughout).
 
@@ -418,7 +523,7 @@ the sixteenth.
 > **Closing it needs `@bugsee/performance` added as a devDependency to both packages and each double
 > annotated `: Transaction`** — a `pnpm install`, so it was reported rather than run.
 
-**The harness rewrite is the load-bearing part.** `.session-artifacts/invariants.mts` no longer asks the
+**The harness rewrite is the load-bearing part.** `packages/instrumentation-tests/harness/invariants.mts` no longer asks the
 SDK anything: it drives the REAL upload stack (`createBugseeApi` + `createBundleUploader` +
 `createUploadPipeline`) over a fake collector whose answers the harness chooses, and judges the SDK
 against those answers. `harnessVerdict` is transcribed by hand from the Java and **must never import

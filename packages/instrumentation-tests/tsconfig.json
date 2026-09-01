@@ -5,5 +5,5 @@
     "types": ["node"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["app", "test", "vitest.config.ts"]
+  "include": ["app", "harness", "test", "vitest.config.ts"]
 }

@@ -21,6 +21,19 @@ export function resolveEdgeStore(client: Bugsee): EdgeRequestContextStore | unde
   }
 }
 
+/**
+ * Flush deadline while the customer's response is being HELD (the `awaitFlush` / Durable Object path).
+ * Short on purpose: every millisecond here is added latency on a request that has already succeeded.
+ */
+export const AWAITED_FLUSH_TIMEOUT_MS = 3_000;
+
+/**
+ * Flush deadline off the response path (`waitUntil`). Longer, because it costs the customer nothing —
+ * but still finite, since the platform's extend-lifetime budget is finite and an upload that outlives
+ * it is killed mid-flight regardless.
+ */
+export const DEFERRED_FLUSH_TIMEOUT_MS = 10_000;
+
 export interface EdgeInvocationOptions {
   /** Attributes stamped on the per-invocation context (merged into any incident report produced within it) —
    *  e.g. `http.method`/`http.url` for fetch, or `faas.trigger`/`faas.cron` for a Cron handler. */
@@ -39,6 +52,18 @@ export interface EdgeInvocationOptions {
    *  pending — the flush must be awaited before the method returns. (Module Workers / WorkerEntrypoint have a
    *  real, effective `ctx.waitUntil`, so they leave this `false` and defer the flush — no added response latency.) */
   awaitFlush?: boolean;
+  /**
+   * Deadline in milliseconds for the incident flush. Defaults to {@link AWAITED_FLUSH_TIMEOUT_MS} when
+   * `awaitFlush` is set and {@link DEFERRED_FLUSH_TIMEOUT_MS} otherwise.
+   *
+   * There IS a default, deliberately: a bundle's retry ladder is 10s + 20s + 40s inside `createIssue`
+   * and again inside the signed PUT, so an unbounded flush can run ~140 s — with the `awaitFlush` path
+   * holding the customer's HTTP response open for the duration. Bounding costs no delivery the platform
+   * would otherwise have provided, because the isolate is killed at the platform's own budget either
+   * way; waiting past it buys nothing and risks the request. Pass a larger value if your platform
+   * budget is larger, or `Number.POSITIVE_INFINITY` for the old unbounded behaviour.
+   */
+  flushTimeoutMs?: number;
   /**
    * Where an SDK-internal failure inside the wrapper is reported. It is never thrown into the invocation:
    * this wrapper IS the customer's request, so an escape changes the request's outcome rather than costing
@@ -94,17 +119,22 @@ export async function runInEdgeContext<T>(
     // it contains a SYNCHRONOUS throw and returns the promise unchanged, so `await`ing it still rejected
     // (the Durable Object path), and handing it to `waitUntil` still gave the platform a rejecting promise
     // to await. Both are async failures of the upload, which must never become the request's outcome.
-    const flushed = async (): Promise<void> => {
+    const flushed = async (timeoutMs: number): Promise<void> => {
       try {
-        await client.flush();
+        await client.flush(timeoutMs);
       } catch (error) {
         neverThrow(() => options.onError?.(error)); // a throwing sink must not defeat the guard either
       }
     };
     if (options.awaitFlush === true) {
-      await flushed(); // Durable Object: ctx.waitUntil is inert → hold the request open by awaiting
+      // Durable Object: ctx.waitUntil is inert → hold the request open by awaiting. BOUNDED, because
+      // this is the customer's response being held.
+      await flushed(options.flushTimeoutMs ?? AWAITED_FLUSH_TIMEOUT_MS);
     } else {
-      neverThrow(() => waitUntil(flushed()), options.onError);
+      neverThrow(
+        () => waitUntil(flushed(options.flushTimeoutMs ?? DEFERRED_FLUSH_TIMEOUT_MS)),
+        options.onError,
+      );
     }
   }
 }

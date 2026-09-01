@@ -352,8 +352,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
-  // Permanent kill-state (§1435/§1504): set when a report fails with an unrecoverable auth error
-  // (invalid app token). All capture goes no-op, capture+detection halt, onError fires ONCE.
+  // Permanent kill-state (§1435/§1504): set when a report comes back with the collector's KILL_SDK
+  // verdict (code 99099) — the app token has been switched OFF at the server. All capture goes no-op,
+  // capture+detection halt, onError fires ONCE. An INVALID app token is a different thing entirely: it
+  // classifies as `permanent` (drop this bundle) and leaves the client recording.
   let killed = false;
   let tickTimer: unknown = null;
 
@@ -437,9 +439,17 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     };
     report.then((result) => {
       forget();
-      // An unrecoverable auth failure (invalid app token) on any report trips the kill-state.
-      if (result.ok === false && result.error?.fatal === true) {
-        enterKillState(result.error);
+      // Guarded, because the rejection handler beside this one covers `report` REJECTING and not this
+      // handler's own throw — so reading a non-conforming result here would surface as precisely the
+      // unhandled rejection the comment above says `track` exists to prevent. `uploadPipeline` and the
+      // trigger pipeline are injectable seams; neither is guaranteed to answer with an `UploadResult`.
+      try {
+        // The collector's KILL_SDK verdict on any report trips the kill-state.
+        if (result.ok === false && result.error?.fatal === true) {
+          enterKillState(result.error);
+        }
+      } catch (error) {
+        onError(error);
       }
     }, forget);
     return report;
@@ -465,7 +475,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     detectionCoordinator.stop();
   };
 
-  // Enter the permanent kill-state (invalid app token): fire onError ONCE, then halt capture/detection.
+  // Enter the permanent kill-state (collector KILL_SDK): fire onError ONCE, then halt capture/detection.
   // Idempotent. Pending uploads are not drained — further uploads on a rejected token are futile.
   const enterKillState = (error: BugseeError): void => {
     if (killed) {
@@ -540,10 +550,15 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       // keeps the marker. That is not a leak: the next launch rebuilds the incident from it and retires it
       // on settle, which is precisely what capture recovery exists to do.
       const clear = (settled: UploadResult): void => {
-        if (!isUploadSettled(settled) && settled.retained !== true) {
-          return;
-        }
+        // The whole body is guarded, the predicate included. `settled` comes from an INJECTABLE pipeline
+        // and so is not guaranteed to be an `UploadResult`; reading `.retained` off it outside the try
+        // threw inside a `.then` whose only handler covers the upstream promise, which surfaced as an
+        // unhandled rejection in the host application. Failing here also means nothing is known about
+        // the upload, and the fail-safe answer to that is to KEEP the marker.
         try {
+          if (!isUploadSettled(settled) && settled.retained !== true) {
+            return;
+          }
           reportMarkers.store.remove(handled.id);
         } catch (error) {
           onError(error);
@@ -716,7 +731,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     launch(): void {
-      // A killed client (invalid app token) is permanently dead: re-launching must not re-arm it.
+      // A killed client (collector KILL_SDK) is permanently dead: re-launching must not re-arm it.
       if (killed || launched) {
         return;
       }

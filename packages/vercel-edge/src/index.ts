@@ -10,6 +10,8 @@ export {
   type EdgeGlobalEvents,
 } from './detection';
 export {
+  AWAITED_FLUSH_TIMEOUT_MS,
+  DEFERRED_FLUSH_TIMEOUT_MS,
   type EdgeInvocationOptions,
   resolveEdgeStore,
   // The generic edge-invocation core: open a per-invocation context, capture+rethrow inside it, flush via

@@ -89,7 +89,7 @@ describe('createPersistentBundleStore', () => {
     expect(store.list()).toEqual([]);
   });
 
-  it('routes a persistence (put) failure to onError without throwing', async () => {
+  it('surfaces a persistence (put) failure to the CALLER, without throwing synchronously', async () => {
     const onError = vi.fn();
     const blob: AsyncBlobStore = {
       loadAll: () => Promise.resolve([]),
@@ -97,9 +97,24 @@ describe('createPersistentBundleStore', () => {
       remove: () => Promise.resolve(),
     };
     const store = createPersistentBundleStore(blob, onError);
-    store.put('a', bytes(1)); // does not throw; the mirror still holds it
+    const written = store.put('a', bytes(1)); // does not throw; the mirror still holds it
     expect(store.read('a')).toEqual(bytes(1));
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
+    // The durable queue AWAITS this to decide `UploadResult.retained`, and `client.ts` retires the
+    // report marker on the strength of that. Swallowing the failure here — which is what a
+    // `.catch(onError)` did — made `retained: true` UNCONDITIONAL on this tier: quota exhaustion left
+    // the marker retired with nothing durable behind the incident, so it was unrecoverable.
+    await expect(written).rejects.toThrow('quota exceeded');
+    expect(onError).not.toHaveBeenCalled(); // reported by the queue, once, not twice
+  });
+
+  it('resolves the returned promise once the write is durable — the positive control', async () => {
+    const blob: AsyncBlobStore = {
+      loadAll: () => Promise.resolve([]),
+      put: () => Promise.resolve(),
+      remove: () => Promise.resolve(),
+    };
+    const store = createPersistentBundleStore(blob);
+    await expect(store.put('a', bytes(1))).resolves.toBeUndefined();
   });
 
   it('routes a removal failure to onError without throwing', async () => {
@@ -133,10 +148,16 @@ describe('createPersistentBundleStore', () => {
     const blob: AsyncBlobStore = {
       loadAll: () => Promise.resolve([]),
       put: () => Promise.reject(new Error('boom')),
-      remove: () => Promise.resolve(),
+      remove: () => Promise.reject(new Error('remove boom')),
     };
     const store = createPersistentBundleStore(blob); // no onError
+    // `put` reports through its RETURN value, so an ignoring caller must neither throw nor leak an
+    // unhandled rejection …
     expect(() => store.put('a', bytes(1))).not.toThrow();
+    // … while `remove` has no caller that can act on it and so still routes to the sink — which is the
+    // path that actually exercises the defaulted no-op.
+    expect(() => store.remove('a')).not.toThrow();
+    await Promise.resolve();
     await Promise.resolve();
   });
 });

@@ -14,10 +14,12 @@ export interface PersistentBundleStore extends BundleStore {
 }
 
 /**
- * Adapt an async {@link AsyncBlobStore} to the sync {@link BundleStore} contract. The mirror serves
- * reads/writes synchronously; writes persist through asynchronously; hydration loads durable bundles
- * into the mirror on open (a live put during hydration wins). Persistence/hydration failures route to
- * `onError` and never throw — best-effort durability must not break the upload path.
+ * Adapt an async {@link AsyncBlobStore} to the mostly-sync {@link BundleStore} contract. The mirror
+ * serves reads synchronously; writes persist through asynchronously; hydration loads durable bundles
+ * into the mirror on open (a live put during hydration wins). Removal and hydration failures route to
+ * `onError` and never throw — best-effort durability must not break the upload path. A `put` failure
+ * is the exception: it is REPORTED TO THE CALLER through the returned promise, because the durable
+ * queue must know whether the blob is really staged before it tells the client the incident is safe.
  */
 export function createPersistentBundleStore(
   blob: AsyncBlobStore,
@@ -40,7 +42,16 @@ export function createPersistentBundleStore(
     put(id, bytes) {
       touched.add(id);
       mirror.set(id, bytes);
-      blob.put(id, bytes).catch(onError);
+      // RETURNED, not swallowed. The durable queue awaits this to decide `UploadResult.retained`, and
+      // the client retires the incident's report marker on the strength of that. A `.catch(onError)`
+      // here made the failure invisible to the only caller that can act on it, so on the tier where
+      // quota exhaustion is routine the marker was retired with nothing durable behind it.
+      const written = blob.put(id, bytes);
+      // Marking it handled is NOT the same as swallowing it: `written` still rejects for the queue's
+      // own handler, but a caller that ignores the return cannot leak an `unhandledrejection` into the
+      // host page. The SDK must never alter application behaviour, and this store is public API.
+      written.catch(() => {});
+      return written;
     },
     list() {
       return [...mirror.keys()];

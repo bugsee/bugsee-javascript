@@ -46,9 +46,21 @@ export interface IdentifiedBundle extends Bundle {
 }
 
 /** A durable blob store for serialized bundles, keyed by an opaque id. */
+/** A store whose `put` completes asynchronously hands back a thenable; a synchronous one returns nothing. */
+const isThenable = (value: void | Promise<void>): value is Promise<void> =>
+  typeof (value as Promise<void> | undefined)?.then === 'function';
+
 export interface BundleStore {
-  /** Durably write a bundle blob under `id` (replacing any existing one). */
-  put(id: string, bytes: Uint8Array): void;
+  /**
+   * Durably write a bundle blob under `id` (replacing any existing one).
+   *
+   * Return a promise if the write completes asynchronously (IndexedDB, a network-backed store): the
+   * queue AWAITS it before claiming {@link UploadResult.retained}, because "the durable queue owns
+   * delivery from here" is a promise the caller retires its report marker on. A store that accepts the
+   * write and fails later — quota exhaustion on the browser tier is the routine case, not the exotic
+   * one — must reject, or the incident is lost. A synchronous store simply returns nothing and throws.
+   */
+  put(id: string, bytes: Uint8Array): void | Promise<void>;
   /** Ids of every bundle still pending (written and not yet removed). */
   list(): string[];
   /** Read a bundle blob, or undefined if it is absent. */
@@ -414,15 +426,33 @@ export function createDurableUploadPipeline(
       // read-only disk must not stop the upload from being attempted — but it means "the durable queue
       // owns delivery from here" is FALSE for this bundle, and the caller has no other way to find out.
       // See UploadResult.retained.
-      let staged = false;
+      // `true`/`false` once known; a promise while an asynchronous store is still writing.
+      let staged: boolean | Promise<boolean> = false;
       try {
-        store.put(id, serializeBundle(bundle, now())); // durable BEFORE the upload attempt
-        staged = true;
+        const written = store.put(id, serializeBundle(bundle, now())); // durable BEFORE the attempt
+        staged = isThenable(written)
+          ? written.then(
+              () => true,
+              (error: unknown) => {
+                onError(error); // same contract as the synchronous throw below
+                return false;
+              },
+            )
+          : true;
       } catch (error) {
         onError(error); // best-effort persistence must never block the upload
       }
+      // The attempt does NOT wait on the durable write; only the `retained` VERDICT does.
       const result = attempt(id, bundle, hint);
-      return staged ? result.then(retainedIfPending) : result;
+      if (staged === false) {
+        return result;
+      }
+      if (staged === true) {
+        return result.then(retainedIfPending);
+      }
+      return Promise.all([result, staged]).then(([settled, ok]) =>
+        ok ? retainedIfPending(settled) : settled,
+      );
     },
 
     recover(options?: DurableRecoverOptions): void {

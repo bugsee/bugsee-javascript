@@ -73,8 +73,13 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const R = '/Users/alexeykarimov/Projects/Bugsee/javascript/packages';
+// Resolved from THIS file, never hardcoded. An absolute path pinned to one checkout would run only on
+// its author's machine, and — worse — would silently resolve to the MAIN tree when the harness is run
+// from a git worktree, which is the isolation this repo prescribes for agents that inject mutations
+// (docs/review/OPEN-FINDINGS.md). It would then certify code that is not the code under test.
+const R = fileURLToPath(new URL('../..', import.meta.url));
 const { recoverInstances } = await import(`${R}/node/src/recover-instances`);
 const core: any = await import(`${R}/core/src/index`);
 const nu: any = await import(`${R}/node-utils/src/index`);
@@ -130,20 +135,40 @@ interface Answer {
  */
 const ANSWERS: readonly Answer[] = [
   { status: 200, intent: 'accept', why: 'the object store stored the bytes' },
-  { status: 400, intent: 'refuse', why: 'the payload itself is malformed; re-sending it changes nothing' },
+  {
+    status: 400,
+    intent: 'refuse',
+    why: 'the payload itself is malformed; re-sending it changes nothing',
+  },
   { status: 401, intent: 'transient', why: 'credentials expired — a fresh session mints new ones' },
   // NOT a refusal of the BYTES: a signed PUT 403 is the URL's signature having expired or been
   // scoped wrong, and the SDK can mint a fresh URL for the same object. Round 5 flagged the old
   // table's `refuse` here as its fifth blind spot — it made "delete on the first 403" sweep clean
   // across all 33 403 cases.
-  { status: 403, intent: 'transient', why: 'the signed URL was refused, not the payload; a renewed URL works' },
-  { status: 404, intent: 'refuse', why: 'the target does not exist; re-sending it changes nothing' },
-  { status: 408, intent: 'transient', why: 'the request timed out in flight; it never reached a decision' },
+  {
+    status: 403,
+    intent: 'transient',
+    why: 'the signed URL was refused, not the payload; a renewed URL works',
+  },
+  {
+    status: 404,
+    intent: 'refuse',
+    why: 'the target does not exist; re-sending it changes nothing',
+  },
+  {
+    status: 408,
+    intent: 'transient',
+    why: 'the request timed out in flight; it never reached a decision',
+  },
   { status: 425, intent: 'transient', why: 'too early — the server asked to be asked again' },
   { status: 429, intent: 'transient', why: 'rate-limited; the budget refills' },
   { status: 500, intent: 'transient', why: 'the server broke while handling it; it never decided' },
   { status: 503, intent: 'transient', why: 'the server is unavailable; it never decided' },
-  { status: 0, intent: 'transient', why: 'the transport threw — DNS/TLS/socket; nothing was decided' },
+  {
+    status: 0,
+    intent: 'transient',
+    why: 'the transport threw — DNS/TLS/socket; nothing was decided',
+  },
 ];
 
 const INTENT = new Map(ANSWERS.map((a) => [a.status, a.intent]));
@@ -349,7 +374,9 @@ function judge(o: Observation): void {
   for (const [incident, n] of delivered) {
     if (n <= 1) continue;
     if (o.expectedDuplicates?.has(incident) === true) {
-      notes.push(`${o.label}: incident ${incident} delivered ${n}x — declared expected by the case`);
+      notes.push(
+        `${o.label}: incident ${incident} delivered ${n}x — declared expected by the case`,
+      );
       continue;
     }
     problems.push(`P3 incident ${incident} DELIVERED ${n}x`);
@@ -428,13 +455,13 @@ function judgeCrossLaunch(o: {
   // P4 — what the collector said it would take, it must have taken.
   if (o.mustDeliver) {
     const ok = new Set(
-      flat
-        .filter((put) => put.verdict === 'accept')
-        .map((put) => o.incidentOf(put.summary)),
+      flat.filter((put) => put.verdict === 'accept').map((put) => o.incidentOf(put.summary)),
     );
     for (const incident of new Set(o.staged.map((st) => st.incident))) {
       if (!ok.has(incident)) {
-        problems.push(`P4 incident ${incident} was never delivered, though the collector would take it`);
+        problems.push(
+          `P4 incident ${incident} was never delivered, though the collector would take it`,
+        );
       }
     }
   }
@@ -638,9 +665,9 @@ for (const markers of markerSets)
               ownSummary: blobSummary(b.sub, b.key),
             })),
           // A MARKER carries no `ownSummary`: it is one of two copies of a single incident, so it is
-        // legitimately retired once that INCIDENT settled — through its blob or through its own
-        // rebuild. Requiring its own bytes would flag the reconciliation the design exists for.
-        ...[...before]
+          // legitimately retired once that INCIDENT settled — through its blob or through its own
+          // rebuild. Requiring its own bytes would flag the reconciliation the design exists for.
+          ...[...before]
             .filter((s) => s.includes('!'))
             .map((s) => ({ slot: s, incident: s.slice(s.indexOf('!') + 1) })),
           ...stagedGenerations(before),
@@ -710,8 +737,7 @@ for (const subs of [['9-9-deadA'], ['9-9-deadA', '9-9-deadB']])
           const replay = core.createMarkerAwareBundleReplay({ markers: ms, pipeline: base });
           durable.recover({
             via: replay.pipeline,
-            select: (b: any) =>
-              b.reportId !== undefined && replay.pendingReportIds.has(b.reportId),
+            select: (b: any) => b.reportId !== undefined && replay.pendingReportIds.has(b.reportId),
           });
           return replay.skipReportIds;
         },
@@ -803,7 +829,8 @@ for (const status of [200, 429, 400]) {
     threw = e;
   }
   await settle();
-  if (threw !== undefined) failures.push(`D throwing store: recovery threw into launch: ${String(threw)}`);
+  if (threw !== undefined)
+    failures.push(`D throwing store: recovery threw into launch: ${String(threw)}`);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -898,7 +925,10 @@ for (const selective of [false, true]) {
 
   const c = collector(() => 200);
   const base = realPipeline(c, { bufferSize: 1, maxWaiting: 0 });
-  const durable = core.createDurableUploadPipeline({ store: nu.createNodeBundleStore(shared), pipeline: base });
+  const durable = core.createDurableUploadPipeline({
+    store: nu.createNodeBundleStore(shared),
+    pipeline: base,
+  });
 
   await recoverInstances({
     dataDir: dir,
@@ -963,7 +993,9 @@ for (const [s1, s2] of [
   const store = nu.createNodeBundleStore(join(dir, sub, 'pending'));
   for (const b of placed) store.put(b.key, frame(b, sub));
 
-  const c = collector((summary) => (summary.endsWith('g1') || summary === markerSummary('G1') ? s1 : s2));
+  const c = collector((summary) =>
+    summary.endsWith('g1') || summary === markerSummary('G1') ? s1 : s2,
+  );
   await recoverInstances({
     dataDir: dir,
     ownInstanceId: '1-0-live',
@@ -1103,7 +1135,12 @@ for (const status of statuses)
       staged.push({ slot: `${sub}!${incident}`, incident });
     }
     // A LIVE sibling holding its lock must be left completely alone.
-    await seedBrowserSibling(idb, 'liveC', [{ key: 'wl', spec: { key: 'wl', incident: 'LIVE', withId: true } }], ['LIVE']);
+    await seedBrowserSibling(
+      idb,
+      'liveC',
+      [{ key: 'wl', spec: { key: 'wl', incident: 'LIVE', withId: true } }],
+      ['LIVE'],
+    );
     locks.hold(bu.instanceLockName(TOK, 'liveC'));
 
     const c = collector(() => status);
@@ -1167,8 +1204,7 @@ for (const answer of ANSWERS)
     const incident = 'I0';
     const markerIds = shape === 'blob-only' ? [] : [incident];
     seedSubtree(dir, sub, markerIds);
-    const placed =
-      shape === 'marker-only' ? [] : [{ key: 'i0', incident, withId: true, sub }];
+    const placed = shape === 'marker-only' ? [] : [{ key: 'i0', incident, withId: true, sub }];
     const store = nu.createNodeBundleStore(join(dir, sub, 'pending'));
     for (const b of placed) store.put(b.key, frame(b, sub));
 
@@ -1384,26 +1420,98 @@ const CONTROL_CASES: ControlCase[] = [
   // ── R5-2: an HTTP auth status on the control plane. Android treats 401 as session expiry and
   //    retries once (`BugseeCommunicationManager.java:614-635`); the token blacklist fires ONLY on
   //    the server error code KILL_SDK (`:776-781`), never on an HTTP status.
-  { label: 'session HTTP 401', on: 'session', answer: { status: 401, body: {} }, intent: 'transient', staysAlive: true },
-  { label: 'session HTTP 403', on: 'session', answer: { status: 403, body: {} }, intent: 'transient', staysAlive: true },
+  {
+    label: 'session HTTP 401',
+    on: 'session',
+    answer: { status: 401, body: {} },
+    intent: 'transient',
+    staysAlive: true,
+  },
+  {
+    label: 'session HTTP 403',
+    on: 'session',
+    answer: { status: 403, body: {} },
+    intent: 'transient',
+    staysAlive: true,
+  },
   // ── R5-3: the collector's OWN codes, inside an HTTP 200 envelope.
   //    TRANSIENT (Android's `default:` arm, and 99013 explicitly).
-  { label: 'session code 99013 ServerTooBusy', on: 'session', answer: envelope(99013, 'ServerTooBusyError'), intent: 'transient', staysAlive: true },
-  { label: 'session code 14002 SessionNotFound', on: 'session', answer: envelope(14002, 'SessionNotFoundError'), intent: 'transient', staysAlive: true },
+  {
+    label: 'session code 99013 ServerTooBusy',
+    on: 'session',
+    answer: envelope(99013, 'ServerTooBusyError'),
+    intent: 'transient',
+    staysAlive: true,
+  },
+  {
+    label: 'session code 14002 SessionNotFound',
+    on: 'session',
+    answer: envelope(14002, 'SessionNotFoundError'),
+    intent: 'transient',
+    staysAlive: true,
+  },
   //    …and the two whose numbers COLLIDE with HTTP statuses. Neither is in the collector's permanent
   //    set, so neither may kill anything — the collision is the finding.
-  { label: 'session code 403 (a COLLECTOR code, not a status)', on: 'session', answer: envelope(403, 'SomeCollectorError'), intent: 'transient', staysAlive: true },
-  { label: 'session code 401 (a COLLECTOR code, not a status)', on: 'session', answer: envelope(401, 'SomeCollectorError'), intent: 'transient', staysAlive: true },
+  {
+    label: 'session code 403 (a COLLECTOR code, not a status)',
+    on: 'session',
+    answer: envelope(403, 'SomeCollectorError'),
+    intent: 'transient',
+    staysAlive: true,
+  },
+  {
+    label: 'session code 401 (a COLLECTOR code, not a status)',
+    on: 'session',
+    answer: envelope(401, 'SomeCollectorError'),
+    intent: 'transient',
+    staysAlive: true,
+  },
   //    PERMANENT (`CommunicationErrorClassifier.java:46-53`): the payload can never be accepted, so it
   //    must be dropped rather than re-sent at every launch for the life of the installation.
-  { label: 'session code 14019 InvalidAppToken', on: 'session', answer: envelope(14019, 'InvalidAppTokenError'), intent: 'refuse', staysAlive: false },
-  { label: 'session code 11004 ApplicationTypeMismatch', on: 'session', answer: envelope(11004, 'ApplicationTypeMismatchError'), intent: 'refuse', staysAlive: false },
-  { label: 'session code 99098 UnsupportedSdk', on: 'session', answer: envelope(99098, 'UnsupportedSdkError'), intent: 'refuse', staysAlive: false },
+  {
+    label: 'session code 14019 InvalidAppToken',
+    on: 'session',
+    answer: envelope(14019, 'InvalidAppTokenError'),
+    intent: 'refuse',
+    staysAlive: false,
+  },
+  {
+    label: 'session code 11004 ApplicationTypeMismatch',
+    on: 'session',
+    answer: envelope(11004, 'ApplicationTypeMismatchError'),
+    intent: 'refuse',
+    staysAlive: false,
+  },
+  {
+    label: 'session code 99098 UnsupportedSdk',
+    on: 'session',
+    answer: envelope(99098, 'UnsupportedSdkError'),
+    intent: 'refuse',
+    staysAlive: false,
+  },
   //    KILL_SDK — permanent AND the one case where going quiet is the CORRECT outcome.
-  { label: 'session code 99099 KillSdk', on: 'session', answer: envelope(99099, 'KillSdkError'), intent: 'refuse', staysAlive: false },
+  {
+    label: 'session code 99099 KillSdk',
+    on: 'session',
+    answer: envelope(99099, 'KillSdkError'),
+    intent: 'refuse',
+    staysAlive: false,
+  },
   //    The same namespace on the ISSUE call, where the SDK also reads `err.code` as a status.
-  { label: 'issue code 12003 SimilarCrashExists', on: 'issue', answer: envelope(12003, 'SimilarCrashExistsError'), intent: 'refuse', staysAlive: true },
-  { label: 'issue code 99013 ServerTooBusy', on: 'issue', answer: envelope(99013, 'ServerTooBusyError'), intent: 'transient', staysAlive: true },
+  {
+    label: 'issue code 12003 SimilarCrashExists',
+    on: 'issue',
+    answer: envelope(12003, 'SimilarCrashExistsError'),
+    intent: 'refuse',
+    staysAlive: true,
+  },
+  {
+    label: 'issue code 99013 ServerTooBusy',
+    on: 'issue',
+    answer: envelope(99013, 'ServerTooBusyError'),
+    intent: 'transient',
+    staysAlive: true,
+  },
 ];
 
 for (const control of CONTROL_CASES) {

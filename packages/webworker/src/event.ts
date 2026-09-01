@@ -7,6 +7,18 @@ import type { Bugsee } from './launch';
 // finishes — the exact isolate-freeze guard the edge SDK uses (vercel-edge wait-until.ts). A dedicated/shared
 // Web Worker is long-lived and does NOT need this; it's Service-Worker-only.
 
+/**
+ * Deadline for the incident flush handed to `waitUntil`.
+ *
+ * `waitUntil` is why the flush gets to run at all — it keeps a Service Worker that would otherwise be
+ * killed on idle alive until the upload settles. That is a reason to bound the flush, not to leave it
+ * open: a bundle's retry ladder is 10s + 20s + 40s inside `createIssue` and again inside the signed PUT,
+ * so an unbounded flush asks the platform to keep the worker alive ~140 s per bundle — well past the
+ * extend-lifetime budget any runtime actually grants, which means it is killed mid-flight regardless.
+ * Overridable via the `flushTimeoutMs` parameter.
+ */
+export const SW_FLUSH_TIMEOUT_MS = 10_000;
+
 /** The minimal ExtendableEvent surface: a SW event whose `waitUntil(promise)` extends the worker's life until
  *  the promise settles (FetchEvent / PushEvent / ExtendableMessageEvent / SyncEvent all extend it). */
 export interface ExtendableEventLike {
@@ -42,6 +54,7 @@ export function withBugseeEvent<E extends ExtendableEventLike>(
   client: Bugsee,
   handler: ServiceWorkerEventHandler<E>,
   onError?: (error: unknown) => void,
+  flushTimeoutMs: number = SW_FLUSH_TIMEOUT_MS,
 ): (event: E) => void {
   const capture = (error: unknown): void => {
     neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), onError);
@@ -49,7 +62,7 @@ export function withBugseeEvent<E extends ExtendableEventLike>(
   // A flush that can only resolve — see the note above on rejected extend-lifetime promises.
   const flushed = async (): Promise<void> => {
     try {
-      await client.flush();
+      await client.flush(flushTimeoutMs);
     } catch (error) {
       neverThrow(() => onError?.(error)); // a throwing sink must not defeat the guard either
     }

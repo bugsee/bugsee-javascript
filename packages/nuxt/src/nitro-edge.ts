@@ -12,6 +12,7 @@
 import {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
+  DEFERRED_FLUSH_TIMEOUT_MS,
   type EdgeExecutionContext,
   launchEdge,
   resolveWaitUntil,
@@ -40,6 +41,13 @@ export interface InstallBugseeNitroEdgeOptions extends BugseeEdgeLaunchOptions {
   appToken: string;
   /** Test/advanced seam: the edge launch. Default `@bugsee/vercel-edge` `launchEdge`. */
   launch?: (appToken: string, options: BugseeEdgeLaunchOptions) => Bugsee;
+  /**
+   * Deadline in milliseconds for the incident flush held past the Response by `waitUntil`. Defaults to
+   * the edge tier's `DEFERRED_FLUSH_TIMEOUT_MS`. Bounded on purpose: a bundle's retry ladder is
+   * 10s + 20s + 40s in `createIssue` and again in the signed PUT, so an unbounded flush asks the isolate
+   * to stay alive ~140 s — past any platform's extend-lifetime budget, so it is killed mid-flight anyway.
+   */
+  flushTimeoutMs?: number;
 }
 
 /** An H3Error carries a numeric `statusCode`; a <500 status is an expected client error (404/422/…), not a
@@ -59,7 +67,12 @@ export function installBugseeNitroEdge(
   nitroApp: EdgeNitroAppLike,
   options: InstallBugseeNitroEdgeOptions,
 ): Bugsee {
-  const { appToken, launch = launchEdge, ...launchOptions } = options;
+  const {
+    appToken,
+    launch = launchEdge,
+    flushTimeoutMs = DEFERRED_FLUSH_TIMEOUT_MS,
+    ...launchOptions
+  } = options;
   const client = launch(appToken, launchOptions);
 
   nitroApp.hooks.hook('error', (error, context) => {
@@ -74,7 +87,7 @@ export function installBugseeNitroEdge(
       (async () => {
         try {
           await client.logException(error, { mechanism: 'http-error' });
-          await client.flush();
+          await client.flush(flushTimeoutMs);
         } catch {
           // swallow — the edge response is unaffected
         }

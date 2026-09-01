@@ -1244,54 +1244,25 @@ describe('launch — capture recovery (multi-instance)', () => {
     await vi.waitFor(async () => expect(await bundleShared.loadAll()).toEqual([]));
   });
 
-  // Pins the `skipReportIds` pass-through from this launch into core's `recoverReports`. It is only
-  // observable when the queue leg FAILED: the incident is then still owed, and the marker leg must NOT
-  // attempt the same one again in the same pass (that second attempt is what became a duplicate upload
-  // the moment either attempt actually landed). A 403 on /v2/sessions fails the upload immediately and
-  // without retry backoff, so each attempt is exactly one session call.
-  it('does not re-attempt an incident the failed bundle-queue leg already owns', async () => {
-    const idb = new IDBFactory();
-    const bundleShared = createIdbBlobStore({
-      databaseName: coexistenceDatabaseName('tok'),
-      indexedDB: idb,
-    });
-    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true); // marker + chunks for inc-deadsib
-    await bundleShared.put('deadsib/staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
-
-    const transport = vi.fn<HttpTransport>(async (url: string) => ({
-      status: url.endsWith('/v2/sessions') ? 403 : 200,
-      headers: {},
-      body: new Uint8Array(),
-    }));
-
-    const client = launchTracked(
-      'tok',
-      baseOptions({
-        transport,
-        persist: true,
-        clock: recoveryClock,
-        scheduler: noopScheduler,
-        indexedDB: idb,
-        locks: fakeWebLocks(),
-        onError: vi.fn(),
-      }),
-    );
-
-    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
-    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
-    await new Promise((r) => setTimeout(r, 30)); // let a (wrong) second attempt land if it is going to
-    // ONE attempt so far. Had the marker leg also run it would have enqueued a second bundle in the
-    // same turn, i.e. a second session call with no delay between them — which is what this counts.
-    // The queue leg's own RETRY ladder is a 5 s backoff away (a control-plane failure is retryable
-    // since round 6; it used to be fatal, which is what kept this count at 1 forever).
-    expect(sessions()).toHaveLength(1);
-    // …and both durable traces survive, so the next launch retries from the staged bundle.
-    expect((await bundleShared.loadAll()).map(([k]) => k)).toEqual(['deadsib/staged']);
-    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
-    // Bounded, because the failed upload is now mid-retry-ladder: an unbounded stop() would wait out
-    // three exponential backoffs. Retiring the client here makes the shared afterEach a no-op.
-    await client.stop(0);
-  });
+  // The `skipReportIds` pass-through into core's `recoverReports` — the marker leg must not rebuild an
+  // incident the bundle-queue leg already owns — is NOT pinned here, and a test that claimed to was
+  // removed rather than repaired.
+  //
+  // It asserted that only one /v2/sessions call was made, reasoning that a second leg would enqueue a
+  // second bundle in the same turn. It cannot: `ensureSession` shares one in-flight promise, so both
+  // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
+  // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
+  // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
+  // could have worked. Before round 6 the test failed on the mutation only incidentally, through the
+  // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
+  // that side effect and left the test unable to fail.
+  //
+  // The guard is covered where it is actually observable — an INJECTED bundle store, whose staged blob
+  // and marker are visible to the same launch: "uploads an incident ONCE when an injected bundle store
+  // holds the blob a dead sibling's marker covers", "gives each dead sibling only its own blobs out of a
+  // shared injected store", and "waits for an injected ASYNC store to hydrate before reconciling it",
+  // plus `core/src/capture-recovery.test.ts` and `node/src/recover-instances.test.ts`. Deleting the
+  // guard fails 14 tests across those four packages.
 
   // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
   // page loads, so it holds the previous session's staged bundle while that incident's marker still sits in

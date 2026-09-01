@@ -1,11 +1,23 @@
-// Canonical SDK error (design §10). A numeric `code` mirrors the mobile SDKs' error codes (e.g. the
-// INVALID_APP_TOKEN kill-state, server dedup 12003/12004 referenced in §7.7); `cause` chains the
-// underlying error. Carried on UploadResult.error and thrown from hard-fail paths.
+// Canonical SDK error (design §10). `cause` chains the underlying error. Carried on UploadResult.error
+// and thrown from hard-fail paths.
+//
+// TWO DISJOINT NUMERIC NAMESPACES, and conflating them is a data-loss bug: `code` is the HTTP STATUS
+// (`0` when none was reached), while `serverCode` is the COLLECTOR's own code from a `{ ok: false,
+// error: { code } }` envelope — the mobile-parity codes such as 12003/12004 (§7.7) and 14019. The
+// collector answers HTTP 200 with an error envelope, so the two never arrive together and a collector
+// code must never be read as a status.
 
 export interface BugseeErrorOptions {
   /** The underlying error this one wraps, surfaced as the standard `Error.cause`. */
   cause?: unknown;
-  /** Unrecoverable auth failure (invalid app token): the client enters its kill-state. Default false. */
+  /**
+   * The app token itself has been switched off — collector code `KILL_SDK` (99099), and ONLY that. The
+   * client enters its kill-state. Default false.
+   *
+   * NOT an invalid app token: that arrives as `14019` and classifies as `permanent` (drop this bundle),
+   * because a bad token is a per-payload verdict, not a reason to stop capturing. And NOT an HTTP
+   * 401/403, which is an infrastructure answer — a proxy, a WAF, a session expiring mid-upload.
+   */
   fatal?: boolean;
   /**
    * The COLLECTOR's own error code, from a `/v2/*` `{ ok: false, error: { code } }` envelope.
@@ -33,7 +45,7 @@ export class BugseeError extends Error {
    * collector error code — see {@link BugseeErrorOptions.serverCode}.
    */
   readonly code: number;
-  /** True for an unrecoverable auth failure (invalid app token) that should disable the SDK. */
+  /** True only for the collector's KILL_SDK (99099) verdict: the app token has been switched off. */
   readonly fatal: boolean;
   /** The collector's own error code, when the failure came from a `/v2/*` envelope. */
   readonly serverCode?: number;

@@ -12,8 +12,12 @@ describe('BugseeError', () => {
     expect(new BugseeError('something failed', 1).message).toBe('something failed');
   });
 
-  it('carries the numeric code', () => {
-    expect(new BugseeError('x', 12003).code).toBe(12003);
+  it('carries the numeric code — an HTTP STATUS, never a collector code', () => {
+    // 12003 is a COLLECTOR code and belongs in `serverCode`; the constructor's second argument is the
+    // HTTP status. Using a collector code here as the example implied the two share a namespace, which
+    // is the confusion that let a 200-with-error-envelope be read as a transport status.
+    expect(new BugseeError('x', 503).code).toBe(503);
+    expect(new BugseeError('x', 503).serverCode).toBeUndefined();
   });
 
   it('sets name to "BugseeError"', () => {

@@ -192,6 +192,55 @@ describe('createDurableUploadPipeline', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it('does NOT report `retained` when the durable write fails ASYNCHRONOUSLY', async () => {
+    // The browser/worker shape. `BundleStore.put` was typed `: void`, so the queue could only learn about
+    // a durability failure that threw SYNCHRONOUSLY — and IndexedDB cannot: `idb-bundle-store.ts` accepts
+    // the write into its mirror and persists off the hot path. On the one tier where quota exhaustion is
+    // routine rather than exotic, `retained: true` was therefore unconditional, and `client.ts` retired
+    // the report marker on the strength of it with nothing durable behind the incident.
+    const { store, map } = memStore();
+    const onError = vi.fn();
+    const asyncFailingStore: BundleStore = {
+      ...store,
+      // Accepted now, fails later — precisely what an IDB transaction does on QuotaExceededError.
+      put: () => Promise.reject(new Error('QuotaExceededError')),
+    };
+    const { pipeline } = fakePipeline({ ok: false });
+    const durable = createDurableUploadPipeline({
+      store: asyncFailingStore,
+      pipeline,
+      newId: () => 'b1',
+      onError,
+    });
+    const result = await durable.enqueue(bundle());
+    expect(result).toEqual({ ok: false });
+    expect(result.retained).toBeUndefined(); // nothing durable ⇒ the marker MUST be kept
+    expect(map.size).toBe(0);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('reports `retained` when an ASYNC durable write SUCCEEDS — the positive control', async () => {
+    // Without this, the test above would also pass on an implementation that simply never stamps
+    // `retained` for an async store, which would strand every browser marker forever.
+    const { store, map } = memStore();
+    const asyncStore: BundleStore = {
+      ...store,
+      put: (id, bytes) => {
+        map.set(id, bytes);
+        return Promise.resolve();
+      },
+    };
+    const { pipeline } = fakePipeline({ ok: false });
+    const durable = createDurableUploadPipeline({
+      store: asyncStore,
+      pipeline,
+      newId: () => 'b1',
+    });
+    const result = await durable.enqueue(bundle());
+    expect(result.retained).toBe(true);
+    expect(map.size).toBe(1); // and the blob really is staged
+  });
+
   it('does NOT report `retained` on a SETTLED result — the copy has just been freed', async () => {
     const { store, map } = memStore();
     const delivered = createDurableUploadPipeline({
@@ -318,7 +367,9 @@ describe('createDurableUploadPipeline', () => {
     const { map } = memStore();
     const ids: string[] = [];
     const trackingStore: BundleStore = {
-      put: (id) => ids.push(id),
+      put: (id) => {
+        ids.push(id);
+      },
       list: () => [...map.keys()],
       read: (id) => map.get(id),
       remove: () => {},

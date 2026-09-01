@@ -5,7 +5,11 @@ invariants about what may be delivered, kept and deleted. It is the safety net t
 blocking defects fixed in round 6 (R5-1 live-path marker loss, R5-2 kill-state on 401/403, R5-3
 collector-code namespace collision).
 
-Run it: `pnpm exec tsx packages/instrumentation-tests/harness/invariants.mts` (~17 s, 350 cases).
+Run it from the repo root: `pnpm exec tsx packages/instrumentation-tests/harness/invariants.mts`
+(~30 s, 350 cases). It resolves the packages it exercises from its OWN location, so it can be run
+from a git worktree and will validate THAT tree — but only if the worktree's dependencies are its
+own. A worktree whose `node_modules` are symlinked to the main checkout resolves `@bugsee/*` back
+to the main tree, and the harness then certifies code that is not the code under test.
 Expected output: `350 cases swept, 0 invariant violations`.
 
 ## Why it lives here and not in `test/`

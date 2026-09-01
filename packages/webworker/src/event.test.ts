@@ -206,3 +206,34 @@ describe('withBugseeEvent — a failing flush never fails the event', () => {
     await expect(settle()).resolves.toBeDefined();
   });
 });
+
+describe('withBugseeEvent — the flush deadline', () => {
+  // A Service Worker is killed when idle, so the flush is handed to waitUntil to keep it alive. That is a
+  // reason to bound it, not to leave it open: a bundle's retry ladder runs 10s + 20s + 40s in createIssue
+  // and again in the signed PUT, so an unbounded flush can hold the worker alive ~140 s per bundle and
+  // still be killed by the platform's own extend-lifetime budget before it finishes.
+  const clientWith = (flush: (t?: number) => Promise<boolean>) =>
+    ({
+      logException: vi.fn(() => Promise.resolve({ ok: true })),
+      flush: vi.fn(flush),
+    }) as unknown as Parameters<typeof withBugseeEvent>[0];
+
+  it('BOUNDS the flush handed to waitUntil', async () => {
+    // Resolves only when given a deadline, so this fails by hanging if `flush()` is ever called bare.
+    const client = clientWith((t) =>
+      t === undefined ? new Promise(() => {}) : Promise.resolve(false),
+    );
+    const held: Array<Promise<unknown>> = [];
+    withBugseeEvent(client, () => undefined)({ waitUntil: (p) => held.push(p) });
+    await Promise.all(held);
+    expect(client.flush).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it('lets the caller choose the deadline', async () => {
+    const client = clientWith(() => Promise.resolve(true));
+    const held: Array<Promise<unknown>> = [];
+    withBugseeEvent(client, () => undefined, undefined, 4321)({ waitUntil: (p) => held.push(p) });
+    await Promise.all(held);
+    expect(client.flush).toHaveBeenCalledWith(4321);
+  });
+});

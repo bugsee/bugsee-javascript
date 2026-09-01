@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveEdgeStore, runInEdgeContext } from './edge-context';
+import { AWAITED_FLUSH_TIMEOUT_MS, resolveEdgeStore, runInEdgeContext } from './edge-context';
 import { type Bugsee, EdgeContextStoreToken } from './launch';
 import { createEdgeRequestContextStore } from './request-context-store';
 
@@ -8,7 +8,7 @@ function fakeClient(over: { withStore?: boolean } = {}) {
   const withStore = over.withStore ?? true;
   const store = createEdgeRequestContextStore();
   const logException = vi.fn((_e: unknown, _o?: unknown) => Promise.resolve({ ok: true }));
-  const flush = vi.fn(() => Promise.resolve(true));
+  const flush = vi.fn((_timeoutMs?: number) => Promise.resolve(true));
   const client = {
     logException,
     flush,
@@ -81,6 +81,43 @@ describe('runInEdgeContext', () => {
     expect(logException).toHaveBeenCalledWith(boom, { mechanism: 'uncaught' });
     expect(typeof ctxIdAtLog).toBe('string'); // logException fired INSIDE the context (report stays correlated)
     expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('BOUNDS the awaited flush, so a stuck upload cannot hold the customer’s response open', async () => {
+    // A bundle's retry ladder is 10s + 20s + 40s inside createIssue and again inside the signed PUT, so
+    // an unbounded flush can run ~140 s — and on the Durable Object path this one is holding the
+    // CUSTOMER's HTTP response open for all of it. Bounding costs no delivery the platform would have
+    // provided anyway: the isolate is killed at the platform's own budget regardless, so waiting longer
+    // buys nothing and risks the request. The fake resolves ONLY when given a deadline, so this test
+    // fails by hanging if the wrapper ever goes back to calling `flush()` bare.
+    const { client, flush } = fakeClient();
+    flush.mockImplementation((timeout?: number) =>
+      timeout === undefined ? new Promise<boolean>(() => {}) : Promise.resolve(false),
+    );
+    await runInEdgeContext(client, { ctx: { waitUntil: vi.fn() }, awaitFlush: true }, () => 'ok');
+    expect(flush).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it('lets the caller choose the flush deadline via flushTimeoutMs', async () => {
+    const { client, flush } = fakeClient();
+    await runInEdgeContext(
+      client,
+      { ctx: { waitUntil: vi.fn() }, awaitFlush: true, flushTimeoutMs: 1234 },
+      () => 'ok',
+    );
+    expect(flush).toHaveBeenCalledWith(1234);
+  });
+
+  it('BOUNDS the deferred (waitUntil) flush too, with a longer deadline than the awaited one', async () => {
+    // Off the response path, so it may run longer — but still not unbounded: the platform's extend-lifetime
+    // budget is finite and an upload that outlives it is killed mid-flight either way.
+    const { client, flush } = fakeClient();
+    const held: Array<Promise<unknown>> = [];
+    await runInEdgeContext(client, { ctx: { waitUntil: (p) => held.push(p) } }, () => 'ok');
+    await Promise.all(held);
+    const awaited = flush.mock.calls[0]?.[0];
+    expect(awaited).toEqual(expect.any(Number));
+    expect(awaited as number).toBeGreaterThan(AWAITED_FLUSH_TIMEOUT_MS);
   });
 
   it('AWAITS client.flush() in-request when awaitFlush is set (instead of deferring to waitUntil)', async () => {

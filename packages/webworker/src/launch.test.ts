@@ -562,50 +562,25 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(issueJson(transport).summary).toBe('nobody-claims-me');
   });
 
-  // Pins the `skipReportIds` pass-through into core's `recoverReports`: only observable when the queue
-  // leg FAILED, where the marker leg must NOT attempt the same incident again in the same pass. A 403 on
-  // /v2/sessions fails the upload immediately and without retry backoff (one session call per attempt).
-  it('does not re-attempt an incident the failed bundle-queue leg already owns', async () => {
-    const idb = new IDBFactory();
-    const shared = createIdbBlobStore({
-      databaseName: coexistenceDatabaseName('tok'),
-      indexedDB: idb,
-    });
-    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
-    await shared.put('deadsib/staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
-
-    const transport = vi.fn<HttpTransport>(async (url: string) => ({
-      status: url.endsWith('/v2/sessions') ? 403 : 200,
-      headers: {},
-      body: new Uint8Array(),
-    }));
-
-    const client = track(
-      'tok',
-      baseOptions({
-        transport,
-        platformType: 'service-worker',
-        clock: recoveryClock,
-        indexedDB: idb,
-        locks: fakeWebLocks(),
-        onError: vi.fn(),
-      }),
-    );
-
-    const sessions = () => transport.mock.calls.filter(([url]) => url.endsWith('/v2/sessions'));
-    await vi.waitFor(() => expect(sessions().length).toBeGreaterThanOrEqual(1));
-    await new Promise((r) => setTimeout(r, 30));
-    // ONE attempt so far. Had the marker leg also run it would have enqueued a second bundle in the
-    // same turn, i.e. a second session call with no delay between them — which is what this counts.
-    // The queue leg's own RETRY ladder is a 5 s backoff away (a control-plane failure is retryable
-    // since round 6; it used to be fatal, which is what kept this count at 1 forever).
-    expect(sessions()).toHaveLength(1);
-    expect((await shared.loadAll()).map(([k]) => k)).toEqual(['deadsib/staged']);
-    expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
-    // Bounded, because the failed upload is now mid-retry-ladder: an unbounded stop() would wait out
-    // three exponential backoffs. Retiring the client here makes the shared afterEach a no-op.
-    await client.stop(0);
-  });
+  // The `skipReportIds` pass-through into core's `recoverReports` — the marker leg must not rebuild an
+  // incident the bundle-queue leg already owns — is NOT pinned here, and a test that claimed to was
+  // removed rather than repaired.
+  //
+  // It asserted that only one /v2/sessions call was made, reasoning that a second leg would enqueue a
+  // second bundle in the same turn. It cannot: `ensureSession` shares one in-flight promise, so both
+  // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
+  // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
+  // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
+  // could have worked. Before round 6 the test failed on the mutation only incidentally, through the
+  // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
+  // that side effect and left the test unable to fail.
+  //
+  // The guard is covered where it is actually observable — an INJECTED bundle store, whose staged blob
+  // and marker are visible to the same launch: "uploads an incident ONCE when an injected bundle store
+  // holds the blob a dead sibling's marker covers", "gives each dead sibling only its own blobs out of a
+  // shared injected store", and "waits for an injected ASYNC store to hydrate before reconciling it",
+  // plus `core/src/capture-recovery.test.ts` and `node/src/recover-instances.test.ts`. Deleting the
+  // guard fails 14 tests across those four packages.
 
   // The case the previous fix's set-emptiness key silently DELETED.
   it('delivers BOTH a marker-only incident and a staged bundle belonging to another incident', async () => {
