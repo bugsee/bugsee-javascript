@@ -230,8 +230,11 @@ export type {
   UploadResult,
 } from './transport';
 export {
+  classifyServerErrorCode,
   isRetryableHttpStatus,
   isUploadSettled,
+  SERVER_ERROR_CATEGORIES,
+  type ServerErrorCategory,
   TransportToken,
   UploadPipelineToken,
 } from './transport';

@@ -81,11 +81,23 @@ that settles it.
 
 ### Still open from round 6
 
-- **Data-safety F2 · SEV2 · the harness's control-plane oracle is a second transcription of the same
-  Java table the SDK transcribes** (`CONTROL_CASES` cites `CommunicationErrorClassifier.java:46-53` in
-  its own comments). A SHARED mis-transcription is invisible: injecting one produced 350 cases, 0
-  violations. Costed against the real collector — `ServerTooBusyError` (99013) classified permanent
-  would delete crash reports exactly when the collector is shedding load.
+- **FIXED · the harness's control-plane oracle was a second transcription of the same Java table.** A
+  shared mis-transcription was invisible: injecting one produced 350 cases, 0 violations, and the cost
+  was concrete — `ServerTooBusy` (99013) classified permanent would delete crash reports exactly when
+  the collector is shedding load. Closed at the source rather than by adding another copy: the SDK's
+  table is now enumerable data (`SERVER_ERROR_CATEGORIES`), a drift test parses Android's
+  `CommunicationErrorClassifier.java` and fails if the two disagree in EITHER direction (skipping when
+  the Android checkout is absent, since it is a drift detector and not a gate that can be satisfied by
+  guessing), and the harness now DERIVES its expected intents from that verified table instead of
+  hand-copying the Java a second time. Verified by mutation: flipping 99013 to permanent fails the drift
+  test with a precise diff.
+- **FIXED (found while doing the above) · the harness's liveness check was one-sided.**
+  `if (control.staysAlive && !stillCapturing)` never checked the other direction, so any case declaring
+  `staysAlive: false` silently asserted NOTHING about liveness — and three of the four such cases were
+  wrong, left over from when an invalid app token killed the client. Now asserted both ways, and the
+  expectation is derived (only `kill_sdk` may silence the SDK). Verified by mutation: making KILL_SDK
+  non-fatal now fails with "the client KEPT CAPTURING after the collector switched the SDK off", which
+  was previously invisible.
 - **Data-safety F3 · SEV2 · `judgeCrossLaunch` flattens the log**, so a deletion in launch 2 is
   licensed by an accept in launch 4. Injecting a sweep that destroys every pending incident's recording
   produced 124 violations — ALL from single-launch sets; the cross-launch sets reported zero.

@@ -242,27 +242,29 @@ export type ServerErrorCategory = 'transient' | 'permanent' | 'auth_expired' | '
  * `kill_sdk` is the ONLY verdict that may disable the SDK. Android blacklists an app token here and
  * nowhere else (`BugseeCommunicationManager.java:776-781`) — never on an HTTP status, which is exactly
  * what this SDK used to do.
+ *
+ * The table is a DATA structure rather than a switch so it can be enumerated, and
+ * `collector-error-codes.drift.test.ts` parses Android's `CommunicationErrorClassifier.java` and fails
+ * if the two disagree in either direction. That test exists because this transcription had a reader it
+ * could not be checked against: the invariants harness hand-copied the SAME Java table as its expected
+ * answers, so a mistake made in both places was invisible to 350 cases — and classifying `99013`
+ * (ServerTooBusy) as permanent would delete crash reports exactly when the collector is shedding load.
  */
-export const classifyServerErrorCode = (code: number): ServerErrorCategory => {
-  switch (code) {
-    case 99013: // ServerTooBusy
-      return 'transient';
-    case 99099: // KillSdk
-      return 'kill_sdk';
-    case 14002: // SessionNotFound
-      return 'auth_expired';
-    case 12003: // SimilarCrashExists
-    case 12004: // TooManySimilarCrashes
-    case 14019: // InvalidAppToken
-    case 11004: // ApplicationTypeMismatch
-    case 99098: // UnsupportedSdk
-    case 99003: // MissingParameter
-    case 99002: // EmptyBody
-      return 'permanent';
-    default:
-      return 'transient';
-  }
+export const SERVER_ERROR_CATEGORIES: Readonly<Record<number, ServerErrorCategory>> = {
+  11004: 'permanent', // ApplicationTypeMismatch
+  12003: 'permanent', // SimilarCrashExists
+  12004: 'permanent', // TooManySimilarCrashes
+  14002: 'auth_expired', // SessionNotFound
+  14019: 'permanent', // InvalidAppToken
+  99002: 'permanent', // EmptyBody
+  99003: 'permanent', // MissingParameter
+  99013: 'transient', // ServerTooBusy
+  99098: 'permanent', // UnsupportedSdk
+  99099: 'kill_sdk', // KillSdk
 };
+
+export const classifyServerErrorCode = (code: number): ServerErrorCategory =>
+  SERVER_ERROR_CATEGORIES[code] ?? 'transient';
 
 /** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes (§7.5/§7.8). */
 export interface UploadPipeline {

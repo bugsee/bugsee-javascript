@@ -83,7 +83,6 @@ describe('isThenable', () => {
 
   it('does not throw on a value whose `then` getter throws', () => {
     // A store's return value is caller-supplied; probing it must not become the failure.
-    // biome-ignore lint/suspicious/noThenProperty: a hostile `then` getter is the case being guarded
     const hostile = Object.defineProperty({}, 'then', {
       get() {
         throw new Error('hostile');

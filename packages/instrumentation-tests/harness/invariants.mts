@@ -1416,6 +1416,29 @@ interface ControlCase {
   staysAlive: boolean;
 }
 
+/**
+ * A collector-code case whose expected outcome is DERIVED from the Android-canonical table, not
+ * hand-declared here.
+ *
+ * These were a SECOND hand-transcription of `CommunicationErrorClassifier.java` — the same table the
+ * SDK transcribes — so a mistake made in both places was invisible to every one of these cases. Sharing
+ * one table is safe only because `core/src/collector-error-codes.drift.test.ts` now parses that Java
+ * file and fails if the table disagrees with it: the shared source is checked against CANON rather than
+ * against another copy of itself.
+ */
+const collectorCase = (on: 'session' | 'issue', code: number, type: string): ControlCase => {
+  const category: string = core.SERVER_ERROR_CATEGORIES[code] ?? 'transient';
+  return {
+    label: `${on} code ${code} ${type}`,
+    on,
+    answer: envelope(code, type),
+    intent: category === 'permanent' || category === 'kill_sdk' ? 'refuse' : 'transient',
+    // Only KILL_SDK may silence the SDK. A `permanent` verdict drops THIS payload and nothing else —
+    // three of these cases used to declare otherwise, left over from when a bad token killed the client.
+    staysAlive: category !== 'kill_sdk',
+  };
+};
+
 const CONTROL_CASES: ControlCase[] = [
   // ── R5-2: an HTTP auth status on the control plane. Android treats 401 as session expiry and
   //    retries once (`BugseeCommunicationManager.java:614-635`); the token blacklist fires ONLY on
@@ -1459,59 +1482,17 @@ const CONTROL_CASES: ControlCase[] = [
     intent: 'transient',
     staysAlive: true,
   },
-  {
-    label: 'session code 401 (a COLLECTOR code, not a status)',
-    on: 'session',
-    answer: envelope(401, 'SomeCollectorError'),
-    intent: 'transient',
-    staysAlive: true,
-  },
-  //    PERMANENT (`CommunicationErrorClassifier.java:46-53`): the payload can never be accepted, so it
-  //    must be dropped rather than re-sent at every launch for the life of the installation.
-  {
-    label: 'session code 14019 InvalidAppToken',
-    on: 'session',
-    answer: envelope(14019, 'InvalidAppTokenError'),
-    intent: 'refuse',
-    staysAlive: false,
-  },
-  {
-    label: 'session code 11004 ApplicationTypeMismatch',
-    on: 'session',
-    answer: envelope(11004, 'ApplicationTypeMismatchError'),
-    intent: 'refuse',
-    staysAlive: false,
-  },
-  {
-    label: 'session code 99098 UnsupportedSdk',
-    on: 'session',
-    answer: envelope(99098, 'UnsupportedSdkError'),
-    intent: 'refuse',
-    staysAlive: false,
-  },
+  collectorCase('session', 401, 'SomeCollectorError'), // a COLLECTOR code, not a status
+  //    PERMANENT: the payload can never be accepted, so it must be dropped rather than re-sent at
+  //    every launch for the life of the installation — but the SDK keeps RECORDING.
+  collectorCase('session', 14019, 'InvalidAppTokenError'),
+  collectorCase('session', 11004, 'ApplicationTypeMismatchError'),
+  collectorCase('session', 99098, 'UnsupportedSdkError'),
   //    KILL_SDK — permanent AND the one case where going quiet is the CORRECT outcome.
-  {
-    label: 'session code 99099 KillSdk',
-    on: 'session',
-    answer: envelope(99099, 'KillSdkError'),
-    intent: 'refuse',
-    staysAlive: false,
-  },
-  //    The same namespace on the ISSUE call, where the SDK also reads `err.code` as a status.
-  {
-    label: 'issue code 12003 SimilarCrashExists',
-    on: 'issue',
-    answer: envelope(12003, 'SimilarCrashExistsError'),
-    intent: 'refuse',
-    staysAlive: true,
-  },
-  {
-    label: 'issue code 99013 ServerTooBusy',
-    on: 'issue',
-    answer: envelope(99013, 'ServerTooBusyError'),
-    intent: 'transient',
-    staysAlive: true,
-  },
+  collectorCase('session', 99099, 'KillSdkError'),
+  //    The same namespace on the ISSUE call.
+  collectorCase('issue', 12003, 'SimilarCrashExistsError'),
+  collectorCase('issue', 99013, 'ServerTooBusyError'),
 ];
 
 for (const control of CONTROL_CASES) {
@@ -1601,10 +1582,18 @@ for (const control of CONTROL_CASES) {
   }
 
   const label = `M ${control.label} (${control.intent})`;
-  // P7 — a condition the collector said would clear must not have disabled the SDK.
+  // P7 — liveness, asserted in BOTH directions. It used to check only the `staysAlive` side, so a case
+  // declaring `staysAlive: false` silently opted out of the check entirely — and three cases declared it
+  // wrongly, left over from when an invalid app token killed the client. A `permanent` verdict drops one
+  // payload; only KILL_SDK may silence the SDK, and it MUST.
   if (control.staysAlive && !stillCapturing) {
     failures.push(
-      `${label} :: P7 the client STOPPED CAPTURING after a failure the collector said would clear`,
+      `${label} :: P7 the client STOPPED CAPTURING after a failure that does not license it`,
+    );
+  }
+  if (!control.staysAlive && stillCapturing) {
+    failures.push(
+      `${label} :: P7 the client KEPT CAPTURING after the collector switched the SDK off`,
     );
   }
   judgeCrossLaunch({
