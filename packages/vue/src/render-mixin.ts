@@ -1,4 +1,8 @@
-import { type AdapterClientOptions, recordRenderSpan } from '@bugsee/web-adapter';
+import {
+  type AdapterClientOptions,
+  recordRenderSpan,
+  resolveTimeOrigin,
+} from '@bugsee/web-adapter';
 import { vueComponentName } from './component-name';
 
 // @bugsee/vue RENDER SPANS (frontend-adapters depth pass — the Vue counterpart to React's <Profiler>). A Vue
@@ -31,10 +35,16 @@ export interface VueRenderMixinOptions extends AdapterClientOptions {
   now?: () => number;
 }
 
+// Not `(perf?.timeOrigin ?? 0) + …`: `??` only replaces `null`/`undefined`, so a NaN (or, via an unchecked
+// cast, a non-number) `timeOrigin` sailed through and poisoned the span's wire timestamps into NaN. And a
+// literal 0 fared no better — this span nests under a transaction whose own start time is a real epoch
+// value (Date.now()-based), so a 0 origin stamped the span ~1970 inside it. `resolveTimeOrigin` (from
+// @bugsee/util, via the web-adapter re-export) screens both and reconstructs a usable-if-imprecise origin
+// from a live wall-clock reading when the host's own is unusable.
 const defaultNow = (): number => {
-  const perf = (globalThis as { performance?: { now?: () => number; timeOrigin?: number } })
+  const perf = (globalThis as { performance?: { now?: () => number; timeOrigin?: unknown } })
     .performance;
-  return (perf?.timeOrigin ?? 0) + (perf?.now?.() ?? 0);
+  return (perf?.now?.() ?? 0) + resolveTimeOrigin(perf);
 };
 
 /** A Vue global mixin that records a `ui.render` span per component mount/update on the active transaction.

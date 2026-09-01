@@ -65,31 +65,80 @@ describe('recordReactRenderSpan', () => {
     }
   });
 
-  it('falls back to timeOrigin 0 when performance.timeOrigin is unavailable', () => {
+  it('falls back to a live Date.now()-reconstructed origin when performance.timeOrigin is unavailable', () => {
+    // The host has a `performance` global but no `timeOrigin` field on it (no `now` either, here) — the old
+    // `?? 0` fallback stamped every span at ~1970; the fix reconstructs a real (if less precise) epoch
+    // anchor from Date.now() instead.
     const { client, recordChildSpan } = fakeActive();
-    vi.stubGlobal('performance', {}); // no timeOrigin
+    vi.stubGlobal('performance', {});
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
     try {
       recordReactRenderSpan(profile, { getClient: () => client });
-      expect(
-        (recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number }).startTimestampMs,
-      ).toBe(100); // 0 + startTime
+      const opts = recordChildSpan.mock.calls[0]?.[1] as {
+        startTimestampMs: number;
+        endTimestampMs: number;
+      };
+      expect(opts.startTimestampMs).toBe(2_000_100); // 2_000_000 + startTime(100)
+      expect(opts.endTimestampMs).toBe(2_000_118); // 2_000_000 + commitTime(118)
+      expect(dateNowSpy).toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('falls back to timeOrigin 0 when there is no `performance` global AT ALL', () => {
+  it('falls back to a Date.now()-reconstructed origin when there is no `performance` global AT ALL', () => {
     // Distinct from the case above: there the global exists and lacks the field; here the whole object is
     // missing, which is the non-browser host this React-free escape hatch is meant to be callable from.
-    // Reading `.timeOrigin` off it unguarded throws — and it throws OUTSIDE `recordRenderSpan`'s own guard,
-    // so it would escape into React's commit phase rather than being contained.
+    // Must not throw OUTSIDE `recordRenderSpan`'s own guard — that would escape into React's commit phase.
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', undefined);
+    vi.spyOn(Date, 'now').mockReturnValue(3_000_000);
     try {
       expect(() => recordReactRenderSpan(profile, { getClient: () => client })).not.toThrow();
       expect(
         (recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number }).startTimestampMs,
-      ).toBe(100); // 0 + startTime
+      ).toBe(3_000_100); // 3_000_000 + startTime
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back to a reconstructed origin when performance.timeOrigin is NaN (typeof NaN === "number")', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: NaN, now: () => 40 });
+    vi.spyOn(Date, 'now').mockReturnValue(5_000_000);
+    try {
+      recordReactRenderSpan(profile, { getClient: () => client });
+      const opts = recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number };
+      // origin = Date.now() - now() = 5_000_000 - 40 = 4_999_960; + startTime(100) = 5_000_060
+      expect(opts.startTimestampMs).toBe(5_000_060);
+      expect(Number.isNaN(opts.startTimestampMs)).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is a non-number arriving through an unchecked cast', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 'nope' as unknown as number, now: () => 40 });
+    vi.spyOn(Date, 'now').mockReturnValue(5_000_000);
+    try {
+      recordReactRenderSpan(profile, { getClient: () => client });
+      const opts = recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number };
+      expect(opts.startTimestampMs).toBe(5_000_060);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when the global performance.timeOrigin is a literal 0 (not a real epoch anchor)', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 0, now: () => 40 });
+    vi.spyOn(Date, 'now').mockReturnValue(5_000_000);
+    try {
+      recordReactRenderSpan(profile, { getClient: () => client });
+      const opts = recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number };
+      expect(opts.startTimestampMs).toBe(5_000_060); // NOT 0 + 100
     } finally {
       vi.unstubAllGlobals();
     }

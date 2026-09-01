@@ -264,10 +264,16 @@ describe('BugseeProfiler produces spans through a real render', () => {
   ])('renders and still records when the host has %s', (_label, stub) => {
     // The component reads `performance.now()` from the RENDER BODY, outside any guard the recorder applies
     // — so on a host that has no `performance` (or a partial one), an unguarded read would throw straight
-    // into React's render phase and unmount the tree. The clock degrading to 0 is the accepted cost; taking
-    // the app down is not.
+    // into React's render phase and unmount the tree.
+    //
+    // Both the component's own `now()` (start/commit, relative) and `realTimeOrigin()`'s reconstruction
+    // (via `Date.now()`) degrade in the SAME direction here: with no relative reading at all, the origin
+    // reconstruction collapses to plain `Date.now()`, so the recorded span sits at "now" with 0 duration —
+    // a real epoch anchor, not the pre-fix literal 0 (which would have mis-anchored the span ~1970, inside
+    // a transaction whose own timestamp is a real epoch value). Taking the app down is still not accepted.
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', stub);
+    const before = Date.now();
     try {
       const cleanup = render(
         createElement(
@@ -276,10 +282,12 @@ describe('BugseeProfiler produces spans through a real render', () => {
           createElement('div', null, 'x'),
         ),
       );
+      const after = Date.now();
       expect(recordChildSpan).toHaveBeenCalledTimes(1);
       const { startTimestampMs, endTimestampMs } = optsOf(recordChildSpan, 0);
-      expect(startTimestampMs).toBe(0);
-      expect(endTimestampMs).toBe(0);
+      expect(startTimestampMs).toBe(endTimestampMs); // 0 relative duration → both collapse to the same origin
+      expect(startTimestampMs).toBeGreaterThanOrEqual(before);
+      expect(startTimestampMs).toBeLessThanOrEqual(after);
       expect(attrsOf(recordChildSpan, 0)['ui.render_duration_ms']).toBe(0);
       cleanup();
     } finally {

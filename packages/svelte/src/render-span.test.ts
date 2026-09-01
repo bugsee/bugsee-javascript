@@ -50,43 +50,98 @@ describe('startSvelteRenderSpan', () => {
     }
   });
 
-  it('falls back to 0 timestamps when there is NO performance global at all', () => {
-    // The test below stubs `performance` to `{}` — PRESENT but empty — which exercises only the `?? 0`
-    // fallbacks, never the `perf?.` guards. The preprocessor injects `startSvelteRenderSpan()` at the top
-    // of EVERY component's script with no containment around it, so in an environment without a
-    // `performance` global (SvelteKit's SSR/prerender pass) a missing guard throws during component init
-    // and fails the render outright. That is the case this pins.
+  it('falls back to a live Date.now()-anchored clock when there is NO performance global at all', () => {
+    // The test below stubs `performance` to `{}` — PRESENT but empty — which exercises only the fallback
+    // path, never the `perf?.` guards. The preprocessor injects `startSvelteRenderSpan()` at the top of
+    // EVERY component's script with no containment around it, so in an environment without a `performance`
+    // global (SvelteKit's SSR/prerender pass) a missing guard throws during component init and fails the
+    // render outright. That is the case this pins. The clock degrades to Date.now() (a real, if less
+    // precise, epoch reading), NOT the pre-fix literal 0 — a 0 timestamp would mis-anchor this span ~1970,
+    // decades before the real-epoch transaction it nests inside.
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', undefined);
+    const before = Date.now();
     try {
       let onMounted!: () => void;
       expect(() => {
         onMounted = startSvelteRenderSpan('NoPerfGlobal', { getClient: () => client });
       }).not.toThrow(); // component init is unguarded — a throw here fails the render
       expect(() => onMounted()).not.toThrow();
+      const after = Date.now();
       const opts = recordChildSpan.mock.calls[0]?.[1] as {
         startTimestampMs: number;
         endTimestampMs: number;
       };
       expect(recordChildSpan).toHaveBeenCalledTimes(1);
-      expect(opts.startTimestampMs).toBe(0);
-      expect(opts.endTimestampMs).toBe(0);
+      expect(opts.startTimestampMs).toBeGreaterThanOrEqual(before);
+      expect(opts.startTimestampMs).toBeLessThanOrEqual(after);
+      expect(opts.endTimestampMs).toBeGreaterThanOrEqual(opts.startTimestampMs);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('falls back to 0 timestamps when the performance clock is unavailable', () => {
+  it('falls back to a live Date.now()-anchored clock when the performance clock is unavailable', () => {
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', {});
+    const before = Date.now();
     try {
       startSvelteRenderSpan('NoPerf', { getClient: () => client })();
+      const after = Date.now();
       const opts = recordChildSpan.mock.calls[0]?.[1] as {
         startTimestampMs: number;
         endTimestampMs: number;
       };
-      expect(opts.startTimestampMs).toBe(0);
-      expect(opts.endTimestampMs).toBe(0);
+      expect(opts.startTimestampMs).toBeGreaterThanOrEqual(before);
+      expect(opts.startTimestampMs).toBeLessThanOrEqual(after);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is NaN (typeof NaN === "number")', () => {
+    // A CONSTANT `now()`: `defaultNow()` reads `perf.now()` twice per call — once for the relative-now
+    // term, once inside `resolveTimeOrigin`'s reconstruction — so a constant reading keeps the arithmetic
+    // independent of call count.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: NaN, now: () => 8 });
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const onMounted = startSvelteRenderSpan('NanOrigin', { getClient: () => client });
+      onMounted();
+      const opts = recordChildSpan.mock.calls[0]?.[1] as {
+        startTimestampMs: number;
+        endTimestampMs: number;
+      };
+      expect(opts.startTimestampMs).toBe(1_000_000); // 8 + (1_000_000 - 8)
+      expect(opts.endTimestampMs).toBe(1_000_000);
+      expect(Number.isNaN(opts.startTimestampMs)).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is a non-number arriving through an unchecked cast', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 'nope' as unknown as number, now: () => 3 });
+    vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+    try {
+      startSvelteRenderSpan('BadCast', { getClient: () => client })();
+      const opts = recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number };
+      expect(opts.startTimestampMs).toBe(2_000_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is a literal 0 (not a real epoch anchor)', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 0, now: () => 3 });
+    vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+    try {
+      startSvelteRenderSpan('ZeroOrigin', { getClient: () => client })();
+      const opts = recordChildSpan.mock.calls[0]?.[1] as { startTimestampMs: number };
+      expect(opts.startTimestampMs).toBe(2_000_000); // NOT 0 + 3
     } finally {
       vi.unstubAllGlobals();
     }

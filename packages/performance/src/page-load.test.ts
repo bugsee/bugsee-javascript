@@ -1,5 +1,5 @@
 import type { Clock } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPerformanceController } from './controller';
 import {
   collectLongTasks,
@@ -71,6 +71,10 @@ function fakeTarget(extra: Record<string, unknown> = {}) {
 const clock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
 
 describe('collectPageLoadVitals', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('collects all five vitals into a finished pageload transaction', () => {
     const { Ctor, emit } = fakeObservers();
     const win = fakeTarget();
@@ -370,5 +374,105 @@ describe('collectPageLoadVitals', () => {
     expect(drained).toHaveLength(1); // finished exactly once
     expect(drained[0]).toMatchObject({ name: '/', operation: 'pageload' });
     expect(drained[0]?.attributes).toBeUndefined(); // no vitals collected → no attributes
+  });
+
+  // These spans nest as children of `transaction`, whose own startTimestampMs is a real epoch value — an
+  // unusable `timeOrigin` (NaN, or a literal 0) must not silently mis-anchor a child ~1970 (or NaN) inside
+  // it. `?? 0` (the pre-fix code) only screens `null`/`undefined`, so a NaN/0 sailed straight through.
+  describe('resolveTimeOrigin usage (collectResourceTiming / collectLongTasks)', () => {
+    const resourceEnv = (performance: Partial<WebVitalsEnv['performance']>): WebVitalsEnv => ({
+      performance: {
+        now: () => 0,
+        getEntriesByType: (type: string) =>
+          type === 'resource'
+            ? [
+                entry({
+                  entryType: 'resource',
+                  startTime: 10,
+                  duration: 5,
+                  initiatorType: 'script',
+                }),
+              ]
+            : [],
+        ...performance,
+      } as never,
+    });
+
+    it('collectResourceTiming falls back when timeOrigin is NaN (typeof NaN === "number")', () => {
+      const calls: RecordChildSpanOptions[] = [];
+      const span = {
+        recordChildSpan: (_op: string, opts: RecordChildSpanOptions) => calls.push(opts),
+      };
+      vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      collectResourceTiming(resourceEnv({ timeOrigin: NaN }), span as never);
+      expect(calls[0]?.startTimestampMs).toBe(1_000_010); // 1_000_000 (origin, now()=0) + startTime(10)
+      expect(Number.isNaN(calls[0]?.startTimestampMs)).toBe(false);
+    });
+
+    it('collectResourceTiming falls back when timeOrigin is a non-number arriving through an unchecked cast', () => {
+      const calls: RecordChildSpanOptions[] = [];
+      const span = {
+        recordChildSpan: (_op: string, opts: RecordChildSpanOptions) => calls.push(opts),
+      };
+      vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      collectResourceTiming(
+        resourceEnv({ timeOrigin: 'nope' as unknown as number }),
+        span as never,
+      );
+      expect(calls[0]?.startTimestampMs).toBe(1_000_010);
+    });
+
+    it('collectResourceTiming falls back when timeOrigin is a literal 0 (not a real epoch anchor)', () => {
+      const calls: RecordChildSpanOptions[] = [];
+      const span = {
+        recordChildSpan: (_op: string, opts: RecordChildSpanOptions) => calls.push(opts),
+      };
+      vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      collectResourceTiming(resourceEnv({ timeOrigin: 0 }), span as never);
+      expect(calls[0]?.startTimestampMs).toBe(1_000_010); // NOT 0 + 10
+    });
+
+    it('collectLongTasks falls back when timeOrigin is NaN/0/an unchecked non-number cast', () => {
+      class FakePO {
+        static supportedEntryTypes = ['longtask'];
+        cb: (list: { getEntries(): PerformanceEntryLike[] }) => void;
+        constructor(cb: (list: { getEntries(): PerformanceEntryLike[] }) => void) {
+          this.cb = cb;
+        }
+        observe() {
+          this.cb({ getEntries: () => [] }); // unused here — this suite drives collectResourceTiming
+        }
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+      }
+      for (const timeOrigin of [NaN, 0, 'nope' as unknown as number]) {
+        const instances: { emit: (e: PerformanceEntryLike[]) => void }[] = [];
+        class ObservingPO extends FakePO {
+          constructor(cb: (list: { getEntries(): PerformanceEntryLike[] }) => void) {
+            super(cb);
+            instances.push({ emit: (e) => cb({ getEntries: () => e }) });
+          }
+        }
+        const calls: RecordChildSpanOptions[] = [];
+        const span = {
+          recordChildSpan: (_op: string, opts: RecordChildSpanOptions) => calls.push(opts),
+        };
+        const env: WebVitalsEnv = {
+          PerformanceObserver: ObservingPO as never,
+          performance: { now: () => 0, timeOrigin, getEntriesByType: () => [] } as never,
+          queueMicrotask: (cb) => cb(),
+        };
+        vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+        collectLongTasks(env, span as never);
+        instances[0]?.emit([
+          entry({ name: 'x', entryType: 'longtask', startTime: 50, duration: 10 }),
+        ]);
+        expect(calls[0]?.startTimestampMs).toBe(2_000_050); // 2_000_000 (origin) + startTime(50)
+        expect(calls[0]?.endTimestampMs).toBe(2_000_060);
+        vi.restoreAllMocks();
+      }
+    });
   });
 });

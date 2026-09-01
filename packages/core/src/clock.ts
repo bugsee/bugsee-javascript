@@ -24,7 +24,17 @@ interface PerfLike {
 
 export function createSystemClock(): Clock {
   const perf = (globalThis as { performance?: Partial<PerfLike> }).performance;
-  const usable = !!perf && typeof perf.now === 'function' && typeof perf.timeOrigin === 'number';
+  // `Number.isFinite`, not `typeof … === 'number'`: `typeof NaN === 'number'` is TRUE, so the old check
+  // let a NaN timeOrigin through and poisoned every monotonicNow() reading into NaN — a non-monotonic
+  // clock silently corrupting internal ordering/duration math far more broadly than a single capture
+  // source. `Number.isFinite` also rejects Infinity/-Infinity (same poisoning) and, being false for any
+  // non-number, a non-number arriving through this unchecked `globalThis` cast.
+  //
+  // Unlike the browser UI-breadcrumb source (and the render-timing helpers below the core tier), a literal
+  // `0` is NOT special-cased here: monotonicNow() is consumed only as a DIFFERENCE of two readings
+  // (RateLimiter interval math, Span duration math — see `docs/design/sdk-design.md` §7.7) and never
+  // surfaced as an absolute wire timestamp, so a constant `0` offset cancels exactly and is fully usable.
+  const usable = !!perf && typeof perf.now === 'function' && Number.isFinite(perf.timeOrigin);
   const monotonicNow = usable
     ? () => (perf as PerfLike).now() + (perf as PerfLike).timeOrigin
     : () => Date.now();

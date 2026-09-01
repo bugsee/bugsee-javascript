@@ -1,4 +1,8 @@
-import { type AdapterClientOptions, recordRenderSpan } from '@bugsee/web-adapter';
+import {
+  type AdapterClientOptions,
+  recordRenderSpan,
+  resolveTimeOrigin,
+} from '@bugsee/web-adapter';
 import {
   type ComponentType,
   createElement,
@@ -57,8 +61,16 @@ export interface RecordRenderOptions extends AdapterClientOptions {
 const now = (): number =>
   (globalThis as { performance?: { now?: () => number } }).performance?.now?.() ?? 0;
 
+// Not `.performance?.timeOrigin ?? 0`: `??` only replaces `null`/`undefined`, so a NaN (or, via an
+// unchecked cast, a non-number) timeOrigin would sail through and poison every wire timestamp below into
+// NaN. And a literal 0 is no better — no spec-compliant host anchors its clock at the Unix epoch, so it
+// would just stamp spans ~1970, decades before the real-epoch transaction they nest inside. `Number.isFinite`
+// screens all of that in `resolveTimeOrigin` (@bugsee/util, via the web-adapter re-export), which also
+// reconstructs a usable-if-imprecise origin from a live wall-clock reading when the host's is unusable.
 const realTimeOrigin = (): number =>
-  (globalThis as { performance?: { timeOrigin?: number } }).performance?.timeOrigin ?? 0;
+  resolveTimeOrigin(
+    (globalThis as { performance?: { now?: () => unknown; timeOrigin?: unknown } }).performance,
+  );
 
 /** Record a `ui.render` child span on the active transaction for one React commit. A no-op when there is no
  *  active transaction (the render is not part of a captured trace). */

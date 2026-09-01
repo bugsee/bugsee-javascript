@@ -26,7 +26,8 @@
   "dependencies": {
     "@bugsee/browser": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/performance": "workspace:*"
+    "@bugsee/performance": "workspace:*",
+    "@bugsee/util": "workspace:*"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

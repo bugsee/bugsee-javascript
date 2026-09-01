@@ -1,3 +1,4 @@
+import { resolveTimeOrigin } from '@bugsee/util';
 import type { PerformanceApi } from './controller';
 import type { Span } from './span';
 import { onCLS } from './web-vitals/cls';
@@ -74,7 +75,13 @@ const resourceAttributes = (r: ResourceTimingLike): Record<string, unknown> => {
 const MAX_LONGTASK_SPANS = 50;
 
 export function collectLongTasks(env: WebVitalsEnv, transaction: Span): void {
-  const timeOrigin = env.performance?.timeOrigin ?? 0;
+  // Not `?? 0`: these spans nest as children of `transaction`, whose OWN start time is a real epoch value
+  // (the controller's `Clock.wallNow()`), so an unusable `timeOrigin` cannot be allowed to silently stamp
+  // a child ~1970 (or NaN) inside it. `resolveTimeOrigin` (@bugsee/util) screens NaN/Infinity/a non-number
+  // (all pass `?? 0` unharmed — only `null`/`undefined` don't) and a literal 0 (no spec-compliant host
+  // anchors its clock at the Unix epoch), reconstructing a usable origin from a live wall-clock reading
+  // when the host's own is unusable.
+  const timeOrigin = resolveTimeOrigin(env.performance);
   let count = 0;
   observe(env, 'longtask', (entries) => {
     for (const e of entries) {
@@ -91,7 +98,9 @@ export function collectLongTasks(env: WebVitalsEnv, transaction: Span): void {
 
 export function collectResourceTiming(env: WebVitalsEnv, transaction: Span): void {
   const resources = (env.performance?.getEntriesByType('resource') ?? []) as ResourceTimingLike[];
-  const timeOrigin = env.performance?.timeOrigin ?? 0;
+  // See `collectLongTasks` above for why `?? 0` is wrong here too — same nesting-under-a-real-epoch-
+  // transaction reasoning.
+  const timeOrigin = resolveTimeOrigin(env.performance);
   let count = 0;
   for (const r of resources) {
     if (count >= MAX_RESOURCE_SPANS) break;

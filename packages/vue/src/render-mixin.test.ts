@@ -150,17 +150,72 @@ describe('createBugseeVueRenderMixin', () => {
     }
   });
 
-  it('falls back to 0 timestamps when the performance clock is unavailable', () => {
+  it('falls back to a live Date.now()-anchored clock when the performance clock is unavailable', () => {
     const { client, recordChildSpan } = fakeActive();
     vi.stubGlobal('performance', {}); // no now / no timeOrigin
+    const before = Date.now();
     try {
       const m = createBugseeVueRenderMixin({ getClient: () => client });
       const i = inst({ $options: { name: 'NoPerf' } });
       m.beforeMount.call(i);
       m.mounted.call(i);
+      const after = Date.now();
       const opts = recordChildSpan.mock.calls[0]?.[1] as Record<string, number>;
-      expect(opts.startTimestampMs).toBe(0);
-      expect(opts.endTimestampMs).toBe(0);
+      expect(opts.startTimestampMs).toBeGreaterThanOrEqual(before);
+      expect(opts.startTimestampMs).toBeLessThanOrEqual(after);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is NaN (typeof NaN === "number")', () => {
+    // A CONSTANT `now()`: `defaultNow()` reads `perf.now()` twice per call — once for the relative-now
+    // term, once inside `resolveTimeOrigin`'s reconstruction — so a constant reading keeps the arithmetic
+    // independent of call count.
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: NaN, now: () => 8 });
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const m = createBugseeVueRenderMixin({ getClient: () => client });
+      const i = inst({ $options: { name: 'NanOrigin' } });
+      m.beforeMount.call(i);
+      m.mounted.call(i);
+      const opts = recordChildSpan.mock.calls[0]?.[1] as Record<string, number>;
+      expect(opts.startTimestampMs).toBe(1_000_000); // 8 + (1_000_000 - 8)
+      expect(opts.endTimestampMs).toBe(1_000_000);
+      expect(Number.isNaN(opts.startTimestampMs)).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is a non-number arriving through an unchecked cast', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 'nope' as unknown as number, now: () => 3 });
+    vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+    try {
+      const m = createBugseeVueRenderMixin({ getClient: () => client });
+      const i = inst({ $options: { name: 'BadCast' } });
+      m.beforeMount.call(i);
+      m.mounted.call(i);
+      const opts = recordChildSpan.mock.calls[0]?.[1] as Record<string, number>;
+      expect(opts.startTimestampMs).toBe(2_000_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back when performance.timeOrigin is a literal 0 (not a real epoch anchor)', () => {
+    const { client, recordChildSpan } = fakeActive();
+    vi.stubGlobal('performance', { timeOrigin: 0, now: () => 3 });
+    vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+    try {
+      const m = createBugseeVueRenderMixin({ getClient: () => client });
+      const i = inst({ $options: { name: 'ZeroOrigin' } });
+      m.beforeMount.call(i);
+      m.mounted.call(i);
+      const opts = recordChildSpan.mock.calls[0]?.[1] as Record<string, number>;
+      expect(opts.startTimestampMs).toBe(2_000_000); // NOT 0 + 3
     } finally {
       vi.unstubAllGlobals();
     }
@@ -196,24 +251,29 @@ describe('createBugseeVueRenderMixin', () => {
     expect(recordChildSpan).not.toHaveBeenCalled();
   });
 
-  it('degrades to epoch 0 — without throwing into Vue — on a host with no `performance`', () => {
+  it('degrades to a live Date.now() reading — without throwing into Vue — on a host with no `performance`', () => {
     // The default clock is the only part of this mixin that reads a runtime global, and it reads it from
     // `beforeMount`, which is OUTSIDE the try/catch that guards the after-hooks. On a host that has no
     // `performance` (or a partial one), an unguarded read would throw straight out of a Vue lifecycle hook
-    // and fail the component's mount — the SDK breaking the app, which the binding rule forbids.
+    // and fail the component's mount — the SDK breaking the app, which the binding rule forbids. The clock
+    // degrades to Date.now() (a real, if less precise, epoch reading), NOT the pre-fix literal 0 — a 0
+    // timestamp would mis-anchor this span ~1970, decades before the real-epoch transaction it nests in.
     const { client, recordChildSpan } = fakeActive();
     const m = createBugseeVueRenderMixin({ getClient: () => client }); // no injected clock → the default
     const i = inst({ $options: { name: 'UserCard' } });
     vi.stubGlobal('performance', undefined);
+    const before = Date.now();
     try {
       expect(() => m.beforeMount.call(i)).not.toThrow();
       expect(() => m.mounted.call(i)).not.toThrow();
     } finally {
       vi.unstubAllGlobals();
     }
+    const after = Date.now();
     expect(recordChildSpan).toHaveBeenCalledTimes(1);
     const [, opts] = recordChildSpan.mock.calls[0] as [string, Record<string, unknown>];
-    expect(opts.startTimestampMs).toBe(0);
-    expect(opts.endTimestampMs).toBe(0);
+    expect(opts.startTimestampMs as number).toBeGreaterThanOrEqual(before);
+    expect(opts.startTimestampMs as number).toBeLessThanOrEqual(after);
+    expect(opts.endTimestampMs as number).toBeGreaterThanOrEqual(opts.startTimestampMs as number);
   });
 });

@@ -26,9 +26,7 @@
   "dependencies": {
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",
-    "@bugsee/types": "workspace:*"
-  },
-  "devDependencies": {
+    "@bugsee/types": "workspace:*",
     "@bugsee/util": "workspace:*"
   },
   "publishConfig": {
