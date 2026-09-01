@@ -33,8 +33,12 @@ export interface NodeSystemMetricsDeps {
   systemMemory?: SystemMemoryReader;
   /** Reads event-loop lag mean/max/p99 (ms) since the previous sample. Default a perf_hooks histogram. */
   eventLoop?: EventLoopReader;
-  /** Reads event-loop utilization (0..1) over the interval. Default perf_hooks eventLoopUtilization. */
-  eventLoopUtilization?: () => number;
+  /**
+   * Reads event-loop utilization (0..1) over the interval, or `undefined` when the runtime cannot
+   * answer. Default perf_hooks eventLoopUtilization. See {@link eluUnavailable} for why `undefined`
+   * has to be representable at all.
+   */
+  eventLoopUtilization?: () => number | undefined;
   /** Logical CPU count for the cpu% normalization. Default os.cpus().length. */
   cpuCount?: () => number;
   /** Monotonic wall clock (ms) for the cpu% window. Default perf_hooks performance.now. */
@@ -59,14 +63,30 @@ const createEventLoopReader = (): EventLoopReader => {
   };
 };
 
+/**
+ * Does this delta mean "the runtime does not implement ELU" rather than "the loop was idle"?
+ *
+ * `performance.eventLoopUtilization()` exists on Bun and Deno and does not throw — it simply answers
+ * `{idle:0, active:0, utilization:0}` for ever. Measured 2026-09-01, after a 120ms CPU burn and a 60ms
+ * sleep: node reported `{idle:61.0, active:0.118}` while Bun and Deno both reported zeros. A throw-guard
+ * cannot see that, so the SDK shipped a confident 0% utilization — which reads, to whoever opens the
+ * report, exactly like a perfectly healthy idle process.
+ *
+ * `idle` is the discriminator, not `utilization`: on any honest implementation idle accumulates
+ * wall-clock time between samples, so at a 1s cadence it cannot be zero. A process that genuinely did
+ * nothing reports utilization 0 with a non-zero idle, and that reading is true and worth keeping.
+ */
+export const eluUnavailable = (delta: { idle?: number; active?: number }): boolean =>
+  delta.idle === 0 && delta.active === 0;
+
 // Default event-loop utilization reader: the delta utilization (0..1) between successive samples.
-const createEluReader = (): (() => number) => {
+const createEluReader = (): (() => number | undefined) => {
   let last = performance.eventLoopUtilization();
   return () => {
     const current = performance.eventLoopUtilization();
     const delta = performance.eventLoopUtilization(current, last);
     last = current;
-    return delta.utilization;
+    return eluUnavailable(delta) ? undefined : delta.utilization;
   };
 };
 
@@ -100,6 +120,7 @@ export function createNodeSystemMetricsSampler(
     const cpuProcessPct =
       wallMsDelta > 0 ? ((userDelta + systemDelta) / (wallMsDelta * 1000) / cores) * 100 : 0;
     const loop = eventLoop();
+    const utilization = eventLoopUtilization();
     return [
       { name: 'process_memory_rss', value: memory.rss },
       { name: 'process_memory_heap_total', value: memory.heapTotal },
@@ -114,7 +135,11 @@ export function createNodeSystemMetricsSampler(
       { name: 'event_loop_lag_ms', value: loop.meanMs },
       { name: 'event_loop_lag_max_ms', value: loop.maxMs },
       { name: 'event_loop_lag_p99_ms', value: loop.p99Ms },
-      { name: 'event_loop_utilization', value: eventLoopUtilization() },
+      // OMITTED, never zeroed, when the runtime cannot answer: a metric that is absent prompts a
+      // question, while a fabricated 0 answers one wrongly.
+      ...(utilization === undefined
+        ? []
+        : [{ name: 'event_loop_utilization', value: utilization }]),
     ];
   };
 }

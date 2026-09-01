@@ -1,6 +1,10 @@
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type { TraceSample } from '@bugsee/capture';
-import { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
+import {
+  createNodeSystemMetricsSampler,
+  eluUnavailable,
+  type NodeSystemMetricsDeps,
+} from './system-metrics';
 
 // A guarded system-metrics sampler for node-family runtimes with PARTIAL perf_hooks (Bun, Deno). Process
 // memory/CPU and OS memory reads work identically to Node, so this reuses createNodeSystemMetricsSampler
@@ -22,6 +26,9 @@ interface DelayHistogram {
 }
 interface Elu {
   utilization: number;
+  /** Present on a real implementation; used to tell "not implemented" from "idle" — see `eluUnavailable`. */
+  idle?: number;
+  active?: number;
 }
 /** The two perf_hooks primitives the event-loop metrics need (partial on Bun/Deno → injected). */
 export interface PerfHooks {
@@ -66,22 +73,25 @@ function guardedEventLoop(monitor: () => DelayHistogram): () => EventLoopSample 
   };
 }
 
-// Build a utilization reader (delta 0..1) from the ELU primitive; if it throws at construction → zero.
-function guardedElu(elu: PerfHooks['eventLoopUtilization']): () => number {
+// Build a utilization reader (delta 0..1) from the ELU primitive. Answers `undefined` — NOT zero —
+// whenever the runtime cannot give a real reading: it threw, or it answered the way Bun and Deno do,
+// with a delta whose idle and active are both zero for ever (see `eluUnavailable`). Zero was a
+// confident wrong answer; absence is an honest one.
+function guardedElu(elu: PerfHooks['eventLoopUtilization']): () => number | undefined {
   let prev: Elu;
   try {
     prev = elu();
   } catch {
-    return () => 0;
+    return () => undefined;
   }
   return () => {
     try {
       const current = elu();
       const delta = elu(current, prev);
       prev = current;
-      return delta.utilization;
+      return eluUnavailable(delta) ? undefined : delta.utilization;
     } catch {
-      return 0;
+      return undefined;
     }
   };
 }

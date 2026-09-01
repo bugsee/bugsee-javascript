@@ -65,7 +65,7 @@ describe('createGuardedSystemMetricsSampler', () => {
     expect(metricValue(sample, 'event_loop_utilization')).toBe(0.3); // ELU still works → unaffected
   });
 
-  it('degrades UTILIZATION to zero when eventLoopUtilization throws', () => {
+  it('OMITS utilization when eventLoopUtilization throws', () => {
     const { histogram } = fakeHistogram({ mean: 2e6, max: 2e6, p99: 2e6 });
     const sample = createGuardedSystemMetricsSampler({
       perfHooks: {
@@ -75,7 +75,9 @@ describe('createGuardedSystemMetricsSampler', () => {
         },
       },
     })();
-    expect(metricValue(sample, 'event_loop_utilization')).toBe(0);
+    // OMITTED, not zero. Reporting 0 for a primitive that could not be read is a confident wrong
+    // answer: a support engineer reads "0% event-loop utilization" as a healthy idle process.
+    expect(metricValue(sample, 'event_loop_utilization')).toBeUndefined();
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(2); // lag still works → unaffected
   });
 
@@ -113,7 +115,7 @@ describe('createGuardedSystemMetricsSampler', () => {
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(0);
   });
 
-  it('degrades utilization to zero if the ELU delta READ throws (not just init)', () => {
+  it('OMITS utilization if the ELU delta READ throws (not just init)', () => {
     // 0-arg init succeeds; the 2-arg delta form throws (a partial-runtime sample-time failure).
     const elu = (a?: { utilization: number }): { utilization: number } => {
       if (a !== undefined) {
@@ -125,7 +127,7 @@ describe('createGuardedSystemMetricsSampler', () => {
     const sample = createGuardedSystemMetricsSampler({
       perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: elu },
     })();
-    expect(metricValue(sample, 'event_loop_utilization')).toBe(0);
+    expect(metricValue(sample, 'event_loop_utilization')).toBeUndefined();
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(1); // lag unaffected
   });
 
@@ -145,5 +147,37 @@ describe('createGuardedSystemMetricsSampler', () => {
     // The explicit dep wins over the guarded perf_hooks reader (1, not 99).
     expect(metricValue(sample, 'event_loop_lag_ms')).toBe(1);
     expect(metricValue(sample, 'event_loop_lag_max_ms')).toBe(2);
+  });
+});
+
+describe('createGuardedSystemMetricsSampler — a runtime that ANSWERS but does not implement ELU', () => {
+  it('omits event_loop_utilization on the Bun/Deno shape instead of reporting a plausible 0%', () => {
+    // Measured 2026-09-01 on real runtimes, after a 120ms CPU burn and a 60ms sleep:
+    //   node  delta={"idle":61.0,"active":0.118,"utilization":0.0019}
+    //   bun   delta={"idle":0,"active":0,"utilization":0}
+    //   deno  delta={"idle":0,"active":0,"utilization":0}
+    // The call SUCCEEDS on Bun and Deno, so the throw-guard never fires and the SDK shipped a confident
+    // 0% forever — indistinguishable, to whoever reads the report, from a perfectly healthy idle loop.
+    // `idle` is the discriminator: on any honest implementation it accumulates wall-clock time between
+    // samples, so at a 1s cadence it cannot be zero.
+    const flat = () => ({ idle: 0, active: 0, utilization: 0 });
+    const { histogram } = fakeHistogram({ mean: 2e6, max: 2e6, p99: 2e6 });
+    const sample = createGuardedSystemMetricsSampler({
+      perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: flat },
+    })();
+    expect(metricValue(sample, 'event_loop_utilization')).toBeUndefined();
+    // …and everything the runtime CAN answer is still reported.
+    expect(metricValue(sample, 'event_loop_lag_ms')).toBe(2);
+  });
+
+  it('still reports a genuine zero when the runtime says idle time actually passed', () => {
+    // The positive control, and the reason `utilization === 0` alone is not the test: a real process
+    // that did nothing at all reports utilization 0 with a NON-zero idle, and that reading is true.
+    const idleButReal = () => ({ idle: 1000, active: 0, utilization: 0 });
+    const { histogram } = fakeHistogram({ mean: 2e6, max: 2e6, p99: 2e6 });
+    const sample = createGuardedSystemMetricsSampler({
+      perfHooks: { monitorEventLoopDelay: () => histogram, eventLoopUtilization: idleButReal },
+    })();
+    expect(metricValue(sample, 'event_loop_utilization')).toBe(0);
   });
 });
