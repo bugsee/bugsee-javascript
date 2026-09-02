@@ -19,6 +19,7 @@
     "@bugsee/deno": "workspace:*",
     "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/node": "workspace:*",
+    "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*",
     "@bugsee/protocol": "workspace:*",
     "@bugsee/replay": "workspace:*",
@@ -29,6 +30,8 @@
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
     "@types/jsdom": "^21.1.7",
     "@types/node": "^22.0.0",
     "ajv": "^8.17.1",
@@ -36,6 +39,7 @@
     "fflate": "^0.8.2",
     "jsdom": "^25.0.1",
     "miniflare": "^4.20260722.0",
+    "playwright": "^1.62.1",
     "tsx": "^4.19.0"
   }
 }

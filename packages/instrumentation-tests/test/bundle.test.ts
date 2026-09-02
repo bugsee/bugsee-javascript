@@ -10,7 +10,7 @@
 //     directory-shaped entry `profile.json/` (docs/review/core-D-bundle-upload-recovery.md).
 //   - capture/node: URL query-string credentials reached the wire unredacted
 //     (docs/review/capture.md, docs/review/node-B-http-server.md).
-import { strToU8, zipSync } from '@bugsee/util';
+import { gzipSync, strToU8, zipSync } from '@bugsee/util';
 import { describe, expect, it } from 'vitest';
 import {
   assertBundleIntegrity,
@@ -21,13 +21,17 @@ import {
   readJson,
 } from './bundle';
 
-/** Build a ParsedBundle from a plain file map, going through the real zip round-trip. */
-const makeBundle = (files: Record<string, string>, issueId = 'i1'): ParsedBundle => {
+/**
+ * Build a ParsedBundle from a plain file map, going through the real zip round-trip.
+ *
+ * Values may be raw bytes as well as text, because the interesting binary entry — a gzipped
+ * `replay.bin` — cannot survive a round trip through a UTF-8 encode.
+ */
+const makeBundle = (files: Record<string, string | Uint8Array>, issueId = 'i1'): ParsedBundle => {
   const zipped = zipSync(
-    Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)])) as Record<
-      string,
-      Uint8Array
-    >,
+    Object.fromEntries(
+      Object.entries(files).map(([k, v]) => [k, typeof v === 'string' ? strToU8(v) : v]),
+    ) as Record<string, Uint8Array>,
   );
   const [bundle] = parseBundles({ uploads: [{ issueId, body: zipped }] });
   return bundle as ParsedBundle;
@@ -42,7 +46,7 @@ const manifest = (fileEntries: Array<{ filename: string; type: string }>): strin
   });
 
 /** A well-formed bundle: request.json + manifest.json + apptoken + one declared, present file. */
-const wellFormed = (extra: Record<string, string> = {}): ParsedBundle =>
+const wellFormed = (extra: Record<string, string | Uint8Array> = {}): ParsedBundle =>
   makeBundle({
     'request.json': JSON.stringify({ report: { type: 'crash' } }),
     'manifest.json': manifest([{ filename: 'logs.json', type: 'logs' }]),
@@ -199,7 +203,36 @@ describe('assertNoSecrets', () => {
     expect(() => assertNoSecrets(b, ['hunter2'])).toThrow(/network\.json/);
   });
 
-  it('searches binary files too, not only the JSON ones', () => {
+  // The REAL `replay.bin` is GZIPPED (packages/replay writes it compressed), and this suite's only
+  // binary case used plaintext — so it asserted a property the shipped file never has. A real-Chromium
+  // run proved the gap: with masking disabled the typed password appeared verbatim inside `replay.bin`,
+  // and `assertNoSecrets` swept clean over it because the compressed bytes contain no such substring.
+  it('FAILS when a secret is inside a GZIPPED entry, where the compressed bytes hide it', () => {
+    const b = wellFormed({
+      'replay.bin': gzipSync(strToU8('rrweb-stream prefix hunter2 suffix')),
+      'manifest.json': manifest([
+        { filename: 'logs.json', type: 'logs' },
+        { filename: 'replay.bin', type: 'replay' },
+      ]),
+    });
+    expect(() => assertNoSecrets(b, ['hunter2'])).toThrow(/replay\.bin/);
+  });
+
+  // The inflate step must not become a NEW way to miss a leak: an entry that carries the gzip magic but
+  // is not a valid stream falls back to the raw bytes rather than throwing.
+  it('still finds a secret in an entry that claims gzip but is corrupt', () => {
+    const corrupt = new Uint8Array([0x1f, 0x8b, ...strToU8('plain hunter2 text')]);
+    const b = wellFormed({
+      'replay.bin': corrupt,
+      'manifest.json': manifest([
+        { filename: 'logs.json', type: 'logs' },
+        { filename: 'replay.bin', type: 'replay' },
+      ]),
+    });
+    expect(() => assertNoSecrets(b, ['hunter2'])).toThrow(/replay\.bin/);
+  });
+
+  it('leaves a non-gzip binary entry searchable as before', () => {
     const b = wellFormed({
       'replay.bin': 'prefix-hunter2-suffix',
       'manifest.json': manifest([

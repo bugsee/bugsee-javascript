@@ -17,7 +17,7 @@
 // unit tests (bundle.test.ts), run in CI by the `test:unit` task — an assertion library that cannot fail is
 // precisely the theater this work removes, so every assertion has a negative test.
 import type { ManifestJson } from '@bugsee/protocol';
-import { strFromU8, unzipSync } from '@bugsee/util';
+import { gunzipSync, strFromU8, unzipSync } from '@bugsee/util';
 
 /** The subset of the mock collector this library needs — keeps it usable from every harness. */
 export interface UploadsSource {
@@ -147,6 +147,28 @@ export function assertNoContractViolations(source: ViolationSource): void {
  *
  * An empty secret is rejected — it would match every file and turn this into a no-op that always passes.
  */
+/**
+ * The searchable bytes of a bundle entry: gzip-compressed ones are INFLATED first.
+ *
+ * Without this the scan is blind to exactly the file most likely to carry typed characters. `replay.bin`
+ * is written gzipped, so a secret recorded verbatim inside it is not a substring of the stored bytes and
+ * a raw scan sweeps clean over a real leak — measured, not theorised: a real-Chromium run with masking
+ * disabled put a typed password in plaintext inside `replay.bin` and this function passed it.
+ *
+ * Detection is by gzip magic (`1f 8b`) rather than by filename, so it covers any compressed entry.
+ *
+ * A truncated or corrupt stream throws, deliberately uncaught here: the caller already wraps this in the
+ * lenient decode whose fallback searches the RAW bytes, which is exactly the right answer for a file
+ * whose claimed compression is a lie. Catching it here as well was dead code — a mutation that removed
+ * the inner handler changed no test outcome, which is what exposed it.
+ */
+function decompressed(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 2 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
+    return bytes;
+  }
+  return gunzipSync(bytes);
+}
+
 export function assertNoSecrets(bundle: ParsedBundle, secrets: readonly string[]): void {
   // The apptoken exemption keys on PROVENANCE, not the name: only the assembler's structural apptoken (a
   // root entry the manifest does not declare) is skipped. An attachment that merely happens to be called
@@ -167,7 +189,7 @@ export function assertNoSecrets(bundle: ParsedBundle, secrets: readonly string[]
     // Decode leniently: binary payloads still surface ASCII substrings, which is what a leak looks like.
     let text: string;
     try {
-      text = strFromU8(bytes);
+      text = strFromU8(decompressed(bytes));
     } catch {
       text = Buffer.from(bytes).toString('latin1');
     }

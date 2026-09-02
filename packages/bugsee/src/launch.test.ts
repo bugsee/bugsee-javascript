@@ -282,6 +282,38 @@ describe('bugsee umbrella launch', () => {
     expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions).toHaveLength(1);
   });
 
+  // A 30s tick is the ONLY delivery path the uploader had, so anything buffered since the last one was
+  // lost whenever the process ended first — which for a serverless invocation, a CLI, or a test is every
+  // time. `flush()` is documented as "get everything out"; it drained reports but not transactions.
+  it('flush() delivers buffered transactions instead of waiting for the interval', async () => {
+    const { scheduler } = fakeScheduler();
+    const { fn: transport, perfPosts } = recordingTransport();
+    const client = track(
+      launch('tok', base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 })),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish(); // buffered, no tick fired
+    expect(perfPosts).toHaveLength(0);
+
+    await client.flush();
+
+    expect(perfPosts).toHaveLength(1);
+    expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions).toHaveLength(1);
+  });
+
+  it('stop() delivers what was buffered rather than dropping it on teardown', async () => {
+    const { scheduler } = fakeScheduler();
+    const { fn: transport, perfPosts } = recordingTransport();
+    const client = launch(
+      'tok',
+      base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish();
+
+    await client.stop();
+
+    expect(perfPosts).toHaveLength(1);
+  });
+
   it('starts the uploader at performanceFlushIntervalMs', () => {
     const { scheduler, intervals } = fakeScheduler();
     track(launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })));

@@ -150,6 +150,32 @@ describe('wirePerformance', () => {
     expect(send).toHaveBeenCalledWith([wire]); // it rode the uploader to `send`, unsampled
   });
 
+  it('flush() delivers what is buffered NOW, without waiting for an interval tick', async () => {
+    // The uploader's tick was the only delivery path, so a process that ended between ticks lost
+    // everything since the last one. This is the drain the umbrella composes into client.flush()/stop().
+    const { client } = fakeClient();
+    const { scheduler } = fakeScheduler();
+    const send = vi.fn(async () => {});
+    const wired = wirePerformance(base({ client, scheduler, send, flushIntervalMs: 5000 }));
+    const wire = {
+      traceId: 't',
+      spanId: 's0',
+      name: 'consumed',
+      operation: 'consumed',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      isSnapshot: false,
+      spans: [],
+    } as TransactionWire;
+    wired?.recordTransaction(wire);
+    expect(send).not.toHaveBeenCalled(); // no tick has fired
+
+    await wired?.flush();
+
+    expect(send).toHaveBeenCalledWith([wire]);
+  });
+
   it('registers ext(performance), starts a pageload transaction, and starts the uploader', () => {
     const { client, perf } = fakeClient();
     const { scheduler, scheduled } = fakeScheduler();

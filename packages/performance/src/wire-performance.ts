@@ -49,6 +49,15 @@ export interface WirePerformanceOptions {
 
 export interface WiredPerformance {
   stop(): void;
+  /**
+   * Deliver everything buffered now, rather than at the next interval tick.
+   *
+   * The uploader's periodic drain was the ONLY delivery path, so a process that ended between ticks —
+   * a serverless invocation, a CLI, a test, a closing tab — lost every transaction recorded since the
+   * last one. The umbrella composes this into the client's `flush()` and `stop()`, which is where
+   * callers already expect "get everything out" to mean exactly that.
+   */
+  flush(): Promise<void>;
   /** Buffer an already-finished transaction (e.g. the Node `app.start` startup transaction, or consumed
    *  OTel spans assembled into a §8.8 transaction) into BOTH sinks — the continuous uploader AND the
    *  incident-bundle capture ring (performance.json). Externally sampled — it bypasses head sampling. */
@@ -124,6 +133,9 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
       offHttp?.();
       uploader.stop();
       extension.stop();
+    },
+    flush() {
+      return uploader.flush();
     },
     recordTransaction(transaction) {
       // Dual-write: the continuous uploader AND the incident-bundle capture ring (performance.json).

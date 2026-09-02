@@ -279,10 +279,25 @@ export function wireUmbrella(
   // already registered as the process singleton, so mutating its stop() here means the carrier singleton,
   // a repeat launch, and this return value are all one consistent client whose stop() tears the extensions
   // (performance, OTel propagation, consume) down before the core teardown.
+  //
+  // `flush()` is composed the same way and for the same reason: the performance uploader delivers on an
+  // interval, so without this everything buffered since the last tick is lost whenever the process ends
+  // first — the normal case for a serverless invocation, a CLI run, or a closing tab. The extension's
+  // drain runs BEFORE the core drain so a transaction batch and the reports leave in one flush.
   const stopClient = client.stop;
-  client.stop = (timeout?: number): Promise<boolean> => {
+  const flushClient = client.flush;
+  // No guard around it: `uploader.flush()` already catches a failed batch into `onError` and drops it, so
+  // a broken APM upload cannot turn a caller's flush()/stop() into a rejection and cost them the crash
+  // report they were flushing. Wrapping it again here would be untestable through this seam.
+  const flushExtensions = (): Promise<void> => wired.flush();
+  client.flush = async (timeout?: number): Promise<boolean> => {
+    await flushExtensions();
+    return flushClient(timeout);
+  };
+  client.stop = async (timeout?: number): Promise<boolean> => {
     void spanProcessor?.shutdown();
     offPropagation?.();
+    await flushExtensions();
     wired.stop();
     return stopClient(timeout);
   };

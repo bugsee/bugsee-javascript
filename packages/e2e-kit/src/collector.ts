@@ -54,6 +54,16 @@ export interface MockCollector {
   /** The request headers of each /echo hit (so a test can assert injected traceparent/tracestate). */
   echoHeaders: Array<Record<string, string | string[] | undefined>>;
   /**
+   * Performance transactions posted to `/v2/performance/transactions`, flattened across batches.
+   *
+   * The mock had no such route, so every batch 404'd into `onError` and no harness could see APM data at
+   * all — the SDK's transactions were the one payload nothing verified. The OTel consume bridge feeds
+   * this same endpoint, so it is also how a consumed OTel span becomes visible.
+   */
+  transactions: Array<Record<string, unknown>>;
+  /** OTLP/HTTP-JSON export requests posted to `/v1/traces` (the produce-direction tee). */
+  otlpTraces: Array<Record<string, unknown>>;
+  /**
    * Every envelope that failed schema validation, in arrival order. The collector RECORDS rather than
    * rejects, so a contract break shows up as a readable test failure instead of an opaque upload error
    * mid-scenario. Assert it is empty — `assertNoContractViolations` does exactly that.
@@ -77,9 +87,26 @@ const readBody = (req: IncomingMessage): Promise<Uint8Array> =>
 // `app.utils.js` success()/error().
 const envelope = (result: unknown): unknown => ({ ok: true, result });
 
+/**
+ * The CORS headers the REAL collector must send, because the browser SDK is always cross-origin with the
+ * page that loaded it — a customer's app runs on their domain and uploads to Bugsee's.
+ *
+ * The mock did not send them, which meant no harness could ever drive the SDK from a real browser: the
+ * very first upload fails at the preflight with an opaque "Failed to fetch". Every browser-tier suite ran
+ * under jsdom, where fetch enforces no same-origin policy, so the gap was invisible until a real Chromium
+ * was pointed at this server.
+ */
+const corsHeaders = (): Record<string, string> => ({
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
+  'access-control-allow-headers': '*',
+  'access-control-expose-headers': '*',
+  'access-control-max-age': '600',
+});
+
 const sendJson = (res: ServerResponse, status: number, payload: unknown): void => {
   const body = Buffer.from(JSON.stringify(payload));
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { 'content-type': 'application/json', ...corsHeaders() });
   res.end(body);
 };
 
@@ -96,6 +123,8 @@ export async function startMockCollector(): Promise<MockCollector> {
   const issues: Array<Record<string, unknown>> = [];
   const uploads: CapturedUpload[] = [];
   const echoHeaders: Array<Record<string, string | string[] | undefined>> = [];
+  const transactions: Array<Record<string, unknown>> = [];
+  const otlpTraces: Array<Record<string, unknown>> = [];
   let echoHits = 0;
   let issueSeq = 0;
   // Maps an upload path (/upload/<n>) to the issueId we minted for it, so a captured PUT can be
@@ -107,6 +136,15 @@ export async function startMockCollector(): Promise<MockCollector> {
   const server: Server = createServer((req, res) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
+
+    // Preflight. A cross-origin PUT, and a POST carrying `content-type: application/json`, are both
+    // non-simple requests, so a real browser sends OPTIONS first and never issues the upload at all
+    // unless it is answered.
+    if (method === 'OPTIONS') {
+      res.writeHead(204, corsHeaders());
+      res.end();
+      return;
+    }
 
     void (async () => {
       try {
@@ -174,8 +212,26 @@ export async function startMockCollector(): Promise<MockCollector> {
           } catch (err) {
             violations.push({ where: 'manifest', errors: `unreadable bundle: ${String(err)}` });
           }
-          res.writeHead(200);
+          res.writeHead(200, corsHeaders());
           res.end();
+          return;
+        }
+        if (method === 'POST' && url.endsWith('/v2/performance/transactions')) {
+          const body = await readBody(req);
+          const batch = JSON.parse(Buffer.from(body).toString('utf8')) as {
+            transactions?: Array<Record<string, unknown>>;
+          };
+          transactions.push(...(batch.transactions ?? []));
+          sendJson(res, 200, envelope({ accepted: batch.transactions?.length ?? 0 }));
+          return;
+        }
+        if (method === 'POST' && url.endsWith('/v1/traces')) {
+          // OTLP/HTTP-JSON. A real collector answers with an (empty) ExportTraceServiceResponse.
+          const body = await readBody(req);
+          otlpTraces.push(
+            JSON.parse(Buffer.from(body).toString('utf8')) as Record<string, unknown>,
+          );
+          sendJson(res, 200, {});
           return;
         }
         if (url.startsWith('/echo')) {
@@ -184,10 +240,10 @@ export async function startMockCollector(): Promise<MockCollector> {
           sendJson(res, 200, { ok: true, ts: 'e2e' });
           return;
         }
-        res.writeHead(404);
+        res.writeHead(404, corsHeaders());
         res.end();
       } catch (err) {
-        res.writeHead(500);
+        res.writeHead(500, corsHeaders());
         res.end(String(err));
       }
     })();
@@ -203,6 +259,8 @@ export async function startMockCollector(): Promise<MockCollector> {
     issues,
     uploads,
     echoHeaders,
+    transactions,
+    otlpTraces,
     violations,
     get echoHits() {
       return echoHits;
