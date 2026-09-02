@@ -19,7 +19,7 @@ import {
   type IdentifiedBundle,
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
-import { FiltersToken } from './filters';
+import { type FilterableSpan, FiltersToken } from './filters';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createPartitionedCaptureStore } from './partitioned-capture-store';
@@ -860,6 +860,19 @@ describe('createClient — capture-recovery markers', () => {
     enqueue: vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false, ...over })),
     flush: vi.fn(async () => true),
     drop: vi.fn(),
+  });
+
+  it('stores a span filter for the capture pipeline to read live', async () => {
+    // The seam consumed OpenTelemetry spans are scrubbed through — `@bugsee/performance` reads
+    // `filters.span` from this same store at both of its transaction funnels. Set here, read there.
+    const client = createClient({ appToken: 'tok', getEnvironment });
+    const filters = client.getService(FiltersToken);
+    expect(filters.span).toBeNull();
+    const filter = (span: FilterableSpan): FilterableSpan => span;
+    client.setSpanFilter(filter);
+    expect(filters.span).toBe(filter);
+    client.setSpanFilter(null); // and it clears
+    expect(filters.span).toBeNull();
   });
 
   it('KEEPS the marker when the upload fails retryably and nothing durably retained the bundle', async () => {

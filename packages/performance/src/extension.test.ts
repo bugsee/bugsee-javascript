@@ -5,10 +5,13 @@ import {
   type CaptureProvider,
   type Clock,
   ClockToken,
+  createFilterStore,
+  type FilterStore,
+  FiltersToken,
   type OperationDispatcher,
   type OptionsContainer,
 } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PerformanceApi } from './controller';
 import { createPerformanceExtension } from './extension';
 import type { TransactionWire } from './span';
@@ -30,7 +33,7 @@ const externalWire = (over: Partial<TransactionWire> = {}): TransactionWire => (
 const fixedClock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
 const enabledOptions: OptionsContainer = { get: (_k, fallback) => fallback, has: () => false };
 
-function fakeClient() {
+function fakeClient(filters?: FilterStore) {
   const registered = new Map<string, unknown>();
   const providers: CaptureProvider[] = [];
   const captured: CaptureDataEntry[] = [];
@@ -42,7 +45,8 @@ function fakeClient() {
     },
   };
   const client = {
-    getService: (token: unknown) => (token === ClockToken ? fixedClock : undefined),
+    getService: (token: unknown) =>
+      token === ClockToken ? fixedClock : token === FiltersToken ? filters : undefined,
     registerExt: (name: string, api: unknown) => registered.set(name, api),
     // Mirror the capture coordinator's post-launch path: an added provider is init'd + started now.
     addCaptureProvider: (p: CaptureProvider) => {
@@ -150,5 +154,88 @@ describe('createPerformanceExtension', () => {
     ext().startTransaction({ name: 'b', operation: 'op' }).finish();
     expect(extension.store.size()).toBe(1); // bounded to 1 → only the newest kept
     expect(extension.store.drain()[0]).toMatchObject({ name: 'b' });
+  });
+});
+
+describe('createPerformanceExtension — the span filter reaches CONSUMED spans', () => {
+  it('scrubs a consumed OTel span attribute before either sink sees it', () => {
+    // The whole point of the seam. `recordExternal` is the path a consumed OpenTelemetry span takes, and
+    // `@opentelemetry/instrumentation-pg` puts the executed SQL — literals included — on `db.statement`.
+    // Before this, every attribute went through verbatim with no way to reach it.
+    const filters = createFilterStore(() => {});
+    filters.span = (span) =>
+      span.attributes?.['db.statement'] === undefined
+        ? span
+        : { ...span, attributes: { ...span.attributes, 'db.statement': '<redacted>' } };
+    const { client, captured } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal({
+      traceId: 't',
+      spanId: 's',
+      name: 'pg.query',
+      operation: 'db',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      attributes: { 'db.statement': "SELECT * FROM users WHERE email = 'a@b.com'" },
+      spans: [],
+    });
+    // BOTH sinks: the continuous-upload store …
+    expect(extension.store.drain()[0]?.attributes?.['db.statement']).toBe('<redacted>');
+    // … and the incident-bundle capture ring, which is a separate write.
+    expect(JSON.stringify(captured)).toContain('<redacted>');
+    expect(JSON.stringify(captured)).not.toContain('a@b.com');
+  });
+
+  it('drops a consumed span whose filter THREW, and reports it once', () => {
+    // Same rule as every other filter: a filter that threw cannot be assumed to have scrubbed anything,
+    // so the span is dropped rather than shipped with whatever it was meant to remove still on it.
+    const onError = vi.fn();
+    const filters = createFilterStore(onError);
+    filters.span = () => {
+      throw new Error('bad filter');
+    };
+    const { client, captured } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal({
+      traceId: 't',
+      spanId: 's',
+      name: 'pg.query',
+      operation: 'db',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      isSnapshot: false,
+      attributes: { 'db.statement': 'SELECT 1' },
+      spans: [],
+    });
+    expect(extension.store.drain()).toEqual([]);
+    expect(captured).toEqual([]);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('drops a consumed span the filter rejects, from both sinks', () => {
+    const filters = createFilterStore(() => {});
+    filters.span = () => null;
+    const { client, captured } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal({
+      traceId: 't',
+      spanId: 's',
+      name: 'pg.query',
+      operation: 'db',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      isSnapshot: false,
+      spans: [],
+    });
+    expect(extension.store.drain()).toEqual([]);
+    expect(captured).toEqual([]);
   });
 });

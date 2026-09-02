@@ -49,6 +49,7 @@ import {
   type NetworkEventFilter,
   type ReportHandler,
   runFilter,
+  type SpanFilter,
 } from './filters';
 import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
@@ -169,6 +170,14 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   setNetworkEventFilter(filter: NetworkEventFilter | null): void;
   setLogEventFilter(filter: LogEventFilter | null): void;
   setBreadcrumbFilter(filter: BreadcrumbFilter | null): void;
+  /**
+   * Filter performance spans: mutate one, or return null to drop it. Runs for the transaction ROOT and
+   * for every child; dropping the root drops the whole transaction.
+   *
+   * The stream that most needs it is consumed OpenTelemetry: those spans arrive with every attribute
+   * intact, so `db.statement` reaches the SDK as raw SQL with literals unless something scrubs it.
+   */
+  setSpanFilter(filter: SpanFilter | null): void;
   /** `before` mutates/vetoes (return null) the report before assembly. `after` is accepted but deferred. */
   setReportHandler(handler: ReportHandler | null): void;
 
@@ -654,6 +663,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
     setBreadcrumbFilter(filter: BreadcrumbFilter | null): void {
       filters.breadcrumb = filter;
+    },
+    setSpanFilter(filter: SpanFilter | null): void {
+      filters.span = filter;
     },
     setReportHandler(handler: ReportHandler | null): void {
       filters.report = handler;

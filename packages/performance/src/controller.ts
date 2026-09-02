@@ -93,6 +93,14 @@ export interface PerformanceControllerDeps {
   /** Called with the serialized wire of each SAMPLED finished transaction (e.g. to also route it to the
    *  capture ring for the bundle's performance.json, alongside the store's /v2 upload). */
   onFinished?: (transaction: TransactionWire) => void;
+  /**
+   * Redaction seam applied to each finished transaction before it reaches EITHER sink. Returns null to
+   * drop the transaction entirely. Default: no filtering.
+   *
+   * It has to run here rather than at the sinks because the store and the capture ring are separate
+   * writes — filtering at one would ship the unscrubbed span through the other.
+   */
+  filterTransaction?: (transaction: TransactionWire) => TransactionWire | null;
 }
 
 export function createPerformanceController(deps: PerformanceControllerDeps): PerformanceApi {
@@ -123,9 +131,17 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
           ...(continuation !== undefined ? { newTraceId: () => continuation.traceId } : {}),
           onFinish: (finished) => {
             if (finished.isSampled()) {
-              const wire = serializeTransaction(finished);
-              deps.store.add(wire); // the continuous /v2 (+ OTLP tee) buffer
-              deps.onFinished?.(wire); // also route it to the capture ring (bundle performance.json)
+              const serialized = serializeTransaction(finished);
+              // NOT `?? serialized`: the filter returning null MEANS drop, and `null ?? serialized`
+              // would resurrect exactly the transaction it just rejected.
+              const wire =
+                deps.filterTransaction === undefined
+                  ? serialized
+                  : deps.filterTransaction(serialized);
+              if (wire !== null) {
+                deps.store.add(wire); // the continuous /v2 (+ OTLP tee) buffer
+                deps.onFinished?.(wire); // also route it to the capture ring (performance.json)
+              }
             }
             // Single-slot (D11): when the active root finishes, the slot CLEARS — it is NOT reverted to a
             // still-open pageload (there is no span stack). Consequence: a fetch between activity

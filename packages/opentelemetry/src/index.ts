@@ -3,7 +3,8 @@
 // docs/design/opentelemetry-integration.md. BUILT: Phase A — the runtime-portable Produce-direction
 // mapping (Bugsee §8.8 transactions → OTLP/HTTP-JSON), with hand-rolled OTLP types (no @opentelemetry/*
 // dependency). BUILT: Phase B — the OTLP/HTTP-JSON trace exporter (a `send`-shaped function, uploader-
-// compatible). PLANNED: the SpanProcessor consume bridge (C), and the interception-transformer
+// compatible). The SpanProcessor consume bridge (C) is BUILT — `createBugseeSpanProcessor` below.
+// PLANNED: the interception-transformer
 // propagation (T/D).
 
 export {

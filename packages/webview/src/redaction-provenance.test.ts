@@ -7,6 +7,7 @@ const store = (over: Partial<FilterStore> = {}): FilterStore => ({
   network: null,
   log: null,
   breadcrumb: null,
+  span: null,
   report: null,
   onError: () => {},
   ...over,

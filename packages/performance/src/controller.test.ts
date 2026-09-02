@@ -1,5 +1,5 @@
 import type { Clock } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPerformanceController } from './controller';
 import { serializeTransaction, type TransactionWire } from './span';
 import { createTransactionStore } from './transaction-store';
@@ -210,5 +210,38 @@ describe('createPerformanceController', () => {
     api.setRouteName('/resolved');
     expect(second.getName()).toBe('/resolved'); // the active one is refined
     expect(first.getName()).toBe('first'); // the superseded one is untouched
+  });
+});
+
+describe('createPerformanceController — the span redaction seam', () => {
+  it('does not write a DROPPED transaction to either sink', () => {
+    // Both sinks, deliberately: the store and the capture ring are separate writes, so filtering at one
+    // would ship the unscrubbed transaction through the other. An earlier version of this wiring used
+    // `filter(x) ?? serialized`, which turned every drop back into the original.
+    const store = createTransactionStore({ maxTransactions: 10 });
+    const onFinished = vi.fn();
+    const api = createPerformanceController({
+      clock: { wallNow: () => 1000, monotonicNow: () => 0 },
+      store,
+      onFinished,
+      filterTransaction: () => null,
+    });
+    api.startTransaction({ name: 'GET /x', operation: 'http.server' }).finish();
+    expect(store.drain()).toEqual([]);
+    expect(onFinished).not.toHaveBeenCalled();
+  });
+
+  it('writes the FILTERED transaction, not the original, to both sinks', () => {
+    const store = createTransactionStore({ maxTransactions: 10 });
+    const onFinished = vi.fn();
+    const api = createPerformanceController({
+      clock: { wallNow: () => 1000, monotonicNow: () => 0 },
+      store,
+      onFinished,
+      filterTransaction: (t) => ({ ...t, name: '<redacted>' }),
+    });
+    api.startTransaction({ name: 'GET /secret', operation: 'http.server' }).finish();
+    expect(store.drain().map((t) => t.name)).toEqual(['<redacted>']);
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ name: '<redacted>' }));
   });
 });

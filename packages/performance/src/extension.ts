@@ -1,10 +1,11 @@
-import { type BugseeClient, ClockToken } from '@bugsee/core';
+import { type BugseeClient, ClockToken, type FilterStore, FiltersToken } from '@bugsee/core';
 import {
   createPerformanceCaptureProvider,
   type PerformanceCaptureProvider,
 } from './capture-provider';
 import { createPerformanceController, type PerformanceApi } from './controller';
 import type { TransactionWire } from './span';
+import { applySpanFilter } from './span-filter';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
 
 // The @bugsee/performance extension shell (design §0.6/§16). There is no addExtension lifecycle on the
@@ -60,16 +61,24 @@ export function createPerformanceExtension(
   // performance.json), alongside the store's continuous /v2 upload. Created in setup() once the client is
   // available; `recordExternal` also feeds it (hence the closure-scoped handle).
   let provider: PerformanceCaptureProvider | undefined;
+  // The redaction seam, resolved at setup(). `recordExternal` is documented as callable BEFORE setup,
+  // so this stays undefined until then and the filter simply does not run yet — there is no client to
+  // have configured one on.
+  let filters: FilterStore | undefined;
+  const filterTransaction = (transaction: TransactionWire): TransactionWire | null =>
+    applySpanFilter(transaction, filters?.span ?? null, (error) => filters?.onError(error));
   return {
     name: 'performance',
     store,
     setup(client) {
       const clock = client.getService(ClockToken);
+      filters = client.getService(FiltersToken);
       provider = createPerformanceCaptureProvider();
       const api = createPerformanceController({
         clock,
         store,
         onFinished: (wire) => provider?.record(wire),
+        filterTransaction,
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
         ...(options.sampler !== undefined ? { sampler: options.sampler } : {}),
@@ -78,8 +87,14 @@ export function createPerformanceExtension(
       client.registerExt('performance', api);
     },
     recordExternal(transaction) {
-      store.add(transaction); // continuous /v2 (+ OTLP tee) upload
-      provider?.record(transaction); // incident-bundle performance.json
+      // Filtered HERE as well as in the controller: this is the path a consumed OpenTelemetry span takes,
+      // which is the one that arrives carrying `db.statement`, GenAI prompts and HTTP bodies verbatim.
+      const filtered = filterTransaction(transaction);
+      if (filtered === null) {
+        return;
+      }
+      store.add(filtered); // continuous /v2 (+ OTLP tee) upload
+      provider?.record(filtered); // incident-bundle performance.json
     },
     stop() {},
   };

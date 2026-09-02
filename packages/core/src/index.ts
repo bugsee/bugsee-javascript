@@ -135,12 +135,14 @@ export { createFileChunkBackend, type FileChunkBackendOptions } from './file-chu
 export {
   type BreadcrumbFilter,
   createFilterStore,
+  type FilterableSpan,
   type FilterStore,
   FiltersToken,
   type LogEventFilter,
   type NetworkEventFilter,
   type ReportHandler,
   runFilter,
+  type SpanFilter,
 } from './filters';
 export { InterceptorBase } from './interceptor-base';
 export {
