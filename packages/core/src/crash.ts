@@ -6,7 +6,7 @@
 // debug-id registration global are injected seams (browser passes its multi-engine parser).
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { applyDebugIds } from './debug-id';
-import { parseV8Stack, type StackFrame } from './stack';
+import { type FrameContext, parseV8Stack, type StackFrame } from './stack';
 
 /** A crash.json stack frame: an Android-parity `trace` string + the structured `data` the worker
  *  symbolicates against + the per-frame source-map `debug_id`. */
@@ -20,6 +20,8 @@ export interface CrashFrame {
    * by the capturing tier. Absent unless the platform captured them.
    */
   variables?: Record<string, string>;
+  /** Source lines around this frame, when the platform read them. */
+  context?: FrameContext;
 }
 
 /**
@@ -76,6 +78,21 @@ export interface NativeCrashJson extends CrashProvenance {
  * frames to use (typically the same array with `variables` filled in).
  */
 export type FrameEnricher = (error: Error, frames: StackFrame[]) => StackFrame[];
+
+/**
+ * Chain frame enrichers left to right, each seeing what the previous added.
+ *
+ * Returns `undefined` for an empty list rather than an identity function, so a platform that enabled
+ * nothing passes no `enrichFrames` at all and the crash path keeps its original array untouched.
+ */
+export function composeFrameEnrichers(
+  enrichers: readonly FrameEnricher[],
+): FrameEnricher | undefined {
+  if (enrichers.length === 0) {
+    return undefined;
+  }
+  return (error, frames) => enrichers.reduce((current, enrich) => enrich(error, current), frames);
+}
 
 export interface BuildCrashOptions {
   /** Runtime stack parser (default {@link parseV8Stack}; the browser tier injects its multi-engine parser). */
@@ -139,6 +156,9 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
   }
   if (frame.variables !== undefined) {
     crashFrame.variables = frame.variables;
+  }
+  if (frame.context !== undefined) {
+    crashFrame.context = frame.context;
   }
   return crashFrame;
 }

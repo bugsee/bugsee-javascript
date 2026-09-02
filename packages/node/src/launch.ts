@@ -19,6 +19,7 @@ import {
   ChunkStorageToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  composeFrameEnrichers,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -98,6 +99,7 @@ import {
   RequestContextStoreToken,
 } from './request-context-store';
 import type { TraceResponseConfig } from './server-instrument';
+import { createSourceContextEnricher, type SourceContextOptions } from './source-context';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
@@ -222,6 +224,19 @@ export interface BugseeLaunchOptions {
    * This is why it is opt-in rather than a default with an opt-out.
    */
   captureLocalVariables?: boolean | LocalVariablesOptions;
+  /**
+   * Attach SOURCE CONTEXT — the line that threw plus a window either side — to the crash's frames.
+   * **Off by default.**
+   *
+   * Only APPLICATION frames are read: after frame-path scrubbing a dependency frame reads
+   * `node_modules/express/...` and does not resolve, and reading a dependency's source is neither
+   * useful in a report nor something the SDK should do. Files are read once and cached.
+   *
+   * Off by default because it uploads the customer's own SOURCE CODE, which a stack trace does not —
+   * a line number is a reference, a line is the thing itself. Peers default this ON; under this SDK's
+   * rule that privacy-relevant data is obscured by default, it is the customer's call to make.
+   */
+  captureSourceContext?: boolean | SourceContextOptions;
   /** Hang escalation thresholds in ms. Defaults 3000 (fair) / 5000 (medium) / 10000 (severe). */
   hangFairMs?: number;
   hangMediumMs?: number;
@@ -615,9 +630,25 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         });
 
+  // Frame enrichers, in the order their output composes: locals first, then the source those locals
+  // belong to. Both opt-in, so the common case wires nothing at all.
+  const enrichFrames = composeFrameEnrichers([
+    ...(localVariables !== undefined ? [createFrameEnricher(localVariables)] : []),
+    ...(options.captureSourceContext === undefined || options.captureSourceContext === false
+      ? []
+      : [
+          createSourceContextEnricher({
+            ...(typeof options.captureSourceContext === 'object'
+              ? options.captureSourceContext
+              : {}),
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          }),
+        ]),
+  ]);
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
-    ...(localVariables !== undefined ? { enrichFrames: createFrameEnricher(localVariables) } : {}),
+    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
     launchOptions: resolved.options,
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,

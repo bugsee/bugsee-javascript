@@ -4,6 +4,16 @@
 // §14.3 steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
 // config-driven and belong to the report path, not this pure parser.
 
+/** Source lines around a frame: the line itself, plus a bounded window either side. */
+export interface FrameContext {
+  /** Lines BEFORE the throwing line, in file order. */
+  pre?: string[];
+  /** The line that threw. */
+  line?: string;
+  /** Lines AFTER it, in file order. */
+  post?: string[];
+}
+
 export interface StackFrame {
   /** Function/method name; absent for anonymous frames. */
   function?: string;
@@ -21,6 +31,11 @@ export interface StackFrame {
    * "we did not look" stays distinguishable from "there was nothing to see".
    */
   variables?: Record<string, string>;
+  /**
+   * The source around this frame — the line that threw, plus a little either side. Present only when
+   * the platform read it (node's opt-in source-context capture).
+   */
+  context?: FrameContext;
 }
 
 // §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the

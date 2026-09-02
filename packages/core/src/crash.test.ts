@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCrashJson,
   type CrashJson,
+  composeFrameEnrichers,
   type NativeCrashJson,
   stampCrashProvenance,
 } from './crash';
@@ -378,6 +379,28 @@ describe('toCrashFrame — local variables', () => {
     expect(frame?.variables).toEqual({ orderId: 'null', retries: '3' });
   });
 
+  it("carries a frame's source context onto the wire", () => {
+    const [frame] = buildCrashJson(
+      errorWith('Error', 'boom', 'Error: boom\n    at checkout (/app/src/checkout.js:9:3)'),
+      {
+        parseStack: () => [
+          {
+            file: '/app/src/checkout.js',
+            line: 9,
+            column: 3,
+            function: 'checkout',
+            context: { pre: ['const o = load();'], line: 'o.total()', post: ['return o;'] },
+          },
+        ],
+      },
+    ).exception.frames;
+    expect(frame?.context).toEqual({
+      pre: ['const o = load();'],
+      line: 'o.total()',
+      post: ['return o;'],
+    });
+  });
+
   it('omits the field entirely when nothing was captured', () => {
     // Absent, not `{}`: an empty object on every frame of every crash is pure wire weight, and it also
     // reads as "we looked and there were no locals" rather than "we did not look".
@@ -390,6 +413,7 @@ describe('toCrashFrame — local variables', () => {
       },
     ).exception.frames;
     expect(frame).not.toHaveProperty('variables');
+    expect(frame).not.toHaveProperty('context');
   });
 });
 
@@ -421,5 +445,39 @@ describe('buildCrashJson — the frame enrichment seam', () => {
     });
     expect(crash?.exception.frames[0]?.variables).toEqual({ from: 'outer' });
     expect(crash?.exception.cause?.frames[0]?.variables).toEqual({ from: 'inner' });
+  });
+});
+
+describe('composeFrameEnrichers', () => {
+  it('returns undefined for an empty list, so nothing is wired at all', () => {
+    // Not an identity function: a platform that enabled nothing should pass no `enrichFrames`, leaving
+    // the crash path on its original array rather than mapping it for no reason.
+    expect(composeFrameEnrichers([])).toBeUndefined();
+  });
+
+  it('chains left to right, each seeing what the previous added', () => {
+    const enrich = composeFrameEnrichers([
+      (_e, frames) => frames.map((f) => ({ ...f, variables: { a: '1' } })),
+      (_e, frames) => frames.map((f) => ({ ...f, context: { line: String(f.variables?.a) } })),
+    ]);
+    expect(enrich?.(new Error('x'), [{ file: 'a.js', line: 1 }])).toEqual([
+      { file: 'a.js', line: 1, variables: { a: '1' }, context: { line: '1' } },
+    ]);
+  });
+
+  it('passes the same error to every enricher', () => {
+    const seen: unknown[] = [];
+    const err = new Error('x');
+    composeFrameEnrichers([
+      (e, f) => {
+        seen.push(e);
+        return f;
+      },
+      (e, f) => {
+        seen.push(e);
+        return f;
+      },
+    ])?.(err, []);
+    expect(seen).toEqual([err, err]);
   });
 });

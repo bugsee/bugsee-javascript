@@ -91,6 +91,7 @@ export {
   type CrashFrame,
   type CrashJson,
   type CrashProvenance,
+  composeFrameEnrichers,
   type FrameEnricher,
   type NativeCrashJson,
   stampCrashProvenance,
@@ -210,7 +211,13 @@ export {
   SENSITIVE_INPUT_SELECTOR,
 } from './sensitive-input';
 export type { ServiceRegistrar, ServiceResolver } from './services';
-export { formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
+export {
+  type FrameContext,
+  formatStack,
+  parseLocation,
+  parseV8Stack,
+  type StackFrame,
+} from './stack';
 export {
   createStreamingCaptureStore,
   type StreamingCaptureEntry,
