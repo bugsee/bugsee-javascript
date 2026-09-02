@@ -66,6 +66,116 @@ describe('renderValue', () => {
   });
 });
 
+describe('renderValue — one-level unrolling', () => {
+  // V8 hands back an ObjectPreview in the SAME `Runtime.getProperties` response when
+  // `generatePreview` is set, so the contents cost no extra round-trip and no extra pause time.
+  const preview = (
+    properties: Array<{ name: string; type: string; value: string }>,
+    overflow = false,
+  ) => ({ overflow, properties });
+
+  it('renders an object’s own properties instead of the bare word "Object"', () => {
+    // The whole point: `customer: "Object"` told a reader nothing at all.
+    expect(
+      renderValue(
+        {
+          type: 'object',
+          description: 'Object',
+          preview: preview([
+            { name: 'tier', type: 'string', value: 'gold' },
+            { name: 'seats', type: 'number', value: '7' },
+          ]),
+        },
+        120,
+      ),
+    ).toBe("{tier: 'gold', seats: 7}");
+  });
+
+  it('renders an array with brackets and no keys', () => {
+    expect(
+      renderValue(
+        {
+          type: 'object',
+          subtype: 'array',
+          description: 'Array(3)',
+          preview: preview([
+            { name: '0', type: 'number', value: '1' },
+            { name: '1', type: 'string', value: 'two' },
+          ]),
+        },
+        120,
+      ),
+    ).toBe("[1, 'two']");
+  });
+
+  it('marks a truncated preview, so a short render is not mistaken for the whole object', () => {
+    expect(
+      renderValue(
+        {
+          type: 'object',
+          description: 'Object',
+          preview: preview([{ name: 'k0', type: 'number', value: '0' }], true),
+        },
+        120,
+      ),
+    ).toBe('{k0: 0, …}');
+  });
+
+  it('REDACTS a sensitive nested key, exactly as it does a top-level one', () => {
+    // A secret does not stop being a secret one level down. `isSensitiveKey` is the SDK's single
+    // definition and is applied at every depth we render.
+    expect(
+      renderValue(
+        {
+          type: 'object',
+          description: 'Object',
+          preview: preview([
+            { name: 'user', type: 'string', value: 'ada' },
+            { name: 'password', type: 'string', value: 'hunter2' },
+          ]),
+        },
+        120,
+      ),
+    ).toBe("{user: 'ada', password: <redacted>}");
+  });
+
+  it('keeps a nested object opaque — one level only, never a deep walk', () => {
+    expect(
+      renderValue(
+        {
+          type: 'object',
+          description: 'Object',
+          preview: preview([{ name: 'nested', type: 'object', value: 'Object' }]),
+        },
+        120,
+      ),
+    ).toBe('{nested: Object}');
+  });
+
+  it('still honours maxValueLength once unrolled', () => {
+    const rendered = renderValue(
+      {
+        type: 'object',
+        description: 'Object',
+        preview: preview([{ name: 'blob', type: 'string', value: 'x'.repeat(200) }]),
+      },
+      20,
+    );
+    expect(rendered.length).toBe(21); // 20 + the ellipsis
+    expect(rendered.endsWith('…')).toBe(true);
+  });
+
+  it('falls back to the description when V8 sent no preview', () => {
+    expect(renderValue({ type: 'object', description: 'Object' }, 120)).toBe('Object');
+  });
+
+  it('renders an EMPTY preview as an empty literal, not as "Object"', () => {
+    expect(renderValue({ type: 'object', description: 'Object', preview: preview([]) }, 120)).toBe(
+      '{}',
+    );
+  });
+});
+
 describe('collectScope', () => {
   it('REDACTS a variable whose NAME says it is a secret', () => {
     // Derived from `@bugsee/protocol`'s `isSensitiveKey` — the SDK's single definition of a sensitive
@@ -119,6 +229,22 @@ describe('createLocalVariablesCapture', () => {
     createLocalVariablesCapture({ session: f.session, includeCaught: true });
     expect(f.posts.find((p) => p.method === 'Debugger.setPauseOnExceptions')?.params).toEqual({
       state: 'all',
+    });
+  });
+
+  it('asks V8 to PREVIEW each value, so an object arrives unrolled at no extra round-trip', () => {
+    // Without `generatePreview` V8 sends only a description and every object renders as the word
+    // "Object". Sentry pays a SECOND `Runtime.getProperties` per object-valued local instead; this
+    // rides the response we were already waiting for, inside a paused process.
+    const f = fakeSession({ 'scope-0': [] });
+    createLocalVariablesCapture({ session: f.session });
+    f.fire({ callFrames: [{ scopeChain: [f.scope('scope-0')] }], data: { objectId: 'thrown-1' } });
+
+    const call = f.posts.find((p) => p.method === 'Runtime.getProperties');
+    expect(call?.params).toEqual({
+      objectId: 'scope-0',
+      ownProperties: true,
+      generatePreview: true,
     });
   });
 

@@ -62,10 +62,63 @@ export interface LocalVariablesCapture {
  */
 const MARKER = '__bugsee_locals_id__';
 
-/** `Runtime.getProperties` describes a value; render it flat, short, and never by calling user code. */
+/** One entry of V8's `ObjectPreview` — a property it rendered for us, without running any user code. */
+interface PropertyPreview {
+  name?: unknown;
+  type?: unknown;
+  value?: unknown;
+}
+
+/**
+ * V8's own one-level rendering of an object or array, returned in the SAME `Runtime.getProperties`
+ * response when `generatePreview` is set. `overflow` says V8 stopped early (it previews five).
+ */
+interface ObjectPreview {
+  overflow?: unknown;
+  properties?: readonly PropertyPreview[];
+}
+
+/**
+ * Render one previewed property. A sensitive NAME is redacted here exactly as it is at the top level —
+ * `isSensitiveKey` is the SDK's single definition of sensitive and a secret does not stop being one a
+ * level down. Strings are quoted so `{seats: 7}` and `{seats: '7'}` stay distinguishable.
+ */
+function renderPreviewEntry(entry: PropertyPreview): string {
+  const name = typeof entry.name === 'string' ? entry.name : '?';
+  if (isSensitiveKey(name)) {
+    return `${name}: ${REDACTED}`;
+  }
+  const raw = typeof entry.value === 'string' ? entry.value : String(entry.value ?? 'undefined');
+  return `${name}: ${entry.type === 'string' ? `'${raw}'` : raw}`;
+}
+
+/**
+ * `Runtime.getProperties` describes a value; render it short, one level deep, and NEVER by calling
+ * user code.
+ *
+ * Objects and arrays used to render as V8's bare `description` — the literal word `Object` — which told
+ * a reader nothing. They are now unrolled ONE level from the `preview` V8 already put in the same
+ * response, so `customer` reads `{tier: 'gold', seats: 7}`.
+ *
+ * The preview is the whole reason this stays cheap and safe. Sentry's integration issues a SECOND
+ * `Runtime.getProperties` per object-valued local, which is another round-trip inside a paused process
+ * for every one of them; asking for `generatePreview` costs none, because V8 renders it while it is
+ * already building the response. It is also GETTER-SAFE — verified against a real `node:inspector`
+ * session: a local holding `{ get danger() { throw } }` previews as `danger=undefined` and the getter
+ * does not run. Invoking an accessor from here would be the SDK changing what the application does.
+ *
+ * Depth stops at one. A nested object stays the word `Object`: deeper walks cost pause time on a
+ * stopped process and are a good way to serialise something enormous by accident.
+ */
 export function renderValue(description: unknown, maxLength: number): string {
   const value = description as
-    | { type?: string; value?: unknown; description?: string; subtype?: string }
+    | {
+        type?: string;
+        value?: unknown;
+        description?: string;
+        subtype?: string;
+        preview?: ObjectPreview;
+      }
     | undefined;
   if (value === undefined) {
     return 'undefined';
@@ -76,6 +129,23 @@ export function renderValue(description: unknown, maxLength: number): string {
   if (value.subtype === 'null') {
     return 'null';
   }
+  const clip = (text: string): string =>
+    text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+
+  const entries = value.preview?.properties;
+  if (entries !== undefined) {
+    const isArray = value.subtype === 'array';
+    const parts = entries.map(renderPreviewEntry);
+    if (value.preview?.overflow === true) {
+      parts.push('…');
+    }
+    const body = isArray
+      ? // An array's preview names are its indices; they carry nothing a reader wants to see.
+        parts.map((part) => part.replace(/^\d+: /, '')).join(', ')
+      : parts.join(', ');
+    return clip(isArray ? `[${body}]` : `{${body}}`);
+  }
+
   // `description` is V8's own rendering (e.g. "Array(3)", "function foo"). Preferring the primitive
   // `value` when present keeps numbers and booleans readable; falling back to `description` avoids
   // ever invoking a user `toString`, which could throw or have side effects.
@@ -83,7 +153,7 @@ export function renderValue(description: unknown, maxLength: number): string {
     value.value !== undefined && value.type !== 'object'
       ? String(value.value)
       : (value.description ?? String(value.type ?? 'unknown'));
-  return rendered.length > maxLength ? `${rendered.slice(0, maxLength)}…` : rendered;
+  return clip(rendered);
 }
 
 /**
@@ -219,7 +289,9 @@ export function createLocalVariablesCapture(
         }
         session.post(
           'Runtime.getProperties',
-          { objectId, ownProperties: true },
+          // `generatePreview` is what makes one-level unrolling free: V8 renders the contents while
+          // it is already building this response, so there is no second round-trip inside the pause.
+          { objectId, ownProperties: true, generatePreview: true },
           (error, result) => {
             if (error === null) {
               const properties =
