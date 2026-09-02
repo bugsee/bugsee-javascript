@@ -15,6 +15,12 @@ export interface StackFrame {
   column?: number;
   /** Source-map debug-ID for this frame's bundle (set when a build injected one). See debug-id.ts. */
   debugId?: string;
+  /**
+   * Local variables in scope at this frame, already stringified and scrubbed. Present only when the
+   * platform captured them (node's opt-in inspector capture) — absent, never `{}`, when it did not, so
+   * "we did not look" stays distinguishable from "there was nothing to see".
+   */
+  variables?: Record<string, string>;
 }
 
 // §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the

@@ -15,6 +15,11 @@ export interface CrashFrame {
   user: boolean;
   data?: { source?: string; member?: string; line?: number; column?: number };
   debug_id?: string;
+  /**
+   * Local variables in scope at this frame — `{ name: stringified-value }`, already scrubbed and capped
+   * by the capturing tier. Absent unless the platform captured them.
+   */
+  variables?: Record<string, string>;
 }
 
 /**
@@ -66,6 +71,12 @@ export interface NativeCrashJson extends CrashProvenance {
   minidumpFile: string;
 }
 
+/**
+ * Add to a parsed stack before it becomes wire frames. Given the error the frames came from, returns the
+ * frames to use (typically the same array with `variables` filled in).
+ */
+export type FrameEnricher = (error: Error, frames: StackFrame[]) => StackFrame[];
+
 export interface BuildCrashOptions {
   /** Runtime stack parser (default {@link parseV8Stack}; the browser tier injects its multi-engine parser). */
   parseStack?: (stack: string) => StackFrame[];
@@ -79,6 +90,16 @@ export interface BuildCrashOptions {
    * previous frameless behaviour rather than losing the crash.
    */
   syntheticFrames?: StackFrame[];
+  /**
+   * Last chance to add to the parsed frames before they become wire frames — the seam the node tier
+   * attaches captured LOCAL VARIABLES through.
+   *
+   * It lives here rather than in the parser because it needs the ERROR, not just its stack string: the
+   * locals were captured when that specific object was thrown, and matching them to any other error's
+   * frames would be worse than attaching none. Runtime-portable: core defines the seam and never
+   * implements one (the inspector is node-only).
+   */
+  enrichFrames?: FrameEnricher;
 }
 
 /** The Android cause-chain depth cap (matches the mobile serializer). */
@@ -116,6 +137,9 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
   if (frame.debugId !== undefined) {
     crashFrame.debug_id = frame.debugId;
   }
+  if (frame.variables !== undefined) {
+    crashFrame.variables = frame.variables;
+  }
   return crashFrame;
 }
 
@@ -147,9 +171,14 @@ function buildException(
   globalObject: unknown,
   seen: Set<unknown>,
   depth: number,
+  enrichFrames?: FrameEnricher,
 ): CrashException {
-  const frames = error.stack !== undefined ? parseStack(error.stack) : [];
-  applyDebugIds(frames, { globalObject, parseStack });
+  const parsed = error.stack !== undefined ? parseStack(error.stack) : [];
+  applyDebugIds(parsed, { globalObject, parseStack });
+  // Runs per exception in the `cause` chain, not just the outermost: the frames that matter are often
+  // the original cause's, and a chained error is exactly where "which value was it, three throws ago"
+  // is hardest to answer from the stack alone.
+  const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed);
 
   const exception: CrashException = {
     name: error.name || 'Error',
@@ -162,7 +191,14 @@ function buildException(
   const cause = (error as { cause?: unknown }).cause;
   if (cause instanceof Error && !seen.has(cause) && depth < MAX_CAUSE_DEPTH) {
     seen.add(cause);
-    exception.cause = buildException(cause, parseStack, globalObject, seen, depth + 1);
+    exception.cause = buildException(
+      cause,
+      parseStack,
+      globalObject,
+      seen,
+      depth + 1,
+      enrichFrames,
+    );
   }
   return exception;
 }
@@ -242,7 +278,14 @@ export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}):
     exception_type: 'error',
     ndkCrash: false,
     handled: options.handled ?? false,
-    exception: buildException(error, parseStack, globalObject, new Set<unknown>([error]), 0),
+    exception: buildException(
+      error,
+      parseStack,
+      globalObject,
+      new Set<unknown>([error]),
+      0,
+      options.enrichFrames,
+    ),
   };
 }
 

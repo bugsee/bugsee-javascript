@@ -91,6 +91,7 @@ export {
   type CrashFrame,
   type CrashJson,
   type CrashProvenance,
+  type FrameEnricher,
   type NativeCrashJson,
   stampCrashProvenance,
 } from './crash';

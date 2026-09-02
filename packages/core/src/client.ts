@@ -34,7 +34,7 @@ import {
   type Client,
   type OptionsContainer,
 } from './contracts';
-import { buildCrashJson } from './crash';
+import { buildCrashJson, type FrameEnricher } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
@@ -220,6 +220,11 @@ export interface CreateClientOptions {
    * the V8 default.
    */
   stackParser?: (stack: string) => StackFrame[];
+  /**
+   * Add to a crash's parsed frames before they reach the wire — the seam the node tier attaches captured
+   * LOCAL VARIABLES through. Core defines it and never implements one: the inspector is node-only.
+   */
+  enrichFrames?: FrameEnricher;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
@@ -760,6 +765,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       const crash = buildCrashJson(error, {
         parseStack: options.stackParser,
         handled: true,
+        ...(options.enrichFrames !== undefined ? { enrichFrames: options.enrichFrames } : {}),
         ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
       });
       const request = createReportingRequest({

@@ -355,3 +355,71 @@ describe('stampCrashProvenance', () => {
     expect(stamped.minidumpFile).toBe('dump-1.dmp');
   });
 });
+
+describe('toCrashFrame — local variables', () => {
+  it("carries a frame's captured locals onto the wire", () => {
+    // Locals are the single biggest step-change in debuggability a crash report can carry: "it threw"
+    // becomes "it threw with orderId=null". They are captured by the node tier behind an explicit
+    // opt-in, and this is the field they ride in.
+    const [frame] = buildCrashJson(
+      errorWith('Error', 'boom', 'Error: boom\n    at checkout (/app/src/checkout.js:9:3)'),
+      {
+        parseStack: () => [
+          {
+            file: '/app/src/checkout.js',
+            line: 9,
+            column: 3,
+            function: 'checkout',
+            variables: { orderId: 'null', retries: '3' },
+          },
+        ],
+      },
+    ).exception.frames;
+    expect(frame?.variables).toEqual({ orderId: 'null', retries: '3' });
+  });
+
+  it('omits the field entirely when nothing was captured', () => {
+    // Absent, not `{}`: an empty object on every frame of every crash is pure wire weight, and it also
+    // reads as "we looked and there were no locals" rather than "we did not look".
+    const [frame] = buildCrashJson(
+      errorWith('Error', 'boom', 'Error: boom\n    at checkout (/app/src/checkout.js:9:3)'),
+      {
+        parseStack: () => [
+          { file: '/app/src/checkout.js', line: 9, column: 3, function: 'checkout' },
+        ],
+      },
+    ).exception.frames;
+    expect(frame).not.toHaveProperty('variables');
+  });
+});
+
+describe('buildCrashJson — the frame enrichment seam', () => {
+  it('lets the platform attach locals to the frames it recognises', () => {
+    const err = errorWith(
+      'Error',
+      'boom',
+      'Error: boom\n    at checkout (/app/src/checkout.js:9:3)',
+    );
+    const crash = buildCrashJson(err, {
+      parseStack: parseV8Stack,
+      enrichFrames: (error, frames) =>
+        frames.map((f) => (error === err ? { ...f, variables: { orderId: 'null' } } : f)),
+    });
+    expect(crash?.exception.frames[0]?.variables).toEqual({ orderId: 'null' });
+  });
+
+  it("runs the enricher for each exception in the CAUSE chain, with that link's own error", () => {
+    // The frames that matter are usually the original cause's — "which value was it, three throws ago"
+    // is exactly what a stack alone cannot answer.
+    const cause = errorWith('Error', 'inner', 'Error: inner\n    at load (/app/src/db.js:4:1)');
+    const outer = errorWith('Error', 'outer', 'Error: outer\n    at handler (/app/src/api.js:8:1)');
+    (outer as { cause?: unknown }).cause = cause;
+    const crash = buildCrashJson(outer, {
+      parseStack: parseV8Stack,
+      enrichFrames: (error, frames) =>
+        frames.map((f) => ({ ...f, variables: { from: (error as Error).message } })),
+    });
+    expect(crash?.exception.frames[0]?.variables).toEqual({ from: 'outer' });
+    expect(crash?.exception.cause?.frames[0]?.variables).toEqual({ from: 'inner' });
+  });
+});

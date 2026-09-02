@@ -2502,3 +2502,57 @@ describe('launch — incoming-server instrumentation wiring', () => {
     expect(Object.hasOwn(http.Server.prototype, 'emit')).toBe(false); // restored
   });
 });
+
+describe('launch — local variables (opt-in)', () => {
+  // WIRING, deliberately. What the enricher DOES is pinned behaviourally where it lives: the capture,
+  // scrubbing and frame attachment in `local-variables.test.ts`, and `enrichFrames` reaching crash.json
+  // in core's `client.test.ts` and `crash.test.ts`. What only THIS tier decides is whether the option
+  // builds a capture at all and hands its lookup to the client — and an end-to-end assertion here
+  // proved unreliable for an unrelated reason worth recording: these suites share a process, and a
+  // client another test file launched answers `logException` through the global singleton, so the
+  // bundle under assertion was another test's.
+  const fakeInspector = () => {
+    const posts: Array<{ method: string; params?: unknown }> = [];
+    let paused: ((m: { params: unknown }) => void) | undefined;
+    const session = {
+      connect: () => {},
+      disconnect: () => {},
+      post: (method: string, params?: unknown, cb?: (e: Error | null, r?: unknown) => void) => {
+        posts.push({ method, params });
+        if (method === 'Runtime.getProperties') {
+          cb?.(null, { result: [{ name: 'orderId', value: { type: 'object', subtype: 'null' } }] });
+        }
+      },
+      on: (event: string, handler: (m: { params: unknown }) => void) => {
+        if (event === 'Debugger.paused') paused = handler;
+      },
+    };
+    return { session, posts, fire: (params: unknown) => paused?.({ params }) };
+  };
+
+  it('ARMS the debugger when the option is set, and captures scrubbed locals for the thrown error', () => {
+    const inspector = fakeInspector();
+    launchTracked(
+      'tok',
+      baseOptions({ carrier: {}, captureLocalVariables: { session: inspector.session } }),
+    );
+    // The debugger is actually armed, on UNCAUGHT only …
+    expect(inspector.posts.map((p) => p.method)).toContain('Debugger.enable');
+    expect(
+      inspector.posts.find((p) => p.method === 'Debugger.setPauseOnExceptions')?.params,
+    ).toEqual({ state: 'uncaught' });
+    // … and a pause is handled end to end: locals collected, the thrown object stamped, app resumed.
+    inspector.fire({
+      callFrames: [{ scopeChain: [{ type: 'local', object: { objectId: 'scope-0' } }] }],
+      data: { objectId: 'thrown-1' },
+    });
+    expect(inspector.posts.map((p) => p.method)).toContain('Runtime.callFunctionOn');
+    expect(inspector.posts.map((p) => p.method)).toContain('Debugger.resume');
+  });
+
+  it('does NOT arm the debugger when the option is absent — it is off by default', () => {
+    const inspector = fakeInspector();
+    launchTracked('tok', baseOptions({ carrier: {} })); // no captureLocalVariables
+    expect(inspector.posts).toEqual([]); // the session was never touched
+  });
+});

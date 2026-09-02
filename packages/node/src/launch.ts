@@ -75,6 +75,12 @@ import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
 import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
 import { startLivenessHeartbeat } from './liveness-heartbeat';
+import {
+  createFrameEnricher,
+  createInspectorSession,
+  createLocalVariablesCapture,
+  type LocalVariablesOptions,
+} from './local-variables';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 import {
   foreignListenerCount,
@@ -202,6 +208,20 @@ export interface BugseeLaunchOptions {
   detectCrashes?: boolean;
   /** Detect main-thread/event-loop hangs and report them (Android BugseeDetectionHang). Default true. */
   detectHangs?: boolean;
+  /**
+   * Capture LOCAL VARIABLES in scope at the moment of a throw, onto the crash's stack frames. **Off by
+   * default**, and deliberately so on two counts.
+   *
+   * COST: enabling the V8 debugger costs ~3% steady-state (measured, best-of-7 after warm-up), and
+   * pausing on CAUGHT exceptions as well costs ~36µs per throw — which an application that uses
+   * exceptions for control flow would pay continuously. The default pauses on uncaught only; opt into
+   * `{ includeCaught: true }` knowing that.
+   *
+   * PRIVACY: locals hold whatever the code held. Names matching the SDK's sensitive-key definition are
+   * redacted and values are truncated, but a variable called `row` can still contain a customer record.
+   * This is why it is opt-in rather than a default with an opt-out.
+   */
+  captureLocalVariables?: boolean | LocalVariablesOptions;
   /** Hang escalation thresholds in ms. Defaults 3000 (fair) / 5000 (medium) / 10000 (severe). */
   hangFairMs?: number;
   hangMediumMs?: number;
@@ -579,8 +599,25 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const requestContextStore = options.requestContextStore ?? createNodeRequestContextStore();
   services.addService(defineService(RequestContextStoreToken, () => requestContextStore));
 
+  // Local variables (opt-in). Built BEFORE the client so its lookup can be handed in as the frame
+  // enricher; inert when the runtime has no usable inspector.
+  const localVariables =
+    options.captureLocalVariables === undefined || options.captureLocalVariables === false
+      ? undefined
+      : createLocalVariablesCapture({
+          ...(typeof options.captureLocalVariables === 'object'
+            ? options.captureLocalVariables
+            : {}),
+          ...(typeof options.captureLocalVariables === 'object' &&
+          options.captureLocalVariables.session !== undefined
+            ? {}
+            : { session: createInspectorSession() }),
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        });
+
   const client = createClient({
     isEnabled: resolved.isEnabled,
+    ...(localVariables !== undefined ? { enrichFrames: createFrameEnricher(localVariables) } : {}),
     launchOptions: resolved.options,
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,

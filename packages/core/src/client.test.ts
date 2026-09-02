@@ -862,6 +862,22 @@ describe('createClient — capture-recovery markers', () => {
     drop: vi.fn(),
   });
 
+  it('threads enrichFrames into the crash it builds, so a platform can attach locals', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      enrichFrames: (_error, frames) => frames.map((f) => ({ ...f, variables: { a: '1' } })),
+    });
+    await client.logException(new Error('boom'));
+    const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+      exception: { frames: Array<{ variables?: Record<string, string> }> };
+    };
+    expect(crash.exception.frames[0]?.variables).toEqual({ a: '1' });
+  });
+
   it('stores a span filter for the capture pipeline to read live', async () => {
     // The seam consumed OpenTelemetry spans are scrubbed through — `@bugsee/performance` reads
     // `filters.span` from this same store at both of its transaction funnels. Set here, read there.
