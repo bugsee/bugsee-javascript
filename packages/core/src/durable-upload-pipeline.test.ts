@@ -230,8 +230,25 @@ describe('createDurableUploadPipeline', () => {
       store: { ...store, put: () => new Promise<void>(() => {}) }, // accepted, never settles
       pipeline: fakePipeline({ ok: true }).pipeline,
       newId: () => 'b1',
+      // A deadline that NEVER fires. Without it this test passes either way — it just takes the
+      // default 5s bound instead of resolving at once — so it would assert nothing about the
+      // short-circuit it exists to pin. With it, only the short-circuit can resolve this.
+      sleep: () => new Promise<void>(() => {}),
     });
-    expect(await durable.enqueue(bundle())).toEqual({ ok: true });
+    // Raced against a short timer so a regression fails by ASSERTION in milliseconds with a readable
+    // diff, rather than by a 30s test timeout that reads like runner flakiness.
+    const settled = await Promise.race([
+      durable.enqueue(bundle()),
+      new Promise((resolve) =>
+        // `globalThis` cast: core's tsconfig has no DOM or Node lib, deliberately — it is the tier that
+        // must not assume a runtime.
+        (globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown }).setTimeout(
+          () => resolve('STILL PENDING'),
+          50,
+        ),
+      ),
+    ]);
+    expect(settled).toEqual({ ok: true });
   });
 
   it('BOUNDS the wait on an unsettled durable write, and keeps the marker when it times out', async () => {

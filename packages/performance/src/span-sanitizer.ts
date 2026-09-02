@@ -1,4 +1,4 @@
-import { type FilterableSpan, isSensitiveInput } from '@bugsee/core';
+import type { FilterableSpan } from '@bugsee/core';
 import { isSensitiveKey, REDACTED } from '@bugsee/protocol';
 
 // The BUILT-IN span sanitizer, applied to every span unless the integrator installs their own filter
@@ -77,10 +77,13 @@ function sanitizeAttribute(key: string, value: unknown): unknown {
   if (CONTENT_KEYS.has(key)) {
     return REDACTED;
   }
-  // …and the general rule, through the SDK's single definitions of a sensitive key and a sensitive
-  // field name, rather than a list restated here. `db.user` stays; `db.password` does not.
-  const leaf = key.slice(key.lastIndexOf('.') + 1);
-  return isSensitiveKey(key) || isSensitiveKey(leaf) || isSensitiveInput({ name: leaf })
-    ? REDACTED
-    : value;
+  // …and the general rule, through the SDK's single definition of a sensitive key rather than a list
+  // restated here. `db.user` stays; `db.password` does not.
+  //
+  // The FULL key is enough, and deliberately so. An earlier version also tested the leaf (`password`
+  // out of `db.password`) — dead code, because `isSensitiveKey` is a substring match and the leaf is a
+  // substring of the key, so it can never match when the key does not. It also called
+  // `isSensitiveInput({ name: leaf })`, which is a DOM-ELEMENT predicate reading `type` and `matches`:
+  // handed a plain object it returns false for every input, always. A mutation run found both.
+  return isSensitiveKey(key) ? REDACTED : value;
 }

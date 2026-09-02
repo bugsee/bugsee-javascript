@@ -87,6 +87,17 @@ describe('sanitizeSpan', () => {
     });
   });
 
+  it('matches on the whole dotted key, which subsumes any leaf check', () => {
+    // Pins WHY there is no separate leaf-name test: `isSensitiveKey` is a substring match and a leaf is
+    // a substring of its key, so a leaf can never match when the full key does not. A leaf clause was
+    // written, SURVIVED a mutation, and was removed as dead rather than covered — it also called a
+    // DOM-element predicate on a plain object, which returns false for every input.
+    const out = sanitizeSpan(
+      span({ 'deeply.nested.thing.secret': 'x', 'deeply.nested.thing.count': 1 }),
+    ).attributes;
+    expect(out).toEqual({ 'deeply.nested.thing.secret': REDACTED, 'deeply.nested.thing.count': 1 });
+  });
+
   it('keeps ordinary attributes untouched and returns the SAME span when nothing changed', () => {
     const input = span({ 'db.system': 'postgresql', 'net.peer.port': 5432 });
     expect(sanitizeSpan(input)).toBe(input);
