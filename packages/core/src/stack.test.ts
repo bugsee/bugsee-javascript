@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { callSiteFrames, formatStack, parseLocation, parseV8Stack, type StackFrame } from './stack';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  callSiteFrames,
+  formatStack,
+  parseLocation,
+  parseV8Stack,
+  type StackFrame,
+  setStackAppRoot,
+} from './stack';
 
 describe('parseV8Stack', () => {
   it('parses a typical Node stack into structured frames', () => {
@@ -297,5 +304,73 @@ describe("scrubFramePath — the customer's filesystem must not ship in a crash"
 
   it('leaves an already-relative path alone', () => {
     expect(parseLocation('./src/app.ts:3:7').file).toBe('./src/app.ts');
+  });
+});
+
+describe('setStackAppRoot — application paths must not carry the machine', () => {
+  afterEach(() => {
+    setStackAppRoot(undefined); // module state: every test must leave it as it found it
+  });
+
+  it('relativises a frame beneath the app root', () => {
+    // The other half of the frame-path leak. Dependency frames have `node_modules` as a landmark;
+    // application frames have none, so the platform has to say where the project starts.
+    setStackAppRoot('/Users/jane/work/acme-secret');
+    expect(parseLocation('/Users/jane/work/acme-secret/src/checkout.js:9:3').file).toBe(
+      './src/checkout.js',
+    );
+  });
+
+  it('accepts a root that already ends in a separator', () => {
+    setStackAppRoot('/Users/jane/app/');
+    expect(parseLocation('/Users/jane/app/src/a.js:1:1').file).toBe('./src/a.js');
+  });
+
+  it('does NOT match a sibling directory that merely shares a prefix', () => {
+    // `/app` must not swallow `/apples`. Storing the root with its separator is what prevents it.
+    setStackAppRoot('/app');
+    expect(parseLocation('/apples/x.js:1:1').file).toBe('/apples/x.js');
+  });
+
+  it('leaves a frame OUTSIDE the app root alone', () => {
+    setStackAppRoot('/Users/jane/app');
+    expect(parseLocation('/usr/local/lib/tool.js:1:1').file).toBe('/usr/local/lib/tool.js');
+  });
+
+  it('still truncates dependencies at node_modules, root or no root', () => {
+    // Order matters: a dependency inside the project would otherwise relativise to
+    // `./node_modules/express/...`, which is longer and says nothing extra.
+    setStackAppRoot('/Users/jane/app');
+    expect(parseLocation('/Users/jane/app/node_modules/express/index.js:1:1').file).toBe(
+      'node_modules/express/index.js',
+    );
+  });
+
+  it('restores absolute paths when the root is cleared', () => {
+    setStackAppRoot('/Users/jane/app');
+    setStackAppRoot(undefined);
+    expect(parseLocation('/Users/jane/app/src/a.js:1:1').file).toBe('/Users/jane/app/src/a.js');
+  });
+
+  it('ignores an empty root rather than relativising everything to nothing', () => {
+    setStackAppRoot('');
+    expect(parseLocation('/Users/jane/app/src/a.js:1:1').file).toBe('/Users/jane/app/src/a.js');
+  });
+
+  it('leaves URLs alone, root or no root', () => {
+    setStackAppRoot('/Users/jane/app');
+    expect(parseLocation('https://app.test/static/main.js:1:1').file).toBe(
+      'https://app.test/static/main.js',
+    );
+  });
+
+  it('reaches the appended console stack too, not just crash frames', () => {
+    // `console.trace` appends `formatStack` into the log MESSAGE, which is why this is scrubbed at parse
+    // time rather than in the crash path: a fix that covered only crash frames would leave logs.json
+    // carrying the same absolute paths.
+    setStackAppRoot('/Users/jane/app');
+    const formatted = formatStack(parseV8Stack('Error\n    at run (/Users/jane/app/src/a.js:2:1)'));
+    expect(formatted).toContain('./src/a.js');
+    expect(formatted).not.toContain('/Users/jane');
   });
 });

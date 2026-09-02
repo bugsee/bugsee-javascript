@@ -35,10 +35,12 @@ import {
   type HttpResponse,
   type HttpTransport,
   type NativeCrashSource,
+  parseLocation,
   ReportMarkerStoreToken,
   type StoredEntry,
   serializeBundle,
   serviceToken,
+  setStackAppRoot,
   TransportToken,
 } from '@bugsee/core';
 import {
@@ -2554,5 +2556,48 @@ describe('launch — local variables (opt-in)', () => {
     const inspector = fakeInspector();
     launchTracked('tok', baseOptions({ carrier: {} })); // no captureLocalVariables
     expect(inspector.posts).toEqual([]); // the session was never touched
+  });
+});
+
+describe('launch — application frame paths', () => {
+  afterEach(() => {
+    setStackAppRoot(undefined); // module state in core: leave it as we found it
+  });
+
+  it('relativises application frames to the app root, so the machine does not ship', () => {
+    // The other half of the frame-path leak: dependency frames truncate at `node_modules` on their own,
+    // but application frames have no landmark, so the platform has to say where the project starts.
+    launchTracked('tok', baseOptions({ carrier: {}, appRoot: '/Users/jane/work/acme-secret' }));
+    expect(parseLocation('/Users/jane/work/acme-secret/src/checkout.js:9:3').file).toBe(
+      './src/checkout.js',
+    );
+  });
+
+  it('defaults the root to the process working directory', () => {
+    launchTracked('tok', baseOptions({ carrier: {} }));
+    expect(parseLocation(`${process.cwd()}/src/a.js:1:1`).file).toBe('./src/a.js');
+  });
+
+  it('survives a working directory that has been deleted out from under the process', () => {
+    // `process.cwd()` throws ENOENT then. Launching must not fail for the sake of a path cosmetic, so
+    // the frames simply stay absolute.
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    });
+    try {
+      expect(() => launchTracked('tok', baseOptions({ carrier: {} }))).not.toThrow();
+      expect(parseLocation('/Users/jane/work/acme/src/a.js:1:1').file).toBe(
+        '/Users/jane/work/acme/src/a.js',
+      );
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('keeps absolute paths when the caller passes an empty root', () => {
+    launchTracked('tok', baseOptions({ carrier: {}, appRoot: '' }));
+    expect(parseLocation('/Users/jane/work/acme/src/a.js:1:1').file).toBe(
+      '/Users/jane/work/acme/src/a.js',
+    );
   });
 });

@@ -52,6 +52,34 @@ export interface StackFrame {
 // the LAST boundary collapsed 2,783 distinct files onto shared keys; at the first, none. It also keeps a
 // nested copy distinguishable from a hoisted one (the duplicate-package signal) and preserves pnpm's
 // `.pnpm/<pkg>@<version>/` directory, which carries the version for free.
+// The application's root, when a platform has told us. Module state, deliberately: a parsed stack
+// reaches the wire from several places — crash frames, and `console.trace`'s appended `formatStack`
+// among them — so the scrub has to happen at PARSE time to cover them all, and `parseV8Stack` is a pure
+// function with no options to thread this through. One process has one working directory, so a
+// per-client value would be a distinction without a difference. Core never reads it itself: it is
+// runtime-portable and cannot know a filesystem exists.
+let appRoot: string | undefined;
+
+/**
+ * Tell the frame scrubber where the application root is, so frames beneath it ship RELATIVE.
+ *
+ * Without it a Node stack carries `/Users/jane/work/acme-secret/src/checkout.js` into every crash and
+ * every `console.trace` — the OS username, the home-directory layout, and often an internal project
+ * codename. Dependency frames are already handled without this (truncated at the first `node_modules`),
+ * but application frames have no such landmark.
+ *
+ * Set once by the platform launch (`process.cwd()`); pass `undefined` to restore absolute paths.
+ */
+export function setStackAppRoot(root: string | undefined): void {
+  if (root === undefined || root === '') {
+    appRoot = undefined;
+    return;
+  }
+  // Stored WITH a trailing separator so `/app` cannot match `/apples/x.js`.
+  const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+  appRoot = root.endsWith(separator) ? root : `${root}${separator}`;
+}
+
 function scrubFramePath(path: string): string {
   let scrubbed = path;
   if (scrubbed.startsWith('file://')) {
@@ -63,7 +91,15 @@ function scrubFramePath(path: string): string {
     return scrubbed;
   }
   const dependency = scrubbed.indexOf('/node_modules/');
-  return dependency >= 0 ? scrubbed.slice(dependency + 1) : scrubbed;
+  if (dependency >= 0) {
+    return scrubbed.slice(dependency + 1);
+  }
+  // Application code: relative to the app root, which keeps everything a symbolicator or a reader needs
+  // (the path WITHIN the project) and drops everything that identifies the machine it was built on.
+  if (appRoot !== undefined && scrubbed.startsWith(appRoot)) {
+    return `./${scrubbed.slice(appRoot.length)}`;
+  }
+  return scrubbed;
 }
 
 const LOCATION = /^(.+):(\d+):(\d+)$/;

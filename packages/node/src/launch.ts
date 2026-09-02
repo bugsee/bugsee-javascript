@@ -45,6 +45,7 @@ import {
   type Scheduler,
   SchedulerToken,
   setCarrierClient,
+  setStackAppRoot,
   TransportToken,
 } from '@bugsee/core';
 import {
@@ -163,6 +164,13 @@ export interface BugseeLaunchOptions {
   endpoint?: string;
   /** SDK version reported in the environment + user-agent. Default the package version. */
   sdkVersion?: string;
+  /**
+   * The application's root directory, used to relativise stack-frame paths. Default `process.cwd()`.
+   *
+   * Pass `''` to keep absolute paths — they identify the machine the code was built on, so the default
+   * is to drop that.
+   */
+  appRoot?: string;
   /** app.package_id. */
   appId?: string;
   /** app.version. */
@@ -419,8 +427,23 @@ const internalTagged =
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
 
+/** `process.cwd()` can throw when the working directory has been deleted out from under the process. */
+const safeCwd = (): string | undefined => {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
+};
+
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   const proc = options.process ?? (process as unknown as NodeRuntime);
+  // Tell core's frame scrubber where the application starts, so stack frames beneath it ship RELATIVE
+  // (`./src/checkout.js`) instead of carrying the OS username, the home-directory layout and often an
+  // internal project codename into every crash and every `console.trace`. Set before anything can
+  // capture. Dependency frames are already handled without this — they truncate at `node_modules` —
+  // but application frames have no such landmark.
+  setStackAppRoot(options.appRoot ?? safeCwd());
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
 

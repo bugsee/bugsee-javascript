@@ -217,6 +217,7 @@ export {
   parseLocation,
   parseV8Stack,
   type StackFrame,
+  setStackAppRoot,
 } from './stack';
 export {
   createStreamingCaptureStore,
