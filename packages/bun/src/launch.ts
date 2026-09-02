@@ -21,6 +21,15 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     systemProbe: bunSystemProbe,
     systemMetricsSampler: createGuardedSystemMetricsSampler(),
     ...options,
+    // LOCAL VARIABLES ARE OFF HERE, after `...options` so a caller cannot switch them on. Measured on
+    // Bun 1.4.0: `Debugger.enable` is REFUSED — `Inspector method "Debugger.enable" requires an active
+    // inspector (call inspector.open() first)` — so no pause ever arrives and the capture is inert.
+    // Unlike Deno this is safe rather than dangerous (nothing freezes), but an option that is accepted
+    // and silently does nothing is still a lie to whoever set it.
+    //
+    // Reversible the moment Bun implements the Debugger domain without `inspector.open()`; opening one
+    // ourselves is not an option, since that exposes a debugger port in a production process.
+    captureLocalVariables: false,
     // Bun's native serve wrap (instruments idiomatic Bun.serve({fetch}) apps that bypass node:http),
     // CONCATENATED before any caller-supplied server instrumentations — never spread-replaced, so a user
     // array does not drop it. node still installs its own node:http interceptor first when the flag is on;

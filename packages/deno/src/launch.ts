@@ -28,6 +28,17 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // its own tell (a zero `idle`), so it needs no flag.
     systemMetricsSampler: createGuardedSystemMetricsSampler({ measuresEventLoopDelay: false }),
     ...options,
+    // LOCAL VARIABLES ARE OFF HERE, and deliberately AFTER `...options` so a caller cannot switch them
+    // back on. This is not a preference: with `includeCaught` Deno FREEZES. Measured with the real SDK
+    // on Deno 2.9.6 — the process produced no output at all and never exited, because the SDK's own
+    // guarded startup paths throw-and-catch internally, so the freeze happens during launch, before any
+    // application code runs. `Debugger.enable` and `setPauseOnExceptions` both answer "ok"; the pause
+    // then arrives and `Debugger.paused` never reaches an in-process listener, so nothing ever resumes.
+    //
+    // Even on the default (`uncaught`) path Deno never fires a pause, so the feature can only ever cost
+    // a debugger attachment and return nothing. Same shape as `measuresEventLoopDelay` above: Deno
+    // answers the call and silently does not do the thing.
+    captureLocalVariables: false,
     // Deno's native serve wrap (instruments idiomatic Deno.serve apps that bypass node:http), CONCATENATED
     // before any caller-supplied server instrumentations — never spread-replaced. node still installs its
     // own node:http interceptor first when the flag is on; all of it activates only when
