@@ -1,6 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import process from 'node:process';
 import { describe, expect, it, vi } from 'vitest';
 import { createSourceContextEnricher, isReadablePath, readContext } from './source-context';
 
@@ -46,7 +47,7 @@ describe('isReadablePath', () => {
     ['C:\\app\\src\\index.js', true],
     ['node_modules/express/lib/router/index.js', false], // scrubbed dependency frame
     ['https://app.test/static/main.js', false],
-    ['./src/app.ts', false],
+    ['./src/app.ts', true], // relative NOW resolves — app frames are scrubbed to this shape
     [undefined, false],
   ])('%s -> %s', (path, expected) => {
     expect(isReadablePath(path as string | undefined)).toBe(expected);
@@ -157,5 +158,50 @@ describe('createSourceContextEnricher', () => {
     expect(enrich(new Error('x'), frames('/definitely/not/here.js'))[0]).not.toHaveProperty(
       'context',
     );
+  });
+});
+
+describe('source context after the frame paths became RELATIVE', () => {
+  it('resolves a `./` frame against the app root', () => {
+    // The interaction that broke it: application frames now ship `./src/app.js` (the privacy fix), and
+    // this reader accepted only absolute paths — so context silently stopped working for exactly the
+    // application files it exists for. Each feature was right alone and wrong together.
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-ctx-rel-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'app.js'), SOURCE);
+    const enrich = createSourceContextEnricher({ appRoot: dir, contextLines: 1 });
+    expect(enrich(new Error('x'), [{ file: './src/app.js', line: 4 }])[0]?.context?.line).toBe('d');
+  });
+
+  it('still reads an absolute path, which is what a frame outside the app root keeps', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-ctx-abs-'));
+    const file = join(dir, 'outside.js');
+    writeFileSync(file, SOURCE);
+    const enrich = createSourceContextEnricher({ appRoot: '/somewhere/else', contextLines: 1 });
+    expect(enrich(new Error('x'), [{ file, line: 4 }])[0]?.context?.line).toBe('d');
+  });
+
+  it('treats a `./` path as readable now, but still not a bare dependency path', () => {
+    expect(isReadablePath('./src/app.js')).toBe(true);
+    expect(isReadablePath('node_modules/express/index.js')).toBe(false);
+  });
+});
+
+describe('createSourceContextEnricher — a working directory that has been deleted', () => {
+  it('still reads absolute frames when process.cwd() throws', () => {
+    // `safeCwd` returns '' then. Source context is decoration on a crash report; it must never be the
+    // reason a report fails, and an absolute frame needs no root anyway.
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-ctx-nocwd-'));
+    const file = join(dir, 'a.js');
+    writeFileSync(file, SOURCE);
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: uv_cwd');
+    });
+    try {
+      const enrich = createSourceContextEnricher({ contextLines: 1 });
+      expect(enrich(new Error('x'), [{ file, line: 4 }])[0]?.context?.line).toBe('d');
+    } finally {
+      cwd.mockRestore();
+    }
   });
 });

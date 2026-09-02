@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import process from 'node:process';
 import type { FrameContext, StackFrame } from '@bugsee/core';
 
 // Source context: the line that threw, plus a little either side, read from disk at report time.
@@ -10,6 +12,15 @@ import type { FrameContext, StackFrame } from '@bugsee/core';
 // be doing. That makes the rule a happy consequence of the privacy fix rather than a limitation.
 
 export interface SourceContextOptions {
+  /**
+   * Where a relative frame path is resolved from. Default `process.cwd()`.
+   *
+   * Load-bearing since frame paths became relative: application frames now read `./src/app.js` (the
+   * privacy fix), and this reader accepted only absolute paths — so source context silently stopped
+   * working for exactly the application files it exists for. Two features each correct in isolation
+   * and wrong together; only a real end-to-end run showed it.
+   */
+  appRoot?: string;
   /** Lines of context on EACH side of the throwing line. Default 5. */
   contextLines?: number;
   /** How many frames from the top to read context for. Default 5. */
@@ -22,6 +33,15 @@ export interface SourceContextOptions {
   readFile?: (path: string) => string | undefined;
   onError?: (error: unknown) => void;
 }
+
+/** `process.cwd()` throws when the working directory has been deleted out from under the process. */
+const safeCwd = (): string => {
+  try {
+    return process.cwd();
+  } catch {
+    return '';
+  }
+};
 
 const DEFAULT_READ = (path: string): string | undefined => {
   try {
@@ -66,7 +86,15 @@ export function readContext(
 
 /** Is this a path this tier can actually read? See the note above on which frames qualify. */
 export function isReadablePath(file: string | undefined): file is string {
-  return file !== undefined && (file.startsWith('/') || /^[A-Za-z]:[\\/]/.test(file));
+  return (
+    file !== undefined &&
+    (file.startsWith('/') || /^[A-Za-z]:[\\/]/.test(file) || file.startsWith('./'))
+  );
+}
+
+/** Resolve a frame path to something on disk: `./x` against the app root, absolute paths unchanged. */
+export function resolveFramePath(file: string, appRoot: string): string {
+  return file.startsWith('./') ? join(appRoot, file.slice(2)) : file;
 }
 
 /**
@@ -76,7 +104,13 @@ export function isReadablePath(file: string | undefined): file is string {
 export function createSourceContextEnricher(
   options: SourceContextOptions = {},
 ): (error: unknown, frames: StackFrame[]) => StackFrame[] {
-  const { contextLines = 5, maxFrames = 5, maxLineLength = 200, maxCachedFiles = 50 } = options;
+  const {
+    contextLines = 5,
+    maxFrames = 5,
+    maxLineLength = 200,
+    maxCachedFiles = 50,
+    appRoot = safeCwd(),
+  } = options;
   const read = options.readFile ?? DEFAULT_READ;
   const onError = options.onError ?? ((): void => {});
   // `undefined` is cached too: a file that could not be read once will not become readable within a
@@ -109,7 +143,7 @@ export function createSourceContextEnricher(
       if (index >= maxFrames || frame.line === undefined || !isReadablePath(frame.file)) {
         return frame;
       }
-      const source = load(frame.file);
+      const source = load(resolveFramePath(frame.file, appRoot));
       if (source === undefined) {
         return frame;
       }

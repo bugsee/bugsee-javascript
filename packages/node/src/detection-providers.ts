@@ -1,6 +1,12 @@
 import process from 'node:process';
 import type { CrashJson, DetectionProvider } from '@bugsee/core';
-import { buildCrashJson, DetectionProviderBase, formatStack, parseV8Stack } from '@bugsee/core';
+import {
+  buildCrashJson,
+  DetectionProviderBase,
+  type FrameEnricher,
+  formatStack,
+  parseV8Stack,
+} from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { markOwnHandler } from './process-policy';
 
@@ -30,21 +36,34 @@ function describeError(value: unknown): { summary: string; description?: string 
   return { summary: String(value) };
 }
 
-/** Structured crash.json (SC3) from an uncaught value — `handled: false`. Undefined for non-Errors. */
-function crashOf(value: unknown): CrashJson | undefined {
-  return buildCrashJson(value, { parseStack: parseV8Stack, handled: false });
+/**
+ * Structured crash.json (SC3) from an uncaught value — `handled: false`. Undefined for non-Errors.
+ *
+ * `enrichFrames` has to be threaded in here rather than left to the client. This path builds its OWN
+ * crash.json and never passes through `logException`, so a frame enricher configured on the client was
+ * silently skipped for every UNCAUGHT crash — which is the case local variables exist for. Unit tests
+ * could not see it: they drive `logException`, which does go through the client.
+ */
+function crashOf(value: unknown, enrichFrames?: FrameEnricher): CrashJson | undefined {
+  return buildCrashJson(value, {
+    parseStack: parseV8Stack,
+    handled: false,
+    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
+  });
 }
 
 abstract class NodeProcessDetectionProvider extends DetectionProviderBase {
   protected abstract readonly event: 'uncaughtException' | 'unhandledRejection';
+  protected readonly enrichFrames: FrameEnricher | undefined;
   readonly #proc: ProcessEvents;
   // Marked as Bugsee-owned so the process policy can tell OUR listeners from the host's — the SDK installs
   // more than one listener per event, so a raw count cannot answer "does the host handle this too?" (D2).
   readonly #handler = markOwnHandler((value: unknown): void => this.onDetected(value));
 
-  constructor(proc: ProcessEvents) {
+  constructor(proc: ProcessEvents, enrichFrames?: FrameEnricher) {
     super();
     this.#proc = proc;
+    this.enrichFrames = enrichFrames;
   }
 
   protected onStart(): void {
@@ -65,7 +84,7 @@ class UncaughtExceptionProvider extends NodeProcessDetectionProvider {
 
   protected onDetected(value: unknown): void {
     const { summary, description } = describeError(value);
-    const crash = crashOf(value);
+    const crash = crashOf(value, this.enrichFrames);
     this.handleReportingRequest(
       this.createCrashReport({
         mechanism: 'uncaught',
@@ -84,7 +103,7 @@ class UnhandledRejectionProvider extends NodeProcessDetectionProvider {
 
   protected onDetected(value: unknown): void {
     const { summary, description } = describeError(value);
-    const crash = crashOf(value);
+    const crash = crashOf(value, this.enrichFrames);
     this.handleReportingRequest(
       this.createErrorReport({
         mechanism: 'unhandledrejection',
@@ -97,11 +116,17 @@ class UnhandledRejectionProvider extends NodeProcessDetectionProvider {
 }
 
 /** Detect `uncaughtException` and report it as a crash. */
-export function createUncaughtExceptionProvider(proc: ProcessEvents = process): DetectionProvider {
-  return new UncaughtExceptionProvider(proc);
+export function createUncaughtExceptionProvider(
+  proc: ProcessEvents = process,
+  enrichFrames?: FrameEnricher,
+): DetectionProvider {
+  return new UncaughtExceptionProvider(proc, enrichFrames);
 }
 
 /** Detect `unhandledRejection` and report it as an error. */
-export function createUnhandledRejectionProvider(proc: ProcessEvents = process): DetectionProvider {
-  return new UnhandledRejectionProvider(proc);
+export function createUnhandledRejectionProvider(
+  proc: ProcessEvents = process,
+  enrichFrames?: FrameEnricher,
+): DetectionProvider {
+  return new UnhandledRejectionProvider(proc, enrichFrames);
 }

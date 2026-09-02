@@ -757,9 +757,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // Detection providers: uncaughtException → crash, unhandledRejection → error, event-loop hang → error
   // (Android BugseeDetectionHang). Each is gated by its controllingOption (the coordinator skips it when
   // disabled), so they are added unconditionally.
-  client.addDetectionProvider(createUncaughtExceptionProvider(proc));
+  // The enricher is passed HERE too, not only to the client: this path builds its own crash.json
+  // and never goes through `logException`, so a client-configured enricher was skipped for every
+  // uncaught crash — the one case local variables exist for.
+  client.addDetectionProvider(createUncaughtExceptionProvider(proc, enrichFrames));
   if ((options.unhandledRejections ?? 'preserve') !== 'none') {
-    client.addDetectionProvider(createUnhandledRejectionProvider(proc));
+    client.addDetectionProvider(createUnhandledRejectionProvider(proc, enrichFrames));
   }
   client.addDetectionProvider(
     createHangDetectionProvider({

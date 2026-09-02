@@ -190,8 +190,6 @@ export function createLocalVariablesCapture(
           try {
             session.post('Runtime.callFunctionOn', {
               objectId: thrownId,
-              // Non-enumerable: a marker the application can see in its own object dumps would be the
-              // SDK altering its behaviour.
               functionDeclaration: `function(){Object.defineProperty(this,'${MARKER}',{value:'${id}',enumerable:false,configurable:true})}`,
             });
           } catch (error) {

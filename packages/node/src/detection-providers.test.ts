@@ -158,3 +158,47 @@ describe('createUnhandledRejectionProvider', () => {
     expect(process.listenerCount('unhandledRejection')).toBe(before);
   });
 });
+
+describe('detection providers — the frame enricher', () => {
+  // This path builds its OWN crash.json and never passes through `logException`, so an enricher
+  // configured on the client was silently skipped for every UNCAUGHT crash — which is precisely the
+  // case local variables exist for. Found by a real end-to-end run; the unit suites could not see it
+  // because they drive `logException`, which does go through the client.
+  const throwing = (): Error => {
+    const err = new Error('boom');
+    err.stack = 'Error: boom\n    at doWork (file:///app/work.js:3:7)';
+    return err;
+  };
+
+  it('applies the enricher to an UNCAUGHT exception crash', () => {
+    const p = fakeProcess();
+    const requests = started(
+      createUncaughtExceptionProvider(p.proc, (_e, frames) =>
+        frames.map((f) => ({ ...f, variables: { orderId: '42' } })),
+      ),
+    );
+    p.emit('uncaughtException', throwing());
+    const crash = requests[0]?.report.crash as CrashJson | undefined;
+    expect(crash?.exception.frames[0]?.variables).toEqual({ orderId: '42' });
+  });
+
+  it('applies the enricher to an unhandled REJECTION too', () => {
+    const p = fakeProcess();
+    const requests = started(
+      createUnhandledRejectionProvider(p.proc, (_e, frames) =>
+        frames.map((f) => ({ ...f, variables: { orderId: '42' } })),
+      ),
+    );
+    p.emit('unhandledRejection', throwing());
+    const crash = requests[0]?.report.crash as CrashJson | undefined;
+    expect(crash?.exception.frames[0]?.variables).toEqual({ orderId: '42' });
+  });
+
+  it('builds the crash unenriched when no enricher is supplied', () => {
+    const p = fakeProcess();
+    const requests = started(createUncaughtExceptionProvider(p.proc));
+    p.emit('uncaughtException', throwing());
+    const crash = requests[0]?.report.crash as CrashJson | undefined;
+    expect(crash?.exception.frames[0]).not.toHaveProperty('variables');
+  });
+});

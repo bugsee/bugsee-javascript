@@ -112,6 +112,7 @@ export function runScenarioProcess(
   scenario:
     | 'main'
     | 'crash'
+    | 'locals'
     | 'server'
     | 'multi-instance'
     | 'disk-recovery'

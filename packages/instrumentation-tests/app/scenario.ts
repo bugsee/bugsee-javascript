@@ -105,6 +105,57 @@ async function runMainScenario(launch: LaunchFn, collectorUrl: string): Promise<
  * The SDK's crash handler flushes the crash report then `process.exit(1)` — so this run exits non-zero
  * by design, and the collector must have captured the crash bundle before exit.
  */
+/**
+ * The values this scenario expects to see come back on the crash frame, and the one that must NOT.
+ * Exported so the e2e asserts against the same constants the app used rather than a second copy.
+ */
+export const LOCALS_ORDER_ID = 4242;
+export const LOCALS_SECRET = 'sk-live-e2e-MUST-NOT-SHIP';
+
+/**
+ * Throws with real locals LIVE at the throw site, so V8's local scope for frame 0 actually contains
+ * them. The condition keeps all three referenced right up to the `throw` — a value the optimizer can
+ * prove dead may not appear in the scope at all, which would make this scenario silently vacuous.
+ */
+function e2eLocalsThrow(): void {
+  const orderId = LOCALS_ORDER_ID;
+  const apiKey = LOCALS_SECRET;
+  const customer = { plan: 'pro' };
+  if (orderId > 0 && apiKey.length > 0 && customer.plan === 'pro') {
+    throw new Error('e2e locals crash');
+  }
+}
+
+/**
+ * Local variables + source context, end to end through a REAL crash: a real `node:inspector` session,
+ * a real V8 `Debugger.paused`, a real uncaught exception, a real bundle upload.
+ *
+ * This is the one thing the unit suites cannot do. They inject a fake inspector session and drive the
+ * pause by hand, so nothing there proves V8 actually pauses where we think, that the thrown object can
+ * be stamped and matched back, or that any of it survives assembly and upload.
+ */
+async function runLocalsScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
+  launch('e2e-app-token', {
+    endpoint: collectorUrl,
+    appVersion: '1.2.3',
+    detectHangs: false,
+    profiling: false,
+    recover: false,
+    exitOnUncaught: true,
+    shutdownTimeoutMs: 5000,
+    captureLocalVariables: true,
+    captureSourceContext: true,
+    onError: noteOnError,
+  });
+
+  console.log('e2e locals scenario armed'); // marks the run in the e2e output
+  // Async, so this is an uncaughtException rather than a module-eval error — and `pauseOnExceptions` is
+  // 'uncaught' by default, so only a genuinely uncaught throw exercises the capture.
+  setTimeout(e2eLocalsThrow, 20);
+
+  await sleep(10_000); // stay alive until the SDK flushes the crash bundle and exits
+}
+
 async function runCrashScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   launch('e2e-app-token', {
     endpoint: collectorUrl,
@@ -585,6 +636,10 @@ export async function runScenario(
   launch: LaunchFn,
   opts: { collectorUrl: string; scenario: string },
 ): Promise<void> {
+  if (opts.scenario === 'locals') {
+    await runLocalsScenario(launch, opts.collectorUrl);
+    return;
+  }
   if (opts.scenario === 'crash') {
     await runCrashScenario(launch, opts.collectorUrl);
     return;
