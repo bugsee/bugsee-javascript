@@ -678,8 +678,16 @@ get it wrong.
   `Transaction` at all. Fix is one line — add `@bugsee/performance` as a devDependency of each — but it
   needs `pnpm install`. Re-exporting `Transaction` from `@bugsee/node` would work and is public-surface
   creep to satisfy a test; don't.
-- **R3-12** (input key payload: `key: string` vs `keyCode: int`, four booleans vs `metaState`, no gesture
-  `id`/`keyup`/`displayId`) — still open, still pre-existing.
+- **R3-12** (input key payload) — **CLOSED 2026-09-02 (`59d49dd`)**, with two parts deliberately left
+  divergent. Now emitted: Android's `keyCode` (+ `KEYCODE_REDACTED`), the `metaState` bitmask replacing
+  the four bespoke booleans, and a gesture `id` on every key entry (the viewer types
+  `RecordingTouchEvent.id` as REQUIRED). Every constant was read out of the real `android.view.KeyEvent`
+  in `android.jar` with `javap` rather than recalled. A mutation proved the single-character redaction
+  guard could never fire — the table simply holds no character keys — so it was deleted and replaced by
+  a sweep test over the printable range, which is what now stops a future edit leaking a typed glyph.
+  **`keyup` and `displayId` stay divergent on purpose:** a web keyup doubles the volume of the noisiest
+  stream to say only "the finger came off", which no consumer renders, and JS cannot observe a display
+  id (the native WebView receiver can, and is the tier that should fill it).
 
 ## Round 3 review — DID NOT CONVERGE. 13 findings from 4 reviewers (data-safety, test-quality-in-worktree, architecture, integration)
 
@@ -997,20 +1005,32 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
 
 ## Known-open, pre-existing, deliberately not in this wave
 
-- `node/src/launch.ts:754-765` — cross-subtree double-upload: a recovered bundle is re-staged
-  into the live instance's `pending/`; if that upload fails, the dead sibling keeps its marker
-  while the recoverer holds a blob with the same id in a different subtree. Confirmed. Severity
-  reduced by the fact that the two uploads are **byte-identical** re-serializations (a collector
-  dedup candidate, unlike R2-1/R2-2). The new per-blob `reportId` is the missing ingredient;
-  closing it means threading an id set across the whole `recoverInstances` loop.
-- `node/src/recover-instances.ts:38` — node has **no** lock claim ("atomic-rename claim land in
-  slice 4"), so two simultaneous node launches both recover the same dead subtree. Browser is
-  serialized by `web-lock-liveness.ts:63` `ifAvailable: true`.
-- `@bugsee/util` `sha256.ts:31` — the `node:crypto` fallback is statically visible to
-  esbuild-family bundlers; ignore comments (`webpackIgnore`/`turbopackIgnore`/`@vite-ignore`)
-  mean nothing to esbuild. The documented `externalDependencies` workaround converts a build
-  error into a **silent runtime error** on the upload path (`core/src/upload-pipeline.ts:77,137`
-  calls `sha256Hex`), scoped to insecure contexts where `crypto.subtle` is absent.
+- ~~`node/src/launch.ts:754-765` — cross-subtree double-upload~~ **CLOSED 2026-09-02 (`59d49dd`).**
+  The scan is now two passes — every dead sibling's bundle queue before any marker leg, so
+  directory order cannot decide the outcome — reconciled against a UNION marker view across every
+  claimed subtree, which also retires the marker wherever it lives. Retiring it is the half that
+  matters: leaving it merely postponed the duplicate to the next launch, when the blob is gone and
+  no longer shadows it. Reproduced first, in both scan orders.
+- ~~`node/src/recover-instances.ts:38` — node has **no** lock claim~~ **CLOSED 2026-09-02
+  (`59d49dd`).** `recovery-claim.ts`: an `O_EXCL` claim file inside the subtree (`writeFileExclusive`
+  in node-utils). Claimed by FILE, not by the rename the design sketched — the subtree name is
+  load-bearing for both the recovery scan and the age-based sweep, and a rename would hide a claimed
+  subtree from the reaper. A claim names its holder and one whose holder is DEAD is taken over, so a
+  recoverer that dies half way cannot strand the incident for ever (which would be strictly worse
+  than the duplicate the claim replaces).
+- `@bugsee/util` `sha256.ts` — the `node:crypto` fallback is statically visible to esbuild-family
+  bundlers; ignore comments (`webpackIgnore`/`turbopackIgnore`/`@vite-ignore`) mean nothing to
+  esbuild. **STILL OPEN, and the obvious fix was measured and REJECTED (2026-09-02).** Computing the
+  specifier (`['node','crypto'].join(':')`) hides it from static analysis and does fix esbuild —
+  verified, with vite 8 and webpack 5 staying clean, and webpack silent because `webpackIgnore` stops
+  it parsing the import at all. It was reverted because **workerd rejects dynamic module specifiers
+  outright** (`ERR_MODULE_DYNAMIC_SPEC`), which broke the real-workerd Durable Object e2e and would
+  break `@bugsee/cloudflare` in production. Trading a build error for a broken supported runtime is a
+  bad trade. The fix with no downside is a per-runtime `exports` condition on `@bugsee/util` (a node
+  entry keeping the fallback, a default entry that is WebCrypto-only); it needs a second dist build.
+  A pure-JS SHA-256 was also rejected — this hashes the whole bundle BODY, and bundles run to
+  megabytes. The `external` workaround's residual risk is narrower than first written: it can only
+  bite in an INSECURE context, since every secure context has `crypto.subtle`.
 - `bugsee-cli` (Rust repo): a CSS map aborts the whole source-map batch; an unchanged chunk fails
   the whole batch. Together these make iterative CI production builds impossible.
 - rrweb fork: `.bugsee-unmask` on an `<input>` is honoured on the full-snapshot path only; a
