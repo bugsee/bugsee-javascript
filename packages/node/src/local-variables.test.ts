@@ -470,7 +470,9 @@ describe('createInspectorSession — refusing to fight another debugger', () => 
   // where THEIR debugger stops, and our own resume can restart a process they deliberately paused.
   // Sentry refuses to start in the same situation for the same reason.
   it('returns no session when an inspector is already listening', () => {
-    expect(createInspectorSession({ inspectorUrl: () => 'ws://127.0.0.1:9229/abc' })).toBeUndefined();
+    expect(
+      createInspectorSession({ inspectorUrl: () => 'ws://127.0.0.1:9229/abc' }),
+    ).toBeUndefined();
   });
 
   it('returns a session when nothing is attached', () => {
