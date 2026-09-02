@@ -78,6 +78,7 @@ export {
   type TransactionOptions,
   type TransactionWire,
 } from './span';
+export { redactSqlLiterals, sanitizeSpan } from './span-sanitizer';
 export {
   createTransactionStore,
   type TransactionStore,

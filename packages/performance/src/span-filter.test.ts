@@ -29,9 +29,23 @@ const child = (over: Partial<TransactionWire['spans'][number]> = {}) => ({
 });
 
 describe('applySpanFilter', () => {
-  it('passes the transaction through untouched when no filter is set', () => {
+  it('applies the BUILT-IN sanitizer when no filter is set', () => {
+    // "No filter" does not mean "no scrubbing": consuming OpenTelemetry brings in SQL, prompts and
+    // bodies the SDK never produced, and the default is that they are captured scrubbed.
+    const out = applySpanFilter(txn({ spans: [child()] }), null, () => {});
+    expect(out?.spans[0]?.attributes?.['db.statement']).toBe('SELECT * FROM users WHERE email = ?');
+  });
+
+  it('returns the SAME transaction by reference when the sanitizer changed nothing', () => {
+    // The built-in runs on every transaction the SDK produces, so it must not rebuild all of them to
+    // change nothing.
+    const t = txn({ spans: [child({ attributes: { 'db.system': 'postgresql' } })] });
+    expect(applySpanFilter(t, null, () => {})).toBe(t);
+  });
+
+  it('can be turned off, leaving the transaction untouched', () => {
     const t = txn({ spans: [child()] });
-    expect(applySpanFilter(t, null, () => {})).toBe(t); // same reference — no needless copying
+    expect(applySpanFilter(t, null, () => {}, false)).toBe(t);
   });
 
   it('scrubs an attribute on a CHILD span', () => {

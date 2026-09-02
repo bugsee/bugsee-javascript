@@ -32,6 +32,14 @@ export interface PerformanceExtensionOptions {
   maxTransactions?: number;
   /** Injectable transaction buffer (tests, or a launch that wires its own drains). */
   store?: TransactionStore;
+  /**
+   * Run the BUILT-IN span sanitizer — SQL literals replaced, model prompts and bodies redacted,
+   * sensitive attribute names removed. Default true.
+   *
+   * An integrator `setSpanFilter` REPLACES it rather than layering, the same XOR the network sanitizer
+   * follows: someone who has written a filter has decided what leaves their process.
+   */
+  sanitizeSpans?: boolean;
 }
 
 export interface PerformanceExtension {
@@ -66,7 +74,12 @@ export function createPerformanceExtension(
   // have configured one on.
   let filters: FilterStore | undefined;
   const filterTransaction = (transaction: TransactionWire): TransactionWire | null =>
-    applySpanFilter(transaction, filters?.span ?? null, (error) => filters?.onError(error));
+    applySpanFilter(
+      transaction,
+      filters?.span ?? null,
+      (error) => filters?.onError(error),
+      options.sanitizeSpans ?? true,
+    );
   return {
     name: 'performance',
     store,

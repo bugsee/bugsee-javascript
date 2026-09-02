@@ -1,5 +1,6 @@
 import { type FilterableSpan, runFilter, type SpanFilter } from '@bugsee/core';
 import type { SpanStatus, TransactionWire } from './span';
+import { sanitizeSpan } from './span-sanitizer';
 
 // The span redaction seam (core's `filters.span`), applied to every finished transaction — the SDK's own
 // and every externally recorded one, which is where consumed OpenTelemetry spans arrive.
@@ -30,6 +31,13 @@ const projectRoot = (transaction: TransactionWire): FilterableSpan => ({
   ...(transaction.attributes !== undefined ? { attributes: transaction.attributes } : {}),
 });
 
+/** Did the filter alter anything the root projection carries back onto the transaction? */
+const rootChanged = (transaction: TransactionWire, root: FilterableSpan): boolean =>
+  root.description !== transaction.name ||
+  root.operation !== transaction.operation ||
+  root.status !== transaction.status ||
+  root.attributes !== transaction.attributes;
+
 /**
  * Run `filter` over a transaction's root and every child.
  *
@@ -45,22 +53,38 @@ export function applySpanFilter(
   transaction: TransactionWire,
   filter: SpanFilter | null,
   onError: (error: unknown) => void,
+  sanitizeDefault = true,
 ): TransactionWire | null {
-  if (filter === null) {
+  // An integrator filter REPLACES the built-in sanitizer rather than layering over it — the same XOR
+  // the network sanitizer follows. Someone who has written a span filter has decided what leaves their
+  // process, and silently re-scrubbing on top of it would make their filter's behaviour unpredictable.
+  const effective = filter ?? (sanitizeDefault ? sanitizeSpan : null);
+  if (effective === null) {
     return transaction;
   }
-  const root = runFilter(filter, projectRoot(transaction), onError);
+  const root = runFilter(effective, projectRoot(transaction), onError);
   if (root === null) {
     return null;
   }
   const spans: TransactionWire['spans'] = [];
+  // Whether anything actually changed. Without this the built-in sanitizer would rebuild every
+  // transaction the SDK produces, forever, to change nothing — it runs on all of them by default.
+  let changed = root !== undefined && rootChanged(transaction, root);
   for (const span of transaction.spans) {
-    const kept = runFilter(filter, span as FilterableSpan, onError);
-    if (kept !== null) {
-      // The cast mirrors `FilterableSpan`'s widening of `status` to `string`: core sits below this
-      // package and cannot name the `SpanStatus` union, so the narrowing is restored here.
-      spans.push(kept as TransactionWire['spans'][number]);
+    const kept = runFilter(effective, span as FilterableSpan, onError);
+    if (kept === null) {
+      changed = true;
+      continue;
     }
+    if (kept !== span) {
+      changed = true;
+    }
+    // The cast mirrors `FilterableSpan`'s widening of `status` to `string`: core sits below this
+    // package and cannot name the `SpanStatus` union, so the narrowing is restored here.
+    spans.push(kept as TransactionWire['spans'][number]);
+  }
+  if (!changed) {
+    return transaction;
   }
   return {
     ...transaction,
