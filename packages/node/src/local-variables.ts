@@ -362,11 +362,39 @@ export function attachLocals(
  * static import would make the whole package fail to load on a runtime that lacks the module, to
  * deliver a feature that is off by default.
  */
-export function createInspectorSession(): InspectorSessionLike | undefined {
+/** Seams for {@link createInspectorSession} (tests inject both; production uses `node:inspector`). */
+export interface InspectorSessionFactoryOptions {
+  /** The listening inspector's URL, or undefined when none. Default `inspector.url()`. */
+  inspectorUrl?: () => string | undefined;
+}
+
+/**
+ * A connected-capable inspector session, or undefined when we must not take one.
+ *
+ * REFUSES when a debugger is already attached (`--inspect`, an IDE, another SDK). `Debugger.enable` is
+ * not exclusive, but `setPauseOnExceptions` is process-wide state and last-writer-wins: attaching
+ * underneath someone's live session silently changes where THEIR debugger stops, and our own
+ * `Debugger.resume` — which we are otherwise right to always call — would restart a process they
+ * deliberately paused. Sentry declines in the same situation for the same reason.
+ *
+ * The probe FAILS CLOSED: an unreadable `inspector.url()` is read as "something is there", because
+ * guessing "free" attaches a second debugger to a process we know nothing about, while guessing "busy"
+ * costs only the local variables.
+ */
+export function createInspectorSession(
+  options: InspectorSessionFactoryOptions = {},
+): InspectorSessionLike | undefined {
   try {
     const load = createRequire(import.meta.url);
-    const { Session } = load('node:inspector') as { Session: new () => InspectorSessionLike };
-    return new Session();
+    const inspector = load('node:inspector') as {
+      Session: new () => InspectorSessionLike;
+      url: () => string | undefined;
+    };
+    const inspectorUrl = options.inspectorUrl ?? inspector.url;
+    if (inspectorUrl() !== undefined) {
+      return undefined; // someone else owns the debugger
+    }
+    return new inspector.Session();
   } catch {
     /* v8 ignore next -- unreachable on Node, where these tests run: `node:inspector` is a builtin, so
        this is the Bun/Deno degradation path and reaching it would mean faking `createRequire` itself. */

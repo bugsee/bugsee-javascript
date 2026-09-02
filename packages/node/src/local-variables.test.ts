@@ -464,6 +464,32 @@ describe('attachLocals', () => {
   });
 });
 
+describe('createInspectorSession — refusing to fight another debugger', () => {
+  // `Debugger.enable` is not exclusive, but `setPauseOnExceptions` IS process-wide state: whichever
+  // client sets it last wins. Attaching underneath a developer's `--inspect` session silently changes
+  // where THEIR debugger stops, and our own resume can restart a process they deliberately paused.
+  // Sentry refuses to start in the same situation for the same reason.
+  it('returns no session when an inspector is already listening', () => {
+    expect(createInspectorSession({ inspectorUrl: () => 'ws://127.0.0.1:9229/abc' })).toBeUndefined();
+  });
+
+  it('returns a session when nothing is attached', () => {
+    expect(createInspectorSession({ inspectorUrl: () => undefined })).toBeDefined();
+  });
+
+  it('treats an unreadable url probe as "something is there" rather than assuming it is safe', () => {
+    // Fail CLOSED: guessing "free" attaches a second debugger to a process we know nothing about,
+    // and the cost of guessing "busy" is only that locals are missing.
+    expect(
+      createInspectorSession({
+        inspectorUrl: () => {
+          throw new Error('nope');
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe('createInspectorSession', () => {
   it('returns a usable session on a runtime that has node:inspector', () => {
     // Loaded lazily rather than by static import, because @bugsee/node's composition is reused verbatim
