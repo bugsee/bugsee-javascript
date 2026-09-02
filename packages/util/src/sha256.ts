@@ -15,12 +15,33 @@ type TextEncoderCtor = new () => { encode(input: string): Uint8Array };
  * exists (the Node >=18 baseline without `--experimental-global-webcrypto`); both paths produce
  * identical digests. Matches design §8.3, which routes Node/Bun through `node:crypto`.
  *
- * The `node:crypto` import is dynamic AND marked ignore-for-every-bundler (Wave 3b.5). Dynamic alone only
- * defers the LOAD; a bundler still resolves the specifier and pulls it into the graph, which on an edge
- * target is a hard build failure — `@bugsee/util` is tier-0 and reachable from `@bugsee/core`, so this one
- * line broke `next build` for any app whose edge graph touched the SDK at all (reproduced on real Next
- * 15.5: `node:crypto` ← util/sha256 ← core/bugsee-api ← adapter-kit ← nextjs/trace-data). The ignore
- * comments keep the specifier a literal, so no bundler emits a "critical dependency" warning either.
+ * The `node:crypto` import is dynamic AND marked ignore-for-every-bundler-that-honours-comments (Wave
+ * 3b.5). Dynamic alone only defers the LOAD; a bundler still resolves the specifier and pulls it into the
+ * graph, which on an edge target is a hard build failure — `@bugsee/util` is tier-0 and reachable from
+ * `@bugsee/core`, so this one line broke `next build` for any app whose edge graph touched the SDK at all
+ * (reproduced on real Next 15.5: `node:crypto` ← util/sha256 ← core/bugsee-api ← adapter-kit ←
+ * nextjs/trace-data). The ignore comments keep the specifier a literal, so no bundler emits a "critical
+ * dependency" warning either — measured, not assumed: webpack 5.110 is silent because `webpackIgnore`
+ * stops it parsing the import at all.
+ *
+ * KNOWN LIMITATION, and the alternative was MEASURED AND REJECTED. esbuild honours none of these comments,
+ * so a browser- or edge-target esbuild build fails with `Could not resolve "node:crypto"`; the customer's
+ * answer is `external: ['node:crypto']`, which is safe in practice because every secure context has
+ * `crypto.subtle` and the fallback is unreachable there.
+ *
+ * Computing the specifier (`['node','crypto'].join(':')`) hides it from every bundler's static graph and
+ * DOES fix esbuild — verified, along with vite 8 and webpack 5 staying clean. It was still reverted:
+ * **workerd rejects dynamic module specifiers outright** (`ERR_MODULE_DYNAMIC_SPEC: dynamic module
+ * specifiers are unsupported`), which took out the real-workerd Durable Object e2e and would break
+ * `@bugsee/cloudflare` in production. Trading an esbuild build error for a broken supported runtime is a
+ * bad trade.
+ *
+ * The fix with no downside is a per-runtime `exports` condition on `@bugsee/util` — a node entry that
+ * keeps this fallback and a default entry that is WebCrypto-only — so no browser or edge bundle contains
+ * the specifier in any form. That needs a second dist build and is not done here.
+ *
+ * A pure-JS SHA-256 was also considered and rejected: this hashes the whole bundle BODY for the PUT
+ * checksum, and bundles run to megabytes.
  */
 async function digestSha256(bytes: Uint8Array): Promise<Uint8Array> {
   const webcrypto = (globalThis as { crypto?: WebCryptoLike }).crypto;

@@ -27,6 +27,7 @@ import {
   readLiveMtimeMs,
   readOwner,
 } from './liveness';
+import { claimSubtree, releaseClaim } from './recovery-claim';
 
 // Multi-instance recovery coordinator (design: docs/design/multi-instance-disk-coexistence.md, D4). On
 // launch, a live aggregator scans the SIBLING instance subtrees under the shared `dataDir` and recovers each
@@ -34,9 +35,10 @@ import {
 // enqueuing them through THIS instance's upload pipeline, then removes the subtree — but ONLY once it is
 // fully delivered (a failed upload leaves the subtree for a later launch to retry; the backend dedups a
 // duplicate). It reuses the existing per-incident recovery pipeline — only the per-sibling scan is new.
-// (Liveness skip + atomic-rename claim land in slice 4; slice 1 recovers every non-own subtree, correct
-// while no live siblings exist.) Fully defensive: a failure on one subtree goes to onError and never blocks
-// the others or the launch.
+// Both gates are now in place: the liveness skip (only DEAD siblings are touched) and the CLAIM
+// (`recovery-claim.ts`) that stops two simultaneous launches recovering — and re-uploading — the same
+// subtree. Fully defensive: a failure on one subtree goes to onError and never blocks the others or the
+// launch.
 
 /** Subtree names shaped like an instance id (`<pid>-<threadId>-<nonce>`) — avoids touching foreign files. */
 const INSTANCE_DIR = /^\d+-\d+-/;
@@ -62,6 +64,8 @@ export interface RecoverInstancesOptions {
   now?: () => number;
   /** How long an alive-pid subtree may be heartbeat-stale before reclaim. Default DEFAULT_PATIENT_MS. */
   patientMs?: number;
+  /** Process-alive probe seam (advanced / tests). Default `process.kill` via `pidAlive`. */
+  kill?: (pid: number, signal: number) => void;
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
   /**
@@ -109,31 +113,23 @@ async function drainBundles(
   }
 }
 
-async function recoverSubtree(
+/**
+ * Everything after the bundle queues: the injected-queue reconciliation, native crashes, the marker leg,
+ * and the remove-if-fully-drained check.
+ *
+ * Split out of a single per-subtree pass because the bundle legs of EVERY subtree must run before the
+ * marker leg of ANY of them (see {@link recoverInstances}).
+ */
+async function finishSubtree(
   sub: string,
+  markers: ReportMarkerStore,
+  skipReportIds: ReadonlySet<string>,
   options: RecoverInstancesOptions,
   onError: (error: unknown) => void,
 ): Promise<void> {
   const bundleStore = createNodeBundleStore(join(sub, 'pending'));
-  const markers = createNodeReportMarkerStore(join(sub, 'incidents'), onError);
 
-  // SEV1 (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): a
-  // bundle can reach `pending/` and STILL leave its incident's report marker behind — the process can die
-  // after the durable put but before the upload settles, and client.ts's submitReport clears the marker
-  // only once that upload settles. Replaying `pending/` AND rebuilding the same incident from its marker +
-  // chunks reports it twice. The shared core policy (`createMarkerAwareBundleReplay`) reconciles the two
-  // PER INCIDENT, keyed on the report id the durable frame carries: the staged bundle is delivered, its
-  // now-redundant marker retired, and only that id is withheld from the marker leg below. A blob whose
-  // incident has no pending marker — its marker was cleared on a non-ok upload, or it was re-staged here
-  // by an earlier recovery, or it predates the id — is replayed exactly as before, never dropped.
-  const replay = createMarkerAwareBundleReplay({
-    markers,
-    pipeline: options.uploadPipeline,
-    onError,
-  });
-  await drainBundles(bundleStore, replay.pipeline, onError);
-
-  // …and the same reconciliation for a bundle store the caller owns outside this layout (an injected
+  // …the same reconciliation for a bundle store the caller owns outside this layout (an injected
   // `bundleStore`): it is shared by every launch, so it can hold THIS dead sibling's staged bundles while
   // its markers are still here, and the two legs would otherwise report each of those incidents twice with
   // differing payloads. The callback takes only the blobs this sibling's markers cover.
@@ -181,9 +177,7 @@ async function recoverSubtree(
     keepGenerations,
     onError,
     skipReportIds:
-      ownQueueSkip === undefined
-        ? replay.skipReportIds
-        : new Set([...replay.skipReportIds, ...ownQueueSkip]),
+      ownQueueSkip === undefined ? skipReportIds : new Set([...skipReportIds, ...ownQueueSkip]),
   });
 
   // Remove the subtree ONLY when fully drained (no bundles, no report markers, no pending native crash);
@@ -205,6 +199,8 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
   }
   const now = options.now ?? Date.now;
   const patientMs = options.patientMs ?? DEFAULT_PATIENT_MS;
+  /** The dead siblings this launch owns for the duration of the scan. */
+  const claimed: Array<{ sub: string; markers: ReportMarkerStore }> = [];
   for (const id of entries) {
     if (id === options.ownInstanceId || !INSTANCE_DIR.test(id)) {
       continue;
@@ -226,7 +222,7 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       }
       if (
         !isSiblingDead(
-          pidAlive(owner.pid),
+          pidAlive(owner.pid, options.kill),
           readLiveMtimeMs(join(sub, '.live')),
           now(),
           patientMs,
@@ -235,9 +231,84 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       ) {
         continue;
       }
-      await recoverSubtree(sub, options, onError);
+      // Claim it (D4). Without this, two launches starting together both recover the same dead sibling
+      // and both upload every bundle in it. A claim held by another LIVE launch means "leave it alone".
+      if (
+        !claimSubtree({
+          sub,
+          dataDir: options.dataDir,
+          ownInstanceId: options.ownInstanceId,
+          now,
+          patientMs,
+          ...(options.kill !== undefined ? { kill: options.kill } : {}),
+        })
+      ) {
+        continue;
+      }
+      claimed.push({ sub, markers: createNodeReportMarkerStore(join(sub, 'incidents'), onError) });
     } catch (error) {
       onError(error); // a failed subtree is left in place to retry on a later launch
+    }
+  }
+
+  if (claimed.length === 0) {
+    return;
+  }
+
+  // SEV1 (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): a
+  // bundle can reach `pending/` and STILL leave its incident's report marker behind — the process can die
+  // after the durable put but before the upload settles, and client.ts's submitReport clears the marker
+  // only once that upload settles. Replaying `pending/` AND rebuilding the same incident from its marker +
+  // chunks reports it twice. `createMarkerAwareBundleReplay` reconciles the two PER INCIDENT, keyed on the
+  // report id the durable frame carries: the staged bundle is delivered, its now-redundant marker retired,
+  // and that id withheld from the marker leg. A blob whose incident has no pending marker anywhere — its
+  // marker was cleared on a non-ok upload, or it predates the id — is replayed exactly as before.
+  //
+  // The reconciliation is SCAN-WIDE, not per-subtree, because an incident's two halves routinely end up in
+  // DIFFERENT subtrees: recovery re-stages a dead sibling's bundle into the RECOVERER's queue, and if that
+  // upload does not settle the marker stays behind with the original sibling. When the recoverer later dies
+  // too, both are dead siblings — one holding the blob, the other the marker — and a per-subtree view sees
+  // no conflict in either, so the incident is uploaded twice (byte-identical, and still twice). A union
+  // view over every claimed subtree's markers sees the pair, and retires the marker wherever it lives.
+  const markerUnion: Pick<ReportMarkerStore, 'list' | 'remove'> = {
+    list: () => claimed.flatMap((entry) => entry.markers.list()),
+    remove: (reportId: string) => {
+      for (const entry of claimed) {
+        entry.markers.remove(reportId);
+      }
+    },
+  };
+  const replay = createMarkerAwareBundleReplay({
+    markers: markerUnion,
+    pipeline: options.uploadPipeline,
+    onError,
+  });
+
+  try {
+    // PASS 1 — every claimed subtree's durable bundle queue. All of them, before any marker leg: an
+    // incident owned by a blob in a LATER subtree would otherwise be rebuilt from its marker in an
+    // earlier one, and the scan's own directory order would decide whether it duplicated.
+    for (const { sub } of claimed) {
+      try {
+        await drainBundles(createNodeBundleStore(join(sub, 'pending')), replay.pipeline, onError);
+      } catch (error) {
+        onError(error); // a failed subtree is left in place to retry on a later launch
+      }
+    }
+
+    // PASS 2 — the marker legs, each withholding every id pass 1 took ownership of.
+    for (const { sub, markers } of claimed) {
+      try {
+        await finishSubtree(sub, markers, replay.skipReportIds, options, onError);
+      } catch (error) {
+        onError(error);
+      }
+    }
+  } finally {
+    // However the scan ended, including by throwing: a subtree kept for retry must not keep a claim
+    // naming a process that is about to exit.
+    for (const { sub } of claimed) {
+      releaseClaim(sub);
     }
   }
 }

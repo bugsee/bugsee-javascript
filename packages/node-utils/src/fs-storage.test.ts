@@ -9,6 +9,7 @@ import {
   readFileBytes,
   remove,
   writeFileAtomic,
+  writeFileExclusive,
   writeFileSecure,
 } from './fs-storage';
 
@@ -37,6 +38,34 @@ describe('ensureDir', () => {
     const dir = join(root, 'x');
     ensureDir(dir);
     expect(() => ensureDir(dir)).not.toThrow();
+  });
+});
+
+describe('writeFileExclusive', () => {
+  it('creates the file and reports that it won the claim', () => {
+    const file = join(root, 'claim');
+    expect(writeFileExclusive(file, 'first')).toBe(true);
+    expect(readFileBytes(file)).toEqual(new TextEncoder().encode('first'));
+  });
+
+  it('reports LOST without touching an existing file — the whole point of the primitive', () => {
+    const file = join(root, 'claim');
+    writeFileSecure(file, 'first');
+    expect(writeFileExclusive(file, 'second')).toBe(false);
+    // The loser must not clobber the winner's content, or two claimants both believe they hold it.
+    expect(readFileBytes(file)).toEqual(new TextEncoder().encode('first'));
+  });
+
+  it('is owner-only, like every other write here', () => {
+    const file = join(root, 'claim');
+    writeFileExclusive(file, 'x');
+    expect(statSync(file).mode & 0o077).toBe(0);
+  });
+
+  it('THROWS on a real failure rather than reporting a lost claim', () => {
+    // EEXIST means "someone else holds it"; anything else (ENOENT on a missing directory here) is a
+    // genuine fault, and swallowing it as `false` would silently disable claiming altogether.
+    expect(() => writeFileExclusive(join(root, 'nope', 'claim'), 'x')).toThrow();
   });
 });
 

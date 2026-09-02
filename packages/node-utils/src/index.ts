@@ -25,6 +25,7 @@ export {
   readFileBytes,
   remove,
   writeFileAtomic,
+  writeFileExclusive,
   writeFileSecure,
 } from './fs-storage';
 // httpRequest implements core's HttpTransport; the transport contract types live in @bugsee/core.

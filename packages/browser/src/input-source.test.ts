@@ -491,7 +491,10 @@ describe('createBrowserInputSource', () => {
       {
         type: 'keydown',
         tool: InputTool.Key,
+        id: '1',
         key: 'Enter',
+        keyCode: 66, // KEYCODE_ENTER
+        metaState: 0,
         view_tag: 'input',
         target: { type: 'text', selector: 'input' },
       },
@@ -508,20 +511,65 @@ describe('createBrowserInputSource', () => {
       ctrlKey: true,
       shiftKey: true,
     });
-    expect(events[0]).toMatchObject({ key: 'c', ctrl: true, shift: true, tool: InputTool.Key });
-    expect(events[0]).not.toHaveProperty('meta');
-    expect(events[0]).not.toHaveProperty('alt');
+    // Modifiers ride the Android `metaState` BITMASK (KeyEvent.META_CTRL_ON 4096 | META_SHIFT_ON 1),
+    // not four bespoke booleans — both mobile SDKs already emit this field and the viewer reads it.
+    expect(events[0]).toMatchObject({ key: 'c', metaState: 4096 | 1, tool: InputTool.Key });
+    expect(events[0]).not.toHaveProperty('ctrl');
+    expect(events[0]).not.toHaveProperty('shift');
   });
 
-  it('records meta and alt shortcut modifiers', () => {
+  it('emits the Android keyCode for a named key, and KEYCODE_REDACTED for a character key', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    const t = el({ tag: 'body' });
+    target.emit('keydown', { target: t, key: 'Enter' });
+    target.emit('keydown', { target: t, key: 'ArrowDown' });
+    target.emit('keydown', { target: t, key: 'c', ctrlKey: true });
+
+    // Verified against android.jar's real `android.view.KeyEvent`, not from memory.
+    expect(events[0]).toMatchObject({ key: 'Enter', keyCode: 66 });
+    expect(events[1]).toMatchObject({ key: 'ArrowDown', keyCode: 20 });
+    // A character-producing key is REDACTED on the mobile SDKs however it was reached, shortcut or not.
+    expect(events[2]).toMatchObject({ key: 'c', keyCode: -1 });
+  });
+
+  it('gives an unrecognised named key KEYCODE_REDACTED rather than inventing a code', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('keydown', { target: el({ tag: 'body' }), key: 'BrightnessUp' });
+    expect(events[0]).toMatchObject({ key: 'BrightnessUp', keyCode: -1 });
+  });
+
+  it('gives every key entry a gesture id — the viewer types RecordingTouchEvent.id as REQUIRED', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    const t = el({ tag: 'body' });
+    target.emit('keydown', { target: t, key: 'Enter' });
+    target.emit('keydown', { target: t, key: 'Tab' });
+
+    expect(typeof events[0]?.id).toBe('string');
+    expect(events[0]?.id).not.toBe('');
+    // Each press is its own interaction, so ids must not collide the way one gesture's stages share one.
+    expect(events[1]?.id).not.toBe(events[0]?.id);
+  });
+
+  it('reports no modifiers as metaState 0, never as an absent field', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('keydown', { target: el({ tag: 'body' }), key: 'Enter' });
+    expect(events[0]?.metaState).toBe(0);
+  });
+
+  it('records meta and alt shortcut modifiers in the bitmask', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
     const t = el({ tag: 'body' });
     target.emit('keydown', { target: t, key: 'k', metaKey: true });
     target.emit('keydown', { target: t, key: 'ArrowDown', altKey: true });
-    expect(events.map((e) => [e.key, e.meta, e.alt])).toStrictEqual([
-      ['k', true, undefined],
-      ['ArrowDown', undefined, true],
+    // META_META_ON = 65536, META_ALT_ON = 2 (android.view.KeyEvent).
+    expect(events.map((e) => [e.key, e.metaState])).toStrictEqual([
+      ['k', 65536],
+      ['ArrowDown', 2],
     ]);
   });
 

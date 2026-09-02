@@ -846,8 +846,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // recover each DEAD one's pending bundles + detected-incident markers (rebuilt from its capture
   // chunks) through THIS instance's upload pipeline, then remove the fully-delivered subtree. It
   // subsumes the old "recover my own prior generations" — a prior crashed run is just a dead sibling. A
-  // LIVE sibling is skipped by the liveness gate; the atomic-rename claim that would also stop two
-  // SIMULTANEOUS launches recovering one subtree is still open (`recover-instances.ts`).
+  // LIVE sibling is skipped by the liveness gate, and two SIMULTANEOUS launches are serialized by the
+  // recovery claim (`recovery-claim.ts`).
   const scan =
     recoverEnabled && instanceLayout !== undefined && effectiveDataDir !== undefined
       ? (reconcileOwnQueue?: ReconcileOwnQueue): Promise<void> =>

@@ -1,6 +1,7 @@
 import type { InputEventDetail } from '@bugsee/capture';
 import { InputTool, type Interceptor, InterceptorBase, isSensitiveInput } from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
+import { androidKeyCode, androidMetaState } from './keycodes';
 
 // Browser INPUT SOURCE for @bugsee/capture's input provider (the DOM analog of the node lifecycle
 // source). A listenable InterceptorBase: on activate it attaches capture-phase, passive listeners and
@@ -31,13 +32,18 @@ import { componentNameFromElement } from './component-name';
 // DELIBERATELY NOT CAPTURED: `pointermove`. A move stream is orders of magnitude larger than the press
 // stream and would dominate the capture ring; the viewer's gesture classification runs off the first
 // and last event of a gesture, which down/up already provide. Drags therefore render as their two
-// endpoints, not their path. `keyup` likewise: a press is recorded once, on the way down.
+// endpoints, not their path.
+//
+// `keyup` is a DELIBERATE divergence from the mobile SDKs, not an oversight: a press is recorded once, on
+// the way down. Android emits both edges because it has them for free; on the web a keyup doubles the
+// volume of the noisiest stream to say only "the finger came off", which no consumer renders. The stage
+// exists in the vocabulary (`InputEventStage`) if that ever changes.
 //
 // Emitted per interaction:
 //   pointerdown   → { type:'begin', id, x, y, force, majorRadius?, minorRadius?, tool, button, view* }
 //   pointerup     → { type:'end',   …the same, closing the gesture id }
 //   pointercancel → { type:'end',   …the gesture was aborted by the browser }
-//   keydown       → { type:'keydown', tool:Key, key, ctrl?/meta?/alt?/shift?, view* }
+//   keydown       → { type:'keydown', tool:Key, id, key, keyCode, metaState, view* }
 // `type:'keydown'` is Android's InputEventStage.KeyDown (interception/input/InputEventStage.java) —
 // distinct from the pointer 'begin'/'end' stages, so a consumer can tell a key press apart from a
 // pointer-down without inspecting `tool`.
@@ -267,11 +273,13 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
         // collided the two.
         type: 'keydown',
         tool: InputTool.Key,
+        // Each press is its own interaction. The viewer types `RecordingTouchEvent.id` as REQUIRED and
+        // groups by it, so a key entry without one is a malformed member of the stream it shares with
+        // touches — it used to have none at all.
+        id: this.#keyId(),
         key: e.key,
-        ...(e.ctrlKey ? { ctrl: true as const } : {}),
-        ...(e.metaKey ? { meta: true as const } : {}),
-        ...(e.altKey ? { alt: true as const } : {}),
-        ...(e.shiftKey ? { shift: true as const } : {}),
+        keyCode: androidKeyCode(e.key),
+        metaState: androidMetaState(e),
         ...targetFields(desc),
       };
     }),
@@ -281,6 +289,12 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     super();
     this.#target = target;
     this.#mask = mask;
+  }
+
+  /** A fresh id for one key press — it shares the gesture-id sequence so no key entry can collide with
+   *  a pointer gesture in the same stream. */
+  #keyId(): string {
+    return String(this.#nextGestureId++);
   }
 
   /** The gesture id for this stage: reuse the open one, else mint a new one (an `up` whose `down`

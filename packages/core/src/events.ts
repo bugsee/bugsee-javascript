@@ -66,8 +66,8 @@ export type InputTool = (typeof InputTool)[keyof typeof InputTool];
  * `tool`/`view`/`view_id`/`view_tag`, grouped into gestures by `id`, staged by `type`), so a web
  * interaction and a mobile touch render through ONE path.
  *
- * SDK-AHEAD-OF-CONTRACT — `button`, `key`, the four modifier flags and `target` are NOT in the viewer's
- * `RecordingTouchEvent` today. Desktop input has buttons and keyboards that the mobile-shaped contract
+ * SDK-AHEAD-OF-CONTRACT — `button`, `key` and `target` are NOT in the viewer's `RecordingTouchEvent`
+ * today. Desktop input has buttons and keyboards that the mobile-shaped contract
  * has no room for, and JSON consumers ignore unknown keys, so the SDK emits them as an additive
  * superset rather than waiting on backend/viewer adoption. Nothing may be moved OUT of the contract
  * fields into these; they are additions only.
@@ -107,15 +107,31 @@ export interface InputEvent {
   /** Target tag name — the viewer maps `view_tag`→`target.tag`. */
   view_tag?: string;
 
+  /**
+   * Android `KeyEvent` keycode for a key entry, `InputUtils.KEYCODE_REDACTED` (-1) for a
+   * character-producing or unrecognised key. Both mobile SDKs emit this; the web tier fills it from
+   * `@bugsee/browser`'s `keycodes.ts`.
+   */
+  keyCode?: number;
+  /** Android `KeyEvent` modifier bitmask for a key entry (`META_SHIFT_ON` etc.); 0 when none are held. */
+  metaState?: number;
+  /**
+   * Which display the input happened on (Android multi-display). Declared for parity and DELIBERATELY
+   * never set by the web tier: a document belongs to exactly one display and JS cannot observe which,
+   * so emitting a constant 0 on every entry of the noisiest stream would be pure overhead. The native
+   * WebView receiver, which does know, is the tier that can fill it.
+   */
+  displayId?: number;
+
   // ---- SDK-ahead-of-contract (see the note above) ----
   /** Which device button was pressed (DOM `MouseEvent.button`: 0 primary, 1 middle, 2 secondary…). */
   button?: number;
-  /** The key's IDENTITY, and only ever a NAMED key — printable characters are never recorded. */
+  /**
+   * The key's IDENTITY as the DOM names it — only ever a NAMED key, or a character reached as a
+   * shortcut; typed characters are never recorded. Kept ALONGSIDE the mobile-shaped `keyCode` because it
+   * is strictly more informative on the web, where layouts and named keys do not map onto a phone keypad.
+   */
   key?: string;
-  ctrl?: true;
-  meta?: true;
-  alt?: true;
-  shift?: true;
   /** A structural, PII-safe description of the target, richer than `view*` (the browser tier's
    *  `TargetDescriptor`: component name, control type, label, masked flag). */
   target?: Record<string, unknown>;

@@ -469,6 +469,197 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
   });
 
+  // --- the recovery claim (two launches must not recover the same dead subtree at once) ------------
+
+  it('SKIPS a dead subtree another LIVE launch is already recovering', async () => {
+    // Node had no claim at all: two simultaneous launches both recovered the same dead sibling and both
+    // uploaded it. Browser has been serialized by Web Locks since #166; this is node's equivalent.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    writeFileSecure(
+      join(dir, '9-9-dead', '.recovering'),
+      JSON.stringify({ claimerId: `${LIVE_PID}-0-other`, claimedAt: 1 }),
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles).toHaveLength(0); // the other launch owns it
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // …and it is left intact for them
+  });
+
+  it('TAKES OVER a claim whose holder died mid-recovery, rather than stranding the subtree', async () => {
+    // The failure mode a naive claim introduces: a recoverer that crashes half way leaves a claim file
+    // nobody can clear, and the incident is then delivered on no launch ever again.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    writeFileSecure(
+      join(dir, '9-9-dead', '.recovering'),
+      JSON.stringify({ claimerId: `${DEAD_PID}-0-gone`, claimedAt: 1 }),
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['prior crash']);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  it('treats an UNPARSEABLE claim as stale — a corrupt file must not strand a subtree either', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    writeFileSecure(join(dir, '9-9-dead', '.recovering'), 'not json');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['prior crash']);
+  });
+
+  it('treats a well-formed claim naming a NON-instance holder as stale', async () => {
+    // Distinct from the unparseable case above: this file parses, so `readClaim` returns a claim and the
+    // holder-shape check is the only thing standing between it and stranding the subtree for ever. A
+    // mutation that read an unparseable HOLDER as "live" survived until this case existed.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    writeFileSecure(
+      join(dir, '9-9-dead', '.recovering'),
+      JSON.stringify({ claimerId: 'not-an-instance-id', claimedAt: 1 }),
+    );
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['prior crash']);
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
+  });
+
+  it('RELEASES its claim when the subtree survives for retry, so the next launch can take it', async () => {
+    // A kept subtree (undelivered upload) must not keep a claim naming a process that has since exited —
+    // that would be indistinguishable from the strand above until the claimer's pid was reaped.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    const pipe = fakePipeline({ ok: false });
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(existsSync(join(dir, '9-9-dead'))).toBe(true); // kept for retry
+    expect(existsSync(join(dir, '9-9-dead', '.recovering'))).toBe(false); // …and unclaimed
+  });
+
+  it('releases the claim even when recovery THROWS, so a failure cannot strand the subtree', async () => {
+    const dir = mkDir();
+    writeOwner(dir, '9-9-dead', DEAD_PID);
+    // `pending` as a FILE makes the bundle store unlistable → recoverSubtree throws.
+    writeFileSecure(join(dir, '9-9-dead', 'pending'), 'x');
+    const errors: unknown[] = [];
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: fakePipeline(),
+      context,
+      onError: (e) => errors.push(e),
+    });
+
+    expect(errors.length).toBeGreaterThan(0);
+    expect(existsSync(join(dir, '9-9-dead', '.recovering'))).toBe(false);
+  });
+
+  it('two CONCURRENT recoveries of the same dead subtree upload it exactly once', async () => {
+    // The defect itself, rather than its parts: before the claim, both passes drained the same queue and
+    // the collector received the bundle twice. Both claimants name THIS process, so the loser sees a
+    // genuinely live holder — no invented liveness.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('prior crash'));
+    const pipe = fakePipeline();
+    const run = (id: string) =>
+      recoverInstances({
+        dataDir: dir,
+        ownInstanceId: id,
+        uploadPipeline: pipe,
+        context,
+      });
+
+    await Promise.all([run(`${LIVE_PID}-0-a`), run(`${LIVE_PID}-0-b`)]);
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['prior crash']);
+  });
+
+  // --- one incident, two subtrees (the cross-subtree double-upload) --------------------------------
+
+  it('uploads an incident ONCE when its BUNDLE and its MARKER are in different dead subtrees', async () => {
+    // How this arises: a recovery stages a dead sibling's rebuilt bundle into the RECOVERER's queue and
+    // the upload then fails. The marker stays with the original sibling, the blob now lives in the
+    // recoverer's subtree, and when that recoverer later dies both are dead siblings — so the next launch
+    // replays the blob AND rebuilds the same incident from the marker. Byte-identical, and still two.
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-aqueue', 'b1', aBundle('prior crash', 'R1'));
+    seedIncident(dir, '9-9-bmarker', 5, 'R1');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles).toHaveLength(1);
+    expect(pipe.bundles[0]?.request.summary).toBe('prior crash'); // the staged bundle, not a rebuild
+    // BOTH subtrees are gone: the marker in the other subtree was retired by the settled blob. Leaving it
+    // would merely postpone the duplicate to the next launch, when the blob is no longer there to shadow
+    // it — which is the same defect with a delay.
+    expect(existsSync(join(dir, '9-9-aqueue'))).toBe(false);
+    expect(existsSync(join(dir, '9-9-bmarker'))).toBe(false);
+  });
+
+  it('does so in EITHER scan order — the marker subtree sorting first must not decide it', () => {
+    // The same case with the names swapped, so the marker subtree is visited first. Nothing may depend
+    // on directory order: an incident's two halves have no reason to sort conveniently.
+    return (async () => {
+      const dir = mkDir();
+      seedIncident(dir, '9-9-amarker', 5, 'R1');
+      seedPendingBundle(dir, '9-9-bqueue', 'b1', aBundle('prior crash', 'R1'));
+      const pipe = fakePipeline();
+
+      await recoverInstances({
+        dataDir: dir,
+        ownInstanceId: '1-0-live',
+        uploadPipeline: pipe,
+        context,
+      });
+
+      expect(pipe.bundles).toHaveLength(1);
+      expect(pipe.bundles[0]?.request.summary).toBe('prior crash');
+    })();
+  });
+
   it('never touches this instance’s OWN subtree or a foreign (non-instance) entry', async () => {
     const dir = mkDir();
     seedPendingBundle(dir, '1-0-live', 'own', aBundle('own — must not recover'));

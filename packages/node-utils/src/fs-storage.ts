@@ -33,6 +33,27 @@ export function writeFileSecure(file: string, data: Uint8Array | string): void {
 }
 
 /**
+ * Create `file` with `data` ONLY IF IT DOES NOT EXIST — an atomic claim.
+ *
+ * Returns true when this caller created it, false when someone else already had. `O_EXCL` makes the
+ * existence check and the creation one operation in the kernel, which is what makes this usable as a
+ * mutual-exclusion primitive between processes that share a directory: two launches racing to recover the
+ * same dead instance subtree cannot both win. Any error OTHER than `EEXIST` is a genuine fault and is
+ * re-thrown — reporting it as a lost claim would silently turn claiming off.
+ */
+export function writeFileExclusive(file: string, data: Uint8Array | string): boolean {
+  try {
+    writeFileSync(file, data, { mode: FILE_MODE, flag: 'wx' });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
  * Write `data` to `file` ATOMICALLY and owner-only: a temp sibling, fsync'd, then renamed into place.
  *
  * For any file whose DETERMINISTIC final name is treated as proof of a complete artifact — a staged

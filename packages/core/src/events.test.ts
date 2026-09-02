@@ -67,10 +67,8 @@ describe('InputEvent (the input-stream wire shape)', () => {
       timestamp: 1,
       tool: InputTool.Key,
       key: 'Enter',
-      ctrl: true,
-      meta: true,
-      alt: true,
-      shift: true,
+      keyCode: 66,
+      metaState: 4096 | 1,
       button: 2,
       target: { tag: 'button' },
     };
