@@ -49,14 +49,29 @@ function resolveBin(
   return undefined;
 }
 
-const tsxBin = join(pkgRoot, '..', '..', 'node_modules', '.bin', 'tsx');
+/**
+ * The `tsx` this harness runs its node scenarios with.
+ *
+ * THIS package's `node_modules/.bin` comes first, and that order is the whole point: `tsx` is a
+ * devDependency of this package, so under pnpm that is where it is guaranteed to be. The workspace
+ * root's copy is incidental — a hoist, or a leftover from an older install — and looking only there is
+ * how the node target came to report itself "unavailable" on CI, where `git clean -ffdx` removes it.
+ * Nothing failed: the whole node instrumentation suite was skipped and CI stayed green on 133 tests
+ * where a developer ran 195.
+ */
+export function resolveTsx(): string | undefined {
+  return resolveBin([
+    join(pkgRoot, 'node_modules', '.bin', 'tsx'),
+    join(pkgRoot, '..', '..', 'node_modules', '.bin', 'tsx'),
+  ]);
+}
 
 /** All three targets, with availability resolved. */
 export function runtimeTargets(): RuntimeTarget[] {
   return [
     {
       name: 'node',
-      bin: resolveBin([tsxBin], ['--version']),
+      bin: resolveTsx(),
       baseArgs: [],
       entry: entryPath('entry-node.ts'),
       umbrellaEntry: entryPath('entry-umbrella.ts'),

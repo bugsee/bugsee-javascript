@@ -92,6 +92,11 @@ if [ "$RUN_E2E" -eq 1 ]; then
   if [ "$MISSING" -eq 1 ]; then
     FAILED+=("Runtime matrix incomplete")
   else
+    # Playwright ships a downloader, not the browsers. A developer who has run it before already
+    # has them cached, which is precisely why their absence on CI went unnoticed — so this mirrors
+    # the workflow rather than assuming a warm cache.
+    step "Install Playwright's Chromium" pnpm --filter @bugsee/instrumentation-tests exec playwright install chromium
+
     # Same reason the workflow does this: nuxt/sveltekit/astro bind fixed ports, and a Ctrl-C'd
     # run can leave the dev server holding one. The next run then dies with EADDRINUSE and looks
     # like a broken change rather than leftover state.

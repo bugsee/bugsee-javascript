@@ -134,11 +134,28 @@ jobs:
 
       # Fail loudly if a runtime the harness expects is missing, rather than letting
       # runtimes.ts silently skip it and report green.
+      #
+      # ⚠️ These three commands were never the thing that could go missing. What the node target
+      # actually needs is `tsx`, and the harness resolved it only from the WORKSPACE ROOT's
+      # node_modules/.bin — where pnpm does not put a package's own devDependency, and where
+      # `git clean -ffdx` removes the stale copy a developer's machine happens to have. So node
+      # resolved to `undefined` here for as long as this job has existed, its whole instrumentation
+      # suite was skipped, and the run went green on 133 tests where a developer ran 195. The real
+      # guard is now inside the harness (instrumentation.e2e.ts THROWS when node does not resolve);
+      # these version checks remain as a fast, readable failure for a genuinely missing runtime.
       - name: Verify the runtime matrix is complete
         run: |
           node --version
           bun --version
           deno --version
+
+      # Playwright ships a downloader, not the browsers: `pnpm install` does not fetch them, so
+      # `browser.e2e.ts` fails with "Executable doesn't exist at .../chrome-headless-shell".
+      # Scoped to chromium — it is the only engine the browser harness drives. Like the pnpm store,
+      # ~/Library/Caches/ms-playwright survives on this self-hosted machine, so after the first run
+      # this step is a no-op rather than a download.
+      - name: Install Playwright's Chromium
+        run: pnpm --filter @bugsee/instrumentation-tests exec playwright install chromium
 
       # ⚠️ SELF-HOSTED HYGIENE. The nuxt/sveltekit/astro harnesses each boot a real dev
       # server on a FIXED port. On a hosted VM a leaked server died with the VM; here the

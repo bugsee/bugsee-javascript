@@ -16,9 +16,14 @@ import { fileURLToPath } from 'node:url';
 import { type MockCollector, startMockCollector } from '@bugsee/e2e-kit';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OTEL_CHILD_SPAN, OTEL_ROOT_SPAN } from '../app/otel-entry-names';
+import { resolveTsx } from './runtimes';
 
 const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
-const tsxBin = fileURLToPath(new URL('../../../node_modules/.bin/tsx', import.meta.url));
+// Through the harness's own resolver rather than a hardcoded path. The workspace root's `tsx` is
+// incidental; this package's is the one pnpm guarantees, and hardcoding the root is what made this
+// suite fail on CI with `spawn .../node_modules/.bin/tsx ENOENT` while passing on a machine that
+// happened to have a leftover copy there.
+const tsxBin = resolveTsx();
 const entry = fileURLToPath(new URL('../app/otel-entry.ts', import.meta.url));
 
 interface Run {
@@ -29,6 +34,10 @@ interface Run {
 
 function runOtelProcess(collectorUrl: string): Promise<Run> {
   return new Promise<Run>((resolve, reject) => {
+    if (tsxBin === undefined) {
+      reject(new Error('tsx did not resolve; it is a devDependency of this package'));
+      return;
+    }
     const child = spawn(tsxBin, [entry], {
       cwd: pkgRoot,
       env: { ...process.env, BUGSEE_E2E_COLLECTOR: collectorUrl },

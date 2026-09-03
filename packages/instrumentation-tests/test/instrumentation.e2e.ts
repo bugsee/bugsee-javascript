@@ -71,7 +71,18 @@ for (const t of targets) {
   }
 }
 
-// node is the guaranteed target (tsx is a devDep); bun/deno run only where installed.
+// node is not optional, and saying so out loud is the point. It WAS optional in practice: its `tsx`
+// resolved only at the workspace root, so on CI it came back undefined, this suite skipped every node
+// case, and the run went green having tested strictly less — the exact failure the workflow's own
+// comment warns about. A message on stderr was not enough, because nobody reads a green run's stderr.
+if (targets.find((t) => t.name === 'node')?.bin === undefined) {
+  throw new Error(
+    '[e2e] the node runtime did not resolve. tsx is a devDependency of this package, so this is a ' +
+      'broken install or a broken resolver — never a reason to skip the node suite and report green.',
+  );
+}
+
+// bun/deno run only where installed.
 describe.each(
   targets.filter((t): t is RuntimeTarget & { bin: string } => t.bin !== undefined),
 )('instrumentation e2e — $name', (target) => {

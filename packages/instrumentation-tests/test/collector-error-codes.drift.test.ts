@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SERVER_ERROR_CATEGORIES, type ServerErrorCategory } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 // DRIFT TEST. The collector's error-code table is Android-canonical, and this SDK transcribes it by
 // hand. That transcription had no independent reader: the invariants harness copied the SAME Java table
@@ -71,7 +71,15 @@ function parseJava(source: string): {
 }
 
 describe.skipIf(!existsSync(JAVA))('collector error codes match the Android source', () => {
-  const { table, fallback } = parseJava(readFileSync(JAVA, 'utf8'));
+  // Read in `beforeAll`, NOT in the describe body. `skipIf` skips the tests; it does not stop vitest
+  // from EXECUTING the body while collecting them, so reading the file here threw ENOENT on CI and
+  // failed the whole file — the opposite of the skip this was written to do, and it turned a
+  // developer-only drift detector into a red build.
+  let table: Record<number, ServerErrorCategory>;
+  let fallback: string;
+  beforeAll(() => {
+    ({ table, fallback } = parseJava(readFileSync(JAVA, 'utf8')));
+  });
 
   it('parsed a non-trivial table (the parser itself is not silently matching nothing)', () => {
     // Without this, a parser that returned {} would make every comparison below vacuously true — the
