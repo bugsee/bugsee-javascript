@@ -878,6 +878,66 @@ describe('createClient — capture-recovery markers', () => {
     expect(crash.exception.frames[0]?.variables).toEqual({ a: '1' });
   });
 
+  it('calls onReportSite at the boundary of logException, before the crash is built', async () => {
+    // The seam exists for ONE reason: at this instant the caller's catch block is still on the stack,
+    // so a platform with a debugger attached can read the scope the report was made from. A moment
+    // later — inside buildCrashJson, or in any promise callback — those frames are gone.
+    const { uploadPipeline } = fakeUpload();
+    const order: string[] = [];
+    const thrown = new Error('boom');
+    const seen: unknown[] = [];
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onReportSite: (error) => {
+        seen.push(error);
+        order.push('report-site');
+      },
+      enrichFrames: (_error, frames) => {
+        order.push('enrich');
+        return frames;
+      },
+    });
+    await client.logException(thrown);
+    expect(seen).toEqual([thrown]);
+    expect(order).toEqual(['report-site', 'enrich']);
+  });
+
+  it('does not call onReportSite for a report it is going to refuse anyway', async () => {
+    // Pausing the process to look at a scope whose report is then dropped is pure cost.
+    const { uploadPipeline } = fakeUpload();
+    const onReportSite = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onReportSite,
+      captureRateLimit: { limit: 1, windowMs: 60_000 },
+    });
+    await client.logException(new Error('one'));
+    await client.logException(new Error('two')); // over the capture rate limit
+    expect(onReportSite).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a throwing onReportSite lose the report', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      onReportSite: () => {
+        throw new Error('inspector detached');
+      },
+    });
+    const result = await client.logException(new Error('boom'));
+    expect(result.ok).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
   it('stores a span filter for the capture pipeline to read live', async () => {
     // The seam consumed OpenTelemetry spans are scrubbed through — `@bugsee/performance` reads
     // `filters.span` from this same store at both of its transaction funnels. Set here, read there.

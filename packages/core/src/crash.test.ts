@@ -1,5 +1,5 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildCrashJson,
   type CrashJson,
@@ -430,6 +430,27 @@ describe('buildCrashJson — the frame enrichment seam', () => {
         frames.map((f) => (error === err ? { ...f, variables: { orderId: 'null' } } : f)),
     });
     expect(crash?.exception.frames[0]?.variables).toEqual({ orderId: 'null' });
+  });
+
+  it('enriches the frames of a thrown NON-Error too', () => {
+    // A non-Error takes the synthetic path, which used to hand `syntheticFrames` straight to the wire
+    // without ever offering them to the enricher — so `logException('payment failed')` could carry
+    // neither locals nor source context, on the one path where the frames are the CALLER's and a
+    // report-site capture lines up with them exactly.
+    const crash = buildCrashJson('payment failed', {
+      syntheticFrames: [{ function: 'checkout', file: './src/checkout.js', line: 9, column: 3 }],
+      enrichFrames: (error, frames) =>
+        frames.map((f) => ({ ...f, variables: { thrown: String(error) } })),
+    });
+    expect(crash?.exception.frames[0]?.variables).toEqual({ thrown: 'payment failed' });
+    expect(crash?.exception.name).toBe('String'); // and it is still the synthetic exception
+  });
+
+  it('leaves a non-Error with no frames alone rather than inventing an enrichment pass', () => {
+    const enrich = vi.fn((_e: unknown, frames: StackFrame[]) => frames);
+    const crash = buildCrashJson('bare', { enrichFrames: enrich });
+    expect(crash?.exception.frames).toEqual([]);
+    expect(enrich).not.toHaveBeenCalled();
   });
 
   it("runs the enricher for each exception in the CAUSE chain, with that link's own error", () => {

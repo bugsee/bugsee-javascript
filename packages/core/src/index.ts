@@ -93,6 +93,7 @@ export {
   type CrashProvenance,
   composeFrameEnrichers,
   type FrameEnricher,
+  isUserFrame,
   type NativeCrashJson,
   stampCrashProvenance,
 } from './crash';

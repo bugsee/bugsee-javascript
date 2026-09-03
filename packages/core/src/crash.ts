@@ -77,7 +77,7 @@ export interface NativeCrashJson extends CrashProvenance {
  * Add to a parsed stack before it becomes wire frames. Given the error the frames came from, returns the
  * frames to use (typically the same array with `variables` filled in).
  */
-export type FrameEnricher = (error: Error, frames: StackFrame[]) => StackFrame[];
+export type FrameEnricher = (error: unknown, frames: StackFrame[]) => StackFrame[];
 
 /**
  * Chain frame enrichers left to right, each seeing what the previous added.
@@ -175,7 +175,7 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
  * treating every dependency as foreign is a defensible product choice, but a different one, and
  * getting it wrong hides the frame the reader actually needs.
  */
-function isUserFrame(frame: StackFrame): boolean {
+export function isUserFrame(frame: StackFrame): boolean {
   const file = frame.file;
   if (file === undefined) return true; // nothing to judge by; assume the application's
   // `node:internal/...`, `node:events` — the runtime's own modules, never application code.
@@ -242,11 +242,21 @@ function buildException(
  * grouping signature at all (worker/crash/managed/common.py:88), so every occurrence became a new
  * issue instead of another event on an existing one.
  */
-function syntheticException(value: unknown, frames: StackFrame[] = []): CrashException {
+function syntheticException(
+  value: unknown,
+  frames: StackFrame[] = [],
+  enrichFrames?: FrameEnricher,
+): CrashException {
+  // The enricher runs here too. It used to run only on the Error path, so `logException('payment
+  // failed')` shipped frames with neither locals nor source context — on the one path where the frames
+  // are the CALLER's own and a report-site capture lines up with them exactly. Skipped when there are no
+  // frames, so a bare non-Error costs nothing.
+  const enriched =
+    enrichFrames !== undefined && frames.length > 0 ? enrichFrames(value, frames) : frames;
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
   // same way.
-  const exception: CrashException = { name: typeTag(value), frames: frames.map(toCrashFrame) };
+  const exception: CrashException = { name: typeTag(value), frames: enriched.map(toCrashFrame) };
   const reason = renderThrowable(value);
   if (reason !== '') {
     exception.reason = reason;
@@ -289,7 +299,7 @@ export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}):
       exception_type: 'error',
       ndkCrash: false,
       handled: options.handled ?? false,
-      exception: syntheticException(error, options.syntheticFrames),
+      exception: syntheticException(error, options.syntheticFrames, options.enrichFrames),
     };
   }
   const parseStack = options.parseStack ?? parseV8Stack;

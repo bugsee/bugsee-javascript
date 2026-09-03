@@ -1,12 +1,17 @@
+import type { StackFrame } from '@bugsee/core';
 import { REDACTED } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  alignReportSite,
   attachLocals,
   collectScope,
   createFrameEnricher,
   createInspectorSession,
   createLocalVariablesCapture,
   type InspectorSessionLike,
+  type LocalVariablesCapture,
+  type LocalVariablesOptions,
+  type ReportSiteFrame,
   renderValue,
 } from './local-variables';
 
@@ -14,6 +19,7 @@ import {
 function fakeSession(properties: Record<string, readonly unknown[]> = {}) {
   const posts: Array<{ method: string; params?: unknown }> = [];
   let paused: ((message: { params: unknown }) => void) | undefined;
+  let parsed: ((message: { params: unknown }) => void) | undefined;
   const session: InspectorSessionLike = {
     connect: vi.fn(),
     disconnect: vi.fn(),
@@ -27,6 +33,7 @@ function fakeSession(properties: Record<string, readonly unknown[]> = {}) {
     }),
     on: vi.fn((event, handler) => {
       if (event === 'Debugger.paused') paused = handler;
+      if (event === 'Debugger.scriptParsed') parsed = handler;
     }),
   };
   const scope = (objectId: string) => ({ type: 'local', object: { objectId } });
@@ -35,6 +42,8 @@ function fakeSession(properties: Record<string, readonly unknown[]> = {}) {
     posts,
     methods: () => posts.map((p) => p.method),
     fire: (params: unknown) => paused?.({ params }),
+    /** Announce a script, as the real session does on `Debugger.enable`. */
+    parse: (scriptId: string, url: string) => parsed?.({ params: { scriptId, url } }),
     scope,
   };
 }
@@ -508,6 +517,8 @@ describe('createFrameEnricher', () => {
   it('composes lookup + attach into the shape core asks for', () => {
     const enrich = createFrameEnricher({
       lookup: (error) => ((error as Error).message === 'match' ? [{ a: '1' }] : undefined),
+      captureReportSite: () => {},
+      takeReportSite: () => undefined,
       stop: () => {},
     });
     expect(enrich(new Error('match'), [{ file: 'a.js', line: 1 }])).toEqual([
@@ -516,8 +527,857 @@ describe('createFrameEnricher', () => {
   });
 
   it('returns the frames untouched for an error it has nothing for', () => {
-    const enrich = createFrameEnricher({ lookup: () => undefined, stop: () => {} });
+    const enrich = createFrameEnricher({
+      lookup: () => undefined,
+      captureReportSite: () => {},
+      takeReportSite: () => undefined,
+      stop: () => {},
+    });
     const frames = [{ file: 'a.js', line: 1 }];
     expect(enrich(new Error('other'), frames)).toBe(frames);
+  });
+});
+
+describe('createLocalVariablesCapture — rate limiting caught exceptions', () => {
+  /** A clock whose monotonic time only moves when a test moves it. */
+  function fakeClock() {
+    let now = 0;
+    return {
+      clock: { wallNow: () => 1_000 + now, monotonicNow: () => now },
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  /** A scheduler whose intervals only fire when a test fires them. */
+  function fakeScheduler() {
+    const timers = new Map<number, () => void>();
+    let next = 0;
+    return {
+      scheduler: {
+        setInterval: (callback: () => void) => {
+          next += 1;
+          timers.set(next, callback);
+          return next;
+        },
+        clearInterval: (handle: unknown) => {
+          timers.delete(handle as number);
+        },
+      },
+      live: () => timers.size,
+      tick: () => {
+        for (const run of [...timers.values()]) run();
+      },
+    };
+  }
+
+  const pause = { callFrames: [{ scopeChain: [] }], data: { objectId: 't' } };
+
+  /** Fire `count` exception pauses through the capture. */
+  const storm = (f: ReturnType<typeof fakeSession>, count: number) => {
+    for (let i = 0; i < count; i += 1) f.fire(pause);
+  };
+
+  const states = (f: ReturnType<typeof fakeSession>) =>
+    f.posts
+      .filter((p) => p.method === 'Debugger.setPauseOnExceptions')
+      .map((p) => (p.params as { state: string }).state);
+
+  it('does not rate-limit at all when only uncaught exceptions are captured', () => {
+    // An uncaught exception happens once, at the end of a process. Rate-limiting it could only ever
+    // throw away the one crash the feature exists to explain.
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      maxCaughtPerSecond: 2,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 50);
+    expect(states(f)).toEqual(['uncaught']); // the initial arming post, and nothing since
+    expect(s.live()).toBe(0);
+  });
+
+  it('keeps pausing while the app throws under the limit', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 10,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 10);
+    expect(states(f)).toEqual(['all']);
+    expect(s.live()).toBe(0);
+  });
+
+  it('drops to uncaught-only once the app throws past the limit', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 3,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 4);
+    expect(states(f)).toEqual(['all', 'uncaught']);
+  });
+
+  it('degrades ONCE per storm, however long the storm runs', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 3,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 500);
+    expect(states(f)).toEqual(['all', 'uncaught']);
+    expect(s.live()).toBe(1);
+  });
+
+  it('still captures the locals of the exception that tripped the limit', () => {
+    // The process has already paid for that pause; throwing its locals away would waste it.
+    const f = fakeSession({ s: [{ name: 'orderId', value: { type: 'string', value: 'ord_1' } }] });
+    const s = fakeScheduler();
+    const c = fakeClock();
+    const capture = createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    f.fire({ callFrames: [{ scopeChain: [f.scope('s')] }], data: { objectId: 't1' } });
+    f.fire({ callFrames: [{ scopeChain: [f.scope('s')] }], data: { objectId: 't2' } });
+    expect(states(f)).toEqual(['all', 'uncaught']);
+    const stamps = f.posts.filter((p) => p.method === 'Runtime.callFunctionOn');
+    expect(stamps).toHaveLength(2);
+    const id = /value:'([^']+)'/.exec(
+      String((stamps[1]?.params as { functionDeclaration: string }).functionDeclaration),
+    )?.[1] as string;
+    expect(
+      capture.lookup(
+        Object.defineProperty(new Error('x'), '__bugsee_locals_id__', { value: id }),
+      )?.[0],
+    ).toEqual({ orderId: 'ord_1' });
+  });
+
+  it('restores caught-exception capture once the backoff has elapsed, and stops ticking', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 2);
+    c.advance(4_999);
+    s.tick();
+    expect(states(f)).toEqual(['all', 'uncaught']); // not yet
+    c.advance(1);
+    s.tick();
+    expect(states(f)).toEqual(['all', 'uncaught', 'all']);
+    expect(s.live()).toBe(0); // no timer left running once it has recovered
+  });
+
+  it('backs off exponentially when the storm returns immediately', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 2); // trip 1 → 5s
+    c.advance(5_000);
+    s.tick();
+    storm(f, 2); // trip 2 → 10s
+    c.advance(5_000);
+    s.tick();
+    expect(states(f)).toEqual(['all', 'uncaught', 'all', 'uncaught']); // still held at 5s
+    c.advance(5_000);
+    s.tick();
+    expect(states(f)).toEqual(['all', 'uncaught', 'all', 'uncaught', 'all']);
+  });
+
+  it('resets the backoff when the next storm is a NEW one, an age later', () => {
+    // Without this an app with one burst every few minutes escalates to the day-long ceiling and never
+    // captures a caught exception again — Sentry's limiter has exactly that ratchet.
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 2); // trip 1 → 5s
+    c.advance(5_000);
+    s.tick(); // restored
+    c.advance(60_000); // a quiet minute
+    storm(f, 2); // a NEW storm → base backoff again, not 10s
+    c.advance(5_000);
+    s.tick();
+    expect(states(f)).toEqual(['all', 'uncaught', 'all', 'uncaught', 'all']);
+  });
+
+  it('caps the backoff at a day however many times the storm returns', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    let held = 5_000;
+    for (let trip = 0; trip < 20; trip += 1) {
+      storm(f, 2);
+      c.advance(held);
+      s.tick();
+      held = Math.min(held * 2, 86_400_000);
+    }
+    // 20 doublings from 5s would be 58 days; the cap is what makes the last few restore on schedule.
+    expect(states(f).filter((state) => state === 'all')).toHaveLength(21);
+  });
+
+  it('clears a pending backoff timer on stop', () => {
+    const f = fakeSession();
+    const s = fakeScheduler();
+    const c = fakeClock();
+    const capture = createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      clock: c.clock,
+      scheduler: s.scheduler,
+    });
+    storm(f, 2);
+    expect(s.live()).toBe(1);
+    capture.stop();
+    expect(s.live()).toBe(0);
+  });
+
+  it('degrades to inert, rather than throwing out of launch, on a nonsense rate', () => {
+    const onError = vi.fn();
+    const f = fakeSession();
+    const capture = createLocalVariablesCapture({
+      session: f.session,
+      includeCaught: true,
+      maxCaughtPerSecond: 0,
+      onError,
+    });
+    expect(onError).toHaveBeenCalledWith(expect.any(RangeError));
+    expect(capture.lookup(new Error('x'))).toBeUndefined();
+  });
+});
+
+describe('alignReportSite', () => {
+  // The report site is the CATCH block, so the live stack there overlaps the thrown error's stack from
+  // the catching function downwards. What can be matched across that overlap is FUNCTION NAMES and
+  // nothing else — measured on Node 24 under tsx: the debugger reports TRANSPILED positions
+  // (`lineNumber: 0, columnNumber: 602` for a whole file on one line) while `Error.stack` has already
+  // been rewritten by source maps back to the original. Any application with source maps — which is
+  // most of them — therefore has two irreconcilable vocabularies for `file` and `line`, and only the
+  // function name survives both.
+  const frame = (fn: string | undefined): StackFrame =>
+    fn === undefined ? { file: './src/x.js' } : { function: fn, file: './src/x.js' };
+  const live = (fn: string, locals: Record<string, string>) => ({
+    function: fn,
+    file: './dist/bundle.js',
+    locals,
+  });
+
+  it('anchors on the longest run of matching frames and attaches from there down', () => {
+    const result = alignReportSite(
+      [live('checkout', { orderId: 'ord_1' }), live('handler', { req: 'Object' })],
+      [frame('risky'), frame('checkout'), frame('handler')],
+    );
+    expect(result[0]?.variables).toBeUndefined(); // above the catch — not knowable from the report site
+    expect(result[1]?.variables).toEqual({ orderId: 'ord_1' });
+    expect(result[2]?.variables).toEqual({ req: 'Object' });
+  });
+
+  it('matches across a bundle boundary, where neither file nor line can agree', () => {
+    // The live frames say `./dist/bundle.js`; the error's frames say `./src/checkout.ts`. Requiring
+    // either to agree would switch this feature off for every application that ships source maps.
+    const result = alignReportSite(
+      [live('checkout', { orderId: 'ord_1' }), live('handler', { req: 'Object' })],
+      [
+        { function: 'checkout', file: './src/checkout.ts', line: 9 },
+        { function: 'handler', file: './src/api.ts', line: 4 },
+      ],
+    );
+    expect(result[0]?.variables).toEqual({ orderId: 'ord_1' });
+  });
+
+  it('accepts V8’s receiver-qualified name against the debugger’s bare one', () => {
+    // `ModuleJob.run` in a stack string is `run` in a call frame. Measured, on the real bottom frames of
+    // a real report-site pause.
+    const result = alignReportSite(
+      [live('checkout', { a: '1' }), live('run', { b: '2' })],
+      [frame('checkout'), frame('ModuleJob.run')],
+    );
+    expect(result[1]?.variables).toEqual({ b: '2' });
+  });
+
+  it('treats the two vocabularies for an anonymous frame as the same frame', () => {
+    // A module top level is `Object.<anonymous>` in a stack string and `''` in a call frame.
+    const result = alignReportSite(
+      [live('main', { a: '1' }), live('', { config: 'Object' })],
+      [frame('main'), frame('Object.<anonymous>')],
+    );
+    expect(result[1]?.variables).toEqual({ config: 'Object' });
+  });
+
+  it('attaches NOTHING when nothing corresponds', () => {
+    // An error thrown in an earlier tick and reported from an unrelated callback. Stamping this scope
+    // onto those frames would be a confident lie, which is worse than the absence it replaces.
+    const frames = [frame('load'), frame('tick')];
+    expect(alignReportSite([live('respond', { status: '500' })], frames)).toBe(frames);
+  });
+
+  it('refuses a run of one — a single name in common is a coincidence, not an alignment', () => {
+    const frames = [frame('checkout'), frame('somethingElse')];
+    expect(alignReportSite([live('checkout', { a: '1' }), live('other', { b: '2' })], frames)).toBe(
+      frames,
+    );
+  });
+
+  it('stops at the first frame that stops corresponding', () => {
+    const result = alignReportSite(
+      [live('checkout', { a: '1' }), live('handler', { b: '2' }), live('elsewhere', { c: '3' })],
+      [frame('checkout'), frame('handler'), frame('serve')],
+    );
+    expect(result[1]?.variables).toEqual({ b: '2' });
+    expect(result[2]?.variables).toBeUndefined();
+  });
+
+  it('prefers the longest run when a name repeats', () => {
+    const result = alignReportSite(
+      [
+        live('retry', { at: 'live-0' }),
+        live('retry', { at: 'live-1' }),
+        live('root', { at: 'live-2' }),
+      ],
+      [frame('retry'), frame('retry'), frame('root')],
+    );
+    expect(result.map((f) => f.variables?.at)).toEqual(['live-0', 'live-1', 'live-2']);
+  });
+
+  it('takes the LONGEST run, not the first one it finds', () => {
+    // A short coincidental match near the top would otherwise win over the real overlap further down,
+    // and every scope would land two frames from where it belongs.
+    const result = alignReportSite(
+      [
+        live('a', { n: '0' }),
+        live('b', { n: '1' }),
+        live('p', { n: '2' }),
+        live('q', { n: '3' }),
+        live('r', { n: '4' }),
+      ],
+      [frame('a'), frame('b'), frame('z'), frame('p'), frame('q'), frame('r')],
+    );
+    expect(result.map((f) => f.variables?.n)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      '2',
+      '3',
+      '4',
+    ]);
+  });
+
+  it('never overwrites locals already captured at the THROW site', () => {
+    // Those are strictly better: the scope as it was when the value was thrown, not as it is several
+    // frames and some unwinding later.
+    const frames = [
+      { ...frame('checkout'), variables: { at: 'throw' } },
+      { ...frame('handler'), variables: { at: 'throw' } },
+    ];
+    const result = alignReportSite(
+      [live('checkout', { at: 'report' }), live('handler', { at: 'report' })],
+      frames,
+    );
+    expect(result[0]?.variables).toEqual({ at: 'throw' });
+  });
+
+  it('leaves a frame alone when the live scope was empty', () => {
+    const result = alignReportSite(
+      [live('checkout', {}), live('handler', { b: '2' })],
+      [frame('checkout'), frame('handler')],
+    );
+    expect(result[0]?.variables).toBeUndefined();
+    expect(result[1]?.variables).toEqual({ b: '2' });
+  });
+
+  it('returns the same array when there is no live capture to attach', () => {
+    const frames = [frame('checkout')];
+    expect(alignReportSite([], frames)).toBe(frames);
+  });
+});
+
+interface LiveFrame {
+  fn: string;
+  scriptId: string;
+  line: number;
+  scope?: string;
+}
+
+/** A `Debugger.paused` payload, in the shape the real inspector sends (0-based line, no `url`). */
+const paused = (frames: readonly LiveFrame[], reason = 'other') => ({
+  reason,
+  callFrames: frames.map((f) => ({
+    functionName: f.fn,
+    location: { scriptId: f.scriptId, lineNumber: f.line - 1, columnNumber: 0 },
+    scopeChain: f.scope === undefined ? [] : [{ type: 'local', object: { objectId: f.scope } }],
+  })),
+});
+
+/**
+ * A session that answers `Debugger.pause` by dispatching a pause SYNCHRONOUSLY, inside the very post
+ * that asked for it — measured on Node 24, and the property the whole feature rests on.
+ */
+function reportSiteSession(
+  properties: Record<string, readonly unknown[]> = {},
+  options: Partial<LocalVariablesOptions> = {},
+  throwOn: readonly string[] = [],
+  propertiesError = false,
+) {
+  let pauseParams: unknown;
+  const posts: Array<{ method: string; params?: unknown }> = [];
+  let onPaused: ((m: { params: unknown }) => void) | undefined;
+  let onParsed: ((m: { params: unknown }) => void) | undefined;
+  const session: InspectorSessionLike = {
+    connect: () => {},
+    disconnect: () => {},
+    post: (method, params, callback) => {
+      posts.push({ method, params });
+      if (throwOn.includes(method)) throw new Error(`${method} failed`);
+      if (method === 'Debugger.pause' && pauseParams !== undefined) {
+        onPaused?.({ params: pauseParams });
+      }
+      if (method === 'Runtime.getProperties' && callback !== undefined) {
+        if (propertiesError) {
+          callback(new Error('detached'));
+          return;
+        }
+        callback(null, { result: properties[(params as { objectId: string }).objectId] ?? [] });
+      }
+    },
+    on: (event, handler) => {
+      if (event === 'Debugger.paused') onPaused = handler;
+      if (event === 'Debugger.scriptParsed') onParsed = handler;
+    },
+  };
+  const capture = createLocalVariablesCapture({ session, ...options });
+  return {
+    capture,
+    posts,
+    session,
+    methods: () => posts.map((p) => p.method),
+    parse: (scriptId: string, url: string) => onParsed?.({ params: { scriptId, url } }),
+    fire: (params: unknown) => onPaused?.({ params }),
+    /** What the next `Debugger.pause` will report. */
+    pauseWith: (frames: readonly LiveFrame[]) => {
+      pauseParams = paused(frames);
+    },
+    /** As {@link pauseWith}, but with the payload given verbatim (to forge a different `reason`). */
+    pauseWithRaw: (params: unknown) => {
+      pauseParams = params;
+    },
+  };
+}
+
+describe('createLocalVariablesCapture — report-site capture', () => {
+  it('listens for scriptParsed BEFORE enabling the debugger', () => {
+    // `Debugger.enable` REPLAYS a scriptParsed for every script already parsed, synchronously, inside
+    // that very post. Registering the listener afterwards therefore misses the entire program — which is
+    // every script that matters, since the application was loaded before the SDK launched. The symptom
+    // is not an error: report-site capture simply returns nothing, for ever.
+    const order: string[] = [];
+    const session: InspectorSessionLike = {
+      connect: () => order.push('connect'),
+      disconnect: () => {},
+      post: (method) => order.push(`post:${method}`),
+      on: (event) => order.push(`on:${event}`),
+    };
+    createLocalVariablesCapture({ session });
+    expect(order.indexOf('on:Debugger.scriptParsed')).toBeGreaterThan(order.indexOf('connect'));
+    expect(order.indexOf('on:Debugger.scriptParsed')).toBeLessThan(
+      order.indexOf('post:Debugger.enable'),
+    );
+  });
+
+  it('pauses the process on demand and reads the scope the report was made from', () => {
+    const f = fakeSession({ s0: [{ name: 'orderId', value: { type: 'string', value: 'ord_1' } }] });
+    const capture = createLocalVariablesCapture({ session: f.session });
+    f.parse('1', 'file:///app/src/checkout.js');
+    const err = new Error('boom');
+    f.session.post = ((method: string, params?: unknown, cb?: unknown) => {
+      (f.posts as Array<{ method: string; params?: unknown }>).push({ method, params });
+      if (method === 'Debugger.pause') {
+        // The real session dispatches the pause synchronously, inside this very call — measured on
+        // Node 24. It is the whole reason a report-site capture is possible at all.
+        f.fire(paused([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's0' }]));
+      }
+      if (method === 'Runtime.getProperties') {
+        (cb as (e: null, r: unknown) => void)(null, {
+          result: [{ name: 'orderId', value: { type: 'string', value: 'ord_1' } }],
+        });
+      }
+    }) as InspectorSessionLike['post'];
+    capture.captureReportSite(err);
+    expect(f.methods()).toContain('Debugger.pause');
+    expect(f.methods()).toContain('Debugger.resume'); // never leave the app stopped
+    const frames = capture.takeReportSite(err);
+    expect(frames).toEqual([
+      {
+        function: 'checkout',
+        file: '/app/src/checkout.js',
+        line: 21,
+        column: 1,
+        locals: { orderId: 'ord_1' }, // a top-level string renders bare; quoting is a preview rule
+      },
+    ]);
+  });
+
+  it('skips the SDK’s own frames and the runtime’s, which sit above the application every time', () => {
+    const f = reportSiteSession({
+      s1: [{ name: 'orderId', value: { type: 'string', value: 'ord_1' } }],
+    });
+    f.parse('9', 'file:///app/node_modules/@bugsee/core/dist/index.js');
+    f.parse('8', 'node:internal/process/task_queues');
+    f.parse('1', 'file:///app/src/checkout.js');
+    const err = new Error('boom');
+    f.pauseWith([
+      { fn: 'logException', scriptId: '9', line: 700, scope: 's9' },
+      { fn: 'processTicks', scriptId: '8', line: 95, scope: 's8' },
+      { fn: 'checkout', scriptId: '1', line: 21, scope: 's1' },
+    ]);
+    f.capture.captureReportSite(err);
+    expect(f.capture.takeReportSite(err)?.map((frame) => frame.function)).toEqual(['checkout']);
+    // and it never even asked for the scopes it was going to discard
+    expect(
+      f.posts
+        .filter((p) => p.method === 'Runtime.getProperties')
+        .map((p) => (p.params as { objectId: string }).objectId),
+    ).toEqual(['s1']);
+  });
+
+  it('honours maxFrames over the application frames that remain', () => {
+    const f = reportSiteSession({}, { maxFrames: 2 });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([
+      { fn: 'one', scriptId: '1', line: 1, scope: 'x' },
+      { fn: 'two', scriptId: '1', line: 2, scope: 'x' },
+      { fn: 'three', scriptId: '1', line: 3, scope: 'x' },
+    ]);
+    f.capture.captureReportSite(err);
+    expect(f.capture.takeReportSite(err)).toHaveLength(2);
+  });
+
+  it('is consumed once — a second read gets nothing', () => {
+    // Otherwise a later UNCAUGHT crash of the same object would be stamped with a scope captured back
+    // when it was merely logged, which describes a moment that has long passed.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's1' }]);
+    f.capture.captureReportSite(err);
+    expect(f.capture.takeReportSite(err)).toBeDefined();
+    expect(f.capture.takeReportSite(err)).toBeUndefined();
+  });
+
+  it('hands the capture only to the value it was taken for', () => {
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's1' }]);
+    f.capture.captureReportSite(err);
+    expect(f.capture.takeReportSite(new Error('other'))).toBeUndefined();
+  });
+
+  it('does not pause a stopped capture', () => {
+    const f = reportSiteSession({});
+    f.capture.stop();
+    const before = f.posts.length;
+    f.capture.captureReportSite(new Error('boom'));
+    expect(f.posts.slice(before).map((p) => p.method)).not.toContain('Debugger.pause');
+  });
+
+  it('can be switched off while throw-site capture stays on', () => {
+    const f = reportSiteSession({}, { reportSite: false });
+    f.capture.captureReportSite(new Error('boom'));
+    expect(f.methods()).not.toContain('Debugger.pause');
+  });
+
+  it('reports a failure to pause instead of throwing into the caller’s catch block', () => {
+    const onError = vi.fn();
+    const f = reportSiteSession({}, { onError }, ['Debugger.pause']);
+    expect(() => f.capture.captureReportSite(new Error('boom'))).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('still takes the THROW-site path for a real exception pause', () => {
+    // The two pauses arrive through the same listener and are told apart by `reason`. Mixing them up
+    // would stamp a thrown object with a scope that has nothing to do with it.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    f.fire({
+      ...paused([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's1' }], 'exception'),
+      data: { objectId: 'thrown-1' },
+    });
+    expect(f.methods()).toContain('Runtime.callFunctionOn'); // stamped, i.e. the throw-site path
+    expect(f.capture.takeReportSite(new Error('x'))).toBeUndefined();
+  });
+
+  it('resumes and captures nothing when the pause reports no frames at all', () => {
+    const f = reportSiteSession({});
+    const err = new Error('boom');
+    f.pauseWith([]);
+    f.capture.captureReportSite(err);
+    expect(f.capture.takeReportSite(err)).toBeUndefined();
+    expect(f.methods()).toContain('Debugger.resume');
+  });
+
+  it('keeps the frame, without its scope, when the runtime refuses to describe it', () => {
+    // The frame still carries its NAME, which is what alignment matches on — dropping it would shift
+    // every frame below it onto the wrong scope, to avoid reporting one empty one.
+    const onError = vi.fn();
+    const f = reportSiteSession({}, { onError }, [], true);
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([
+      { fn: 'checkout', scriptId: '1', line: 21, scope: 's1' },
+      { fn: 'handler', scriptId: '1', line: 40, scope: 's2' },
+    ]);
+    f.capture.captureReportSite(err);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(f.capture.takeReportSite(err)).toEqual([
+      { function: 'checkout', file: '/app/src/a.js', line: 21, column: 1, locals: {} },
+      { function: 'handler', file: '/app/src/a.js', line: 40, column: 1, locals: {} },
+    ]);
+    expect(f.methods()).toContain('Debugger.resume');
+  });
+
+  it('reports a THROWING inspector at the report site and still resumes', () => {
+    const onError = vi.fn();
+    const f = reportSiteSession({}, { onError }, ['Runtime.getProperties']);
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's1' }]);
+    expect(() => f.capture.captureReportSite(err)).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(f.methods()).toContain('Debugger.resume'); // never leave the application stopped
+  });
+
+  it('does not mistake an exception that lands DURING the capture window for the report site', () => {
+    // With `includeCaught` on, any throw between asking for the pause and getting it arrives through
+    // this same listener. Telling them apart by `awaitingReportSite` alone is not enough: that flag is
+    // set at exactly the moment such a throw is most likely, and reading the exception's stack as the
+    // report site would both capture the wrong frames AND skip stamping the thrown object, losing the
+    // throw-site locals entirely.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWithRaw({
+      ...paused([{ fn: 'somethingElse', scriptId: '1', line: 3, scope: 's1' }], 'exception'),
+      data: { objectId: 'thrown-1' },
+    });
+    f.capture.captureReportSite(err);
+    expect(f.methods()).toContain('Runtime.callFunctionOn'); // the throw-site path ran
+    expect(f.capture.takeReportSite(err)).toBeUndefined(); // and nothing was taken for the report
+  });
+
+  it('captures a frame with no local scope as a named, empty one', () => {
+    // A frame the runtime reports no local scope for (a native or fully-optimised one) still holds its
+    // POSITION in the stack. Recording it empty is what keeps the frames below it aligned.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([
+      { fn: 'native', scriptId: '1', line: 2 }, // no scopeChain at all
+      { fn: 'checkout', scriptId: '1', line: 21, scope: 's1' },
+    ]);
+    f.capture.captureReportSite(err);
+    const frames = f.capture.takeReportSite(err);
+    expect(frames?.map((frame) => frame.locals)).toEqual([{}, { a: '1' }]);
+  });
+
+  it('ignores a pause it did not ask for', () => {
+    // Another debugger's `Debugger.pause`. We refuse to attach when one is already present, so this
+    // should not happen — but consuming it would attribute a stranger's stack to our next report.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.fire(paused([{ fn: 'checkout', scriptId: '1', line: 21, scope: 's1' }]));
+    expect(f.capture.takeReportSite(err)).toBeUndefined();
+    expect(f.methods()).toContain('Debugger.resume'); // and it is still resumed
+  });
+
+  it('KEEPS a frame whose script it never saw announced, rather than shifting every frame below it', () => {
+    // The captured array is matched positionally against the error's stack. Dropping an entry would
+    // move every frame beneath it up one and attach each scope to its caller — silently, and wrongly.
+    const f = reportSiteSession({ s1: [{ name: 'a', value: { type: 'number', value: 1 } }] });
+    f.parse('1', 'file:///app/src/a.js');
+    const err = new Error('boom');
+    f.pauseWith([
+      { fn: 'mystery', scriptId: 'never-parsed', line: 1, scope: 's0' },
+      { fn: 'checkout', scriptId: '1', line: 21, scope: 's1' },
+    ]);
+    f.capture.captureReportSite(err);
+    const frames = f.capture.takeReportSite(err);
+    expect(frames?.map((frame) => frame.function)).toEqual(['mystery', 'checkout']);
+    expect(frames?.[0]?.file).toBeUndefined(); // unlocatable, and honest about it
+    expect(frames?.[1]?.locals).toEqual({ a: '1' });
+  });
+});
+
+describe('createFrameEnricher — the two captures composed', () => {
+  it('fills the report site in around the throw site, without displacing it', () => {
+    // Both can be live at once (`includeCaught` plus a `logException` in the catch block). The throw
+    // site wins wherever they overlap; the report site reaches the frames below it, which the throw-site
+    // capture stops short of once `maxFrames` runs out.
+    const err = new Error('boom');
+    const capture: LocalVariablesCapture = {
+      lookup: (value) => (value === err ? [{ at: 'throw' }] : undefined),
+      captureReportSite: () => {},
+      takeReportSite: (value): ReportSiteFrame[] | undefined =>
+        value === err
+          ? [
+              {
+                function: 'checkout',
+                file: './src/checkout.js',
+                line: 21,
+                locals: { at: 'report' },
+              },
+              { function: 'handler', file: './src/api.js', line: 4, locals: { req: 'Object' } },
+            ]
+          : undefined,
+      stop: () => {},
+    };
+    const enrich = createFrameEnricher(capture);
+    const result = enrich(err, [
+      { function: 'checkout', file: './src/checkout.js', line: 9 },
+      { function: 'handler', file: './src/api.js', line: 4 },
+    ]);
+    expect(result[0]?.variables).toEqual({ at: 'throw' }); // throw site kept
+    expect(result[1]?.variables).toEqual({ req: 'Object' }); // report site filled in below it
+  });
+
+  it('is a no-op when neither capture has anything for this value', () => {
+    const capture: LocalVariablesCapture = {
+      lookup: () => undefined,
+      captureReportSite: () => {},
+      takeReportSite: () => undefined,
+      stop: () => {},
+    };
+    const frames = [{ function: 'checkout', file: './src/checkout.js', line: 9 }];
+    expect(createFrameEnricher(capture)(new Error('x'), frames)).toBe(frames);
+  });
+});
+
+describe('createLocalVariablesCapture — the inert capture', () => {
+  it('answers every method safely when there is no session to attach to', () => {
+    // Returned on every degradation path (no inspector, a refused session, another debugger present).
+    // It is what runs on a runtime that cannot support the feature, so every method must be callable.
+    const capture = createLocalVariablesCapture();
+    const err = new Error('boom');
+    expect(() => capture.captureReportSite(err)).not.toThrow();
+    expect(capture.takeReportSite(err)).toBeUndefined();
+    expect(capture.lookup(err)).toBeUndefined();
+    expect(() => capture.stop()).not.toThrow();
+  });
+});
+
+describe('createLocalVariablesCapture — the default scheduler', () => {
+  it('recovers on real timers, and unrefs them so a CLI can still exit', () => {
+    // The throttle's recovery tick is the only timer this feature owns. Left ref'd it would hold a
+    // short-lived process open for the whole backoff — up to a day — which is a far worse bug than the
+    // one the throttle exists to prevent.
+    const unref = vi.fn();
+    const setInterval = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockReturnValue({ unref } as unknown as ReturnType<typeof globalThis.setInterval>);
+    const clearInterval = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
+    try {
+      const f = fakeSession();
+      const capture = createLocalVariablesCapture({
+        session: f.session,
+        includeCaught: true,
+        maxCaughtPerSecond: 1,
+      }); // no scheduler injected — the real one
+      f.fire({ callFrames: [{ scopeChain: [] }], data: { objectId: 'a' } });
+      f.fire({ callFrames: [{ scopeChain: [] }], data: { objectId: 'b' } });
+      expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 1_000);
+      expect(unref).toHaveBeenCalled();
+      capture.stop();
+      expect(clearInterval).toHaveBeenCalled();
+    } finally {
+      setInterval.mockRestore();
+      clearInterval.mockRestore();
+    }
+  });
+});
+
+describe('createLocalVariablesCapture — a session that fails only later', () => {
+  it('reports a refused throttle instead of throwing out of the pause handler', () => {
+    // Arming succeeds and the throttle then cannot disarm — a session that died between the two. The
+    // failure belongs in onError; throwing here would escape into whatever the application was doing
+    // when it threw, and leave the process paused.
+    const onError = vi.fn();
+    let armed = false;
+    let onPaused: ((m: { params: unknown }) => void) | undefined;
+    const posts: string[] = [];
+    const session: InspectorSessionLike = {
+      connect: () => {},
+      disconnect: () => {},
+      post: (method) => {
+        posts.push(method);
+        if (method === 'Debugger.setPauseOnExceptions') {
+          if (armed) throw new Error('session gone');
+          armed = true;
+        }
+      },
+      on: (event, handler) => {
+        if (event === 'Debugger.paused') onPaused = handler;
+      },
+    };
+    createLocalVariablesCapture({
+      session,
+      includeCaught: true,
+      maxCaughtPerSecond: 1,
+      onError,
+      scheduler: { setInterval: () => 1, clearInterval: () => {} },
+    });
+    onPaused?.({ params: { callFrames: [], data: { objectId: 'a' } } });
+    expect(() => onPaused?.({ params: { callFrames: [], data: { objectId: 'b' } } })).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(posts).toContain('Debugger.resume');
   });
 });

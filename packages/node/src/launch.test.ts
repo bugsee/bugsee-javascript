@@ -2557,6 +2557,110 @@ describe('launch — local variables (opt-in)', () => {
     launchTracked('tok', baseOptions({ carrier: {} })); // no captureLocalVariables
     expect(inspector.posts).toEqual([]); // the session was never touched
   });
+
+  it('gives the caught-exception throttle THIS launch’s clock and scheduler', () => {
+    // The throttle holds capture back for a backoff measured on the monotonic clock and recovered on a
+    // scheduler tick. Left on the global timers it would be untestable here and, worse, unaffected by a
+    // host that injected its own — the seam exists precisely so a runtime can own its timers.
+    const inspector = fakeInspector();
+    const intervals: Array<() => void> = [];
+    let now = 0;
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier: {},
+        clock: { wallNow: () => 1_000 + now, monotonicNow: () => now },
+        scheduler: {
+          setInterval: (callback: () => void) => intervals.push(callback),
+          clearInterval: () => {},
+        },
+        captureLocalVariables: {
+          session: inspector.session,
+          includeCaught: true,
+          maxCaughtPerSecond: 1,
+        },
+      }),
+    );
+    const states = () =>
+      inspector.posts
+        .filter((p) => p.method === 'Debugger.setPauseOnExceptions')
+        .map((p) => (p.params as { state: string }).state);
+    expect(states()).toEqual(['all']);
+    // Launch arms its own periodic work on this scheduler too (capture-store tick, system traces), so
+    // what is asserted here is the recovery timer this throttle adds ON TOP of those.
+    const before = intervals.length;
+    inspector.fire({ callFrames: [], data: { objectId: 'a' } });
+    inspector.fire({ callFrames: [], data: { objectId: 'b' } });
+    expect(states()).toEqual(['all', 'uncaught']); // throttled, on the injected clock
+    expect(intervals).toHaveLength(before + 1); // recovery armed on the injected scheduler
+    now = 5_000;
+    (intervals[before] as () => void)();
+    expect(states()).toEqual(['all', 'uncaught', 'all']);
+  });
+
+  it('hands the client an onReportSite that reads the live scope at logException', () => {
+    // Wiring only — what a report-site pause collects, and how it lines up with the error's frames, is
+    // pinned in `local-variables.test.ts`. What THIS tier decides is whether the seam is connected at
+    // all, and an unconnected one is silent: the feature would simply capture nothing, for ever.
+    const inspector = fakeInspector();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ carrier: {}, captureLocalVariables: { session: inspector.session } }),
+    );
+    void client.logException(new Error('boom'));
+    expect(inspector.posts.map((p) => p.method)).toContain('Debugger.pause');
+  });
+
+  it('does not pause at all when report-site capture is switched off', () => {
+    const inspector = fakeInspector();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureLocalVariables: { session: inspector.session, reportSite: false },
+      }),
+    );
+    void client.logException(new Error('boom'));
+    expect(inspector.posts.map((p) => p.method)).not.toContain('Debugger.pause');
+  });
+
+  it('lets a seam passed INSIDE the option beat the one launch supplies', () => {
+    // Spread order decides this, and getting it backwards is silent: the caller's clock would be
+    // overwritten by launch's and the option would look accepted while doing nothing. It is the same
+    // hazard that made `captureLocalVariables: false` have to go AFTER `...options` on deno and bun.
+    const inspector = fakeInspector();
+    const intervals: Array<() => void> = [];
+    let ownNow = 0;
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier: {},
+        clock: { wallNow: () => 1_000, monotonicNow: () => 0 }, // launch's: frozen
+        scheduler: {
+          setInterval: (callback: () => void) => intervals.push(callback),
+          clearInterval: () => {},
+        },
+        captureLocalVariables: {
+          session: inspector.session,
+          includeCaught: true,
+          maxCaughtPerSecond: 1,
+          clock: { wallNow: () => 1_000 + ownNow, monotonicNow: () => ownNow }, // the caller's
+        },
+      }),
+    );
+    const states = () =>
+      inspector.posts
+        .filter((p) => p.method === 'Debugger.setPauseOnExceptions')
+        .map((p) => (p.params as { state: string }).state);
+    const before = intervals.length;
+    inspector.fire({ callFrames: [], data: { objectId: 'a' } });
+    inspector.fire({ callFrames: [], data: { objectId: 'b' } });
+    expect(states()).toEqual(['all', 'uncaught']);
+    // Only the CALLER's clock moves. On launch's frozen one the backoff could never elapse.
+    ownNow = 5_000;
+    (intervals[before] as () => void)();
+    expect(states()).toEqual(['all', 'uncaught', 'all']);
+  });
 });
 
 describe('launch — application frame paths', () => {

@@ -643,6 +643,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     options.captureLocalVariables === undefined || options.captureLocalVariables === false
       ? undefined
       : createLocalVariablesCapture({
+          // This launch's timers, BEFORE the caller's object so an explicitly-passed seam still wins.
+          // The caught-exception throttle measures its backoff on the monotonic clock and recovers on a
+          // scheduler tick; left on the global timers it would ignore a host that injected its own.
+          clock,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           ...(typeof options.captureLocalVariables === 'object'
             ? options.captureLocalVariables
             : {}),
@@ -672,6 +677,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const client = createClient({
     isEnabled: resolved.isEnabled,
     ...(enrichFrames !== undefined ? { enrichFrames } : {}),
+    // Called at the boundary of logException, while the caller's catch block is still on the stack —
+    // the one instant at which the scope the report was made FROM can still be read.
+    ...(localVariables !== undefined
+      ? { onReportSite: (error: unknown) => localVariables.captureReportSite(error) }
+      : {}),
     launchOptions: resolved.options,
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,

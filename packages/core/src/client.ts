@@ -225,6 +225,19 @@ export interface CreateClientOptions {
    * LOCAL VARIABLES through. Core defines it and never implements one: the inspector is node-only.
    */
   enrichFrames?: FrameEnricher;
+  /**
+   * Called at the public boundary of {@link BugseeClient.logException}, with the value being reported,
+   * while the CALLER's frames are still on the stack.
+   *
+   * That instant is the whole point. A platform holding a debugger (node's opt-in local-variables
+   * capture) can look at the scope the report was made FROM — the catch block and everything below it —
+   * which no later hook can, because by the time the crash is built those frames have unwound. It runs
+   * after every guard that could refuse the report, so a refused report never pays for a pause.
+   *
+   * Runtime-portable: core defines the seam and never implements one, exactly as it does for
+   * {@link FrameEnricher}.
+   */
+  onReportSite?: (error: unknown) => void;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
@@ -749,6 +762,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       // Storm self-protection: drop beyond the rolling capture rate (§7.7).
       if (!rateLimiter.tryAcquire()) {
         return Promise.resolve({ ok: false });
+      }
+      // The caller's catch block is still on the stack RIGHT HERE and nowhere after here. Isolated: a
+      // platform failing to read the live scope must never cost the report it was decorating.
+      try {
+        options.onReportSite?.(error);
+      } catch (reportSiteError) {
+        onError(reportSiteError);
       }
       const message = error instanceof Error ? error.message : String(error);
       const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
