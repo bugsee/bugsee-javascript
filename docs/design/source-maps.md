@@ -303,3 +303,27 @@ it did introduce was three false claims, and round 4 caught all three:
 - A comment pointing "below" at code that is above it.
 
 Plus the substantive one, now fixed: the dirtiness guarantee was conditional on host git config. See §9.7.
+
+
+### 9.9 Review round 5 (2026-09-06) — functionally clean
+
+The first round to find **no correctness defect, no build-failure path and no security regression**. The
+pinned argv was verified valid on any git (`-c` keys are not validated against a registry, so on a git
+predating `diff.relative` in 2.31 the pin is a silent no-op rather than an error), the hostile-config tests
+were confirmed to be genuinely falsifying and to leak nothing, and the round-3 rename was confirmed real
+this time.
+
+Two accuracy items, both fixed:
+
+- The probe's docstring claimed to pin **the** settings its answer depends on. It pins the two most likely
+  ones; `diff.ignoreSubmodules=all` and the ambient `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` that git
+  sets for every hook also change the answer. `ignoreSubmodules` is deliberately NOT pinned, because a
+  third `-c` would not actually fix it — per-submodule `submodule.<name>.ignore` outranks the diff-level
+  setting. Named in the docstring rather than papered over. Both remaining cases fail toward recording a
+  SHA, never toward breaking a build.
+- The `autoRefreshIndex` test rewrote the mtime to **now**, which only falsifies on a git built with
+  `USE_NSEC`. Without it mtime is compared at SECOND granularity and the whole test body runs inside one
+  second, so the stat would match and the test would have passed with the pin removed — on several Linux
+  distro builds of git, the assertion protecting the CI-checkout hazard was inert. It now uses the epoch,
+  which cannot match at any granularity and cannot be racily-clean. Re-verified by mutation: removing
+  either pin, or flipping `autoRefreshIndex` to `false`, now fails.

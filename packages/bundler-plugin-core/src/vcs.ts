@@ -60,7 +60,8 @@ export const VCS_TIMEOUT_MS = 15_000;
 export const DIRTY_TIMEOUT_MS = 10_000;
 
 /**
- * The dirtiness probe, with the two settings its answer depends on PINNED rather than inherited.
+ * The dirtiness probe, with the two HOST-CONFIG settings most likely to change its answer pinned rather
+ * than inherited. This does NOT make the probe hermetic — see the caveats at the end.
  *
  * The child inherits the ambient environment, so it reads the developer's or the CI runner's
  * `~/.gitconfig`, and two ordinary options there silently change what this function means:
@@ -74,7 +75,19 @@ export const DIRTY_TIMEOUT_MS = 10_000;
  *   whole-repository check the docs promise — and in a monorepo built from one package directory, a
  *   dirty sibling would stop counting.
  *
- * `-c` overrides for the single invocation; nothing about the user's config is changed.
+ * `-c` overrides for the single invocation; nothing about the user's config is changed. They are safe on
+ * any git: `-c` keys are not validated against a registry, so on a git predating `diff.relative` (2.31)
+ * the pin is a silent no-op rather than an error — verified.
+ *
+ * STILL INHERITED, and deliberately not pinned:
+ * - `diff.ignoreSubmodules=all` makes a submodule whose checkout differs from the recorded gitlink read
+ *   CLEAN, so a SHA gets recorded that does not describe the built source. A third `-c` would not
+ *   actually fix it — per-submodule `submodule.<name>.ignore` outranks the diff-level setting — so this
+ *   is named rather than papered over.
+ * - Ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE`. Git sets all three for every hook, so a build
+ *   run from a `pre-commit` hook probes the commit-in-progress index rather than plain `projectRoot`.
+ *
+ * Both are rare, and both fail toward recording a SHA rather than toward breaking a build.
  */
 const GIT_DIRTY_ARGV = [
   '-c',

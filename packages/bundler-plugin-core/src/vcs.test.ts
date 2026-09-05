@@ -678,15 +678,20 @@ describe('isWorkingTreeDirty — against the real git binary', () => {
     // porcelain `git diff` refreshes the index first (the plumbing `diff-index` is the one that
     // needs an explicit `update-index --refresh`), so both of these are clean.
     const dir = initRepo();
-    const now = new Date();
-    utimesSync(join(dir, 'a.txt'), now, now);
+    // A FIXED PAST timestamp, not `new Date()`. Whether git notices a stat change at all depends on
+    // whether it was built with USE_NSEC: without it, mtime is compared at SECOND granularity, and the
+    // whole test body runs inside one second — so "now" would match the recorded stat and this would
+    // pass even with the pin removed. The epoch cannot match at any granularity, and cannot be
+    // racily-clean either (the index's own recorded mtime is untouched).
+    const past = new Date(0);
+    utimesSync(join(dir, 'a.txt'), past, past);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
 
     // …and it holds even with the hostile setting written into the repo's OWN config, which the probe
     // inherits. Without the pinned `-c diff.autoRefreshIndex=true` this is the assertion that fails,
     // and in production it is every CI build losing its commit SHA.
     git(dir, 'config', 'diff.autoRefreshIndex', 'false');
-    utimesSync(join(dir, 'a.txt'), new Date(), new Date());
+    utimesSync(join(dir, 'a.txt'), past, past);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
     git(dir, 'config', '--unset', 'diff.autoRefreshIndex');
 
