@@ -7,6 +7,7 @@ import {
   type UploadSourcemapsResult,
 } from './orchestrate';
 import type { EnvRecord } from './run-cli';
+import { resolveVcsMetadata as defaultResolveVcsMetadata, type VcsMetadata } from './vcs';
 
 /** User-facing options for the Bugsee bundler plugin. */
 export interface BugseePluginOptions {
@@ -34,6 +35,21 @@ export interface BugseePluginOptions {
   failOnError?: boolean;
   /** Where a contained failure is reported. Default: a console warning naming the plugin. */
   onError?: (error: unknown) => void;
+  /**
+   * Capture the build's VCS metadata (commit SHA, branch, repo) via `bugsee-cli vcs-metadata`.
+   * Default `true`.
+   *
+   * The commit is what lets the backend show a frame's ORIGINAL source when the uploaded map carries no
+   * `sourcesContent` — it fetches the file from the repository connected to the app. Capture costs one
+   * short-lived subprocess per build and degrades to nothing at all outside a repository.
+   */
+  vcs?: boolean;
+  /** Explicit commit SHA for this build. Falls back to `BUGSEE_BUILD_COMMIT`. Overrides detection. */
+  commit?: string;
+  /** Report a commit even when the working tree has uncommitted changes. Default `false`. */
+  allowDirtyCommit?: boolean;
+  /** Repository root the VCS resolver inspects. Default `process.cwd()` (the build's own directory). */
+  projectRoot?: string;
 }
 
 export interface ResolvedPluginOptions {
@@ -49,6 +65,14 @@ export interface ResolvedPluginOptions {
   failOnError: boolean;
   /** Failure sink for the contained path. */
   onError?: (error: unknown) => void;
+  /** Whether to capture the build's VCS metadata. Default true. */
+  vcs: boolean;
+  /** Explicit commit SHA override (unvalidated here; `resolveVcsMetadata` is the single validator). */
+  commit: string | undefined;
+  /** Whether a dirty working tree may still report a commit. Default false. */
+  allowDirtyCommit: boolean;
+  /** Repository root the VCS resolver inspects. */
+  projectRoot: string;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
@@ -70,6 +94,12 @@ export function resolvePluginOptions(
     dryRun: options.dryRun ?? false,
     failOnError: options.failOnError ?? false,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    vcs: options.vcs ?? true,
+    // Passed through RAW. `resolveCommitOverride` is the single place a commit value is validated, so a
+    // malformed `BUGSEE_BUILD_COMMIT` is rejected once, in one place, rather than in two that can drift.
+    commit: options.commit ?? env.BUGSEE_BUILD_COMMIT,
+    allowDirtyCommit: options.allowDirtyCommit ?? false,
+    projectRoot: options.projectRoot ?? process.cwd(),
   };
 }
 
@@ -77,7 +107,10 @@ export function resolvePluginOptions(
 export async function runPluginUpload(
   resolved: ResolvedPluginOptions,
   outDir: string,
-  deps: { uploadSourcemaps?: typeof defaultUploadSourcemaps } = {},
+  deps: {
+    uploadSourcemaps?: typeof defaultUploadSourcemaps;
+    resolveVcs?: typeof defaultResolveVcsMetadata;
+  } = {},
 ): Promise<UploadSourcemapsResult | undefined> {
   if (!resolved.enabled) {
     return undefined;
@@ -92,17 +125,21 @@ export async function runPluginUpload(
     return inFlight;
   }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
-  const run = uploadSourcemaps({
-    outDir,
-    appToken: resolved.appToken,
-    appVersion: resolved.appVersion,
-    appBuild: resolved.appBuild,
-    endpoint: resolved.endpoint,
-    deleteMaps: resolved.deleteMaps,
-    dryRun: resolved.dryRun,
-    failOnError: resolved.failOnError,
-    ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
-  });
+  const run = collectVcs(resolved, deps.resolveVcs).then((vcs) =>
+    uploadSourcemaps({
+      outDir,
+      appToken: resolved.appToken,
+      appVersion: resolved.appVersion,
+      appBuild: resolved.appBuild,
+      endpoint: resolved.endpoint,
+      deleteMaps: resolved.deleteMaps,
+      dryRun: resolved.dryRun,
+      failOnError: resolved.failOnError,
+      ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
+      // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".
+      ...(vcs !== undefined ? { vcs } : {}),
+    }),
+  );
   // The ORIGINAL promise is stored, so a joiner sees the same outcome — including the same failure. The
   // cleanup rides a separate, already-handled chain: storing `run.finally(…)` instead would create a
   // DERIVED promise that nobody awaits, and a failed run would surface as an unhandled rejection.
@@ -116,4 +153,26 @@ export async function runPluginUpload(
       runsByDir.delete(outDir);
     });
   return run;
+}
+
+/**
+ * Collect the build's VCS metadata, absorbing every failure.
+ *
+ * A commit SHA is a *nice-to-have* enrichment of a source-map upload; the maps themselves are the point.
+ * So a resolver that threw must not stop the upload, let alone the build.
+ */
+async function collectVcs(
+  resolved: ResolvedPluginOptions,
+  resolveVcs: typeof defaultResolveVcsMetadata = defaultResolveVcsMetadata,
+): Promise<VcsMetadata | undefined> {
+  try {
+    return await resolveVcs({
+      projectRoot: resolved.projectRoot,
+      enabled: resolved.vcs,
+      ...(resolved.commit !== undefined ? { commit: resolved.commit } : {}),
+      allowDirtyCommit: resolved.allowDirtyCommit,
+    });
+  } catch {
+    return undefined;
+  }
 }

@@ -118,3 +118,92 @@ SDK's concern (needs `hermes-compose-source-map` + a preserved bundle id).
 - The exact debug-ID WIRE FORMAT — additive ` debugId=<id>` string suffix now; a structured `debug_meta`/per-frame
   field is a refinement gated on the JS-backend symbolication contract.
 - Tunnel option (proxy uploads through the app origin) — opt-in, hardened, later.
+
+---
+
+## 9. Build VCS metadata — the commit SHA (SM-A4)
+
+Status: **the capture half is BUILT** (`packages/bundler-plugin-core/src/vcs.ts`). The delivery half is
+**designed and blocked on one decision** — see §9.4. Research + build 2026-09-05.
+
+### 9.1 The problem
+
+A remapped JS frame can only show its ORIGINAL source if the uploaded map embeds it in `sourcesContent`.
+When it does not, the worker gives up: `symbolfiles/sourcemap.py::_regenerate_context` reports
+`context_unavailable = 'no_sources_content'` and the frame ships with no source at all.
+
+Measured across the toolchain (2026-09-03): esbuild, Rollup, Vite (including `hidden` modes) and a real
+Next.js production build ALL embed `sourcesContent` by default — all 12 maps in the Next build carried it.
+The exceptions are `tsc --sourceMap` (needs `inlineSources`), bare `terser`, and Rollup's opt-in
+`sourcemapExcludeSources`. Under zstd-9 the sources cost 3.4x, ~337 KB per app release. So: real, uncommon.
+
+**Option B** is to fetch the file from the customer's connected repository when `sourcesContent` is absent.
+Competitively this is the differentiator: Datadog *requires* `sourcesContent`; Sentry expects it and treats
+public-URL fetching as an explicitly discouraged fallback; BugSnag and Rollbar fetch over plain HTTP from
+the path in the map. **Nobody fetches from a connected VCS repo.**
+
+### 9.2 What already exists (research, 2026-09-05)
+
+Almost all of it. The only genuinely missing piece was the commit SHA of a JS build.
+
+| Piece | Where | State |
+|---|---|---|
+| Commit SHA field | appserver `build.vcs.commit_sha` (`models/build.js:232-240`), regex `^[0-9a-fA-F]{7,64}$` | **exists**, sanitized (`build.vcs-helper.js::sanitizeVcs`) and indexed (`{application, 'vcs.commit_sha'}`, partial) |
+| Build record write path | `POST /v2/apps/{token}/builds` → `builds.service.js:793` `vcs: sanitizeVcs(data.vcs)` | **exists** |
+| Canonical VCS resolver | `bugsee-cli vcs-metadata` (`src/cli/vcs_metadata.rs`) | **exists** — GitHub/GitLab/Bitbucket env + `git` fallback; wire-compatible with the Android Gradle plugin's `VcsMetadataResolver` and `sanitizeVcs` |
+| Crash → build → SHA lookup | worker `jobs/issues.py::_lookup_build_vcs` — filters `list_builds` on `environment.app.{version, package_id, build}`, returns the first `vcs.commit_sha` | **exists**, live for AI Insights |
+| Ref preference | worker `ai/insights_source.py::candidate_customer_refs` — a `commit_sha` short-circuits ahead of tags and branches | **exists** |
+| Repo fetch | `ai/insights_source.py::fetch_snippet` + `ai/vcs_auth.py`, driven by `application.vcs` (repo connection, viewer PR #13) | **exists** |
+| Commit SHA on a **symbol/sourcemap** record | — | **does NOT exist** anywhere: not on `SymbolFileSchema`, not in bugsee-cli's `Metadata` (`presigned.rs:41-71` is a closed 5-key struct: `uuid`/`version`/`build`/`hash`/`format`), not on the JS plugin |
+| A JS **build record** | — | **does NOT exist**: no JS tooling registers one |
+
+Note `get_build_by_commit` is appserver-MCP-only (`mcp/tools/build.get-by-commit.js`), has no REST route, and
+is not called by the worker. It is the *reverse* direction (commit → build) and is not the join we need.
+
+### 9.3 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| **D7** | The SHA's home is **`build.vcs.commit_sha`** on a build record — NOT a new field on the symbol record. | It already exists, is validated, indexed, webhook-exposed and consumed. The worker's `_lookup_build_vcs` already performs the join. A symbol-level field would be a new schema in three repos for something the backend already models. |
+| **D8** | **Spawn `bugsee-cli vcs-metadata`; do not reimplement CI/git detection in JS.** | Per D0. The iOS agent and the fastlane plugin were both *deleted* in favour of shelling out to it precisely to end cross-language divergence; a JS copy would be the fourth implementation and the one that drifts. The output is passed through opaquely so a provider added on the backend needs no release here. |
+| **D9** | **A dirty working tree drops `commit_sha` (and `base_sha`) by default.** | The one case the canonical resolver has no notion of. A SHA that does not describe the built source makes the backend display *the wrong lines of code* for a frame — confidently wrong beats nothing. `allowDirtyCommit` opts out. Untracked files are not dirt (they change no committed file, and counting them would disable the feature on most working checkouts). |
+| **D10** | **"Cannot tell" is not "dirty".** Only a definite `git diff --quiet HEAD --` exit 1 drops the SHA. | The most common deployment shape there is — a CI container with no `git` binary and no `.git`, whose SHA came from the provider's env var — reports "unknown", and treating that as dirty would disable the feature exactly where it works best. |
+| **D11** | Validate the caller's `commit` override against the appserver's own regex; ignore a malformed one. | It is the one untrusted, human-typed value. A branch name or `HEAD` would be silently discarded server-side; rejecting it locally makes that visible. Everything from the canonical resolver is trusted as-is. |
+
+### 9.4 What is built, and the one open decision
+
+**Built (SM-A4):** `resolveVcsMetadata` / `isWorkingTreeDirty` / `resolveCommitOverride` in
+`@bugsee/bundler-plugin-core`, plumbed through `resolvePluginOptions` (`vcs`, `commit`, `allowDirtyCommit`,
+`projectRoot`) → `runPluginUpload` → `uploadSourcemaps`, echoed on `UploadSourcemapsResult.vcs`. Verified
+against the real `bugsee-cli` binary and real repositories: a clean checkout yields
+`{commit_sha, branch}`; a dirty one yields `{branch}`.
+
+**Not built — the delivery.** Nothing in the JS pipeline can put the SHA on a build record yet, because
+`bugsee-cli` has no register-only build command:
+
+- `upload build` requires `--artifact` and hard-codes `request_artifact_upload: true` (`cli/upload.rs:245-252`).
+  A JS build has no `.aab`/`.apk`/`.ipa` to ship.
+- `upload build-info` requires at least one sidecar (`cli/upload.rs:160-164`) **and** fails unless the
+  response carries `build_info_upload_endpoint`, which is gated on an org build-info feature flag
+  (`upload/build_info.rs:260-266`).
+- `debug-files upload` — the command the plugin actually runs — carries a closed 5-key metadata struct with
+  nowhere to put VCS data.
+
+Options, in preference order:
+
+1. **A register-only build in `bugsee-cli`** (e.g. `upload build --no-artifact`, or a `register-build`
+   subcommand) taking the payload the Xcode path already builds (`xcode.rs:629-730`), with `vcs` nested and
+   `request_artifact_upload: false` — a shape `build::Params` already supports and documents. The JS plugin
+   then spawns it after a successful sourcemap upload. **No appserver change at all.**
+2. **A `--sidecar vcs.json=…` build-info upload** — uses only existing commands, and
+   `worker/jobs/build_info_bundle.py:22-23` already names `vcs.json` as an anticipated sidecar. Rejected as
+   the primary: the org feature-flag gate makes it fail on most apps.
+3. **`vcs.commit_sha` on the symbol record** (Rust `Metadata` + `SymbolFileSchema` + worker read). Keys off
+   the debug-ID, so it needs no version/build discipline — but it is a new field in three repos, against
+   D7.
+
+**A caveat that applies to option 1 and 2 equally.** The join is `environment.app.{version, package_id,
+build}` → build record. The SDK reports those from `launch()`; the plugin sends `--version`/`--build` and
+defaults them to `0.0.0`/`0`. **The two must agree**, or the lookup finds the wrong build or none. This is
+the same discipline the Gradle plugin has (it reads `versionName`/`versionCode`, which the SDK also
+reports), but on JS nothing enforces it. Worth a build-time warning when the plugin is left on defaults.

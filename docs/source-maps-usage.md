@@ -40,6 +40,38 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 | `deleteMaps` | — | `true` | delete client `.map`s after upload (privacy) |
 | `dryRun` | — | `false` | run the CLI with `--dry-run` (no upload, no delete) |
 | `disabled` | — | `false` | turn the plugin off (e.g. dev builds) |
+| `vcs` | — | `true` | capture the build's commit SHA / branch (see §1.1) |
+| `commit` | `BUGSEE_BUILD_COMMIT` | detected | explicit commit SHA for this build |
+| `allowDirtyCommit` | — | `false` | report a commit even with uncommitted changes |
+| `projectRoot` | — | `process.cwd()` | repository root the VCS detection inspects |
+
+### 1.1 The build's commit SHA
+
+The plugin records which commit the build was made from. This exists for one reason: a source map that does
+**not** embed `sourcesContent` gives the backend no way to show you the original source of a crashing frame.
+With a commit, Bugsee can fetch that file from the repository you connected to the app instead.
+
+Most toolchains embed `sourcesContent` already — esbuild, Rollup, Vite (including their `hidden` modes) and
+Next.js production builds all do it by default. The gap is `tsc --sourceMap` without `inlineSources`, bare
+`terser`, and Rollup's opt-in `sourcemapExcludeSources`.
+
+Detection is delegated to `bugsee-cli vcs-metadata`, the same resolver the Android Gradle plugin and the
+iOS/fastlane agents use, so a Bugsee build looks identical whatever produced it. It reads the CI provider's
+environment (GitHub Actions, GitLab CI, Bitbucket Pipelines) and otherwise falls back to `git`.
+
+**It never fails a build.** No `git`, no repository, no commits yet, a shallow clone, a detached HEAD, a CI
+container with no `.git` at all, or a `bugsee-cli` that is missing or too old — every one of those simply
+means no commit is recorded.
+
+**A dirty working tree drops the commit.** If you build with uncommitted changes to tracked files, the SHA no
+longer describes what was built, and fetching source at it would show you *the wrong lines of code* for a
+frame. That is worse than showing none, so the SHA is omitted (`branch`, `repo` and the rest still ship).
+Untracked files are not counted — they change nothing about any committed file. Pass
+`allowDirtyCommit: true` if you would rather have the approximate answer.
+
+**Overriding.** A build made from an artifact rather than a checkout has no working tree to inspect; pass
+`commit` (or set `BUGSEE_BUILD_COMMIT`) with the SHA. An explicit value skips the dirty check. It must be
+7-64 hex characters — a branch name or tag is ignored rather than sent.
 
 ## 2. Any other target — the universal CLI step (Bun, Deno, tsc/swc, Angular, no-plugin builds)
 

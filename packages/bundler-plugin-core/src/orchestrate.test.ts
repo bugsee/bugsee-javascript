@@ -357,3 +357,44 @@ describe('the DEFAULT failure sink (no onError supplied)', () => {
     expect(onError).toHaveBeenCalledOnce();
   });
 });
+
+describe('uploadSourcemaps — VCS metadata passthrough', () => {
+  const vcs = { commit_sha: 'a'.repeat(40), branch: 'main' };
+
+  it('echoes the supplied VCS metadata on a successful run', async () => {
+    const { run } = fakeRun();
+    const result = await uploadSourcemaps({
+      ...base,
+      run,
+      deleteMapFiles: async () => [],
+      vcs,
+    });
+    expect(result.vcs).toEqual(vcs);
+  });
+
+  it('echoes it on a DRY run too — this is the diagnostic that shows what was captured', async () => {
+    const { run } = fakeRun();
+    const result = await uploadSourcemaps({ ...base, run, dryRun: true, vcs });
+    expect(result.vcs).toEqual(vcs);
+  });
+
+  it('echoes it on the CONTAINED-FAILURE path, so a failed upload still reports what it had', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('cli failed');
+    });
+    const result = await uploadSourcemaps({
+      ...base,
+      run: run as never,
+      onError: () => undefined,
+      vcs,
+    });
+    expect(result.uploaded).toBe(false);
+    expect(result.vcs).toEqual(vcs);
+  });
+
+  it('omits `vcs` from the result when none was supplied', async () => {
+    const { run } = fakeRun();
+    const result = await uploadSourcemaps({ ...base, run, deleteMapFiles: async () => [] });
+    expect('vcs' in result).toBe(false);
+  });
+});

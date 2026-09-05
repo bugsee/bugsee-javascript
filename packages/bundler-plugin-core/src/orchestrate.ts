@@ -4,6 +4,7 @@
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
+import type { VcsMetadata } from './vcs';
 
 /** The `runBugseeCli` shape, injectable for tests. */
 export type RunFn = (args: string[], options: RunBugseeCliOptions) => Promise<SpawnResult>;
@@ -38,12 +39,22 @@ export interface UploadSourcemapsOptions {
   failOnError?: boolean;
   /** Where a contained failure is reported. Default: a console warning naming the plugin. */
   onError?: (error: unknown) => void;
+  /**
+   * The build's VCS metadata, already collected by the caller (SM-A4).
+   *
+   * Data, not policy: collection is the context-gathering layer's job (`resolve.ts`), this layer only
+   * drives `bugsee-cli`. Carried here because this is where it will be handed to the CLI once the
+   * upload wire protocol has a field to put it in — see docs/design/source-maps.md §9.
+   */
+  vcs?: VcsMetadata;
 }
 
 export interface UploadSourcemapsResult {
   injected: boolean;
   uploaded: boolean;
   deletedMaps: string[];
+  /** Echo of the collected VCS metadata; absent when none was captured. */
+  vcs?: VcsMetadata;
 }
 
 /**
@@ -102,6 +113,9 @@ export async function uploadSourcemaps(
   options: UploadSourcemapsOptions,
 ): Promise<UploadSourcemapsResult> {
   const { outDir, appToken, appVersion, appBuild, endpoint, dryRun = false } = options;
+  // Echoed on EVERY exit path, including the failures: what the plugin captured is a fact about the
+  // build, independent of whether the upload that would carry it succeeded.
+  const vcsEcho = options.vcs !== undefined ? { vcs: options.vcs } : {};
   if (appToken === '') {
     throw new Error('uploadSourcemaps: appToken is required');
   }
@@ -127,7 +141,7 @@ export async function uploadSourcemaps(
     // first". That failure aborted the user's build, on every freshly-built output directory, from the one
     // option documented as the SAFE diagnostic.
     if (dryRun) {
-      return { injected: true, uploaded: false, deletedMaps: [] };
+      return { injected: true, uploaded: false, deletedMaps: [], ...vcsEcho };
     }
     await run(
       [
@@ -149,7 +163,7 @@ export async function uploadSourcemaps(
     const deletedMaps = deleteMaps
       ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir)
       : [];
-    return { injected: true, uploaded: true, deletedMaps };
+    return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {
     // A telemetry side effect must not break a production deploy (Wave 7). Reported, never swallowed;
     // `failOnError` is there for teams that would rather the build stopped.
@@ -157,6 +171,6 @@ export async function uploadSourcemaps(
       throw error;
     }
     onError(error);
-    return { injected: false, uploaded: false, deletedMaps: [] };
+    return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
   }
 }

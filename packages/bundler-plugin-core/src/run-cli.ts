@@ -124,7 +124,12 @@ export function resolveBugseeCli(
  */
 const SIGNAL_EXIT_CODE = -1;
 
-const defaultSpawn: SpawnFn = (command, args, options) =>
+/**
+ * The real `node:child_process` adapter. Exported because the VCS dirtiness probe (vcs.ts) shells out to
+ * `git` and must do it through the SAME hardened options as the CLI spawn — never a shell, stdin ignored,
+ * both output streams captured.
+ */
+export const spawnProcess: SpawnFn = (command, args, options) =>
   new Promise<SpawnResult>((resolve, reject) => {
     const child = nodeSpawn(command, args, spawnOptionsFor(options) as never);
     let stdout = '';
@@ -166,7 +171,7 @@ export async function runBugseeCli(
   const isScript = binary.endsWith('.js');
   const command = isScript ? process.execPath : binary;
   const commandArgs = isScript ? [binary, ...args] : args;
-  const spawn = options.spawn ?? defaultSpawn;
+  const spawn = options.spawn ?? spawnProcess;
 
   const childEnv: EnvRecord = { ...env };
   if (options.token !== undefined) {

@@ -114,7 +114,7 @@ describe('runBugseeCli', () => {
   });
 
   it('really spawns via the default child_process wrapper (no injected spawn/env)', async () => {
-    // Exercises the default `process.env` + `defaultSpawn` fallbacks against a trivial real process.
+    // Exercises the default `process.env` + `spawnProcess` fallbacks against a trivial real process.
     const result = await runBugseeCli(['--version'], { resolveBinary: () => process.execPath });
     expect(result.code).toBe(0);
     expect(result.stdout).toMatch(/^v\d+\./); // `node --version` → vX.Y.Z
