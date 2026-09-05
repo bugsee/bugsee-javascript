@@ -269,6 +269,10 @@ describe('a signal-terminated child is a FAILURE, not an exit 0', () => {
     expect(error.code).toBe(-1);
     expect(error.stderr).toContain('partial upload'); // whatever the CLI managed to say is kept
     expect(error.stderr).toContain('SIGKILL');
+    // NAMES THE COMMAND THAT DIED. This adapter is also the one the VCS dirtiness probe runs `git`
+    // through, so a hard-coded "bugsee-cli" here fabricated a line blaming the wrong binary.
+    expect(error.stderr).toContain(`${process.execPath} was terminated by signal SIGKILL`);
+    expect(error.stderr).not.toContain('bugsee-cli was terminated');
   });
 
   it('still reports a clean exit 0 as success — the canary', async () => {

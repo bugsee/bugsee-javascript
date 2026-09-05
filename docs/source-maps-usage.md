@@ -47,9 +47,13 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 
 ### 1.1 The build's commit SHA
 
+> **Status: capture only.** The plugin records the commit, and you can see it (`dryRun` logs what was
+> captured), but **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today
+> costs one short-lived subprocess per build and changes nothing else. See `docs/design/source-maps.md` §9.4.
+
 The plugin records which commit the build was made from. This exists for one reason: a source map that does
 **not** embed `sourcesContent` gives the backend no way to show you the original source of a crashing frame.
-With a commit, Bugsee can fetch that file from the repository you connected to the app instead.
+Once delivery lands, a commit will let Bugsee fetch that file from the repository you connected to the app.
 
 Most toolchains embed `sourcesContent` already — esbuild, Rollup, Vite (including their `hidden` modes) and
 Next.js production builds all do it by default. The gap is `tsc --sourceMap` without `inlineSources`, bare
@@ -65,9 +69,21 @@ means no commit is recorded.
 
 **A dirty working tree drops the commit.** If you build with uncommitted changes to tracked files, the SHA no
 longer describes what was built, and fetching source at it would show you *the wrong lines of code* for a
-frame. That is worse than showing none, so the SHA is omitted (`branch`, `repo` and the rest still ship).
-Untracked files are not counted — they change nothing about any committed file. Pass
-`allowDirtyCommit: true` if you would rather have the approximate answer.
+frame. That is worse than showing none, so the SHA is omitted (`branch`, `repo` and the rest still ship) and
+the reason is printed once. Untracked files are not counted — they change nothing about any committed file.
+
+Two consequences worth knowing, because they make the drop permanent rather than occasional:
+
+- The check runs **after** your build has written its output, and covers the **whole repository**, not just
+  `projectRoot`. So a repo that tracks generated content — a committed `dist/`, a generated `version.ts`, a
+  lockfile the build refreshes — is dirty *because of the build itself*, on every build. In a monorepo, an
+  unrelated dirty package also counts.
+- Pass `allowDirtyCommit: true` if that describes your repo and you would rather have the approximate
+  answer, or commit the generated files before building.
+
+**A known gap.** The check compares your tree against local `HEAD`, but on CI the SHA usually comes from the
+provider's environment. If those are different commits (a checkout of an explicit `ref`, a PR merge commit
+vs the branch head), the tree reads clean and the recorded SHA still is not what was built.
 
 **Overriding.** A build made from an artifact rather than a checkout has no working tree to inspect; pass
 `commit` (or set `BUGSEE_BUILD_COMMIT`) with the SHA. An explicit value skips the dirty check. It must be

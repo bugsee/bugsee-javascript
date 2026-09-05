@@ -207,3 +207,24 @@ build}` → build record. The SDK reports those from `launch()`; the plugin send
 defaults them to `0.0.0`/`0`. **The two must agree**, or the lookup finds the wrong build or none. This is
 the same discipline the Gradle plugin has (it reads `versionName`/`versionCode`, which the SDK also
 reports), but on JS nothing enforces it. Worth a build-time warning when the plugin is left on defaults.
+
+### 9.5 Known limitations (review round 1, 2026-09-05)
+
+Found by the convergent review; each is real, each is documented for users, none is fixed in the capture
+slice because each needs a product decision.
+
+1. **The dirty probe runs after the build wrote its output, and covers the whole repository.** A repo that
+   tracks generated content (a committed `dist/`, a generated `version.ts`, a refreshed lockfile) is dirty
+   *because of the build*, so the SHA is dropped on every build; in a monorepo an unrelated dirty package
+   counts too. Mitigated by `allowDirtyCommit` + docs. A pathspec-scoped diff is not the fix — the source
+   that matters lives across the repo, not under the output dir.
+2. **The gate does not check that the reported SHA is `HEAD`.** `bugsee-cli`'s resolver prefers the CI
+   provider's env vars over git, while the probe diffs against local `HEAD`. When those are different
+   commits the tree reads clean and the SHA still does not describe the build — the same failure class D9
+   exists to prevent. A `git rev-parse HEAD === commit_sha` guard would close it and is cheap; it is not in
+   yet because it would also drop the SHA in legitimate setups that build a different ref on purpose.
+   **Recommend adding it, defaulting to drop-on-mismatch, once delivery lands.**
+3. **Collection is serialized ahead of the upload** (`resolve.ts`), adding up to `VCS_TIMEOUT_MS` +
+   `DIRTY_TIMEOUT_MS` = 25 s worst case before the upload's own budget starts. Sequential rather than
+   concurrent because the delivery step will need the value *before* `debug-files upload` runs. It is now
+   memoized per project root, so an SSR build with several output dirs pays it once.

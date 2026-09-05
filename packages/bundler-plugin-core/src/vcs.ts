@@ -54,10 +54,10 @@ const COMMIT_SHA_RE = /^[0-9a-fA-F]{7,64}$/;
  * worst, and it runs on the critical path of every production build. A network-mounted or enormous
  * repository must cost the build a few seconds and then be given up on, never the upload timeout.
  */
-const VCS_TIMEOUT_MS = 15_000;
+export const VCS_TIMEOUT_MS = 15_000;
 
 /** Wall-clock budget for the `git diff` dirtiness probe, in ms. Same reasoning, smaller job. */
-const DIRTY_TIMEOUT_MS = 10_000;
+export const DIRTY_TIMEOUT_MS = 10_000;
 
 /** `git diff --quiet` reports "there is a difference" as exit 1; 0 is "no difference". */
 const GIT_DIFF_CLEAN = 0;
@@ -102,17 +102,23 @@ export async function isWorkingTreeDirty(
   timeoutMs: number = DIRTY_TIMEOUT_MS,
 ): Promise<boolean | undefined> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // ONE timer for both jobs: it aborts the child (which is what actually kills a hung `git`) and
+  // resolves the race arm that stops US waiting on a spawn that ignores the signal. Two timers left a
+  // pending closure per probe — harmless but accumulating once per rebuild under `--watch`.
+  let onTimeout!: () => void;
+  const timedOut = new Promise<undefined>((resolve) => {
+    onTimeout = () => {
+      controller.abort();
+      // Resolving, not rejecting, keeps the timeout on the same "unknown" path as every other failure.
+      resolve(undefined);
+    };
+  });
+  const timer = setTimeout(onTimeout, timeoutMs);
   timer.unref?.(); // never keep the build's process alive on a dirtiness probe
   try {
     const result = await Promise.race([
       spawn('git', ['diff', '--quiet', 'HEAD', '--'], { cwd: dir, signal: controller.signal }),
-      // The abort is what actually kills the child; this arm only stops US waiting on it. Resolving
-      // (rather than rejecting) keeps the timeout on the same "unknown" path as every other failure.
-      new Promise<undefined>((resolve) => {
-        const t = setTimeout(() => resolve(undefined), timeoutMs);
-        t.unref?.();
-      }),
+      timedOut,
     ]);
     if (result === undefined) {
       return undefined;
@@ -153,6 +159,15 @@ export interface ResolveVcsMetadataOptions {
   run?: RunCli;
   /** Injectable dirtiness probe (default {@link isWorkingTreeDirty}). */
   checkDirty?: (dir: string) => Promise<boolean | undefined>;
+  /**
+   * Where a user-actionable notice goes. Default: silence.
+   *
+   * Only the two cases a user can DO something about are reported — a malformed override they typed, and
+   * a SHA dropped because their tree was dirty. Everything else (no repo, no `git`, an old CLI) is the
+   * ordinary state of a build that simply has no VCS context, and warning about it on every build would
+   * be noise.
+   */
+  onNotice?: (message: string) => void;
 }
 
 /**
@@ -162,11 +177,23 @@ export interface ResolveVcsMetadataOptions {
 export async function resolveVcsMetadata(
   options: ResolveVcsMetadataOptions,
 ): Promise<VcsMetadata | undefined> {
-  if (options.enabled === false) {
-    return undefined;
-  }
   const { projectRoot } = options;
-  const override = resolveCommitOverride(options.commit, options.env ?? process.env);
+  const notice = options.onNotice ?? ((): void => undefined);
+  const env = options.env ?? process.env;
+  const rawCommit = options.commit ?? env.BUGSEE_BUILD_COMMIT;
+  const override = resolveCommitOverride(options.commit, env);
+  if (rawCommit !== undefined && override === undefined) {
+    // The claim that this is "something the build log can say out loud" is only true if it is said.
+    notice(
+      `ignoring the configured commit ${JSON.stringify(rawCommit)}: expected 7-64 hex characters, ` +
+        'so the backend would have discarded it. No commit will be recorded for this build.',
+    );
+  }
+  if (options.enabled === false) {
+    // Detection off still honours a commit the caller stated explicitly: "do not shell out, I will tell
+    // you the SHA myself" is a reasonable reading, and silently discarding it is not.
+    return override !== undefined ? { commit_sha: override } : undefined;
+  }
   const run = options.run ?? runBugseeCli;
 
   const resolved = await runResolver(run, projectRoot);
@@ -192,6 +219,11 @@ export async function resolveVcsMetadata(
       delete metadata.commit_sha;
       // `base_sha` is the same kind of claim about the same tree, so it goes with it.
       delete metadata.base_sha;
+      notice(
+        'the working tree has uncommitted changes to tracked files, so no commit was recorded for ' +
+          'this build (the original source shown for a crash frame would not have matched what was ' +
+          'built). Commit the changes, or pass allowDirtyCommit: true to record it anyway.',
+      );
     }
   }
 
@@ -203,7 +235,8 @@ async function runResolver(run: RunCli, projectRoot: string): Promise<VcsMetadat
   let stdout: string;
   try {
     const result = await run(['vcs-metadata', '--working-dir', projectRoot], {
-      // No app token: `vcs-metadata` performs no network I/O, so it needs no credentials.
+      // No token is PASSED: `vcs-metadata` performs no network I/O, so it needs no credentials. (The
+      // child still inherits the ambient environment, which is the same binary's own anyway.)
       cwd: projectRoot,
       timeoutMs: VCS_TIMEOUT_MS,
     });
@@ -219,8 +252,10 @@ async function runResolver(run: RunCli, projectRoot: string): Promise<VcsMetadat
   } catch {
     return {};
   }
-  // A plain object is the only shape the contract allows. An array is typeof 'object' and would otherwise
-  // spread into numeric keys, so it is excluded explicitly.
+  // A plain object is the only shape the contract allows. The two arms that CHANGE the outcome are the
+  // array (typeof 'object', spreads into numeric keys) and the string (spreads into per-character keys);
+  // `null`/number/boolean spread to `{}` and would be filtered by the emptiness check below anyway, so
+  // they are named here for intent, not for effect — the tests say the same.
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return {};
   }

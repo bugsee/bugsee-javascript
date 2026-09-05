@@ -48,7 +48,7 @@ export interface BugseePluginOptions {
   commit?: string;
   /** Report a commit even when the working tree has uncommitted changes. Default `false`. */
   allowDirtyCommit?: boolean;
-  /** Repository root the VCS resolver inspects. Default `process.cwd()` (the build's own directory). */
+  /** Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. */
   projectRoot?: string;
 }
 
@@ -71,13 +71,33 @@ export interface ResolvedPluginOptions {
   commit: string | undefined;
   /** Whether a dirty working tree may still report a commit. Default false. */
   allowDirtyCommit: boolean;
-  /** Repository root the VCS resolver inspects. */
-  projectRoot: string;
+  /**
+   * Repository root the VCS resolver inspects; `undefined` means "the build's cwd", resolved LAZILY at
+   * collection time.
+   *
+   * Deliberately not defaulted here. This function runs synchronously from `bugseeUnpluginFactory` at
+   * config-evaluation time, outside every containment layer — not in `runPluginUpload`, not in
+   * `uploadSourcemaps`, not gated on `failOnError`. `process.cwd()` THROWS (`ENOENT … uncwd`) when the
+   * process's working directory has been unlinked, which a build script that recreates its own directory
+   * really does, so calling it here would fail the build from a plugin whose whole contract is that it
+   * cannot — and would do so even for a fully disabled plugin.
+   */
+  projectRoot: string | undefined;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
 /** In-flight uploads, keyed by output directory (Wave 7.5). Entries are removed as each run settles. */
 const runsByDir = new Map<string, Promise<UploadSourcemapsResult | undefined>>();
+
+/**
+ * In-flight VCS collections, keyed by project root.
+ *
+ * `writeBundle` fires once per OUTPUT and an SSR build emits several (SvelteKit client+server, Nuxt,
+ * Next), so without this each one forks `bugsee-cli vcs-metadata` AND `git diff` concurrently for an
+ * identical answer. Released on settle rather than cached permanently, so a commit made during a
+ * `--watch` session is picked up by the next rebuild instead of being frozen at session start.
+ */
+const vcsByRoot = new Map<string, Promise<VcsMetadata | undefined>>();
 
 export function resolvePluginOptions(
   options: BugseePluginOptions,
@@ -99,7 +119,7 @@ export function resolvePluginOptions(
     // malformed `BUGSEE_BUILD_COMMIT` is rejected once, in one place, rather than in two that can drift.
     commit: options.commit ?? env.BUGSEE_BUILD_COMMIT,
     allowDirtyCommit: options.allowDirtyCommit ?? false,
-    projectRoot: options.projectRoot ?? process.cwd(),
+    projectRoot: options.projectRoot,
   };
 }
 
@@ -146,6 +166,11 @@ export async function runPluginUpload(
   //
   // `finally`, not `then`: a failed run must free the slot too, or every later build of that directory
   // would be blocked by a corpse.
+  //
+  // ORDERING NOTE: the slot is freed on a chain that settles AFTER a caller awaiting `run` resumes, so a
+  // sequential caller (watch mode) always finds the slot free by its next call. That holds because this
+  // function is `async` and so adds a thenable-adoption tick; making it non-async would reorder the two
+  // and is not the pure refactor it looks like.
   runsByDir.set(outDir, run);
   void run
     .catch(() => undefined)
@@ -165,14 +190,48 @@ async function collectVcs(
   resolved: ResolvedPluginOptions,
   resolveVcs: typeof defaultResolveVcsMetadata = defaultResolveVcsMetadata,
 ): Promise<VcsMetadata | undefined> {
+  if (!resolved.vcs) {
+    // Short-circuited HERE as well as inside the resolver, so a disabled feature resolves no cwd,
+    // spawns nothing and cannot fail for any reason at all.
+    return undefined;
+  }
+  // `process.cwd()` is reached only now — inside the try, on the contained path. See the note on
+  // `ResolvedPluginOptions.projectRoot`.
+  let projectRoot: string;
   try {
-    return await resolveVcs({
-      projectRoot: resolved.projectRoot,
-      enabled: resolved.vcs,
-      ...(resolved.commit !== undefined ? { commit: resolved.commit } : {}),
-      allowDirtyCommit: resolved.allowDirtyCommit,
-    });
+    projectRoot = resolved.projectRoot ?? process.cwd();
   } catch {
     return undefined;
   }
+  const inFlight = vcsByRoot.get(projectRoot);
+  if (inFlight !== undefined) {
+    return inFlight;
+  }
+  const collection = (async (): Promise<VcsMetadata | undefined> => {
+    try {
+      return await resolveVcs({
+        projectRoot,
+        enabled: true,
+        ...(resolved.commit !== undefined ? { commit: resolved.commit } : {}),
+        allowDirtyCommit: resolved.allowDirtyCommit,
+        onNotice: (message: string) => {
+          // Routed to the plugin's own sink so a host can capture it; the default names the plugin,
+          // matching every other diagnostic this package emits.
+          (resolved.onError ?? ((m: unknown) => console.warn(String(m))))(`[bugsee] ${message}`);
+        },
+        // EMPTY on purpose. The env was already consulted by `resolvePluginOptions` above, and letting
+        // the resolver fall back to `process.env` would let an ambient BUGSEE_BUILD_COMMIT defeat an
+        // injected env — the very duplication the note on `commit` says is being avoided.
+        env: {},
+      });
+    } catch {
+      return undefined;
+    }
+  })();
+  vcsByRoot.set(projectRoot, collection);
+  // Already-handled (the IIFE cannot reject), so this frees the slot without creating an orphan.
+  void collection.finally(() => {
+    vcsByRoot.delete(projectRoot);
+  });
+  return collection;
 }

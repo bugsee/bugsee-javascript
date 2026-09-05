@@ -250,6 +250,17 @@ describe('resolvePluginOptions — VCS options', () => {
     expect(resolvePluginOptions({ appToken: 't' }, {}).commit).toBeUndefined();
   });
 
+  it('passes a MALFORMED commit through RAW — validation happens in exactly one place', () => {
+    // resolve.ts documents this: `resolveCommitOverride` is the single validator, so adding a second
+    // check here is the drift the comment forbids. Without this test that mutation survives.
+    expect(resolvePluginOptions({ appToken: 't', commit: 'not-a-sha' }, {}).commit).toBe(
+      'not-a-sha',
+    );
+    expect(resolvePluginOptions({ appToken: 't' }, { BUGSEE_BUILD_COMMIT: 'HEAD' }).commit).toBe(
+      'HEAD',
+    );
+  });
+
   it('does NOT report a commit from a dirty tree unless asked', () => {
     expect(resolvePluginOptions({ appToken: 't' }, {}).allowDirtyCommit).toBe(false);
     expect(
@@ -257,11 +268,21 @@ describe('resolvePluginOptions — VCS options', () => {
     ).toBe(true);
   });
 
-  it('defaults the project root to the build’s working directory', () => {
-    expect(resolvePluginOptions({ appToken: 't' }, {}).projectRoot).toBe(process.cwd());
+  it('keeps projectRoot UNRESOLVED when not given — it must not touch process.cwd() eagerly', () => {
+    // `resolvePluginOptions` runs synchronously from `bugseeUnpluginFactory` at config-evaluation time,
+    // OUTSIDE every containment layer — not in `runPluginUpload`, not in `uploadSourcemaps`, not gated
+    // on `failOnError`. `process.cwd()` THROWS (ENOENT, uncwd) when the process's working directory has
+    // been unlinked, which a build script that recreates its own directory really does. Calling it here
+    // would fail the build from a plugin whose entire contract is that it cannot — and it would do so
+    // even for a fully disabled plugin, since this field was computed before `enabled` is consulted.
+    expect(resolvePluginOptions({ appToken: 't' }, {}).projectRoot).toBeUndefined();
     expect(resolvePluginOptions({ appToken: 't', projectRoot: '/repo' }, {}).projectRoot).toBe(
       '/repo',
     );
+  });
+
+  it('resolves projectRoot for a DISABLED plugin without touching the filesystem either', () => {
+    expect(resolvePluginOptions({}, {}).projectRoot).toBeUndefined();
   });
 });
 
@@ -293,8 +314,22 @@ describe('runPluginUpload — VCS metadata collection', () => {
       enabled: true,
       commit: sha,
       allowDirtyCommit: true,
+      // The env was ALREADY consulted at this layer, so the resolver must not reach for `process.env`
+      // behind the seam — an ambient BUGSEE_BUILD_COMMIT would otherwise defeat an injected env.
+      env: {},
+      onNotice: expect.any(Function),
     });
-    expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({
+    // The FULL bag, exactly — `toMatchObject` is recursively partial, so it would not notice a field
+    // dropped on the way through, which is precisely how the plumbing breaks.
+    expect(uploadSourcemaps.mock.calls[0]?.[0]).toEqual({
+      outDir: '/out-vcs-1',
+      appToken: 't',
+      appVersion: '0.0.0',
+      appBuild: '0',
+      endpoint: undefined,
+      deleteMaps: true,
+      dryRun: false,
+      failOnError: false,
       vcs: { commit_sha: sha, branch: 'main' },
     });
   });
@@ -315,7 +350,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
     expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
   });
 
-  it('passes `enabled: false` through when the plugin user turned VCS off', async () => {
+  it('does not call the resolver AT ALL when the plugin user turned VCS off', async () => {
     const uploadSourcemaps = vi.fn(
       async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
         injected: true,
@@ -328,7 +363,167 @@ describe('runPluginUpload — VCS metadata collection', () => {
     );
     const resolved = resolvePluginOptions({ appToken: 't', vcs: false }, {});
     await runPluginUpload(resolved, '/out-vcs-3', { uploadSourcemaps, resolveVcs });
-    expect(resolveVcs.mock.calls[0]?.[0]).toMatchObject({ enabled: false });
+    // Short-circuited at this layer rather than inside the resolver, so a disabled feature resolves no
+    // cwd, spawns nothing, and has no path on which it could fail.
+    expect(resolveVcs).not.toHaveBeenCalled();
+    expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
+  });
+
+  it('defaults projectRoot to the cwd LAZILY, at collection time rather than construction time', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = vi.fn(
+      async (_o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => undefined,
+    );
+    const resolved = resolvePluginOptions({ appToken: 't' }, {});
+    await runPluginUpload(resolved, '/out-vcs-lazy', { uploadSourcemaps, resolveVcs });
+    expect(resolveVcs.mock.calls[0]?.[0].projectRoot).toBe(process.cwd());
+  });
+
+  it('does NOT resolve the cwd at all when VCS is disabled', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = vi.fn(
+      async (_o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => undefined,
+    );
+    const resolved = resolvePluginOptions({ appToken: 't', vcs: false }, {});
+    await runPluginUpload(resolved, '/out-vcs-off-cwd', { uploadSourcemaps, resolveVcs });
+    expect(resolveVcs).not.toHaveBeenCalled();
+  });
+
+  it('collects the VCS metadata ONCE per project root, not once per output directory', async () => {
+    // `writeBundle` fires per OUTPUT, and an SSR build emits two (SvelteKit client+server, Nuxt, Next).
+    // Without this each one forks `bugsee-cli vcs-metadata` AND `git diff` for an identical answer.
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const resolveVcs = async (_o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
+      calls += 1;
+      await gate;
+      return { commit_sha: sha };
+    };
+    const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/shared-root' }, {});
+    const a = runPluginUpload(resolved, '/out-multi-a', { uploadSourcemaps, resolveVcs });
+    const b = runPluginUpload(resolved, '/out-multi-b', { uploadSourcemaps, resolveVcs });
+    release();
+    await Promise.all([a, b]);
+    expect(calls).toBe(1);
+    // …and BOTH outputs still get the metadata — dedupe must not mean "the second one loses it".
+    expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
+    expect(uploadSourcemaps.mock.calls[1]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
+  });
+
+  it('re-collects on a LATER build of the same root — a commit made mid-watch must be picked up', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    let calls = 0;
+    const resolveVcs = async (_o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
+      calls += 1;
+      return { commit_sha: sha };
+    };
+    const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/watch-root' }, {});
+    await runPluginUpload(resolved, '/out-watch-1', { uploadSourcemaps, resolveVcs });
+    await runPluginUpload(resolved, '/out-watch-2', { uploadSourcemaps, resolveVcs });
+    expect(calls).toBe(2);
+  });
+
+  it('routes a VCS notice to the plugin’s own onError sink, prefixed', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const seen: unknown[] = [];
+    const resolveVcs = async (o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
+      o.onNotice?.('the tree was dirty');
+      return undefined;
+    };
+    const resolved = resolvePluginOptions(
+      { appToken: 't', projectRoot: '/notice-root', onError: (e) => seen.push(e) },
+      {},
+    );
+    await runPluginUpload(resolved, '/out-notice', { uploadSourcemaps, resolveVcs });
+    expect(seen).toEqual(['[bugsee] the tree was dirty']);
+  });
+
+  it('warns on the console when the plugin has no onError sink of its own', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = async (o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
+      o.onNotice?.('no sink configured');
+      return undefined;
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/warn-root' }, {});
+      await runPluginUpload(resolved, '/out-warn', { uploadSourcemaps, resolveVcs });
+      expect(warn).toHaveBeenCalledWith('[bugsee] no sink configured');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('CONTAINS a process.cwd() that throws — an unlinked working directory must not fail the build', async () => {
+    // `process.cwd()` throws ENOENT/uncwd when the directory has been unlinked, which a build script
+    // that removes and recreates its own directory really does. The upload must still run.
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = vi.fn(
+      async (_o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => ({
+        commit_sha: sha,
+      }),
+    );
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    });
+    try {
+      const resolved = resolvePluginOptions({ appToken: 't' }, {});
+      const result = await runPluginUpload(resolved, '/out-uncwd', {
+        uploadSourcemaps,
+        resolveVcs,
+      });
+      expect(result?.uploaded).toBe(true);
+      expect(resolveVcs).not.toHaveBeenCalled();
+      expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
+    } finally {
+      cwd.mockRestore();
+    }
   });
 
   it('never lets a VCS failure break the upload — the maps still ship', async () => {
@@ -353,19 +548,47 @@ describe('runPluginUpload — VCS metadata collection', () => {
 });
 
 describe('runPluginUpload — the real VCS resolver is the default', () => {
-  it('uses resolveVcsMetadata when no seam is injected (here with VCS off, so it forks nothing)', async () => {
-    const uploadSourcemaps = vi.fn(
+  const upload = () =>
+    vi.fn(
       async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
         injected: true,
         uploaded: true,
         deletedMaps: [],
       }),
     );
-    // `vcs: false` short-circuits inside the REAL resolver, so this asserts the default wiring without
-    // spawning a subprocess or depending on this machine's git state.
-    const resolved = resolvePluginOptions({ appToken: 't', vcs: false }, {});
-    await runPluginUpload(resolved, '/out-vcs-default', { uploadSourcemaps });
+
+  it('actually CALLS resolveVcsMetadata when no seam is injected', async () => {
+    const uploadSourcemaps = upload();
+    const sha = 'c'.repeat(40);
+    // The real resolver, exercised end to end with nothing stubbed at this layer. `BUGSEE_CLI_PATH`
+    // points at a binary that fails, so `bugsee-cli vcs-metadata` yields nothing and no network or git
+    // state is involved; the commit can then ONLY have come from the real resolver reading the real
+    // override. Severing the default to `async () => undefined` — the mutation the previous version of
+    // this test could not see — makes the `vcs` key vanish and this fail.
+    const previousCli = process.env.BUGSEE_CLI_PATH;
+    process.env.BUGSEE_CLI_PATH = '/nonexistent/bugsee-cli-that-cannot-run';
+    try {
+      const resolved = resolvePluginOptions({ appToken: 't', commit: sha }, {});
+      await runPluginUpload(resolved, '/out-vcs-default-a', { uploadSourcemaps });
+      expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
+    } finally {
+      if (previousCli === undefined) {
+        delete process.env.BUGSEE_CLI_PATH;
+      } else {
+        process.env.BUGSEE_CLI_PATH = previousCli;
+      }
+    }
+  });
+
+  it('short-circuits inside the real resolver when VCS is off, forking nothing', async () => {
+    const uploadSourcemaps = upload();
+    const resolved = resolvePluginOptions(
+      { appToken: 't', vcs: false, commit: 'd'.repeat(40) },
+      {},
+    );
+    await runPluginUpload(resolved, '/out-vcs-default-b', { uploadSourcemaps });
     expect(uploadSourcemaps).toHaveBeenCalledTimes(1);
+    // Even with a valid explicit commit: `enabled: false` wins over everything.
     expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
   });
 });

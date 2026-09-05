@@ -150,7 +150,9 @@ export const spawnProcess: SpawnFn = (command, args, options) =>
         resolve({
           code: SIGNAL_EXIT_CODE,
           stdout,
-          stderr: `${stderr}bugsee-cli was terminated by signal ${String(signal)}\n`,
+          // NAMES THE ACTUAL COMMAND. This adapter also runs `git` for the VCS dirtiness probe, so a
+          // hard-coded "bugsee-cli" fabricated a stderr line blaming the wrong binary for a kill.
+          stderr: `${stderr}${command} was terminated by signal ${String(signal)}\n`,
         });
         return;
       }

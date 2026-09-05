@@ -113,8 +113,9 @@ export async function uploadSourcemaps(
   options: UploadSourcemapsOptions,
 ): Promise<UploadSourcemapsResult> {
   const { outDir, appToken, appVersion, appBuild, endpoint, dryRun = false } = options;
-  // Echoed on EVERY exit path, including the failures: what the plugin captured is a fact about the
-  // build, independent of whether the upload that would carry it succeeded.
+  // Echoed on every RETURNING path, including the contained failure: what the plugin captured is a fact
+  // about the build, independent of whether the upload that would carry it succeeded. (The two paths
+  // that THROW — an empty token, and a `failOnError` rethrow — carry no result object to echo on.)
   const vcsEcho = options.vcs !== undefined ? { vcs: options.vcs } : {};
   if (appToken === '') {
     throw new Error('uploadSourcemaps: appToken is required');
