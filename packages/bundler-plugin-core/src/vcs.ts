@@ -60,45 +60,37 @@ export const VCS_TIMEOUT_MS = 15_000;
 export const DIRTY_TIMEOUT_MS = 10_000;
 
 /**
- * The dirtiness probe, with the two HOST-CONFIG settings most likely to change its answer pinned rather
- * than inherited. This does NOT make the probe hermetic — see the caveats at the end.
+ * The dirtiness probe, with the one host-config setting that provably changes its answer PINNED rather
+ * than inherited. The child inherits the ambient environment, so it reads the developer's or the CI
+ * runner's `~/.gitconfig` and the repository's own `.git/config`.
  *
- * The child inherits the ambient environment, so it reads the developer's or the CI runner's
- * `~/.gitconfig`, and two ordinary options there silently change what this function means:
+ * `diff.relative=true` scopes the diff to the CWD's subtree. This function is documented as covering the
+ * whole repository, and in a monorepo built from one package directory that setting silently stops a
+ * dirty sibling from counting — a SHA recorded for a tree that does not describe what was built.
+ * MEASURED on git 2.50.1: probing `<repo>/pkg` with a modified `<repo>/a.txt` exits 0 (clean) with the
+ * setting inherited and 1 (dirty) with it pinned.
  *
- * - `diff.autoRefreshIndex=false` stops porcelain `git diff` re-hashing entries whose stat data does not
- *   match the index. A fresh CI checkout or a restored build cache rewrites every mtime, so under that
- *   setting an untouched tree reads DIRTY and the commit SHA would be dropped on every CI build — the
- *   feature silently dead exactly where it matters most. Measured clean on git 2.50.1 with the default
- *   `true`; pinning it makes that a property of the probe rather than of the host's config.
- * - `diff.relative=true` scopes the diff to the cwd's subtree, which would quietly narrow the
- *   whole-repository check the docs promise — and in a monorepo built from one package directory, a
- *   dirty sibling would stop counting.
+ * `-c` overrides the single invocation; nothing about the user's config is changed. It is safe on any
+ * git: `-c` keys are not validated against a registry, so on a git predating `diff.relative` (2.31) the
+ * pin is a silent no-op rather than an error.
  *
- * `-c` overrides for the single invocation; nothing about the user's config is changed. They are safe on
- * any git: `-c` keys are not validated against a registry, so on a git predating `diff.relative` (2.31)
- * the pin is a silent no-op rather than an error — verified.
- *
- * STILL INHERITED, and deliberately not pinned:
- * - `diff.ignoreSubmodules=all` makes a submodule whose checkout differs from the recorded gitlink read
- *   CLEAN, so a SHA gets recorded that does not describe the built source. A third `-c` would not
- *   actually fix it — per-submodule `submodule.<name>.ignore` outranks the diff-level setting — so this
- *   is named rather than papered over.
+ * NOT PINNED, deliberately:
+ * - `diff.autoRefreshIndex`. It is documented as controlling whether stat-only changes count, and an
+ *   earlier revision of this file pinned it on the theory that a CI checkout's rewritten mtimes would
+ *   otherwise read as dirty. That theory is WRONG for this command, and the pin was removed once it was
+ *   actually measured: porcelain `git diff --quiet HEAD --` compares CONTENT for stat-unmatched entries
+ *   and returns 0 either way, at both settings. Only the plumbing `git diff-index --quiet HEAD --` is
+ *   stat-sensitive (it returns 1 on a pure mtime change) — which is the real reason this uses the
+ *   porcelain, and the reason a future switch to plumbing would be a silent regression.
+ * - `diff.ignoreSubmodules=all`, which makes a submodule differing from its recorded gitlink read clean.
+ *   A `-c` would not fix it anyway: per-submodule `submodule.<name>.ignore` outranks the diff-level
+ *   setting.
  * - Ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE`. Git sets all three for every hook, so a build
  *   run from a `pre-commit` hook probes the commit-in-progress index rather than plain `projectRoot`.
  *
- * Both are rare, and both fail toward recording a SHA rather than toward breaking a build.
+ * The unpinned cases all fail toward recording a SHA, never toward breaking a build.
  */
-const GIT_DIRTY_ARGV = [
-  '-c',
-  'diff.autoRefreshIndex=true',
-  '-c',
-  'diff.relative=false',
-  'diff',
-  '--quiet',
-  'HEAD',
-  '--',
-];
+const GIT_DIRTY_ARGV = ['-c', 'diff.relative=false', 'diff', '--quiet', 'HEAD', '--'];
 
 /** `git diff --quiet` reports "there is a difference" as exit 1; 0 is "no difference". */
 const GIT_DIFF_CLEAN = 0;

@@ -272,21 +272,37 @@ drift. All fixed.
 - The sample verification docs quoted the old signal string and claimed *every* `BugseePluginOptions`
   field had been driven from a real build; the five VCS options have not been, and both now say so.
 
-**A hazard checked, and then actually closed (round 4).** `git diff --quiet` is stat-sensitive when the
-index is stale, and a CI checkout or restored build cache rewrites every mtime — if that read as dirty, the
-SHA would be dropped on every CI build, killing the feature exactly where it matters most. Measured on git
-2.50.1: porcelain `git diff` refreshes the index first, so an mtime rewrite AND a same-bytes rewrite with a
-new inode both read clean; only the plumbing `git diff-index` needs an explicit `update-index --refresh`.
+**A hazard, a wrong fix for it, and the real one (rounds 3-6).** `git diff` is often described as
+stat-sensitive when the index is stale, and a CI checkout or restored build cache rewrites every mtime —
+if that read as dirty, the SHA would be dropped on every CI build, killing the feature exactly where it
+matters most. Round 3 measured it and found the probe safe. Round 4 objected that this made the guarantee a
+property of the HOST'S CONFIG, since the child inherits the environment and reads `~/.gitconfig`, where
+`diff.autoRefreshIndex=false` would restore the failure — and a pin for it was added.
 
-Round 4 pointed out that this made the guarantee a property of the HOST'S CONFIG, not of the probe: the
-child inherits the ambient environment and so reads `~/.gitconfig`, where `diff.autoRefreshIndex=false`
-restores the whole failure. The probe now pins both settings it depends on for the single invocation —
-`git -c diff.autoRefreshIndex=true -c diff.relative=false diff --quiet HEAD --`. The second closes the
-matching hole in the other direction: `diff.relative=true` would have scoped the check to the cwd's
-subtree, silently contradicting the whole-repository behaviour §9.5.1 and the usage doc promise, and in a
-monorepo built from one package a dirty sibling would have stopped counting. Both are asserted directly,
-and by real-git tests that write the hostile setting into the repository's own config.
+**That objection was wrong, and the pin was a no-op.** It was accepted without being measured, which is the
+mistake worth recording here. Measured directly (git 2.50.1, content identical, mtime rewritten):
 
+| command | `autoRefreshIndex=true` | `autoRefreshIndex=false` |
+|---|---|---|
+| `git diff --quiet HEAD --` (porcelain, what we run) | 0 clean | **0 clean** |
+| `git diff-index --quiet HEAD --` (plumbing) | — | **1 dirty** |
+
+Porcelain `git diff` compares CONTENT for a stat-unmatched entry at either setting. The setting cannot
+affect this command, so the pin protected nothing; it was removed in round 6. Round 3's original conclusion
+was right all along, for a better reason than it gave: the safety comes from **using the porcelain**, and a
+future switch to `diff-index` would be a silent regression costing every CI build its SHA. That is now what
+the mtime test guards — flipping the argv to `diff-index` fails it.
+
+**One pin survives, and it is real.** `diff.relative=true` in a host's config scopes the diff to the CWD's
+subtree. Measured: probing `<repo>/pkg` with a modified `<repo>/a.txt` exits 0 (clean) inherited, 1 (dirty)
+with `-c diff.relative=false`. In a monorepo built from one package directory a dirty sibling silently
+stopped counting, contradicting the whole-repository behaviour both docs promise. Backed by a real-git
+behavioural test, not just an argv assertion.
+
+Still inherited and deliberately not pinned: `diff.ignoreSubmodules=all` (a `-c` would not fix it —
+per-submodule `submodule.<name>.ignore` outranks the diff-level setting) and the ambient
+`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` git sets for every hook. Both fail toward recording a SHA,
+never toward breaking a build.
 
 ### 9.8 Review round 4 (2026-09-06)
 
@@ -327,3 +343,26 @@ Two accuracy items, both fixed:
   distro builds of git, the assertion protecting the CI-checkout hazard was inert. It now uses the epoch,
   which cannot match at any granularity and cannot be racily-clean. Re-verified by mutation: removing
   either pin, or flipping `autoRefreshIndex` to `false`, now fails.
+
+
+### 9.10 Review round 6 (2026-09-06) — the round that caught the reviewer, and me
+
+Round 6 was meant to be the convergence check on round 5's two small edits. Verifying them instead
+uncovered that **two of the previous rounds' conclusions were wrong**, both because a plausible claim about
+git was accepted without being run:
+
+1. **The `diff.autoRefreshIndex` pin added in round 4 did nothing.** See §9.7. Removed.
+2. **The mutation evidence for it was tautological.** Rounds 4 and 5 recorded "removing either pin fails
+   the tests". It did — but only the literal argv assertion failed, never a behavioural one, because the
+   setting cannot change this command's answer. A test that asserts an argv will always "catch" an argv
+   change; that is not evidence the argv matters. Every pin is now backed by a test that exercises real
+   git and would fail on the behaviour, and the argv assertion is treated as documentation rather than
+   proof.
+3. **A hostile-config assertion was inert for a second reason.** It re-applied the same mtime after a
+   previous probe in the same test, and porcelain `git diff` REWRITES the refreshed stat into `.git/index`
+   — so the stat simply matched. An assertion riding on the side effect of the assertion above it. Deleted
+   rather than repaired, since the setting it tested is irrelevant anyway.
+
+The lesson generalises past this branch: **a review finding about tool behaviour is a hypothesis until it
+is run.** Three rounds of careful reasoning about `git diff` produced a no-op fix, a false doc claim, and
+two assertions that could not fail — and one five-line shell script settled it.

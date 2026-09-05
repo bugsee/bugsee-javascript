@@ -84,6 +84,10 @@ Two consequences worth knowing, because they make the drop permanent rather than
 - Pass `allowDirtyCommit: true` if that describes your repo and you would rather have the approximate
   answer, or commit the generated files before building.
 
+The check covers the whole repository even when your build runs from a subdirectory, and a rewritten
+mtime (a fresh CI checkout, a restored build cache) does **not** count as a change — only real content
+differences do.
+
 **A known gap.** The check compares your tree against local `HEAD`, but on CI the SHA usually comes from the
 provider's environment. If those are different commits (a checkout of an explicit `ref`, a PR merge commit
 vs the branch head), the tree reads clean and the recorded SHA still is not what was built.

@@ -538,20 +538,10 @@ describe('isWorkingTreeDirty', () => {
     expect(calls[0]?.command).toBe('git');
     // `HEAD` compares index+worktree against the commit, so a STAGED-only change counts as dirty;
     // the trailing `--` disambiguates paths. Untracked files are deliberately NOT dirt.
-    // The two `-c` overrides are load-bearing, not decoration. The child inherits the ambient env and
-    // so reads the host's ~/.gitconfig: `diff.autoRefreshIndex=false` makes an untouched tree with
-    // rewritten mtimes (every CI checkout) read DIRTY, and `diff.relative=true` narrows the check to
-    // the cwd subtree, both silently.
-    expect(calls[0]?.args).toEqual([
-      '-c',
-      'diff.autoRefreshIndex=true',
-      '-c',
-      'diff.relative=false',
-      'diff',
-      '--quiet',
-      'HEAD',
-      '--',
-    ]);
+    // The `-c` override is load-bearing, not decoration: the child inherits the ambient env and so reads
+    // the host's ~/.gitconfig, where `diff.relative=true` silently narrows the check to the cwd subtree.
+    // A behavioural test below proves it against real git.
+    expect(calls[0]?.args).toEqual(['-c', 'diff.relative=false', 'diff', '--quiet', 'HEAD', '--']);
     expect(calls[0]?.options.cwd).toBe('/proj');
     // The timeout only stops US waiting; the SIGNAL is what kills the child. Without it a hung `git`
     // is orphaned holding the build's handles, and the timeout test alone cannot see that.
@@ -675,8 +665,11 @@ describe('isWorkingTreeDirty — against the real git binary', () => {
     // `git diff --quiet` is famously stat-sensitive when the index is stale, and a CI checkout or a
     // restored build cache rewrites every mtime. If that read as dirty, the SHA would be dropped on
     // every CI build — killing the feature exactly where it matters most. Measured, not assumed:
-    // porcelain `git diff` refreshes the index first (the plumbing `diff-index` is the one that
-    // needs an explicit `update-index --refresh`), so both of these are clean.
+    // MEASURED on git 2.50.1: porcelain `git diff` compares CONTENT for a stat-unmatched entry, so both
+    // of these are clean at either `diff.autoRefreshIndex` setting. The plumbing `git diff-index --quiet
+    // HEAD --` is the stat-sensitive one — it returns 1 on a pure mtime change. That is precisely why
+    // this probe uses the porcelain, and why switching it to plumbing would be a silent regression that
+    // costs every CI build its commit SHA. This test is what would catch that.
     const dir = initRepo();
     // A FIXED PAST timestamp, not `new Date()`. Whether git notices a stat change at all depends on
     // whether it was built with USE_NSEC: without it, mtime is compared at SECOND granularity, and the
@@ -687,13 +680,10 @@ describe('isWorkingTreeDirty — against the real git binary', () => {
     utimesSync(join(dir, 'a.txt'), past, past);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
 
-    // …and it holds even with the hostile setting written into the repo's OWN config, which the probe
-    // inherits. Without the pinned `-c diff.autoRefreshIndex=true` this is the assertion that fails,
-    // and in production it is every CI build losing its commit SHA.
-    git(dir, 'config', 'diff.autoRefreshIndex', 'false');
-    utimesSync(join(dir, 'a.txt'), past, past);
-    expect(await isWorkingTreeDirty(dir)).toBe(false);
-    git(dir, 'config', '--unset', 'diff.autoRefreshIndex');
+    // NOT asserted here any more: a `diff.autoRefreshIndex=false` variant of this. It proved to be two
+    // things at once that were each worthless — the first probe REWRITES the refreshed stat into the
+    // index, so re-applying the same mtime was a no-op and the stat simply matched; and the setting does
+    // not affect this command in the first place (see GIT_DIRTY_ARGV). It passed either way.
 
     // Harsher: same bytes, but a new inode and ctime as well as mtime.
     const bytes = readFileSync(join(dir, 'a.txt'));
