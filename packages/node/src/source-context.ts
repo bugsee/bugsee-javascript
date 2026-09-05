@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import type { FrameContext, StackFrame } from '@bugsee/core';
+import { redactSourceLines } from '@bugsee/protocol';
 
 // Source context: the line that threw, plus a little either side, read from disk at report time.
 // Node-only by nature — core is runtime-portable and has no filesystem.
@@ -68,11 +69,23 @@ export function readContext(
   if (index < 0 || index >= lines.length) {
     return undefined;
   }
+  const start = Math.max(0, index - contextLines);
+  // REDACT BEFORE CLIPPING. `redactSourceLines` is the shared rule (`@bugsee/protocol`) that also runs
+  // in the background worker when it rebuilds this window from a sourcemap — see that module's header
+  // for what it does and, just as deliberately, what it does not. Clipping first would cut a long line
+  // mid-literal, leaving a prefix with no closing quote for the assignment pass to match and no
+  // complete shape for the shape pass: a truncated credential, shipped.
+  //
+  // The whole window is passed at once because the rule is window-scoped — a wrapped assignment puts
+  // the key on one line and the literal on the next — and it returns exactly as many lines as it was
+  // given, so the positions below stay aligned.
+  const sourceWindow = redactSourceLines(lines.slice(start, index + 1 + contextLines));
+  const at = index - start;
   const clip = (value: string): string =>
     value.length > maxLineLength ? `${value.slice(0, maxLineLength)}…` : value;
-  const context: FrameContext = { line: clip(lines[index] as string) };
-  const pre = lines.slice(Math.max(0, index - contextLines), index).map(clip);
-  const post = lines.slice(index + 1, index + 1 + contextLines).map(clip);
+  const context: FrameContext = { line: clip(sourceWindow[at] as string) };
+  const pre = sourceWindow.slice(0, at).map(clip);
+  const post = sourceWindow.slice(at + 1).map(clip);
   // Omitted rather than empty at the top or bottom of a file — an empty array on the wire says
   // "we looked and there was nothing", which is not the same as "there is no line 0".
   if (pre.length > 0) {

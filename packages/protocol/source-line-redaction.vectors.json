@@ -1,0 +1,291 @@
+{
+  "$comment": [
+    "Shared behavioural corpus for source-context secret redaction. CANONICAL COPY — this file lives in",
+    "the JavaScript SDK (github.com/bugsee/bugsee-javascript) at packages/protocol/, and is VENDORED",
+    "byte-for-byte into the background worker (github.com/bugsee/bugsee-background-worker) at",
+    "symbolfiles/source_line_redaction.vectors.json.",
+    "",
+    "WHY IT EXISTS. A crash frame's source window is produced on BOTH sides: the SDK reads it off disk",
+    "at crash time (packages/node/src/source-context.ts) and the worker REBUILDS it from a sourcemap's",
+    "sourcesContent on a remap (symbolfiles/sourcemap.py), which is the common path for web frames.",
+    "Two implementations of one redaction rule drift, and only one of them ever gets fixed. Both test",
+    "suites run this corpus, so a divergence turns one of the two CIs red instead of shipping a secret.",
+    "",
+    "Each vector is a whole source WINDOW (the lines in order), because the rule is window-scoped: a",
+    "value may sit on the line after its key. `expected` must have the same length as `lines`."
+  ],
+  "definitions": {
+    "$comment": [
+      "MIRRORED FROM `packages/protocol/src/sensitive.ts`, and asserted equal to it by",
+      "`src/source-context-redaction.test.ts` — so this copy cannot drift from the SDK inside this repo.",
+      "The worker READS these at import time rather than restating them, so it cannot drift either. The",
+      "only hand step left in the loop is keeping the worker’s vendored copy of this file up to date."
+    ],
+    "sensitiveKeySubstrings": [
+      "password",
+      "passwd",
+      "pass",
+      "secret",
+      "client_secret",
+      "token",
+      "access_token",
+      "refresh_token",
+      "id_token",
+      "auth_token",
+      "api_key",
+      "apikey",
+      "authorization",
+      "credit_card",
+      "creditcard",
+      "card_number",
+      "cardnumber",
+      "cvv",
+      "cvc",
+      "cvv2",
+      "ssn",
+      "social_security",
+      "pin",
+      "private_key",
+      "privatekey",
+      "jwt",
+      "bearer",
+      "bearer_token",
+      "auth",
+      "creds",
+      "credentials",
+      "session_token",
+      "sessionid",
+      "phpsessid",
+      "jsessionid",
+      "connect.sid",
+      "csrf",
+      "csrf_token",
+      "_csrf",
+      "xsrf_token",
+      "code_verifier",
+      "client_assertion",
+      "signature",
+      "hmac",
+      "mfa_token",
+      "otp",
+      "totp",
+      "routing_number",
+      "account_number",
+      "iban",
+      "swift",
+      "bank_account",
+      "dob",
+      "date_of_birth",
+      "passport",
+      "passport_number",
+      "national_id",
+      "tax_id",
+      "ein"
+    ],
+    "sensitiveHeaders": [
+      "authentication",
+      "authorization",
+      "cookie",
+      "proxy-authorization",
+      "proxy-cookie",
+      "set-cookie",
+      "x-amz-credential",
+      "x-amz-security-token",
+      "x-amz-signature",
+      "x-api-key",
+      "x-auth-token",
+      "x-clerk-session-token",
+      "x-csrf-token",
+      "x-forwarded-authorization",
+      "x-forwarded-for",
+      "x-goog-api-key",
+      "x-goog-iam-authorization-token",
+      "x-ms-token-aad-access-token",
+      "x-ms-token-aad-id-token",
+      "x-ms-token-aad-refresh-token",
+      "x-okapi-token",
+      "x-original-authorization",
+      "x-real-ip",
+      "x-shopify-access-token",
+      "x-supabase-auth",
+      "x-vault-token",
+      "x-vault-wrap-ttl"
+    ]
+  },
+  "vectors": [
+    {
+      "name": "const assignment to a sensitive identifier, double quotes",
+      "lines": ["const apiKey = \"sk-live-abcdef\";"],
+      "expected": ["const apiKey = \"<redacted>\";"]
+    },
+    {
+      "name": "let assignment, single quotes",
+      "lines": ["let password = 'hunter2';"],
+      "expected": ["let password = '<redacted>';"]
+    },
+    {
+      "name": "var assignment, template literal",
+      "lines": ["var secret = `s3cr3t`;"],
+      "expected": ["var secret = `<redacted>`;"]
+    },
+    {
+      "name": "re-assignment with no declaration keyword",
+      "lines": ["apiKey = \"abc\";"],
+      "expected": ["apiKey = \"<redacted>\";"]
+    },
+    {
+      "name": "object literal, unquoted key",
+      "lines": ["  apiKey: 'abc',"],
+      "expected": ["  apiKey: '<redacted>',"]
+    },
+    {
+      "name": "object literal, double-quoted key (JSON shape)",
+      "lines": ["  \"password\": \"abc\","],
+      "expected": ["  \"password\": \"<redacted>\","]
+    },
+    {
+      "name": "object literal, single-quoted key",
+      "lines": ["  'token': \"abc\","],
+      "expected": ["  'token': \"<redacted>\","]
+    },
+    {
+      "name": "dotted property assignment",
+      "lines": ["config.apiKey = \"abc\";"],
+      "expected": ["config.apiKey = \"<redacted>\";"]
+    },
+    {
+      "name": "this-property assignment",
+      "lines": ["this.password = \"abc\";"],
+      "expected": ["this.password = \"<redacted>\";"]
+    },
+    {
+      "name": "bracket property assignment with a quoted key",
+      "lines": ["obj[\"password\"] = \"abc\";"],
+      "expected": ["obj[\"password\"] = \"<redacted>\";"]
+    },
+    {
+      "name": "SCREAMING_SNAKE env-style key",
+      "lines": ["process.env.API_KEY = \"abc\";"],
+      "expected": ["process.env.API_KEY = \"<redacted>\";"]
+    },
+    {
+      "name": "dashed header-style key",
+      "lines": ["  \"x-api-key\": \"abc\","],
+      "expected": ["  \"x-api-key\": \"<redacted>\","]
+    },
+    {
+      "name": "default parameter value",
+      "lines": ["function f(apiKey = \"abc\") {}"],
+      "expected": ["function f(apiKey = \"<redacted>\") {}"]
+    },
+    {
+      "name": "strict-equality comparison against a hardcoded credential",
+      "lines": ["if (password === \"abc\") {}"],
+      "expected": ["if (password === \"<redacted>\") {}"]
+    },
+    {
+      "name": "loose-equality comparison against a hardcoded credential",
+      "lines": ["if (token == \"abc\") {}"],
+      "expected": ["if (token == \"<redacted>\") {}"]
+    },
+    {
+      "name": "numeric literal assigned to a sensitive identifier",
+      "lines": ["const cvv = 123;"],
+      "expected": ["const cvv = <redacted>;"]
+    },
+    {
+      "name": "negative numeric literal",
+      "lines": ["const pin = -1234;"],
+      "expected": ["const pin = <redacted>;"]
+    },
+    {
+      "name": "every sensitive assignment on the line, not only the first",
+      "lines": ["{ apiKey: \"a\", user: \"u\", password: \"p\" }"],
+      "expected": ["{ apiKey: \"<redacted>\", user: \"u\", password: \"<redacted>\" }"]
+    },
+    {
+      "name": "escaped quote inside the literal does not end it early",
+      "lines": ["const password = \"a\\\"b\";"],
+      "expected": ["const password = \"<redacted>\";"]
+    },
+    {
+      "name": "value on the line after its key is still redacted",
+      "lines": ["const apiKey =", "  \"sk-live-abcdef\";"],
+      "expected": ["const apiKey =", "  \"<redacted>\";"]
+    },
+    {
+      "name": "multi-line template literal keeps the window's line count",
+      "lines": ["const secret = `a", "b", "c`;", "after"],
+      "expected": ["const secret = `<redacted>", "", "`;", "after"]
+    },
+    {
+      "name": "non-sensitive identifier keeps its value",
+      "lines": ["const greeting = \"hello sk-live\";"],
+      "expected": ["const greeting = \"hello sk-live\";"]
+    },
+    {
+      "name": "arrow function is not an assignment",
+      "lines": ["items.map((token) => \"x\")"],
+      "expected": ["items.map((token) => \"x\")"]
+    },
+    {
+      "name": "bare single-parameter arrow is not an assignment either",
+      "lines": ["items.map(token => \"x\")"],
+      "expected": ["items.map(token => \"x\")"]
+    },
+    {
+      "name": "non-literal right-hand side is left intact",
+      "lines": ["const apiKey = readKeyFromVault();"],
+      "expected": ["const apiKey = readKeyFromVault();"]
+    },
+    {
+      "name": "ORDINARY identifier containing a sensitive substring is over-redacted (documented cost)",
+      "lines": ["const author = \"Ada\";"],
+      "expected": ["const author = \"<redacted>\";"]
+    },
+    {
+      "name": "JWT with no sensitive key name",
+      "lines": ["send({ a: \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc\" });"],
+      "expected": ["send({ a: \"<redacted>\" });"]
+    },
+    {
+      "name": "AWS access key id with no sensitive key name",
+      "lines": ["const id = \"AKIAIOSFODNN7EXAMPLE\";"],
+      "expected": ["const id = \"<redacted>\";"]
+    },
+    {
+      "name": "Stripe live secret key with no sensitive key name",
+      "lines": ["stripe(\"sk_live_4eC39HqLyjWDarjtT1zdp7dc\");"],
+      "expected": ["stripe(\"<redacted>\");"]
+    },
+    {
+      "name": "GitHub token with no sensitive key name",
+      "lines": ["const t = \"ghp_016C7869B9C1E0B9A1C6D0E5F4A3B2C1D0E9F8\";"],
+      "expected": ["const t = \"<redacted>\";"]
+    },
+    {
+      "name": "long ordinary hex digest is KEPT — there is no entropy heuristic",
+      "lines": [
+        "const sha = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\";"
+      ],
+      "expected": [
+        "const sha = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\";"
+      ]
+    },
+    {
+      "name": "blank lines survive as blank lines",
+      "lines": ["", "x", ""],
+      "expected": ["", "x", ""]
+    },
+    {
+      "name": "an empty window redacts to an empty window",
+      "lines": [],
+      "expected": []
+    },
+    {
+      "name": "adjacent lines each keep their own string literal",
+      "lines": ["const password = \"abc\";", "const other = \"keep\";"],
+      "expected": ["const password = \"<redacted>\";", "const other = \"keep\";"]
+    }
+  ]
+}

@@ -46,6 +46,7 @@ export {
   SENSITIVE_KEY_SUBSTRINGS,
 } from './sensitive';
 export { redactShapes, type ShapeRedactionOptions } from './shapes';
+export { redactSourceLines } from './source-context-redaction';
 export { bytesToMegabytes } from './units';
 export { sanitizeErrorMessage, sanitizeUrl } from './url';
 export type {

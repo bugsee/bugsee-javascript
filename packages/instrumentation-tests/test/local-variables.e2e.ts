@@ -5,6 +5,7 @@
 // thrown object can be stamped and matched back to the Error the SDK captures, or that any of it survives
 // bundle assembly, zipping and upload. A real process, the real `node:inspector`, a real uncaught throw,
 // and the real uploaded artifact.
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LOCALS_ORDER_ID, LOCALS_SECRET } from '../app/scenario';
 import { type ParsedBundle, parseBundles, readJson } from './bundle';
@@ -130,5 +131,23 @@ describe.each(nodeTarget)('local variables — the captured values ($name)', (ta
     // Source context on the same frame: the SDK read its own scenario file off disk at report time.
     expect(throwingFrame()?.context?.line).toContain('throw new Error');
     expect(stderr).not.toContain('[bugsee onError]');
+  });
+
+  it('the scenario really does hardcode the secret near the throw', () => {
+    // The guard that keeps the assertion below from being vacuous. If someone rewrites the scenario's
+    // `const apiKey = '…'` back into a reference to LOCALS_SECRET, the source window stops containing
+    // a credential at all and "no secret in the window" becomes true for the wrong reason.
+    const scenario = readFileSync(new URL('../app/scenario.ts', import.meta.url), 'utf8');
+    expect(scenario).toContain(`const apiKey = '${LOCALS_SECRET}';`);
+  });
+
+  it('REDACTS the hardcoded secret in the SOURCE WINDOW, not just in the locals', () => {
+    // The defect this pair of PRs closes: the window shipped verbatim, so the same value arrived
+    // redacted as a local and in plaintext two lines above it.
+    const frame = throwingFrame();
+    const window = [...(frame?.context?.pre ?? []), frame?.context?.line ?? ''];
+    expect(window.join('\n')).toContain('const apiKey =');
+    expect(window.join('\n')).toContain('<redacted>');
+    expect(window.join('\n')).not.toContain(LOCALS_SECRET);
   });
 });

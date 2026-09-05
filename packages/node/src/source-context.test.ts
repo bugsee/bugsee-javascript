@@ -1,7 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createSourceContextEnricher, isReadablePath, readContext } from './source-context';
 
@@ -38,6 +40,63 @@ describe('readContext', () => {
     const context = readContext(`short\n${'x'.repeat(5000)}\nshort`, 2, 1, 20);
     expect(context?.line).toBe(`${'x'.repeat(20)}…`);
     expect(context?.pre).toEqual(['short']); // the window is clipped too, not just the line
+  });
+});
+
+describe('readContext — secrets in the source window', () => {
+  // The defect this closes: these lines shipped verbatim, so a hardcoded credential ON or NEAR the
+  // throwing line was disclosed in plaintext — while the same value held in a local variable arrived
+  // as `<redacted>`, because local-variable capture scrubs by key name. The rule itself lives in
+  // `@bugsee/protocol` (`redactSourceLines`), shared with the worker; these pin the WIRING.
+  const secretSource = [
+    'const before = 1;',
+    'const apiKey = "sk-live-SUPERSECRET";',
+    'throw new Error("boom");',
+    "const password = 'hunter2';",
+    'const after = 2;',
+  ].join('\n');
+
+  it('redacts a secret on the THROWING line', () => {
+    expect(readContext(`const apiKey = "sk-live-SUPERSECRET";`, 1, 0, 200)?.line).toBe(
+      'const apiKey = "<redacted>";',
+    );
+  });
+
+  it('redacts secrets in `pre` and `post`, not only on the throwing line', () => {
+    const context = readContext(secretSource, 3, 2, 200);
+    expect(context?.pre).toEqual(['const before = 1;', 'const apiKey = "<redacted>";']);
+    expect(context?.post).toEqual(["const password = '<redacted>';", 'const after = 2;']);
+  });
+
+  it('leaves ordinary source alone', () => {
+    expect(readContext(secretSource, 5, 0, 200)?.line).toBe('const after = 2;');
+  });
+
+  it('redacts BEFORE clipping, so a clipped line cannot ship a secret prefix', () => {
+    // Clipping first would cut the literal in half: no closing quote for the assignment pass to match,
+    // no complete shape for the shape pass, and a usable prefix of the credential on the wire.
+    const padding = 'x'.repeat(40);
+    const line = `const apiKey = "sk-live-${padding}"; // ${padding}`;
+    const context = readContext(line, 1, 0, 30);
+    expect(context?.line).toBe('const apiKey = "<redacted>"; /…');
+    expect(context?.line).not.toContain('sk-live');
+  });
+
+  it('keeps the window aligned when a redacted literal spans lines', () => {
+    // A multi-line template collapsed to one `<redacted>` would shorten the window and slide every
+    // later line onto the wrong position — a frame pointing at source it did not throw from.
+    const source = [
+      'const secret = `a',
+      'b',
+      'c`;',
+      'throw new Error("boom");',
+      'const tail = 1;',
+    ].join('\n');
+    const context = readContext(source, 4, 3, 200);
+    expect(context?.line).toBe('throw new Error("boom");');
+    expect(context?.pre).toHaveLength(3);
+    expect(context?.post).toEqual(['const tail = 1;']);
+    expect(context?.pre?.join('\n')).not.toContain('b');
   });
 });
 
@@ -203,5 +262,45 @@ describe('createSourceContextEnricher — a working directory that has been dele
     } finally {
       cwd.mockRestore();
     }
+  });
+});
+
+describe('the background worker vendors an equivalent copy of the redaction artifact', () => {
+  // WHY HERE. `packages/protocol` owns `source-line-redaction.vectors.json` and runs its vectors, but
+  // it compiles with no Node types (`types: []`) and so cannot open a file. This tier can, and it is
+  // the SDK-side producer of the very windows the worker REPLACES on a remap — so the question "do the
+  // two repos still agree?" is at home next to `readContext`.
+  //
+  // The one hand step left in the loop, so it gets a test rather than a comment. It can only run where
+  // the worker checkout is present — a developer machine — so it SKIPS elsewhere rather than passing
+  // silently, and says so. The behavioural half (the vectors) is enforced in BOTH CIs independently,
+  // which is what stops a stale copy from being a silent divergence rather than merely an old one.
+  //
+  // CONTENT, not bytes: `pnpm lint:fix` reformats the canonical JSON (biome collapses the short
+  // arrays), and a byte comparison duly went red on a re-format that changed no vector. A guard that
+  // fires on whitespace gets suppressed, and then it is not a guard.
+  const require_ = createRequire(import.meta.url);
+  // Through the package's own `exports` map, so a rename that forgets to update it fails HERE rather
+  // than leaving this test quietly reading a path that no consumer can reach.
+  const canonical = JSON.parse(
+    readFileSync(require_.resolve('@bugsee/protocol/source-line-redaction.vectors.json'), 'utf8'),
+  );
+  const workerRepo =
+    process.env.BUGSEE_WORKER_REPO ??
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'worker');
+  const vendored = join(workerRepo, 'symbolfiles', 'source_line_redaction.vectors.json');
+  const present = existsSync(vendored);
+
+  it('the canonical artifact is where this test thinks it is', () => {
+    // Otherwise a moved or renamed file would make the comparison below vacuously pass.
+    expect(canonical.vectors.length).toBeGreaterThan(25);
+  });
+
+  it.skipIf(!present)('carries the same definitions and vectors as the canonical file', () => {
+    expect(JSON.parse(readFileSync(vendored, 'utf8'))).toEqual(canonical);
+  });
+
+  it.runIf(!present)('is not checkable here — recorded, not silently skipped', () => {
+    expect(present).toBe(false);
   });
 });

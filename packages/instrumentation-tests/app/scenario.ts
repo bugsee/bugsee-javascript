@@ -119,7 +119,12 @@ export const LOCALS_SECRET = 'sk-live-e2e-MUST-NOT-SHIP';
  */
 function e2eLocalsThrow(): void {
   const orderId = LOCALS_ORDER_ID;
-  const apiKey = LOCALS_SECRET;
+  // HARDCODED ON PURPOSE, and it must STAY a literal rather than a reference to `LOCALS_SECRET`.
+  // Source-context capture reads this file off disk at report time and puts the window around the
+  // `throw` below straight on the wire, so a reference would mean the leak the redaction exists to stop
+  // is not actually present in the file and the assertion covering it would be vacuous. The e2e checks
+  // this line is still spelled out — see `local-variables.e2e.ts`.
+  const apiKey = 'sk-live-e2e-MUST-NOT-SHIP';
   const customer = { plan: 'pro' };
   if (orderId > 0 && apiKey.length > 0 && customer.plan === 'pro') {
     throw new Error('e2e locals crash');

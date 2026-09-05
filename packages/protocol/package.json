@@ -12,11 +12,13 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./upload-contract.schema.json": "./upload-contract.schema.json"
+    "./upload-contract.schema.json": "./upload-contract.schema.json",
+    "./source-line-redaction.vectors.json": "./source-line-redaction.vectors.json"
   },
   "files": [
     "dist",
-    "upload-contract.schema.json"
+    "upload-contract.schema.json",
+    "source-line-redaction.vectors.json"
   ],
   "sideEffects": false,
   "scripts": {
@@ -44,7 +46,8 @@
           "default": "./dist/index.cjs"
         }
       },
-      "./upload-contract.schema.json": "./upload-contract.schema.json"
+      "./upload-contract.schema.json": "./upload-contract.schema.json",
+      "./source-line-redaction.vectors.json": "./source-line-redaction.vectors.json"
     }
   }
 }
