@@ -49,8 +49,8 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 ### 1.1 The build's commit SHA
 
 > **Status: capture only.** The plugin records the commit and `dryRun` prints what it captured, but
-> **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today costs one
-> two short-lived subprocesses (`bugsee-cli vcs-metadata` plus a `git diff` dirtiness probe) per output
+> **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today costs two
+> short-lived subprocesses (`bugsee-cli vcs-metadata` plus a `git diff` dirtiness probe) per output
 > directory and changes nothing else.
 > See `docs/design/source-maps.md` §9.4.
 

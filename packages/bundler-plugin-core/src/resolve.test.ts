@@ -708,7 +708,7 @@ describe('runPluginUpload — the real VCS resolver is the default', () => {
     }
   });
 
-  it('short-circuits inside the real resolver when VCS is off, forking nothing', async () => {
+  it('never even CALLS the resolver when VCS is off, explicit commit or not', async () => {
     const uploadSourcemaps = upload();
     const resolved = resolvePluginOptions(
       { appToken: 't', vcs: false, commit: 'd'.repeat(40) },
@@ -716,7 +716,10 @@ describe('runPluginUpload — the real VCS resolver is the default', () => {
     );
     await runPluginUpload(resolved, '/out-vcs-default-b', { uploadSourcemaps });
     expect(uploadSourcemaps).toHaveBeenCalledTimes(1);
-    // Even with a valid explicit commit: `enabled: false` wins over everything.
+    // This layer returns BEFORE the resolver, so `enabled: false` is never passed to anything and this
+    // test cannot see the resolver's own off-switch — `vcs.test.ts` is what pins that half. What this
+    // asserts is the half that lives here: nothing is called, nothing is recorded, even with a valid
+    // explicit commit.
     expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
   });
 });

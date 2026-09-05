@@ -253,7 +253,7 @@ function notify(resolved: ResolvedPluginOptions): (message: string) => void {
       console.warn(text);
     } catch {
       // GUARDED HERE, not only inside the resolver. The resolver wraps its own `notice()` calls, but
-      // the dry-run diagnostic below calls this sink DIRECTLY, inside the try whose catch discards the
+      // the dry-run diagnostic above calls this sink DIRECTLY, inside the try whose catch discards the
       // metadata — so a throwing host logger cost the caller the whole VcsMetadata object rather than
       // one message, which is the exact trade the resolver's contract says never to make.
     }

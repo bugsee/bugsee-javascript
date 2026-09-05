@@ -59,6 +59,34 @@ export const VCS_TIMEOUT_MS = 15_000;
 /** Wall-clock budget for the `git diff` dirtiness probe, in ms. Same reasoning, smaller job. */
 export const DIRTY_TIMEOUT_MS = 10_000;
 
+/**
+ * The dirtiness probe, with the two settings its answer depends on PINNED rather than inherited.
+ *
+ * The child inherits the ambient environment, so it reads the developer's or the CI runner's
+ * `~/.gitconfig`, and two ordinary options there silently change what this function means:
+ *
+ * - `diff.autoRefreshIndex=false` stops porcelain `git diff` re-hashing entries whose stat data does not
+ *   match the index. A fresh CI checkout or a restored build cache rewrites every mtime, so under that
+ *   setting an untouched tree reads DIRTY and the commit SHA would be dropped on every CI build — the
+ *   feature silently dead exactly where it matters most. Measured clean on git 2.50.1 with the default
+ *   `true`; pinning it makes that a property of the probe rather than of the host's config.
+ * - `diff.relative=true` scopes the diff to the cwd's subtree, which would quietly narrow the
+ *   whole-repository check the docs promise — and in a monorepo built from one package directory, a
+ *   dirty sibling would stop counting.
+ *
+ * `-c` overrides for the single invocation; nothing about the user's config is changed.
+ */
+const GIT_DIRTY_ARGV = [
+  '-c',
+  'diff.autoRefreshIndex=true',
+  '-c',
+  'diff.relative=false',
+  'diff',
+  '--quiet',
+  'HEAD',
+  '--',
+];
+
 /** `git diff --quiet` reports "there is a difference" as exit 1; 0 is "no difference". */
 const GIT_DIFF_CLEAN = 0;
 const GIT_DIFF_DIRTY = 1;
@@ -117,7 +145,7 @@ export async function isWorkingTreeDirty(
   timer.unref?.(); // never keep the build's process alive on a dirtiness probe
   try {
     const result = await Promise.race([
-      spawn('git', ['diff', '--quiet', 'HEAD', '--'], { cwd: dir, signal: controller.signal }),
+      spawn('git', GIT_DIRTY_ARGV, { cwd: dir, signal: controller.signal }),
       timedOut,
     ]);
     if (result === undefined) {

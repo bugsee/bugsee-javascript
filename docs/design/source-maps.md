@@ -272,9 +272,34 @@ drift. All fixed.
 - The sample verification docs quoted the old signal string and claimed *every* `BugseePluginOptions`
   field had been driven from a real build; the five VCS options have not been, and both now say so.
 
-**A hazard checked and ruled out.** `git diff --quiet` is stat-sensitive when the index is stale, and a CI
-checkout or restored build cache rewrites every mtime — if that read as dirty, the SHA would be dropped on
-every CI build, killing the feature exactly where it matters most. Measured on git 2.50.1: porcelain
-`git diff` refreshes the index first, so an mtime rewrite AND a same-bytes rewrite with a new inode both
-read clean; only the plumbing `git diff-index` needs an explicit `update-index --refresh`. Pinned by a
-real-git test so a future switch to plumbing cannot silently reintroduce it.
+**A hazard checked, and then actually closed (round 4).** `git diff --quiet` is stat-sensitive when the
+index is stale, and a CI checkout or restored build cache rewrites every mtime — if that read as dirty, the
+SHA would be dropped on every CI build, killing the feature exactly where it matters most. Measured on git
+2.50.1: porcelain `git diff` refreshes the index first, so an mtime rewrite AND a same-bytes rewrite with a
+new inode both read clean; only the plumbing `git diff-index` needs an explicit `update-index --refresh`.
+
+Round 4 pointed out that this made the guarantee a property of the HOST'S CONFIG, not of the probe: the
+child inherits the ambient environment and so reads `~/.gitconfig`, where `diff.autoRefreshIndex=false`
+restores the whole failure. The probe now pins both settings it depends on for the single invocation —
+`git -c diff.autoRefreshIndex=true -c diff.relative=false diff --quiet HEAD --`. The second closes the
+matching hole in the other direction: `diff.relative=true` would have scoped the check to the cwd's
+subtree, silently contradicting the whole-repository behaviour §9.5.1 and the usage doc promise, and in a
+monorepo built from one package a dirty sibling would have stopped counting. Both are asserted directly,
+and by real-git tests that write the hostile setting into the repository's own config.
+
+
+### 9.8 Review round 4 (2026-09-06)
+
+The code changes in round 3 were correct — the first round that introduced no new functional defect. What
+it did introduce was three false claims, and round 4 caught all three:
+
+- **A rename the commit message and §9.7 both recorded had never happened.** The edit was an unasserted
+  string replace whose anchor had already been changed by round 2, so it silently did nothing while the
+  documentation stated it was done. The test kept a name claiming to cover the resolver's `enabled: false`
+  branch at a layer that returns before the resolver is ever called. *Lesson, and the reason this is
+  written down: assert every anchor. A no-op edit that reports success is worse than a failed one.*
+- A botched sentence ("costs one two short-lived subprocesses") in the very user-facing line round 3 was
+  correcting.
+- A comment pointing "below" at code that is above it.
+
+Plus the substantive one, now fixed: the dirtiness guarantee was conditional on host git config. See §9.7.

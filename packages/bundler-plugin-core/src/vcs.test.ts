@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -530,7 +538,20 @@ describe('isWorkingTreeDirty', () => {
     expect(calls[0]?.command).toBe('git');
     // `HEAD` compares index+worktree against the commit, so a STAGED-only change counts as dirty;
     // the trailing `--` disambiguates paths. Untracked files are deliberately NOT dirt.
-    expect(calls[0]?.args).toEqual(['diff', '--quiet', 'HEAD', '--']);
+    // The two `-c` overrides are load-bearing, not decoration. The child inherits the ambient env and
+    // so reads the host's ~/.gitconfig: `diff.autoRefreshIndex=false` makes an untouched tree with
+    // rewritten mtimes (every CI checkout) read DIRTY, and `diff.relative=true` narrows the check to
+    // the cwd subtree, both silently.
+    expect(calls[0]?.args).toEqual([
+      '-c',
+      'diff.autoRefreshIndex=true',
+      '-c',
+      'diff.relative=false',
+      'diff',
+      '--quiet',
+      'HEAD',
+      '--',
+    ]);
     expect(calls[0]?.options.cwd).toBe('/proj');
     // The timeout only stops US waiting; the SIGNAL is what kills the child. Without it a hung `git`
     // is orphaned holding the build's handles, and the timeout test alone cannot see that.
@@ -562,7 +583,11 @@ describe('isWorkingTreeDirty', () => {
 // The real `git`, in real repositories — the semantics above are ASSERTIONS ABOUT GIT, and a stub cannot
 // falsify them. Each case is one the brief requires to degrade gracefully.
 //
-// Hermeticity: every `git` call is insulated from the developer's global config. `commit.gpgsign=true` is
+// Hermeticity: every git call in the SETUP is insulated from the developer's global config (the `git()`
+// helper below). The call UNDER TEST is not — `isWorkingTreeDirty` spawns `git` with no env, so the child
+// reads the host's ~/.gitconfig. That is why the probe pins the two settings that change its answer with
+// `-c` (see GIT_DIRTY_ARGV); the tests below assert those overrides directly rather than assuming the
+// runner's config is friendly. `commit.gpgsign=true` is
 // a common global setting and would make `git commit` throw here, failing the suite for a reason that has
 // nothing to do with this code.
 describe('isWorkingTreeDirty — against the real git binary', () => {
@@ -657,11 +682,35 @@ describe('isWorkingTreeDirty — against the real git binary', () => {
     utimesSync(join(dir, 'a.txt'), now, now);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
 
+    // …and it holds even with the hostile setting written into the repo's OWN config, which the probe
+    // inherits. Without the pinned `-c diff.autoRefreshIndex=true` this is the assertion that fails,
+    // and in production it is every CI build losing its commit SHA.
+    git(dir, 'config', 'diff.autoRefreshIndex', 'false');
+    utimesSync(join(dir, 'a.txt'), new Date(), new Date());
+    expect(await isWorkingTreeDirty(dir)).toBe(false);
+    git(dir, 'config', '--unset', 'diff.autoRefreshIndex');
+
     // Harsher: same bytes, but a new inode and ctime as well as mtime.
     const bytes = readFileSync(join(dir, 'a.txt'));
     rmSync(join(dir, 'a.txt'));
     writeFileSync(join(dir, 'a.txt'), bytes);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
+  });
+
+  it('counts a dirty file OUTSIDE the probed directory — the check is repository-wide', async () => {
+    // Documented as covering the whole repository, not just `projectRoot`. `diff.relative=true` in the
+    // host's config would silently narrow it to the cwd subtree, so a monorepo built from one package
+    // would stop seeing a dirty sibling. The pinned `-c diff.relative=false` is what holds this.
+    const dir = initRepo();
+    mkdirSync(join(dir, 'pkg'));
+    writeFileSync(join(dir, 'pkg', 'c.txt'), 'x\n');
+    git(dir, 'add', '.');
+    git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'pkg');
+    git(dir, 'config', 'diff.relative', 'true');
+
+    // Dirty a file at the ROOT while probing the SUBDIRECTORY.
+    writeFileSync(join(dir, 'a.txt'), 'hello\nchanged\n');
+    expect(await isWorkingTreeDirty(join(dir, 'pkg'))).toBe(true);
   });
 
   it('is CLEAN in a SHALLOW clone — depth-1 CI checkouts must not read as dirty', async () => {
