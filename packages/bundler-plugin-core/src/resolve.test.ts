@@ -401,9 +401,12 @@ describe('runPluginUpload — VCS metadata collection', () => {
     expect(resolveVcs).not.toHaveBeenCalled();
   });
 
-  it('collects the VCS metadata ONCE per project root, not once per output directory', async () => {
-    // `writeBundle` fires per OUTPUT, and an SSR build emits two (SvelteKit client+server, Nuxt, Next).
-    // Without this each one forks `bugsee-cli vcs-metadata` AND `git diff` for an identical answer.
+  it('collects independently per output directory — no shared cross-instance memo', async () => {
+    // A per-root memo was tried and REMOVED. Bundlers call `writeBundle` sequentially (vite awaits each
+    // `bundle.write`), so an in-flight memo never fired for the multi-output case it was added for,
+    // while a module-level map shared across every plugin instance in the process meant a second
+    // instance configured `allowDirtyCommit: false` could join a result collected WITH it — recording
+    // a SHA for a dirty tree, the exact invariant this feature exists to protect.
     const uploadSourcemaps = vi.fn(
       async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
         injected: true,
@@ -426,7 +429,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
     const b = runPluginUpload(resolved, '/out-multi-b', { uploadSourcemaps, resolveVcs });
     release();
     await Promise.all([a, b]);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     // …and BOTH outputs still get the metadata — dedupe must not mean "the second one loses it".
     expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
     expect(uploadSourcemaps.mock.calls[1]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
@@ -451,7 +454,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
     expect(calls).toBe(2);
   });
 
-  it('routes a VCS notice to the plugin’s own onError sink, prefixed', async () => {
+  it('routes a VCS notice to the plugin’s onNotice sink, prefixed — NOT to onError', async () => {
     const uploadSourcemaps = vi.fn(
       async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
         injected: true,
@@ -459,17 +462,104 @@ describe('runPluginUpload — VCS metadata collection', () => {
         deletedMaps: [],
       }),
     );
-    const seen: unknown[] = [];
+    const notices: string[] = [];
+    const errors: unknown[] = [];
     const resolveVcs = async (o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
       o.onNotice?.('the tree was dirty');
       return undefined;
     };
     const resolved = resolvePluginOptions(
-      { appToken: 't', projectRoot: '/notice-root', onError: (e) => seen.push(e) },
+      {
+        appToken: 't',
+        projectRoot: '/notice-root',
+        onNotice: (m) => notices.push(m),
+        onError: (e) => errors.push(e),
+      },
       {},
     );
     await runPluginUpload(resolved, '/out-notice', { uploadSourcemaps, resolveVcs });
-    expect(seen).toEqual(['[bugsee] the tree was dirty']);
+    expect(notices).toEqual(['[bugsee] the tree was dirty']);
+    // `onError` is documented as taking a contained FAILURE and everywhere else receives an `Error`;
+    // hosts do `e.message` / `e instanceof Error` / fail-the-pipeline-if-non-empty on it. A plain
+    // informational string about a dirty tree breaks all three.
+    expect(errors).toEqual([]);
+  });
+
+  it('falls back to a console warning when no onNotice sink is configured', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = async (o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
+      o.onNotice?.('no sink configured');
+      return undefined;
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/warn-root-2' }, {});
+      await runPluginUpload(resolved, '/out-warn-2', { uploadSourcemaps, resolveVcs });
+      expect(warn).toHaveBeenCalledWith('[bugsee] no sink configured');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports what it captured on a DRY RUN — the documented way to confirm capture works', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: false,
+        deletedMaps: [],
+      }),
+    );
+    const notices: string[] = [];
+    const resolveVcs = async (): Promise<VcsMetadata | undefined> => ({ commit_sha: sha });
+    const resolved = resolvePluginOptions(
+      { appToken: 't', dryRun: true, projectRoot: '/dry', onNotice: (m) => notices.push(m) },
+      {},
+    );
+    await runPluginUpload(resolved, '/out-dry', { uploadSourcemaps, resolveVcs });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain(sha);
+  });
+
+  it('says so on a DRY RUN when nothing was captured', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: false,
+        deletedMaps: [],
+      }),
+    );
+    const notices: string[] = [];
+    const resolveVcs = async (): Promise<VcsMetadata | undefined> => undefined;
+    const resolved = resolvePluginOptions(
+      { appToken: 't', dryRun: true, projectRoot: '/dry2', onNotice: (m) => notices.push(m) },
+      {},
+    );
+    await runPluginUpload(resolved, '/out-dry2', { uploadSourcemaps, resolveVcs });
+    expect(notices).toEqual(['[bugsee] no VCS metadata was captured for this build']);
+  });
+
+  it('stays SILENT about capture on a normal (non-dry) build', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: true,
+        deletedMaps: [],
+      }),
+    );
+    const notices: string[] = [];
+    const resolveVcs = async (): Promise<VcsMetadata | undefined> => ({ commit_sha: sha });
+    const resolved = resolvePluginOptions(
+      { appToken: 't', projectRoot: '/quiet', onNotice: (m) => notices.push(m) },
+      {},
+    );
+    await runPluginUpload(resolved, '/out-quiet', { uploadSourcemaps, resolveVcs });
+    expect(notices).toEqual([]);
   });
 
   it('warns on the console when the plugin has no onError sink of its own', async () => {

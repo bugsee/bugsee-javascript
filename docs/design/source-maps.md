@@ -226,5 +226,31 @@ slice because each needs a product decision.
    **Recommend adding it, defaulting to drop-on-mismatch, once delivery lands.**
 3. **Collection is serialized ahead of the upload** (`resolve.ts`), adding up to `VCS_TIMEOUT_MS` +
    `DIRTY_TIMEOUT_MS` = 25 s worst case before the upload's own budget starts. Sequential rather than
-   concurrent because the delivery step will need the value *before* `debug-files upload` runs. It is now
-   memoized per project root, so an SSR build with several output dirs pays it once.
+   concurrent because the delivery step will need the value *before* `debug-files upload` runs. It runs
+   once per OUTPUT DIRECTORY, so a multi-output SSR build pays it per output.
+
+   A per-project-root memo was added and then **removed** (review round 2). It never fired for the case it
+   was added for — bundlers await each `bundle.write` in turn (`vite/dist/node/chunks/config.js`,
+   `rollup.js` `hookParallel('writeBundle')` inside each write), so the in-flight entry was always gone by
+   the next output — while a module-level map shared across every plugin instance in the process meant a
+   second instance configured `allowDirtyCommit: false` could join a result collected WITH it, recording a
+   SHA for a dirty tree. Shared mutable state for a benefit that was never obtained.
+
+### 9.6 Review round 2 (2026-09-06) — decisions the fixes forced
+
+- **`vcs: false` means OFF, everywhere, including an explicitly configured `commit`.** Round 1 had made the
+  resolver honour an explicit commit while the plugin layer discarded it, so the two surfaces answered the
+  same configuration differently and a green test pinned each contradictory answer. One option, one
+  meaning. A caller who wants a commit recorded leaves `vcs` alone and sets `commit`.
+- **Notices go to a new `onNotice`, not to `onError`.** `onError` is documented as taking a contained
+  FAILURE and everywhere else receives an `Error`; hosts do `e.message`, `e instanceof Error`, or fail
+  their pipeline on a non-empty list. A plain string about a dirty tree broke all three.
+- **A throwing notice sink is swallowed.** `resolveVcsMetadata` is public API documented as never
+  throwing; an unguarded sink made that conditional, and cost the caller the whole metadata object rather
+  than one message.
+- **An empty `BUGSEE_BUILD_COMMIT` is absent, not malformed.** CI templating of an unset variable produces
+  `''` constantly, and warning on every build forever trains users to ignore the sink. The token
+  resolution beside it already treated `''` as absent.
+- **The signal-termination line names no binary.** `"bugsee-cli"` was wrong once this adapter also ran
+  `git`; `command` is equally wrong, because on the default install it is `process.execPath` — an
+  OOM-killed CLI reported that `node` had died. The caller's own error message already says what it ran.

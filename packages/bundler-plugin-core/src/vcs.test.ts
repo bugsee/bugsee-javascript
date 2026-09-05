@@ -196,6 +196,37 @@ describe('resolveVcsMetadata — driving `bugsee-cli vcs-metadata`', () => {
     expect(notices[0]).toContain('7-64 hex');
   });
 
+  it.each([
+    ['an EMPTY env var', ''],
+    ['a whitespace-only env var', '   '],
+  ])('says nothing for %s — an unset CI variable templates to exactly this', async (_l, value) => {
+    const notices: string[] = [];
+    const { run } = fakeRun('{}');
+    await resolveVcsMetadata({
+      projectRoot: '/p',
+      env: { BUGSEE_BUILD_COMMIT: value },
+      run,
+      checkDirty: clean,
+      onNotice: (m) => notices.push(m),
+    });
+    expect(notices).toEqual([]);
+  });
+
+  it('SURVIVES an onNotice sink that throws, keeping the metadata it had', async () => {
+    // "never throws" is an absolute contract on public API. Losing the whole object — branch, repo,
+    // provider — because a host's logger blew up would be a far worse trade than losing one message.
+    const { run } = fakeRun(JSON.stringify({ commit_sha: 'a'.repeat(40), branch: 'main' }));
+    const vcs = await resolveVcsMetadata({
+      projectRoot: '/p',
+      run,
+      checkDirty: dirty,
+      onNotice: () => {
+        throw new Error('logger exploded');
+      },
+    });
+    expect(vcs).toEqual({ branch: 'main' });
+  });
+
   it('says nothing when no commit was configured at all — absence is not an error', async () => {
     const notices: string[] = [];
     const { run } = fakeRun('{}');
@@ -246,14 +277,19 @@ describe('resolveVcsMetadata — driving `bugsee-cli vcs-metadata`', () => {
     expect(notices).toEqual([]);
   });
 
-  it('still HONOURS an explicit commit when detection is disabled', async () => {
-    // "Do not shell out, I will tell you the SHA myself" is a reasonable reading of `vcs: false` with a
-    // commit set; silently discarding the value the user supplied is not.
+  it('records NOTHING when disabled, even with a valid explicit commit — off means off', async () => {
+    // ONE meaning for the option, matching what the plugin layer does (resolve.test.ts). An earlier
+    // version honoured the commit here while the plugin layer discarded it, and a green test pinned
+    // each of the two contradictory answers.
     const run = vi.fn(async () => ({ code: 0, stdout: '{}', stderr: '' }));
-    const override = 'e'.repeat(40);
     expect(
-      await resolveVcsMetadata({ projectRoot: '/p', enabled: false, commit: override, run }),
-    ).toEqual({ commit_sha: override });
+      await resolveVcsMetadata({
+        projectRoot: '/p',
+        enabled: false,
+        commit: 'e'.repeat(40),
+        run,
+      }),
+    ).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
   });
 

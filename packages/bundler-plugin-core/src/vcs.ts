@@ -160,7 +160,9 @@ export interface ResolveVcsMetadataOptions {
   /** Injectable dirtiness probe (default {@link isWorkingTreeDirty}). */
   checkDirty?: (dir: string) => Promise<boolean | undefined>;
   /**
-   * Where a user-actionable notice goes. Default: silence.
+   * Where a user-actionable notice goes. Default: silence. A sink that THROWS is ignored — this
+   * function's "never throws" contract is absolute, and losing the whole metadata object because a
+   * host's logger blew up would be a far worse trade than losing one message.
    *
    * Only the two cases a user can DO something about are reported — a malformed override they typed, and
    * a SHA dropped because their tree was dirty. Everything else (no repo, no `git`, an old CLI) is the
@@ -178,21 +180,36 @@ export async function resolveVcsMetadata(
   options: ResolveVcsMetadataOptions,
 ): Promise<VcsMetadata | undefined> {
   const { projectRoot } = options;
-  const notice = options.onNotice ?? ((): void => undefined);
+  const sink = options.onNotice;
+  const notice = (message: string): void => {
+    try {
+      sink?.(message);
+    } catch {
+      // See the note on `onNotice`. A throwing sink must not cost the caller its VCS metadata.
+    }
+  };
   const env = options.env ?? process.env;
-  const rawCommit = options.commit ?? env.BUGSEE_BUILD_COMMIT;
+  // An UNSET env var and one set to the empty string are the same intention. CI templating produces
+  // the latter constantly (BUGSEE_BUILD_COMMIT set from an unset CI variable), and the token resolution
+  // above already treats `''` as absent for exactly this reason — warning about it on every build,
+  // forever, would train users to ignore the sink.
+  const rawCommit = (options.commit ?? env.BUGSEE_BUILD_COMMIT ?? '').trim();
   const override = resolveCommitOverride(options.commit, env);
-  if (rawCommit !== undefined && override === undefined) {
+  if (rawCommit !== '' && override === undefined) {
     // The claim that this is "something the build log can say out loud" is only true if it is said.
     notice(
       `ignoring the configured commit ${JSON.stringify(rawCommit)}: expected 7-64 hex characters, ` +
-        'so the backend would have discarded it. No commit will be recorded for this build.',
+        'so the backend would have discarded it. Falling back to the detected commit, if any.',
     );
   }
   if (options.enabled === false) {
-    // Detection off still honours a commit the caller stated explicitly: "do not shell out, I will tell
-    // you the SHA myself" is a reasonable reading, and silently discarding it is not.
-    return override !== undefined ? { commit_sha: override } : undefined;
+    // OFF MEANS OFF — no metadata at all, not even an explicitly configured commit.
+    //
+    // The alternative (honour an explicit `commit` anyway) was tried and reverted: the plugin layer
+    // short-circuits before ever calling this function, so the two surfaces answered the same
+    // configuration differently and two green tests pinned contradictory semantics. One option, one
+    // meaning. A caller who wants the commit recorded leaves `vcs` alone and sets `commit`.
+    return undefined;
   }
   const run = options.run ?? runBugseeCli;
 

@@ -40,16 +40,18 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 | `deleteMaps` | — | `true` | delete client `.map`s after upload (privacy) |
 | `dryRun` | — | `false` | run the CLI with `--dry-run` (no upload, no delete) |
 | `disabled` | — | `false` | turn the plugin off (e.g. dev builds) |
-| `vcs` | — | `true` | capture the build's commit SHA / branch (see §1.1) |
+| `vcs` | — | `true` | capture the build's commit SHA / branch (see §1.1); `false` records nothing at all, even an explicit `commit` |
 | `commit` | `BUGSEE_BUILD_COMMIT` | detected | explicit commit SHA for this build |
 | `allowDirtyCommit` | — | `false` | report a commit even with uncommitted changes |
 | `projectRoot` | — | `process.cwd()` | repository root the VCS detection inspects |
+| `onNotice` | — | `console.warn` | where user-actionable notices go (distinct from `onError`, which takes failures) |
 
 ### 1.1 The build's commit SHA
 
-> **Status: capture only.** The plugin records the commit, and you can see it (`dryRun` logs what was
-> captured), but **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today
-> costs one short-lived subprocess per build and changes nothing else. See `docs/design/source-maps.md` §9.4.
+> **Status: capture only.** The plugin records the commit and `dryRun` prints what it captured, but
+> **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today costs one
+> short-lived subprocess per output directory and changes nothing else.
+> See `docs/design/source-maps.md` §9.4.
 
 The plugin records which commit the build was made from. This exists for one reason: a source map that does
 **not** embed `sourcesContent` gives the backend no way to show you the original source of a crashing frame.
@@ -70,7 +72,7 @@ means no commit is recorded.
 **A dirty working tree drops the commit.** If you build with uncommitted changes to tracked files, the SHA no
 longer describes what was built, and fetching source at it would show you *the wrong lines of code* for a
 frame. That is worse than showing none, so the SHA is omitted (`branch`, `repo` and the rest still ship) and
-the reason is printed once. Untracked files are not counted — they change nothing about any committed file.
+the reason is printed. Untracked files are not counted — they change nothing about any committed file.
 
 Two consequences worth knowing, because they make the drop permanent rather than occasional:
 

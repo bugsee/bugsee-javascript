@@ -150,9 +150,12 @@ export const spawnProcess: SpawnFn = (command, args, options) =>
         resolve({
           code: SIGNAL_EXIT_CODE,
           stdout,
-          // NAMES THE ACTUAL COMMAND. This adapter also runs `git` for the VCS dirtiness probe, so a
-          // hard-coded "bugsee-cli" fabricated a stderr line blaming the wrong binary for a kill.
-          stderr: `${stderr}${command} was terminated by signal ${String(signal)}\n`,
+          // NAMES NEITHER TOOL. A hard-coded "bugsee-cli" blamed the wrong binary once this adapter
+          // started running `git` too — but `command` is no better: on the DEFAULT install it is
+          // `process.execPath`, so an OOM-killed bugsee-cli reported that `node` had died. The caller
+          // already names what it ran (`BugseeCliError`'s message), so this line only has to say what
+          // happened.
+          stderr: `${stderr}child process was terminated by signal ${String(signal)}\n`,
         });
         return;
       }

@@ -50,6 +50,14 @@ export interface BugseePluginOptions {
   allowDirtyCommit?: boolean;
   /** Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. */
   projectRoot?: string;
+  /**
+   * Where user-actionable NOTICES go — a malformed `commit`, a SHA dropped because the tree was dirty,
+   * and (on `dryRun`) what was captured. Default: a `console.warn` naming the plugin.
+   *
+   * Separate from {@link BugseePluginOptions.onError}, which reports contained FAILURES and always
+   * receives an `Error`. These are plain strings about configuration, not failures.
+   */
+  onNotice?: (message: string) => void;
 }
 
 export interface ResolvedPluginOptions {
@@ -83,21 +91,13 @@ export interface ResolvedPluginOptions {
    * cannot — and would do so even for a fully disabled plugin.
    */
   projectRoot: string | undefined;
+  /** Notice sink; `undefined` means the default console warning. */
+  onNotice: ((message: string) => void) | undefined;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
 /** In-flight uploads, keyed by output directory (Wave 7.5). Entries are removed as each run settles. */
 const runsByDir = new Map<string, Promise<UploadSourcemapsResult | undefined>>();
-
-/**
- * In-flight VCS collections, keyed by project root.
- *
- * `writeBundle` fires once per OUTPUT and an SSR build emits several (SvelteKit client+server, Nuxt,
- * Next), so without this each one forks `bugsee-cli vcs-metadata` AND `git diff` concurrently for an
- * identical answer. Released on settle rather than cached permanently, so a commit made during a
- * `--watch` session is picked up by the next rebuild instead of being frozen at session start.
- */
-const vcsByRoot = new Map<string, Promise<VcsMetadata | undefined>>();
 
 export function resolvePluginOptions(
   options: BugseePluginOptions,
@@ -120,6 +120,7 @@ export function resolvePluginOptions(
     commit: options.commit ?? env.BUGSEE_BUILD_COMMIT,
     allowDirtyCommit: options.allowDirtyCommit ?? false,
     projectRoot: options.projectRoot,
+    onNotice: options.onNotice,
   };
 }
 
@@ -167,10 +168,11 @@ export async function runPluginUpload(
   // `finally`, not `then`: a failed run must free the slot too, or every later build of that directory
   // would be blocked by a corpse.
   //
-  // ORDERING NOTE: the slot is freed on a chain that settles AFTER a caller awaiting `run` resumes, so a
-  // sequential caller (watch mode) always finds the slot free by its next call. That holds because this
-  // function is `async` and so adds a thenable-adoption tick; making it non-async would reorder the two
-  // and is not the pure refactor it looks like.
+  // ORDERING NOTE (measured, not assumed): the slot is freed BEFORE a caller awaiting `run` resumes —
+  // `await runPluginUpload(...)` observes `slot-freed -> caller-resumed`. That is what makes a
+  // sequential caller (watch mode) find the slot free on its next call. It holds because this function
+  // is `async` and so adds a thenable-adoption tick; the non-async variant reverses the two, leaving
+  // the slot still held when the caller resumes. Not the pure refactor it looks like.
   runsByDir.set(outDir, run);
   void run
     .catch(() => undefined)
@@ -203,35 +205,49 @@ async function collectVcs(
   } catch {
     return undefined;
   }
-  const inFlight = vcsByRoot.get(projectRoot);
-  if (inFlight !== undefined) {
-    return inFlight;
-  }
-  const collection = (async (): Promise<VcsMetadata | undefined> => {
-    try {
-      return await resolveVcs({
-        projectRoot,
-        enabled: true,
-        ...(resolved.commit !== undefined ? { commit: resolved.commit } : {}),
-        allowDirtyCommit: resolved.allowDirtyCommit,
-        onNotice: (message: string) => {
-          // Routed to the plugin's own sink so a host can capture it; the default names the plugin,
-          // matching every other diagnostic this package emits.
-          (resolved.onError ?? ((m: unknown) => console.warn(String(m))))(`[bugsee] ${message}`);
-        },
-        // EMPTY on purpose. The env was already consulted by `resolvePluginOptions` above, and letting
-        // the resolver fall back to `process.env` would let an ambient BUGSEE_BUILD_COMMIT defeat an
-        // injected env — the very duplication the note on `commit` says is being avoided.
-        env: {},
-      });
-    } catch {
-      return undefined;
+  try {
+    const vcs = await resolveVcs({
+      projectRoot,
+      enabled: true,
+      ...(resolved.commit !== undefined ? { commit: resolved.commit } : {}),
+      allowDirtyCommit: resolved.allowDirtyCommit,
+      onNotice: notify(resolved),
+      // EMPTY on purpose. The env was already consulted by `resolvePluginOptions` above, and letting
+      // the resolver fall back to `process.env` would let an ambient BUGSEE_BUILD_COMMIT defeat an
+      // injected env — the very duplication the note on `commit` says is being avoided.
+      env: {},
+    });
+    if (resolved.dryRun) {
+      // The documented way to confirm capture works. Without it a dry run prints nothing about the
+      // VCS metadata at all, which for a CAPTURE-ONLY feature leaves a user no way to tell whether it
+      // did anything — the plugin discards `uploadSourcemaps`' return value.
+      notify(resolved)(
+        vcs === undefined
+          ? 'no VCS metadata was captured for this build'
+          : `captured VCS metadata: ${JSON.stringify(vcs)}`,
+      );
     }
-  })();
-  vcsByRoot.set(projectRoot, collection);
-  // Already-handled (the IIFE cannot reject), so this frees the slot without creating an orphan.
-  void collection.finally(() => {
-    vcsByRoot.delete(projectRoot);
-  });
-  return collection;
+    return vcs;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The plugin's notice sink: a user-actionable message, distinct from a contained FAILURE.
+ *
+ * Deliberately NOT `onError`. That option is documented as "where a contained failure is reported" and
+ * everywhere else receives an `Error`, so hosts do `e.message`, `e.stack`, `e instanceof Error`, or
+ * fail their pipeline on a non-empty list. Feeding a plain informational string about a dirty working
+ * tree into it would break all four.
+ */
+function notify(resolved: ResolvedPluginOptions): (message: string) => void {
+  return (message) => {
+    const text = `[bugsee] ${message}`;
+    if (resolved.onNotice !== undefined) {
+      resolved.onNotice(text);
+      return;
+    }
+    console.warn(text);
+  };
 }
