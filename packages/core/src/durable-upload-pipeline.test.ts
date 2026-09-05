@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type BundleStore,
   createDurableUploadPipeline,
+  DEFAULT_DURABLE_RETENTION,
   deserializeBundle,
+  deserializeBundleFrame,
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
@@ -53,6 +55,60 @@ function fakePipeline(result: UploadResult = { ok: true }) {
   const drop = vi.fn();
   return { pipeline: { enqueue, flush, drop } as UploadPipeline, enqueue, flush, drop };
 }
+
+describe('deserializeBundleFrame + DEFAULT_DURABLE_RETENTION', () => {
+  // Both exist for ONE reason: the browser/worker dead-sibling recovery leg reads a dead instance's blobs
+  // straight out of the shared store, so it never went through `recover()` and never saw the retention
+  // bounds `recover()` applies. To apply the SAME age bound it has to be able to read the frame's staging
+  // timestamp, and to use the SAME default rather than a second copy of the number.
+
+  it('returns the staging timestamp alongside the bundle', () => {
+    const framed = serializeBundle({ ...bundle(), reportId: 'inc-1' }, 1_700_000_000_000);
+    expect(deserializeBundleFrame(framed)).toEqual({
+      bundle: expect.objectContaining({ reportId: 'inc-1', fileName: 'abc.bundle.zip' }),
+      firstSeenMs: 1_700_000_000_000,
+    });
+  });
+
+  it('reports firstSeenMs as UNDEFINED for a frame written before it existed', () => {
+    // The upgrade-launch case. A reader must be able to tell "staged at the epoch" from "we do not
+    // know", because treating unknown as the epoch expires every pending bundle on the launch after an
+    // upgrade — losing exactly the crash reports the upgrade was meant to deliver.
+    expect(deserializeBundleFrame(serializeBundle(bundle())).firstSeenMs).toBeUndefined();
+  });
+
+  it('agrees with deserializeBundle about the bundle itself', () => {
+    const framed = serializeBundle(bundle({ fileName: 'x.zip' }), 5);
+    expect(deserializeBundleFrame(framed).bundle).toEqual(deserializeBundle(framed));
+  });
+
+  it('throws on an unparseable frame, exactly as deserializeBundle does', () => {
+    expect(() => deserializeBundleFrame(new Uint8Array([9, 9, 9, 9, 9]))).toThrow();
+  });
+
+  it('publishes the retention defaults the durable queue actually applies', () => {
+    expect(DEFAULT_DURABLE_RETENTION).toEqual({
+      maxBundles: 32,
+      maxBytes: 64 * 1024 * 1024,
+      maxAgeMs: 7 * 24 * 60 * 60 * 1000,
+    });
+  });
+
+  it('is the SAME object the queue defaults from, not a copy that can drift', async () => {
+    // Pinned behaviourally: a blob one millisecond past the published maxAgeMs must be evicted by a queue
+    // given no explicit retention. A second hand-written copy of "7 days" is exactly the kind of
+    // duplication that drifts, and the cost of drift here is a deleted crash report.
+    const { store, map } = memStore();
+    const now = 10 * DEFAULT_DURABLE_RETENTION.maxAgeMs;
+    map.set('old', serializeBundle(bundle(), now - DEFAULT_DURABLE_RETENTION.maxAgeMs - 1));
+    map.set('fresh', serializeBundle(bundle(), now - DEFAULT_DURABLE_RETENTION.maxAgeMs));
+    const { pipeline, drop } = fakePipeline({ ok: false });
+    createDurableUploadPipeline({ store, pipeline, now: () => now }).recover();
+    await vi.waitFor(() => expect(map.has('old')).toBe(false));
+    expect(map.has('fresh')).toBe(true); // exactly AT the bound is kept — the comparison is strict
+    expect(drop).toHaveBeenCalledWith('retention_expired', 'issue');
+  });
+});
 
 describe('serializeBundle / deserializeBundle', () => {
   // The report id rides in the frame HEADER (local storage), never in `request` (the wire envelope). It is

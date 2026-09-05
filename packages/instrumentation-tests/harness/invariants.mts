@@ -1536,6 +1536,54 @@ const collectorCase = (on: 'session' | 'issue', code: number, type: string): Con
   };
 };
 
+/**
+ * The SAME collector envelope, delivered with a NON-2xx status instead of the usual 200.
+ *
+ * The gap this closes. `bugsee-api.ts` threw on the status BEFORE reading the body, so a verdict the SDK
+ * honours perfectly on an HTTP 200 was thrown away the moment the collector attached a status to it:
+ * `14019 InvalidAppToken` on a 400 was retried at every launch for the life of the installation, and
+ * `99099 KillSdk` on a 400 could not switch the SDK off at all. Android reads the body on BOTH endpoints'
+ * failure paths — `ReportUploadExecutor.java:468-484` for `/v2/issues`, `CommunicationRequests.obtainSession`
+ * for `/v2/sessions` — and lets the collector's code win over the status.
+ *
+ * The expected outcome is DERIVED from the same Android-canonical table as {@link collectorCase}, so this
+ * adds no second opinion about which codes are permanent: it asserts only that the STATUS does not change
+ * the answer.
+ */
+const collectorCaseOverHttp = (
+  on: 'session' | 'issue',
+  status: number,
+  code: number,
+  type: string,
+): ControlCase => ({
+  ...collectorCase(on, code, type),
+  label: `${on} HTTP ${status} carrying code ${code} ${type}`,
+  answer: { status, body: { ok: false, error: { type, message: type, code } } },
+});
+
+/**
+ * A NAKED non-2xx on the control plane — a status with no collector code behind it.
+ *
+ * These are declared TRANSIENT, and that is the decision this harness exists to keep honest rather than
+ * an observation about HTTP. A bare 4xx on the control plane is the answer an INTERMEDIARY gives — a
+ * captive portal, a corporate MITM proxy, a WAF, a stale CDN route, a service worker — none of which read
+ * the payload, and all of which go away. Android's own two endpoints disagree about the identical status
+ * (`/v2/issues` falls back to `classifyHttpStatus` → PERMANENT; `/v2/sessions` falls back to
+ * `classifyServerErrorCode(0)` → TRANSIENT), which is the tell that a status is not a verdict about the
+ * bytes. So the SDK keeps the report, and these cases assert that it is still there to deliver once the
+ * interposer is gone — P4 fires if a future change starts deleting on a status.
+ *
+ * "Retried forever" is answered by BOUNDS instead: node's 7-day dead-subtree sweep, the durable queue's
+ * own retention, and — new with these cases — the same age bound on the browser/worker sibling leg (set N).
+ */
+const bareStatusCase = (on: 'session' | 'issue', status: number): ControlCase => ({
+  label: `${on} HTTP ${status} with NO collector code (an intermediary answered)`,
+  on,
+  answer: { status, body: { message: 'Bad Request' } },
+  intent: 'transient',
+  staysAlive: true,
+});
+
 const CONTROL_CASES: ControlCase[] = [
   // ── R5-2: an HTTP auth status on the control plane. Android treats 401 as session expiry and
   //    retries once (`BugseeCommunicationManager.java:614-635`); the token blacklist fires ONLY on
@@ -1590,6 +1638,27 @@ const CONTROL_CASES: ControlCase[] = [
   //    The same namespace on the ISSUE call.
   collectorCase('issue', 12003, 'SimilarCrashExistsError'),
   collectorCase('issue', 99013, 'ServerTooBusyError'),
+  //    ── The same codes with an HTTP STATUS attached. The status must not change the verdict, in
+  //       EITHER direction: a permanent code stays permanent, and ServerTooBusy stays retryable even
+  //       though it arrived on a 503 that a status-first reading would also have called retryable —
+  //       and on a 400 that a status-first reading would have DELETED.
+  collectorCaseOverHttp('issue', 400, 14019, 'InvalidAppTokenError'),
+  collectorCaseOverHttp('issue', 403, 11004, 'ApplicationTypeMismatchError'),
+  collectorCaseOverHttp('issue', 404, 99098, 'UnsupportedSdkError'),
+  collectorCaseOverHttp('issue', 422, 12004, 'TooManySimilarCrashesError'),
+  collectorCaseOverHttp('issue', 503, 99013, 'ServerTooBusyError'),
+  collectorCaseOverHttp('issue', 400, 99013, 'ServerTooBusyError'),
+  collectorCaseOverHttp('session', 400, 14019, 'InvalidAppTokenError'),
+  collectorCaseOverHttp('session', 401, 14002, 'SessionNotFoundError'),
+  collectorCaseOverHttp('session', 400, 99099, 'KillSdkError'),
+  collectorCaseOverHttp('session', 500, 99013, 'ServerTooBusyError'),
+  //    ── …and the naked statuses, which stay retryable BY DECISION (see bareStatusCase).
+  bareStatusCase('issue', 400),
+  bareStatusCase('issue', 403),
+  bareStatusCase('issue', 404),
+  bareStatusCase('issue', 422),
+  bareStatusCase('session', 400),
+  bareStatusCase('session', 404),
 ];
 
 for (const control of CONTROL_CASES) {
@@ -1703,6 +1772,120 @@ for (const control of CONTROL_CASES) {
   });
   judgePayload(label, perLaunch.flat());
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ══ N. THE BROWSER/WORKER AGE BOUND — the other half of "retried at every launch, forever" ═════════
+//
+// Set M pins what the SDK does when the collector gives a FINAL answer. This set pins what happens when
+// it never gives one at all — the case the control-plane decision deliberately leaves retryable (a bare
+// 4xx from an intermediary, an offline collector, a 5xx). On node such a blob is bounded twice over:
+// `sweep-instances` reaps a dead instance's whole subtree at 7 days, and `recover()` applies the durable
+// queue's retention. The browser/worker dead-sibling leg reads the dead instance's prefix DIRECTLY, so it
+// met neither — and on the web an instance is dead the moment its tab closes, so the blob was re-offered
+// on every launch for the lifetime of the installation. That is what `recoverSiblingBundleQueue`'s age
+// bound closes, using the SAME `DEFAULT_DURABLE_RETENTION.maxAgeMs` the same bytes already meet on the
+// same tier when the instance recovers its OWN queue.
+//
+// WHY THIS SET IS NOT JUDGED BY `judge`. Retention is the one licensed exception to P2 ("nothing is
+// deleted that was not first delivered or refused"): giving up on a blob is, by definition, deleting one
+// the collector never answered about. Routing it through `judge` would either report a violation the
+// design intends or force P2 to be weakened for everyone, and a weakened P2 is how real losses hide. So
+// the bound gets its own explicit assertions, and every OTHER blob in the case is still judged normally.
+//
+// The `firstSeenMs` dimension is the whole safety argument. A frame written before the header carried one
+// reads as UNKNOWN, and unknown must NEVER expire — treating it as the epoch would delete every pending
+// crash report on the first launch after an SDK upgrade, which is the exact loss the upgrade was
+// installed to prevent. The `legacy` case below is that control, and it must be DELIVERED.
+
+const AGE_DAY = 24 * 60 * 60 * 1000;
+const AGE_NOW = Date.now();
+
+/** A durable frame carrying an explicit staging time (or none at all, for the legacy control). */
+const agedFrame = (sub: string, key: string, incident: string, firstSeenMs?: number) =>
+  core.serializeBundle(
+    {
+      request: {
+        type: 'crash',
+        summary: blobSummary(sub, key),
+        severity: 3,
+        source: { type: 'crash', mechanism: 'uncaught' },
+        created_on: '2026-05-29T00:00:00Z',
+        environment: env,
+      },
+      body: new Uint8Array([1, 2, 3]),
+      fileName: 'p.zip',
+      reportId: incident,
+    },
+    firstSeenMs,
+  );
+
+for (const [label, staleFirstSeenMs, mustGiveUp] of [
+  ['90 days old', AGE_NOW - 90 * AGE_DAY, true],
+  ['one day old', AGE_NOW - AGE_DAY, false],
+  ['no timestamp at all (staged by an older SDK)', undefined, false],
+] as Array<[string, number | undefined, boolean]>) {
+  cases += 1;
+  const idb = new fidb.IDBFactory();
+  const locks = fakeLocks();
+  const sub = 'deadN';
+  const bundles = bu.createIdbBlobStore({
+    databaseName: bu.coexistenceDatabaseName(TOK),
+    indexedDB: idb,
+  });
+  // The blob under test, plus a FRESH sibling that must be unaffected by whatever happens to it.
+  await bundles.put(`${sub}/stale`, agedFrame(sub, 'stale', 'STALE', staleFirstSeenMs));
+  await bundles.put(`${sub}/fresh`, agedFrame(sub, 'fresh', 'FRESH', AGE_NOW - AGE_DAY));
+
+  // The collector is simply unreachable for the first two launches and then comes back — a TRANSIENT
+  // condition throughout, so nothing here is ever refused. That is the point: the only thing that may
+  // stop a blob being offered is the age bound.
+  let launch = 1;
+  const c = collector(() => (launch <= CLEARS_AFTER ? 503 : 200));
+  const perLaunch: Answered[][] = [];
+  for (; launch <= LAUNCHES; launch += 1) {
+    const mark = c.puts.length;
+    await bu
+      .createCoexistence({
+        appToken: TOK,
+        persist: true,
+        locks: locks.manager,
+        indexedDB: idb,
+        onError: () => {},
+      })
+      .recoverDeadSiblings({ uploadPipeline: realPipeline(c) });
+    await settle();
+    perLaunch.push(c.puts.slice(mark));
+  }
+
+  const name = `N browser age bound — a stale blob ${label}`;
+  const offeredStale = c.puts.filter((p) => p.summary === blobSummary(sub, 'stale'));
+  const left = await browserLeft(idb);
+  if (mustGiveUp) {
+    // GIVEN UP: never offered at all, and gone from the store — the self-DoS is over.
+    if (offeredStale.length > 0) {
+      failures.push(`${name} :: it was still OFFERED ${offeredStale.length}x past the age bound`);
+    }
+    if (left.has(`${sub}/stale`)) {
+      failures.push(`${name} :: it was withheld from the collector but LEFT ON DISK forever`);
+    }
+  } else {
+    // KEPT: offered, and delivered once the collector came back. A bound that eats these is a loss.
+    if (!offeredStale.some((p) => p.verdict === 'accept')) {
+      failures.push(`${name} :: it was NEVER DELIVERED, though the collector came back for it`);
+    }
+    if (left.has(`${sub}/stale`)) {
+      failures.push(`${name} :: it was delivered and then LEFT ON DISK`);
+    }
+  }
+  // …and the fresh sibling is judged exactly as any other blob: the bound must not touch it.
+  judgeCrossLaunch({
+    label: `${name} (its fresh neighbour)`,
+    staged: [{ slot: `${sub}/fresh`, incident: 'FRESH', ownSummary: blobSummary(sub, 'fresh') }],
+    incidentOf: (summary: string) => (summary === blobSummary(sub, 'fresh') ? 'FRESH' : undefined),
+    perLaunch,
+    left,
+    mustDeliver: true,
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════

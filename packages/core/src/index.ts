@@ -114,9 +114,12 @@ export {
   type BundleStore,
   BundleStoreToken,
   createDurableUploadPipeline,
+  DEFAULT_DURABLE_RETENTION,
+  type DurableQueueRetention,
   type DurableUploadPipeline,
   type DurableUploadPipelineOptions,
   deserializeBundle,
+  deserializeBundleFrame,
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
