@@ -195,14 +195,9 @@ export async function resolveVcsMetadata(
   // forever, would train users to ignore the sink.
   const rawCommit = (options.commit ?? env.BUGSEE_BUILD_COMMIT ?? '').trim();
   const override = resolveCommitOverride(options.commit, env);
-  if (rawCommit !== '' && override === undefined) {
-    // The claim that this is "something the build log can say out loud" is only true if it is said.
-    notice(
-      `ignoring the configured commit ${JSON.stringify(rawCommit)}: expected 7-64 hex characters, ` +
-        'so the backend would have discarded it. Falling back to the detected commit, if any.',
-    );
-  }
   if (options.enabled === false) {
+    // BEFORE the malformed-commit notice below: with detection off nothing is detected, so "falling
+    // back to the detected commit" would be a promise this path cannot keep.
     // OFF MEANS OFF — no metadata at all, not even an explicitly configured commit.
     //
     // The alternative (honour an explicit `commit` anyway) was tried and reverted: the plugin layer
@@ -210,6 +205,13 @@ export async function resolveVcsMetadata(
     // configuration differently and two green tests pinned contradictory semantics. One option, one
     // meaning. A caller who wants the commit recorded leaves `vcs` alone and sets `commit`.
     return undefined;
+  }
+  if (rawCommit !== '' && override === undefined) {
+    // The claim that this is "something the build log can say out loud" is only true if it is said.
+    notice(
+      `ignoring the configured commit ${JSON.stringify(rawCommit)}: expected 7-64 hex characters, ` +
+        'so the backend would have discarded it. Falling back to the detected commit, if any.',
+    );
   }
   const run = options.run ?? runBugseeCli;
 

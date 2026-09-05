@@ -544,6 +544,66 @@ describe('runPluginUpload — VCS metadata collection', () => {
     expect(notices).toEqual(['[bugsee] no VCS metadata was captured for this build']);
   });
 
+  it('KEEPS the captured metadata when a dry-run notice sink throws', async () => {
+    // The dry-run diagnostic calls the sink DIRECTLY, inside the try whose catch discards the metadata
+    // — so an unguarded throw here cost the caller the whole VcsMetadata object (branch, repo,
+    // provider, everything), which is the precise trade the resolver's contract says never to make.
+    // The resolver guards its own notices; this pins the same property at the layer that OWNS the sink.
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: false,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = async (): Promise<VcsMetadata | undefined> => ({ commit_sha: sha });
+    const resolved = resolvePluginOptions(
+      {
+        appToken: 't',
+        dryRun: true,
+        projectRoot: '/dry-throw',
+        onNotice: () => {
+          throw new Error('logger exploded');
+        },
+      },
+      {},
+    );
+    const result = await runPluginUpload(resolved, '/out-dry-throw', {
+      uploadSourcemaps,
+      resolveVcs,
+    });
+    expect(result?.injected).toBe(true);
+    expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
+  });
+
+  it('survives a throwing console.warn on the default sink path', async () => {
+    const uploadSourcemaps = vi.fn(
+      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
+        injected: true,
+        uploaded: false,
+        deletedMaps: [],
+      }),
+    );
+    const resolveVcs = async (): Promise<VcsMetadata | undefined> => ({ commit_sha: sha });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      throw new Error('stdout is closed');
+    });
+    try {
+      const resolved = resolvePluginOptions(
+        { appToken: 't', dryRun: true, projectRoot: '/dry-warn-throw' },
+        {},
+      );
+      const result = await runPluginUpload(resolved, '/out-dry-warn-throw', {
+        uploadSourcemaps,
+        resolveVcs,
+      });
+      expect(uploadSourcemaps.mock.calls[0]?.[0]).toMatchObject({ vcs: { commit_sha: sha } });
+      expect(result?.injected).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('stays SILENT about capture on a normal (non-dry) build', async () => {
     const uploadSourcemaps = vi.fn(
       async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
@@ -560,28 +620,6 @@ describe('runPluginUpload — VCS metadata collection', () => {
     );
     await runPluginUpload(resolved, '/out-quiet', { uploadSourcemaps, resolveVcs });
     expect(notices).toEqual([]);
-  });
-
-  it('warns on the console when the plugin has no onError sink of its own', async () => {
-    const uploadSourcemaps = vi.fn(
-      async (_o: UploadSourcemapsOptions): Promise<UploadSourcemapsResult> => ({
-        injected: true,
-        uploaded: true,
-        deletedMaps: [],
-      }),
-    );
-    const resolveVcs = async (o: ResolveVcsMetadataOptions): Promise<VcsMetadata | undefined> => {
-      o.onNotice?.('no sink configured');
-      return undefined;
-    };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/warn-root' }, {});
-      await runPluginUpload(resolved, '/out-warn', { uploadSourcemaps, resolveVcs });
-      expect(warn).toHaveBeenCalledWith('[bugsee] no sink configured');
-    } finally {
-      warn.mockRestore();
-    }
   });
 
   it('CONTAINS a process.cwd() that throws — an unlinked working directory must not fail the build', async () => {

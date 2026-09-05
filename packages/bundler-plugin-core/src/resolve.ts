@@ -40,8 +40,9 @@ export interface BugseePluginOptions {
    * Default `true`.
    *
    * The commit is what lets the backend show a frame's ORIGINAL source when the uploaded map carries no
-   * `sourcesContent` — it fetches the file from the repository connected to the app. Capture costs one
-   * short-lived subprocess per build and degrades to nothing at all outside a repository.
+   * `sourcesContent` — it fetches the file from the repository connected to the app. Capture costs two
+   * short-lived subprocesses (`bugsee-cli vcs-metadata` and a `git diff` dirtiness probe) per OUTPUT
+   * DIRECTORY, and degrades to nothing at all outside a repository.
    */
   vcs?: boolean;
   /** Explicit commit SHA for this build. Falls back to `BUGSEE_BUILD_COMMIT`. Overrides detection. */
@@ -244,10 +245,17 @@ async function collectVcs(
 function notify(resolved: ResolvedPluginOptions): (message: string) => void {
   return (message) => {
     const text = `[bugsee] ${message}`;
-    if (resolved.onNotice !== undefined) {
-      resolved.onNotice(text);
-      return;
+    try {
+      if (resolved.onNotice !== undefined) {
+        resolved.onNotice(text);
+        return;
+      }
+      console.warn(text);
+    } catch {
+      // GUARDED HERE, not only inside the resolver. The resolver wraps its own `notice()` calls, but
+      // the dry-run diagnostic below calls this sink DIRECTLY, inside the try whose catch discards the
+      // metadata — so a throwing host logger cost the caller the whole VcsMetadata object rather than
+      // one message, which is the exact trade the resolver's contract says never to make.
     }
-    console.warn(text);
   };
 }

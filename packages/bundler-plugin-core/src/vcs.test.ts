@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -275,6 +275,24 @@ describe('resolveVcsMetadata — driving `bugsee-cli vcs-metadata`', () => {
       onNotice: (m) => notices.push(m),
     });
     expect(notices).toEqual([]);
+  });
+
+  it('says NOTHING about a malformed commit when disabled — it has no fallback to promise', async () => {
+    // The notice's tail is "Falling back to the detected commit, if any." With detection off there is
+    // no detection, so emitting it here would be a promise this path cannot keep.
+    const notices: string[] = [];
+    const run = vi.fn(async () => ({ code: 0, stdout: '{}', stderr: '' }));
+    expect(
+      await resolveVcsMetadata({
+        projectRoot: '/p',
+        enabled: false,
+        commit: 'HEAD',
+        run,
+        onNotice: (m) => notices.push(m),
+      }),
+    ).toBeUndefined();
+    expect(notices).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('records NOTHING when disabled, even with a valid explicit commit — off means off', async () => {
@@ -625,6 +643,24 @@ describe('isWorkingTreeDirty — against the real git binary', () => {
   it('is CLEAN on a DETACHED HEAD — the shape of every CI checkout', async () => {
     const dir = initRepo();
     git(dir, 'checkout', '-q', '--detach', 'HEAD');
+    expect(await isWorkingTreeDirty(dir)).toBe(false);
+  });
+
+  it('is CLEAN after mtimes are rewritten — a fresh checkout must not read as dirty', async () => {
+    // `git diff --quiet` is famously stat-sensitive when the index is stale, and a CI checkout or a
+    // restored build cache rewrites every mtime. If that read as dirty, the SHA would be dropped on
+    // every CI build — killing the feature exactly where it matters most. Measured, not assumed:
+    // porcelain `git diff` refreshes the index first (the plumbing `diff-index` is the one that
+    // needs an explicit `update-index --refresh`), so both of these are clean.
+    const dir = initRepo();
+    const now = new Date();
+    utimesSync(join(dir, 'a.txt'), now, now);
+    expect(await isWorkingTreeDirty(dir)).toBe(false);
+
+    // Harsher: same bytes, but a new inode and ctime as well as mtime.
+    const bytes = readFileSync(join(dir, 'a.txt'));
+    rmSync(join(dir, 'a.txt'));
+    writeFileSync(join(dir, 'a.txt'), bytes);
     expect(await isWorkingTreeDirty(dir)).toBe(false);
   });
 

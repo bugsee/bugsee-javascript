@@ -254,3 +254,27 @@ slice because each needs a product decision.
 - **The signal-termination line names no binary.** `"bugsee-cli"` was wrong once this adapter also ran
   `git`; `command` is equally wrong, because on the default install it is `process.execPath` — an
   OOM-killed CLI reported that `node` had died. The caller's own error message already says what it ran.
+
+### 9.7 Review round 3 (2026-09-06)
+
+Round 2's fixes held; round 3 found one instance of the same "the fix broke something" pattern plus doc
+drift. All fixed.
+
+- **The dry-run diagnostic was the one unguarded sink call.** Round 2 made a throwing `onNotice` harmless
+  *inside the resolver*, but `collectVcs` calls the sink directly, inside the try whose catch discards the
+  metadata — so a throwing host logger cost the caller the whole `VcsMetadata` object. Guarded at the layer
+  that owns the sink, and now pinned there too.
+- **The malformed-commit notice fired on the `enabled: false` path**, promising a fallback to "the detected
+  commit" on the one path where nothing is detected. The off-return now precedes it.
+- Two tests carried names describing behaviour that no longer exists (`onError` notice routing) or that
+  they cannot reach (the resolver's short-circuit, which the plugin layer never gets to). One was a
+  duplicate and was deleted; the other renamed to state the half it actually asserts.
+- The sample verification docs quoted the old signal string and claimed *every* `BugseePluginOptions`
+  field had been driven from a real build; the five VCS options have not been, and both now say so.
+
+**A hazard checked and ruled out.** `git diff --quiet` is stat-sensitive when the index is stale, and a CI
+checkout or restored build cache rewrites every mtime — if that read as dirty, the SHA would be dropped on
+every CI build, killing the feature exactly where it matters most. Measured on git 2.50.1: porcelain
+`git diff` refreshes the index first, so an mtime rewrite AND a same-bytes rewrite with a new inode both
+read clean; only the plumbing `git diff-index` needs an explicit `update-index --refresh`. Pinned by a
+real-git test so a future switch to plumbing cannot silently reintroduce it.
