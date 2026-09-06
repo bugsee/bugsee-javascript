@@ -286,6 +286,46 @@
       "name": "adjacent lines each keep their own string literal",
       "lines": ["const password = \"abc\";", "const other = \"keep\";"],
       "expected": ["const password = \"<redacted>\";", "const other = \"keep\";"]
+    },
+    {
+      "name": "strict inequality against a sensitive identifier",
+      "lines": ["if (password !== \"hunter2\") {"],
+      "expected": ["if (password !== \"<redacted>\") {"]
+    },
+    {
+      "name": "loose inequality against a sensitive identifier",
+      "lines": ["if (apiKey != \"sk-live-abcdef\") {"],
+      "expected": ["if (apiKey != \"<redacted>\") {"]
+    },
+    {
+      "name": "inequality wrapped across the window, which is why the scan is window-scoped",
+      "lines": ["if (password !==", "  \"hunter2\") {"],
+      "expected": ["if (password !==", "  \"<redacted>\") {"]
+    },
+    {
+      "name": "logical-or assignment of a fallback secret",
+      "lines": ["apiKey ||= \"sk-live-fallback\";"],
+      "expected": ["apiKey ||= \"<redacted>\";"]
+    },
+    {
+      "name": "nullish assignment of a fallback secret",
+      "lines": ["password ??= \"admin\";"],
+      "expected": ["password ??= \"<redacted>\";"]
+    },
+    {
+      "name": "logical-and assignment",
+      "lines": ["token &&= \"replacement\";"],
+      "expected": ["token &&= \"<redacted>\";"]
+    },
+    {
+      "name": "an arrow function is still not an assignment",
+      "lines": ["const pick = (password) => \"not-a-secret\";"],
+      "expected": ["const pick = (password) => \"not-a-secret\";"]
+    },
+    {
+      "name": "greater-or-equal is a comparison, not an assignment, and still redacts",
+      "lines": ["if (secret >= \"0\") {"],
+      "expected": ["if (secret >= \"<redacted>\") {"]
     }
   ]
 }

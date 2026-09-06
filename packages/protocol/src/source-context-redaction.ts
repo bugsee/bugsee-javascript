@@ -67,6 +67,16 @@ const NUMERIC_LITERAL = '-?\\d[\\d_]*(?:\\.\\d+)?';
  *   - `"` / `'`    — the closing quote of a quoted object key
  *   - `:` or 1-3 `=`, so `:`, `=`, `==` and `===` all count.
  *
+ * The separator carries an optional OPERATOR PREFIX. Without it only `:`, `=`, `==` and `===` matched,
+ * so `if (password !== "hunter2")` shipped the literal while `===` redacted it — half of the comparison
+ * forms this pass already claimed to cover. `!`, `||`, `&&`, `??` and `<`/`>` are accepted, which adds
+ * `!=`/`!==`, the logical assignments (`||=`, `??=`, `&&=`) and `<=`/`>=`.
+ *
+ * Widening the prefix cannot let an arrow through, and that is structural too: `token => "x"` fails
+ * because after the `=` the pattern allows only whitespace before the literal, and `>` is neither. A
+ * mutation adding `=` to the prefix class SURVIVES the suite for that reason — measured, the only input
+ * it changes is `a ==== "x"`, which is not valid JavaScript. It is an equivalent mutant, not a gap.
+ *
  * An ARROW FUNCTION is excluded structurally rather than by a lookahead. `(?!=|>)` was written here
  * first, on the assumption that `token => "x"` would otherwise read as an assignment; the mutator loop
  * disproved it — removing the lookahead changed no test outcome, because between the `=` and the value
@@ -80,7 +90,7 @@ const NUMERIC_LITERAL = '-?\\d[\\d_]*(?:\\.\\d+)?';
 const SENSITIVE_ASSIGNMENT = new RegExp(
   '(^|[^A-Za-z0-9_$-])' +
     '([A-Za-z0-9_$-]+)' +
-    '((?:["\']?\\s*\\])?["\']?\\s*(?::|={1,3})\\s*)' +
+    '((?:["\']?\\s*\\])?["\']?\\s*(?::|(?:!|\\|\\||&&|\\?\\?|[<>])?={1,3})\\s*)' +
     `(${STRING_LITERAL}|${NUMERIC_LITERAL})`,
   'g',
 );
