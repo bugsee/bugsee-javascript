@@ -3,9 +3,12 @@
 //
 // TWO DISJOINT NUMERIC NAMESPACES, and conflating them is a data-loss bug: `code` is the HTTP STATUS
 // (`0` when none was reached), while `serverCode` is the COLLECTOR's own code from a `{ ok: false,
-// error: { code } }` envelope — the mobile-parity codes such as 12003/12004 (§7.7) and 14019. The
-// collector answers HTTP 200 with an error envelope, so the two never arrive together and a collector
-// code must never be read as a status.
+// error: { code } }` envelope — the mobile-parity codes such as 12003/12004 (§7.7) and 14019.
+//
+// They CAN arrive together. The usual rejection is an error envelope on an HTTP 200, so `code` is 0 and
+// only `serverCode` is set — but the collector can also attach a status to the same envelope, and then
+// both are populated (`bugsee-api.ts`, `httpFailure`). What must never happen is either being read as the
+// other: only `serverCode` is a verdict about the payload, and a status is never one.
 
 export interface BugseeErrorOptions {
   /** The underlying error this one wraps, surfaced as the standard `Error.cause`. */
@@ -22,11 +25,11 @@ export interface BugseeErrorOptions {
   /**
    * The COLLECTOR's own error code, from a `/v2/*` `{ ok: false, error: { code } }` envelope.
    *
-   * A SEPARATE numeric namespace from `code`, and it has to be: a v2 rejection arrives with **HTTP
-   * 200**, so there is no status to report, and the collector's codes overlap HTTP statuses by pure
-   * accident (a collector code of `403` is not an auth failure). Carrying one in `code` meant the
-   * upload pipeline read it as a status — retrying Android's permanent codes forever, and disabling the
-   * SDK on a transient rejection that merely happened to be numbered 401 or 403.
+   * A SEPARATE numeric namespace from `code`, and it has to be: a v2 rejection usually arrives with
+   * **HTTP 200**, so there is often no status to report at all, and the collector's codes overlap HTTP
+   * statuses by pure accident (a collector code of `403` is not an auth failure). Carrying one in `code`
+   * meant the upload pipeline read it as a status — retrying Android's permanent codes forever, and
+   * disabling the SDK on a transient rejection that merely happened to be numbered 401 or 403.
    *
    * Read it through {@link classifyServerErrorCode}, never by comparing it to a status.
    */

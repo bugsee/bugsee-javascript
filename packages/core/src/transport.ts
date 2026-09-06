@@ -167,7 +167,10 @@ export interface UploadResult {
  * ONE definition, because three separately-written copies of it drifted: the live durable pipeline treated
  * `permanent` as settled while both recovery legs gated on `ok` alone, so a 4xx-refused bundle recovered
  * from a dead instance was re-uploaded on every launch forever — bounded at 7 days on node by the instance
- * sweep, unbounded on browser/worker, which has no retention pass at all.
+ * sweep, and on browser/worker not bounded at all. That second half is now closed separately, by the age
+ * bound `recoverSiblingBundleQueue` applies from `DEFAULT_DURABLE_RETENTION`: a verdict settles a bundle,
+ * and a bound gives up on one, and the two must stay different things. Widening what counts as a verdict
+ * to make up for a missing bound is what produced a new loss path in three consecutive review rounds.
  *
  * Android parity: `CommunicationErrorClassifier.java:14-33` + `ReportUploadExecutor.java:258-268`.
  */

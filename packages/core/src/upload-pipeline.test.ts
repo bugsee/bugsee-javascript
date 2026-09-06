@@ -1,7 +1,8 @@
 import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
-import { createDeferred } from '@bugsee/util';
+import { createDeferred, strToU8 } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createBugseeApi } from './bugsee-api';
 import { BugseeError } from './errors';
 import type { BugseeApi, Bundle, BundleUploader, IssueCreateResult, PutResult } from './transport';
 import {
@@ -612,5 +613,129 @@ describe('createUploadPipeline — diagnosability', () => {
     const result = await pipeline.enqueue(bundle);
     expect(result.ok).toBe(false);
     expect(result.error?.cause).toBe(boom);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// INTEGRATION — the REAL BugseeApi over a fake transport, so the whole control-plane verdict path runs
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Every test above injects a `BugseeApi` double that throws a ready-made `BugseeError`, so the step that
+// actually DECIDES the verdict — reading the collector's `error.code` off the wire — was never covered
+// end to end. That is precisely where the gap lived: `bugsee-api.ts` threw on a non-2xx status before
+// looking at the body, so a `14019 InvalidAppToken` delivered with an HTTP 400 reached this pipeline with
+// no `serverCode`, was classified transient, and was re-uploaded at every launch for the life of the
+// installation — while the byte-identical body on an HTTP 200 was classified permanent and freed.
+describe('createUploadPipeline + createBugseeApi — the control plane end to end', () => {
+  const enc = (json: unknown): Uint8Array => strToU8(JSON.stringify(json));
+  const sessionOk = {
+    status: 200,
+    headers: {},
+    body: enc({ ok: true, result: { access_token: 't' } }),
+  };
+
+  /**
+   * Wire the REAL api to a transport that answers `on` with `status` + `body`, and count the calls.
+   * The signed PUT always succeeds, so anything that fails here failed on the control plane.
+   */
+  const wired = (on: '/v2/sessions' | '/v2/issues', status: number, body: unknown) => {
+    const calls = { session: 0, issue: 0 };
+    const transport = async (url: string) => {
+      const which = url.endsWith('/v2/sessions') ? 'session' : 'issue';
+      calls[which] += 1;
+      if (url.endsWith(on)) {
+        return { status, headers: {}, body: enc(body) };
+      }
+      return which === 'session'
+        ? sessionOk
+        : {
+            status: 200,
+            headers: {},
+            body: enc({
+              ok: true,
+              result: { endpoint: 'https://put/1', issue_id: 'i1', recording_id: 'r1' },
+            }),
+          };
+    };
+    const api = createBugseeApi(transport, {
+      baseUrl: 'https://api.test',
+      appToken: 'tok',
+      sdkVersion: '0',
+    });
+    return { api, calls };
+  };
+  const envelope = (code: number, type: string) => ({
+    ok: false,
+    error: { type, message: type, code },
+  });
+  const run = (api: BugseeApi) =>
+    createUploadPipeline(deps({ api, maxRetries: 2 })).enqueue(bundle);
+
+  it.each([
+    ['/v2/issues' as const, 400],
+    ['/v2/issues' as const, 404],
+    ['/v2/sessions' as const, 400],
+    ['/v2/sessions' as const, 403],
+  ])('drops the bundle on a permanent collector code carried by a %s HTTP %i', async (on, status) => {
+    const { api, calls } = wired(on, status, envelope(14019, 'InvalidAppTokenError'));
+    const result = await run(api);
+    expect(result.permanent).toBe(true); // the durable queue frees it — no more launch-forever loop
+    expect(result.error?.serverCode).toBe(14019);
+    expect(result.error?.code).toBe(status); // the status is still reported, just not as the verdict
+    expect(result.error?.fatal).toBe(false); // a bad token drops a payload; it does not stop the SDK
+    expect(calls[on === '/v2/sessions' ? 'session' : 'issue']).toBe(1); // not retried
+  });
+
+  it('switches the SDK off when KILL_SDK (99099) arrives WITH a status, not only inside a 200', async () => {
+    const { api } = wired('/v2/sessions', 400, envelope(99099, 'KillSdkError'));
+    const result = await run(api);
+    expect(result.error?.fatal).toBe(true);
+    expect(result.permanent).toBe(true);
+  });
+
+  it.each([
+    [503, 99013, 'ServerTooBusy — the collector is shedding load, not refusing the payload'],
+    [400, 14002, 'SessionNotFound — the session is stale, the payload is fine'],
+    [400, 123_456, 'a code this SDK has never heard of'],
+  ])('KEEPS the bundle for a %i carrying %i (%s)', async (status, code) => {
+    const { api, calls } = wired('/v2/sessions', status, envelope(code, 'X'));
+    const result = await run(api);
+    expect(result.permanent).toBeUndefined();
+    expect(calls.session).toBe(3); // initial + 2 retries, then kept for the next launch
+  });
+
+  // ── THE DECISION, pinned. ────────────────────────────────────────────────────────────────────────
+  //
+  // Android's issue-create path DOES fall back to the HTTP status when the body carries no code, and
+  // `classifyHttpStatus` calls any non-401/408/425/429 4xx PERMANENT — which would delete the report.
+  // This SDK deliberately does NOT follow it there, and this test is the fence:
+  //
+  //   • Android's OWN session path disagrees with its issue path about the identical status: an
+  //     `/v2/sessions` non-2xx with no body code becomes `UNKNOWN_ERROR` → `classifyServerErrorCode(0)`
+  //     → TRANSIENT → retry (`CommunicationRequests.obtainSession`). Two adjacent calls to the same
+  //     collector cannot both be right, which is the tell that the STATUS is not the verdict — the
+  //     collector's code is.
+  //   • A bare 4xx on the control plane is the answer an intermediary gives: a captive portal, a
+  //     corporate MITM proxy, a WAF, a stale CDN route, a service worker. None of them read the payload.
+  //   • Widening a deletion path on a status is what produced a NEW data-loss path in each of three
+  //     consecutive review rounds here (R3-1: `status >= 500` deleted every 401/408/425/429).
+  //
+  // The cost of NOT classifying was "retried forever". That cost is now paid for separately, by BOUNDS
+  // rather than by verdicts: node sweeps dead subtrees at 7 days, the durable queue's own retention caps
+  // at 32 bundles / 64 MiB / 7 days, and `recoverSiblingBundleQueue` now applies that same age bound on
+  // browser and worker, which is where "forever" was literally true.
+  it.each([
+    ['/v2/issues' as const, 400],
+    ['/v2/issues' as const, 403],
+    ['/v2/issues' as const, 404],
+    ['/v2/issues' as const, 422],
+    ['/v2/sessions' as const, 400],
+    ['/v2/sessions' as const, 404],
+  ])('KEEPS the bundle for a NAKED %s HTTP %i — a status is never a verdict here', async (on, status) => {
+    const { api } = wired(on, status, { message: 'Bad Request' });
+    const result = await run(api);
+    expect(result.permanent).toBeUndefined();
+    expect(result.error?.fatal).toBe(false);
+    expect(result.error?.serverCode).toBeUndefined();
   });
 });

@@ -156,7 +156,16 @@ export interface DurableQueueRetention {
   maxAgeMs?: number;
 }
 
-const DEFAULT_RETENTION: Required<DurableQueueRetention> = {
+/**
+ * The bounds `recover()` applies when a caller supplies none.
+ *
+ * EXPORTED because the durable queue is not the only reader of a staged blob: the browser/worker
+ * dead-sibling leg (`browser-utils/recover-dead-instances.ts`) replays another instance's blobs straight
+ * out of the shared store, so it never passes through `recover()` and never saw these bounds at all. It
+ * applies `maxAgeMs` from HERE rather than from a second hand-written "7 days", because a second copy of
+ * a number that decides whether a crash report is deleted is a copy that will eventually drift.
+ */
+export const DEFAULT_DURABLE_RETENTION: Required<DurableQueueRetention> = {
   maxBundles: 32,
   maxBytes: 64 * 1024 * 1024,
   maxAgeMs: 7 * 24 * 60 * 60 * 1000,
@@ -186,11 +195,23 @@ export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number):
 }
 
 export function deserializeBundle(bytes: Uint8Array): IdentifiedBundle {
-  return readFrame(bytes).bundle;
+  return deserializeBundleFrame(bytes).bundle;
 }
 
-/** Parse a durable frame into its bundle plus the staging metadata the retention policy needs. */
-function readFrame(bytes: Uint8Array): { bundle: IdentifiedBundle; firstSeenMs?: number } {
+/**
+ * Parse a durable frame into its bundle plus the staging metadata the retention policy needs.
+ *
+ * EXPORTED for the browser/worker dead-sibling leg, which replays another instance's blobs straight out
+ * of the shared store and so needs the staging time without going through `recover()`.
+ *
+ * `firstSeenMs` is `undefined` for a frame written before the header carried it. A reader MUST NOT treat
+ * that as the epoch: doing so expires every pending bundle on the launch after an upgrade, which loses
+ * exactly the crash reports the upgrade was installed to deliver.
+ */
+export function deserializeBundleFrame(bytes: Uint8Array): {
+  bundle: IdentifiedBundle;
+  firstSeenMs?: number;
+} {
   const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
     0,
     true,
@@ -242,7 +263,7 @@ export function createDurableUploadPipeline(
   const now = options.now ?? (() => Date.now());
   const stagedWaitMs = options.stagedWaitMs ?? 5_000;
   const sleep = options.sleep ?? defaultSleep;
-  const retention = { ...DEFAULT_RETENTION, ...options.retention };
+  const retention = { ...DEFAULT_DURABLE_RETENTION, ...options.retention };
   let counter = 0;
   const newId =
     options.newId ??
@@ -344,7 +365,7 @@ export function createDurableUploadPipeline(
         if (bytes === undefined) continue; // removed between list() and read()
         let bundle: Bundle;
         try {
-          bundle = readFrame(bytes).bundle;
+          bundle = deserializeBundleFrame(bytes).bundle;
         } catch (error) {
           onError(error);
           removeSafe(id); // unparseable leftover — purge so it can't wedge the pump forever
@@ -385,7 +406,7 @@ export function createDurableUploadPipeline(
       }
       let frame: { bundle: IdentifiedBundle; firstSeenMs?: number };
       try {
-        frame = readFrame(bytes);
+        frame = deserializeBundleFrame(bytes);
       } catch (error) {
         onError(error);
         removeSafe(id); // unparseable leftover — purge so it can't wedge recovery forever

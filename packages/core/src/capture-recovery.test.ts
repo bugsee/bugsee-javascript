@@ -486,7 +486,7 @@ describe('recoverReports', () => {
 
     // A collector refusal is settled, exactly as the live durable pipeline treats it: rebuilding the same
     // bundle every launch would be a self-DoS, and the marker (plus the generation it pins) would never be
-    // freed — unbounded on browser/worker, where no retention sweep exists.
+    // freed — and on browser/worker nothing bounded that until `recoverSiblingBundleQueue` gained an age bound.
     it('retires a permanently-refused incident instead of rebuilding it forever', async () => {
       const storage = createInMemoryChunkStorage();
       seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
@@ -680,7 +680,7 @@ describe('createMarkerAwareBundleReplay', () => {
 
   // A collector refusal is SETTLED — the durable pipeline frees the blob for it (a re-upload would just be
   // refused again, forever). The marker must go with it, or the incident is rebuilt on every later launch
-  // and its capture generation is pinned for good (unbounded on browser/worker: no retention sweep there).
+  // and its capture generation is pinned for good (on browser/worker, until the sibling leg's age bound, forever).
   it('retires the marker when the collector permanently refuses the staged bundle', async () => {
     const markers = fakeMarkers([marker('inc1', 100)]);
     const inner = innerPipeline({ ok: false, permanent: true });

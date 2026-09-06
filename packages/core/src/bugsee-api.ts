@@ -2,13 +2,15 @@ import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { randomId, strFromU8 } from '@bugsee/util';
 import { BugseeError } from './errors';
-import type { BugseeApi, HttpTransport, IssueCreateResult } from './transport';
+import type { BugseeApi, HttpResponse, HttpTransport, IssueCreateResult } from './transport';
 
 // The control-plane BugseeApi (design §7.5/§8.1/§8.2) — platform-agnostic logic over an injected
 // HttpTransport. Lazily creates a session (POST /v2/sessions), memoizes the access token, and
 // authenticates issue creation / renewal with it. Non-2xx responses throw a BugseeError carrying the
-// status as `code` — the UploadPipeline catches the throw, calls invalidateSession() and retries (so
-// a stale-token 401 is re-acquired). `app_token` travels in the X-App-Token header (§8.1 v3). The
+// status as `code` — plus the collector's own `error.code` on `serverCode` when the failed body carried
+// one, which is the only thing the UploadPipeline reads as a verdict about the payload. The
+// UploadPipeline catches the throw, calls invalidateSession() and retries (so a stale-token 401 is
+// re-acquired). `app_token` travels in the X-App-Token header (§8.1 v3). The
 // only platform-specific piece is the transport, supplied by the platform.
 
 export interface BugseeApiOptions {
@@ -58,6 +60,56 @@ function unwrap(body: Uint8Array, what: string): unknown {
   return envelope.result;
 }
 
+/**
+ * The collector's OWN `error.code` inside the body of a FAILED (non-2xx) response, or `undefined`.
+ *
+ * A `/v2/*` rejection usually arrives with HTTP 200 and the verdict in the envelope, which is what
+ * {@link unwrap} reads. But it does not always: the collector can answer a 4xx and put the SAME envelope
+ * in the body, and this client threw on the status before ever looking. The byte-identical body was
+ * therefore classified `permanent` on a 200 and retried at every launch forever on a 400 — including
+ * `99099 KillSdk`, which could not switch the SDK off if it arrived with a status attached.
+ *
+ * Android reads the body on both endpoints' failure paths and lets the collector's code win over the
+ * status: `ReportUploadExecutor.java:468-484` for `/v2/issues` (`serverErrorCode != 0` →
+ * `classifyServerErrorCode`, and only otherwise the status), and `CommunicationRequests.obtainSession`
+ * for `/v2/sessions` (a non-2xx with `errorCode != 0` → `createFailure(errorCode)`).
+ *
+ * Everything here fails towards `undefined`, and `undefined` means "the status is all we know" — which
+ * the pipeline retries. A non-JSON body (an nginx/WAF/captive-portal error page), a body with no error
+ * object, a non-numeric code: none of them is the collector speaking, so none of them may license
+ * deleting a crash report. `0` is ABSENT rather than a code, matching Android's `!= 0` guards — the
+ * value `optInt("code", 0)` cannot tell from a missing field.
+ */
+function serverErrorCodeOf(body: Uint8Array): number | undefined {
+  let decoded: unknown;
+  try {
+    decoded = decode(body);
+  } catch {
+    return undefined; // not JSON — an intermediary answered, not the collector
+  }
+  if (typeof decoded !== 'object' || decoded === null) {
+    return undefined;
+  }
+  const error = (decoded as V2Envelope).error;
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+  const code = error.code;
+  return typeof code === 'number' && code !== 0 ? code : undefined;
+}
+
+/** The error for a non-2xx control-plane answer: the STATUS on `code`, and the collector's own code on
+ *  `serverCode` when the body carried one. The two namespaces stay disjoint; only one call now
+ *  populates both, and nothing reads either as the other. */
+function httpFailure(what: string, response: HttpResponse): BugseeError {
+  const serverCode = serverErrorCodeOf(response.body);
+  return new BugseeError(
+    `${what} failed (status ${response.status})`,
+    response.status,
+    serverCode !== undefined ? { serverCode } : undefined,
+  );
+}
+
 export function createBugseeApi(transport: HttpTransport, options: BugseeApiOptions): BugseeApi {
   const { baseUrl, appToken, sdkVersion } = options;
   const sessionId = options.sessionId ?? randomId();
@@ -89,7 +141,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
       body: JSON.stringify(body),
     });
     if (!isOk(response.status)) {
-      throw new BugseeError(`issue create failed (status ${response.status})`, response.status);
+      throw httpFailure('issue create', response);
     }
     // The collector answers snake_case (`issue_id`/`recording_id`); the SDK's own shape is camelCase.
     const result = unwrap(response.body, 'issue create') as {
@@ -117,7 +169,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
         body: JSON.stringify({ app_token: appToken, environment, session_id: sessionId }),
       });
       if (!isOk(response.status)) {
-        throw new BugseeError(`session create failed (status ${response.status})`, response.status);
+        throw httpFailure('session create', response);
       }
       const token = (unwrap(response.body, 'session create') as { access_token?: string } | null)
         ?.access_token;

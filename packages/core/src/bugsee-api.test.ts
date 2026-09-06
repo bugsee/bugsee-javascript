@@ -280,6 +280,122 @@ describe('createBugseeApi — the v2 response envelope', () => {
   });
 });
 
+describe('createBugseeApi — a NON-2xx that also carries a collector code', () => {
+  // THE GAP THIS CLOSES. `unwrap` reads the collector's own `error.code` only out of a 2xx body,
+  // because a v2 rejection normally arrives with HTTP 200. But the collector does NOT always answer
+  // 200: a 4xx can carry the same `{ ok: false, error: { code } }` envelope, and the SDK threw on the
+  // status BEFORE reading it. So `14019 InvalidAppToken` delivered with a 400 produced a BugseeError
+  // with no `serverCode`, `finalControlPlaneFailure` returned null, and the bundle was retried at every
+  // launch for the life of the installation — while the byte-identical body on a 200 was classified
+  // permanent and freed.
+  //
+  // Android reads the body on BOTH endpoints' failure paths and lets the collector's code win over the
+  // status (`ReportUploadExecutor.java:468-484` for /v2/issues, `CommunicationRequests.obtainSession`
+  // for /v2/sessions, where a non-2xx with `errorCode != 0` becomes `createFailure(errorCode)`).
+  //
+  // What does NOT change: the STATUS never becomes a verdict. `code` still carries it, `serverCode`
+  // carries the collector's code, and a status alone still means retry.
+
+  /** A non-2xx that carries the collector's envelope anyway. */
+  const failedWithCode = (status: number, code: number, type = 'InvalidAppTokenError') => ({
+    status,
+    headers: {},
+    body: enc({ ok: false, error: { type, message: type, code } }),
+  });
+
+  it.each([
+    400, 403, 404, 422, 500,
+  ])('reads the collector code out of a %i on /v2/issues, with the status still on `code`', async (status) => {
+    const { transport } = recorder((url) =>
+      url.endsWith('/v2/sessions') ? sessionOk() : failedWithCode(status, 14019),
+    );
+    const a = api(transport);
+    await a.ensureSession(env);
+    await expect(a.createIssue(requestJson)).rejects.toMatchObject({
+      code: status, // the STATUS namespace — unchanged
+      serverCode: 14019, // …and the COLLECTOR namespace, which used to be thrown away
+    });
+  });
+
+  it.each([
+    400, 403, 404, 422, 500,
+  ])('reads the collector code out of a %i on /v2/sessions too', async (status) => {
+    const { transport } = recorder(() => failedWithCode(status, 99099, 'KillSdkError'));
+    await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
+      code: status,
+      serverCode: 99099,
+    });
+  });
+
+  it('carries the code through renewUpload as well', async () => {
+    const { transport } = recorder((url) =>
+      url.endsWith('/v2/sessions') ? sessionOk() : failedWithCode(400, 11004),
+    );
+    const a = api(transport);
+    await a.ensureSession(env);
+    await expect(
+      a.renewUpload(requestJson, 'i1' as IssueId, 'r1' as RecordingId),
+    ).rejects.toMatchObject({ code: 400, serverCode: 11004 });
+  });
+
+  // ── Everything below is the SAFE direction: no code found ⇒ no `serverCode` ⇒ the status alone is
+  //    not a verdict, and the failure stays retryable. Each of these is a body an intermediary can
+  //    produce, and none of them is the collector speaking.
+
+  it('reports NO collector code when a non-2xx body is not JSON at all (an nginx error page)', async () => {
+    const { transport } = recorder(() => ({
+      status: 502,
+      headers: {},
+      body: strToU8('<html><body>502 Bad Gateway</body></html>'),
+    }));
+    await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
+      code: 502,
+      serverCode: undefined,
+    });
+  });
+
+  it.each([
+    ['an empty object', {}],
+    ['an error with no code', { ok: false, error: { type: 'Whatever' } }],
+    ['a JSON scalar', 'nope'],
+    ['null', null],
+    ['a JSON array', [1, 2]],
+    ['a non-numeric code', { ok: false, error: { code: 'oops' } }],
+    ['a nested error that is a scalar', { ok: false, error: 7 }],
+  ])('reports NO collector code for %s', async (_label, body) => {
+    const { transport } = recorder(() => ({ status: 400, headers: {}, body: enc(body) }));
+    await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
+      code: 400,
+      serverCode: undefined,
+    });
+  });
+
+  it("treats the collector's `code: 0` as ABSENT, exactly as Android does", async () => {
+    // `optInt("code", 0)` cannot tell "absent" from "zero", so Android's failure paths both guard on
+    // `errorCode != 0`. Mirroring that keeps 0 out of the classifier, where it would land on the
+    // `transient` default anyway — but only by luck, and luck is not the property to rely on when the
+    // answer decides whether a crash report is deleted.
+    const { transport } = recorder(() => failedWithCode(400, 0, 'CollectorError'));
+    await expect(api(transport).ensureSession(env)).rejects.toMatchObject({
+      code: 400,
+      serverCode: undefined,
+    });
+  });
+
+  it('still throws, and still names the status, when a code IS found', async () => {
+    const { transport } = recorder(() => failedWithCode(400, 14019));
+    await expect(api(transport).ensureSession(env)).rejects.toThrow(/session create failed.*400/);
+  });
+
+  it('never caches a session from a non-2xx, whatever the body says', async () => {
+    const { transport, calls } = recorder(() => failedWithCode(400, 14019));
+    const a = api(transport);
+    await expect(a.ensureSession(env)).rejects.toThrow();
+    await expect(a.ensureSession(env)).rejects.toThrow();
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe('createBugseeApi — invalidateSession', () => {
   it('forces the next ensureSession to re-authenticate', async () => {
     const { transport, calls } = recorder(() => sessionOk());

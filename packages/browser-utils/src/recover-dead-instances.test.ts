@@ -1,4 +1,9 @@
-import { type Bundle, serializeBundle, type UploadPipeline } from '@bugsee/core';
+import {
+  type Bundle,
+  DEFAULT_DURABLE_RETENTION,
+  serializeBundle,
+  type UploadPipeline,
+} from '@bugsee/core';
 import { Severity } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { AsyncBlobStore } from './idb';
@@ -126,5 +131,146 @@ describe('recoverSiblingBundleQueue', () => {
     ).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledTimes(1);
     expect(pipeline.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE AGE BOUND — what stops "retried at every launch" from meaning "forever" on this tier
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Everything above is about a SETTLED answer. The dangerous case is the one that never settles: a
+// collector that is simply unreachable, or a control-plane failure this SDK deliberately keeps retrying
+// (a bare 4xx on `/v2/issues` — see `upload-pipeline.test.ts`, "a status is never a verdict here").
+//
+// On node such a blob is bounded twice over: `sweep-instances` reaps a dead instance's whole subtree at
+// 7 days, and `recover()` applies the durable queue's own retention. This leg has neither — it reads a
+// dead instance's prefix DIRECTLY — and on the web an instance is dead the moment its tab closes. So a
+// blob that never settles was re-offered on every launch for the lifetime of the installation.
+//
+// The bound applied here is not a new policy: it is `DEFAULT_DURABLE_RETENTION.maxAgeMs`, the SAME
+// 7 days already applied to the SAME bytes on the SAME tier by the instance's own `recover()`, and the
+// same TTL node's sweep uses. Only the count and byte caps are deliberately left off — see below.
+describe('recoverSiblingBundleQueue — the retention age bound', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+  const failing = () => {
+    // The collector is unreachable — never a refusal, so nothing here is ever "settled".
+    const enqueue = vi.fn<UploadPipeline['enqueue']>(() => Promise.resolve({ ok: false }));
+    const drop = vi.fn<UploadPipeline['drop']>();
+    return { enqueue, drop, flush: () => Promise.resolve(true) } satisfies UploadPipeline;
+  };
+
+  it('stops re-offering a blob past the age bound, and says so rather than deleting it silently', async () => {
+    const shared = memBlobWith([
+      [
+        'dead/old',
+        serializeBundle(aBundle('a crash from a tab closed months ago'), NOW - 90 * DAY),
+      ],
+    ]);
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, { now: () => NOW });
+    expect(pipeline.enqueue).not.toHaveBeenCalled();
+    expect(shared.map.has('dead/old')).toBe(false);
+    // Announced, exactly as `durable-upload-pipeline` announces its own evictions: a bundle that
+    // vanishes without an outcome is indistinguishable from one that was delivered.
+    expect(pipeline.drop).toHaveBeenCalledWith('retention_expired', 'issue');
+  });
+
+  it('keeps replaying a blob INSIDE the bound, launch after launch', async () => {
+    const shared = memBlobWith([['dead/recent', serializeBundle(aBundle('yesterday'), NOW - DAY)]]);
+    const pipeline = failing();
+    for (let launch = 0; launch < 3; launch += 1) {
+      await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, {
+        now: () => NOW,
+      });
+    }
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(3);
+    expect(shared.map.has('dead/recent')).toBe(true);
+    expect(pipeline.drop).not.toHaveBeenCalled();
+  });
+
+  it('is EXCLUSIVE at the bound — exactly maxAgeMs old is still replayed', async () => {
+    const shared = memBlobWith([
+      ['dead/at', serializeBundle(aBundle('at'), NOW - DEFAULT_DURABLE_RETENTION.maxAgeMs)],
+      ['dead/past', serializeBundle(aBundle('past'), NOW - DEFAULT_DURABLE_RETENTION.maxAgeMs - 1)],
+    ]);
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, { now: () => NOW });
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect((pipeline.enqueue.mock.calls[0]?.[0] as Bundle).request.summary).toBe('at');
+    expect(shared.map.has('dead/at')).toBe(true);
+    expect(shared.map.has('dead/past')).toBe(false);
+  });
+
+  it('NEVER expires a frame that predates `firstSeenMs` — the upgrade launch', async () => {
+    // `serializeBundle(bundle)` with no timestamp is what every blob staged by an older SDK looks like.
+    // Reading "unknown" as the epoch would delete every pending crash report on the first launch after
+    // an upgrade — losing exactly the reports the upgrade was installed to deliver. Same rule as
+    // `durable-upload-pipeline.recoverPass`.
+    const shared = memBlobWith([['dead/legacy', serializeBundle(aBundle('legacy'))]]);
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, { now: () => NOW });
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect(shared.map.has('dead/legacy')).toBe(true);
+    expect(pipeline.drop).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the durable queue’s own 7 days, not a second copy of the number', async () => {
+    const shared = memBlobWith([
+      [
+        'dead/old',
+        serializeBundle(aBundle('old'), Date.now() - DEFAULT_DURABLE_RETENTION.maxAgeMs - 60_000),
+      ],
+      ['dead/new', serializeBundle(aBundle('new'), Date.now() - 60_000)],
+    ]);
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline); // no clock, no bound: the defaults
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect(shared.map.has('dead/old')).toBe(false);
+    expect(shared.map.has('dead/new')).toBe(true);
+  });
+
+  it('honours an explicit maxAgeMs override', async () => {
+    const shared = memBlobWith([['dead/b', serializeBundle(aBundle('b'), NOW - 2 * DAY)]]);
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, {
+      now: () => NOW,
+      maxAgeMs: DAY,
+    });
+    expect(pipeline.enqueue).not.toHaveBeenCalled();
+    expect(shared.map.has('dead/b')).toBe(false);
+  });
+
+  it('reports a failed eviction to onError instead of throwing out of launch', async () => {
+    const onError = vi.fn();
+    const shared = memBlobWith([['dead/old', serializeBundle(aBundle('old'), NOW - 90 * DAY)]]);
+    const store: AsyncBlobStore = {
+      ...shared.store,
+      remove: () => Promise.reject(new Error('idb gone')),
+    };
+    const pipeline = failing();
+    await expect(
+      recoverSiblingBundleQueue(store, 'dead', pipeline, onError, { now: () => NOW }),
+    ).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(pipeline.enqueue).not.toHaveBeenCalled(); // still withheld — the bound holds either way
+  });
+
+  it('bounds by AGE ONLY — a hundred fresh blobs are all still offered', async () => {
+    // The count and byte caps `recover()` also applies are deliberately NOT mirrored here. They evict
+    // the OLDEST survivors to make room, which on this leg would mean deleting a crash report the
+    // collector has never been asked about, purely because a burst arrived after it. Age is the one
+    // bound where "give up" and "this is worthless now" are the same statement.
+    const shared = memBlobWith(
+      Array.from({ length: 100 }, (_, i): [string, Uint8Array] => [
+        `dead/b${i}`,
+        serializeBundle(aBundle(`b${i}`), NOW - DAY),
+      ]),
+    );
+    const pipeline = failing();
+    await recoverSiblingBundleQueue(shared.store, 'dead', pipeline, undefined, { now: () => NOW });
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(100);
+    expect(shared.map.size).toBe(100);
+    expect(pipeline.drop).not.toHaveBeenCalled();
   });
 });
