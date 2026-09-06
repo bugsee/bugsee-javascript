@@ -326,6 +326,61 @@
       "name": "greater-or-equal is a comparison, not an assignment, and still redacts",
       "lines": ["if (secret >= \"0\") {"],
       "expected": ["if (secret >= \"<redacted>\") {"]
+    },
+    {
+      "name": "typed const initializer",
+      "lines": ["const password: string = \"hunter2\";"],
+      "expected": ["const password: string = \"<redacted>\";"]
+    },
+    {
+      "name": "typed default parameter",
+      "lines": ["function f(apiKey: string = \"abc\") {"],
+      "expected": ["function f(apiKey: string = \"<redacted>\") {"]
+    },
+    {
+      "name": "typed class field with a modifier",
+      "lines": ["private password: string = \"admin\";"],
+      "expected": ["private password: string = \"<redacted>\";"]
+    },
+    {
+      "name": "typed numeric initializer",
+      "lines": ["const pin: number = 1234;"],
+      "expected": ["const pin: number = <redacted>;"]
+    },
+    {
+      "name": "a LITERAL type must not be mistaken for the value it annotates",
+      "lines": ["const apiKey: \"prod\" = \"actual-secret\";"],
+      "expected": ["const apiKey: \"prod\" = \"<redacted>\";"]
+    },
+    {
+      "name": "a generic type between the key and its value",
+      "lines": ["const secret: Record<string, string> = \"nope\";"],
+      "expected": ["const secret: Record<string, string> = \"<redacted>\";"]
+    },
+    {
+      "name": "a typed initializer wrapped across the window",
+      "lines": ["const password: string =", "  \"hunter2\";"],
+      "expected": ["const password: string =", "  \"<redacted>\";"]
+    },
+    {
+      "name": "an object key is still an object key, with no assignment after it",
+      "lines": ["{ apiKey: \"sk-live-abcdef\" }"],
+      "expected": ["{ apiKey: \"<redacted>\" }"]
+    },
+    {
+      "name": "a type annotation on a NON-sensitive name is left entirely alone",
+      "lines": ["const total: number = 42;"],
+      "expected": ["const total: number = 42;"]
+    },
+    {
+      "name": "a typed initializer compared on the same line redacts the VALUE, not the operand",
+      "lines": ["const password: string = \"leaked\" == \"y\";"],
+      "expected": ["const password: string = \"<redacted>\" == \"y\";"]
+    },
+    {
+      "name": "the type skip must stop at the first =, or it redacts the far operand and spares the secret",
+      "lines": ["const apiKey: T = \"real-secret\" === \"compare\";"],
+      "expected": ["const apiKey: T = \"<redacted>\" === \"compare\";"]
     }
   ]
 }

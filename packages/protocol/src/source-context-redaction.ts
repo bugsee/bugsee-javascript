@@ -87,10 +87,29 @@ const NUMERIC_LITERAL = '-?\\d[\\d_]*(?:\\.\\d+)?';
  * The `\]` alternative is grouped so it cannot decompose into two adjacent `\s*` — two adjacent
  * unbounded whitespace runs are ambiguous, and ambiguity is what backtracking costs.
  */
+/**
+ * How much TypeScript may sit between a key and its `=`.
+ *
+ * BOUNDED on purpose. A type annotation cannot contain `=`, so an unbounded run would be safe to
+ * match but not safe to SCAN: this pattern runs globally over a window that may be a whole minified
+ * bundle line, and an unbounded negated class is what turns that scan quadratic. 200 characters is
+ * far past any real annotation; past it the line simply does not redact, which the linearity guards
+ * exist to keep true.
+ */
+const MAX_TYPE_ANNOTATION = 200;
+
+/** The assignment and comparison operators a value can follow. See the separator note below. */
+const ASSIGN_OP = '(?:!|\\|\\||&&|\\?\\?|[<>])?={1,3}';
+
 const SENSITIVE_ASSIGNMENT = new RegExp(
   '(^|[^A-Za-z0-9_$-])' +
     '([A-Za-z0-9_$-]+)' +
-    '((?:["\']?\\s*\\])?["\']?\\s*(?::|(?:!|\\|\\||&&|\\?\\?|[<>])?={1,3})\\s*)' +
+    '((?:["\']?\\s*\\])?["\']?\\s*' +
+    // Ordered: a TYPED assignment must be tried before the bare `:`, or the colon binds a literal
+    // TYPE and spares the value — `const apiKey: "prod" = "actual-secret"` redacted `"prod"` and
+    // shipped the secret, which reads as success.
+    `(?::[^=;\\n]{0,${MAX_TYPE_ANNOTATION}}${ASSIGN_OP}|:|${ASSIGN_OP})` +
+    '\\s*)' +
     `(${STRING_LITERAL}|${NUMERIC_LITERAL})`,
   'g',
 );
