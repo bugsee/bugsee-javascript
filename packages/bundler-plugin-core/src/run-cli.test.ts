@@ -114,7 +114,7 @@ describe('runBugseeCli', () => {
   });
 
   it('really spawns via the default child_process wrapper (no injected spawn/env)', async () => {
-    // Exercises the default `process.env` + `defaultSpawn` fallbacks against a trivial real process.
+    // Exercises the default `process.env` + `spawnProcess` fallbacks against a trivial real process.
     const result = await runBugseeCli(['--version'], { resolveBinary: () => process.execPath });
     expect(result.code).toBe(0);
     expect(result.stdout).toMatch(/^v\d+\./); // `node --version` → vX.Y.Z
@@ -269,6 +269,13 @@ describe('a signal-terminated child is a FAILURE, not an exit 0', () => {
     expect(error.code).toBe(-1);
     expect(error.stderr).toContain('partial upload'); // whatever the CLI managed to say is kept
     expect(error.stderr).toContain('SIGKILL');
+    // BLAMES NO SPECIFIC BINARY. This adapter runs `git` for the VCS probe as well as the CLI, and on
+    // the default install `command` is the node launcher — so both "bugsee-cli" and `command` name the
+    // wrong thing in a real scenario. What the caller ran is already in the error's own message.
+    expect(error.stderr).toContain('child process was terminated by signal SIGKILL');
+    expect(error.stderr).not.toContain('bugsee-cli was terminated');
+    expect(error.stderr).not.toContain(process.execPath);
+    expect(error.message).toContain('bugsee-cli'); // …the caller still says WHAT it was running
   });
 
   it('still reports a clean exit 0 as success — the canary', async () => {

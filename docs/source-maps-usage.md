@@ -40,6 +40,61 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 | `deleteMaps` | — | `true` | delete client `.map`s after upload (privacy) |
 | `dryRun` | — | `false` | run the CLI with `--dry-run` (no upload, no delete) |
 | `disabled` | — | `false` | turn the plugin off (e.g. dev builds) |
+| `vcs` | — | `true` | capture the build's commit SHA / branch (see §1.1); `false` records nothing at all, even an explicit `commit` |
+| `commit` | `BUGSEE_BUILD_COMMIT` | detected | explicit commit SHA for this build |
+| `allowDirtyCommit` | — | `false` | report a commit even with uncommitted changes |
+| `projectRoot` | — | `process.cwd()` | repository root the VCS detection inspects |
+| `onNotice` | — | `console.warn` | where user-actionable notices go (distinct from `onError`, which takes failures) |
+
+### 1.1 The build's commit SHA
+
+> **Status: capture only.** The plugin records the commit and `dryRun` prints what it captured, but
+> **nothing is uploaded with it yet** — the delivery step is not built. Turning it on today costs two
+> short-lived subprocesses (`bugsee-cli vcs-metadata` plus a `git diff` dirtiness probe) per output
+> directory and changes nothing else.
+> See `docs/design/source-maps.md` §9.4.
+
+The plugin records which commit the build was made from. This exists for one reason: a source map that does
+**not** embed `sourcesContent` gives the backend no way to show you the original source of a crashing frame.
+Once delivery lands, a commit will let Bugsee fetch that file from the repository you connected to the app.
+
+Most toolchains embed `sourcesContent` already — esbuild, Rollup, Vite (including their `hidden` modes) and
+Next.js production builds all do it by default. The gap is `tsc --sourceMap` without `inlineSources`, bare
+`terser`, and Rollup's opt-in `sourcemapExcludeSources`.
+
+Detection is delegated to `bugsee-cli vcs-metadata`, the same resolver the Android Gradle plugin and the
+iOS/fastlane agents use, so a Bugsee build looks identical whatever produced it. It reads the CI provider's
+environment (GitHub Actions, GitLab CI, Bitbucket Pipelines) and otherwise falls back to `git`.
+
+**It never fails a build.** No `git`, no repository, no commits yet, a shallow clone, a detached HEAD, a CI
+container with no `.git` at all, or a `bugsee-cli` that is missing or too old — every one of those simply
+means no commit is recorded.
+
+**A dirty working tree drops the commit.** If you build with uncommitted changes to tracked files, the SHA no
+longer describes what was built, and fetching source at it would show you *the wrong lines of code* for a
+frame. That is worse than showing none, so the SHA is omitted (`branch`, `repo` and the rest still ship) and
+the reason is printed. Untracked files are not counted — they change nothing about any committed file.
+
+Two consequences worth knowing, because they make the drop permanent rather than occasional:
+
+- The check runs **after** your build has written its output, and covers the **whole repository**, not just
+  `projectRoot`. So a repo that tracks generated content — a committed `dist/`, a generated `version.ts`, a
+  lockfile the build refreshes — is dirty *because of the build itself*, on every build. In a monorepo, an
+  unrelated dirty package also counts.
+- Pass `allowDirtyCommit: true` if that describes your repo and you would rather have the approximate
+  answer, or commit the generated files before building.
+
+The check covers the whole repository even when your build runs from a subdirectory, and a rewritten
+mtime (a fresh CI checkout, a restored build cache) does **not** count as a change — only real content
+differences do.
+
+**A known gap.** The check compares your tree against local `HEAD`, but on CI the SHA usually comes from the
+provider's environment. If those are different commits (a checkout of an explicit `ref`, a PR merge commit
+vs the branch head), the tree reads clean and the recorded SHA still is not what was built.
+
+**Overriding.** A build made from an artifact rather than a checkout has no working tree to inspect; pass
+`commit` (or set `BUGSEE_BUILD_COMMIT`) with the SHA. An explicit value skips the dirty check. It must be
+7-64 hex characters — a branch name or tag is ignored rather than sent.
 
 ## 2. Any other target — the universal CLI step (Bun, Deno, tsc/swc, Angular, no-plugin builds)
 

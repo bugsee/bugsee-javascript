@@ -31,4 +31,12 @@ export {
   runBugseeCli,
   type SpawnFn,
   type SpawnResult,
+  spawnProcess,
 } from './run-cli';
+export {
+  isWorkingTreeDirty,
+  type ResolveVcsMetadataOptions,
+  resolveCommitOverride,
+  resolveVcsMetadata,
+  type VcsMetadata,
+} from './vcs';

@@ -332,7 +332,7 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
   `packages/bundler-plugin-core/src/run-cli.ts`'s `SIGNAL_EXIT_CODE = -1` correctly maps a
   signal-terminated child (`close` event with `code: null`) to a NON-zero result. Verified directly:
   `pnpm build:signal-kill` (a stand-in "bugsee-cli" that immediately `SIGKILL`s itself) produced
-  `code: -1, stderr: 'bugsee-cli was terminated by signal SIGKILL'`, `BugseeCliError` was thrown, and
+  `code: -1, stderr: 'child process was terminated by signal SIGKILL'` (the line named `bugsee-cli` when this was recorded; the commit-SHA branch made it name no binary, because `spawnProcess` now also runs `git` and `command` is the node launcher on a default install), `BugseeCliError` was thrown, and
   the whole webpack build failed (real process exit code 2) — not the historical false-success.
 
 ## Testing-methodology note (not an SDK defect — recorded so the next sample author doesn't rediscover it the hard way)

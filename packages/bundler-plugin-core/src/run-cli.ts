@@ -124,7 +124,12 @@ export function resolveBugseeCli(
  */
 const SIGNAL_EXIT_CODE = -1;
 
-const defaultSpawn: SpawnFn = (command, args, options) =>
+/**
+ * The real `node:child_process` adapter. Exported because the VCS dirtiness probe (vcs.ts) shells out to
+ * `git` and must do it through the SAME hardened options as the CLI spawn — never a shell, stdin ignored,
+ * both output streams captured.
+ */
+export const spawnProcess: SpawnFn = (command, args, options) =>
   new Promise<SpawnResult>((resolve, reject) => {
     const child = nodeSpawn(command, args, spawnOptionsFor(options) as never);
     let stdout = '';
@@ -145,7 +150,12 @@ const defaultSpawn: SpawnFn = (command, args, options) =>
         resolve({
           code: SIGNAL_EXIT_CODE,
           stdout,
-          stderr: `${stderr}bugsee-cli was terminated by signal ${String(signal)}\n`,
+          // NAMES NEITHER TOOL. A hard-coded "bugsee-cli" blamed the wrong binary once this adapter
+          // started running `git` too — but `command` is no better: on the DEFAULT install it is
+          // `process.execPath`, so an OOM-killed bugsee-cli reported that `node` had died. The caller
+          // already names what it ran (`BugseeCliError`'s message), so this line only has to say what
+          // happened.
+          stderr: `${stderr}child process was terminated by signal ${String(signal)}\n`,
         });
         return;
       }
@@ -166,7 +176,7 @@ export async function runBugseeCli(
   const isScript = binary.endsWith('.js');
   const command = isScript ? process.execPath : binary;
   const commandArgs = isScript ? [binary, ...args] : args;
-  const spawn = options.spawn ?? defaultSpawn;
+  const spawn = options.spawn ?? spawnProcess;
 
   const childEnv: EnvRecord = { ...env };
   if (options.token !== undefined) {

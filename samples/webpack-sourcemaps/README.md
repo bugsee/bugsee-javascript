@@ -199,7 +199,9 @@ shipped bundle carries NO `//# sourceMappingURL=` comment).
    exists to prove does not happen on a real `pnpm build`.
 
 **Plugin options in full** — every one of `BugseePluginOptions` (`docs/source-maps-usage.md`'s table)
-was driven from a real build, not just read from the source:
+**as of the source-map milestone** was driven from a real build, not just read from the source. The five
+VCS options added later (`vcs`, `commit`, `allowDirtyCommit`, `projectRoot`, `onNotice`) are covered by
+unit + real-git tests in `@bugsee/bundler-plugin-core` but are **not** exercised here yet:
 
 | Option | Build | Observed |
 | --- | --- | --- |
