@@ -381,6 +381,41 @@
       "name": "the type skip must stop at the first =, or it redacts the far operand and spares the secret",
       "lines": ["const apiKey: T = \"real-secret\" === \"compare\";"],
       "expected": ["const apiKey: T = \"<redacted>\" === \"compare\";"]
+    },
+    {
+      "name": "a typed parameter must not swallow a later default on the same line",
+      "lines": ["function login(user: string, password = \"changeme\") {"],
+      "expected": ["function login(user: string, password = \"<redacted>\") {"]
+    },
+    {
+      "name": "a sensitive typed parameter does not reach across the comma to the next default",
+      "lines": ["function connect(password: string, host = \"localhost\") {"],
+      "expected": ["function connect(password: string, host = \"localhost\") {"]
+    },
+    {
+      "name": "commas INSIDE a generic are part of the type",
+      "lines": ["const secret: Pick<Foo, \"a\" | \"b\"> = \"nope\";"],
+      "expected": ["const secret: Pick<Foo, \"a\" | \"b\"> = \"<redacted>\";"]
+    },
+    {
+      "name": "a nested generic is still one type",
+      "lines": ["const secret: Array<Record<string, string>> = \"nope\";"],
+      "expected": ["const secret: Array<Record<string, string>> = \"<redacted>\";"]
+    },
+    {
+      "name": "a renamed destructure with a default",
+      "lines": ["const { password: pw = \"changeme\" } = opts;"],
+      "expected": ["const { password: pw = \"<redacted>\" } = opts;"]
+    },
+    {
+      "name": "a prettier-wrapped signature keeps each parameter on its own line",
+      "lines": ["function login(", "  user: string,", "  password = \"changeme\",", ") {"],
+      "expected": ["function login(", "  user: string,", "  password = \"<redacted>\",", ") {"]
+    },
+    {
+      "name": "a typed parameter followed by a non-sensitive one is left alone entirely",
+      "lines": ["function f(token: string, retries = 3) {"],
+      "expected": ["function f(token: string, retries = 3) {"]
     }
   ]
 }

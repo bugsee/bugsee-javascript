@@ -101,6 +101,25 @@ const MAX_TYPE_ANNOTATION = 200;
 /** The assignment and comparison operators a value can follow. See the separator note below. */
 const ASSIGN_OP = '(?:!|\\|\\||&&|\\?\\?|[<>])?={1,3}';
 
+/**
+ * A TypeScript type annotation, ending at the TOP-LEVEL comma that separates one parameter from the
+ * next.
+ *
+ * A flat "anything but `=`" skip was wrong in both directions on a parameter list. It let a
+ * NON-sensitive parameter's type run across the comma and match the next parameter's default —
+ * `function login(user: string, password = "changeme")` matched at `user`, was returned unchanged
+ * because `user` is not sensitive, and CONSUMED the region, so `password`'s default never got its own
+ * look. And it did the reverse too: `function connect(password: string, host = "localhost")` reached
+ * past the comma and redacted `"localhost"`, which is not a secret.
+ *
+ * So a comma ends the type — unless it is inside `<…>`, where it belongs to the type
+ * (`Record<string, string>`, `Pick<Foo, "a" | "b">`). The two branches are DISJOINT: the first cannot
+ * match `<`, so a `<` only ever starts the second, which is what keeps this linear. The inner class
+ * still allows `<`/`>`, so arbitrary nesting works — only the last `>` before the operator has to line
+ * up, and `Array<Record<string, string>>` does.
+ */
+const TYPE_ANNOTATION = `(?:[^=;,\\n<]|<[^=;\\n]{0,150}>){0,${MAX_TYPE_ANNOTATION}}`;
+
 const SENSITIVE_ASSIGNMENT = new RegExp(
   '(^|[^A-Za-z0-9_$-])' +
     '([A-Za-z0-9_$-]+)' +
@@ -108,7 +127,7 @@ const SENSITIVE_ASSIGNMENT = new RegExp(
     // Ordered: a TYPED assignment must be tried before the bare `:`, or the colon binds a literal
     // TYPE and spares the value — `const apiKey: "prod" = "actual-secret"` redacted `"prod"` and
     // shipped the secret, which reads as success.
-    `(?::[^=;\\n]{0,${MAX_TYPE_ANNOTATION}}${ASSIGN_OP}|:|${ASSIGN_OP})` +
+    `(?::${TYPE_ANNOTATION}${ASSIGN_OP}|:|${ASSIGN_OP})` +
     '\\s*)' +
     `(${STRING_LITERAL}|${NUMERIC_LITERAL})`,
   'g',
