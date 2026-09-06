@@ -660,12 +660,35 @@ get it wrong.
 
 ### New open items from round 4
 
-- **The control plane never classifies at all** — asymmetry with the data plane. `bugsee-api.ts:82-84`
-  (`/v2/issues`) and `:107-109` (`/v2/sessions`) throw for every non-2xx and `upload-pipeline.ts:97-125`
-  defaults `permanent` to false, so a `400` from `/v2/issues` is retried forever. Fails SAFE (data kept),
-  bounded on node by the 7-day retention, **unbounded on browser/worker** (`recover-dead-instances.ts`
-  applies none). Deliberately NOT fixed: widening a deletion path unilaterally is what produced a new loss
-  path in each of the last three rounds. Needs a decision, and should land WITH its harness case.
+- **The control plane never classifies at all** — **CLOSED**, on `fix/control-plane-classification`, in two
+  halves that are deliberately different kinds of thing.
+  - **What became a verdict:** the collector's OWN error code, when it arrives with a status attached.
+    `bugsee-api.ts` threw on `!isOk(status)` BEFORE parsing the body, so a code the SDK already honours on
+    an HTTP 200 was discarded the moment the collector also sent a status — `14019 InvalidAppToken` on a
+    400 retried forever, `99099 KillSdk` on a 400 unable to disable the SDK at all. The failed body is now
+    read (`httpFailure` → `serverErrorCodeOf`) and its code goes on `serverCode`, where the existing
+    drift-tested `classifyServerErrorCode` sees it. **No code was added to the permanent set** — the same
+    table now simply reaches a response shape that was being thrown away, which is what Android does on
+    both endpoints (`ReportUploadExecutor.java:468-484`, `CommunicationRequests.obtainSession`).
+  - **What did NOT become a verdict:** a naked non-2xx. Android's `/v2/issues` path falls back to
+    `classifyHttpStatus` (any non-401/408/425/429 4xx → PERMANENT → the bundle file is deleted), and this
+    SDK deliberately does not follow it, because Android's OWN `/v2/sessions` path falls back to
+    `classifyServerErrorCode(0)` → TRANSIENT for the identical status. Two adjacent calls to one collector
+    cannot both be right, and on the web a bare 4xx is what an intermediary answers. Pinned by tests
+    (`upload-pipeline.test.ts`, "a status is never a verdict here") so the decision is falsifiable.
+  - **What bounds the rest:** `recoverSiblingBundleQueue` now applies `DEFAULT_DURABLE_RETENTION.maxAgeMs`
+    (7 days) — the SAME bound these bytes already meet on this tier via the instance's own `recover()`, and
+    the TTL node's sweep uses. Age only: the count/byte caps evict the oldest SURVIVORS, which on this leg
+    would delete a report the collector was never asked about. A frame with no `firstSeenMs` is never
+    expired (the upgrade launch), and that rail is load-bearing — injecting `firstSeenMs ?? 0` is caught 23
+    times over by the pre-existing P2 in harness set H.
+  - **Harness:** set M gained 16 control cases (the same envelopes over a non-2xx, plus 6 naked statuses as
+    a fence), and a new set N drives the browser age bound across 4 launches over real IndexedDB. 369 cases,
+    0 violations. Reproduced first: pre-fix the new M cases give 7 violations (incl. `P7 the client KEPT
+    CAPTURING after the collector switched the SDK off`) and set N gives `it was still OFFERED 9x past the
+    age bound`. The §Evidence note that the harness oracle is flawed refers to the ROUND-1 copy in
+    `.session-artifacts/`; the committed `packages/instrumentation-tests/harness/invariants.mts` no longer
+    keys on `reportId ?? 'anon:'+summary` and imports no SDK predicate — verified before relying on it.
 - **A doubly-403 signed PUT** returns `permanent: false` (`upload-pipeline.ts:169-186`, `renew_failed`)
   where Android calls 403 PERMANENT. Fail-safe, and arguably right since each launch mints a fresh signed
   URL. Left alone.
@@ -912,7 +935,9 @@ The live pipeline treats `permanent` as settled and frees the blob
 (`recover-instances.ts:89`, `browser-utils/src/recover-dead-instances.ts:39`). So a 4xx-refused
 bundle is re-uploaded every launch forever, and its marker is never retired either. Bounded at
 7 days on node by `sweep-instances.ts:24`; **unbounded on browser/worker** —
-`recoverSiblingBundleQueue` applies no retention and no `permanent` check.
+`recoverSiblingBundleQueue` applies no retention and no `permanent` check. *(Both halves since fixed:
+the `permanent` check by round 4's `isUploadSettled` unification, and the missing retention by the
+7-day age bound on `recoverSiblingBundleQueue` — see §New open items from round 4.)*
 
 ### R2-4 · `skipReportIds.add` is not throw-safe — SEV3
 

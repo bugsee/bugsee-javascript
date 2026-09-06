@@ -76,9 +76,15 @@ const okPipeline = (): UploadPipeline & { enqueue: ReturnType<typeof vi.fn> } =>
 });
 
 // Seed a bundle into another instance's prefix within the per-token bundle-queue database.
-async function seedSibling(idb: IDBFactory, instanceId: string, bundleId: string, b: Bundle) {
+async function seedSibling(
+  idb: IDBFactory,
+  instanceId: string,
+  bundleId: string,
+  b: Bundle,
+  firstSeenMs?: number,
+) {
   const shared = createIdbBlobStore({ databaseName: coexistenceDatabaseName(TOK), indexedDB: idb });
-  await shared.put(`${instanceId}/${bundleId}`, serializeBundle(b));
+  await shared.put(`${instanceId}/${bundleId}`, serializeBundle(b, firstSeenMs));
 }
 // Seed a report marker into a sibling's prefix within the per-token marker database. The bytes are a
 // REAL serialized ReportMarker — coexistence now hydrates these to reconcile them against the bundle queue.
@@ -160,6 +166,68 @@ describe('createCoexistence — pass-through', () => {
     expect(coex.markerView).toBeUndefined();
     await coex.recoverDeadSiblings({ uploadPipeline: pipeline });
     expect(pipeline.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe('createCoexistence — the dead-sibling age bound, end to end', () => {
+  // The coordinator wires `recoverSiblingBundleQueue` with its DEFAULTS, so this is what actually
+  // decides how long a browser or worker keeps re-offering an undeliverable blob. Unit-testing the leg
+  // alone proves the arithmetic; only driving the real coordinator over real IndexedDB proves it is
+  // reached at all. On this tier an instance is dead the moment its tab closes, so before the bound a
+  // blob the collector never settled was replayed on every launch for the lifetime of the installation.
+  const DAY = 24 * 60 * 60 * 1000;
+
+  const unreachable = () => {
+    // Never settles: the collector is offline, or answering a bare 4xx this SDK keeps retrying.
+    const enqueue = vi.fn<UploadPipeline['enqueue']>(() => Promise.resolve({ ok: false }));
+    const drop = vi.fn<UploadPipeline['drop']>();
+    return { enqueue, drop, flush: () => Promise.resolve(true) } satisfies UploadPipeline;
+  };
+
+  const coexist = (idb: IDBFactory) =>
+    createCoexistence({
+      appToken: TOK,
+      persist: true,
+      indexedDB: idb,
+      locks: fakeLocks().manager,
+    });
+
+  it('gives up on a blob a dead sibling staged 90 days ago, and keeps yesterday’s', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 'ancient', aBundle('ancient'), Date.now() - 90 * DAY);
+    await seedSibling(idb, 'deadsib', 'recent', aBundle('recent'), Date.now() - DAY);
+    const pipeline = unreachable();
+
+    await coexist(idb).recoverDeadSiblings({ uploadPipeline: pipeline });
+
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect((pipeline.enqueue.mock.calls[0]?.[0] as Bundle).request.summary).toBe('recent');
+    expect(pipeline.drop).toHaveBeenCalledWith('retention_expired', 'issue');
+    const keys = await rawKeys(idb);
+    expect(keys).not.toContain('deadsib/ancient');
+    expect(keys).toContain('deadsib/recent'); // still pending — the next launch tries again
+  });
+
+  it('re-offers the SAME recent blob on launch after launch — the bound is age, not attempts', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 'b1', aBundle('kept'), Date.now() - DAY);
+    for (let launch = 0; launch < 3; launch += 1) {
+      const pipeline = unreachable();
+      await coexist(idb).recoverDeadSiblings({ uploadPipeline: pipeline });
+      expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+      expect(pipeline.drop).not.toHaveBeenCalled();
+    }
+    expect(await rawKeys(idb)).toContain('deadsib/b1');
+  });
+
+  it('never expires a blob staged by an older SDK, which carries no timestamp at all', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 'legacy', aBundle('legacy')); // no firstSeenMs
+    const pipeline = unreachable();
+    await coexist(idb).recoverDeadSiblings({ uploadPipeline: pipeline });
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect(pipeline.drop).not.toHaveBeenCalled();
+    expect(await rawKeys(idb)).toContain('deadsib/legacy');
   });
 });
 
