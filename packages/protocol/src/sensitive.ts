@@ -105,8 +105,37 @@ export function isSensitiveHeader(name: string): boolean {
   return SENSITIVE_HEADERS.has(name.toLowerCase());
 }
 
-/** True if `name` contains a sensitive substring (case-insensitive). */
+/**
+ * Strip what separates the words in a key, so a spelling cannot decide whether a secret ships.
+ *
+ * The denylist carries `api_key` and `apikey` but never `api-key`, so `{"x-api-key": "sk_live_…"}` in
+ * a JSON BODY went to the wire in plaintext while `{"apiKey": "…"}` beside it was redacted. That is
+ * how a proxied request, a webhook payload or a captured config object spells it, and a hyphen is not
+ * a thing a privacy rule should turn on.
+ *
+ * Normalising once beats adding a hyphenated twin to all 59 entries: one rule instead of a list that
+ * has to be edited in pairs for ever, and it covers `.` and space spellings at the same time.
+ */
+function normalizeKey(name: string): string {
+  return name.toLowerCase().replace(/[-_.\s]/g, '');
+}
+
+/**
+ * True if `name` is a sensitive body/query key.
+ *
+ * TWO rules, because they carry different risks:
+ *
+ * - the SUBSTRING denylist, matched separator-insensitively. Deliberately broad — `userPassword` and
+ *   `oauth_token` must match — and it over-redacts by design (`author` contains `auth`).
+ * - the exact HEADER names, matched exactly. Header-shaped keys appear in bodies constantly, and the
+ *   ones with no substring twin (`cookie`, `set-cookie`, `x-real-ip`) would otherwise be missed. They
+ *   are NOT folded into the substring list: as a substring, `cookie` would flag `cookieConsent` and
+ *   `cookie_banner_shown`, which are ordinary analytics keys. Exact matching costs no false positives.
+ */
 export function isSensitiveKey(name: string): boolean {
-  const lower = name.toLowerCase();
-  return SENSITIVE_KEY_SUBSTRINGS.some((sub) => lower.includes(sub));
+  const normalized = normalizeKey(name);
+  if (SENSITIVE_KEY_SUBSTRINGS.some((sub) => normalized.includes(normalizeKey(sub)))) {
+    return true;
+  }
+  return isSensitiveHeader(name);
 }
