@@ -166,6 +166,24 @@ describe('createClient — request context', () => {
     await client.logException(new Error('boom'));
     expect((enqueue.mock.calls[0]?.[0] as Bundle).request.context_id).toBeUndefined();
   });
+
+  it('a throwing contextProvider degrades to no context — never breaks reporting (R-5)', async () => {
+    // The provider is integrator-replaceable; a custom binding whose getCurrent() throws must read
+    // as "no active context" at submit, not propagate out of logException into the application.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      contextProvider: {
+        getCurrent: (): RequestContext => {
+          throw new Error('custom provider broken');
+        },
+      },
+    });
+    await client.logException(new Error('boom')); // must not throw…
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).request.context_id).toBeUndefined(); // …and reports clean
+  });
 });
 
 describe('createClient — registration seams', () => {

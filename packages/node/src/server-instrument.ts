@@ -124,6 +124,30 @@ const activeSpan = (context: RequestContext | undefined): ServerRequestSpan | un
 const resolveStore = (client: BugseeClient): RequestContextStore | undefined =>
   client.getServiceProvider(RequestContextStoreToken).getImmediate({ optional: true }) ?? undefined;
 
+/**
+ * The active context, or `undefined` when there is none — or when the (integrator-replaceable)
+ * store itself throws. A custom `requestContextStore` whose `getCurrent()` throws must degrade
+ * every read to "no active context", never propagate into the request lifecycle (the same fail-safe
+ * the request-scoped active-span store holds: a broken binding degrades, it never breaks).
+ * Deliberately silent (no warning): these are high-frequency read paths with no per-store latch
+ * available, and the same root cause already surfaces once via the span store's warn-once when the
+ * performance extension is on.
+ */
+const safeCurrent = (store: RequestContextStore | undefined): RequestContext | undefined => {
+  try {
+    const context = store?.getCurrent() as unknown;
+    // A custom binding may return null (the idiomatic absent value) instead of undefined. The raw
+    // stash readers below only guard undefined, so without normalization a null would throw a
+    // TypeError out of start/open/get — and read as "already active" in openServerContext. Same
+    // absent-normalization the request-scoped active-span store applies at its own boundary.
+    return typeof context === 'object' && context !== null
+      ? (context as RequestContext)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const tryGetPerf = (client: BugseeClient): PerformanceApi | undefined => {
   try {
     return client.ext('performance');
@@ -272,7 +296,7 @@ export function openServerContext(
   }
   try {
     const store = resolveStore(client);
-    if (store === undefined || store.getCurrent() !== undefined) {
+    if (store === undefined || safeCurrent(store) !== undefined) {
       return;
     }
     store.enterWith(buildContext(info, options.newContextId ?? defaultNewContextId));
@@ -292,7 +316,7 @@ export function startServerSpan(
     return NOOP_SPAN;
   }
   const store = resolveStore(client);
-  const existing = refinableSpan(store?.getCurrent());
+  const existing = refinableSpan(safeCurrent(store));
   if (existing !== undefined) {
     return refiningHandle(existing, info, store, options);
   }
@@ -312,7 +336,7 @@ export function getActiveServerSpan(
   if (client === undefined) {
     return undefined;
   }
-  return activeSpan(resolveStore(client)?.getCurrent());
+  return activeSpan(safeCurrent(resolveStore(client)));
 }
 
 /** Open the context (enterWith) AND start the http.server transaction — the common entry for hook adapters
@@ -326,7 +350,7 @@ export function openServerRequest(
     return NOOP_SPAN;
   }
   const store = resolveStore(client);
-  const existing = refinableSpan(store?.getCurrent());
+  const existing = refinableSpan(safeCurrent(store));
   if (existing !== undefined) {
     return refiningHandle(existing, info, store, options);
   }
@@ -370,7 +394,7 @@ export function runServerRequest<T>(
       return run(NOOP_SPAN);
     }
     const store = resolveStore(client);
-    const existing = refinableSpan(store?.getCurrent());
+    const existing = refinableSpan(safeCurrent(store));
     if (existing !== undefined) {
       return run(refiningHandle(existing, info, store, options));
     }
@@ -405,7 +429,12 @@ function refiningHandle(
   options: ServerInstrumentOptions,
 ): ServerRequestSpan {
   if (info.user !== undefined) {
-    store?.setUser(info.user);
+    try {
+      store?.setUser(info.user);
+    } catch {
+      // A custom store whose mutator throws must not break refinement (or the request): the user
+      // propagation is skipped, the owner span is still refined.
+    }
   }
   const refinerShouldReport = options.shouldReport ?? defaultShouldReport;
   return {
@@ -460,6 +489,19 @@ function makeSpan(
       });
     }
   } catch {
+    // If startTransaction succeeded before a later APM call threw, the controller slot still holds
+    // the live transaction while this handle is about to abandon it — an orphan no owner can ever
+    // finish (on a lingering context the next request would even read it). Finish it instead: the
+    // normal onFinish path clears the slot and still delivers the bounded transaction once. Status
+    // CANCELLED (not the default OK): the outcome is unknown — the request may still succeed — so
+    // the sample must be self-identifying and excludable downstream rather than a ~0-duration OK
+    // dragging the http.server p50/p95 down. (It carries its start-time name + trace identity +
+    // timing, but none of the http.* attributes finishWith would have added.)
+    try {
+      transaction?.finish('CANCELLED');
+    } catch {
+      // A hostile transaction's own finish must not break the request either.
+    }
     transaction = undefined; // APM wiring failure must never break the request
   }
 
@@ -497,7 +539,12 @@ function makeSpan(
         if (!shouldReport(err)) {
           return false;
         }
-        store?.setAttribute('http.route', route ?? urlPath(info.url));
+        try {
+          store?.setAttribute('http.route', route ?? urlPath(info.url));
+        } catch {
+          // The context merge is enrichment, not the report: a custom store whose mutator throws
+          // must not convert a reportable error into a silent "not reported".
+        }
         void client.logException(err, { mechanism: 'http-error' });
         return true;
       } catch {
@@ -533,9 +580,17 @@ function makeSpan(
 
   // Stash the owner span on the active context so a later opener in this request refines instead of
   // opening a second context/transaction (no-op when no context is active — e.g. the no-store path).
-  const active = store?.getCurrent();
+  const active = safeCurrent(store);
   if (active !== undefined) {
-    stashSpan(active, span, runScoped);
+    try {
+      stashSpan(active, span, runScoped);
+    } catch {
+      // A non-extensible active context (frozen/sealed foreign object) cannot carry the stash.
+      // Skip refinement rather than breaking span start: the span stays usable transaction-only,
+      // mirroring the request-scoped active-span store's drop semantics on the same object. Note
+      // the consequence: a later opener in this request finds no stashed owner and opens a SECOND
+      // context + transaction (first-owner-wins cannot apply to what was never stashed).
+    }
   }
   return span;
 }

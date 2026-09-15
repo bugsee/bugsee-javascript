@@ -12,6 +12,7 @@ import {
   type OptionsContainer,
 } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
+import { createSingleSlotActiveSpanStore } from './active-span-store';
 import type { PerformanceApi } from './controller';
 import { createPerformanceExtension } from './extension';
 import type { TransactionWire } from './span';
@@ -154,6 +155,35 @@ describe('createPerformanceExtension', () => {
     ext().startTransaction({ name: 'b', operation: 'op' }).finish();
     expect(extension.store.size()).toBe(1); // bounded to 1 → only the newest kept
     expect(extension.store.drain()[0]).toMatchObject({ name: 'b' });
+  });
+
+  it('threads an injected activeSpanStore into the registered controller (D2 part 2)', () => {
+    const activeSpanStore = createSingleSlotActiveSpanStore();
+    const extension = createPerformanceExtension({ activeSpanStore });
+    const { client, ext } = fakeClient();
+    extension.setup(client);
+    const txn = ext().startTransaction({ name: 'T', operation: 'op' });
+    expect(activeSpanStore.get()).toBe(txn); // the start went through the injected store…
+    expect(ext().getActiveSpan()).toBe(txn); // …and reads come back out of it
+    txn.finish();
+    expect(activeSpanStore.get()).toBeUndefined();
+  });
+
+  it('threads onError through to the controller so a broken store is reportable (R-3)', () => {
+    const broken = (): never => {
+      throw new Error('custom store broken');
+    };
+    const onError = vi.fn();
+    const extension = createPerformanceExtension({
+      activeSpanStore: { get: broken, set: broken, clear: broken },
+      onError,
+    });
+    const { client, ext } = fakeClient();
+    extension.setup(client);
+    ext().startTransaction({ name: 'T', operation: 'op' });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'custom store broken' }),
+    );
   });
 });
 

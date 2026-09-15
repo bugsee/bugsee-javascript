@@ -13,6 +13,7 @@ import {
   createOtlpTraceExporter,
 } from '@bugsee/opentelemetry';
 import {
+  type ActiveSpanStore,
   createPerformanceSend,
   defaultSpanId,
   defaultTraceId,
@@ -37,8 +38,10 @@ export interface UmbrellaPlatform {
 
 /**
  * The internal wiring `launchCore` hands back (the browser and node launchCore produce a structurally
- * identical value). Typed against runtime-neutral packages only, so this shared module never imports a
- * platform package — that is what keeps `@bugsee/browser` out of the node umbrella entry's type graph.
+ * compatible value — same shared fields; each side may add its own, e.g. `activeSpanStore` below, which
+ * every platform must declare but only the server fills in). Typed against runtime-neutral
+ * packages only, so this shared module never imports a platform package — that is what keeps
+ * `@bugsee/browser` out of the node umbrella entry's type graph.
  */
 interface UmbrellaInternals {
   baseUrl: string;
@@ -49,6 +52,15 @@ interface UmbrellaInternals {
   appVersion: string | undefined;
   appBuild: string | undefined;
   onError: ((error: unknown) => void) | undefined;
+  /**
+   * Where the performance controller's active transaction lives. The server `launchCore` supplies a
+   * per-request-context store (D2 part 2); the browser passes `undefined` and keeps the single-slot
+   * default. REQUIRED-but-nullable rather than optional (R-16): `UmbrellaInternals` is a
+   * hand-maintained structural mirror of two independently declared `LaunchInternals`, and an
+   * optional field let a platform omit the store with no type error — it would silently fall back to
+   * the single slot, which is the D2 defect. A required key forces every platform to state its choice.
+   */
+  activeSpanStore: ActiveSpanStore | undefined;
 }
 
 // The browser-only capture-source FACTORIES the browser umbrella entry injects (so this shared module
@@ -62,7 +74,7 @@ export interface UmbrellaBrowserSources {
 }
 
 // The runtime-agnostic umbrella wiring: given a launched client + its LaunchInternals (from EITHER the
-// browser or node launchCore — the two are structurally identical), turn on the on-by-default extensions
+// browser or node launchCore — structurally compatible; see UmbrellaInternals), turn on the on-by-default extensions
 // the bare platform packages deliberately leave out so they tree-shake: @bugsee/performance (web-vitals +
 // transactions + http spans) and @bugsee/opentelemetry (produce/consume/propagation). Lives HERE, not in
 // the platform packages, so a platform-only build never pulls the extensions in. The browser/node umbrella
@@ -219,6 +231,9 @@ export function wireUmbrella(
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),
     ...(internals.onError !== undefined ? { onError: internals.onError } : {}),
+    ...(internals.activeSpanStore !== undefined
+      ? { activeSpanStore: internals.activeSpanStore }
+      : {}),
   });
 
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
@@ -255,9 +270,10 @@ export function wireUmbrella(
   // `@bugsee/capture` transformer, NOT an OTel-gated path) on the network umbrella's request-decorator
   // seam, propagating the active performance transaction's trace + the `bugsee=` session tracestate.
   // BROWSER ONLY (`platform.pageload`): on Node the `@bugsee/node` launch already wires its OWN
-  // per-request-context-sourced decorator (concurrency-correct), so the umbrella must NOT double-wire —
-  // and must not wire this single-slot perf-sourced one, which would leak the ambient transaction's trace
-  // across concurrent server requests. Same-origin propagates by default; cross-origin only via the
+  // per-request-context-sourced decorator, so the umbrella must NOT double-wire. The perf-sourced one
+  // stays browser-only on its own merits even after D2 part 2 made the controller's slot request-scoped
+  // on Node: it reads whatever transaction is active rather than the request context the node decorator
+  // is built on, and it is tied to the OPT-IN APM extension. Same-origin propagates by default; cross-origin only via the
   // allowlist (`tracePropagationTargets`).
   let offPropagation: (() => void) | undefined;
   if (platform.pageload && (options.propagateTrace ?? false)) {

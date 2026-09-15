@@ -48,7 +48,7 @@ import {
   createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
 } from '@bugsee/node-utils';
-import type { Transaction } from '@bugsee/performance';
+import { createTransaction, type Transaction } from '@bugsee/performance';
 import {
   BugseeOption,
   type EnvironmentEnvelope,
@@ -1951,6 +1951,104 @@ describe('launchCore', () => {
     expect(internals?.baseUrl).toBe('https://eu.bugsee.test');
     expect(internals?.onError).toBe(onError);
     expect(internals?.appVersion).toBeUndefined();
+  });
+
+  it('internals carries a request-scoped activeSpanStore keyed off the launch’s own context store', () => {
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore() }),
+    );
+    clients.push(client);
+    expect(internals?.activeSpanStore).toBeDefined();
+    // The store must key off the SAME request-context store the launch registered (not a fresh one),
+    // or per-request isolation silently degrades to the ambient slot.
+    const contextStore = client.getService(RequestContextStoreToken);
+    const txn = createTransaction(
+      { name: 'GET /x', operation: 'http.server' },
+      { clock: { wallNow: () => 1, monotonicNow: () => 0 } },
+    );
+    // Same run() callback for set + get: the store keys off the context OBJECT (like stashSpan),
+    // and one request flows through one run() — two run() calls are two contexts even with one id.
+    contextStore.run({ contextId: 'req-1' }, () => {
+      internals?.activeSpanStore.set(txn);
+      expect(internals?.activeSpanStore.get()).toBe(txn); // stashed on THIS request's context
+    });
+    // The scoped write must NOT have leaked into the ambient slot: it would have iff the store were
+    // keyed off a different (e.g. freshly minted) context store than the launch registered.
+    expect(internals?.activeSpanStore.get()).toBeUndefined();
+    // A sibling request never sees it.
+    expect(
+      contextStore.run({ contextId: 'req-2' }, () => internals?.activeSpanStore.get()),
+    ).toBeUndefined();
+  });
+
+  it('routes a frozen-context drop to onError through the launched span store (R-14)', () => {
+    // The launch test above pins the 'throw' kind threading; this pins the 'drop' kind: a frozen
+    // context run through the launch's OWN registered store, dropped by the internals span store,
+    // surfaces through the launch onError exactly once.
+    const onError = vi.fn();
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore(), onError }),
+    );
+    clients.push(client);
+    onError.mockClear();
+    const contextStore = client.getService(RequestContextStoreToken);
+    const frozen = Object.freeze({ contextId: 'F' });
+    const dropped = createTransaction(
+      { name: 'GET /f', operation: 'http.server' },
+      { clock: { wallNow: () => 1, monotonicNow: () => 0 } },
+    );
+    expect(() =>
+      contextStore.run(frozen, () => internals?.activeSpanStore.set(dropped)),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(contextStore.run(frozen, () => internals?.activeSpanStore.get())).toBeUndefined();
+  });
+
+  it('a broken custom store surfaces at launch — never silently, even with no APM wired (F5)', () => {
+    // Measured: launch reads the registered store repeatedly (provider starts), and every throw is
+    // reported — so a broken custom binding is LOUD at launch regardless of whether any controller
+    // ever touches the span store. A dedicated probe would be redundant noise on top; this pins the
+    // signal existing at all (silence here would mean the breakage hides until first request).
+    const thrown = new Error('custom store broken at launch');
+    const failing = createNodeRequestContextStore();
+    vi.spyOn(failing, 'getCurrent').mockImplementation(() => {
+      throw thrown;
+    });
+    const onError = vi.fn();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore(), requestContextStore: failing, onError }),
+    );
+    clients.push(client);
+    expect(onError).toHaveBeenCalledWith(thrown);
+  });
+
+  it('routes a throwing context source’s first failure to onError (once) through the span store', () => {
+    // The span store is built off the registered request-context store — including a caller-injected
+    // one — so a broken custom binding surfaces through the launch onError exactly once instead of
+    // failing silently on every request. The breakage starts AFTER launch (and the sink is cleared),
+    // so the only reporter of `thrown` below is the span store itself.
+    const thrown = new Error('custom store broken');
+    let broken = false;
+    const failing = createNodeRequestContextStore();
+    vi.spyOn(failing, 'getCurrent').mockImplementation(() => {
+      if (broken) throw thrown;
+      return undefined;
+    });
+    const onError = vi.fn();
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore(), requestContextStore: failing, onError }),
+    );
+    clients.push(client);
+    onError.mockClear();
+    broken = true;
+    expect(() => internals?.activeSpanStore.get()).not.toThrow();
+    expect(() => internals?.activeSpanStore.get()).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(thrown);
   });
 
   it('returns internals: undefined on a repeat launch (the process singleton is already owned)', () => {

@@ -1,6 +1,13 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
-import type { Bugsee, NodeRuntime, SystemProbe } from '@bugsee/node';
+import {
+  type Bugsee,
+  type LaunchResult,
+  type NodeRuntime,
+  RequestContextStoreToken,
+  type SystemProbe,
+} from '@bugsee/node';
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
+import type { ActiveSpanStore } from '@bugsee/performance';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeNodeLaunchOptions, launch } from './node';
 
@@ -244,5 +251,50 @@ describe('bugsee node umbrella launch', () => {
     const first = track(launch('tok', base({ carrier, appStartTimeMs: 1000 })));
     const second = launch('tok', base({ carrier, appStartTimeMs: 1000 }));
     expect(second).toBe(first);
+  });
+
+  it('the node LaunchInternals key the umbrella reads is present, at the right type (R-16)', () => {
+    // The umbrella reads `internals.activeSpanStore` optionally (the browser omits it), so a rename
+    // or drop on the node side would vanish to the single slot with NO type error (no
+    // excess-property checking on variables). This fails compilation — not just a test — the day the
+    // key stops existing on what launchCore hands back. The behavioural full-stack test above covers
+    // today; this covers every future edit. Presence AND type: optionality-drift alone is harmless
+    // (the umbrella tolerates absence), but a mistyped field would corrupt the handoff silently.
+    type StoreField = NonNullable<LaunchResult['internals']>['activeSpanStore'];
+    type Present = 'activeSpanStore' extends keyof NonNullable<LaunchResult['internals']>
+      ? true
+      : false;
+    type SameType = StoreField extends ActiveSpanStore
+      ? ActiveSpanStore extends StoreField
+        ? true
+        : false
+      : false;
+    const present: Present = true;
+    const sameType: SameType = true;
+    expect([present, sameType]).toEqual([true, true]);
+  });
+
+  it('the wired active slot is request-scoped: concurrent requests stay isolated (D2 part 2)', async () => {
+    // Full stack through every threading link: node launchCore internals → wireUmbrella →
+    // wirePerformance → extension → controller → the request-context store. If ANY link dropped
+    // the store, the controller would fall back to the process-wide single slot and request A's
+    // read below would see request B's transaction (or nothing, after B finished and cleared it).
+    const client = track(launch('tok', base({ carrier: {}, appStartTimeMs: 1000 })));
+    const perf = client.ext('performance');
+    const contexts = client.getService(RequestContextStoreToken);
+    const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const names: string[] = [];
+    const request = async (id: string, route: string, delayMs: number): Promise<void> => {
+      await contexts.run({ contextId: id }, async () => {
+        const own = perf.startTransaction({ name: `GET ${id}`, operation: 'http.server' });
+        await tick(delayMs); // yield so the sibling request starts before reading back
+        expect(perf.getActiveSpan()).toBe(own); // still ours, not the sibling's
+        perf.setRouteName(route); // must rename OURS, not the sibling's
+        names.push(own.getName());
+        own.finish('OK');
+      });
+    };
+    await Promise.all([request('A', '/a/:id', 20), request('B', '/b/:id', 5)]);
+    expect(names.sort()).toEqual(['/a/:id', '/b/:id']); // no rename crossed requests
   });
 });

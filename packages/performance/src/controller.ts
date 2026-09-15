@@ -1,5 +1,6 @@
 import type { Clock } from '@bugsee/core';
 import { NAME_SOURCE_ATTRIBUTE } from '@bugsee/protocol';
+import { type ActiveSpanStore, createSingleSlotActiveSpanStore } from './active-span-store';
 import {
   createTransaction,
   type Span,
@@ -18,9 +19,9 @@ export { NAME_SOURCE_ATTRIBUTE };
 // The performance controller — the runtime-portable implementation of the ext('performance') API. It
 // starts transactions (head-sampled, stamped with the app version/build), tracks the active span, and
 // buffers each SAMPLED transaction into the store when it finishes (the extension drains the store into
-// performance.json / the /v2/performance/transactions upload). Active-span tracking is minimal here (the
-// most recently started transaction, cleared on its finish); proper async-context propagation is a later
-// slice.
+// performance.json / the /v2/performance/transactions upload). Active-span tracking lives behind the
+// injectable `activeSpanStore` seam (a process-wide single slot by default; per-async-context on the
+// Node umbrella launch); a span stack is a later slice.
 
 /** Options for {@link PerformanceApi.startTransaction}. */
 export interface StartTransactionOptions {
@@ -47,21 +48,20 @@ export interface PerformanceApi {
   /** Begin a transaction (the root of a trace). */
   startTransaction(options: StartTransactionOptions): Transaction;
   /**
-   * The active span: the most recently STARTED transaction, cleared when it finishes. A minimal
-   * single-slot tracker (starting a second transaction overwrites the first; no span stack) — proper
-   * async-context nesting is a later slice.
+   * The active span: the most recently STARTED transaction visible to this execution, cleared when it
+   * finishes. No span stack — proper async-context nesting is a later slice.
    *
-   * CONCURRENCY (round-2 D2, tracked, not yet fixed): this slot is process-wide, not per-request. On a
-   * Node server handling concurrent requests, a second `startTransaction` (a second in-flight request)
-   * overwrites the slot before the first request calls this — so a call intended for request A can read/
-   * name request B's transaction. Android's parity implementation (`SpanContextHolder`) avoids this by
-   * keying the active span off a `ThreadLocal`, i.e. per execution context, not one shared variable — the
-   * fix here is the JS equivalent (per-async-context tracking, e.g. via the same `AsyncLocalStorage`-backed
-   * `RequestContext` `@bugsee/node` already threads through `server-instrument.ts`). SAFE today: no
-   * built-in server adapter calls `setActiveTransactionName`/`setRouteName` — they all refine their OWN
-   * request's span via the request-scoped `ServerRequestSpan.setRoute()` (`@bugsee/node`), which reads the
-   * per-request context, NOT this slot. Prefer that request-scoped path over this API from concurrent
-   * server code; this API remains correct for a browser's single in-flight navigation/interaction.
+   * CONCURRENCY (round-2 D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
+   * a process-wide single slot (a second `startTransaction` overwrites the first) — correct for a
+   * browser's single in-flight navigation/interaction. The Node launch instead supplies per-async-context
+   * tracking keyed off the `AsyncLocalStorage`-backed `RequestContext` (the JS equivalent of Android's
+   * `ThreadLocal`-keyed `SpanContextHolder`), so concurrent requests stay isolated ON THE DEFAULT
+   * AUTO-INSTRUMENTED PATH, where every request runs in a fresh ALS context (the `node:http` emit patch,
+   * native serve wraps, express/koa/hono). Requests that genuinely SHARE one context object (a lingering
+   * `enterWith` reused across dispatches with `instrumentIncomingRequests: false`) share the stash too —
+   * isolation is exactly as isolated as the context object is. Server-side route naming should still
+   * prefer the request-scoped `ServerRequestSpan.setRoute()` (what every built-in adapter does) over
+   * this API from concurrent server code.
    */
   getActiveSpan(): Span | undefined;
   /**
@@ -71,10 +71,11 @@ export interface PerformanceApi {
    * has run — the second phase of two-phase naming. A NO-OP when no transaction is active (nothing to
    * name). Default `source` is `custom`.
    *
-   * See the {@link getActiveSpan} CONCURRENCY note: on a Node server with requests in flight
-   * concurrently, this can rename a DIFFERENT request's transaction than the caller intended. Server-side
-   * route naming should go through the request-scoped `ServerRequestSpan.setRoute()` instead (what every
-   * built-in adapter does); this method is safe for a browser's single active navigation.
+   * Without a request-scoped store (the bare-controller default), on a Node server with requests in
+   * flight concurrently this can rename a DIFFERENT request's transaction than the caller intended
+   * (see the {@link getActiveSpan} CONCURRENCY note). Under the Node umbrella launch the slot is
+   * request-scoped, so this renames the caller's own request — though server-side route naming should
+   * still prefer the request-scoped `ServerRequestSpan.setRoute()` (what every built-in adapter does).
    */
   setActiveTransactionName(name: string, opts?: { source?: TransactionNameSource }): void;
   /** Sugar for {@link setActiveTransactionName}(name, { source: 'route' }) — the manual route-naming
@@ -88,6 +89,19 @@ export interface PerformanceControllerDeps {
   store: TransactionStore;
   appVersion?: string;
   appBuild?: string;
+  /**
+   * Where the active transaction lives. Default a process-wide single slot (last-started wins) —
+   * correct for a browser's one in-flight navigation/interaction. A concurrent server passes a
+   * per-execution-context store (Node keys it off the AsyncLocalStorage-backed `RequestContext`)
+   * so one request's `startTransaction` never overwrites another's (D2 part 2).
+   */
+  activeSpanStore?: ActiveSpanStore;
+  /**
+   * Internal-error sink. The ONLY thing reported here is a store that breaks its must-not-throw
+   * contract (R-3): degrading silently would stop route naming dead with no signal anywhere. Latched
+   * per call site, so a store throwing on every outgoing network call reports once, not once a call.
+   */
+  onError?: (error: unknown) => void;
   /** Head sampling decision, made once per transaction. Default: sample everything. */
   sampler?: () => boolean;
   /** Called with the serialized wire of each SAMPLED finished transaction (e.g. to also route it to the
@@ -105,7 +119,45 @@ export interface PerformanceControllerDeps {
 
 export function createPerformanceController(deps: PerformanceControllerDeps): PerformanceApi {
   const sampler = deps.sampler ?? (() => true);
-  let active: Transaction | undefined;
+  const activeSpanStore = deps.activeSpanStore ?? createSingleSlotActiveSpanStore();
+  // A store that breaks its must-not-throw contract degrades the controller to untracked (usable
+  // transactions, no active slot) rather than throwing into user code — but it is REPORTED, once per
+  // site. Silence was the defect: a broken `get()` makes both naming seams no-ops, so route naming
+  // stops with nothing to find it by. Latched per site (not per call) because `get()` runs on every
+  // outgoing network call; latched per CONTROLLER (not module-hoisted) so sibling controllers in one
+  // process each keep their own report. The sink is user code, so its own throw is absorbed.
+  const reported = new Set<'get' | 'set' | 'clear' | 'name'>();
+  const degraded = (site: 'get' | 'set' | 'clear' | 'name', error: unknown): void => {
+    if (reported.has(site)) return;
+    reported.add(site);
+    try {
+      deps.onError?.(error);
+    } catch {
+      // A broken sink must never become the caller's outcome (node active-span-store precedent).
+    }
+  };
+  const readActive = (): Span | undefined => {
+    try {
+      return activeSpanStore.get();
+    } catch (error) {
+      degraded('get', error);
+      return undefined;
+    }
+  };
+  // Naming is guarded SEPARATELY from the read: a custom store can hand back a hostile transaction as
+  // easily as it can throw from `get()`, and the contract promises the controller never propagates
+  // either into the caller. Both naming seams run through here, so the guard covers exactly the
+  // surface the contract claims. A degraded name is a lost rename, never a throw out of user code.
+  const nameActive = (name: string, source: TransactionNameSource): void => {
+    const active = readActive();
+    if (active === undefined) return; // nothing in flight to name
+    try {
+      active.setName(name);
+      active.setAttribute(NAME_SOURCE_ATTRIBUTE, source);
+    } catch (error) {
+      degraded('name', error);
+    }
+  };
 
   return {
     startTransaction(options) {
@@ -143,30 +195,42 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
                 deps.onFinished?.(wire); // also route it to the capture ring (performance.json)
               }
             }
-            // Single-slot (D11): when the active root finishes, the slot CLEARS — it is NOT reverted to a
-            // still-open pageload (there is no span stack). Consequence: a fetch between activity
-            // transactions (after a navigation/interaction idle-finishes, before the next one) attaches to
-            // nothing and is dropped, even though the pageload lingers. Accepted tradeoff of the single-slot
-            // model; a span stack / pageload-fallback is a later slice (see frontend-adapters D11/D12).
-            if (active === finished) active = undefined;
+            // When the active root finishes, the slot CLEARS — it is NOT reverted to a still-open
+            // pageload (there is no span stack; D11). Consequence: a fetch between activity transactions
+            // (after a navigation/interaction idle-finishes, before the next one) attaches to nothing and
+            // is dropped, even though the pageload lingers. Accepted tradeoff of that model; a span stack /
+            // pageload-fallback is a later slice (see frontend-adapters D11/D12).
+            // Cleared by identity, not by re-reading: clear() drops the transaction WHEREVER the
+            // store holds it, and a non-held finish clears nothing. (A scoped store may hold it somewhere
+            // other than what the finishing execution observes — e.g. an ambient slot it can no longer
+            // read — so matching by re-reading here would miss.)
+            try {
+              activeSpanStore.clear(finished);
+            } catch (error) {
+              // A throwing custom store (against the must-not-throw contract) degrades to untracked
+              // rather than breaking the finish path.
+              degraded('clear', error);
+            }
           },
         },
       );
-      active = transaction;
+      try {
+        activeSpanStore.set(transaction);
+      } catch (error) {
+        // A throwing custom store (against the must-not-throw contract) degrades to untracked: the
+        // transaction stays usable, only active tracking is lost — never a throw into user code.
+        degraded('set', error);
+      }
       return transaction;
     },
     getActiveSpan() {
-      return active;
+      return readActive();
     },
     setActiveTransactionName(name, opts) {
-      if (active === undefined) return; // nothing in flight to name
-      active.setName(name);
-      active.setAttribute(NAME_SOURCE_ATTRIBUTE, opts?.source ?? 'custom');
+      nameActive(name, opts?.source ?? 'custom');
     },
     setRouteName(name) {
-      if (active === undefined) return;
-      active.setName(name);
-      active.setAttribute(NAME_SOURCE_ATTRIBUTE, 'route');
+      nameActive(name, 'route');
     },
   };
 }

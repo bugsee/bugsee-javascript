@@ -1,6 +1,7 @@
 import { type BugseeClient, type Clock, ClockToken, type Scheduler } from '@bugsee/core';
 import type { NetworkEvent } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createSingleSlotActiveSpanStore } from './active-span-store';
 import type { PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
 import type { InteractionDetailLike, InteractionSource } from './interactions';
@@ -127,6 +128,37 @@ describe('wirePerformance', () => {
     expect(wired).toBeDefined();
     expect(perf()).toBeDefined(); // the extension is still registered (store/controller/uploader)
     expect(perf()?.getActiveSpan()).toBeUndefined(); // but NO pageload transaction was started
+  });
+
+  it('threads an injected activeSpanStore into the extension (D2 part 2)', () => {
+    const { client, perf } = fakeClient();
+    const activeSpanStore = createSingleSlotActiveSpanStore();
+    const wired = wirePerformance(base({ client, pageload: false, activeSpanStore }));
+    expect(wired).toBeDefined();
+    const txn = perf()?.startTransaction({ name: 'T', operation: 'op' });
+    expect(activeSpanStore.get()).toBe(txn); // the controller wrote through the injected store
+    txn?.finish();
+    expect(activeSpanStore.get()).toBeUndefined();
+  });
+
+  it("threads the launch's onError down to the controller's store guard (R-3)", () => {
+    const { client, perf } = fakeClient();
+    const broken = (): never => {
+      throw new Error('custom store broken');
+    };
+    const onError = vi.fn();
+    wirePerformance(
+      base({
+        client,
+        pageload: false,
+        activeSpanStore: { get: broken, set: broken, clear: broken },
+        onError,
+      }),
+    );
+    perf()?.startTransaction({ name: 'T', operation: 'op' });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'custom store broken' }),
+    );
   });
 
   it('recordTransaction buffers an external (already-finished) transaction into the uploader', async () => {

@@ -62,8 +62,12 @@ and surface backend timing.
 - `capture/traceparent.ts` `parseTraceparent` — inbound parse (defensive). Used by `server-instrument.ts`.
 - `node/server-instrument.ts` — inbound: starts the `http.server` transaction with `continuation:{traceId}`.
   **Gaps: (a) drops the parent span link; (b) doesn't parse/continue `tracestate`; (c) doesn't emit return headers.**
-- `performance/controller.ts` — `startTransaction({continuation:{traceId}})`; `getActiveSpan()` is a single
-  slot ("most recently started txn"). **Gap: not async-context-aware → wrong trace under server concurrency.**
+- `performance/controller.ts` — `startTransaction({continuation:{traceId}})`; `getActiveSpan()` reads the
+  injectable `activeSpanStore`. ~~**Gap: not async-context-aware → wrong trace under server concurrency.**~~
+  **CLOSED (D2 part 2):** the slot is a process-wide single slot only by DEFAULT (correct for a browser's
+  one in-flight navigation); the Node umbrella launch supplies a request-scoped store keyed off the
+  AsyncLocalStorage-backed `RequestContext`. Note this was never the propagation path anyway — the node
+  decorator reads the request context directly (`node/trace-propagation.ts`), not the controller.
 - `core/capture-aggregator.ts` — stamps each capture entry with `trace_id`/`span_id` from the active
   `RequestContext.trace`. **Gap (to confirm): the report ENVELOPE (`request.json`) doesn't surface `traceId`.**
 - `@bugsee/opentelemetry` — wires *this same* decorator + OTLP produce + consuming SpanProcessor. After this

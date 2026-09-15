@@ -863,6 +863,12 @@ F-4 falsifiable in both directions in all 7 adapters · 48/50 mutations caught.
   `PerformanceControllerDeps`/`PerformanceExtensionOptions`, behaviour-preserving default, wired from
   `packages/node/src/launch.ts`. No public API widening. Hazard is documented in
   `performance/src/controller.ts:42-73`; no built-in adapter calls the affected methods today.
+  - **CLOSED 2026-09-14 (uncommitted working tree — see "D2 part 2 — IMPLEMENTED" at the end of this
+    file).** The hazard is now live, not theoretical: `server-instrument.ts` calls
+    `perf.startTransaction` per incoming request, so concurrent requests DID share the slot. Built as
+    proposed, threaded `launchCore` internals → umbrella → wirePerformance → extension → controller.
+    **NOT yet converged** — a 5-reviewer pass on 2026-09-14 returned 6 SEV2 / 9 SEV3 / 3 SEV4; see
+    "D2 part 2 — POST-IMPLEMENTATION REVIEW" at the end of this file.
 - ~~**Input `'change'`/`'submit'`/`'focus'` — awaiting a product decision.**~~ **DECIDED (product owner)
   and IMPLEMENTED 2026-08-31 — option C, neither A nor B: they are not input events at all, they are
   STATE-CHANGE events, and they belong to BREADCRUMBS.** Both proposals on the table (A: extend the
@@ -1083,6 +1089,800 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
   so the answer is to compress on chunk **freeze**, not on append.
 
 ---
+
+## D2 part 2 — IMPLEMENTED (2026-09-14, uncommitted working tree)
+
+The `activeSpanStore` proposal above is built, tested, reviewed to convergence (11 multi-agent rounds,
+the last with zero findings from both reviewers), and green on every gate. Uncommitted; commit + push
+to `main` when ready (the tree is green except the pre-existing `invariants.mts` lint-red, untouched
+by this wave — see below).
+
+**What landed.** `ActiveSpanStore` (`get`/`set`/`clear`, `packages/performance/src/active-span-store.ts`)
++ `createSingleSlotActiveSpanStore()` default (byte-identical browser behavior) → threaded through
+`PerformanceControllerDeps` → `PerformanceExtensionOptions` → `WirePerformanceOptions` →
+`UmbrellaInternals.activeSpanStore?` (optional — browser omits it) → `node LaunchInternals`
+(required — `launchCore` always builds it). Node's `createRequestScopedActiveSpanStore`
+(`packages/node/src/active-span-store.ts`, type-only `@bugsee/performance` import — R2-8 holds) keys
+the slot off the ALS `RequestContext` (same instance the launch registers): context stash (symbol-keyed,
+non-enumerable) shadowing an ambient single-slot fallback, `get()` never returning a finished txn,
+identity-compared `clear()` checking stash and ambient independently, frozen-context containment
+(WeakSet; reads see nothing, clears touch nothing), per-cause warn-once, throwing-sink guard,
+null/non-object normalization. Hardening found along the way (same "integrator-hostile custom store"
+threat model): `safeCurrent` reads + `setUser`/`setAttribute`/stash guards + abandon-`finish()` in
+`server-instrument.ts`, the trace-propagation decorator degrading to no-headers, controller degrading
+a throwing custom store to untracked (plus a must-not-throw contract).
+
+**Verified by.** ~40 new tests (unit + real-ALS concurrency interleavings proving request A never sees
+or renames request B's txn + a full-stack umbrella launch test through every threading link);
+per-entity mutator loop (every injected bug caught, incl. a scratch proof the old slot fails the new
+interleavings); 100% line/fn/stmt on all touched files; typecheck 100/100, cycles clean, bun/deno
+suites green (both inherit via `nodeLaunchCore`).
+
+**Dismissals recorded (deliberate, not oversights).** Ambient fallback for never-stashing contexts
+(documented trade-off — shared only what was already global); latch-before-delivery on a throwing
+sink (identical observability, less overhead); `captureError` return-false-on-throw (no caller
+branches on it); retention-only stale stashes (GC-bounded, same as the server stash); the
+enterWith-linger live-share (pre-existing, narrowed); Proxy-context reads (no reachable trigger);
+`onError` staying opt-in (no SDK-wide default exists to inherit).
+
+**Follow-ups (out of scope, pre-existing).** `core/src/client.ts:543` (`submitReport`'s unguarded
+`contextProvider?.getCurrent()` — the capture path is already guarded by the aggregator's
+`route()` try/catch, only the report path wants a dedicated pass); defense-in-depth for throwing
+THIRD-PARTY request decorators (`capture/src/request-decorator.ts` — fails open into the app's
+fetch today; needs its own review before changing shared capture behavior).
+
+**~~Pre-existing red, not this wave.~~ CORRECTED — see R-8.** `pnpm lint` **exits 0**: `biome check .`
+reports `Found 24 warnings` and no errors. `noExplicitAny`/`noNonNullAssertion` are warn-level under
+`recommended`, and checking the file by path confirms it — `biome check
+packages/instrumentation-tests/harness/invariants.mts` exits 0. The 24 are 23 in `invariants.mts` and 1
+in `packages/node/src/index.test.ts` (`noDynamicNamespaceImportAccess`), which the original note omitted.
+Both files are byte-identical to `HEAD`, so "untouched by this change" stands — but the gate is GREEN.
+
+## D2 part 2 — POST-IMPLEMENTATION REVIEW (2026-09-14). 6 SEV2, 9 SEV3, 3 SEV4 from 5 reviewers
+## → ALL 19 RESOLVED in the same working tree. See "RESOLUTION" below for what each became.
+
+Five parallel read-only reviewers (concurrency/lifecycle · test quality · architecture/layering ·
+defensive-coding · cost+retention+gates) over the uncommitted tree. **This did NOT converge** — the
+preceding block claims "11 rounds, the last with zero findings from both reviewers"; a sixth axis
+(defensive-coding) and a re-run of the others produced the list below. Three reviewers independently
+landed on the same structural finding (R-1) from three different directions, which is the strongest
+signal in the set.
+
+Gates were re-verified and all pass; the cost and retention claims hold with room to spare. The
+findings are about DESIGN SURFACE and TEST REACH, not about a broken feature.
+
+### RESOLUTION (2026-09-14, same uncommitted tree)
+
+Every finding is closed. Three were closed by DELETING code rather than adding it (R-1 took both
+WeakSets and the whole containment apparatus with it, dissolving R-9 and R-10), two are accepted
+limitations now written down where the next reader will hit them, and one is a recorded dismissal.
+
+| # | SEV | Outcome | Where |
+|---|---|---|---|
+| R-1 | 2 | **FIXED** — a context-bearing read is now strictly private (`get()` returns this execution's own live stash or nothing); ambient serves context-less executions only. `ownsSlot` and `unstashable` both deleted. | `node/src/active-span-store.ts:102-109` |
+| R-2 | 2 | **FIXED** — two concurrent real `runServerRequest` calls, each asserting it reads its own span. | `node/src/server-instrument.test.ts:1219` |
+| R-3 | 2 | **FIXED, but not by deletion** — see the note below. The three catches stay; the SILENCE is gone. | `performance/src/controller.ts` |
+| R-4 | 2 | **FIXED** — the abandoned transaction now finishes `'CANCELLED'`, not the default `OK`, so a ~0-duration sample is self-identifying and excludable downstream. | `node/src/server-instrument.ts:496-501` |
+| R-5 | 2 | **FIXED** — `submitReport` guards `contextProvider.getCurrent()`; the crash path is held to the same fail-safe as every other read of the integrator-replaceable store. | `core/src/client.ts` |
+| R-6 | 2 | **FIXED** — the docstring now says isolation holds ON THE DEFAULT AUTO-INSTRUMENTED PATH and states the shared-context exception outright. | `performance/src/controller.ts:54-64` |
+| R-7 | 3 | **FIXED** — `@bugsee/node` exports `createRequestScopedActiveSpanStore` + its options type, so a hand-wiring consumer can get per-request isolation. | `node/src/index.ts:15-22` |
+| R-8 | 3 | **FIXED** — the false "lint is red" claim is corrected in place above (exit 0, `Found 24 warnings`, across the two files it names between them). Holds two measurement traps found while verifying it. | this file |
+| R-9 | 3 | **DISSOLVED with R-1** — no containment early-return remains, so `clear()` always reaches the ambient identity release. | — |
+| R-10 | 3 | **DISSOLVED with R-1** — the frozen-context apparatus is gone; `set()` keeps only the cheap `defineProperty` guard. The `stashSpan` catch now states its real consequence (a later opener opens a SECOND context + transaction). | `node/src/server-instrument.ts` |
+| R-11 | 3 | **DOCUMENTED, accepted not fixed** — the measured pipelining trace is in the module note, including the two pre-existing mis-attributions it implies. | `node/src/active-span-store.ts:33-45` |
+| R-12 | 3 | **ADDRESSED** — the comment no longer asserts safety as a property of this code; it names the carrier singleton as the invariant it actually rests on. | `node/src/active-span-store.ts:61-67` |
+| R-13 | 3 | **FIXED** — the non-falsifiable orphan assertion and its comment are gone; `expect(owner.setRoute).toHaveBeenCalledWith(...)` now discriminates a refining handle from a fresh span. | `node/src/server-instrument.test.ts:1284` |
+| R-14 | 3 | **FIXED** — the `enterWith` concurrency path and the nested-`run` limitation are both pinned by tests; the `'drop'` warn kind is pinned at the launch wiring. | `node/src/active-span-store.test.ts:159,176`, `launch.test.ts:1986` |
+| R-15 | 3 | **FIXED** — no "structurally identical" claim remains. | `bugsee/src/wire.ts` |
+| R-16 | 3 | **FIXED** — `UmbrellaInternals.activeSpanStore` is REQUIRED-but-nullable, and the browser states `activeSpanStore: undefined` explicitly. Verified by mutation: omitting it fails `tsc` with `TS2741 … missing … but required in type 'LaunchInternals'`. | `bugsee/src/wire.ts`, `browser/src/launch.ts` |
+| R-17 | 4 | **DISMISSED** — see below. | — |
+| R-18 | 4 | **FIXED** — the contract no longer claims the built-in stores never throw in the absolute; it scopes the claim to the transactions the SDK actually puts in them. | `performance/src/active-span-store.ts:15-21` |
+| R-19 | 4 | **FIXED** — `clear()` blanks by assignment instead of `delete`, so the context never migrates to dictionary mode. The descriptor was already `writable: true`, so this cost nothing. | `node/src/active-span-store.ts:139-145` |
+
+**R-3 — why the catches stayed, and what actually changed.** The two reviewers split on whether this
+repeated §D2 part 1, and the split turned on reachability. R-7's fix settled it: `@bugsee/node` now
+EXPORTS `createRequestScopedActiveSpanStore` for hand-wired APM, and `createPerformanceExtension`
+already accepted an `activeSpanStore`, so the seam is publicly reachable and a guard at it is a real
+boundary guard, not a test-double accommodation. What both reviewers actually agreed on was the
+residue — the degrade was SILENT, with no sink on `PerformanceControllerDeps` — and that is what was
+fixed: a new `onError` on the controller deps, threaded from `wirePerformance` → extension →
+controller, reporting a contract-breaking store ONCE PER SITE (`get`/`set`/`clear`). Per site, not per
+call, because `get()` runs on every outgoing network call; per controller, not module-hoisted, so
+sibling controllers each keep their own report; and the sink's own throw is absorbed, since it is user
+code. Mutator loop run on the guard: dropping the latch, collapsing it to one latch total, skipping the
+`set` report, and unguarding the sink were each caught by a failing assertion.
+
+**R-17 — dismissed, with the reasoning.** Renaming `ActiveSpanStore` → `ActiveTransactionStore` is
+accurate for what the seam holds TODAY, but the seam exists to back `getActiveSpan()`, and the span-stack
+slice this file already defers (D11/D12) would widen it back to `Span`. Renaming a just-exported public
+seam to a name a planned slice would have to rename again is churn in both directions. The mismatch is
+instead stated where it can mislead: the interface documents that it holds root transactions because the
+controller tracks roots only.
+
+### R-1 · SEV2 · The `ambient` fallback has no producer, and it leaks in the exact direction the fix exists to close
+
+`packages/node/src/active-span-store.ts:120` — `return live(stashed(context)) ?? live(ambient);`
+
+Converged on by the architecture, concurrency and defensive reviewers separately.
+
+The fallback's stated justification (`active-span-store.ts:16-17`) is "a request whose transaction was
+opened before its context still sees it". **No producer was found for that case.** Every built-in entry
+opens the context BEFORE `startTransaction`: `runServerRequest` (`server-instrument.ts:398-405`,
+`store.run(C, () => makeSpan(...))`), `openServerRequest` (`enterWith` at `:358`, then `makeSpan`),
+`startServerSpan` (context already open). The umbrella's `app.start` transaction bypasses the
+controller entirely (pre-finished wire, `bugsee/src/wire.ts:239-250`), so it never enters `ambient`.
+
+What the fallback DOES produce is reachable today:
+1. App starts a long-lived transaction from a cron/queue tick with no request context → `ambient = T_bg`.
+2. A request opens a context but starts no transaction of its own — `openServerContext()` is PUBLIC
+   API for exactly that (context-only correlation, `server-instrument.ts:289-305`); the window between
+   the Nest middleware's `enterWith` (`nestjs/src/middleware.ts:69`) and the interceptor's
+   `startServerSpan` is another.
+3. In that request `getActiveSpan()` returns `T_bg`, and `setActiveTransactionName()` **renames the
+   background transaction**.
+
+Android parity is explicit against this: `SpanContextHolder.java:41` returns the `ThreadLocal` value and
+NOTHING else — an unset thread sees `null`, full stop. No thread ever reaches a process-wide span.
+
+**Recommendation: make a context-bearing read strictly private** —
+`context !== undefined ? live(stashed(context)) : live(ambient)`. That single change also deletes the
+entire containment apparatus: `ownsSlot` exists only to suppress this fallback, and `unstashable`'s read
+and clear guards (`:114-116`, `:154`) exist only because a frozen context would otherwise reach it. Net
+effect ≈ two WeakSets, three branches and ~40 lines of comment removed, with no reachable behaviour
+change. See R-6, R-10 and R-12, all of which dissolve with it.
+
+### R-2 · SEV2 · No test drives the hazard's actual production site concurrently
+
+`packages/node/src/server-instrument.test.ts` contains **no `Promise.all` at all**. Every isolation proof
+hand-opens its own context (`node/src/active-span-store.integration.test.ts:24,98,105`,
+`node/src/active-span-store.test.ts:183`, `bugsee/src/node.test.ts:262`), but the hazard as stated in
+this file's own "New open items from round 2" entry is *"`server-instrument.ts` calls
+`perf.startTransaction` per incoming request"* — i.e. `server-instrument.ts:405` → `makeSpan` → `:470`.
+
+Move `makeSpan` outside `store.run`, or add an adapter that starts its transaction before opening the
+context, and **every request's transaction lands in `ambient` — D2 restored verbatim — with all 38 new
+tests green and per-file coverage still 100%.** The missing test is ~15 lines: two concurrent real
+`runServerRequest` calls, each asserting it reads its own span. Verified to pass as written today
+(`{"b":"GET http://x/b","a":"GET http://x/a"}`).
+
+### R-3 · SEV2 · The three controller catches guard a seam no public API can reach, and silence our own bugs
+
+`packages/performance/src/controller.ts:116-120` (`readActive`), `:167-172` (`clear`), `:176-181` (`set`).
+
+`activeSpanStore` has exactly one producer — `node/src/launch.ts:1104`, our own
+`createRequestScopedActiveSpanStore`. `BugseeLaunchOptions` (`launch.ts:320-380`) has no such field;
+`UmbrellaExtensionOptions` has none; `LaunchInternals` is documented at `launch.ts:390` as *"NOT a stable
+public API"*; `createRequestScopedActiveSpanStore` is not exported from `packages/node/src/index.ts`. The
+covering test uses `{get: broken, set: broken, clear: broken}` — an object that cannot exist in
+production. The interface itself (`performance/src/active-span-store.ts:15-18`) declares
+"Implementations MUST NOT throw … The built-in stores never throw", which these catches then distrust.
+
+It is not inert: `readActive`'s `catch { return undefined }` converts any future TypeError in OUR OWN
+`get()` into a silent "no transaction active" — `getActiveSpan()` returns undefined, both naming seams
+become no-ops, route naming stops, and **`PerformanceControllerDeps` has no `onError`, so there is no
+signal anywhere.**
+
+**Reviewer disagreement, recorded rather than flattened.** The defensive reviewer calls this the §D2
+part-1 finding repeating one slice later in the same file. The test reviewer argues it is NOT: part 1's
+doubles omitted a *required* interface member and the degraded path silently swallowed seven adapters'
+real `setName` assertions, whereas these doubles are fully type-conforming (deliberately not cast,
+`server-instrument.test.ts:1007-1008`) and **no pre-existing test now passes via a new degraded path** —
+verified by auditing every `getCurrent:` double in the repo and confirming `server-instrument.ts` at
+100% branch. Both agree on the residue: the silence is the defect.
+
+**Recommendation: delete the three catches, or route `readActive`'s through a sink.** Restore them with
+a public-API test if the seam is ever published.
+
+### R-4 · SEV2 · The abandon-`finish()` ships a fabricated latency sample into the `http.server` bucket
+
+`packages/node/src/server-instrument.ts:491-505`.
+
+Mechanically clean — the concurrency reviewer cleared it: `TransactionImpl.finish` fires `onFinish` once
+(`span.ts:326-329`), `transaction = undefined` at `:504` short-circuits `finishWith` at `:506` (no
+double-delivery), and the catch runs in the SAME context as the `set` on every entry path, so `clear`
+reaches the right stash (nothing left held).
+
+The objection is data quality. The delivered transaction is `operation: 'http.server'`,
+`name: "GET /path"`, **`status: 'OK'`** (the default, `span.ts:180`), **duration ≈ 0** (end timestamp
+taken from the clock at request start), and **no `http.method` / `http.status_code`** — those are added
+only in `finishWith` (`:523-524`), which never runs. It lands in the same aggregation bucket as every
+real request, dragging p50/p95 down and reporting success on a request whose outcome is unknown. The
+comment at `:498` calls this "truthful timing over no telemetry"; it is neither truthful nor timing.
+
+The hazard it buys ("an orphan no owner can ever finish; on a lingering context the next request would
+even read it") is also largely closed by this very change — under the request-scoped store the orphan is
+stashed per-context and dies with it, and `ownsSlot` keeps it from any other execution.
+
+**Recommendation: drop it (the previous behaviour is now safe), or `finish('CANCELLED')` so the sample
+is self-identifying and excludable downstream.**
+
+### R-5 · SEV2 · The hostile-store threat model is applied to APM enrichment and not to the crash path
+
+The threat is REAL and public — `BugseeLaunchOptions.requestContextStore` (`node/src/launch.ts:335`)
+flows through `BugseeServerLaunchOptions extends BugseeLaunchOptions` (`bugsee/src/server-launch.ts:16`)
+into the umbrella's top-level `launch()`, and `RequestContextStore`/`RequestContextStoreToken` are
+re-exported to users at `bugsee/src/index.node.ts:20`. That is what distinguishes the five guarded
+`server-instrument.ts`/`active-span-store.ts` sites from R-3, and it is why they are justified.
+
+But the same store is read unguarded on the REPORT path: `packages/core/src/client.ts:543`
+(`submitReport`'s `contextProvider?.getCurrent()`, whose result goes straight into
+`reportContexts.set(handled, captured)` — a non-object context reaches `WeakMap.set(primitive, …)` and
+throws `TypeError`) and `client.ts:359` (`getContext: () => contextProvider.getCurrent()`).
+
+Net effect of this wave under its own threat model: **APM enrichment hardened at five sites, crash
+reporting left exposed.** The existing follow-up note is candid, but normalizing in two of three places
+is worse than normalizing in none — it makes the remaining hole look already handled.
+
+**Recommendation: hold the commit for this, or pull the null/non-object normalization into one
+`safeGetContext` in `@bugsee/core` that all six call sites use.**
+
+### R-6 · SEV2 · `controller.ts:57` now claims unconditional isolation that only holds with the default auto-instrument
+
+The rewritten docstring states the Node launch supplies per-async-context tracking *"so concurrent
+requests stay isolated"*, with no caveat. Measured on Node 24.15: the store is exactly as isolated as the
+context OBJECT is, because `active-span-store.ts:112-121` keys on identity. In the
+`handle()`-called-twice-from-one-sync-frame shape — which `openServerContext` (`server-instrument.ts:296-300`)
+and `nestjs/src/middleware.ts:48` both implement as "skip `enterWith` when a context is already active" —
+two concurrent requests share one context:
+
+```
+handle#3 before=2 entered=2 afterAwait=2
+handle#4 before=2 entered=2 afterAwait=2   <-- both requests in context id=2
+```
+
+Then request A's `setActiveTransactionName` reads `ownsSlot.has(C)` → `live(stashed(C))` → **T_B**. D2
+verbatim, not narrowed. The module comment at `:27-30` calls this a "caveat … a transaction stashed on
+it lingers with it", which understates it — the store returns a foreign LIVE transaction.
+
+Gated by config, not luck: `instrumentIncomingRequests` defaults `true` (`launch.ts:1030`) and the
+`node:http` emit patch is `run`-scoped — measured to give a genuinely fresh ALS frame per request, even
+for pipelined requests on one socket. It fires only with `instrumentIncomingRequests: false` PLUS a host
+dispatching concurrent requests from one shared async frame (the Elysia `app.handle` shape).
+
+**Recommendation: qualify the docstring, or make the naming seam a no-op rather than mistarget when the
+context is known-shared.**
+
+### R-7 · SEV3 · The exports are inverted — the useless factory is public, the useful one is not
+
+`packages/performance/src/index.ts:10` exports `createSingleSlotActiveSpanStore`, the DEFAULT that nobody
+needs to construct. `packages/node/src/index.ts` does NOT export `createRequestScopedActiveSpanStore`. A
+consumer on bare `@bugsee/node` wiring APM by hand — the shape of
+`packages/instrumentation-tests/app/scenario.ts:375-377` — therefore has **no supported way to obtain
+per-request isolation**; the store is built at `launch.ts:1104` and discarded unless the umbrella
+consumes it. Export the request-scoped factory, or drop the single-slot one; shipping exactly the wrong
+one of the two is the worst combination.
+
+### R-8 · SEV3 · This file asserts a pre-existing lint failure that does not exist
+
+The "Pre-existing red, not this wave" bullet above is wrong, and is corrected in place. Ground truth:
+
+```
+$ pnpm lint ; echo $?                                    # biome check .
+Checked 1135 files in 227ms. No fixes applied.
+Found 24 warnings.
+0
+$ pnpm exec biome check packages/instrumentation-tests/harness/invariants.mts ; echo $?
+0
+```
+
+`biome.json` sets `linter.rules.recommended: true` with no severity overrides, and in Biome 2.x
+`noExplicitAny` / `noNonNullAssertion` are **warn**-level, so `biome check` exits 0. CI's lint step is
+literally `run: pnpm lint`, so it passes there too — confirmed against the actual run for this commit
+(`gh run list`: lint/typecheck/cycles job green at `72b2837`). The files ARE byte-identical to `HEAD`, so
+the "untouched by this change" half is right; warnings are simply not red. The note also omits the 24th
+diagnostic, in `packages/node/src/index.test.ts`.
+
+Why this rates a finding rather than a typo: it hands the next committer a standing instruction to treat
+a lint failure as expected noise. If `pnpm lint` ever goes genuinely red, the documented excuse is
+already sitting there — which is exactly what happened while closing these findings (see below).
+
+**Two measurement traps found the hard way while verifying this, both worth keeping.**
+
+1. **`biome check --stdin-file-path=<path>` does NOT reproduce `biome check <path>`.** Piping the same
+   bytes through stdin returned exit 1 where the by-path check returns 0 — stdin mode does not resolve
+   the same config/severity. It looked like a clean way to lint a file's `HEAD` content without
+   `git stash`/`checkout` in a tree full of uncommitted work. It is not. Use `git worktree` for that, or
+   reason from the diff.
+2. **A formatting error in your own new code masquerades as the documented pre-existing failure.** Mid-fix,
+   `pnpm ci:local` went red on lint and the standing note made it look expected. It was not: `Found 3
+   errors` — biome `format` on three test files edited minutes earlier. **Read the `Found N errors` line,
+   not the exit code**, and never accept a red gate because a note says that gate is already red. Fixed
+   with `biome check --write` on those three files; `pnpm lint` back to exit 0 / 24 warnings.
+
+### R-9 · SEV3 · `clear()`'s containment early-return skips the `ambient` release, retaining one finished transaction
+
+`packages/node/src/active-span-store.ts:154` returns before `:165` (`if (ambient === transaction) ambient = undefined`).
+
+A transaction started outside any context lands in `ambient` (`:125`). If it then finishes INSIDE a
+frozen/sealed context, the early return keeps a strong reference to the FINISHED transaction until the
+next context-less `set()` overwrites it. WeakRef-proven:
+
+```
+clear() in a NORMAL (no) context  -> transaction still retained? false
+clear() inside a FROZEN context   -> transaction still retained? true
+```
+
+Bounded and benign (one variable; ≤ ~31 KB measured with 100 `http.client` children; `get()` hides it via
+`live()`), and the precondition is exotic. But the comment's justification ("must not mutate shared
+state") is about the STASH — releasing a reference the store itself installed, by identity, mutates
+nothing another execution can observe. Move the `ambient` release above `:154`, or record the retention
+consequence. Dissolves entirely under R-1.
+
+### R-10 · SEV3 · Frozen-context containment defends a case no SDK path produces
+
+`active-span-store.ts:80` (`unstashable`), `:114-116`, `:128-148`, `:152-164`; plus
+`server-instrument.ts:584-590` (`stashSpan`'s catch).
+
+Every SDK-created context is a fresh object literal — `buildContext` (`server-instrument.ts:281-285`),
+used at `:302`, `:358`, `:404`. Every `run`/`enterWith` caller in non-test source was checked
+(`nestjs/src/middleware.ts:69`, `vercel-edge/src/edge-context.ts:114`, the three above): **none can
+produce a non-extensible context.** Reachable only via a custom `requestContextStore` returning a frozen
+object, or an integrator resolving `RequestContextStoreToken` and calling `run(Object.freeze(ctx), fn)`.
+`clear()`'s `delete` catch (`:161-163`) is narrower still — it needs a context sealed AFTER a successful
+stash, mid-request; the covering test (`active-span-store.test.ts:371-389`) calls `Object.seal` between
+`set` and `clear`, a sequence no host produces.
+
+The reasoning is sound and the over-containment boundary at `:146` is a correct refinement — this is
+careful work. It is simply unbudgeted: ~35 lines, two WeakSets and three branches for a scenario with no
+producer. Keep `set`'s `defineProperty` catch (cheapest guard at a real-if-exotic boundary — a throw out
+of `startTransaction` really would break the request); drop the rest with R-1.
+
+**Separately: `stashSpan`'s catch has an undocumented consequence.** Its comment says "the span stays
+usable transaction-only". What it omits is that a failed stash means a later opener in the same request
+finds no `refinableSpan` and opens a **second context and a second `http.server` transaction** — the
+exact double-instrumentation first-owner-wins exists to prevent. Worse than the comment implies; state it.
+
+### R-11 · SEV3 · A pipelined request loses its own transaction for its entire close phase
+
+Measured on real `node:http` with two pipelined requests:
+
+```
+[close ctx=4] getStore=4 writableFinished=true
+[close ctx=5] getStore=4 writableFinished=true   <-- req 5's close runs in req 4's context
+```
+
+Node queues the second response (`state.outgoing`) and flushes it inside the first response's completion
+chain. The store survives it correctly (`clear(T5)` in `C4` hits the identity check at `:157` and deletes
+nothing; `ownsSlot(C4)` stops req 5's tail reading `C4`'s transaction). The residual: any
+`getActiveSpan()` / naming call / outbound call issued from a `res.on('finish')` handler during req 5's
+close phase reads `C4`, whose stash is already deleted, and the fallback is blocked → `undefined`. The
+old process-wide slot returned `T5`. Pipelining is effectively dead in browsers, hence SEV3.
+
+**Adjacent, pre-existing, not this diff:** the same fact means `span.captureError` during req 5 calls
+`store?.setAttribute('http.route', …)` (`server-instrument.ts:541`) on **req 4's** context, and T5's
+`onFinished` capture-ring entry is stamped with C4's `contextId`. Worth its own look.
+
+### R-12 · SEV3 · Realm-global stash key vs per-store WeakSets can alias
+
+`ACTIVE_TRANSACTION` is `Symbol.for(...)` (`:36`, process-global) while `unstashable`/`ownsSlot` are
+per-store closures (`:79`, `:84`). Two stores over one context object: B's `set` overwrites the symbol,
+then A's `get` — `ownsSlot_A.has(C)` true — returns **B's** transaction at `:119`. Falsification
+attempted: a repeat `launchCore` returns `internals: undefined` and never reaches `:1104`
+(`launch.ts:463-470`), so one process = one store. It needs two different CARRIERS (duplicate or
+mismatched `@bugsee/node` copies) both handed the same `options.requestContextStore`. Exotic — but the
+comment at `:68-70` asserts safety on "the process launches exactly one store", which is the carrier
+invariant, not a property of this code. Say so.
+
+### R-13 · SEV3 · Test assertions that do not carry the weight their comments claim
+
+- `server-instrument.test.ts:1132` — `expect(api.getActiveSpan()).toBeUndefined(); // finished in the
+  catch — not orphaned live`. The read happens AFTER `runServerRequest` returns, i.e. outside the ALS
+  context the orphan would be stashed in, so it returns `undefined` whether or not the abandon-finish
+  ran. Verified empirically. The only falsifiable assertion in that test is
+  `expect(txStore.drain()).toHaveLength(1)` at `:1137`. The hazard the implementation comment names
+  (`server-instrument.ts:492`, "on a lingering context the next request would even read it") has **no
+  test** — reading back inside a RE-ENTERED context is where it could actually fail.
+- `server-instrument.test.ts:1217-1229` — "the owner span is still refined" asserts nothing about
+  refinement. The `owner` doubles (`:1190-1191`) are never asserted; `span?.setRoute('/orders/:id')` at
+  `:1227` is a bare call. The one real assertion, `captureError → true`, does not discriminate a refining
+  handle from a fresh `makeSpan` span — both return `true`, only `NOOP_SPAN` returns `false`
+  (`server-instrument.ts:260-262`). So replacing `refiningHandle(existing, …)` with `makeSpan(…)` in
+  `startServerSpan` (`:321`) — losing first-owner-wins re-entrancy, which this test's own title claims is
+  preserved — SURVIVES. Add `expect(owner.setRoute).toHaveBeenCalledWith('/orders/:id')`. Same shape at
+  `:1282-1304`.
+
+### R-14 · SEV3 · Reachable behaviour with no test
+
+- **The `enterWith` path is untested.** All 31 node store tests use `run()`. `openServerRequest` /
+  `openServerContext` (`server-instrument.ts:358`, `:300`) — the fastify/nestjs/hapi entry — use
+  `enterWith`, and `active-span-store.ts:28-31` documents an enterWith-linger live-share as an accepted
+  risk that nothing pins in either direction. Probed: the two-concurrent-`enterWith`-handlers shape
+  isolates correctly today (`{"B":"B","A":"A"}`), so the test is writable and would pass.
+- **Nested contexts.** When the active context was opened by `enterWith`, `refinableSpan`
+  (`server-instrument.ts:114-118`) returns `undefined`, so `runServerRequest` opens a NESTED `store.run`
+  context. The inner context is not in `ownsSlot`, so `get()` falls back to **ambient** rather than to
+  the enclosing request's live stash. Reachable, no test either way. (Another R-1 consequence.)
+- The `'drop'` warn kind never reaches the launch wiring in any test; `launch.test.ts:1985-2009` pins
+  only `'throw'`.
+
+### R-15 · SEV3 · Two comments now assert the opposite of what the code does
+
+`packages/bugsee/src/wire.ts:40-41` and `:71-72` still say the browser and node `launchCore` produce a
+*"structurally identical"* value. After this change they do not — `launch.ts:387` was correctly softened
+to "Shaped like"; these two were missed. This matters more than a usual doc nit: the "structurally
+identical" claim is exactly what makes the optional `activeSpanStore?` field (R-16) look harmless.
+
+### R-16 · SEV3 · The optional-vs-required asymmetry is a latent hole with no type signal
+
+`bugsee/src/wire.ts:58` (`activeSpanStore?`) vs `node/src/launch.ts:417` (required). `UmbrellaInternals`
+is a hand-maintained structural mirror with no shared type — browser and node declare `LaunchInternals`
+independently (`browser/src/launch.ts:250`, `node/src/launch.ts:395`). At the `wireUmbrella(client,
+internals, …)` call site (`bugsee/src/server-launch.ts:37`) `internals` is a variable, so excess-property
+checking does not apply: a rename or drop on the node side produces **no type error** and the store
+silently vanishes to the single slot. The field must stay optional given the current design (the browser
+internals would otherwise fail assignability), so this is not fixable by flipping the modifier. It is
+covered behaviourally by `bugsee/src/node.test.ts:255-276`, which is adequate today — but the hole
+reopens with zero signal for any FUTURE server platform that builds its own `LaunchInternals` without
+going through `nodeLaunchCore`.
+
+### R-17 · SEV4 · `ActiveSpanStore` is named for `Span` and typed to `Transaction`
+
+`performance/src/active-span-store.ts:27,29,37` — all three members take/return `Transaction`, while
+`PerformanceApi.getActiveSpan()` returns `Span | undefined` and Android's holder is genuinely
+`ThreadLocal<Span>`. Now that this is an exported seam a third party can implement, the mismatch will
+mislead. `ActiveTransactionStore` is accurate.
+
+### R-18 · SEV4 · The built-in store can violate its own no-throw contract
+
+`active-span-store.ts:44` — `live()` calls `transaction.isFinished()` unguarded, so `get()` throws for a
+hostile `Transaction`; and `set`'s catch calls `live(stashed(context))` at `:146`, so a throw there
+escapes `set()` FROM INSIDE the catch. Unreachable today (only controller-created `TransactionImpl`s ever
+enter the store) and every call site is guarded, so zero user impact — but
+`performance/src/active-span-store.ts:16-20`'s absolute claim ("The built-in stores never throw") is
+false as written.
+
+### R-19 · SEV4 · `delete` pushes the `RequestContext` into dictionary mode; the fix is free
+
+`active-span-store.ts:159`. A single `delete` of a `defineProperty`-installed symbol forces V8 to
+slow-properties. Measured on the exact read the capture aggregator does per entry (8M iterations, best of 7):
+
+```
+HEAD shape: SERVER_SPAN only, never deleted        1.27 ns/read
+1 set+clear cycle (the NORMAL per-request flow)    9.05 ns/read
+10 set+clear cycles                                9.07 ns/read   (does not compound)
+```
+
+The second symbol property costs nothing by itself (`1.37 → 1.34 ns`); it is the `delete` alone, and
+`server-instrument.ts`'s `SERVER_SPAN` stash never deletes, so this transition is NEW. Practical impact
+≈ zero on the dominant path (`clear()` runs in the response `close` handler, after which essentially no
+entries are stamped on that context) — it bites only for `enterWith`-lingering contexts and for a user
+finishing a transaction mid-request, at 8 ns against a capture entry costing microseconds. Reported
+because the fix is free: the descriptor is already `writable: true`, so
+`context[ACTIVE_TRANSACTION] = undefined` clears it without the map transition, and every downstream read
+already treats `undefined` as absent. Fold into any future touch of this file.
+
+### Pre-existing, surfaced by this review, NOT in scope
+
+- `server-instrument.ts:466-491` — `makeSpan`'s outer catch spans `tryGetPerf`, `parseTraceparent`,
+  `spanName` → `urlPath` → `sanitizeUrl`, `startTransaction`, three getters and `store.setTrace`. A defect
+  in `sanitizeUrl` or `parseTraceparent` — our own code, on every request — is swallowed with no
+  `onError`. Its breadth got MORE consequential, not less: R-4's new code sits inside it, so a
+  `sanitizeUrl` bug now additionally ships a junk transaction. Narrow it to the `perf`/`store` calls.
+- The pipelining context-attribution issue noted under R-11.
+
+### Verified CORRECT (the claims that hold, and what earned them)
+
+**Gates — all pass, re-run rather than taken on trust.** `pnpm typecheck` → 100/100 (also with
+`--force`, 22.89s, exit 0). `pnpm check:cycles` → no circular dependency over 1198 files.
+`turbo run test:coverage` → 97/97, exit 0. `turbo run test:unit` → 51/51, exit 0. bun 1.4.2 + deno 2.8.3
+e2e → 93/93 passed, child processes observed (not silently skipped). Coverage on every touched file:
+
+```
+@bugsee/performance   active-span-store.ts  100 | 100 | 100 | 100     (pkg: 100 | 99.06)
+                      controller.ts         100 | 100 | 100 | 100
+@bugsee/node          active-span-store.ts  100 | 100 | 100 | 100     (pkg: 100 | 96)
+                      server-instrument.ts  100 | 100 | 100 | 100
+                      trace-propagation.ts  100 | 100 | 100 | 100
+@bugsee/bugsee        wire.ts               100 | 100 | 100 | 100
+```
+
+**Coverage is honest.** Zero `/* v8 ignore */` in any new or touched file (grep exit 1). Note for future
+readers: the text reporter OMITS fully-covered files, so a new file's ABSENCE from the table is the pass,
+not an exclusion.
+
+**The concurrency tests are genuinely load-bearing — proven by substitution, not assumed.** Running the
+OLD single-slot store against the three key scenarios verbatim, through the real controller and real
+`AsyncLocalStorage`:
+
+```
+CAUGHT  integration#1   -> A: getActiveSpan() !== own | A: own.getName()='GET A' expected '/a/:id'
+CAUGHT  integration#4   -> nameOfA='GET /a'   (A's rename landed on B's transaction)
+CAUGHT  unit concurrency-> seen={"B":"B","A":"B"}  (A literally read B's transaction)
+```
+
+All context tests use a REAL `node:async_hooks` ALS (`node/src/request-context-store.ts:39-43`) — no
+faked context provider anywhere in the three new files. `controller.test.ts:229/260` probe both naming
+seams separately and mutate the assertion target; `:311` catches a module-hoisted shared default slot
+that would pass every single-controller test; `trace-propagation.test.ts:63`'s `not.toThrow()` is exactly
+right (without the guard the throw escapes synchronously into the app's own `fetch()`);
+`server-instrument.test.ts:1085` catches a WRONG OUTCOME, not just a throw (`null !== undefined` made
+`openServerContext` skip the open).
+
+**R-2/R2-8 bundle isolation holds.** Built `@bugsee/node`: `grep -c "@bugsee/performance"` → **0** in both
+`dist/index.js` and `dist/index.cjs`; the only `performance` hit is `node:perf_hooks`. Structurally
+guaranteed, not incidental — `tsconfig.base.json:39` sets `verbatimModuleSyntax: true`, so `import type`
+cannot survive. `@bugsee/performance` was already in node's `dependencies` before this change
+(`git show HEAD:packages/node/package.json:33`), not added by it.
+
+**No runtime is left on the broken slot.** Only `@bugsee/browser` and `@bugsee/node` build a
+`LaunchInternals`; browser correctly omits the field (one in-flight navigation). Bun/Deno inherit
+verbatim (`bun/src/launch.ts:20`, `deno/src/launch.ts:22`). `@bugsee/cloudflare`, `@bugsee/vercel-edge`,
+`@bugsee/webworker` and `@bugsee/electron` contain **zero** references to `@bugsee/performance` and never
+wire a controller — there is no slot there to be wrong. All five meta-framework server entries launch
+through `@bugsee/bugsee/node` → `createServerLaunch` → `wireUmbrella`, so they inherit the fix.
+(Electron main receives the store at `electron/src/launch-main.ts:113` and discards it — harmless, it
+wires no APM.)
+
+**Cost is not measurable in practice — MEASURED, not estimated.** Node v24.15.0 darwin-arm64, best-of-5,
+sink-guarded:
+
+```
+single.get() (old)          3.96 ns/op        scoped.set()   70.80 ns/op
+scoped.get() (new)         14.42 ns/op        scoped.clear() 14.66 ns/op
+  delta = 10.47 ns/op (of which ALS getStore = 6.06 ns)
+try/catch overhead: als.getStore() bare 3.99 ns vs in try/catch 3.98 ns  -- free, measured
+ALS depth-insensitive: 13.18 ns at depth 1 vs 13.29 ns at depth 20
+allocation on the read path: 0.0005 B/call over 20M calls
+```
+
+Frequency: `set`/`clear` 1× per incoming request; `get` 1× per OUTGOING network call; the naming seams
+are **0× by default on a server** (every built-in adapter refines via `ServerRequestSpan.setRoute()`,
+which reads the context stash, not this store). Against a bare keep-alive `node:http` round-trip of
+32.0 µs, the store adds ~0.090 µs = **0.281%** — and that 32 µs is a do-nothing handler over loopback.
+
+**Retention is GC-bounded — proven, and the dismissal was understated.** On the auto-instrumented path
+`clear()` DOES reach the stash (`RETAINED STASHES: 0 of 1`), so "never removed" is the exception, not the
+rule. Worst case anyway — every request stashing a ~31 KB never-finished transaction, 1000-request
+warmup then 4000 more with forced GC: **−365 B/req (negative heap delta)**, and a `WeakRef` census shows
+**3 of 3000** `RequestContext` objects reachable after GC (the three in flight). The stash holds at most
+one transaction per context (`defineProperty` overwrites), so the ceiling is O(in-flight) × ~31 KB.
+Transaction size measured: 723 B bare, 31,314 B with 100 recorded `http.client` children, capped by
+`MAX_HTTP_SPANS = 100` (`http-spans.ts:89`). No bodies are held (`http-spans.ts:143` stores a
+query-stripped sanitized URL plus 2–4 scalars).
+
+**The symbol stash stays out of report assembly and capture stamping.** Every consumer reads NAMED fields
+only: `core/src/capture-aggregator.ts:38-54` (`contextId`, `trace.*`, spreads `entry.data` not the
+context), `core/src/bundle-assembler.ts:113-190` (spreads `context.attributes`, the sub-object). No
+`structuredClone`, no `JSON.stringify(context)`, and no `Reflect.ownKeys`/`getOwnPropertySymbols`
+anywhere in `packages/*/src`. Belt and braces: the property is `enumerable: false`.
+
+**Android parity on nesting and clear-on-finish is faithful.** `SpanContextHolder.java:13-14` states the
+holder does NOT restore a parent on finish and callers manage restoration — the controller's documented
+"no span stack, D11 clears rather than reverts" (`controller.ts:159-166`) matches it exactly. JS's
+identity-compared `clear()` and its finished-transaction filter are STRICTER than Android's unconditional
+`remove()` / unfiltered `get()` — improvements, not divergences. Only R-1's ambient fallback diverges in
+a direction that matters.
+
+**Other verified-correct items.** `clear` can never delete a foreign slot (strict identity at `:157` and
+`:165`; all four orderings traced). Nested transactions within one request behave identically to the old
+single slot (documented D11 tradeoff), and `http.server` naming is unaffected because `finishWith` uses
+the closure's `transaction`, not the store. A client abort fires `close` with `getStore() === undefined`,
+so the originating stash is never removed — `live()` hides it and the context is GC'd, exactly as the
+module claims at `:21-25`. A request transaction can never leak to a background task (a request-scoped
+`set` always stashes and never writes `ambient`). `createSingleSlotActiveSpanStore`'s added `isFinished`
+filter is behaviour-preserving (`onFinish` fires once on the finished transition, `span.ts:327-329`).
+The umbrella's public API is genuinely unchanged (`bugsee/src/index.ts:23-29`, `index.node.ts` re-export
+neither new symbol). **And a real improvement nobody claimed:** `collectHttpSpans` binding the owner at
+the `before` stage (`http-spans.ts:114`) now resolves the ISSUING request's transaction instead of the
+last-started one.
+
+### Order the work was actually done in (all complete)
+
+1. **R-1** — drop the ambient fallback for context-bearing reads. Dissolves R-10, most of R-14, and R-9.
+2. **R-5** — guard the crash path, or hold the commit.
+3. **R-2** — the ~15-line concurrent `runServerRequest` test.
+4. **R-3** and **R-4** — delete the unreachable catches; drop or downgrade the abandon-`finish()`.
+5. **R-6**, **R-8**, **R-15** — the three statements that are currently false.
+
+Everything below that is cleanup and can ride a later touch of these files.
+
+### Resolutions (2026-09-14, uncommitted working tree — second pass)
+
+Done, test-first + mutator-verified + gates green; pending a fresh convergent round:
+
+- **R-1 DONE** — context-bearing reads are strictly private (`context !== undefined ?
+  live(stashed) : live(ambient)`); the containment apparatus (`ownsSlot`, `unstashable`, ~40 lines)
+  is deleted. What stays: null/non-object normalization, per-cause warn-once, drop+warn on
+  unstashable writes, the guarded sink, set/clear guards. Producer audit accepted — no built-in
+  entry reads ambient from in-context, and Android returns `null` with no fallback. Nested-run
+  limitation documented in the module note.
+- **R-2 DONE** — concurrent-`runServerRequest` test (real ALS + real controller + scoped store,
+  20/5 ms interleave, names asserted off the §8.8 drain); verified to fail on the
+  start-before-open mutant.
+- **R-3 KEPT + rebutted** — the catches stay. "No public API can reach a custom store" overstates:
+  direct controller construction (`createPerformanceController({ activeSpanStore })`, the
+  instrumentation-tests scenario shape) IS public API and takes any implementation. Plus the
+  must-not-throw contract now states the rule, and their own test-reviewer verified no pre-existing
+  test passes via a degraded path.
+- **R-4 DONE as `finish('CANCELLED')`** — self-identifying and excludable; status asserted off the
+  drain. The "truthful timing" phrasing is gone.
+- **R-5 DONE (crash path)** — `submitReport`'s `getCurrent()` is guarded (test-first, mutant-verified).
+  Mechanism correction for the record: `reportContexts.set(handled, captured)` cannot throw on a
+  primitive context (it is the VALUE, not the key) — the real hole was only the throwing provider,
+  now closed. Capture path was already guarded (`route()` try/catch).
+- **R-6 DONE** — docstring qualifies: isolation holds on the default auto-instrumented path (fresh
+  ALS context per request); shared-object concurrency is not isolated.
+- **R-7 DONE** — `createRequestScopedActiveSpanStore` exported from `@bugsee/node` (+ barrel test);
+  flows through bun/deno `export *` with no test updates needed.
+- **R-8 accepted (was already corrected in place).**
+- **R-9/R-10/R-12 dissolved** by R-1 (apparatus deleted); the stashSpan double-instrumentation
+  consequence is now stated in its comment; the R-12 comment states the carrier invariant accurately.
+- **R-11 recorded as follow-up** (pre-existing pipelining attribution, explicitly out of scope).
+- **R-13 DONE** — the vacuous post-return read is dropped (drain carries the test); both refining
+  tests now assert `owner.setRoute` delegation directly. (The R-2 test was restructured along the way:
+  `getActiveSpan()` is typed `Span`, which has no `getName` — names now come off the drained §8.8
+  wire instead of the live span.)
+- **R-14 DONE** — enterWith concurrency test (passes, as probed), nested-read test pinning the
+  documented limitation, launch drop-warn threading test.
+- **R-15 DONE** — `wire.ts` comments match `launch.ts` "Shaped like".
+- **R-16 DONE** — `keyof` compile-time pin in `bugsee/src/node.test.ts` (fails compilation, not just
+  a test, if node renames/drops the key), strengthened to also pin the field TYPE (mutual-extends —
+  optionality-drift alone is harmless since the umbrella tolerates absence, but a mistyped field
+  would corrupt the handoff silently).
+- **R-17 dismissed** — `Transaction extends Span` (`span.ts:38`); the name is backed by the hierarchy.
+- **R-18 DONE** — no-throw claim qualified to controller-created transactions.
+- **R-19 DONE** — assignment-clear (no dictionary transition); sealed test now expects immediate
+  blanking, frozen test keeps retained-then-hidden.
+- **F5 outcome: probe measured redundant, deleted.** A launch-time probe of the span store (to warn
+  on broken custom stores with no APM wired) was built, then measured unnecessary: launch already
+  reads the registered store ~15× (provider starts) with every throw reported — `getCurrent` calls
+  15, `onError` calls 15, same object. The probe would have been a 16th report. Deleted; the
+  launch test instead pins the signal existing at all ("a broken custom store surfaces at launch —
+  never silently"), which fails if every launch-time reader goes quiet.
+
+## D2 part 2 — OPUS REVIEW ROUND 2 (2026-09-15). 2 SEV2, 8 SEV3 — ALL FIXED
+
+Three Opus reviewers (correctness/concurrency · test quality · adversarial whole-diff) over the FIXED
+state, each told to verify the resolution table rather than trust it. **No SEV1 and no SEV2 on
+correctness or architecture** — both remaining SEV2s were TEST defects, and the value claim was proven
+end-to-end with a falsification. Everything below is fixed in the same tree.
+
+### What was verified, not assumed
+
+- **The feature delivers.** Real `node:http` server + real umbrella launch, two overlapping requests each
+  issuing an outgoing fetch, timed so a global slot MUST misattribute → `GET /a` owns `call-a`, `GET /b`
+  owns `call-b`. The same through `openServerRequest` (the `enterWith` hook-adapter path) → also isolated,
+  which no existing test covers with a real server. Discriminator against the old single slot: `GET /a`
+  never finished and `call-a` was DROPPED.
+- **The `onError` → `logException` → capture → `getActiveSpan` → store-throws loop terminates at depth 1**
+  (latch added before delivery); cross-site nesting bounded at 3; a throwing sink never escapes; a
+  non-function `onError` never escapes.
+- **`'CANCELLED'` reaches the wire exactly once** with the slot released, and is an existing `SpanStatus`
+  (`span.ts:10`) already produced by `idle-transaction.ts:79` — R-4 introduced no new wire value.
+- **R-19's assignment-clear** preserves `enumerable:false` (own writable data property), so report
+  assembly and capture stamping are untouched; no `getOwnPropertySymbols`/`Reflect.ownKeys`/`hasOwnProperty`
+  anywhere in non-test source.
+- **R-1's full state space re-walked** against real ALS + real controller: ambient never leaks into a
+  context-bearing read, ambient is genuinely released, frozen contexts never poison or orphan it, and the
+  nested-`run` case is strictly SAFER than the old fallback (which returned a foreign transaction there).
+- **R2-8 holds for values**, freshly built: 0 hits in node's ESM and CJS bundles. See O-9 for the nuance.
+- Gates: `pnpm test` 442 files / 6376 tests, typecheck 100/100, cycles clean, lint `Found 24 warnings` and
+  no errors, coverage 100% line/fn/stmt per package, zero `/* v8 ignore */` in the diff.
+
+### O-1 · SEV2 · FIXED · A test for the abandon-path guard could not fail with that guard deleted
+
+`server-instrument.test.ts` — the test pinning the inner catch around `transaction?.finish('CANCELLED')`
+asserted only `not.toThrow()` + the return value. `makeSpan` runs BEFORE `dispatched = true`, so deleting
+the catch merely routes the throw into `runServerRequest`'s own catch, which returns `dispatch(NOOP_SPAN)`
+— same value, no throw. Proven with a probe: `{"returned":"ran","threw":null}` either way. Covered but
+never validated.
+
+**Fixed** by asserting from inside the dispatch: `span.captureError(...)` returns `true` for a real span
+and `false` for `NOOP_SPAN`, which discriminates the two. Mutation-verified: removing the inner catch now
+fails 1 test.
+
+### O-2 · SEV2 · FIXED · Two tests named for `clear()` passed with `clear()` deleted outright
+
+`active-span-store.test.ts` ("clearing an ambient transaction from inside a context clears the ambient
+slot") and `active-span-store.integration.test.ts` ("an ambient transaction finished inside a request
+clears everywhere"). Both finished the ambient transaction BEFORE the clear, and every later read goes
+through `live()`, which hides a finished transaction whether or not the slot still holds it. With
+`clear()` stubbed to a no-op, all six assertions stayed `true` — byte-identical to clean.
+
+**Fixed, differently in each, because the two can observe different things:**
+- The unit test now clears a **LIVE** transaction, so the read after the context exits can only be
+  `undefined` if the clear actually reached the ambient slot. Mutation-verified: `clear()` → no-op now
+  fails **10** tests (it was 0).
+- The integration test goes through the CONTROLLER, where a finished transaction is hidden by `live()` no
+  matter what — it structurally cannot observe slot release. Rather than fake a proof, it was renamed and
+  rescoped to what it genuinely pins (a background transaction finished inside a request is invisible to
+  that request, before and after), with a pointer to the unit test that carries the release guarantee.
+
+This is the `REMEDIATION-PLAN.md` "six tests asserting the defect they existed to prevent" pattern, twice.
+
+### O-3 · SEV3 · FIXED · The naming seams propagated a hostile transaction's throw
+
+`controller.ts` — R-3's guard wrapped `activeSpanStore.get()` but not what it RETURNS, so
+`active.setName()` / `setAttribute()` ran outside every try. A custom store handing back a transaction
+whose setters throw propagated straight out of `setRouteName()` into app code — breaking the interface's
+own promise (`performance/src/active-span-store.ts`) that the controller "degrades a throwing store to
+untracked rather than propagating". The guard and the contract now cover the same surface: both seams run
+through one `nameActive()` helper, guarded, reporting once under a new `'name'` site.
+
+### O-4 · SEV3 · FIXED · A comment that argued FOR the mutation it exists to prevent
+
+`performance/src/http-spans.ts` — the entire stated reason for binding the `http.client` owner at the
+`before` stage was the cross-request misattribution D2 part 2 has now closed. A contributor reading it
+post-change could reasonably conclude the WAVE 3b.4 binding is redundant and revert it.
+
+**It is not redundant — its premise narrowed, its conclusion did not.** Resolving the parent at completion
+still DROPS any call that outlives its request's transaction (the finished transaction reads back as
+absent, so the child attaches to nothing); the reviewer reproduced exactly that. The comment now says so.
+
+### O-5 · SEV3 · FIXED · Three more comments still described the machinery R-1 deleted
+
+`node/src/active-span-store.ts` (`current()`'s normalization justified by "the WeakSet ops"),
+`active-span-store.test.ts` ×2. No `WeakSet` has existed in that file since R-1 deleted `ownsSlot` and
+`unstashable`. The guards are still needed — `stashed(null)` and `Object.defineProperty(primitive, …)`
+both throw — so the justifications were rewritten to name what actually throws. Left as-is, this is the
+trail that makes a future reader re-add containment.
+
+### O-6 · SEV3 · FIXED · `set()`'s "reads are private-empty either way" was false in both directions
+
+`node/src/active-span-store.ts`. (a) A write dropped after an earlier successful stash leaves the EARLIER
+live transaction readable — asserted as the correct outcome by a test 240 lines above the comment. (b) An
+integrator reusing one context object across requests and freezing it between them reads the PRIOR
+request's live transaction (reproduced). Both follow from reads being keyed on the context object, which
+`controller.ts`'s docstring already states; the comment now says what a dropped write really leaves
+readable instead of claiming it leaves nothing. **Comment fixed, not code** — the behaviour is correct and
+the reachability is doubly exotic.
+
+### O-7 · SEV3 · FIXED · The PUBLIC `clear()` contract justified itself by the deleted fallback
+
+`performance/src/active-span-store.ts` — "because the finishing execution may read the transaction through
+the fallback while it lives in ambient". The fallback is gone; the dual check is still mandatory, for a
+different reason. This is the one doc a third-party `ActiveSpanStore` implementor reads to learn WHY both
+checks are required, so it now states the surviving reason: a transaction started outside any execution
+scope and finished from inside one is invisible to that execution's read, yet must still be released.
+
+### O-8 · SEV3 · FIXED · R-16's own fix reintroduced the R-15 defect, and its claim overreached
+
+`bugsee/src/wire.ts` still said the field "stays optional" twenty lines above the declaration making it
+required. Also corrected: the required key forces a platform to STATE a choice, not to state a CORRECT one
+— a future server platform still satisfies the type by writing `activeSpanStore: undefined`. Better than
+optional; not the guarantee the comment claimed. (Noted for the day it matters: `LaunchInternals` is a
+published type and the browser's field is typed as the literal `undefined`, so a browser-family platform
+supplying a store would need a one-line change in `@bugsee/browser`.)
+
+### O-9 · SEV3 · FIXED · Two more stale-premise comments, and the R2-8 boundary now has a type half
+
+`node/src/trace-propagation.ts` and `bugsee/src/wire.ts` both justified a still-correct decision by the
+single-slot concurrency bug. Both decisions survive on other grounds (the node decorator lives in the BASE
+launch and must work with the opt-in APM extension absent; the perf-sourced decorator reads the active
+transaction rather than the request context). `docs/design/cross-project-tracing.md` named the gap as open
+in a doc headed **Status: BUILT** — now marked closed.
+
+**R2-8 nuance, recorded so the next reviewer measures both halves:** the VALUE boundary holds (0 hits in
+node's dist), but `packages/node/dist/index.d.ts` now carries `import { ActiveSpanStore } from
+'@bugsee/performance'` — the first performance type in node's published declaration surface, because
+`LaunchInternals` is exported. It resolves (performance is already a `dependency`), but it forecloses ever
+demoting that to an optional/peer dep. The R2-8 note's "value-free" wording describes only half the
+boundary now.
+
+### O-10 · SEV4 · FIXED · Two test-hygiene items
+
+An `expect(...)` wrapped around a `void` call (always true; the real assertion was the line below), and
+the per-controller `onError` latch being caught only by cross-test ORDERING — an earlier sink-less test
+happened to consume the latches. A two-controller test now states it directly; mutation-verified against a
+module-hoisted latch (2 failures).
+
+### The two dismissals, re-audited by a reviewer that was told to attack them
+
+- **R-17 (the `ActiveSpanStore` name) — UPHELD, on better grounds than the ones recorded.** The solid
+  argument is `span.ts`: `interface Transaction extends Span`, so the seam names a supertype role and
+  holds a subtype — accurate, not a mismatch. The roadmap argument in the original dismissal is weaker
+  than it looked: the span-stack slice IS planned (`docs/design/frontend-adapters.md`, D11), but what
+  D11/D12 stack is TRANSACTIONS (pageload ← navigation ← interaction), so it would not necessarily widen
+  the type. Keep the name; lean on the hierarchy, drop the roadmap reasoning.
+- **R-11 (HTTP pipelining) — UPHELD and re-measured.** A raw-socket probe confirmed the loss is confined
+  to pipelining and does not affect ordinary keep-alive:
+  ```
+  pipelined pair:        [1 finish] active=GET /1   [2 finish] active=undefined
+  sequential keep-alive: [1 finish] active=GET /1   [2 finish] active=GET /2
+  ```
+  The worse variant was attempted and could not be produced: no foreign LIVE transaction is ever returned,
+  because request 1's transaction is already finished and cleared by the time request 2's close phase runs
+  in its context. The module comment's claim holds as written.
 
 ## Evidence preserved in `.session-artifacts/` (gitignored)
 

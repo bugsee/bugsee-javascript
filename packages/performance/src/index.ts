@@ -7,6 +7,7 @@
 // the umbrella `bugsee` package auto-registers it (passive web-vitals on by default, span API opt-in).
 // See docs/PROGRESS.md.
 
+export { type ActiveSpanStore, createSingleSlotActiveSpanStore } from './active-span-store';
 export {
   createPerformanceController,
   NAME_SOURCE_ATTRIBUTE,

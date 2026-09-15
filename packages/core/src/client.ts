@@ -540,7 +540,15 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     // Capture the active request context NOW (submit is synchronous in the originating async context);
     // assembly runs detached/queued later, so it reads this snapshot from the WeakMap rather than a
     // by-then-stale active context. Absent contextProvider / no active context → nothing captured.
-    const captured = contextProvider?.getCurrent();
+    // A custom provider whose getCurrent() throws degrades the same way — a broken binding must
+    // never break reporting (the crash path is held to the same fail-safe as every other read of
+    // the integrator-replaceable store; R-5).
+    let captured: RequestContext | undefined;
+    try {
+      captured = contextProvider?.getCurrent();
+    } catch {
+      captured = undefined;
+    }
     if (captured !== undefined) {
       reportContexts.set(handled, captured);
     }

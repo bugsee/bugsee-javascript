@@ -1,4 +1,5 @@
 import type { BugseeClient, Scheduler } from '@bugsee/core';
+import type { ActiveSpanStore } from './active-span-store';
 import { createPerformanceExtension } from './extension';
 import { collectHttpSpans, type NetworkSource } from './http-spans';
 import { collectInteractions, type InteractionSource } from './interactions';
@@ -45,6 +46,12 @@ export interface WirePerformanceOptions {
   /** Web-vitals env override (tests). Default the real globals. */
   env?: WebVitalsEnv;
   onError?: (error: unknown) => void;
+  /**
+   * Where the controller's active transaction lives. Default the process-wide single slot. A server
+   * launch passes its per-request-context store (via `LaunchInternals`) so concurrent requests stay
+   * isolated (D2 part 2); the browser omits it.
+   */
+  activeSpanStore?: ActiveSpanStore;
 }
 
 export interface WiredPerformance {
@@ -71,6 +78,10 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     sampler: createRateSampler(options.sampleRate),
     ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
     ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+    ...(options.activeSpanStore !== undefined ? { activeSpanStore: options.activeSpanStore } : {}),
+    // Same sink the uploader uses below: a store breaking its must-not-throw contract is an internal
+    // error, and reporting it is the whole point of the guard (R-3).
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   extension.setup(options.client);
   const api = options.client.ext('performance');

@@ -1,4 +1,5 @@
 import { type BugseeClient, ClockToken, type FilterStore, FiltersToken } from '@bugsee/core';
+import type { ActiveSpanStore } from './active-span-store';
 import {
   createPerformanceCaptureProvider,
   type PerformanceCaptureProvider,
@@ -32,6 +33,18 @@ export interface PerformanceExtensionOptions {
   maxTransactions?: number;
   /** Injectable transaction buffer (tests, or a launch that wires its own drains). */
   store?: TransactionStore;
+  /**
+   * Where the controller's active transaction lives. Default the process-wide single slot (last-started
+   * wins) — correct for a browser. A concurrent server passes a per-execution-context store (Node keys
+   * it off the AsyncLocalStorage-backed `RequestContext`) so one request never sees another's active
+   * transaction (D2 part 2).
+   */
+  activeSpanStore?: ActiveSpanStore;
+  /**
+   * Internal-error sink, forwarded to the controller. Reports only a store that breaks its
+   * must-not-throw contract (R-3) — once per call site, never once per call.
+   */
+  onError?: (error: unknown) => void;
   /**
    * Run the BUILT-IN span sanitizer — SQL literals replaced, model prompts and bodies redacted,
    * sensitive attribute names removed. Default true.
@@ -95,6 +108,10 @@ export function createPerformanceExtension(
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
         ...(options.sampler !== undefined ? { sampler: options.sampler } : {}),
+        ...(options.activeSpanStore !== undefined
+          ? { activeSpanStore: options.activeSpanStore }
+          : {}),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
       });
       client.addCaptureProvider(provider); // started immediately (the client is already launched)
       client.registerExt('performance', api);

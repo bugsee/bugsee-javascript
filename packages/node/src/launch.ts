@@ -57,7 +57,9 @@ import {
   createWorkerThreadRingWorker,
   httpRequest,
 } from '@bugsee/node-utils';
+import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import { type CapturedDataStore, ensureSecureDataRoot, resolveDataLocation } from './data-location';
 import {
@@ -382,11 +384,13 @@ export type Bugsee = BugseeClient;
 /**
  * The internal wiring `launchCore` hands back alongside the client — the seam the `bugsee` umbrella uses
  * to wire on-by-default extensions (performance / OpenTelemetry) WITHOUT `@bugsee/node` depending on them.
- * Structurally identical to `@bugsee/browser`'s `LaunchInternals` so the umbrella's wiring is
- * runtime-agnostic. Exposes only what is NOT already resolvable from the client's DI container (the
- * clock/scheduler ARE): the authenticated api + transport + base URL + environment builder, the network
- * capture umbrella (its `.interceptor` is the listenable source + request-decorator seam), and the app
- * version/build + error sink. NOT a stable public API — the composition root's internal handoff.
+ * Shaped like `@bugsee/browser`'s `LaunchInternals` so the umbrella's wiring stays runtime-agnostic
+ * (the umbrella reads the shared fields through its own optional-fielded interface — a server-only
+ * addition like `activeSpanStore` below does not need a browser counterpart). Exposes only what is NOT
+ * already resolvable from the client's DI container (the clock/scheduler ARE): the authenticated api +
+ * transport + base URL + environment builder, the network capture umbrella (its `.interceptor` is the
+ * listenable source + request-decorator seam), and the app version/build + error sink. NOT a stable
+ * public API — the composition root's internal handoff.
  */
 export interface LaunchInternals {
   /** API origin (no trailing slash) for extension endpoints. */
@@ -405,6 +409,12 @@ export interface LaunchInternals {
   appBuild: string | undefined;
   /** The internal-error sink. */
   onError: ((error: unknown) => void) | undefined;
+  /**
+   * Where the performance controller's active transaction lives: keyed off the
+   * AsyncLocalStorage-backed request context, so concurrent requests stay isolated (D2 part 2).
+   * The umbrella passes it to `wirePerformance`; a bare `@bugsee/node` consumer never reads it.
+   */
+  activeSpanStore: ActiveSpanStore;
 }
 
 /**
@@ -1088,6 +1098,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appVersion: options.appVersion,
     appBuild: options.appBuild,
     onError: options.onError,
+    // The request-context store is the SAME instance registered as the ContextProvider above, so the
+    // request the auto-instrumentation opens a context for is the request this store keys off. A
+    // broken (throwing) store degrades to the ambient slot and warns through onError, once.
+    activeSpanStore: createRequestScopedActiveSpanStore(requestContextStore, {
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    }),
   };
   return { client: publicClient, internals };
 }

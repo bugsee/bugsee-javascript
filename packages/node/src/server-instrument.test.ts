@@ -1,7 +1,12 @@
-import type { BugseeClient } from '@bugsee/core';
-import type { Transaction } from '@bugsee/performance';
+import type { AttributeValue, BugseeClient, RequestContext } from '@bugsee/core';
+import {
+  createPerformanceController,
+  createTransactionStore,
+  type Transaction,
+} from '@bugsee/performance';
 import { NAME_SOURCE_ATTRIBUTE } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeRequestContextStore, type RequestContextStore } from './request-context-store';
 import {
   defaultShouldReport,
@@ -992,5 +997,378 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
         return null;
       },
     );
+  });
+});
+
+describe('a throwing RequestContextStore never breaks the request path (F5)', () => {
+  // The store is integrator-replaceable (the `requestContextStore` launch option); a custom binding
+  // whose getCurrent() throws must degrade every server-instrument read to "no active context",
+  // never propagate into the request lifecycle.
+  // Fully conforming, deliberately NOT cast: tsc rejects this double the moment
+  // RequestContextStore grows a member it does not implement (the R3-7 enforcement net).
+  const throwingStore = (): RequestContextStore => {
+    const broken = (): never => {
+      throw new Error('custom store broken');
+    };
+    return {
+      getCurrent: broken,
+      run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+      enterWith: (_context: RequestContext): void => {},
+      setUser: (_user: string): void => {},
+      setAttribute: (_key: string, _value: AttributeValue): void => {},
+      setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+    };
+  };
+
+  it('openServerRequest still opens a transaction-only span', () => {
+    const client = fakeClient({
+      store: throwingStore(),
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    let span: ReturnType<typeof openServerRequest> | undefined;
+    expect(() => {
+      span = openServerRequest(info(), { getClient: () => client });
+    }).not.toThrow();
+    // A genuine error is still reported (the span works transaction-only); only the context merge
+    // is skipped — there is no context to merge into.
+    expect(span?.captureError(new Error('x'))).toBe(true);
+  });
+
+  it('startServerSpan still starts a transaction-only span', () => {
+    const client = fakeClient({
+      store: throwingStore(),
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    let span: ReturnType<typeof startServerSpan> | undefined;
+    expect(() => {
+      span = startServerSpan(info(), { getClient: () => client });
+    }).not.toThrow();
+    expect(span?.captureError(new Error('x'))).toBe(true);
+  });
+
+  it('getActiveServerSpan degrades to undefined', () => {
+    const client = fakeClient({ store: throwingStore() });
+    expect(() => getActiveServerSpan({ getClient: () => client })).not.toThrow();
+    expect(getActiveServerSpan({ getClient: () => client })).toBeUndefined();
+  });
+
+  it('getActiveServerSpan with no client at all resolves the default carrier lookup', () => {
+    // Covers the `?? defaultGetClient` arm: with no carrier client launched, the default lookup
+    // yields nothing and the answer is undefined (not a throw).
+    expect(getActiveServerSpan()).toBeUndefined();
+  });
+
+  it('a null-returning store degrades every read to "no active context" (never a crash)', () => {
+    // A custom binding may return null (the idiomatic absent value) instead of undefined. The raw
+    // `stashedOwner`/`refinableSpan` readers only guard undefined, so without normalization a null
+    // would throw a TypeError out of start/open/get — breaking the request path the F5 hardening
+    // exists to protect. Same normalization the span store applies at its own boundary.
+    const nullStore = (): RequestContextStore => ({
+      getCurrent: () => null as unknown as RequestContext,
+      run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+      enterWith: (_context: RequestContext): void => {},
+      setUser: (_user: string): void => {},
+      setAttribute: (_key: string, _value: AttributeValue): void => {},
+      setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+    });
+    const client = fakeClient({
+      store: nullStore(),
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    const opts = { getClient: () => client };
+    expect(() => startServerSpan(info(), opts)).not.toThrow();
+    expect(() => openServerRequest(info(), opts)).not.toThrow();
+    expect(() => getActiveServerSpan(opts)).not.toThrow();
+    expect(getActiveServerSpan(opts)).toBeUndefined();
+  });
+
+  it('openServerContext with a null-returning store still opens (null is absent, not active)', () => {
+    // Without normalization `store.getCurrent() !== undefined` reads null as "a context is already
+    // active" and wrongly skips the open. Routed through the same absent-normalization, null opens.
+    const entered: unknown[] = [];
+    const nullStore = (): RequestContextStore => ({
+      getCurrent: () => null as unknown as RequestContext,
+      run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+      enterWith: (context: RequestContext): void => void entered.push(context),
+      setUser: (_user: string): void => {},
+      setAttribute: (_key: string, _value: AttributeValue): void => {},
+      setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+    });
+    const client = fakeClient({ store: nullStore() });
+    expect(() =>
+      openServerContext(info(), { getClient: () => client, newContextId: () => 'cid-9' }),
+    ).not.toThrow();
+    expect(entered).toHaveLength(1);
+  });
+
+  it('a throwing setTrace finishes the transaction instead of orphaning it live in the slot', () => {
+    // setTrace throws AFTER perf.startTransaction succeeded — the controller slot already holds the
+    // live transaction while this handle is about to abandon it. Finishing (not dropping) clears
+    // the slot through the normal onFinish path and still delivers the bounded transaction once.
+    const als = createNodeRequestContextStore();
+    const txStore = createTransactionStore();
+    const api = createPerformanceController({
+      clock: { wallNow: () => 1, monotonicNow: () => 0 },
+      store: txStore,
+      activeSpanStore: createRequestScopedActiveSpanStore(als),
+    });
+    const store: RequestContextStore = {
+      ...als, // the real ALS binding for every member…
+      setTrace: () => {
+        throw new Error('setTrace broken'); // …except this one
+      },
+    };
+    const client = {
+      getServiceProvider: () => ({ getImmediate: () => store }),
+      ext: () => api,
+      logException: vi.fn(() => Promise.resolve()),
+    } as unknown as BugseeClient;
+    const returned = runServerRequest(info(), { getClient: () => client }, (span) => {
+      span.finish(200); // ownerless now (transaction abandoned) → no-op
+      return 'ran';
+    });
+    expect(returned).toBe('ran');
+    // Delivered exactly once, as CANCELLED (outcome unknown — never a ~0-duration OK in the
+    // http.server bucket): without the abandon-finish the slot would hold the live orphan (drain 0 —
+    // it never settles), and without the start there would be nothing to deliver either. (No
+    // post-return slot read here: outside the request's ALS context it returns undefined whether or
+    // not the abandon-finish ran — that assertion would pass vacuously either way.)
+    const delivered = txStore.drain();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ name: expect.any(String), status: 'CANCELLED' });
+  });
+
+  it('a throwing transaction finish inside the abandon path never breaks the request either', () => {
+    // A hostile perf ext whose finish() throws: the abandon path's own finish must absorb it.
+    const als = createNodeRequestContextStore();
+    const hostileTxn = fakeTxn();
+    hostileTxn.finish = vi.fn(() => {
+      throw new Error('finish broken');
+    });
+    const store: RequestContextStore = {
+      ...als,
+      setTrace: () => {
+        throw new Error('setTrace broken');
+      },
+    };
+    const client = {
+      getServiceProvider: () => ({ getImmediate: () => store }),
+      ext: () => ({ startTransaction: () => hostileTxn }),
+      logException: vi.fn(() => Promise.resolve()),
+    } as unknown as BugseeClient;
+    let returned: string | undefined;
+    let reportedFromInside: boolean | undefined;
+    expect(() => {
+      returned = runServerRequest(info(), { getClient: () => client }, (span) => {
+        // The load-bearing assertion. `not.toThrow()` alone is VACUOUS here: makeSpan runs before
+        // `dispatched` is set, so removing the inner catch merely routes the throw into
+        // runServerRequest's own catch, which returns dispatch(NOOP_SPAN) — same value, no throw.
+        // A real span reports (true); NOOP_SPAN does not (false). That discriminates the two.
+        reportedFromInside = span.captureError(new Error('x'));
+        return 'ran';
+      });
+    }).not.toThrow();
+    expect(returned).toBe('ran');
+    expect(reportedFromInside).toBe(true); // a usable span, NOT the degraded NOOP_SPAN
+  });
+
+  it('runServerRequest still instruments the request with a throwing store (no sink spam)', () => {
+    // The dominant production entry (node:http emit patch, serve wraps, express/koa): without the
+    // safeCurrent hardening the throw lands in runServerRequest's outer catch — the request still
+    // runs, but with a NOOP_SPAN (the http.server transaction is silently lost) plus one spurious
+    // onError call per request. Pinned: a usable span AND a quiet sink.
+    const onError = vi.fn();
+    const client = fakeClient({
+      store: throwingStore(),
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    const returned = runServerRequest(info(), { getClient: () => client, onError }, (span) => {
+      expect(span.captureError(new Error('x'))).toBe(true); // transaction-only, working
+      return 'ran';
+    });
+    expect(returned).toBe('ran'); // the request ran…
+    expect(onError).not.toHaveBeenCalled(); // …with no sink noise about the degraded store
+  });
+});
+
+describe('concurrent runServerRequest isolation (R-2, the D2 production site)', () => {
+  it('two concurrent requests through the real path each read their own transaction', async () => {
+    // Every other isolation proof hand-opens its own context, but the hazard is runServerRequest →
+    // makeSpan → perf.startTransaction per incoming request. Two concurrent requests through the
+    // REAL path (real ALS store, real controller, request-scoped slot) must each read their own
+    // transaction — move makeSpan outside store.run (or start before opening) and this fails with
+    // every request's transaction landing in ambient.
+    const als = createNodeRequestContextStore();
+    const txStore = createTransactionStore();
+    const api = createPerformanceController({
+      clock: { wallNow: () => 1, monotonicNow: () => 0 },
+      store: txStore,
+      activeSpanStore: createRequestScopedActiveSpanStore(als),
+    });
+    const client = {
+      getServiceProvider: () => ({ getImmediate: () => als }),
+      ext: () => api,
+      logException: vi.fn(() => Promise.resolve()),
+    } as unknown as BugseeClient;
+    const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const request = async (id: string, route: string, delayMs: number): Promise<void> => {
+      await runServerRequest(
+        info({ url: `/req-${id}` }),
+        { getClient: () => client },
+        async (span) => {
+          const own = api.getActiveSpan();
+          expect(own).toBeDefined(); // the opener stashed this request's transaction
+          await tick(delayMs); // yield so the sibling request starts before reading back
+          expect(api.getActiveSpan()).toBe(own); // still ours, not the sibling's
+          span.setRoute(route); // refines the OWNER's transaction (first-owner-wins)
+          span.finish(200); // the refinement lands on the buffered name at finish
+        },
+      );
+    };
+    await Promise.all([request('a', '/a/:id', 20), request('b', '/b/:id', 5)]);
+    // NOTE what carries the proof: the `toBe(own)` identity assertion above is the load-bearing one
+    // (it fails under a cross-wired slot). The names below are a SANITY CHECK, not a second proof —
+    // `span.setRoute` refines the owner through makeSpan's own closure, never through the active-span
+    // store, so both names stay correct even with every transaction landing in ambient. Naming
+    // through the store instead (`api.setRouteName`) would not help here either: finishWith re-sets
+    // the name from that closure at finish, so it would be overwritten before reaching the wire.
+    expect(
+      txStore
+        .drain()
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(['GET /a/:id', 'GET /b/:id']);
+  });
+});
+
+describe('integrator-hostile RequestContextStore members (round 6)', () => {
+  // getCurrent is not the only member an integrator's custom store can break. A store whose
+  // MUTATORS throw must degrade the same way — skip the write, keep the request path intact —
+  // never propagate into the request lifecycle.
+  const hostileStore = (
+    mutator: 'setUser',
+  ): { store: RequestContextStore; owner: { setRoute: ReturnType<typeof vi.fn> } } => {
+    const ctx: RequestContext = { contextId: 'owner' };
+    const owner = {
+      setRoute: vi.fn(),
+      captureError: vi.fn(() => true),
+      finish: vi.fn(),
+      cancel: vi.fn(),
+      responseHeaders: vi.fn(() => ({})),
+    };
+    // A pre-stashed run-scoped owner, so the entries below take the refining path (which is the
+    // one that calls the mutator).
+    Object.defineProperty(ctx, SERVER_SPAN, {
+      value: { span: owner, runScoped: true },
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    const broken = (): never => {
+      throw new Error(`custom store ${mutator} broken`);
+    };
+    return {
+      owner,
+      store: {
+        getCurrent: () => ctx,
+        run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+        enterWith: (_context: RequestContext): void => {},
+        setUser: mutator === 'setUser' ? broken : (_user: string): void => {},
+        setAttribute: (_key: string, _value: AttributeValue): void => {},
+        setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+      },
+    };
+  };
+
+  it('a throwing setUser never breaks refinement — the owner span is still refined', () => {
+    const { store, owner } = hostileStore('setUser');
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    let span: ReturnType<typeof startServerSpan> | undefined;
+    expect(() => {
+      span = startServerSpan(info({ user: 'u@x.test' }), { getClient: () => client });
+    }).not.toThrow();
+    // The refining handle still delegates to the pre-stashed run-scoped owner — pinned directly:
+    // replacing the refining handle with a fresh makeSpan span would leave owner.setRoute uncalled.
+    span?.setRoute('/orders/:id');
+    expect(owner.setRoute).toHaveBeenCalledWith('/orders/:id');
+    expect(span?.captureError(new Error('x'))).toBe(true);
+  });
+
+  it('a frozen context with the real store delivers (not orphans) the transaction end to end', () => {
+    // The real interaction, no fakes: the real ALS store's setTrace (`current.trace = trace`,
+    // strict-mode assignment) throws on the frozen object, taking the abandon path — while the
+    // stash skip takes the frozen path. Both guards fire on the SAME object in one start.
+    const als = createNodeRequestContextStore();
+    const txStore = createTransactionStore();
+    const api = createPerformanceController({
+      clock: { wallNow: () => 1, monotonicNow: () => 0 },
+      store: txStore,
+      activeSpanStore: createRequestScopedActiveSpanStore(als),
+    });
+    const client = {
+      getServiceProvider: () => ({ getImmediate: () => als }),
+      ext: () => api,
+      logException: vi.fn(() => Promise.resolve()),
+    } as unknown as BugseeClient;
+    const frozen: RequestContext = Object.freeze({ contextId: 'F' });
+    let span: ReturnType<typeof startServerSpan> | undefined;
+    expect(() => {
+      als.run(frozen, () => {
+        span = startServerSpan(info(), { getClient: () => client });
+      });
+    }).not.toThrow();
+    expect(span?.captureError(new Error('x'))).toBe(true); // usable, transaction-only
+    expect(txStore.drain()).toHaveLength(1); // abandoned but delivered — never orphaned live
+  });
+
+  it('a throwing setAttribute still reports the error — only the context merge is skipped', () => {
+    // captureError's job is the report; the `http.route` merge is enrichment. A custom store whose
+    // mutator throws must not convert a reportable error into a silent "not reported".
+    const store: RequestContextStore = {
+      getCurrent: () => undefined,
+      run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+      enterWith: (_context: RequestContext): void => {},
+      setUser: (_user: string): void => {},
+      setAttribute: (_key: string, _value: AttributeValue): void => {
+        throw new Error('custom store setAttribute broken');
+      },
+      setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+    };
+    const logException = vi.fn(() => Promise.resolve());
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+      logException,
+    });
+    const span = openServerRequest(info(), { getClient: () => client });
+    expect(span.captureError(new Error('x'))).toBe(true); // reported…
+    expect(logException).toHaveBeenCalledTimes(1); // …through the real reporting path
+  });
+
+  it('a frozen active context never breaks span start — the span stays usable, only refinement is lost', () => {
+    // startServerSpan operates on the ALREADY-ACTIVE context — a foreign object the host placed
+    // there, which can be frozen/sealed. The owner stash (defineProperty) then throws; the span
+    // must still come back usable (transaction-only), like the span store's drop semantics.
+    const frozen: RequestContext = Object.freeze({ contextId: 'F' });
+    const store: RequestContextStore = {
+      getCurrent: () => frozen,
+      run: <T>(_context: RequestContext, fn: () => T): T => fn(),
+      enterWith: (_context: RequestContext): void => {},
+      setUser: (_user: string): void => {},
+      setAttribute: (_key: string, _value: AttributeValue): void => {},
+      setTrace: (_trace: { traceId: string; spanId: string; sampled: boolean }): void => {},
+    };
+    const client = fakeClient({
+      store,
+      perf: { startTransaction: vi.fn(() => fakeTxn()) },
+    });
+    let span: ReturnType<typeof startServerSpan> | undefined;
+    expect(() => {
+      span = startServerSpan(info(), { getClient: () => client });
+    }).not.toThrow();
+    expect(span?.captureError(new Error('x'))).toBe(true);
   });
 });

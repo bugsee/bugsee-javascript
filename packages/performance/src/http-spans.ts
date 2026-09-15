@@ -91,12 +91,18 @@ const MAX_HTTP_SPANS = 100;
 export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
   // WAVE 3b.4 — the OWNER is bound when the call starts, not looked up when it finishes.
   //
-  // `getActiveSpan()` is a single slot holding the most-recently-started transaction. On the browser that
-  // is the design (D12). On Node, `startTransaction` runs once per INCOMING request and a server serves
-  // them concurrently, so resolving the parent at completion attributed request A's outgoing call to
-  // whichever request happened to arrive last — A's database call in B's trace, under B's traceId, with A
-  // shipping zero children and nothing signalling it. The child also started before its own parent. A
-  // long-poll that starts last holds the slot for its whole lifetime, collecting everyone else's calls.
+  // `getActiveSpan()` reads the controller's active-transaction slot. On the browser that slot is a
+  // process-wide single slot by design (D12); on Node the umbrella launch supplies a request-scoped one
+  // (D2 part 2), so the cross-request misattribution this binding was originally written against — A's
+  // database call landing in B's trace because B started last — can no longer happen on that path.
+  //
+  // DO NOT conclude the start-time binding is now redundant and revert it. Its premise narrowed; its
+  // conclusion did not. Resolving the parent at COMPLETION still loses the span outright whenever the
+  // call outlives its request's transaction: the finished transaction reads back as absent (the store
+  // hides finished entries), so the child attaches to nothing and is DROPPED rather than misattributed.
+  // Measured under a request-scoped store: an outgoing call still in flight when its request's
+  // transaction finishes vanishes entirely. Binding the owner at the `before` stage is what prevents
+  // both the old misattribution and this surviving loss.
   //
   // Binding at the `before` stage is causally right in both worlds: a call belongs to the transaction that
   // was running when it was ISSUED. The repo already guards the identical hazard one line away —

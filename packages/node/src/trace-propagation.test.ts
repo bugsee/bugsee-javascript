@@ -59,4 +59,23 @@ describe('buildTracePropagationDecorator', () => {
     );
     expect(d?.(req('https://svc.internal/'))?.traceparent).toBe(`00-${TID}-${SID}-00`);
   });
+
+  it('a throwing context source degrades to no headers — never throws into the fetch', () => {
+    // The decorator runs inline in the wrapped fetch (before the original), so a throw here would
+    // propagate synchronously out of the APPLICATION's own fetch() call. Same fail-safe as every
+    // other read of the integrator-replaceable store: degrade to "no active trace".
+    const failing = {
+      getCurrent: (): { trace?: { traceId: string; spanId: string; sampled: boolean } } => {
+        throw new Error('custom store broken');
+      },
+    };
+    const d = buildTracePropagationDecorator(failing, api(), {
+      tracePropagationTargets: ['svc'],
+    });
+    let headers: unknown;
+    expect(() => {
+      headers = d?.(req('https://svc.internal/'));
+    }).not.toThrow();
+    expect(headers).toBeUndefined();
+  });
 });

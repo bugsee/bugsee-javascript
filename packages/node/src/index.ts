@@ -12,6 +12,14 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/co
 // dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.
 export { guarded, neverThrow } from '@bugsee/core';
 
+// R-7/F4: the request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
+// hand. One store per context source: the stash key is process-global (realm convergence), so two
+// live stores over the same source alias on it. The launch builds and owns one; hand-wirers must
+// share (not mint per controller) theirs the same way.
+export {
+  createRequestScopedActiveSpanStore,
+  type RequestScopedActiveSpanStoreOptions,
+} from './active-span-store';
 export {
   type CpuProfile,
   type CpuProfiler,

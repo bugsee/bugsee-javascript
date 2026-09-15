@@ -2,8 +2,10 @@ import { createTraceparentDecorator, type RequestDecorator } from '@bugsee/captu
 
 // Native trace-context propagation (cross-project-tracing.md X3; Bugsee OTLP Profile v1 §12). Builds the
 // outgoing-request decorator that injects `traceparent` + the `bugsee=` tracestate from the ACTIVE per-request
-// context — NOT the performance extension's single-slot `getActiveSpan` (which is wrong under server
-// concurrency). Lives in the base @bugsee/node launch, so propagation works without the OTel extension.
+// context — NOT the performance extension's `getActiveSpan`. That remains the right call after D2 part 2
+// (which made the controller's slot request-scoped on Node): this decorator lives in the BASE
+// @bugsee/node launch, so it must work with the opt-in APM extension absent entirely, and the request
+// context is the source that is always present. Propagation works without the OTel extension too.
 //
 // Node has no same-origin concept (no `location.origin`), so propagation is ALLOWLIST-DRIVEN: without
 // `tracePropagationTargets` nothing is injected — a backend must not leak its trace topology to the
@@ -36,7 +38,15 @@ export function buildTracePropagationDecorator(
   }
   return createTraceparentDecorator({
     getActiveSpan: () => {
-      const trace = store.getCurrent()?.trace;
+      // Fail-safe: this decorator runs inline in the wrapped fetch/XHR (before the original), so a
+      // throwing custom store would propagate synchronously out of the APPLICATION's own request.
+      // Degrade to "no active trace" instead — the headers are enrichment, never the request.
+      let trace: { traceId: string; spanId: string; sampled: boolean } | undefined;
+      try {
+        trace = store.getCurrent()?.trace;
+      } catch {
+        return undefined;
+      }
       return trace === undefined
         ? undefined
         : {

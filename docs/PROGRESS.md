@@ -463,6 +463,32 @@ rakes-as-tests + the packaging decision (extension, umbrella auto-registers, act
     omit-when-absent `description` that survived a `toEqual`) + 2 within-gate defensive branches; round 2
     added the http-span cap + pinned CLS/INP finalize idempotence; round 3 → **NO FINDINGS**. Coverage
     **100% line/fn/branch** (259/259). Every fix per-entity mutator-verified.
+- **D2 part 2 — the active-span store (2026-09-14, uncommitted at time of writing).** The controller's
+  active-transaction slot was one module-global variable, which is wrong on a concurrent server: a second
+  in-flight request's `startTransaction` overwrote the slot, so a rename meant for request A landed on
+  request B's transaction. It is now the injectable **`ActiveSpanStore`** seam (`get`/`set`/`clear`),
+  threaded `node launchCore internals → umbrella wire → wirePerformance → extension → controller`.
+  - **Default = `createSingleSlotActiveSpanStore()`** — byte-identical historical behaviour, correct for a
+    browser's one in-flight navigation/interaction. The browser declares `activeSpanStore: undefined`
+    explicitly; the umbrella's key is REQUIRED-but-nullable so a new platform cannot inherit the wrong
+    slot silently (it fails `tsc`).
+  - **Node = `createRequestScopedActiveSpanStore()`** (`@bugsee/node`, type-only `@bugsee/performance`
+    import so the opt-in APM barrel stays out of every node consumer): the JS equivalent of Android's
+    `ThreadLocal`-keyed `SpanContextHolder`, keying the slot off the ALS `RequestContext` via a
+    symbol-keyed non-enumerable stash. A read under a context is STRICTLY PRIVATE (own live stash or
+    nothing); a process-wide ambient slot serves context-less executions (startup, background work) only.
+  - **New public exports:** `ActiveSpanStore` + `createSingleSlotActiveSpanStore` (`@bugsee/performance`);
+    `createRequestScopedActiveSpanStore` + `RequestScopedActiveSpanStoreOptions` (`@bugsee/node`, for
+    hand-wired APM). A store breaking the must-not-throw contract degrades to untracked and is reported
+    once per site through `onError`.
+  - **Known limitations, documented not fixed:** requests that genuinely SHARE one context object (a
+    lingering `enterWith` with `instrumentIncomingRequests:false`) share the stash — isolation is exactly
+    as isolated as the context object is; a nested `run()` inside an `enterWith` context reads
+    private-empty; and under HTTP pipelining a request's close phase executes in the PREVIOUS request's
+    context (measured), so a `res.on('finish')` reader sees `undefined` where the old global slot returned
+    the transaction.
+  - **Reviewed:** a 5-reviewer round (19 findings, all resolved) then a 3-reviewer Opus round; full detail
+    and the resolution tables are in `docs/review/OPEN-FINDINGS.md` § "D2 part 2".
 - **Phase 3.x — DONE (`main`), reviewed to convergence:** the on-by-default umbrella wiring, via the
   **`launchCore()` seam** (the user-chosen option A: explicit/typed over a callback hook or service
   discovery). `@bugsee/browser` now exports `launchCore(token, opts): { client, internals }`; `launch()`

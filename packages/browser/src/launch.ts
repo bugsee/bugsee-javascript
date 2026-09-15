@@ -264,6 +264,15 @@ export interface LaunchInternals {
   appBuild: string | undefined;
   /** The internal-error sink (defaults undefined → extensions use their own no-op). */
   onError: ((error: unknown) => void) | undefined;
+  /**
+   * Where the performance controller's active transaction lives (D2 part 2). ALWAYS `undefined` here:
+   * the browser keeps the process-wide single slot, which is correct for its one in-flight
+   * navigation/interaction. Declared REQUIRED rather than optional (R-16) so the choice is stated, not
+   * defaulted — a platform that forgets the field fails to typecheck at `wireUmbrella` instead of
+   * silently inheriting a slot that is wrong under concurrency. Typed `undefined` rather than
+   * `ActiveSpanStore | undefined` so this package needs no `@bugsee/performance` import.
+   */
+  activeSpanStore: undefined;
 }
 
 /**
@@ -660,6 +669,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     appVersion: options.appVersion,
     appBuild: options.appBuild,
     onError: options.onError,
+    activeSpanStore: undefined, // the single-slot default is correct here — see the interface note
   };
   return { client: publicClient, internals };
 }

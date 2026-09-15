@@ -43,6 +43,7 @@ const EXPECTED_EXPORTS = [
   'createNodeSystemEventsSource',
   'createNodeSystemMetricsSampler',
   'createProfilingController',
+  'createRequestScopedActiveSpanStore',
   'createUncaughtExceptionProvider',
   'createUnhandledRejectionProvider',
   'defaultShouldReport',
