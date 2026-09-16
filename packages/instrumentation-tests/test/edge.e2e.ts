@@ -40,8 +40,12 @@ describe('X2 — edge bundle-size guard', () => {
   for (const pkg of ['@bugsee/vercel-edge', '@bugsee/cloudflare']) {
     it(`${pkg} imports only its allowed node builtins and stays well under the size budget`, async () => {
       const bundle = await bundleEdgePackage(pkg);
-      // STATIC node:* imports only — the guarded dynamic `import("node:crypto")` never runs on edge.
       expect(bundle.nodeImports).toEqual(ALLOWED_NODE_IMPORTS[pkg]);
+      // …and of ANY kind, dynamic included. @bugsee/util's sha256 once carried a guarded dynamic
+      // `import('node:crypto')` that this allowed through — and that broke every esbuild edge/browser build.
+      expect(bundle.externalImports.filter((path) => path.startsWith('node:'))).toEqual(
+        ALLOWED_NODE_IMPORTS[pkg],
+      );
       console.info(
         `[bundle] ${pkg}: ${(bundle.bytes / KB).toFixed(1)} KB raw / ${(bundle.gzipBytes / KB).toFixed(1)} KB gzip`,
       );

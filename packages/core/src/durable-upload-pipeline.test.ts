@@ -1,4 +1,5 @@
 import { type EnvironmentEnvelope, type RequestJson, Severity } from '@bugsee/protocol';
+import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type BundleStore,
@@ -11,7 +12,7 @@ import {
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
-import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
+import { createUploadPipeline, QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
 const environment: EnvironmentEnvelope = {
   platform: { type: 'node', version: '1' },
@@ -199,6 +200,42 @@ describe('createDurableUploadPipeline', () => {
     const result = await durable.enqueue(bundle());
     expect(result.ok).toBe(true);
     expect(map.has('b1')).toBe(false); // dropped — already removed by the time enqueue resolves
+  });
+
+  it('keeps the bundle when the REAL pipeline cannot checksum it (no WebCrypto, no injected digest)', async () => {
+    // Integration with the real upload pipeline and its default @bugsee/util digest: a runtime without
+    // `crypto.subtle` must never lose the incident silently — the bundle stays staged for the next launch,
+    // and the caller is told its copy is still held.
+    vi.stubGlobal('crypto', undefined);
+    try {
+      const { store, map } = memStore();
+      const putBundle = vi.fn(async () => ({ ok: true as const }));
+      const pipeline = createUploadPipeline({
+        api: {
+          sessionId: 's',
+          ensureSession: async () => 'tok' as AccessToken,
+          createIssue: async () => ({
+            endpoint: 'https://put/1',
+            issueId: 'i1' as IssueId,
+            recordingId: 'r1' as RecordingId,
+          }),
+          renewUpload: async () => {
+            throw new Error('unused');
+          },
+          invalidateSession: () => {},
+        },
+        uploader: { putBundle },
+        sleep: async () => {},
+      });
+      const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'b1' });
+      const result = await durable.enqueue(bundle());
+      expect(result.ok).toBe(false);
+      expect(result.retained).toBe(true);
+      expect(map.has('b1')).toBe(true);
+      expect(putBundle).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('keeps the durable copy when the upload fails (for later recovery)', async () => {

@@ -365,7 +365,7 @@ Three mechanisms, applied in this priority order:
    ```
    Resolved order matches the runtime detection priority: `workerd` first because Cloudflare's resolver sets both `workerd` AND `worker`; we want `workerd` to win.
 
-3. **Build-time file aliasing.** When a single source file in `@bugsee/core` needs different impls of one helper (rare — most divergence is at the entry-file or service-registration level), use `src/platform/<env>/<file>.ts` with Rollup `alias` plugin. Mirrors Firestore's pattern **[F §5.3]**. Reserved for things like the SHA-256 helper (WebCrypto on browsers; `node:crypto` on Node; `crypto.subtle` on Workers/Edge — all available but accessed differently). **Implementation note:** `@bugsee/util` (tsup-built, no Rollup alias) implements sha256 with a single runtime-guarded helper — it prefers the global `crypto.subtle` and dynamically falls back to `node:crypto` only when no global WebCrypto exists (the Node 18 baseline). Both paths produce identical digests, so build-time aliasing isn't required there.
+3. **Build-time file aliasing.** When a single source file in `@bugsee/core` needs different impls of one helper (rare — most divergence is at the entry-file or service-registration level), use `src/platform/<env>/<file>.ts` with Rollup `alias` plugin. Mirrors Firestore's pattern **[F §5.3]**. Originally reserved for things like the SHA-256 helper — not used for it in the end (see the note). **Implementation note (revised 2026-09-16):** no aliasing either. `@bugsee/util`'s `sha256Hex` is WebCrypto-only, and the node platform injects a `node:crypto` digest into core's upload pipeline (`sha256` seam) only where `crypto.subtle` is absent — the injection pattern of §6, not a build-time swap. The earlier dynamic `import('node:crypto')` fallback in util was removed: tier-0 ships in every browser/edge bundle, and esbuild fails on that specifier (a computed specifier was rejected because workerd refuses dynamic specifiers).
 
 Runtime detection (`isBrowser`/`isNode`/`isBun`/`isDeno`/`isCloudflareWorker`/`isVercelEdge`/`isWebWorker`/`isServiceWorker`/`isElectronRenderer`/`isElectronMain`) lives in `@bugsee/util` and is used **only for content decisions** (e.g. "should I open IndexedDB?"); the runtime adapter for transport/storage is chosen at build time.
 
@@ -561,7 +561,7 @@ The orchestrator owns:
 
 The bundle PUT mirrors iOS:
 - `Content-Length: <bytes>`
-- `x-amz-checksum-sha256: <hex>` (computed via `crypto.subtle.digest` or `node:crypto.createHash`)
+- `x-amz-checksum-sha256: <hex>` (computed via `crypto.subtle.digest`; `node:crypto.createHash` only where node injects it for a runtime without WebCrypto — see §8.3)
 - `fileName: <basename>`
 - **No `Authorization` header** (signed URL self-auths)
 - **No `Content-Type` header** (iOS sends `""`; in JS we omit entirely — equivalent for S3)
@@ -677,7 +677,7 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | Header | Value | Notes |
 |---|---|---|
 | `Content-Length` | bytes | Required. |
-| `x-amz-checksum-sha256` | hex of SHA-256(zip) | **OPTIONAL for MVP/BETA (v3) — may be omitted.** When sent: computed via `crypto.subtle.digest('SHA-256', body)` (browser/Workers/Edge) or `crypto.createHash('sha256')` (Node/Bun). Protects against MITM, satisfies S3 integrity-checksum signed URLs. |
+| `x-amz-checksum-sha256` | hex of SHA-256(zip) | **OPTIONAL for MVP/BETA (v3) — may be omitted.** When sent: computed via `crypto.subtle.digest('SHA-256', body)` on every runtime that has WebCrypto (browsers, Workers/Edge, Node ≥19, Bun, Deno) — core's default, `@bugsee/util` `sha256Hex`, which is WebCrypto-only. Where `crypto.subtle` is absent (unflagged Node 18, Electron mains on it), `@bugsee/node`'s launch injects `node:crypto` `createHash('sha256')` (`@bugsee/node-utils` `nodeSha256Fallback`) through the upload pipeline's `sha256` seam; everywhere else a missing `subtle` rejects the checksum as a retryable upload failure, so the durable queue keeps the bundle. **As built (2026-09-16): the header is NOT sent** — the collector does not sign it (`core/src/bundle-uploader.ts`); the checksum is still computed. Protects against MITM, satisfies S3 integrity-checksum signed URLs. |
 | `fileName` | `<random20>.bundle.zip` | Mirrors iOS `BGSBundleAPIHandler.m:124`. |
 | (no `Authorization`) | — | Signed URL self-auths. |
 | (no `Content-Type`) | — | iOS sends `""`; we omit. Equivalent for S3. |

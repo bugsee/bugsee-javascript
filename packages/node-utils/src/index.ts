@@ -31,4 +31,6 @@ export {
 // httpRequest implements core's HttpTransport; the transport contract types live in @bugsee/core.
 export { httpRequest, transportFor } from './http-request';
 export { createNodeReportMarkerStore } from './report-marker-store';
+// node:crypto upload-checksum digest, injected into core's upload pipeline where WebCrypto is absent.
+export { nodeSha256Fallback, nodeSha256Hex, type Sha256Digest } from './sha256';
 export { createWorkerThreadRingWorker } from './worker-ring-worker';

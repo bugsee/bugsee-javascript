@@ -56,6 +56,7 @@ import {
   createNodeReportMarkerStore,
   createWorkerThreadRingWorker,
   httpRequest,
+  nodeSha256Fallback,
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
@@ -490,7 +491,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const transport = services.getProvider(TransportToken).getImmediate();
   const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
   const uploader = createBundleUploader(transport);
-  const baseUploadPipeline = createUploadPipeline({ api, uploader });
+  // The PUT checksum digest. Core's default is @bugsee/util's WebCrypto-only `sha256Hex` (util ships in
+  // browser/edge bundles, so it cannot name `node:crypto`); where this runtime has no `crypto.subtle`
+  // (unflagged Node 18, Electron mains on it) node supplies the `node:crypto` digest instead. Inherited by
+  // bun, deno and electron main, which all compose this launch.
+  const baseUploadPipeline = createUploadPipeline({ api, uploader, sha256: nodeSha256Fallback() });
 
   // Per-instance on-disk subtree (multi-instance coexistence; design: multi-instance-disk-coexistence.md).
   // When file-backed, every store lives under <dataDir>/<instanceId>/ so several aggregators (worker_threads

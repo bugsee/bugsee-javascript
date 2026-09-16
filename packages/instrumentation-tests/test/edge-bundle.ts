@@ -3,9 +3,9 @@ import { gzipSync } from 'node:zlib';
 import { build } from 'esbuild';
 
 // Bundle an edge SDK package the way a real Worker / Edge bundler (wrangler / Vercel) would: a single
-// minified ESM file with the WinterCG (browser-ish) platform and `node:*` builtins external — they're
-// guarded dynamic imports (e.g. @bugsee/util sha256's `import('node:crypto')`) that never execute on edge,
-// where globalThis.crypto.subtle exists. Used by BOTH the bundle-size guard (X2) and the real-edge VM smoke
+// minified ESM file with the WinterCG (browser-ish) platform and `node:*` builtins external — the one a
+// supported edge package may import is `node:async_hooks` (@bugsee/cloudflare under `nodejs_compat`), and the
+// X2 guard pins that per package. Used by BOTH the bundle-size guard (X2) and the real-edge VM smoke
 // (X3, which evaluates the produced code in @edge-runtime/vm).
 
 // instrumentation-tests dir — the resolveDir for the workspace package specifiers.
@@ -27,8 +27,8 @@ export interface EdgeBundle {
    * EVERY module the output still imports, of every kind — the authoritative answer to "is this
    * artifact self-contained?".
    *
-   * `nodeImports` above is deliberately narrower (static node builtins only) because a guarded
-   * dynamic `import('node:crypto')` is fine on edge. The webview injectable has no such allowance:
+   * `nodeImports` above is narrower (static node builtins only); X2 reads the node entries of this list
+   * too, so a DYNAMIC node import is caught as well. The webview injectable has no allowance at all:
    * it is a single string injected into a WebView with no loader at all, so ANY surviving import —
    * static, dynamic or require — means the artifact cannot run.
    */
@@ -78,9 +78,9 @@ function externalImportsOf(metafile: {
 /**
  * The STATIC `node:*` imports esbuild recorded for the built output.
  *
- * `kind` distinguishes an `import-statement` from a `dynamic-import`. Only static imports matter here: a
- * guarded dynamic `import('node:crypto')` — e.g. @bugsee/util's sha256 fallback — never executes on edge,
- * where `globalThis.crypto.subtle` exists, so it must not fail the guard.
+ * `kind` distinguishes an `import-statement` from a `dynamic-import`; this keeps only the static ones. (There
+ * used to be a sanctioned dynamic one — @bugsee/util's `import('node:crypto')` sha256 fallback — and it is
+ * gone: X2 now also asserts no node builtin of ANY kind beyond the allowlist, via `externalImports`.)
  */
 function nodeImportsOf(metafile: {
   outputs: Record<string, { imports?: Array<{ path: string; kind?: string }> }>;
@@ -141,7 +141,7 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     platform: 'browser',
     target: 'es2022',
     // The cloudflare: modules are provided by workerd itself (e.g. the DurableObject RPC base class).
-    external: ['node:*', 'cloudflare:*'], // guarded dynamic imports — never run on edge
+    external: ['node:*', 'cloudflare:*'], // node:async_hooks for cloudflare (nodejs_compat); pinned by X2
     legalComments: 'none',
     metafile: true,
     write: false,

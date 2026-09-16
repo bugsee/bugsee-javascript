@@ -43,13 +43,9 @@ async function bundleScenario(): Promise<string> {
     write: false,
     // The SDK reads `process.env.NODE_ENV` in a few shared-tier guards; a browser has no `process`.
     define: { 'process.env.NODE_ENV': '"production"' },
-    // `@bugsee/util`'s sha256 falls back to `node:crypto` when no global WebCrypto exists, and esbuild
-    // honours none of the ignore comments that specifier carries — so a browser-target esbuild build
-    // fails hard on it and this is what a customer bundling that way has to pass. Hiding the specifier
-    // from static analysis was tried and reverted: workerd rejects dynamic module specifiers outright
-    // (see the note in `packages/util/src/sha256.ts`). The branch is unreachable here anyway — 127.0.0.1
-    // is a secure context, so `crypto.subtle` is present.
-    external: ['node:crypto'],
+    // Deliberately NO `external`. This used to need `external: ['node:crypto']`, because `@bugsee/util`'s
+    // sha256 carried a `node:crypto` fallback esbuild could not resolve for the browser. The digest is now
+    // WebCrypto-only (node injects its own), so a customer's plain browser esbuild build must just work.
   });
   const out = result.outputFiles[0];
   if (out === undefined) {

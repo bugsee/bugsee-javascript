@@ -6,8 +6,8 @@
 // external, minified, globalName) — an INDEPENDENT re-bundle (matching the edge X2 precedent), not the package's
 // `tsup` output — and asserts the artifact is:
 //   - self-contained AND node-free: the output imports NOTHING — every workspace dep is inlined into the
-//     single string, and the only node usage (@bugsee/util's guarded `node:crypto` dynamic import) is dead
-//     under platform:browser and tree-shaken out entirely, so a WebView needs no loader and no builtins,
+//     single string and no node builtin is reachable (tier-0 @bugsee/util is WebCrypto-only), so a WebView
+//     needs no loader and no builtins,
 //   - within a size budget (a regression catch — the bundle ships fixed in the native binary, so size matters),
 //   - LOADABLE: it evaluates in a fresh isolate and exposes `BugseeWebView.launch`.
 // NOTE: self-containment is read from esbuild's METAFILE, not by searching the minified source.

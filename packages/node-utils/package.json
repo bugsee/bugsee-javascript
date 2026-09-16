@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "http/https/fs/ALS helpers shared by node/bun/electron-main",
+  "description": "http/https/fs/ALS/crypto helpers shared by node/bun/electron-main",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

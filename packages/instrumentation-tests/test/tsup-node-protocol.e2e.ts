@@ -18,16 +18,17 @@
 // to import a `node:`-prefixed builtin — statically OR dynamically — from its own (non-test,
 // non-string-embedded) source AND built via tsup + `baseConfig` (i.e. published, not a dev-only/no-build
 // package): `@bugsee/cloudflare`, `@bugsee/node`, `@bugsee/node-utils`, `@bugsee/bun`, `@bugsee/deno`,
-// `@bugsee/electron`, `@bugsee/bundler-plugin-core`, `@bugsee/nestjs`, `@bugsee/remix`, `@bugsee/util`.
+// `@bugsee/electron`, `@bugsee/bundler-plugin-core`, `@bugsee/nestjs`, `@bugsee/remix`.
 //
 // The population was derived by scanning every `packages/*/src` tree (excluding `.test.`/`.fuzz.`/
 // `.e2e.` files) for THREE forms of `node:`-prefixed reference: static `from '...'`, `require('...')`,
 // AND dynamic `import('...')` — the last of which R3-8 found this guard originally missed entirely,
 // because its stated derivation method (grepping only for the static `from`/`require` forms) is
-// structurally blind to a specifier that only ever appears as a dynamic-import argument
-// (`packages/util/src/sha256.ts`'s `await import(/* ...ignore comments... */ 'node:crypto')`). The scan
+// structurally blind to a specifier that only ever appears as a dynamic-import argument (the case R3-8
+// found was `@bugsee/util`'s old sha256 fallback, `await import(/* ...ignore comments... */ 'node:crypto')`,
+// since deleted — util is now asserted to carry NO `node:` specifier at all, see the last test). The scan
 // reads WHOLE FILE CONTENTS (not line-by-line — a dynamic import's magic comments and specifier commonly
-// span multiple lines, as sha256.ts's does), so a single-line `grep` cannot reproduce it; the script is
+// span multiple lines), so a single-line `grep` cannot reproduce it; the script is
 // `.session-artifacts/derive-node-protocol-targets.py` (gitignored, kept for re-runs). For each hit, the source was
 // read to confirm it is a real import reachable from the module graph — not a comment, an error-message
 // string, or text embedded in a worker-thread bootstrap template literal run via `{ eval: true }`
@@ -111,7 +112,15 @@ const targets: readonly NodeProtocolTarget[] = [
   {
     label: '@bugsee/node-utils',
     pkgDir: 'packages/node-utils',
-    specifiers: ['node:fs', 'node:http', 'node:https', 'node:zlib', 'node:worker_threads'],
+    // node:crypto: src/sha256.ts, the upload-checksum digest @bugsee/node injects where WebCrypto is absent.
+    specifiers: [
+      'node:fs',
+      'node:http',
+      'node:https',
+      'node:zlib',
+      'node:worker_threads',
+      'node:crypto',
+    ],
   },
   {
     label: '@bugsee/bun',
@@ -156,21 +165,13 @@ const targets: readonly NodeProtocolTarget[] = [
     specifiers: ['node:stream'],
     entryNames: ['server'],
   },
-  {
-    // R3-8: src/sha256.ts DYNAMICALLY imports node:crypto (`await import(/* ...ignore comments... */
-    // 'node:crypto')`, the WebCrypto-absent fallback), reached from the package's single entry,
-    // src/index.ts. This is the target the guard's original static-only derivation missed.
-    label: '@bugsee/util',
-    pkgDir: 'packages/util',
-    specifiers: ['node:crypto'],
-  },
 ];
 
 /**
  * Every module specifier a `from '...'` (ESM), `require('...')` (CJS), or dynamic `import('...')`
  * reaches for in `code`. The dynamic form must tolerate the magic comments (`webpackIgnore`,
  * `turbopackIgnore`, `@vite-ignore`) and line breaks tsup/esbuild preserve between `import(` and the
- * specifier — sha256.ts's emitted dynamic import spans 5 lines (verified against a real build) — so this
+ * specifier — a dynamic import with magic comments can span several lines in emitted output — so this
  * scans the whole file content, not line-by-line.
  */
 function importSpecifiers(code: string): string[] {
@@ -250,4 +251,29 @@ describe('tsup build config — node: protocol survives into dist (F-2 regressio
       }
     });
   }
+
+  // The inverse guard. `@bugsee/util` is tier-0 and ships inside every browser, worker and edge bundle, where
+  // ANY `node:` specifier — even an unreachable, ignore-commented dynamic import — breaks an esbuild build.
+  // Its sha256 used to carry one (R3-8); the digest is now WebCrypto-only and node injects its own.
+  it('@bugsee/util: emitted index dist carries no node: specifier in any form', () => {
+    outDir = mkdtempSync(join(tmpdir(), 'bugsee-tsup-node-protocol-'));
+    execFileSync(tsupBin, ['--out-dir', outDir], {
+      cwd: join(repoRoot, 'packages/util'),
+      stdio: 'pipe',
+      timeout: BUILD_TIMEOUT_MS,
+    });
+    for (const file of ['index.js', 'index.cjs']) {
+      const code = readFileSync(join(outDir, file), 'utf8');
+      const specifiers = importSpecifiers(code);
+      expect(
+        specifiers.length,
+        `${file} import scan found nothing — scan is broken`,
+      ).toBeGreaterThan(0);
+      expect(
+        specifiers.filter((sp) => sp.startsWith('node:') || sp === 'crypto'),
+        file,
+      ).toEqual([]);
+      expect(code, file).not.toContain('node:crypto');
+    }
+  });
 });

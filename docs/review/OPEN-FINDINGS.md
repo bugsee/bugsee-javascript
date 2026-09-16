@@ -790,7 +790,12 @@ matched the property form (`setName:`). Bun and Deno actively take the degraded 
 seven others and remain `as unknown as Transaction`. The mechanism that produced D2 is unchanged for the
 next member added to that path. Fifteen instances fixed; the mechanism is still live.
 
-### R3-8 · SEV3 · The tsup guard misses a TENTH package — `@bugsee/util`
+### ~~R3-8 · SEV3 · The tsup guard misses a TENTH package — `@bugsee/util`~~ **CLOSED 2026-09-16 (uncommitted).**
+
+Resolved by removal: util no longer has a `node:crypto` specifier to guard (see the sha256 item under
+"Known-open"). The util target is out of `tsup-node-protocol.e2e.ts`; an inverse test now asserts util's
+emitted `index.js`/`index.cjs` carry no `node:` specifier at all, and node-utils' entry gained `node:crypto`
+(its new `sha256.ts`). Original finding, for the record:
 
 `util/src/sha256.ts:30-32` is a **dynamic** `import('node:crypto')`, which the guard's own stated
 derivation (grep for static `from 'node:'` / `require('node:')`) structurally cannot see.
@@ -1049,9 +1054,17 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
   subtree from the reaper. A claim names its holder and one whose holder is DEAD is taken over, so a
   recoverer that dies half way cannot strand the incident for ever (which would be strictly worse
   than the duplicate the claim replaces).
-- `@bugsee/util` `sha256.ts` — the `node:crypto` fallback is statically visible to esbuild-family
-  bundlers; ignore comments (`webpackIgnore`/`turbopackIgnore`/`@vite-ignore`) mean nothing to
-  esbuild. **STILL OPEN, and the obvious fix was measured and REJECTED (2026-09-02).** Computing the
+- ~~`@bugsee/util` `sha256.ts` — the `node:crypto` fallback is statically visible to esbuild-family
+  bundlers~~ **CLOSED 2026-09-16 (uncommitted): the platform injects the digest.** The fallback is
+  deleted; `sha256Hex` is WebCrypto-only and rejects `NotSupportedError` without `crypto.subtle`, which
+  the upload pipeline records as a retryable failure (bundle kept by the durable queue). `@bugsee/node`
+  passes a `node:crypto` digest (`node-utils` `nodeSha256Fallback`) into `createUploadPipeline`'s
+  existing `sha256` seam only when `subtle` is absent; bun/deno/electron-main inherit it. Verified: esbuild
+  `platform:'browser'` with NO `external` bundles `@bugsee/core`, `@bugsee/browser` and
+  `@bugsee/vercel-edge` cleanly, and `browser.e2e.ts` dropped its `external: ['node:crypto']`. This is
+  simpler than the per-runtime `exports` condition proposed below — no second dist build. History:
+  ignore comments (`webpackIgnore`/`turbopackIgnore`/`@vite-ignore`) mean nothing to
+  esbuild. **The obvious fix was measured and REJECTED (2026-09-02).** Computing the
   specifier (`['node','crypto'].join(':')`) hides it from static analysis and does fix esbuild —
   verified, with vite 8 and webpack 5 staying clean, and webpack silent because `webpackIgnore` stops
   it parsing the import at all. It was reverted because **workerd rejects dynamic module specifiers

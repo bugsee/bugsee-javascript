@@ -14,7 +14,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 | Package | Role |
 | --- | --- |
 | `@bugsee/types` | Shared TS types (`NameExtensionMapping`, `AccessToken`, `IssueId`, `LogLevelName`, `SeverityName`, …) consumed via declaration merging. |
-| `@bugsee/util` | Pure helpers: `fflate` re-export (`zipSync`/`unzipSync`/`gzipSync`/`gunzipSync`/`strToU8`/`strFromU8`), `sha256Hex`, `computeBackoff`, `utf8ByteLength` (allocation-free UTF-8 byte measure for the capture-store byte cap). |
+| `@bugsee/util` | Pure helpers: `fflate` re-export (`zipSync`/`unzipSync`/`gzipSync`/`gunzipSync`/`strToU8`/`strFromU8`), `sha256Hex` (WebCrypto-only; rejects `NotSupportedError` without `crypto.subtle`), `computeBackoff`, `utf8ByteLength` (allocation-free UTF-8 byte measure for the capture-store byte cap). |
 | `@bugsee/logger` | Debug logger (`debug.warn` etc.); platforms route `onError` here. |
 | `@bugsee/protocol` | Wire types (`RequestJson`, `EnvironmentEnvelope`, `NetworkEvent` superset incl. `'http'` mechanism, `NetworkStage`, `FileType`, `Mechanism`), `Severity` enum + level conversions, header/JSON/params sanitizers, shape redaction, **`BugseeOption` canonical identifiers + `optionsToWire` (dots → colons)**. |
 | `@bugsee/service` | The DI/IoC container: `createServiceContainer`/`defineService`/`Provider` (Firebase-component model, LAZY/EXPLICIT, lazy resolution, deps-via-container, `onInit`, late registration). The backbone of the **internal aggregated object** (see DI note below). |
@@ -57,6 +57,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 - `fs-storage` helpers (sync, owner-only `0o600`/`0o700`): `ensureDir`, `writeFileSecure`, `appendFileSecure`, `readFileBytes` (Uint8Array), `listFiles`, `remove`.
 - `createNodeFileStorageAdapter(dir)` — core's `FileStorageAdapter` impl.
 - `createNodeBundleStore(dir)` — core's `BundleStore` impl (`<id>.bundle` files).
+- `nodeSha256Hex` / `nodeSha256Fallback()` — `node:crypto` upload-checksum digest; node launch injects it into core's upload pipeline (`sha256` seam) ONLY where `crypto.subtle` is absent (2026-09-16).
 
 **`@bugsee/node`**:
 - `buildNodeEnvironment(input, probe)` — §8.6 envelope via injectable `SystemProbe`. Applies `optionsToWire` to `sdk.options` (dots → colons; server treats dots as nested-document paths).
@@ -994,6 +995,22 @@ against the assertion itself, not only against the implementation.**
   include the blocking frame` — 3 of ~13 FULL parallel runs, never in isolation. CPU starvation and
   rolling-window rotation are both ruled out by measurement. No fix was shipped because it could not be
   reproduced; the assertion now prints the profile window, sample count and busiest frames on failure.
+
+### 2026-09-16 — `@bugsee/util` sha256 is WebCrypto-only; the node platform injects its digest
+
+The `import('node:crypto')` fallback in tier-0 `util/src/sha256.ts` is gone, so no browser/worker/edge graph
+names `node:crypto` any more: a plain esbuild `platform:'browser'` build of `@bugsee/core`/`browser`/
+`vercel-edge` now resolves with no `external` (it used to fail `Could not resolve "node:crypto"`; the
+computed-specifier workaround stays rejected — workerd throws `ERR_MODULE_DYNAMIC_SPEC`). Without
+`crypto.subtle`, `sha256Hex` rejects with a `NotSupportedError`; the upload pipeline turns that into a
+retryable (non-`permanent`) failure before any PUT, so the durable queue keeps the bundle. `@bugsee/node`'s
+`launchCore` passes `nodeSha256Fallback()` (`@bugsee/node-utils`) to `createUploadPipeline`: `node:crypto` only
+when `subtle` is absent (unflagged Node 18), otherwise core's WebCrypto default — one hashing path on every
+modern runtime, and on Node `subtle.digest` runs off the event loop where `createHash` blocks it (measured:
+512 MB, 159 timer ticks during `subtle` vs 0 during `createHash`). Bun, Deno and Electron main inherit it
+through `launchCore`. Guards: `browser.e2e.ts` bundles with no `external`; edge X2 rejects a node import of
+ANY kind beyond the allowlist; `tsup-node-protocol.e2e.ts` asserts util's dist carries no `node:` specifier.
+Closes the OPEN-FINDINGS sha256 item and R3-8.
 
 ---
 

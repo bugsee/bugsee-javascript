@@ -6,8 +6,8 @@ import { baseConfig } from '../../tsup.config.base';
 //  2. the SELF-CONTAINED injectable IIFE single-string (native resource, D7) — bundles every @bugsee/* dep into
 //     one minified script that defines the `BugseeWebView` global (the native bootstrap calls
 //     `BugseeWebView.launch`). Any `node:*` builtin reachable from this graph (e.g. a dependency's guarded
-//     DYNAMIC fallback that's dead code in a WebView/browser — see @bugsee/util's `node:crypto` fallback in
-//     sha256.ts, currently NOT reachable here but a future dependency could pull one in) must not become a
+//     DYNAMIC fallback that's dead code in a WebView/browser — @bugsee/util's sha256 once had a `node:crypto`
+//     one, since removed; a future dependency could pull one in) must not become a
 //     STATIC import esbuild tries to resolve under `platform:'browser'` — see the `removeNodeProtocol` note
 //     below for how that's actually guarded.
 // tsup runs an array of configs CONCURRENTLY, and a config's `clean` does a whole-`outDir` wipe at its build

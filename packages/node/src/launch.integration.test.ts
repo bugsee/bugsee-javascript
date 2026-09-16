@@ -128,6 +128,69 @@ describe('launch — loopback end-to-end', () => {
     expect(put?.body.length).toBeGreaterThan(0);
   });
 
+  // The upload checksum across the node → core boundary. @bugsee/util's digest is WebCrypto-only, so on a
+  // runtime without `crypto.subtle` (unflagged Node 18) the node launch must inject its node:crypto digest
+  // into core's upload pipeline — otherwise the checksum rejects and NO bundle is ever PUT.
+  describe('upload checksum digest', () => {
+    // A private dataDir per test: a bundle a failing run leaves staged must not be recovered into another test.
+    let dataDir: string;
+    beforeEach(() => {
+      dataDir = mkdtempSync(join(tmpdir(), 'bugsee-digest-'));
+    });
+    const launchLoopback = () =>
+      launch('app-token', {
+        endpoint: origin,
+        dataDir,
+        process: fakeProcess(),
+        captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+        captureNetwork: false,
+        captureSystemEvents: false,
+        systemMetricsSampler: () => [],
+      });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('still delivers the bundle on a runtime with no WebCrypto (Node 18): node injects node:crypto', async () => {
+      vi.stubGlobal('crypto', undefined);
+      const client = launchLoopback();
+      const result = await client.logException(new Error('no webcrypto'));
+      await client.stop();
+
+      expect(result.ok).toBe(true);
+      const upload = received.filter((r) => r.url === '/upload');
+      expect(upload).toHaveLength(1);
+      expect(upload[0]?.method).toBe('PUT');
+      expect(upload[0]?.body.subarray(0, 2).toString('latin1')).toBe('PK');
+    });
+
+    it('keeps WebCrypto as the single hashing path when crypto.subtle exists (no injection)', async () => {
+      const real = globalThis.crypto.subtle;
+      const digests: Array<{ algorithm: string; bytes: Buffer }> = [];
+      vi.stubGlobal('crypto', {
+        subtle: {
+          digest: (algorithm: string, data: Uint8Array) => {
+            digests.push({ algorithm, bytes: Buffer.from(data) });
+            return real.digest(algorithm, data as Uint8Array<ArrayBuffer>);
+          },
+        },
+      });
+      const client = launchLoopback();
+      const result = await client.logException(new Error('webcrypto present'));
+      await client.stop();
+
+      expect(result.ok).toBe(true);
+      const upload = received.filter((r) => r.url === '/upload');
+      expect(upload).toHaveLength(1);
+      // The PUT body is exactly what WebCrypto hashed: node:crypto was not substituted for it.
+      expect(digests).toHaveLength(1);
+      expect(digests[0]?.algorithm).toBe('SHA-256');
+      expect(digests[0]?.bytes.equals(upload[0]?.body as Buffer)).toBe(true);
+    });
+  });
+
   it('recovers a bundle a prior run persisted to disk and re-uploads it through the real transport', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-'));
     try {

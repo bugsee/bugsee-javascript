@@ -76,9 +76,9 @@ describe('@bugsee/nextjs — real `next build`', () => {
   });
 
   it('has no STATIC node: require anywhere in the edge output', () => {
-    // A static `require("node:…")` in an edge chunk cannot resolve at runtime. The one permitted form is
-    // the ignore-marked DYNAMIC `import("node:crypto")` in @bugsee/util's SHA-256 fallback, which no edge
-    // runtime ever reaches (they all have global `crypto.subtle`) and which is what keeps Node 18 working.
+    // A static `require("node:…")` in an edge chunk cannot resolve at runtime. (@bugsee/util's SHA-256 once
+    // carried an ignore-marked dynamic `import("node:crypto")` fallback; it is gone — util is WebCrypto-only
+    // and @bugsee/node injects a node:crypto digest where WebCrypto is absent.)
     const offenders: string[] = [];
     for (const file of walk(join(outDir, 'server')).filter((f) => f.endsWith('.js'))) {
       const text = readFileSync(file, 'utf8');

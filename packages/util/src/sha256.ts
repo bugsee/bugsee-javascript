@@ -1,8 +1,3 @@
-/// <reference path="./web-globals.d.ts" />
-// The reference makes the local `node:crypto` ambient (web-globals.d.ts) travel with this file,
-// so a consumer that type-checks @bugsee/util's source (e.g. @bugsee/service) can resolve the
-// dynamic import without needing @types/node of its own.
-
 type WebCryptoLike = {
   subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> };
 };
@@ -10,51 +5,35 @@ type WebCryptoLike = {
 type TextEncoderCtor = new () => { encode(input: string): Uint8Array };
 
 /**
- * Computes the SHA-256 digest, preferring the global WebCrypto `crypto.subtle` (browsers, Node
- * >=19/20, Bun, Deno, Workers) and falling back to `node:crypto` when no global `crypto`/`subtle`
- * exists (the Node >=18 baseline without `--experimental-global-webcrypto`); both paths produce
- * identical digests. Matches design §8.3, which routes Node/Bun through `node:crypto`.
+ * SHA-256 via the global WebCrypto `crypto.subtle` — and nothing else.
  *
- * The `node:crypto` import is dynamic AND marked ignore-for-every-bundler-that-honours-comments (Wave
- * 3b.5). Dynamic alone only defers the LOAD; a bundler still resolves the specifier and pulls it into the
- * graph, which on an edge target is a hard build failure — `@bugsee/util` is tier-0 and reachable from
- * `@bugsee/core`, so this one line broke `next build` for any app whose edge graph touched the SDK at all
- * (reproduced on real Next 15.5: `node:crypto` ← util/sha256 ← core/bugsee-api ← adapter-kit ←
- * nextjs/trace-data). The ignore comments keep the specifier a literal, so no bundler emits a "critical
- * dependency" warning either — measured, not assumed: webpack 5.110 is silent because `webpackIgnore`
- * stops it parsing the import at all.
+ * `@bugsee/util` is tier-0 and reachable from every browser, worker and edge bundle, so it must not name
+ * `node:crypto` in any form. Every runtime the SDK supports has `crypto.subtle` (browsers in a secure
+ * context, Node >=19, Bun, Deno, workerd, Vercel Edge) except unflagged Node 18 — and a runtime that needs
+ * a different digest gets one INJECTED by its platform: `@bugsee/node` hands a `node:crypto` digest to
+ * core's upload-pipeline `sha256` seam when `crypto.subtle` is absent (`@bugsee/node-utils` sha256.ts).
  *
- * KNOWN LIMITATION, and the alternative was MEASURED AND REJECTED. esbuild honours none of these comments,
- * so a browser- or edge-target esbuild build fails with `Could not resolve "node:crypto"`; the customer's
- * answer is `external: ['node:crypto']`, which is safe in practice because every secure context has
- * `crypto.subtle` and the fallback is unreachable there.
+ * Without `subtle` this REJECTS with a `NotSupportedError` rather than guessing. The upload pipeline turns
+ * that into a retryable (non-permanent) failure, so the durable queue keeps the bundle.
  *
- * Computing the specifier (`['node','crypto'].join(':')`) hides it from every bundler's static graph and
- * DOES fix esbuild — verified, along with vite 8 and webpack 5 staying clean. It was still reverted:
- * **workerd rejects dynamic module specifiers outright** (`ERR_MODULE_DYNAMIC_SPEC: dynamic module
- * specifiers are unsupported`), which took out the real-workerd Durable Object e2e and would break
- * `@bugsee/cloudflare` in production. Trading an esbuild build error for a broken supported runtime is a
- * bad trade.
- *
- * The fix with no downside is a per-runtime `exports` condition on `@bugsee/util` — a node entry that
- * keeps this fallback and a default entry that is WebCrypto-only — so no browser or edge bundle contains
- * the specifier in any form. That needs a second dist build and is not done here.
- *
- * A pure-JS SHA-256 was also considered and rejected: this hashes the whole bundle BODY for the PUT
- * checksum, and bundles run to megabytes.
+ * History: the `import('node:crypto')` fallback this replaces broke every esbuild browser/edge build, and
+ * hiding it behind a computed specifier was rejected because workerd refuses dynamic specifiers
+ * (`ERR_MODULE_DYNAMIC_SPEC`). A pure-JS SHA-256 was rejected too: this hashes whole multi-megabyte bundles.
  */
 async function digestSha256(bytes: Uint8Array): Promise<Uint8Array> {
   const webcrypto = (globalThis as { crypto?: WebCryptoLike }).crypto;
-  if (webcrypto?.subtle) {
-    return new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes));
+  if (!webcrypto?.subtle) {
+    const error = new Error(
+      'SHA-256 unavailable: this runtime has no WebCrypto `crypto.subtle` (an insecure browser context, ' +
+        'or Node 18 without --experimental-global-webcrypto). Platforms without it must inject a digest.',
+    );
+    error.name = 'NotSupportedError';
+    throw error;
   }
-  const { createHash } = await import(
-    /* webpackIgnore: true */ /* turbopackIgnore: true */ /* @vite-ignore */ 'node:crypto'
-  );
-  return new Uint8Array(createHash('sha256').update(bytes).digest());
+  return new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes));
 }
 
-/** SHA-256 hex digest of a string (UTF-8) or raw bytes. Async. */
+/** SHA-256 hex digest of a string (UTF-8) or raw bytes. Async; rejects when WebCrypto is unavailable. */
 export async function sha256Hex(data: Uint8Array | string): Promise<string> {
   const bytes =
     typeof data === 'string'

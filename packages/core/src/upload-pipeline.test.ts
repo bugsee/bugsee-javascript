@@ -101,7 +101,46 @@ describe('createUploadPipeline — happy path', () => {
     const { sha256: _omit, ...rest } = deps({ uploader: fakeUploader(put) });
     await createUploadPipeline(rest).enqueue(bundle);
     const checksum = (put.mock.calls[0]?.[2] as { checksumSha256: string }).checksumSha256;
-    expect(checksum).toMatch(/^[0-9a-f]{64}$/);
+    // sha256([1,2,3]) — pinned by value: the default digest must be a correct SHA-256, not just 64 hex chars.
+    expect(checksum).toBe('039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81');
+  });
+});
+
+// The default digest is WebCrypto-only (@bugsee/util has no node:crypto fallback any more). On a runtime
+// without `crypto.subtle` — an insecure browser context, or Node 18 whose platform did not inject a digest —
+// the checksum REJECTS. That must surface as a RETRYABLE failure: `permanent` would tell the durable queue
+// to free the bundle, losing the incident, when the cause is the runtime rather than the payload.
+describe('createUploadPipeline — default digest on a runtime without WebCrypto', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fails the upload as retryable, before any PUT, carrying the NotSupportedError as cause', async () => {
+    vi.stubGlobal('crypto', undefined);
+    const put = vi.fn<BundleUploader['putBundle']>(async () => ({ ok: true }));
+    const outcomes: PipelineOutcome[] = [];
+    const { sha256: _omit, ...rest } = deps({
+      uploader: fakeUploader(put),
+      onOutcome: (o) => outcomes.push(o),
+    });
+    const result = await createUploadPipeline(rest).enqueue(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.permanent).toBeUndefined();
+    expect(result.error).toBeInstanceOf(BugseeError);
+    expect(result.error?.message).toBe('checksum failed');
+    expect((result.error?.cause as Error).name).toBe('NotSupportedError');
+    expect(put).not.toHaveBeenCalled();
+    expect(outcomes).toEqual([{ kind: 'drop', category: 'issue', reason: 'upload_failed' }]);
+  });
+
+  it('uploads normally when the platform injects a digest in its place', async () => {
+    vi.stubGlobal('crypto', undefined);
+    const put = vi.fn<BundleUploader['putBundle']>(async () => ({ ok: true }));
+    const result = await createUploadPipeline(
+      deps({ uploader: fakeUploader(put), sha256: async () => 'injected' }),
+    ).enqueue(bundle);
+    expect(result.ok).toBe(true);
+    expect((put.mock.calls[0]?.[2] as { checksumSha256: string }).checksumSha256).toBe('injected');
   });
 });
 

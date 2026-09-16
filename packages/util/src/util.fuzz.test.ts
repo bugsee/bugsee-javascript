@@ -359,10 +359,10 @@ describe('jsonSafeStringify (fuzz)', () => {
 });
 
 /**
- * Both of these targets pick an implementation from a runtime probe, and mutation testing showed the
- * choice was unverified: forcing either probe to `false` changed nothing any test could see. The
- * fallbacks are legitimate, so the fix is not to forbid them — it is to assert that the preferred path
- * is actually taken when available, and that both paths agree.
+ * Both of these targets probe the runtime, and mutation testing showed the choice was unverified: forcing
+ * either probe to `false` changed nothing any test could see. So the preferred path is asserted to be
+ * the one actually taken. (sha256Hex no longer HAS a fallback — see sha256.ts; the WebCrypto-vs-node:crypto
+ * differential now lives with the node digest, in @bugsee/node-utils' sha256 tests.)
  */
 describe('runtime-probed implementations (fuzz)', () => {
   // `globalThis.crypto` is a getter-only property on modern Node, so it cannot be assigned directly.
@@ -412,20 +412,5 @@ describe('runtime-probed implementations (fuzz)', () => {
       expect(digestCalls).toBe(1);
       expect(hex).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
     });
-  });
-
-  // A differential between the two digest implementations. They are supposed to be interchangeable, and
-  // the bundle's integrity depends on that: a hash computed by the WebCrypto path in one runtime and
-  // verified against the node:crypto path in another must match.
-  it('computes the same digest with and without WebCrypto available', async () => {
-    const inputs = ['', 'abc', 'the quick brown fox', '😀 multibyte ✓'];
-    const withWebCrypto = await Promise.all(inputs.map((i) => sha256Hex(i)));
-    vi.stubGlobal('crypto', undefined); // force the node:crypto fallback
-    const withFallback = await Promise.all(inputs.map((i) => sha256Hex(i)));
-    expect(withFallback).toEqual(withWebCrypto);
-    // Known answer, so a change that broke BOTH paths identically still fails.
-    expect(withWebCrypto[1]).toBe(
-      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
-    );
   });
 });
