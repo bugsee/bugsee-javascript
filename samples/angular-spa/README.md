@@ -22,8 +22,7 @@ client" below).
 **Production build + preview** (single port, API + built app served by one process):
 
 ```bash
-pnpm build                # ng build (production) — see F-1 in FINDINGS.md for the externalDependencies
-                           # workaround this needed
+pnpm build                # ng build (production)
 pnpm preview              # serves dist/angular-spa/browser + /api on :5306, one process
 ```
 
@@ -34,16 +33,6 @@ pnpm preview              # serves dist/angular-spa/browser + /api on :5306, one
 > the built output — `pnpm preview` is the only consumer of `dist/`, and it rebuilds via `pnpm build`.
 > The one thing to avoid is running `pnpm preview` and `pnpm verify` together without a fresh
 > `pnpm build`: that WOULD verify a stale bundle, and nothing in the harness would tell you.
-
-> **Caveat (F-3 in FINDINGS.md):** the `externalDependencies` workaround above turns a BUILD-time error
-> into a SILENT RUNTIME one. `dist/angular-spa/browser/chunk-*.js` ships a literal `import("crypto")`
-> that is only ever reached when `crypto.subtle` is absent from the global — i.e. **any non-secure
-> browsing context**: plain `http://` on a LAN host, an internal admin tool, a staging box without TLS
-> terminated in front of it. In that situation the dynamic import resolves against nothing (no bundler
-> shipped a `node:crypto` shim into the browser bundle — it was marked EXTERNAL, meaning "the runtime
-> will provide this," and no browser runtime does), so the SDK's upload checksum (`sha256Hex`,
-> `packages/core/src/upload-pipeline.ts:77`) throws/rejects and every upload that needs it silently
-> fails. Deploy this app (or any app built the same way) behind HTTPS.
 
 **Scenario sweep:**
 
@@ -125,18 +114,12 @@ reviewer probes rather than sweep output.
 
 See `FINDINGS.md` for the full write-ups. Headlines:
 
-- **F-1** — `packages/util/src/sha256.ts:31`'s `import('node:crypto')` Node fallback is guarded ONLY by
-  bundler-specific ignore comments (`webpackIgnore`/`turbopackIgnore`/`@vite-ignore`), and esbuild
-  understands **none** of them — it statically resolves and fails on this import under any
-  `platform: 'browser'` target, **regardless of whether the specifier is spelled `crypto` or
-  `node:crypto`** (measured directly: both fail identically against this repo's own esbuild). This
-  breaks `ng build` (Angular CLI's `application` builder is esbuild-based) for any consumer of
-  `@bugsee/core`. Worked around here via `"externalDependencies": ["crypto", "node:crypto"]` in
-  `angular.json`; not fixed at the source since this sample does not touch `packages/`. *(An earlier
-  draft of this finding incorrectly blamed a `node:`-prefix-stripping bug — corrected in FINDINGS.md.)*
-- **F-3** — that same `externalDependencies` workaround converts the BUILD failure above into a SILENT
-  RUNTIME one: see the caveat in "Run it" above — any non-secure-context deployment can silently fail to
-  upload.
+- **F-1** *(resolved 2026-09-16)* — `@bugsee/util`'s `import('node:crypto')` fallback broke `ng build`
+  (esbuild honours none of the bundler ignore comments). Fixed at the source: util is WebCrypto-only and
+  the Node platform injects its own digest. The `externalDependencies` workaround is removed.
+- **F-3** *(resolved 2026-09-16)* — that workaround turned the build failure into silent upload failure on
+  non-secure (plain-`http`) pages. Both halves are gone: no workaround, and the SDK now uploads without a
+  checksum when `crypto.subtle` is absent.
 - **F-2** — a separate, ~30× wider `node:`-prefix-stripping defect DOES exist, just not where F-1
   originally placed it: `tsup`'s `removeNodeProtocol` defaults to `true` and every package's
   `tsup.config.base.ts` never overrides it, so 149 `node:`-prefixed imports across `packages/*/src` ship

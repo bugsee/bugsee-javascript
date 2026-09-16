@@ -538,7 +538,7 @@ interface BugseeApi {
 interface BundleUploader {
   putBundle(url: string, body: Uint8Array, opts: {
     contentLength: number;
-    checksumSha256: string;       // hex; cheap via crypto.subtle.digest('SHA-256', body)
+    checksumSha256?: string;      // hex via crypto.subtle.digest('SHA-256', body); absent when the runtime cannot hash
     fileName: string;             // <random20>.bundle.zip
   }): Promise<PutResult>;          // { ok: true } | { ok: false, status, retryable }
 }
@@ -677,7 +677,7 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | Header | Value | Notes |
 |---|---|---|
 | `Content-Length` | bytes | Required. |
-| `x-amz-checksum-sha256` | hex of SHA-256(zip) | **OPTIONAL for MVP/BETA (v3) — may be omitted.** When sent: computed via `crypto.subtle.digest('SHA-256', body)` on every runtime that has WebCrypto (browsers, Workers/Edge, Node ≥19, Bun, Deno) — core's default, `@bugsee/util` `sha256Hex`, which is WebCrypto-only. Where `crypto.subtle` is absent (unflagged Node 18, Electron mains on it), `@bugsee/node`'s launch injects `node:crypto` `createHash('sha256')` (`@bugsee/node-utils` `nodeSha256Fallback`) through the upload pipeline's `sha256` seam; everywhere else a missing `subtle` rejects the checksum as a retryable upload failure, so the durable queue keeps the bundle. **As built (2026-09-16): the header is NOT sent** — the collector does not sign it (`core/src/bundle-uploader.ts`); the checksum is still computed. Protects against MITM, satisfies S3 integrity-checksum signed URLs. |
+| `x-amz-checksum-sha256` | hex of SHA-256(zip) | **OPTIONAL for MVP/BETA (v3) — may be omitted.** When sent: computed via `crypto.subtle.digest('SHA-256', body)` on every runtime that has WebCrypto (browsers, Workers/Edge, Node ≥19, Bun, Deno) — core's default, `@bugsee/util` `sha256Hex`, which is WebCrypto-only. Where `crypto.subtle` is absent (unflagged Node 18, Electron mains on it), `@bugsee/node`'s launch injects `node:crypto` `createHash('sha256')` (`@bugsee/node-utils` `nodeSha256Fallback`) through the upload pipeline's `sha256` seam; everywhere else a missing `subtle` makes the pipeline upload WITHOUT a checksum — it is computed best-effort, BEFORE issue-create (iOS sends `bundle_sha256` in that body), and never gates delivery. **As built (2026-09-16): the header is NOT sent** — the collector does not sign it (`core/src/bundle-uploader.ts`); the checksum is still computed. Protects against MITM, satisfies S3 integrity-checksum signed URLs. |
 | `fileName` | `<random20>.bundle.zip` | Mirrors iOS `BGSBundleAPIHandler.m:124`. |
 | (no `Authorization`) | — | Signed URL self-auths. |
 | (no `Content-Type`) | — | iOS sends `""`; we omit. Equivalent for S3. |

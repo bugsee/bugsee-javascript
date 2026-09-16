@@ -8,6 +8,7 @@ import {
   type DropReason,
   type IssueCreateResult,
   type OutcomeCategory,
+  type PutBundleOptions,
   type PutResult,
   type UploadHint,
   type UploadPipeline,
@@ -35,7 +36,8 @@ export interface UploadPipelineOptions {
   maxWaiting?: number;
   /** Retry attempts for retryable failures (§7.5: max 3). Default 3. */
   maxRetries?: number;
-  /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. */
+  /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. Best-effort: a rejection
+   *  uploads the bundle without a checksum rather than failing it. */
   sha256?: (body: Uint8Array) => Promise<string>;
   /** Delay primitive (injected for tests). Default setTimeout-based. */
   sleep?: (ms: number) => Promise<void>;
@@ -155,7 +157,27 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
   };
 
+  /**
+   * The body's hex SHA-256, or `undefined` when this runtime cannot produce one.
+   *
+   * Best-effort on purpose: nothing sends the checksum today (bundle-uploader.ts omits the header the
+   * collector does not sign), so it must never decide whether an incident uploads. When it failed the
+   * upload, a runtime without WebCrypto (an insecure browser context) could never deliver a bundle, and
+   * the durable queue re-ran the operation at every launch — each run leaving another empty issue.
+   */
+  const checksumOf = async (body: Uint8Array): Promise<string | undefined> => {
+    try {
+      return await sha256(body);
+    } catch {
+      return undefined;
+    }
+  };
+
   const runOperation = async (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
+    // BEFORE the issue: creating it is what leaves a record on the collector, so local work runs first —
+    // and iOS carries `bundle_sha256` in the issue-create body itself, which needs the digest by then.
+    const checksumSha256 = await checksumOf(bundle.body);
+
     let issue: IssueCreateResult;
     try {
       issue = await createIssue(bundle);
@@ -166,19 +188,10 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       return fail(error, category, 'upload_failed', error.permanent === true);
     }
 
-    let checksumSha256: string;
-    try {
-      checksumSha256 = await sha256(bundle.body);
-    } catch (err) {
-      return fail(
-        err instanceof BugseeError ? err : new BugseeError('checksum failed', 0, { cause: err }),
-        category,
-      );
-    }
-    const putOptions = {
+    const putOptions: PutBundleOptions = {
       contentLength: bundle.body.length,
-      checksumSha256,
       fileName: bundle.fileName,
+      ...(checksumSha256 !== undefined ? { checksumSha256 } : {}),
     };
     let endpoint = issue.endpoint;
     let lastStatus = 0;

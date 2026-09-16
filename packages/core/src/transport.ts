@@ -81,8 +81,8 @@ export interface BugseeApi {
 /** PUT headers for the signed-URL upload (§8.3). */
 export interface PutBundleOptions {
   contentLength: number;
-  /** Hex SHA-256 of the body. Optional on the wire (§8.3) but always computed by the pipeline. */
-  checksumSha256: string;
+  /** Hex SHA-256 of the body. Optional on the wire (§8.3); absent when the runtime could not compute it. */
+  checksumSha256?: string;
   /** `<random20>.bundle.zip`. */
   fileName: string;
 }

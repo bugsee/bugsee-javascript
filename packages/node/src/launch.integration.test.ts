@@ -9,6 +9,27 @@ import { type RequestJson, Severity } from '@bugsee/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { launch, type NodeRuntime } from './launch';
 
+// Every buffer node:crypto SHA-256-hashes, recorded by passing through to the real implementation. The
+// upload checksum is not sent on the wire, so this is the only way to see node's injected digest run.
+const nodeSha256Inputs = vi.hoisted((): Buffer[] => []);
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    createHash: (algorithm: string) => {
+      const hash = actual.createHash(algorithm);
+      if (algorithm !== 'sha256') return hash;
+      const update = hash.update.bind(hash);
+      return Object.assign(hash, {
+        update: (data: Uint8Array) => {
+          nodeSha256Inputs.push(Buffer.from(data));
+          return update(data);
+        },
+      });
+    },
+  };
+});
+
 // End-to-end integration: launch the real Node SDK against a loopback HTTP server and verify the
 // full pipeline — manual capture → assemble → REAL node:http transport → session/issue/signed PUT —
 // delivers a zip bundle. Unlike launch.test.ts (fake transport), this exercises the actual
@@ -130,11 +151,13 @@ describe('launch — loopback end-to-end', () => {
 
   // The upload checksum across the node → core boundary. @bugsee/util's digest is WebCrypto-only, so on a
   // runtime without `crypto.subtle` (unflagged Node 18) the node launch must inject its node:crypto digest
-  // into core's upload pipeline — otherwise the checksum rejects and NO bundle is ever PUT.
+  // into core's upload pipeline. The pipeline no longer fails an upload whose checksum cannot be computed,
+  // so delivery alone proves nothing here: the tests watch node:crypto hash (or not hash) the PUT body.
   describe('upload checksum digest', () => {
     // A private dataDir per test: a bundle a failing run leaves staged must not be recovered into another test.
     let dataDir: string;
     beforeEach(() => {
+      nodeSha256Inputs.length = 0;
       dataDir = mkdtempSync(join(tmpdir(), 'bugsee-digest-'));
     });
     const launchLoopback = () =>
@@ -153,7 +176,7 @@ describe('launch — loopback end-to-end', () => {
       rmSync(dataDir, { recursive: true, force: true });
     });
 
-    it('still delivers the bundle on a runtime with no WebCrypto (Node 18): node injects node:crypto', async () => {
+    it('hashes the bundle with node:crypto on a runtime with no WebCrypto (Node 18)', async () => {
       vi.stubGlobal('crypto', undefined);
       const client = launchLoopback();
       const result = await client.logException(new Error('no webcrypto'));
@@ -164,6 +187,8 @@ describe('launch — loopback end-to-end', () => {
       expect(upload).toHaveLength(1);
       expect(upload[0]?.method).toBe('PUT');
       expect(upload[0]?.body.subarray(0, 2).toString('latin1')).toBe('PK');
+      // node:crypto hashed exactly the bytes that were PUT — the injected digest ran.
+      expect(nodeSha256Inputs.some((input) => input.equals(upload[0]?.body as Buffer))).toBe(true);
     });
 
     it('keeps WebCrypto as the single hashing path when crypto.subtle exists (no injection)', async () => {
@@ -188,6 +213,7 @@ describe('launch — loopback end-to-end', () => {
       expect(digests).toHaveLength(1);
       expect(digests[0]?.algorithm).toBe('SHA-256');
       expect(digests[0]?.bytes.equals(upload[0]?.body as Buffer)).toBe(true);
+      expect(nodeSha256Inputs.some((input) => input.equals(upload[0]?.body as Buffer))).toBe(false);
     });
   });
 

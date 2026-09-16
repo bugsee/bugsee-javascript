@@ -14,7 +14,7 @@ type TextEncoderCtor = new () => { encode(input: string): Uint8Array };
  * core's upload-pipeline `sha256` seam when `crypto.subtle` is absent (`@bugsee/node-utils` sha256.ts).
  *
  * Without `subtle` this REJECTS with a `NotSupportedError` rather than guessing. The upload pipeline turns
- * that into a retryable (non-permanent) failure, so the durable queue keeps the bundle.
+ * that into an upload WITHOUT a checksum (the checksum is not sent today, so it never gates delivery).
  *
  * History: the `import('node:crypto')` fallback this replaces broke every esbuild browser/edge build, and
  * hiding it behind a computed specifier was rejected because workerd refuses dynamic specifiers

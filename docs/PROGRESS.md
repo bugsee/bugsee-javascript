@@ -1002,8 +1002,8 @@ The `import('node:crypto')` fallback in tier-0 `util/src/sha256.ts` is gone, so 
 names `node:crypto` any more: a plain esbuild `platform:'browser'` build of `@bugsee/core`/`browser`/
 `vercel-edge` now resolves with no `external` (it used to fail `Could not resolve "node:crypto"`; the
 computed-specifier workaround stays rejected — workerd throws `ERR_MODULE_DYNAMIC_SPEC`). Without
-`crypto.subtle`, `sha256Hex` rejects with a `NotSupportedError`; the upload pipeline turns that into a
-retryable (non-`permanent`) failure before any PUT, so the durable queue keeps the bundle. `@bugsee/node`'s
+`crypto.subtle`, `sha256Hex` rejects with a `NotSupportedError`; the upload pipeline then uploads WITHOUT a
+checksum (see the follow-up below). `@bugsee/node`'s
 `launchCore` passes `nodeSha256Fallback()` (`@bugsee/node-utils`) to `createUploadPipeline`: `node:crypto` only
 when `subtle` is absent (unflagged Node 18), otherwise core's WebCrypto default — one hashing path on every
 modern runtime, and on Node `subtle.digest` runs off the event loop where `createHash` blocks it (measured:
@@ -1011,6 +1011,17 @@ modern runtime, and on Node `subtle.digest` runs off the event loop where `creat
 through `launchCore`. Guards: `browser.e2e.ts` bundles with no `external`; edge X2 rejects a node import of
 ANY kind beyond the allowlist; `tsup-node-protocol.e2e.ts` asserts util's dist carries no `node:` specifier.
 Closes the OPEN-FINDINGS sha256 item and R3-8.
+
+**Follow-up (same day): the checksum no longer gates an upload.** The pipeline created the issue BEFORE
+hashing, and a failed hash was a retryable upload failure — so a runtime without `crypto.subtle` (an insecure
+browser context with persistence on) could never deliver its bundle, and the durable queue re-ran it at every
+launch, each run leaving another EMPTY issue on the collector until the 7-day retention expired (the old
+fallback behaved the same in browsers; not a regression). The checksum is not sent (`bundle-uploader.ts`
+omits the header the collector does not sign), so `upload-pipeline.ts` now computes it best-effort
+(`checksumOf`) BEFORE `createIssue` — where iOS needs it, since iOS sends `bundle_sha256` in the issue-create
+body — and a rejection uploads the bundle with `PutBundleOptions.checksumSha256` absent (now optional). The
+node launch integration test watches `node:crypto` hash the PUT body, since delivery alone no longer proves
+the injection ran.
 
 ---
 

@@ -8,61 +8,6 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
 
 ## Open
 
-### F-1 · `@bugsee/util`'s Node fallback for `sha256` is STATICALLY VISIBLE to esbuild-family browser bundlers — the ignore-comment protection doesn't cover esbuild at all, `node:`-prefix or not
-
-- **Severity:** major
-- **Package:** `@bugsee/util` (source: `packages/util/src/sha256.ts:31`; built output:
-  `packages/util/dist/index.js:155`, confirmed both in the repo's own built `dist/` and in the packed
-  tarball this sample installs, `.local-registry/bugsee-util.tgz`)
-- **Scenario:** production build (`ng build`) of any app whose dependency graph reaches `@bugsee/core`
-  (which `@bugsee/util` sits under as a tier-0 dependency) — not tied to any one catalog scenario
-- **Root cause — CORRECTED from an earlier draft of this finding.** An earlier draft of this entry
-  claimed esbuild "recognizes `node:crypto` as a Node built-in and treats it as implicitly external
-  without erroring" while a bare `'crypto'` does not. **That is false — measured directly against this
-  repo's own esbuild:**
-  ```
-  node:crypto, platform=browser  →  ✘ Could not resolve "node:crypto"
-  crypto,      platform=browser  →  ✘ Could not resolve "crypto"
-  ```
-  esbuild rejects BOTH spellings identically under `platform: 'browser'`, and Angular's `application`
-  builder has no `node:`-prefix special-casing of its own —
-  `@angular/build/src/tools/esbuild/application-code-bundle.js:274` passes the configured `external`
-  list straight through to esbuild alongside `platform: 'browser'`. So restoring the `node:` prefix in
-  `@bugsee/util`'s build would NOT close this finding: `ng build` would still fail, and the
-  `externalDependencies` workaround below would still be required — just spelled `["node:crypto"]`
-  instead of `["crypto", "node:crypto"]`.
-
-  The real defect: `packages/util/src/sha256.ts:31`'s `import('node:crypto')` fallback is guarded ONLY
-  by bundler-specific ignore comments — `webpackIgnore`/`turbopackIgnore`/`@vite-ignore` — and esbuild
-  (hence Angular CLI's `@angular/build:application`/`browser-esbuild` builders, Deno's bundler, and
-  plain esbuild used directly) understands **none** of them. Those comments make the specifier a
-  literal for Vite/webpack/Turbopack, which is real protection for THOSE three bundlers, but esbuild
-  still statically resolves the import and fails the build the moment ANY `platform: 'browser'` target
-  reaches `@bugsee/core` (which pulls in `@bugsee/util`). This is a gap in bundler coverage, not a
-  string-prefix bug.
-- **Observed:** `ng build` on this sample failed outright with `externalDependencies` absent:
-  `Could not resolve "crypto"` / `The package "crypto" wasn't found on the file system but is built
-  into node.` (the packed dist happens to ship the bare `'crypto'` spelling —
-  `packages/util/dist/index.js:155` — but per the root-cause correction above, the `node:`-prefixed
-  spelling fails identically; this is not the actionable part of the defect).
-- **Reproduce:** `cd samples/angular-spa && pnpm build` with `angular.json`'s
-  `externalDependencies: ["crypto", "node:crypto"]` REMOVED from the `build` target's options →
-  `ng build` fails with the error above, regardless of which spelling `@bugsee/util`'s dist ships. With
-  the workaround present (as this sample currently ships), the build succeeds — see `angular.json`'s
-  `architect.build.options.externalDependencies`.
-- **Workaround used (this sample only):** added `"externalDependencies": ["crypto", "node:crypto"]` to
-  `angular.json`'s build options, forcing esbuild to treat both spellings as external. Both spellings
-  are listed deliberately — since esbuild has no notion of the ignore comments either way, there is no
-  "correct" prefix to standardize on from the bundler's perspective, only both-must-be-covered.
-- **Evidence:** `pnpm build` output (captured during this build, reproducible verbatim by removing the
-  workaround) plus a direct esbuild repro (`node:crypto` vs `crypto`, both platform=browser, both fail
-  identically) — see the reproduction steps above; no MCP evidence needed, this is a build-time failure.
-- **Cross-cutting:** yes — this affects **any** consumer of `@bugsee/core` bundled with an esbuild-based
-  tool (Angular CLI's `application`/`browser-esbuild` builders, Deno's bundler, plain esbuild, and
-  plausibly others that don't special-case Vite/webpack/Turbopack ignore comments), not just Angular.
-  Belongs in `samples/FINDINGS.md` too; not added there directly per this sample's instructions — the
-  orchestrator aggregates.
-
 ### F-2 · The `node:`-stripping IS real, and ~30× wider than F-1's own blast radius — `tsup`'s `removeNodeProtocol` defaults to `true` and is never overridden
 
 - **Severity:** major
@@ -101,33 +46,6 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
 - **Not fixed here:** `packages/` is out of scope for this sample; recorded for the orchestrator/backend
   team. The one-line fix candidate (`removeNodeProtocol: false` in `tsup.config.base.ts`, then rebuild
   every package) was not applied.
-
-### F-3 · The documented `externalDependencies` workaround converts a BUILD error into a SILENT RUNTIME error — no caveat exists anywhere a reader would see it before shipping
-
-- **Severity:** major
-- **Package:** interacts with `@bugsee/core`'s upload path (`packages/core/src/upload-pipeline.ts:77`,
-  which calls `sha256` — the same `@bugsee/util` function F-1 is about — to compute the S3 PUT
-  checksum) — this sample's own `angular.json`/`README.md` are what's missing the caveat.
-- **Observed:** with the `externalDependencies` workaround in place, `pnpm build` succeeds and
-  `dist/angular-spa/browser/chunk-*.js` ships a literal `import("crypto")` (verified by grepping the
-  built output). That import is only ever reached when `crypto.subtle` is absent from the global —
-  i.e. in ANY non-secure browsing context: plain `http://` (not `https://`) on a LAN host, an internal
-  admin tool, a staging box without TLS terminated in front of it. In that situation the dynamic
-  `import("crypto")` resolves against nothing (no bundler shipped a `node:crypto` shim into the browser
-  bundle — it was marked EXTERNAL, meaning "the runtime will provide this," and no browser runtime
-  does), so `sha256Hex` throws/rejects, and every upload that needs the checksum fails. This is a
-  regression from "build fails loudly" to "build succeeds, then a subset of production traffic silently
-  can't upload" — worse for anyone who copies the workaround without reading this finding.
-- **Consequence:** neither `README.md` (as it stood before this fix pass) nor `angular.json:27`
-  (the `externalDependencies` line itself) carried this caveat. A customer following the README's
-  documented build workaround verbatim would ship a production build that fails to upload from any
-  non-secure-context deployment, with no warning anywhere in the docs they followed.
-- **Fixed in this pass (sample-side only):** added the caveat prominently to `README.md` (both the "Run
-  it"/production-build section and the Findings summary). `angular.json` is plain JSON with no comment
-  syntax, so the caveat could not be attached inline there without either breaking the schema or adding
-  a nonstandard property — left out of `angular.json` for that reason; the README is the single place a
-  reader following the build workaround will see it. Not fixed at the source (`packages/util`'s
-  `sha256.ts` NOT touched) since this sample does not modify `packages/`.
 
 ### F-4 · S12 persist+recover of an exception logged immediately before a page reload is unreliable when preceded by heavy prior SDK activity in the same session
 
@@ -551,6 +469,101 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
   not an SDK finding. See `scenarios.md`'s S11 `.bugsee-unmask` row.
 
 ## Resolved
+
+### F-1 · `@bugsee/util`'s Node fallback for `sha256` is STATICALLY VISIBLE to esbuild-family browser bundlers — the ignore-comment protection doesn't cover esbuild at all, `node:`-prefix or not
+
+- **Status: RESOLVED at the source (2026-09-16).** `@bugsee/util`'s `sha256Hex` is now WebCrypto-only —
+  the `node:crypto` fallback is deleted, and `@bugsee/node` injects a `node:crypto` digest into core's
+  upload pipeline where `crypto.subtle` is absent. Re-verified on this sample: `.local-registry` re-packed,
+  clean install (`rm -rf node_modules pnpm-lock.yaml`), `externalDependencies` REMOVED from `angular.json`,
+  `pnpm build` → `Application bundle generation complete`, and `dist/angular-spa/browser/*.js` contains no
+  `import("crypto")` / `node:crypto` (only `globalThis.crypto` / `crypto.subtle`). The original write-up
+  follows unchanged.
+- **Severity:** major
+- **Package:** `@bugsee/util` (source: `packages/util/src/sha256.ts:31`; built output:
+  `packages/util/dist/index.js:155`, confirmed both in the repo's own built `dist/` and in the packed
+  tarball this sample installs, `.local-registry/bugsee-util.tgz`)
+- **Scenario:** production build (`ng build`) of any app whose dependency graph reaches `@bugsee/core`
+  (which `@bugsee/util` sits under as a tier-0 dependency) — not tied to any one catalog scenario
+- **Root cause — CORRECTED from an earlier draft of this finding.** An earlier draft of this entry
+  claimed esbuild "recognizes `node:crypto` as a Node built-in and treats it as implicitly external
+  without erroring" while a bare `'crypto'` does not. **That is false — measured directly against this
+  repo's own esbuild:**
+  ```
+  node:crypto, platform=browser  →  ✘ Could not resolve "node:crypto"
+  crypto,      platform=browser  →  ✘ Could not resolve "crypto"
+  ```
+  esbuild rejects BOTH spellings identically under `platform: 'browser'`, and Angular's `application`
+  builder has no `node:`-prefix special-casing of its own —
+  `@angular/build/src/tools/esbuild/application-code-bundle.js:274` passes the configured `external`
+  list straight through to esbuild alongside `platform: 'browser'`. So restoring the `node:` prefix in
+  `@bugsee/util`'s build would NOT close this finding: `ng build` would still fail, and the
+  `externalDependencies` workaround below would still be required — just spelled `["node:crypto"]`
+  instead of `["crypto", "node:crypto"]`.
+
+  The real defect: `packages/util/src/sha256.ts:31`'s `import('node:crypto')` fallback is guarded ONLY
+  by bundler-specific ignore comments — `webpackIgnore`/`turbopackIgnore`/`@vite-ignore` — and esbuild
+  (hence Angular CLI's `@angular/build:application`/`browser-esbuild` builders, Deno's bundler, and
+  plain esbuild used directly) understands **none** of them. Those comments make the specifier a
+  literal for Vite/webpack/Turbopack, which is real protection for THOSE three bundlers, but esbuild
+  still statically resolves the import and fails the build the moment ANY `platform: 'browser'` target
+  reaches `@bugsee/core` (which pulls in `@bugsee/util`). This is a gap in bundler coverage, not a
+  string-prefix bug.
+- **Observed:** `ng build` on this sample failed outright with `externalDependencies` absent:
+  `Could not resolve "crypto"` / `The package "crypto" wasn't found on the file system but is built
+  into node.` (the packed dist happens to ship the bare `'crypto'` spelling —
+  `packages/util/dist/index.js:155` — but per the root-cause correction above, the `node:`-prefixed
+  spelling fails identically; this is not the actionable part of the defect).
+- **Reproduce:** `cd samples/angular-spa && pnpm build` with `angular.json`'s
+  `externalDependencies: ["crypto", "node:crypto"]` REMOVED from the `build` target's options →
+  `ng build` fails with the error above, regardless of which spelling `@bugsee/util`'s dist ships. With
+  the workaround present (as this sample currently ships), the build succeeds — see `angular.json`'s
+  `architect.build.options.externalDependencies`.
+- **Workaround used (this sample only):** added `"externalDependencies": ["crypto", "node:crypto"]` to
+  `angular.json`'s build options, forcing esbuild to treat both spellings as external. Both spellings
+  are listed deliberately — since esbuild has no notion of the ignore comments either way, there is no
+  "correct" prefix to standardize on from the bundler's perspective, only both-must-be-covered.
+- **Evidence:** `pnpm build` output (captured during this build, reproducible verbatim by removing the
+  workaround) plus a direct esbuild repro (`node:crypto` vs `crypto`, both platform=browser, both fail
+  identically) — see the reproduction steps above; no MCP evidence needed, this is a build-time failure.
+- **Cross-cutting:** yes — this affects **any** consumer of `@bugsee/core` bundled with an esbuild-based
+  tool (Angular CLI's `application`/`browser-esbuild` builders, Deno's bundler, plain esbuild, and
+  plausibly others that don't special-case Vite/webpack/Turbopack ignore comments), not just Angular.
+  Belongs in `samples/FINDINGS.md` too; not added there directly per this sample's instructions — the
+  orchestrator aggregates.
+
+### F-3 · The documented `externalDependencies` workaround converts a BUILD error into a SILENT RUNTIME error — no caveat exists anywhere a reader would see it before shipping
+
+- **Status: RESOLVED (2026-09-16), both halves.** The workaround is gone (F-1), so no bundle ships an
+  unresolvable `import("crypto")`. And the runtime half no longer depends on bundling at all: without
+  `crypto.subtle` (a non-secure context) the SDK's checksum now fails SOFT — `core/src/upload-pipeline.ts`
+  computes it best-effort before creating the issue and uploads without it (the checksum is not sent on
+  the wire). Before, such a page could never upload, and every launch left an empty issue behind. The
+  README's HTTPS-only caveat is removed. The original write-up follows unchanged.
+- **Severity:** major
+- **Package:** interacts with `@bugsee/core`'s upload path (`packages/core/src/upload-pipeline.ts:77`,
+  which calls `sha256` — the same `@bugsee/util` function F-1 is about — to compute the S3 PUT
+  checksum) — this sample's own `angular.json`/`README.md` are what's missing the caveat.
+- **Observed:** with the `externalDependencies` workaround in place, `pnpm build` succeeds and
+  `dist/angular-spa/browser/chunk-*.js` ships a literal `import("crypto")` (verified by grepping the
+  built output). That import is only ever reached when `crypto.subtle` is absent from the global —
+  i.e. in ANY non-secure browsing context: plain `http://` (not `https://`) on a LAN host, an internal
+  admin tool, a staging box without TLS terminated in front of it. In that situation the dynamic
+  `import("crypto")` resolves against nothing (no bundler shipped a `node:crypto` shim into the browser
+  bundle — it was marked EXTERNAL, meaning "the runtime will provide this," and no browser runtime
+  does), so `sha256Hex` throws/rejects, and every upload that needs the checksum fails. This is a
+  regression from "build fails loudly" to "build succeeds, then a subset of production traffic silently
+  can't upload" — worse for anyone who copies the workaround without reading this finding.
+- **Consequence:** neither `README.md` (as it stood before this fix pass) nor `angular.json:27`
+  (the `externalDependencies` line itself) carried this caveat. A customer following the README's
+  documented build workaround verbatim would ship a production build that fails to upload from any
+  non-secure-context deployment, with no warning anywhere in the docs they followed.
+- **Fixed in this pass (sample-side only):** added the caveat prominently to `README.md` (both the "Run
+  it"/production-build section and the Findings summary). `angular.json` is plain JSON with no comment
+  syntax, so the caveat could not be attached inline there without either breaking the schema or adding
+  a nonstandard property — left out of `angular.json` for that reason; the README is the single place a
+  reader following the build workaround will see it. Not fixed at the source (`packages/util`'s
+  `sha256.ts` NOT touched) since this sample does not modify `packages/`.
 
 ### F-9 · HARNESS defect (not an SDK one) — every "the UPLOADED bundle carries X" check in this sweep would have passed on a bundle the backend REFUSED
 

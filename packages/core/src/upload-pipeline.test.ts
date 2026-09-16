@@ -82,6 +82,31 @@ describe('createUploadPipeline — happy path', () => {
     });
   });
 
+  it('computes the checksum BEFORE creating the issue', async () => {
+    // Issue-create is the step that leaves a record on the collector, so everything that can fail locally
+    // runs first — and iOS sends `bundle_sha256` IN the issue-create body, which needs the digest by then.
+    const order: string[] = [];
+    const api = fakeApi();
+    api.ensureSession = vi.fn(async () => {
+      order.push('session');
+      return 'tok' as AccessToken;
+    });
+    api.createIssue = vi.fn(async () => {
+      order.push('issue');
+      return issue;
+    });
+    await createUploadPipeline(
+      deps({
+        api,
+        sha256: async () => {
+          order.push('sha256');
+          return 'deadbeef';
+        },
+      }),
+    ).enqueue(bundle);
+    expect(order).toEqual(['sha256', 'session', 'issue']);
+  });
+
   it('reports a success outcome under the hinted category', async () => {
     const outcomes: PipelineOutcome[] = [];
     await createUploadPipeline(deps({ onOutcome: (o) => outcomes.push(o) })).enqueue(bundle, {
@@ -106,31 +131,34 @@ describe('createUploadPipeline — happy path', () => {
   });
 });
 
-// The default digest is WebCrypto-only (@bugsee/util has no node:crypto fallback any more). On a runtime
+// The default digest is WebCrypto-only (@bugsee/util has no node:crypto fallback any more), so on a runtime
 // without `crypto.subtle` — an insecure browser context, or Node 18 whose platform did not inject a digest —
-// the checksum REJECTS. That must surface as a RETRYABLE failure: `permanent` would tell the durable queue
-// to free the bundle, losing the incident, when the cause is the runtime rather than the payload.
+// the checksum REJECTS. Nothing sends the checksum today (bundle-uploader.ts omits the header), so it must
+// never decide whether an incident uploads: failing here left a bundle that could NEVER upload on that
+// runtime, and — because the issue was created first — an empty issue on the collector at every launch.
 describe('createUploadPipeline — default digest on a runtime without WebCrypto', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('fails the upload as retryable, before any PUT, carrying the NotSupportedError as cause', async () => {
+  it('uploads without a checksum, creating exactly one issue', async () => {
     vi.stubGlobal('crypto', undefined);
+    const api = fakeApi();
     const put = vi.fn<BundleUploader['putBundle']>(async () => ({ ok: true }));
     const outcomes: PipelineOutcome[] = [];
     const { sha256: _omit, ...rest } = deps({
+      api,
       uploader: fakeUploader(put),
       onOutcome: (o) => outcomes.push(o),
     });
     const result = await createUploadPipeline(rest).enqueue(bundle);
-    expect(result.ok).toBe(false);
-    expect(result.permanent).toBeUndefined();
-    expect(result.error).toBeInstanceOf(BugseeError);
-    expect(result.error?.message).toBe('checksum failed');
-    expect((result.error?.cause as Error).name).toBe('NotSupportedError');
-    expect(put).not.toHaveBeenCalled();
-    expect(outcomes).toEqual([{ kind: 'drop', category: 'issue', reason: 'upload_failed' }]);
+    expect(result).toEqual({ ok: true, issueId: issue.issueId, recordingId: issue.recordingId });
+    expect(api.createIssue).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(1);
+    const options = put.mock.calls[0]?.[2];
+    expect(options).toEqual({ contentLength: 3, fileName: 'a.bundle.zip' });
+    expect(options).not.toHaveProperty('checksumSha256');
+    expect(outcomes).toEqual([{ kind: 'success', category: 'issue' }]);
   });
 
   it('uploads normally when the platform injects a digest in its place', async () => {
@@ -494,30 +522,35 @@ describe('createUploadPipeline — operation rejections (enqueue never rejects)'
     expect(result.error).toBe(boom);
   });
 
-  it('resolves to a failed result and records a drop when sha256 rejects', async () => {
+  it('uploads without a checksum, recording success, when an injected sha256 rejects', async () => {
     const outcomes: PipelineOutcome[] = [];
+    const put = vi.fn<BundleUploader['putBundle']>(async () => ({ ok: true }));
     const result = await createUploadPipeline(
       deps({
+        uploader: fakeUploader(put),
         sha256: async () => {
-          throw new Error('no crypto');
+          throw new BugseeError('checksum boom', 0);
         },
         onOutcome: (o) => outcomes.push(o),
       }),
     ).enqueue(bundle);
-    expect(result.ok).toBe(false);
-    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'upload_failed' });
+    expect(result.ok).toBe(true);
+    expect(put.mock.calls[0]?.[2]).not.toHaveProperty('checksumSha256');
+    expect(outcomes).toEqual([{ kind: 'success', category: 'issue' }]);
   });
 
-  it('preserves a BugseeError thrown by sha256', async () => {
-    const boom = new BugseeError('checksum boom', 0);
+  it('uploads without a checksum when an injected sha256 throws synchronously', async () => {
+    const put = vi.fn<BundleUploader['putBundle']>(async () => ({ ok: true }));
     const result = await createUploadPipeline(
       deps({
-        sha256: async () => {
-          throw boom;
+        uploader: fakeUploader(put),
+        sha256: () => {
+          throw new Error('sync boom');
         },
       }),
     ).enqueue(bundle);
-    expect(result.error).toBe(boom);
+    expect(result.ok).toBe(true);
+    expect(put.mock.calls[0]?.[2]).not.toHaveProperty('checksumSha256');
   });
 });
 

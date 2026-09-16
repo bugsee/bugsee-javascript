@@ -790,7 +790,7 @@ matched the property form (`setName:`). Bun and Deno actively take the degraded 
 seven others and remain `as unknown as Transaction`. The mechanism that produced D2 is unchanged for the
 next member added to that path. Fifteen instances fixed; the mechanism is still live.
 
-### ~~R3-8 · SEV3 · The tsup guard misses a TENTH package — `@bugsee/util`~~ **CLOSED 2026-09-16 (uncommitted).**
+### ~~R3-8 · SEV3 · The tsup guard misses a TENTH package — `@bugsee/util`~~ **CLOSED 2026-09-16 (7151a6b).**
 
 Resolved by removal: util no longer has a `node:crypto` specifier to guard (see the sha256 item under
 "Known-open"). The util target is out of `tsup-node-protocol.e2e.ts`; an inverse test now asserts util's
@@ -1055,9 +1055,10 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
   recoverer that dies half way cannot strand the incident for ever (which would be strictly worse
   than the duplicate the claim replaces).
 - ~~`@bugsee/util` `sha256.ts` — the `node:crypto` fallback is statically visible to esbuild-family
-  bundlers~~ **CLOSED 2026-09-16 (uncommitted): the platform injects the digest.** The fallback is
+  bundlers~~ **CLOSED 2026-09-16 (7151a6b): the platform injects the digest.** The fallback is
   deleted; `sha256Hex` is WebCrypto-only and rejects `NotSupportedError` without `crypto.subtle`, which
-  the upload pipeline records as a retryable failure (bundle kept by the durable queue). `@bugsee/node`
+  the upload pipeline now treats as "upload without a checksum" — the checksum is not sent, and gating on it
+  left an empty issue per launch (see PROGRESS.md 2026-09-16 follow-up). `@bugsee/node`
   passes a `node:crypto` digest (`node-utils` `nodeSha256Fallback`) into `createUploadPipeline`'s
   existing `sha256` seam only when `subtle` is absent; bun/deno/electron-main inherit it. Verified: esbuild
   `platform:'browser'` with NO `external` bundles `@bugsee/core`, `@bugsee/browser` and

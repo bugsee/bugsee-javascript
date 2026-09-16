@@ -202,23 +202,24 @@ describe('createDurableUploadPipeline', () => {
     expect(map.has('b1')).toBe(false); // dropped — already removed by the time enqueue resolves
   });
 
-  it('keeps the bundle when the REAL pipeline cannot checksum it (no WebCrypto, no injected digest)', async () => {
-    // Integration with the real upload pipeline and its default @bugsee/util digest: a runtime without
-    // `crypto.subtle` must never lose the incident silently — the bundle stays staged for the next launch,
-    // and the caller is told its copy is still held.
+  it('uploads and frees the bundle when the REAL pipeline cannot checksum it (no WebCrypto, no injected digest)', async () => {
+    // Integration with the real upload pipeline and its default @bugsee/util digest. The checksum is not
+    // sent, so a runtime without `crypto.subtle` must still deliver the incident — retaining it instead
+    // re-created an issue (with no bundle) at every launch and never uploaded it.
     vi.stubGlobal('crypto', undefined);
     try {
       const { store, map } = memStore();
       const putBundle = vi.fn(async () => ({ ok: true as const }));
+      const createIssue = vi.fn(async () => ({
+        endpoint: 'https://put/1',
+        issueId: 'i1' as IssueId,
+        recordingId: 'r1' as RecordingId,
+      }));
       const pipeline = createUploadPipeline({
         api: {
           sessionId: 's',
           ensureSession: async () => 'tok' as AccessToken,
-          createIssue: async () => ({
-            endpoint: 'https://put/1',
-            issueId: 'i1' as IssueId,
-            recordingId: 'r1' as RecordingId,
-          }),
+          createIssue,
           renewUpload: async () => {
             throw new Error('unused');
           },
@@ -229,10 +230,10 @@ describe('createDurableUploadPipeline', () => {
       });
       const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'b1' });
       const result = await durable.enqueue(bundle());
-      expect(result.ok).toBe(false);
-      expect(result.retained).toBe(true);
-      expect(map.has('b1')).toBe(true);
-      expect(putBundle).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      expect(map.has('b1')).toBe(false);
+      expect(createIssue).toHaveBeenCalledTimes(1);
+      expect(putBundle).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }
