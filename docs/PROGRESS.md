@@ -996,6 +996,23 @@ against the assertion itself, not only against the implementation.**
   rolling-window rotation are both ruled out by measurement. No fix was shipped because it could not be
   reproduced; the assertion now prints the profile window, sample count and busiest frames on failure.
 
+### 2026-09-16 — Stylus tilt and direction on pen input (issue #6)
+
+`InputEvent` (`core/src/events.ts`) gains `altitudeAngle` / `azimuthAngle` — radians, iOS's names and
+conventions (`UITouch.altitudeAngle` / `azimuthAngle(in:)`), which Pointer Events Level 3 shares — so the
+viewer's pen glyph can draw the stylus "shadow" for web recordings. `browser/src/pen-angles.ts` reads them
+for `tool: Pen` only (mouse/touch entries unchanged), on `pointerdown`/`pointerup`/`pointercancel`:
+L3 `altitudeAngle`/`azimuthAngle` when present and in range, else a transcription of the spec's
+`tilt2spherical` over `tiltX`/`tiltY` (boundary cases included). **The no-data case is omitted, not
+written:** the spec REQUIRES hardware without tilt sensing to report altitude π/2 + azimuth 0 and tilt 0/0,
+which a viewer cannot tell from a pen held upright pointing right — and omitting them renders identically
+(an upright pen casts no shadow). MEASURED on real Chromium 151 via a CDP pen event: it supplies L3 angles,
+reports exactly π/2 + 0 (and tilt 0/0) for a pen with no tilt, and its angles for tilt 30/−20 are
+bit-identical to the fallback's conversion (pinned as a test vector). Tests pin cardinal/diagonal/flat/boundary conversions, an independent
+pen-axis geometry check over a grid of tilts, L3 preference, fallback, and every omission path; 17
+mutations caught. Still open (separate decision, raised in the issue): `pointermove` is not captured, so a
+web pen gesture carries angles at its two endpoints only.
+
 ### 2026-09-16 — `@bugsee/util` sha256 is WebCrypto-only; the node platform injects its digest
 
 The `import('node:crypto')` fallback in tier-0 `util/src/sha256.ts` is gone, so no browser/worker/edge graph

@@ -733,6 +733,7 @@ Entry shape — the viewer's `RecordingTouchEvent`, so web and mobile render thr
 | `x`, `y` | viewport CSS pixels (rounded) |
 | `force` | normalised pressure 0..1 |
 | `majorRadius`, `minorRadius` | contact geometry (touch/pen only) |
+| `altitudeAngle`, `azimuthAngle` | stylus orientation in radians — pen only, and only when the device reports it (iOS names/conventions: altitude 0 flat … π/2 perpendicular; azimuth 0 along +x, clockwise). Web: Pointer Events L3 angles, else converted from `tiltX`/`tiltY`; the spec's no-data defaults (π/2 + 0, tilt 0/0) are omitted (#6) |
 | `tool` | `InputTool`: 0 Unknown, 1 Touch, 2 Mouse, 3 Pen, 4 Remote, 5 Other, 6 Eraser, **7 Key** |
 | `view`, `view_id`, `view_tag` | target class / id / tag (the viewer maps these to `target.class/.id/.tag`) |
 

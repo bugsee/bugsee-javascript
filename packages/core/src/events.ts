@@ -100,6 +100,17 @@ export interface InputEvent {
   majorRadius?: number;
   minorRadius?: number;
   tool?: InputTool;
+  /**
+   * Stylus altitude in RADIANS — `0` flat on the surface, `π/2` perpendicular. Pen entries only, and only
+   * when the device reported orientation. iOS's name and convention (`UITouch.altitudeAngle`), which
+   * Pointer Events Level 3 shares.
+   */
+  altitudeAngle?: number;
+  /**
+   * Stylus direction in the screen plane, in RADIANS — `0` along +x, increasing clockwise (y points
+   * down). Pen entries only, emitted together with `altitudeAngle`. iOS's `UITouch.azimuthAngle(in:)`.
+   */
+  azimuthAngle?: number;
   /** Target CLASS — the viewer maps `view`→`target.class` (its own naming is view-tree flavoured). */
   view?: string;
   /** Target element id — the viewer maps `view_id`→`target.id`. */

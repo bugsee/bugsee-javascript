@@ -2,6 +2,7 @@ import type { InputEventDetail } from '@bugsee/capture';
 import { InputTool, type Interceptor, InterceptorBase, isSensitiveInput } from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
 import { androidKeyCode, androidMetaState } from './keycodes';
+import { penAngles } from './pen-angles';
 
 // Browser INPUT SOURCE for @bugsee/capture's input provider (the DOM analog of the node lifecycle
 // source). A listenable InterceptorBase: on activate it attaches capture-phase, passive listeners and
@@ -40,7 +41,8 @@ import { androidKeyCode, androidMetaState } from './keycodes';
 // exists in the vocabulary (`InputEventStage`) if that ever changes.
 //
 // Emitted per interaction:
-//   pointerdown   → { type:'begin', id, x, y, force, majorRadius?, minorRadius?, tool, button, view* }
+//   pointerdown   → { type:'begin', id, x, y, force, majorRadius?, minorRadius?, altitudeAngle?,
+//                     azimuthAngle?, tool, button, view* }   (the two angles: pen only — see pen-angles.ts)
 //   pointerup     → { type:'end',   …the same, closing the gesture id }
 //   pointercancel → { type:'end',   …the gesture was aborted by the browser }
 //   keydown       → { type:'keydown', tool:Key, id, key, keyCode, metaState, view* }
@@ -238,6 +240,10 @@ interface PointerEventLike {
   pressure?: unknown;
   width?: unknown;
   height?: unknown;
+  altitudeAngle?: unknown;
+  azimuthAngle?: unknown;
+  tiltX?: unknown;
+  tiltY?: unknown;
   target?: unknown;
 }
 
@@ -330,6 +336,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
         ? { force: e.pressure }
         : {}),
       ...geometry,
+      // Stylus orientation is a pen property; mouse and touch entries stay exactly as they were.
+      ...(tool === InputTool.Pen ? penAngles(e) : {}),
       tool,
       ...(typeof e.button === 'number' ? { button: e.button } : {}),
       ...targetFields(describeTarget(e.target, this.#mask)),

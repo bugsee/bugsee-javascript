@@ -61,6 +61,17 @@ describe('InputEvent (the input-stream wire shape)', () => {
     expect(pointer.tool).toBe(1);
   });
 
+  it('types the stylus angles (radians, iOS names) as optional numbers', () => {
+    const pen: InputEvent = {
+      timestamp: 1,
+      type: 'begin',
+      tool: InputTool.Pen,
+      altitudeAngle: Math.PI / 4,
+      azimuthAngle: Math.PI,
+    };
+    expect([pen.altitudeAngle, pen.azimuthAngle]).toStrictEqual([Math.PI / 4, Math.PI]);
+  });
+
   it('types the SDK-ahead-of-contract fields (button/key/modifiers/target)', () => {
     const key: InputEvent = {
       type: 'begin',

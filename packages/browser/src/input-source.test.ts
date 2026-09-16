@@ -375,6 +375,73 @@ describe('createBrowserInputSource', () => {
     expect(events[1]?.minorRadius).toBeUndefined();
   });
 
+  it('records stylus altitude/azimuth on every pen stage (begin, end, cancel)', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    const pen = { pointerType: 'pen', width: 2, height: 2, altitudeAngle: 0.8, azimuthAngle: 1.9 };
+    target.emit('pointerdown', ptr(pen));
+    target.emit('pointerup', ptr({ ...pen, altitudeAngle: 0.6, azimuthAngle: 2.1 }));
+    target.emit('pointerdown', ptr({ ...pen, pointerId: 2 }));
+    target.emit('pointercancel', ptr({ ...pen, pointerId: 2, altitudeAngle: 0.4 }));
+    expect(events[0]).toStrictEqual({
+      id: '1',
+      type: 'begin',
+      x: 12,
+      y: 34,
+      force: 0.5,
+      majorRadius: 1,
+      minorRadius: 1,
+      altitudeAngle: 0.8,
+      azimuthAngle: 1.9,
+      tool: InputTool.Pen,
+      button: 0,
+      view_tag: 'button',
+      target: { text: 'OK', selector: 'button' },
+    });
+    expect(events.map((e) => [e.type, e.altitudeAngle, e.azimuthAngle])).toStrictEqual([
+      ['begin', 0.8, 1.9],
+      ['end', 0.6, 2.1],
+      ['begin', 0.8, 1.9],
+      ['end', 0.4, 1.9],
+    ]);
+  });
+
+  it('derives pen angles from tiltX/tiltY when the browser has no Level 3 angles', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ pointerType: 'pen', tiltX: 0, tiltY: -45 }));
+    expect(events[0]?.altitudeAngle).toBeCloseTo(Math.PI / 4, 12);
+    expect(events[0]?.azimuthAngle).toBeCloseTo((3 * Math.PI) / 2, 12);
+  });
+
+  it('omits the pen angles when the pen reports no tilt data', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit(
+      'pointerdown',
+      ptr({ pointerType: 'pen', altitudeAngle: Math.PI / 2, azimuthAngle: 0, tiltX: 0, tiltY: 0 }),
+    );
+    expect(events[0]?.tool).toBe(InputTool.Pen);
+    expect(events[0]).not.toHaveProperty('altitudeAngle');
+    expect(events[0]).not.toHaveProperty('azimuthAngle');
+  });
+
+  it.each([
+    'mouse',
+    'touch',
+    'eraser-ish-unknown',
+    '',
+  ])('never records angles for a non-pen pointer (%s), even when the event carries them', (pointerType) => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit(
+      'pointerdown',
+      ptr({ pointerType, altitudeAngle: 0.5, azimuthAngle: 1, tiltX: 30, tiltY: 20 }),
+    );
+    expect(events[0]).not.toHaveProperty('altitudeAngle');
+    expect(events[0]).not.toHaveProperty('azimuthAngle');
+  });
+
   it('passes the actual device button through (secondary and middle, not a hardcoded 0)', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
