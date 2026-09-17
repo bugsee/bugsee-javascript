@@ -996,6 +996,22 @@ against the assertion itself, not only against the implementation.**
   rolling-window rotation are both ruled out by measurement. No fix was shipped because it could not be
   reproduced; the assertion now prints the profile window, sample count and busiest frames on failure.
 
+### 2026-09-17 — Replay records what a user types into an un-masked input
+
+The rrweb fork honoured `unmaskInputSelector` (`.bugsee-unmask` on an input) on the FULL SNAPSHOT only.
+The live input observer and the mutation observer's `value`-attribute / `<textarea>` paths ignored it, so
+a value typed or set while recording stayed masked — the escape hatch covered the page's initial state
+and nothing after. Fork `bugsee-port` 34ba7400: a single `resolveInputValue` (rrweb-snapshot) now resolves
+the value on all four paths — sensitive input (password / credit-card / password / one-time-code
+autocomplete) masked FIRST, then the un-mask selector, then normal masking; a selector that throws fails
+closed. That also stops the snapshot path's un-mask bypassing the fork's own sensitive hard floor, which
+the SDK's selector guard had been covering. Rebuilt record-only bundle `bugsee-dist` b8aaf209 (esbuild over
+the vite `dist/rrweb-record.js`; 184 KB / 58 KB gzip, byte-identical to what `@bugsee/rrweb` installs);
+`@bugsee/rrweb` pins it. Fork tests: jsdom `record()` on the typed/attribute/textarea paths + sensitive
+fields, snapshot + utils; 8 mutations caught; rrweb input/masking integration tests green. SDK:
+`masking.integration.test.ts` asserts a typed value in a `.bugsee-unmask` input is recorded and an
+unmarked one is not — failing against the previous bundle.
+
 ### 2026-09-17 — A request decorator can no longer break the app's request
 
 `capture/src/request-decorator.ts` — the transformer seam the fetch and XHR interceptors run INLINE,

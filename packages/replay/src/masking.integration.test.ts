@@ -156,6 +156,22 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
     const { json } = await drive('<input type="text" class="bugsee-unmask" value="SEARCHTERM">');
     expect(json).toContain('SEARCHTERM');
   });
+
+  // The escape hatch used to cover the SNAPSHOT only: the fork's live input observer ignored the un-mask
+  // selector, so what a user TYPED into a `.bugsee-unmask` input was recorded masked. Fork bundle
+  // b8aaf209 resolves the value one way on every path.
+  it('un-masks what the user TYPES into a benign `.bugsee-unmask` input, and only there', async () => {
+    const { json } = await drive(
+      '<input type="text" class="bugsee-unmask" id="open"><input type="text" id="closed">',
+      {},
+      () => {
+        typeInto('#open', 'TYPEDTERM')();
+        typeInto('#closed', 'HIDDENTERM')();
+      },
+    );
+    expect(json).toContain('TYPEDTERM');
+    expect(json).not.toContain('HIDDENTERM');
+  });
 });
 
 describe('the sensitive floor holds on the LIVE input path too, with maskAllInputs off', () => {

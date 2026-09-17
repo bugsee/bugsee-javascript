@@ -1097,8 +1097,8 @@ importers:
         version: 2.1.0
     devDependencies:
       '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#d50d8d7e0786e095bfaa12bdaadc59b7447ed920
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)
+        specifier: github:bugsee/rrweb#b8aaf20929aad9e5ab7c7dd2f6f0c2f05b197d49
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/b8aaf20929aad9e5ab7c7dd2f6f0c2f05b197d49(@rrweb/types@2.1.0)(rrweb@2.1.0)
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -1743,8 +1743,8 @@ packages:
     engines: {node: '>=14.14', npm: '>=6'}
     hasBin: true
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920':
-    resolution: {gitHosted: true, integrity: sha512-zneGFYlhaxarSRWfCsyUZdzzInok+0GTrK5gwCXlNy806+sbsbYxGMmtKIo1c8uoF4F8tQv4NbX+jEWC0O642w==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920}
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/b8aaf20929aad9e5ab7c7dd2f6f0c2f05b197d49':
+    resolution: {gitHosted: true, integrity: sha512-EPbtzoqNmdX6qVQ2zODo+nE94mMI3Ik1Hwy3GDAtp9PS/S/ts4L6ezFduhkUHhgTSZdmAi8sX8HCfzh7+WJshQ==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/b8aaf20929aad9e5ab7c7dd2f6f0c2f05b197d49}
     version: 2.1.0
     peerDependencies:
       '@rrweb/types': ^2.1.0
@@ -9665,7 +9665,7 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/d50d8d7e0786e095bfaa12bdaadc59b7447ed920(@rrweb/types@2.1.0)(rrweb@2.1.0)':
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/b8aaf20929aad9e5ab7c7dd2f6f0c2f05b197d49(@rrweb/types@2.1.0)(rrweb@2.1.0)':
     optionalDependencies:
       '@rrweb/types': 2.1.0
       rrweb: 2.1.0

@@ -1076,10 +1076,19 @@ real; the Android-canonical shape is a facade method (e.g. `bugsee.setRequestAtt
   A pure-JS SHA-256 was also rejected — this hashes the whole bundle BODY, and bundles run to
   megabytes. The `external` workaround's residual risk is narrower than first written: it can only
   bite in an INSECURE context, since every secure context has `crypto.subtle`.
-- `bugsee-cli` (Rust repo): a CSS map aborts the whole source-map batch; an unchanged chunk fails
-  the whole batch. Together these make iterative CI production builds impossible.
-- rrweb fork: `.bugsee-unmask` on an `<input>` is honoured on the full-snapshot path only; a
-  value typed *while* recording stays masked. Fails closed, so privacy-safe.
+- ~~`bugsee-cli` (Rust repo): a CSS map aborts the whole source-map batch; an unchanged chunk fails
+  the whole batch. Together these make iterative CI production builds impossible.~~ **CLOSED
+  2026-09-17: bugsee-cli 0.7.8** (bugsee-cli#35) — the appserver nests 16004 in its envelope and the CLI
+  matched only a top-level code; CSS/declaration maps are skipped. `@bugsee/bundler-plugin-core` requires
+  `^0.7.8` (`40ef8ff`); re-verified against staging in `samples/webpack-sourcemaps` (`059b2ae`).
+- ~~rrweb fork: `.bugsee-unmask` on an `<input>` is honoured on the full-snapshot path only; a
+  value typed *while* recording stays masked. Fails closed, so privacy-safe.~~ **CLOSED 2026-09-17:**
+  fork `bugsee-port` 34ba7400 / `bugsee-dist` b8aaf209 — one `resolveInputValue` for the snapshot, the
+  live input observer and the value/textarea mutation paths (the latter two also ignored the selector).
+  The snapshot path's unmask had also bypassed the fork's own sensitive-input hard floor; the SDK's
+  selector guard (`masking.ts`) already kept that from leaking, and the fork now enforces it itself.
+  `@bugsee/rrweb` pins b8aaf209; `masking.integration.test.ts` asserts a typed value in a
+  `.bugsee-unmask` input is recorded (fails against the old bundle).
 - `docs/review/browser-utils.md:36` names the removed `recoverReportsForViews` — stale doc only.
 
 ---
