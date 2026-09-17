@@ -2,8 +2,8 @@ import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { deflateSync, gzipSync } from 'node:zlib';
-import { afterEach, describe, expect, it } from 'vitest';
-import { httpRequest, transportFor } from './http-request';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { httpRequest, settleOnce, transportFor } from './http-request';
 
 // Real loopback server per test — deterministic, no mocking. The handler is swapped per test.
 let server: http.Server | undefined;
@@ -192,3 +192,42 @@ describe('httpRequest', () => {
     await expect(httpRequest(base)).rejects.toThrow();
   });
 });
+
+// The settle-at-most-once guard, tested directly. Through a real socket its second-failure path is only
+// reachable in a race — a timeout that errors BOTH the request and the in-flight response — so whether a
+// run covered it depended on timing, and CI's coverage gate failed on unchanged code (99.81% lines).
+describe('settleOnce', () => {
+  it('rejects with the FIRST failure and ignores every later one', () => {
+    const resolve = vi.fn();
+    const reject = vi.fn();
+    const settle = settleOnce<number>(resolve, reject);
+    const first = new Error('timed out');
+    settle.fail(first);
+    settle.fail(new Error('socket hang up'));
+    expect(reject).toHaveBeenCalledTimes(1);
+    expect(reject).toHaveBeenCalledWith(first);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve once it has failed', () => {
+    const resolve = vi.fn();
+    const reject = vi.fn();
+    const settle = settleOnce<number>(resolve, reject);
+    settle.fail(new Error('timed out'));
+    settle.succeed(200);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('resolves once and ignores a failure that arrives afterwards', () => {
+    const resolve = vi.fn();
+    const reject = vi.fn();
+    const settle = settleOnce<number>(resolve, reject);
+    settle.succeed(200);
+    settle.fail(new Error('late'));
+    settle.succeed(201);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(200);
+    expect(reject).not.toHaveBeenCalled();
+  });
+});
+

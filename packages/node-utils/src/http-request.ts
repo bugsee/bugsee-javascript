@@ -27,6 +27,33 @@ function decode(body: Buffer, encoding: string | string[] | undefined): Buffer {
 }
 
 // Typed as core's HttpTransport so drift from the contract is caught here, not only at call sites.
+/**
+ * Settle a promise at most once. Through a real socket the second failure is a RACE — a timeout destroys the
+ * request, and the in-flight response errors too — so the guard is its own unit, tested without one.
+ */
+export function settleOnce<T>(
+  resolve: (value: T) => void,
+  reject: (error: Error) => void,
+): { succeed: (value: T) => void; fail: (error: Error) => void } {
+  let settled = false;
+  return {
+    succeed(value) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    },
+    fail(error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    },
+  };
+}
+
 export const httpRequest: HttpTransport = (url: string, options: HttpRequestOptions = {}) => {
   const { method = 'GET', headers = {}, body, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
   const parsed = new URL(url);
@@ -39,14 +66,7 @@ export const httpRequest: HttpTransport = (url: string, options: HttpRequestOpti
     : { ...headers, 'accept-encoding': 'gzip, deflate' };
 
   return new Promise<HttpResponse>((resolve, reject) => {
-    let settled = false;
-    const fail = (error: Error): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      reject(error);
-    };
+    const { succeed, fail } = settleOnce(resolve, reject);
 
     const req = transport.request(parsed, { method, headers: outHeaders }, (res) => {
       const chunks: Buffer[] = [];
@@ -55,9 +75,8 @@ export const httpRequest: HttpTransport = (url: string, options: HttpRequestOpti
       res.on('end', () => {
         try {
           const decoded = decode(Buffer.concat(chunks), res.headers['content-encoding']);
-          // resolve is a no-op if a prior error/timeout already settled the promise.
-          settled = true;
-          resolve({
+          // A no-op if a prior error/timeout already settled the promise.
+          succeed({
             status: res.statusCode ?? 0,
             headers: res.headers,
             body: new Uint8Array(decoded),
