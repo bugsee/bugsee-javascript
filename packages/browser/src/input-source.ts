@@ -30,10 +30,16 @@ import { penAngles } from './pen-angles';
 // Pointer Events are supported by every browser this SDK targets. `click` is deliberately dropped: it
 // is a synthesis of a down and an up we now record directly.
 //
-// DELIBERATELY NOT CAPTURED: `pointermove`. A move stream is orders of magnitude larger than the press
-// stream and would dominate the capture ring; the viewer's gesture classification runs off the first
-// and last event of a gesture, which down/up already provide. Drags therefore render as their two
-// endpoints, not their path.
+// `pointermove` is captured for PEN gestures only. A move stream is orders of magnitude larger than the
+// press stream and would dominate the capture ring, and for a mouse or a finger the viewer's gesture
+// classification runs off the first and last event, which down/up already provide — so those drags still
+// render as their two endpoints. A pen stroke is different: its pressure and tilt vary along the path,
+// and that path is what the viewer's pen glyph draws. A pen move is recorded Android-canonically
+// (`InputEventGenerationHelper.registerMoveEvent`): only while the gesture is in contact (never a
+// hovering pen), only when something recorded changed, at the browser's own frame-aligned pointermove
+// rate. Its identity lives on the gesture's `begin`, so a move carries no target and no button. A gesture
+// that began on a MASKED target records no moves at all: a pen path there is handwriting — a signature,
+// a PIN drawn on a pad.
 //
 // `keyup` is a DELIBERATE divergence from the mobile SDKs, not an oversight: a press is recorded once, on
 // the way down. Android emits both edges because it has them for free; on the web a keyup doubles the
@@ -43,6 +49,8 @@ import { penAngles } from './pen-angles';
 // Emitted per interaction:
 //   pointerdown   → { type:'begin', id, x, y, force, majorRadius?, minorRadius?, altitudeAngle?,
 //                     azimuthAngle?, tool, button, view* }   (the two angles: pen only — see pen-angles.ts)
+//   pointermove   → { type:'move',  id, x, y, force, majorRadius?, minorRadius?, altitudeAngle?,
+//                     azimuthAngle?, tool:Pen }   (pen gestures only — see above)
 //   pointerup     → { type:'end',   …the same, closing the gesture id }
 //   pointercancel → { type:'end',   …the gesture was aborted by the browser }
 //   keydown       → { type:'keydown', tool:Key, id, key, keyCode, metaState, view* }
@@ -198,7 +206,24 @@ export interface BrowserInputEnv {
 // preventDefault. We never call stopPropagation/preventDefault — the event reaches the app untouched.
 const ADD_OPTIONS: AddEventListenerOptions = { capture: true, passive: true };
 const REMOVE_OPTIONS: EventListenerOptions = { capture: true };
-const INTERACTIONS = ['pointerdown', 'pointerup', 'pointercancel', 'keydown'] as const;
+const INTERACTIONS = [
+  'pointerdown',
+  'pointermove',
+  'pointerup',
+  'pointercancel',
+  'keydown',
+] as const;
+
+/** The fields whose change makes a pen move worth recording (everything a move carries but its identity). */
+const MOVE_FIELDS = [
+  'x',
+  'y',
+  'force',
+  'majorRadius',
+  'minorRadius',
+  'altitudeAngle',
+  'azimuthAngle',
+] as const;
 
 /** `pointerType` → the wire tool. An unrecognised (but present) type is a real device we cannot name. */
 const TOOL_BY_POINTER_TYPE: Readonly<Record<string, InputTool>> = {
@@ -231,6 +256,29 @@ const isTypedText = (e: KeyboardEvent): boolean => {
   return !shortcut;
 };
 
+/** The contact fields every pointer stage carries: position, pressure, geometry, and (pen) orientation. */
+function contact(e: PointerEventLike, tool: InputTool): Partial<InputEventDetail> {
+  // Contact geometry is a finger/stylus property. A mouse reports a nominal 1x1 box, which would
+  // serialise as a meaningless 0.5-pixel radius, so it is omitted for a mouse — mobile-canonical
+  // (Android records 0 there).
+  const geometry =
+    tool !== InputTool.Mouse &&
+    typeof e.width === 'number' &&
+    typeof e.height === 'number' &&
+    Number.isFinite(e.width) &&
+    Number.isFinite(e.height)
+      ? { majorRadius: e.width / 2, minorRadius: e.height / 2 }
+      : {};
+  return {
+    ...coord(e.clientX, 'x'),
+    ...coord(e.clientY, 'y'),
+    ...(typeof e.pressure === 'number' && Number.isFinite(e.pressure) ? { force: e.pressure } : {}),
+    ...geometry,
+    // Stylus orientation is a pen property; mouse and touch entries stay exactly as they were.
+    ...(tool === InputTool.Pen ? penAngles(e) : {}),
+  };
+}
+
 interface PointerEventLike {
   pointerId?: unknown;
   pointerType?: unknown;
@@ -253,6 +301,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   readonly #mask: string;
   /** Open gestures: pointerId → the wire `id` its stages share. */
   readonly #openGestures = new Map<unknown, string>();
+  /** Open PEN gestures whose moves are recorded: pointerId → the last entry emitted for that gesture. */
+  readonly #penPaths = new Map<unknown, InputEventDetail>();
   #nextGestureId = 1;
 
   // Each handler is wrapped by #dispatch: it builds the entry (returning undefined to skip) inside a
@@ -261,6 +311,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   // app's own dispatch. A build throw drops the whole event — fail-safe, never a partial/unmasked leak.
   readonly #handlers: Record<(typeof INTERACTIONS)[number], (event: Event) => void> = {
     pointerdown: this.#dispatch((event) => this.#pointer(event, 'begin')),
+    pointermove: this.#dispatch((event) => this.#penMove(event)),
     pointerup: this.#dispatch((event) => this.#pointer(event, 'end')),
     pointercancel: this.#dispatch((event) => this.#pointer(event, 'end')),
     keydown: this.#dispatch((event) => {
@@ -316,32 +367,37 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #pointer(event: Event, stage: 'begin' | 'end'): InputEventDetail {
     const e = event as PointerEventLike;
     const tool = toolFor(e.pointerType);
-    // Contact geometry is a finger/stylus property. A mouse reports a nominal 1x1 box, which would
-    // serialise as a meaningless 0.5-pixel radius, so it is omitted for a mouse — mobile-canonical
-    // (Android records 0 there).
-    const geometry =
-      tool !== InputTool.Mouse &&
-      typeof e.width === 'number' &&
-      typeof e.height === 'number' &&
-      Number.isFinite(e.width) &&
-      Number.isFinite(e.height)
-        ? { majorRadius: e.width / 2, minorRadius: e.height / 2 }
-        : {};
-    return {
+    const desc = describeTarget(e.target, this.#mask);
+    const detail: InputEventDetail = {
       id: this.#gestureId(e.pointerId, stage),
       type: stage,
-      ...coord(e.clientX, 'x'),
-      ...coord(e.clientY, 'y'),
-      ...(typeof e.pressure === 'number' && Number.isFinite(e.pressure)
-        ? { force: e.pressure }
-        : {}),
-      ...geometry,
-      // Stylus orientation is a pen property; mouse and touch entries stay exactly as they were.
-      ...(tool === InputTool.Pen ? penAngles(e) : {}),
+      ...contact(e, tool),
       tool,
       ...(typeof e.button === 'number' ? { button: e.button } : {}),
-      ...targetFields(describeTarget(e.target, this.#mask)),
+      ...targetFields(desc),
     };
+    if (stage === 'end') this.#penPaths.delete(e.pointerId);
+    else if (tool === InputTool.Pen && desc.masked !== true)
+      this.#penPaths.set(e.pointerId, detail);
+    return detail;
+  }
+
+  /** A move of an open, unmasked pen gesture — or `undefined` when there is none, or nothing changed. */
+  #penMove(event: Event): InputEventDetail | undefined {
+    // Every mouse move in the document lands here, so the common case must cost one size check.
+    if (this.#penPaths.size === 0) return undefined;
+    const e = event as PointerEventLike;
+    const last = this.#penPaths.get(e.pointerId);
+    if (last === undefined || toolFor(e.pointerType) !== InputTool.Pen) return undefined;
+    const detail: InputEventDetail = {
+      id: last.id,
+      type: 'move',
+      ...contact(e, InputTool.Pen),
+      tool: InputTool.Pen,
+    };
+    if (MOVE_FIELDS.every((field) => detail[field] === last[field])) return undefined;
+    this.#penPaths.set(e.pointerId, detail);
+    return detail;
   }
 
   #dispatch(build: (event: Event) => InputEventDetail | undefined): (event: Event) => void {
@@ -368,6 +424,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     // Gestures cannot span a deactivation: their `up` will never be observed, so holding the ids would
     // leak one Map entry per pointer and let a stale id resurface on the next activation.
     this.#openGestures.clear();
+    this.#penPaths.clear();
   }
 }
 

@@ -729,7 +729,7 @@ Entry shape — the viewer's `RecordingTouchEvent`, so web and mobile render thr
 | --- | --- |
 | `timestamp` | wall-clock ms |
 | `id` | groups the stages of one gesture |
-| `type` | `begin` \| `move` \| `end` for device input; the semantic name for `tool: Other` |
+| `type` | `begin` \| `move` \| `end` for device input; the semantic name for `tool: Other`. Web: `move` is recorded for PEN gestures only (in contact, on change; none for a gesture that began on a masked target) |
 | `x`, `y` | viewport CSS pixels (rounded) |
 | `force` | normalised pressure 0..1 |
 | `majorRadius`, `minorRadius` | contact geometry (touch/pen only) |

@@ -231,7 +231,7 @@ function fakeTarget() {
   };
 }
 
-const ALL_INTERACTIONS = ['pointerdown', 'pointerup', 'pointercancel', 'keydown'];
+const ALL_INTERACTIONS = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'keydown'];
 /** The state-change DOM signals this source deliberately does NOT observe (they are breadcrumbs). */
 const NOT_INPUT = ['change', 'submit', 'focusin'];
 
@@ -273,7 +273,14 @@ describe('createBrowserInputSource', () => {
   it('does NOT listen for click / mousedown / touchstart (superseded by pointer events)', () => {
     const target = fakeTarget();
     activate({ target });
-    for (const type of ['click', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'pointermove']) {
+    for (const type of [
+      'click',
+      'mousedown',
+      'mouseup',
+      'touchstart',
+      'touchend',
+      'pointerrawupdate',
+    ]) {
       expect(target.count(type)).toBe(0);
     }
   });
@@ -373,6 +380,191 @@ describe('createBrowserInputSource', () => {
     expect(events[0]?.minorRadius).toBe(10);
     expect(events[1]?.majorRadius).toBeUndefined();
     expect(events[1]?.minorRadius).toBeUndefined();
+  });
+
+  // ---- pen moves ----
+  // A pen stroke is its path: pressure and tilt vary along it, and the viewer's pen glyph draws that. So a
+  // PEN gesture's `pointermove`s are recorded — Android-canonical: a `move` whenever something about the
+  // contact changed (InputEventGenerationHelper.registerMoveEvent), at the browser's own frame-aligned
+  // pointermove rate. Mouse and touch moves stay unrecorded; they are the volume the header warns about.
+  describe('pen moves', () => {
+    const pen = (over: Record<string, unknown> = {}) =>
+      ptr({
+        pointerType: 'pen',
+        width: 2,
+        height: 2,
+        altitudeAngle: 1,
+        azimuthAngle: 2,
+        ...over,
+      });
+
+    it('records each move of an open pen gesture under that gesture id, without target or button', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen({ clientX: 20.4, clientY: 40.6, pressure: 0.7, button: -1 }));
+      target.emit('pointermove', pen({ clientX: 30, clientY: 50, altitudeAngle: 0.5 }));
+      target.emit('pointerup', pen({ clientX: 30, clientY: 50 }));
+      expect(events.map((e) => [e.type, e.id])).toStrictEqual([
+        ['begin', '1'],
+        ['move', '1'],
+        ['move', '1'],
+        ['end', '1'],
+      ]);
+      expect(events[1]).toStrictEqual({
+        id: '1',
+        type: 'move',
+        x: 20,
+        y: 41,
+        force: 0.7,
+        majorRadius: 1,
+        minorRadius: 1,
+        altitudeAngle: 1,
+        azimuthAngle: 2,
+        tool: InputTool.Pen,
+      });
+      expect(events[2]).toMatchObject({ x: 30, y: 50, altitudeAngle: 0.5, azimuthAngle: 2 });
+    });
+
+    it.each(['mouse', 'touch'])('records no moves for a %s gesture', (pointerType) => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr({ pointerType }));
+      target.emit('pointermove', ptr({ pointerType, clientX: 99 }));
+      target.emit('pointerup', ptr({ pointerType, clientX: 99 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end']);
+    });
+
+    it('records no moves for a HOVERING pen (no gesture open), nor after the gesture ends or is cancelled', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointermove', pen({ clientX: 1 })); // hover, before any contact
+      target.emit('pointerdown', pen());
+      target.emit('pointerup', pen());
+      target.emit('pointermove', pen({ clientX: 2 })); // hover after lifting
+      target.emit('pointerdown', pen({ pointerId: 2 }));
+      target.emit('pointercancel', pen({ pointerId: 2 }));
+      target.emit('pointermove', pen({ pointerId: 2, clientX: 3 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end', 'begin', 'end']);
+    });
+
+    it('skips a move that changes nothing recorded, measured against the last entry of that gesture', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen()); // identical to the begin
+      target.emit('pointermove', pen({ clientX: 12.2 })); // rounds to the same x
+      target.emit('pointermove', pen({ tiltX: 30 })); // L3 angles win, so nothing recorded changed
+      target.emit('pointermove', pen({ pressure: 0.6 })); // force changed
+      target.emit('pointermove', pen({ pressure: 0.6 })); // same as the previous MOVE
+      expect(events.map((e) => [e.type, e.force])).toStrictEqual([
+        ['begin', 0.5],
+        ['move', 0.6],
+      ]);
+    });
+
+    it.each([
+      ['x', { clientX: 13 }],
+      ['y', { clientY: 35 }],
+      ['force', { pressure: 0.51 }],
+      ['majorRadius', { width: 4 }],
+      ['minorRadius', { height: 4 }],
+      ['altitudeAngle', { altitudeAngle: 1.01 }],
+      ['azimuthAngle', { azimuthAngle: 2.01 }],
+    ])('records a move when only %s changed', (field, over) => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen(over));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'move']);
+      expect(events[1]?.[field as keyof InputEventDetail]).not.toStrictEqual(
+        events[0]?.[field as keyof InputEventDetail],
+      );
+    });
+
+    it('records a move when the angles disappear, and when they return', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen({ altitudeAngle: Math.PI / 2, azimuthAngle: 0 })); // no-data defaults
+      target.emit('pointermove', pen());
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'move', 'move']);
+      expect(events[1]).not.toHaveProperty('altitudeAngle');
+      expect(events[2]).toMatchObject({ altitudeAngle: 1, azimuthAngle: 2 });
+    });
+
+    it('never mixes pointer types that share a pointerId: a mouse move is not a pen move, nor the reverse', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen({ pointerId: 1 }));
+      target.emit('pointermove', ptr({ pointerId: 1, pointerType: 'mouse', clientX: 90 }));
+      target.emit('pointerup', pen({ pointerId: 1 }));
+      target.emit('pointerdown', ptr({ pointerId: 5, pointerType: 'mouse' }));
+      target.emit('pointermove', pen({ pointerId: 5, clientX: 91 }));
+      expect(events.map((e) => [e.type, e.tool])).toStrictEqual([
+        ['begin', InputTool.Pen],
+        ['end', InputTool.Pen],
+        ['begin', InputTool.Mouse],
+      ]);
+    });
+
+    it('keeps concurrent pens apart: each move joins, and is compared against, its own gesture', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen({ pointerId: 7, clientX: 100 }));
+      target.emit('pointerdown', pen({ pointerId: 8, clientX: 200 }));
+      target.emit('pointermove', pen({ pointerId: 7, clientX: 200 })); // equals pen 8's state, not pen 7's
+      target.emit('pointermove', pen({ pointerId: 8, clientX: 200 })); // unchanged for pen 8
+      expect(events.map((e) => [e.type, e.id, e.x])).toStrictEqual([
+        ['begin', '1', 100],
+        ['begin', '2', 200],
+        ['move', '1', 200],
+      ]);
+    });
+
+    // A pen path over a secret field or an app-hidden subtree is handwriting — a signature, a PIN
+    // drawn on a pad. The press itself stays as before (its target collapsed to masked); the path does not.
+    it('records no moves for a gesture that began on a masked target', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen({ target: el({ tag: 'canvas', masked: true }) }));
+      target.emit('pointermove', pen({ clientX: 50, target: el({ tag: 'canvas', masked: true }) }));
+      target.emit('pointerup', pen({ clientX: 50, target: el({ tag: 'canvas', masked: true }) }));
+      target.emit(
+        'pointerdown',
+        pen({ pointerId: 2, target: el({ tag: 'input', type: 'password' }) }),
+      );
+      target.emit('pointermove', pen({ pointerId: 2, clientX: 60 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end', 'begin']);
+    });
+
+    it('forgets move state on deactivate, so a re-activation records no moves for a stale gesture', () => {
+      const target = fakeTarget();
+      const source = createBrowserInputSource({ target });
+      const events: InputEventDetail[] = [];
+      const off = source.onAny((_s, e) => events.push(e));
+      target.emit('pointerdown', pen());
+      off();
+      const off2 = source.onAny((_s, e) => events.push(e));
+      target.emit('pointermove', pen({ clientX: 70 }));
+      off2();
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
+    });
+
+    it('never lets a hostile move event reach the app', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen());
+      const hostile = {
+        pointerType: 'pen',
+        pointerId: 1,
+        get clientX(): number {
+          throw new Error('instrumented event');
+        },
+      };
+      expect(() => target.emit('pointermove', hostile)).not.toThrow();
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
+    });
   });
 
   it('records stylus altitude/azimuth on every pen stage (begin, end, cancel)', () => {

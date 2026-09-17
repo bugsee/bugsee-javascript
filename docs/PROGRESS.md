@@ -1010,8 +1010,24 @@ which a viewer cannot tell from a pen held upright pointing right — and omitti
 reports exactly π/2 + 0 (and tilt 0/0) for a pen with no tilt, and its angles for tilt 30/−20 are
 bit-identical to the fallback's conversion (pinned as a test vector). Tests pin cardinal/diagonal/flat/boundary conversions, an independent
 pen-axis geometry check over a grid of tilts, L3 preference, fallback, and every omission path; 17
-mutations caught. Still open (separate decision, raised in the issue): `pointermove` is not captured, so a
-web pen gesture carries angles at its two endpoints only.
+mutations caught. (The endpoints-only limitation this entry originally ended on is closed by the next
+entry.)
+
+**Follow-up (same day): pen strokes carry their path.** `browser/src/input-source.ts` now listens to
+`pointermove` and records `type: 'move'` entries for PEN gestures only — mouse and touch drags stay two
+endpoints, since their moves are the volume that kept `pointermove` out originally. Android-canonical
+(`InputEventGenerationHelper.registerMoveEvent`): only while the pen is in contact (a hovering pen records
+nothing), only when a recorded field changed (`x`/`y` rounded, `force`, radii, the two angles — compared
+against the gesture's last entry), at the browser's own frame-aligned pointermove rate, no time throttle. A
+move joins its gesture's `id` and carries no target or button (identity lives on `begin`). **Privacy:** a
+gesture that BEGAN on a masked target (shared sensitive-input definition, or `[data-bugsee-hidden]`) records
+no moves — a pen path there is handwriting (a signature, a PIN drawn on a pad); its press/release stay as
+before, target collapsed to masked. Mouse `pointermove`s land in the same listener, so its common case is a
+single `Map.size` check. MEASURED on real Chromium 151 with the real source bundled in and a CDP pen
+stroke: hover → nothing; stroke → begin + one move per changed sample with pressure/tilt varying, a repeated
+identical sample skipped; stroke on a `data-bugsee-hidden` element → begin/end only; mouse drag → no moves.
+12 new tests; 11 mutations — 9 caught, 2 survivors are equivalent (the `size === 0` fast path; minting the
+move id via the open-gesture map, which always returns the same id).
 
 ### 2026-09-16 — `@bugsee/util` sha256 is WebCrypto-only; the node platform injects its digest
 
