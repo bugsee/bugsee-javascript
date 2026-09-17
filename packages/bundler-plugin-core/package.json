@@ -24,7 +24,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/bugsee-cli": "^0.7.2",
+    "@bugsee/bugsee-cli": "^0.7.8",
     "unplugin": "^2.3.10"
   },
   "devDependencies": {

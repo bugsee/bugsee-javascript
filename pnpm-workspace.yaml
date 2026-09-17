@@ -20,4 +20,4 @@ allowBuilds:
   workerd: true
 
 minimumReleaseAgeExclude:
-  - '@bugsee/bugsee-cli@0.7.2'
+  - '@bugsee/bugsee-cli@0.7.8'

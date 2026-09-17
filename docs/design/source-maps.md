@@ -30,8 +30,9 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
   zstd zip, and runs the two-stage `POST /v2/apps/{token}/symbols {uuid,version,build,hash}` → presigned `PUT`,
   `16004`-idempotent. **Before v0.7.8 it was not:** the appserver nests `16004` in its error envelope and the CLI
   matched only a top-level `code`, so an already-uploaded map failed the whole batch (exit 30), and a CSS map in the
-  directory did too (exit 11). v0.7.8 (bugsee-cli #35) skips both and continues; `@bugsee/bundler-plugin-core`'s
-  `^0.7.2` range picks it up.
+  directory did too (exit 11). v0.7.8 (bugsee-cli #35) skips both and continues, and
+  `@bugsee/bundler-plugin-core` now REQUIRES it (`^0.7.8`): its `deleteMaps` step runs only after a fully
+  successful upload, which an older CLI never reports for a real web build.
 - Global `--app-token` (env `BUGSEE_APP_TOKEN`) + `--endpoint` (env `BUGSEE_ENDPOINT`, default `https://api.bugsee.com`).
 
 **Decision (D0): the JS side does NOT reimplement any of this.** No JS upload/discovery/pack/inject. The plugins
