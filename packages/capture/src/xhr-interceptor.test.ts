@@ -389,6 +389,19 @@ describe('createXhrInterceptor — request decorators (the transformer seam)', (
     expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 's', traceparent: '00-POST' }); // captured matches
   });
 
+  it("a THROWING decorator never fails the app's send(): the request goes out untouched", () => {
+    const { Xhr, ic, events } = setupD();
+    ic.addRequestDecorator(() => {
+      throw new Error('decorator bug');
+    });
+    const xhr = new Xhr();
+    xhr.open('get', 'https://api/x');
+    xhr.setRequestHeader('authorization', 's');
+    expect(() => xhr.send()).not.toThrow();
+    expect(xhr.reqHeaders).toEqual({ authorization: 's' });
+    expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 's' });
+  });
+
   it('passes the request url/method/headers to the decorator', () => {
     const { Xhr, ic } = setupD();
     const seen: unknown[] = [];

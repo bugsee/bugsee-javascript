@@ -1141,9 +1141,16 @@ enterWith-linger live-share (pre-existing, narrowed); Proxy-context reads (no re
 
 **Follow-ups (out of scope, pre-existing).** `core/src/client.ts:543` (`submitReport`'s unguarded
 `contextProvider?.getCurrent()` — the capture path is already guarded by the aggregator's
-`route()` try/catch, only the report path wants a dedicated pass); defense-in-depth for throwing
+`route()` try/catch, only the report path wants a dedicated pass); ~~defense-in-depth for throwing
 THIRD-PARTY request decorators (`capture/src/request-decorator.ts` — fails open into the app's
-fetch today; needs its own review before changing shared capture behavior).
+fetch today; needs its own review before changing shared capture behavior).~~ **CLOSED 2026-09-17:**
+reviewed — it was not only third-party: our own propagation decorator reads the active span through
+the performance extension, and a throw from any decorator failed the app's `fetch()` (sync throw) or
+`xhr.send()`. The registry now isolates each decorator (a throw, or a throw while READING its result,
+contributes nothing — no partial set) and drops headers the platform rejects synchronously (measured
+on Chromium 151: invalid token names, CR/LF/NUL, non-ByteString values), runs over a snapshot of the
+decorator list, and swallows like every other internal capture failure. With nothing applicable the
+patched fetch still passes the caller's `init` through by identity.
 
 **~~Pre-existing red, not this wave.~~ CORRECTED — see R-8.** `pnpm lint` **exits 0**: `biome check .`
 reports `Found 24 warnings` and no errors. `noExplicitAny`/`noNonNullAssertion` are warn-level under

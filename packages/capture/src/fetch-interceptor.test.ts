@@ -797,6 +797,19 @@ describe('createFetchInterceptor — request decorators (the transformer seam)',
     expect(events[0]?.event.custom?.headers).toEqual({ authorization: 's', traceparent: '00-13' }); // captured matches the wire
   });
 
+  it("a THROWING decorator never fails the app's fetch: the request goes out untouched", async () => {
+    const { target, call, received } = recording();
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    ic.addRequestDecorator(() => {
+      throw new Error('decorator bug');
+    });
+    const init = { method: 'GET', headers: { a: '1' } };
+    await expect(call('https://api/x', init)).resolves.toBeDefined();
+    expect(received()?.init).toBe(init); // nothing applicable → the SAME object, byte-identical passthrough
+    expect(events[0]?.event.custom?.headers).toEqual({ a: '1' });
+  });
+
   it('passes the request url/method/headers to the decorator', async () => {
     const seen: unknown[] = [];
     const { target, call } = recording();

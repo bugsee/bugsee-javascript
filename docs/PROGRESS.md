@@ -996,6 +996,21 @@ against the assertion itself, not only against the implementation.**
   rolling-window rotation are both ruled out by measurement. No fix was shipped because it could not be
   reproduced; the assertion now prints the profile window, sample count and busiest frames on failure.
 
+### 2026-09-17 — A request decorator can no longer break the app's request
+
+`capture/src/request-decorator.ts` — the transformer seam the fetch and XHR interceptors run INLINE,
+before the app's request is sent. A throwing decorator used to propagate out of the patched call: the
+app's `fetch()` threw synchronously and `xhr.send()` threw, so the request never went out. That was not
+only a third-party risk — the built-in trace-propagation decorator reads the active span through the
+performance extension. The registry now runs each decorator isolated: a throw, or a throw while its
+result is being READ (hostile getter / Proxy), contributes nothing rather than a partial set; a non-object
+result is ignored; and headers the platform REJECTS synchronously are dropped entry by entry — names that
+are not an RFC 9110 token, values containing CR/LF/NUL or any code unit above U+00FF (measured on
+Chromium 151: `new Headers` throws TypeError and `setRequestHeader` SyntaxError for exactly these; tabs,
+obs-text and other controls are accepted). The run iterates a snapshot, so a decorator unsubscribing
+itself cannot skip a neighbour. Failures are swallowed like every other internal capture failure. Tests
+at the registry and through both interceptors; 8 mutations, all caught.
+
 ### 2026-09-16 — Stylus tilt and direction on pen input (issue #6)
 
 `InputEvent` (`core/src/events.ts`) gains `altitudeAngle` / `azimuthAngle` — radians, iOS's names and
