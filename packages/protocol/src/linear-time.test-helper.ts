@@ -82,6 +82,16 @@ const ROUNDS = 3;
 const MIN_SAMPLE_MS = 25;
 
 /**
+ * The ceiling on a MATCHED small-side batch (see `measurePair`).
+ *
+ * The small side is batched to last as long as one large call, but a large call can run for seconds
+ * under coverage on the runner (1.6 s measured), and matching that in full across three rounds and
+ * several shapes would push a guard past its 30 s timeout. A second still spans the scheduler's core
+ * moves, which is the noise being matched.
+ */
+const MATCHED_SAMPLE_CAP_MS = 1_000;
+
+/**
  * Refuse to spin forever if the work never accumulates time. A real clock always advances, so this
  * only fires for a stopped one — but without it, `MIN_SAMPLE_MS / 0` is Infinity and the inner loop
  * becomes an unbreakable spin. `clock` is injectable purely so that case can be tested rather than
@@ -105,7 +115,11 @@ const MAX_ITERATIONS = 1e8;
  * Work that already exceeds the floor in a single call — which is every BROKEN case this guards
  * against — runs exactly once, so a quadratic defect does not multiply into a timeout.
  */
-export const timePerCall = (fn: () => void, clock: () => number = now): number => {
+export const timePerCall = (
+  fn: () => void,
+  clock: () => number = now,
+  minSampleMs: number = MIN_SAMPLE_MS,
+): number => {
   let iterations = 1;
   for (let step = 0; step < MAX_SCALE_STEPS; step += 1) {
     const started = clock();
@@ -113,7 +127,7 @@ export const timePerCall = (fn: () => void, clock: () => number = now): number =
       fn();
     }
     const elapsed = clock() - started;
-    if (elapsed >= MIN_SAMPLE_MS) {
+    if (elapsed >= minSampleMs) {
       return elapsed / iterations;
     }
     // Scale toward the floor, but always advance: a zero reading would otherwise multiply by zero.
@@ -123,17 +137,24 @@ export const timePerCall = (fn: () => void, clock: () => number = now): number =
     iterations = Math.min(
       MAX_ITERATIONS,
       elapsed > 0
-        ? Math.max(iterations + 1, Math.ceil(iterations * (MIN_SAMPLE_MS / elapsed)))
+        ? Math.max(iterations + 1, Math.ceil(iterations * (minSampleMs / elapsed)))
         : iterations * 8,
     );
   }
   throw new Error(
-    `work never accumulated ${MIN_SAMPLE_MS} ms of runtime — it may have been optimized away`,
+    `work never accumulated ${minSampleMs} ms of runtime — it may have been optimized away`,
   );
 };
 
 /**
  * Measure both sizes over `ROUNDS` INTERLEAVED rounds and keep the best of each.
+ *
+ * DURATION-MATCHED: each round times the large side first, then batches the small side until it has
+ * run about as long as ONE large call (never less than `MIN_SAMPLE_MS`, never more than
+ * `MATCHED_SAMPLE_CAP_MS`). Before this, a large sample that was a single 1.6 s call on the CI runner
+ * straddled the scheduler moving the thread between performance and efficiency cores, while the 25 ms
+ * small batch usually did not — so the noise inflated ONLY the large side, and healthy XML work read
+ * 65.5 against a ceiling of 64 (it measures ~16 locally). Equal-length samples see the same noise.
  *
  * Interleaved, not one size and then the other: the failure this replaced measured three small runs
  * and then three large ones, so a throttling episode or a core migration between the two blocks
@@ -144,12 +165,17 @@ export const timePerCall = (fn: () => void, clock: () => number = now): number =
 export const measurePair = (
   small: () => void,
   large: () => void,
+  clock: () => number = now,
 ): { small: number; large: number } => {
   let bestSmall = Number.POSITIVE_INFINITY;
   let bestLarge = Number.POSITIVE_INFINITY;
   for (let round = 0; round < ROUNDS; round += 1) {
-    bestSmall = Math.min(bestSmall, timePerCall(small));
-    bestLarge = Math.min(bestLarge, timePerCall(large));
+    // Per-call cost of the large side; when it already exceeds the floor it ran ONCE, so this is also
+    // how long that single sample lasted.
+    const largeCost = timePerCall(large, clock);
+    bestLarge = Math.min(bestLarge, largeCost);
+    const matched = Math.min(MATCHED_SAMPLE_CAP_MS, Math.max(MIN_SAMPLE_MS, largeCost));
+    bestSmall = Math.min(bestSmall, timePerCall(small, clock, matched));
   }
   return { small: bestSmall, large: bestLarge };
 };

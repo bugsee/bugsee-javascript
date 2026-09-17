@@ -81,6 +81,37 @@ describe('timePerCall', () => {
     expect(calls).toBe(1);
   });
 
+  it('keeps batching until the batch reaches the floor it is given', () => {
+    // A virtual clock: each call costs exactly 1 ms, so the batch sizes are exact.
+    let t = 0;
+    let calls = 0;
+    const work = (): void => {
+      calls += 1;
+      t += 1;
+    };
+
+    expect(timePerCall(work, () => t)).toBe(1);
+    expect(calls).toBe(1 + 25); // the default 25 ms floor: a 1-call probe, then a 25-call batch
+
+    calls = 0;
+    expect(timePerCall(work, () => t, 100)).toBe(1);
+    expect(calls).toBe(1 + 100);
+
+    // A single call already past the DEFAULT floor but short of the given one is not trusted either.
+    let slowCalls = 0;
+    expect(
+      timePerCall(
+        () => {
+          slowCalls += 1;
+          t += 30;
+        },
+        () => t,
+        100,
+      ),
+    ).toBe(30);
+    expect(slowCalls).toBe(1 + 4);
+  });
+
   it('escapes rather than spinning when the clock never advances', () => {
     // `MIN_SAMPLE_MS / 0` is Infinity, and `for (i = 0; i < Infinity; i += 1)` is an unbreakable
     // SYNCHRONOUS spin that no test timeout can interrupt. A stopped clock is the only way to reach
@@ -120,6 +151,66 @@ describe('measurePair', () => {
 
     // Segregated ordering puts every 'small' before every 'large'; interleaved cannot.
     expect(order.lastIndexOf('small')).toBeGreaterThan(order.indexOf('large'));
+  });
+
+  // THE CI FLAKE this answers: a large sample that is ONE long call (1.6 s on the runner) straddles the
+  // scheduler moving the thread between performance and efficiency cores, while a 25 ms small batch
+  // usually does not — so noise inflated only the large side (ratio 65.5 for work that measures ~16
+  // locally). Batching the small side to last as long as one large call exposes both to the same noise.
+  it('batches the SMALL side to last as long as one large call, so both see the same noise', () => {
+    let t = 0;
+    let smallCalls = 0;
+    let largeCalls = 0;
+    const result = measurePair(
+      () => {
+        smallCalls += 1;
+        t += 1; // 1 ms a call
+      },
+      () => {
+        largeCalls += 1;
+        t += 200; // one call already exceeds the floor, so it runs once per round
+      },
+      () => t,
+    );
+
+    expect(result).toStrictEqual({ small: 1, large: 200 });
+    expect(largeCalls).toBe(3);
+    // Each round: a 1-call probe, then a batch reaching 200 ms — not the 25 ms default floor.
+    expect(smallCalls).toBe(3 * (1 + 200));
+  });
+
+  it('never matches BELOW the default floor when the large side is cheap', () => {
+    let t = 0;
+    let smallCalls = 0;
+    measurePair(
+      () => {
+        smallCalls += 1;
+        t += 1;
+      },
+      () => {
+        t += 2; // cheap: batched to the 25 ms floor, a per-call cost of 2 ms
+      },
+      () => t,
+    );
+
+    expect(smallCalls).toBe(3 * (1 + 25));
+  });
+
+  it('caps that matched batch, so a very slow large call cannot stall the suite', () => {
+    let t = 0;
+    let smallCalls = 0;
+    measurePair(
+      () => {
+        smallCalls += 1;
+        t += 1;
+      },
+      () => {
+        t += 5_000;
+      },
+      () => t,
+    );
+
+    expect(smallCalls).toBe(3 * (1 + 1_000));
   });
 
   it('keeps the CHEAPEST reading of each size, not the dearest', () => {
