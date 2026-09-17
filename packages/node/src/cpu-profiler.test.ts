@@ -213,14 +213,42 @@ describe('createCpuProfiler', () => {
     });
   });
 
-  it('uses node:inspector by default and profiles the real process', async () => {
-    // No injected session → exercises defaultCreateSession against the live node:inspector.
-    const profiler = createCpuProfiler({ samplingIntervalMicros: 10_000 });
-    await profiler.start();
-    expect(profiler.running).toBe(true);
-    const profile = await profiler.stop();
-    expect(profile).toBeDefined();
-    expect(Array.isArray(profile?.nodes)).toBe(true); // a real V8 .cpuprofile object
-    expect(profiler.running).toBe(false);
+  // A REAL V8 profile, taken in a CHILD process. Never in this one: vitest's v8 coverage runs on its own
+  // inspector session in this isolate, and connecting + disconnecting a Profiler session here reset the
+  // isolate's precise-coverage mode. Measured on Node 22.20: with this test in-process, cpu-profiler.ts
+  // intermittently reported 26% lines (1 run in 3 locally, twice in a row on CI) and even the "passing"
+  // runs had lost its branch data; with it moved out, 6/6 runs reported 100%. (launch.test.ts already
+  // keeps a fake profiler for exactly this reason.)
+  it('profiles a real process through the live node:inspector (in a child process)', async () => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { fileURLToPath, pathToFileURL } = await import('node:url');
+    const source = pathToFileURL(fileURLToPath(new URL('./cpu-profiler.ts', import.meta.url))).href;
+    const script = `
+      import { createCpuProfiler } from ${JSON.stringify(source)};
+      const profiler = createCpuProfiler({ samplingIntervalMicros: 10_000 });
+      await profiler.start();
+      const runningAfterStart = profiler.running;
+      let x = 0;
+      for (let i = 0; i < 2e6; i++) x += Math.sqrt(i);
+      const profile = await profiler.stop();
+      console.log(JSON.stringify({
+        runningAfterStart,
+        runningAfterStop: profiler.running,
+        nodes: Array.isArray(profile?.nodes) ? profile.nodes.length : -1,
+        samples: Array.isArray(profile?.samples) ? profile.samples.length : -1,
+        x: x > 0,
+      }));
+    `;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['--experimental-strip-types', '--no-warnings', '--input-type=module', '--eval', script],
+      { timeout: 25_000 },
+    );
+    const result = JSON.parse(stdout.trim().split('\n').pop() as string);
+    expect(result.runningAfterStart).toBe(true);
+    expect(result.runningAfterStop).toBe(false);
+    expect(result.nodes).toBeGreaterThan(0); // a real V8 .cpuprofile, not an empty stub
+    expect(result.samples).toBeGreaterThan(0);
   });
 });
