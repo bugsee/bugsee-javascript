@@ -230,4 +230,3 @@ describe('settleOnce', () => {
     expect(reject).not.toHaveBeenCalled();
   });
 });
-
