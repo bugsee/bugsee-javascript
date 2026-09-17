@@ -21,11 +21,17 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
 - **`bugsee-cli sourcemaps inject <dir…> [--dry-run]`** — injects debug-IDs: appends `//# debugId=<uuid>` to each
   `.js`/`.cjs`/`.mjs`, embeds `debug_id`+`debugId` into each `.map`, and emits the runtime stub
   `globalThis._bugseeDebugIds[Error().stack] = <uuid>`. The debug-ID is a **deterministic UUIDv5 content hash** →
-  reproducible → idempotent.
+  reproducible → idempotent. **Since v0.7.8** the hash covers the bundle AND its paired map (bundle-only when it has
+  none), and inject re-keys a stamped bundle whose map came back regenerated (webpack `[contenthash]` keeps the JS
+  on disk and re-emits only the map). The server dedups source maps by id alone, so a bundle-only id kept a STALE map
+  once a duplicate stopped being an error.
 - **`bugsee-cli [--app-token <t>] [--endpoint <url>] debug-files upload <dir…> --type sourcemaps --version <v>
   --build <b> [--uuid <id>] [--no-zstd] [--force] [--dry-run]`** — discovers `.map`s, reads the debug-ID + sha1, packs a
   zstd zip, and runs the two-stage `POST /v2/apps/{token}/symbols {uuid,version,build,hash}` → presigned `PUT`,
-  `16004`-idempotent.
+  `16004`-idempotent. **Before v0.7.8 it was not:** the appserver nests `16004` in its error envelope and the CLI
+  matched only a top-level `code`, so an already-uploaded map failed the whole batch (exit 30), and a CSS map in the
+  directory did too (exit 11). v0.7.8 (bugsee-cli #35) skips both and continues; `@bugsee/bundler-plugin-core`'s
+  `^0.7.2` range picks it up.
 - Global `--app-token` (env `BUGSEE_APP_TOKEN`) + `--endpoint` (env `BUGSEE_ENDPOINT`, default `https://api.bugsee.com`).
 
 **Decision (D0): the JS side does NOT reimplement any of this.** No JS upload/discovery/pack/inject. The plugins
@@ -38,7 +44,8 @@ was found — it duplicated the Rust engine and collided on the npm name.)
 **Debug-ID-primary** (what `bugsee-cli` injects/uploads) with an `appVersion`/`appBuild` fallback. Rationale
 (competitive research, v1 §2): debug-IDs are the TC39 standards-track key, natively supported by every major bundler,
 and the web analog of Android's `BUILD_UUID` — a per-build UUID reported at runtime, matched server-side, slotting into
-the existing `/v2/apps/{token}/symbols` envelope as `uuid`. `bugsee-cli` already computes it as a UUIDv5 content hash.
+the existing `/v2/apps/{token}/symbols` envelope as `uuid`. `bugsee-cli` already computes it as a UUIDv5 content hash
+(of the bundle and its map, since v0.7.8).
 
 ## 4. Architecture (spawn model)
 

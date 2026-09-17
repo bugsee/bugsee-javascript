@@ -71,9 +71,9 @@ issue over MCP shows the stack resolved to `.../src/routes/ScenarioPage.tsx:296`
 line — not a minified bundle location. Full detail + evidence in `FINDINGS.md`.
 
 Note: `bugsee-cli` content-addresses source maps by debug id, so building TWICE in a row with unchanged
-source (byte-identical output → the same debug id) correctly fails the second upload with
-`DuplicateSymbolsFoundError` — this is the backend behaving correctly (dedup), not a defect. A fresh
-build after any source change uploads normally.
+source (byte-identical output → the same debug id) is deduplicated by the backend
+(`DuplicateSymbolsFoundError`). `bugsee-cli` before 0.7.8 misread that reply and failed the upload; 0.7.8
+reports it as `already on server, skipped` and the build succeeds.
 
 `@bugsee/babel-plugin-component-annotate` is wired into `vite.config.ts` via `@vitejs/plugin-react`'s
 `babel.plugins`; every host JSX element gets `data-bugsee-component="<EnclosingComponent>"`, confirmed

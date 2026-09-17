@@ -21,49 +21,19 @@ them separately.
 **Production build** (the whole point of this sample — reads `hidden-source-map`, injects debug-IDs,
 uploads real source maps to staging, then deletes the client `.map`s):
 
-> **`pnpm build` fails on every REPEAT run today** — this is the first thing you will hit, and it is
-> not a mistake in this README: it is `FINDINGS.md` F-2, a real `@bugsee/bundler-plugin-core` /
-> `bugsee-cli` defect. This sample code-splits a couple of vendor chunks that never change between
-> builds; once their debug-id is uploaded once, EVERY later build — even one where your own app code
-> changed — fails outright the moment the CLI reaches that unchanged chunk
-> (`DuplicateSymbolsFoundError`, exit code 30), because one file's rejection aborts the WHOLE upload
-> batch.
+> **Repeat builds work as of `bugsee-cli` 0.7.8** (`FINDINGS.md` F-1 and F-2, both RESOLVED). Before it,
+> every build after the first failed: an unchanged vendor chunk's already-uploaded map was a hard error
+> (`DuplicateSymbolsFoundError`, exit 30) that aborted the whole upload batch, and a CSS source map did the
+> same (exit 11), which is why this sample used to turn CSS source maps off in production. 0.7.8 skips a
+> map the server already has and skips `.css.map` files, so the batch completes and `deleteMaps` runs.
+> Re-verified against staging 2026-09-17 with CSS source maps ON: two consecutive production builds both
+> exited 0 and left no `.map` in `dist/`, and a manual upload of a kept-maps build logged
+> `skipping a stylesheet / type-declaration map … main.<hash>.css.map` and
+> `upload complete uploaded=0 already_existed=3 skipped=1`.
 >
-> **Corrected (fix round 2, F-G):** this previously claimed pinning `.build-counter` to `2` and "not
-> bumping it" reproduces the byte-identical main chunk from the one build that fully succeeded, framed
-> as if that's what keeps `pnpm build` working. Two things were wrong with that: (1) `nextBuildCounter()`
-> (`webpack.config.js`) reads-increments-and-REWRITES the file on **every** production build regardless
-> of what's committed, so there is no way to actually "not bump it" — the counter cannot be pinned in
-> that sense; and (2) **file-processing order inside `bugsee-cli debug-files upload` is NOT
-> deterministic across builds** — confirmed empirically while fixing this by running `pnpm build` three
-> times in a row against this exact source: run 1 processed `main.<hash>.js.map` FIRST (uploaded
-> successfully under a fresh debug-id) then hit the unchanged vendor chunk SECOND and aborted; run 2
-> (`BUGSEE_FAIL_ON_ERROR=false`, one build later) processed the vendor chunk FIRST and aborted
-> immediately — main was **never even attempted** that time. So "just run `pnpm build` fresh" does NOT
-> reliably get you a dist/ whose main chunk is confirmed uploaded — it depends on an ordering this
-> sample cannot control.
->
-> **What's actually reliable, and what to do:** reset `.build-counter` to the value that, on your NEXT
-> build, reproduces byte-identical content to a main chunk you've already confirmed WAS uploaded
-> successfully (check its debug-id via `list_issues`/`get_issue` on a real reported issue, or just note
-> it from a prior build's CLI stderr: `identified debug_id=<uuid> ... path=.../main.<hash>.js.map`).
-> Rebuilding with that same counter value reproduces the exact same bytes → the exact same debug-id →
-> the exact same content the server ALREADY has — so even when this build's own upload attempt is
-> rejected as a duplicate (or aborts on the vendor chunk before even reaching main, per the
-> non-determinism above), the main chunk's map is still good server-side, because it was already
-> uploaded by an earlier, successful run. This was re-verified while fixing this round: after resetting
-> `.build-counter` to `2`, `pnpm build` (counter → 3) rebuilt `main.<hash>.js` with debug-id
-> `f2cf373c-…` — the SAME debug-id a fresh `s4-error` throw against THIS exact dist/ had already
-> confirmed `symbolication_status: "ready"` on the server (issue `SWEBPACK-30`) — regardless of that
-> build's own upload call being rejected as a dup.
->
-> Either way, `dist/` is fully written even when the CLI step fails (the plugin's upload runs after
-> webpack's own emit has already completed) and the `hidden-source-map` + debug-id injection (items b/c
-> above) still ran on every chunk — a non-zero `pnpm build` exit here is expected, not a setup error. If
-> you want a clean (exit 0) build instead — e.g. to also exercise the `deleteMaps` step, which only runs
-> after a fully clean upload batch — run `BUGSEE_FAIL_ON_ERROR=false pnpm build`; note that in that case
-> the `.map` files are still NOT deleted (same gating on a clean batch), so don't rely on that flag to
-> test `deleteMaps` — see F-2's Impact paragraph.
+> pnpm 11 refuses packages published less than a day ago, so until 2026-09-18 a clean install resolves
+> an OLDER `bugsee-cli` (0.7.6 at the time of writing) — install with
+> `pnpm install --config.minimum-release-age=0` to get 0.7.8 before then.
 
 ```bash
 pnpm build                # real BUGSEE_APP_TOKEN from .env, failOnError: true
@@ -149,8 +119,9 @@ shipped bundle carries NO `//# sourceMappingURL=` comment).
 1. `pnpm build` — the plugin runs `bugsee-cli sourcemaps inject` (writes a `//# debugId=<uuid>` comment
    + the `_bugseeDebugIds` runtime stub into every JS chunk) then `bugsee-cli debug-files upload`
    (uploads the real maps, keyed by debug-id), then deletes the client `.map` files — **only once the
-   WHOLE batch's upload succeeds**; `deleteMaps` is gated on that (`orchestrate.ts:145-152`), and the
-   unchanged vendor chunk currently always prevents it — F-2. **Updated in the substrate-flip
+   WHOLE batch's upload succeeds**; `deleteMaps` is gated on that (`orchestrate.ts:145-152`). Until
+   `bugsee-cli` 0.7.8 the unchanged vendor chunk always prevented it (F-2, now RESOLVED — see the callout
+   above); the history below describes that period. **Updated in the substrate-flip
    re-verification (2026-08-27):** the `dist/` behind this section's evidence is now build 5 —
    `main.746af8f7.js` with `//# debugId=7b429082-e493-591e-9587-9313da7d32dd` — and that id came from
    this build's OWN upload call (`uploaded debug_id=7b429082-…` in the CLI's stderr), because the
@@ -162,9 +133,8 @@ shipped bundle carries NO `//# sourceMappingURL=` comment).
    `.map` files remain after a clean, successful build" as a general statement; the `dist/assets/`
    shipped in this repo right now still has all three `.map` files next to their chunks, because
    `deleteMaps` only runs after a confirmed upload of the WHOLE batch (`orchestrate.ts:145-152`), which
-   the vendor-chunk collision (F-2) currently always blocks. "No maps remain" is true only immediately
-   after a build whose upload step fully succeeds end to end; it is not the general state of this
-   repo's `dist/`.
+   the vendor-chunk collision (F-2) always blocked before `bugsee-cli` 0.7.8. With 0.7.8 every build's
+   upload completes, so a normal `pnpm build` leaves no `.map` in `dist/` (re-verified 2026-09-17).
 2. `pnpm preview` serves that exact production bundle; `pnpm verify:sourcemaps` clicks the Scenario
    panel's `s4-error` control (throws `new Error('S4: logException(new Error(...))')` from
    `src/scenarios.ts:375`, inside the MINIFIED, hidden-source-mapped bundle) and flushes. **Corrected
@@ -210,7 +180,7 @@ unit + real-git tests in `@bugsee/bundler-plugin-core` but are **not** exercised
 | `endpoint` | every build | `https://apidev.bugsee.com` (staging only, never production) |
 | `dryRun: true` | `build:dry-run` | no upload attempted; `.map` files survive |
 | `disabled: true` | `build:disabled` | plugin does not run at all; no `debugId` comment in the shipped JS |
-| `deleteMaps: false` | `build:keep-maps` | `.map` files survive a run (see F-2 below for why THIS run didn't get a confirmed upload) |
+| `deleteMaps: false` | `build:keep-maps` | `.map` files survive a run |
 | `failOnError: true` + bad token | `build:bad-token-loud` | **the whole webpack build fails** (real exit code 2) — PLAN §5.7f |
 | `failOnError: false` (library default) + bad token | `build:bad-token-soft` | contained: `onError` fires, webpack build exits 0, `.map`s are NOT deleted (privacy-safe on failure) |
 | `BUGSEE_CLI_PATH` pointed at a self-SIGKILLing stand-in | `build:signal-kill` | **the whole build fails** — `code: -1` (`SIGNAL_EXIT_CODE`), `"terminated by signal SIGKILL"` — PLAN §5.7g, the `code ?? 0` regression guard confirmed still in place (`packages/bundler-plugin-core/src/run-cli.ts`'s `SIGNAL_EXIT_CODE`) |

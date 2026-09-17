@@ -21,8 +21,9 @@ const fileEnv = existsSync(envPath) ? dotenv.parse(readFileSync(envPath)) : {};
 
 // A build counter so every production build we upload source maps for is identifiable in the
 // dashboard (appBuild), and so building twice in a row produces two distinct debug-IDs (byte
-// identical output -> identical debug-id -> bugsee-cli's DuplicateSymbolsFoundError on re-upload;
-// bumping the JS below via BUILD_STAMP forces distinct output even with no source changes).
+// identical output -> identical debug-id -> a server-side duplicate on re-upload, which bugsee-cli
+// >= 0.7.8 skips; bumping the JS below via BUILD_STAMP forces distinct output even with no source
+// changes).
 const buildCounterFile = path.join(__dirname, '.build-counter');
 function nextBuildCounter() {
   let n = 0;
@@ -86,16 +87,10 @@ export default (_env, argv) => {
           test: /\.css$/,
           use: [
             isProd ? MiniCssExtractPlugin.loader : 'style-loader',
-            // sourceMap: false in production ONLY — see FINDINGS.md F-1: @bugsee/bundler-plugin-core's
-            // `debug-files upload` walks EVERY `*.map` under the output dir, but `sourcemaps inject`
-            // only injects a debug-ID into JS-originated maps, so a CSS source map alongside the JS
-            // ones (the css-loader/mini-css-extract-plugin default) makes bugsee-cli reject the WHOLE
-            // upload batch (exit 11, "source map has no debug_id"), which — with this sample's
-            // recommended `failOnError: true` — fails the entire build, and even with the library's
-            // own default (`failOnError: false`) silently skips deleting EVERY client `.map` (js
-            // included), a privacy regression. Not emitting a CSS map in prod sidesteps it; the
-            // underlying defect is unfixed (this sample does not touch packages/).
-            { loader: 'css-loader', options: { sourceMap: !isProd } },
+            // CSS source maps stay ON in production (css-loader's default). They used to break the upload —
+            // FINDINGS.md F-1: bugsee-cli < 0.7.8 walked every `*.map` and aborted the whole batch on the
+            // id-less CSS map — so this sample switched them off. bugsee-cli 0.7.8 skips `.css.map` files.
+            { loader: 'css-loader', options: { sourceMap: true } },
           ],
         },
       ],

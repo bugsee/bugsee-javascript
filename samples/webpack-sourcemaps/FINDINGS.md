@@ -8,156 +8,6 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
 
 ## Open
 
-### F-1 · A CSS source map alongside the JS ones aborts the ENTIRE source-map upload batch — `bugsee-cli sourcemaps inject` skips CSS maps, but `debug-files upload` walks every `.map` file indiscriminately
-
-- **Severity:** blocker
-- **Package:** **CORRECTED (was mis-attributed to the plugin alone below)** — the walk-every-`.map`-
-  and-abort-the-whole-batch behavior lives in the **Rust `bugsee-cli`** binary
-  (`bugsee_cli::cli::debug_files`'s upload command, a SEPARATE repo from this one): it is `debug-files
-  upload` that walks the given directory for every `*.map` file indiscriminately and hard-stops the
-  batch on the first one it can't key by debug-id. `@bugsee/bundler-plugin-core`
-  (`packages/bundler-plugin-core/src/orchestrate.ts:120` — `run(['sourcemaps', 'inject', outDir, ...])`,
-  JS-only in practice — and `:132-143` — the following `run(['debug-files', 'upload', outDir, '--type',
-  'sourcemaps', ...])`) contributes two things, both real and both in THIS repo: (1) it passes the
-  WHOLE output directory to the CLI in one invocation rather than a filtered file list, so the CLI's
-  indiscriminate walk reaches the CSS map at all, and (2) it gates the client-side `deleteMaps` step on
-  the whole batch's success (see Impact below). The fix therefore lands in TWO different repos: the CLI
-  (stop hard-aborting the batch on one file, or accept a caller-owned file list instead of a directory)
-  and/or this plugin (stop passing the whole directory / stop treating the whole batch as atomic for
-  `deleteMaps` purposes). F-2's write-up below already states this two-repo split correctly; this entry
-  originally blamed the plugin alone, which was wrong. Shared by `@bugsee/webpack-plugin` and
-  `@bugsee/vite-plugin` (same engine) — cross-cutting, belongs in `samples/FINDINGS.md` too (not edited
-  here).
-- **Scenario:** PLAN §5.7b/c/d — a production build with `hidden-source-map` + debug-id injection +
-  upload, using this sample's stock webpack config (css-loader + `mini-css-extract-plugin`, the
-  ordinary way to ship CSS from a webpack app; CSS source maps are that combination's DEFAULT).
-- **Expected:** the plugin uploads every JS chunk's source map; a co-located CSS source map (not itself
-  a "source map" bugsee-cli's debug-ID model understands — CSS bundlers don't emit the
-  `//# debugId=`-style runtime stub) is either skipped by the upload step too, or excluded from the walk.
-- **Observed:** `bugsee-cli sourcemaps inject <dir>` writes a debug-ID into every JS bundle + its `.map`,
-  but leaves any `.css.map` untouched (confirmed: `grep debugId` on the CSS map after `inject` — absent).
-  `bugsee-cli debug-files upload <dir> --type sourcemaps ...` then walks the SAME directory for every
-  `*.map` file with no such distinction, reaches the CSS map, and HARD-STOPS the whole batch:
-  ```
-  error: input invalid: source map has no debug_id/debugId/uuid: .../dist/assets/main.<hash>.css.map
-  — run `bugsee-cli sourcemaps inject <bundle-dir>` first to embed one, or pass --uuid to key by a
-  caller-owned id
-  ```
-  exit code 11. **Corrected:** this entry originally claimed the JS map (`main.<hash>.js.map`) had
-  already been identified, packed and successfully uploaded before the CLI hit the CSS map and aborted.
-  In both of the reproductions actually behind this finding, the CLI's own log shows it processed ONLY
-  the CSS map before erroring — it never reached the JS map at all, so nothing was uploaded in those
-  runs. The underlying defect (one incompatible file type aborts the WHOLE batch, not just that file) is
-  unchanged and still blocker-severity; what is withdrawn is the specific claim that a real upload had
-  already succeeded silently before the abort in the runs observed here.
-- **Impact:** with this sample's (and `docs/samples/PLAN.md` §5.7f's) recommended `failOnError: true`,
-  **the entire webpack build fails** the first time a customer's project has both a JS and a CSS source
-  map on disk — an extremely common webpack shape. With the library's own default (`failOnError:
-  false`), the failure is contained (console warning only) but step 3 (delete the client `.map` files,
-  the whole point of `deleteMaps`, a privacy feature) NEVER RUNS, because deletion only happens after a
-  CONFIRMED (non-throwing) `uploadSourcemaps` call (`orchestrate.ts:145-152`) — so with default options,
-  a project that emits CSS source maps silently ships ALL of its `.map` files (JS included) to
-  production, forever, with only a single easy-to-miss console line as evidence.
-- **Reproduce:** `webpack.config.js` with `devtool: 'hidden-source-map'`, `css-loader` at its default
-  `sourceMap` setting (or explicit `true`) + `MiniCssExtractPlugin`, `bugseeWebpackPlugin({ appToken,
-  failOnError: true })`. Run `webpack --mode production` against any real app token. This sample's OWN
-  `webpack.config.js` reproduced it on the very first build attempt (before the workaround below was
-  added) — see the comment left in place at the css-loader rule.
-- **Workaround used (this sample only):** `css-loader` options set `sourceMap: !isProd` — no CSS source
-  map is emitted in production, sidestepping the collision. This is a real-world-plausible choice (many
-  projects don't ship CSS source maps at all) but is a workaround, not a fix — a project that DOES want
-  CSS source maps for its own devtools has no escape hatch from this defect today.
-- **Fix direction (not applied):** either have `sourcemaps inject` also stamp a `debugId` into CSS maps
-  (the Source Map Debug ID spec is language-agnostic — a CSS map is still a JSON file with the same
-  schema), or have the upload step (or its invocation from `orchestrate.ts`) exclude files that were not
-  actually touched by `inject` (e.g. diff the set of injected files against the upload walk, or pass an
-  explicit file list instead of a directory to `debug-files upload`).
-
-### F-2 · A second production build reusing an already-uploaded (unchanged) chunk's debug-ID fails the WHOLE upload batch, not just that one file — makes iterative/CI production builds impossible without every chunk changing every release
-
-- **Severity:** blocker
-- **Package:** `@bugsee/bundler-plugin-core` (`packages/bundler-plugin-core/src/orchestrate.ts:132-143`
-  — one `bugsee-cli debug-files upload <outDir> ...` call over the WHOLE output directory) combined
-  with the external `bugsee-cli` binary's own behavior (hard-stops the entire directory batch on the
-  FIRST file it can't upload, rather than skipping a known-duplicate and continuing). Cross-cutting —
-  shared with `@bugsee/vite-plugin`; belongs in `samples/FINDINGS.md` too (not edited here).
-- **Scenario:** PLAN §5.7d — "the upload step against staging", run twice (any real iterative workflow:
-  two CI builds of the same app, a second local `pnpm build`, etc).
-- **Expected:** re-running a production build should either upload new/changed chunks and skip
-  already-uploaded unchanged ones cleanly, or at minimum not let ONE already-known chunk's rejection
-  prevent OTHER, genuinely new chunks in the SAME build from being uploaded.
-- **Observed:** this sample's webpack build code-splits a couple of small numbered chunks that never
-  change (traced to `@bugsee/browser`'s own internal lazy `import()` of `@bugsee/replay`, bundled
-  regardless of whether replay is enabled at runtime — stable content across every build since the
-  chunk's own sources do not change). **Parenthetical corrected in the substrate-flip
-  re-verification:** this used to end "...since nothing in this app touches it", which is no longer
-  true — session replay is now ON BY DEFAULT, so the app DOES load that chunk at runtime (measured:
-  `assets/7.<hash>.chunk.js`, 185 KB, fetched with HTTP 200 from the `pnpm preview` server). The
-  finding itself is unaffected: what makes the chunk trip `DuplicateSymbolsFoundError` is its BYTES
-  being unchanged between builds, not whether anything imports it at runtime. The FIRST production build uploaded everything successfully. Every build
-  since — including ones where the APP's own code (and therefore its main chunk) genuinely changed —
-  fails outright the moment `bugsee-cli` reaches that unchanged vendor chunk:
-  ```
-  error: upload failed: server responded with status 200 — server returned error:
-  type=DuplicateSymbolsFoundError message=A symbol file with the same identifier already exists
-  ```
-  exit code 30. Critically, the CLI's own log shows it processed EXACTLY ONE source map before
-  erroring — it never reached the OTHER chunks in that same build (confirmed across 3 separate repro
-  runs: `7.<hash>.chunk.js.map` was "processing"'d, then the command aborted; `main.<hash>.js.map`,
-  freshly changed and never before uploaded, was never even attempted).
-- **Impact:** given this sample's (and PLAN §5.7f's) recommended `failOnError: true`, the SECOND
-  production build of ANY project that has even one content-stable chunk (extremely common with
-  long-term vendor/dependency splitting) fails outright, forever, unless literally every chunk's bytes
-  change on every single release — an impractical constraint no real CI pipeline satisfies. This makes
-  the plugin's default posture ("fail loudly on a bad upload", which is otherwise exactly correct per
-  §5.7f) actively hostile to the most common real-world usage pattern: building the same app more than
-  once.
-- **Reproduce:** `pnpm build` (real token) twice in a row in this sample with NO source changes between
-  runs — the second run fails identically. Confirmed the root cause is per-file dedup (not a general
-  re-upload prohibition) by resetting `.build-counter` to force a BYTE-IDENTICAL rebuild of the changed
-  (main) chunk too: the resulting debug-ID matched the original exactly
-  (`e0c76509-3d6a-50ea-a949-e69f39d0a7ec`), confirming `bugsee-cli`'s debug-ID derivation is
-  deterministic content hashing, and that the dedup rejection is legitimate (the file really is
-  byte-identical to one already on the server) — the DEFECT is that this single, correct,
-  individually-harmless rejection takes down the WHOLE batch.
-- **Workaround used (this sample only, to obtain the SWEBPACK-1 evidence in README.md/scenarios.md):**
-  reset `.build-counter` to reproduce the exact byte-identical bundle from the one build that DID fully
-  succeed, so the shipped `dist/` carries a debug-ID that is confirmed present on the server, without
-  needing a fresh successful upload. A real customer has no equivalent escape hatch short of changing
-  every chunk's content every release.
-- **Fix direction (not applied):** either have `bugsee-cli debug-files upload` treat a per-file
-  `DuplicateSymbolsFoundError` as a skippable no-op (log and continue) rather than a batch-fatal error,
-  or have `@bugsee/bundler-plugin-core` invoke the upload per-file instead of per-directory so one
-  file's outcome cannot block its siblings.
-- **Additional findings (reviewer-established, added here):**
-  - The duplicate rejection is keyed by **debug_id/content only**, not by `--build`/`--version`: re-
-    running with an explicitly different `--build 99 --version 1.0.0` against the same byte-identical
-    chunk fails identically. There is no per-release escape hatch via those flags.
-  - **Dedup visibility is ASYNCHRONOUS on the server**, which makes "just retry the build" a racy
-    workaround rather than a reliable one: uploading the SAME map twice within about 3 seconds of each
-    other **succeeded twice** (no `DuplicateSymbolsFoundError` on the second, near-immediate attempt);
-    the SAME content THEN failed as a duplicate roughly 30 seconds later. A retry loop that fires
-    quickly after a failure can therefore appear to "fix" the problem while actually racing the
-    server's own dedup-index catch-up, not resolving it.
-  - The CLI already has an `already_existed` counter in its own output/telemetry for exactly this
-    condition (a symbol file the server already has) — i.e. "skip a known duplicate and continue" is
-    an outcome the CLI's own model already represents server-side. That skip-and-continue handling
-    simply isn't applied to `DuplicateSymbolsFoundError` in the upload-batch path today; wiring the
-    existing counter's outcome into a continue-rather-than-abort decision is a smaller change than
-    inventing a new mechanism.
-  - **File-processing order within one `debug-files upload` batch is NOT deterministic across runs**
-    (fix round 2 addendum) — confirmed by three consecutive `pnpm build` invocations against
-    byte-identical source: run 1 processed `main.<hash>.js.map` first (uploaded successfully under a
-    fresh debug-id) and only then hit the unchanged vendor chunk and aborted; the very next run
-    processed the vendor chunk FIRST and aborted before ever attempting `main.<hash>.js.map` at all.
-    This rules out "just re-run the build, the changed file usually gets uploaded before the abort" as
-    a reliable workaround — whether a genuinely NEW chunk in a given build gets uploaded before an
-    unrelated stale chunk aborts the batch depends on an order this plugin/CLI pairing does not
-    control. See `samples/webpack-sourcemaps/README.md`'s "Production build" callout for the
-    counter-reset technique this sample now uses instead (reproduce a specific ALREADY-uploaded
-    chunk's exact bytes, so that chunk's server-side validity does not depend on this build's own
-    upload call succeeding at all).
-
 ### F-3 · Browser persist+recover uploads one incident TWICE — S12 fire-and-forget-then-reload consistently produces `events_count +2` per click, never +1
 
 - **Severity:** major
@@ -396,3 +246,169 @@ Severity: **blocker** (SDK unusable / data lost) · **major** (feature broken or
   from an `md5`-verified `cp` backup — never `git checkout`, since this sample is untracked.
 
 ## Resolved
+
+### F-1 · A CSS source map alongside the JS ones aborts the ENTIRE source-map upload batch — `bugsee-cli sourcemaps inject` skips CSS maps, but `debug-files upload` walks every `.map` file indiscriminately
+
+- **Status: RESOLVED in `bugsee-cli` 0.7.8** (bugsee/bugsee-cli#35, released 2026-09-17). `debug-files upload
+  --type sourcemaps` skips maps named `.css.map` / `.d.ts.map` / `.d.mts.map` / `.d.cts.map` in a scanned
+  directory instead of aborting the batch; any other map without a debug-id still fails, before anything is
+  uploaded. The sample's workaround (`css-loader` `sourceMap: !isProd`) is REMOVED — CSS source maps are on
+  in production again. Re-verified against staging: two consecutive production builds exited 0 with no
+  `.map` left in `dist/`; a kept-maps build uploaded by hand logged `skipping a stylesheet / type-declaration
+  map … path=dist/assets/main.e1ee55ce.css.map`. The original write-up follows unchanged.
+- **Severity:** blocker
+- **Package:** **CORRECTED (was mis-attributed to the plugin alone below)** — the walk-every-`.map`-
+  and-abort-the-whole-batch behavior lives in the **Rust `bugsee-cli`** binary
+  (`bugsee_cli::cli::debug_files`'s upload command, a SEPARATE repo from this one): it is `debug-files
+  upload` that walks the given directory for every `*.map` file indiscriminately and hard-stops the
+  batch on the first one it can't key by debug-id. `@bugsee/bundler-plugin-core`
+  (`packages/bundler-plugin-core/src/orchestrate.ts:120` — `run(['sourcemaps', 'inject', outDir, ...])`,
+  JS-only in practice — and `:132-143` — the following `run(['debug-files', 'upload', outDir, '--type',
+  'sourcemaps', ...])`) contributes two things, both real and both in THIS repo: (1) it passes the
+  WHOLE output directory to the CLI in one invocation rather than a filtered file list, so the CLI's
+  indiscriminate walk reaches the CSS map at all, and (2) it gates the client-side `deleteMaps` step on
+  the whole batch's success (see Impact below). The fix therefore lands in TWO different repos: the CLI
+  (stop hard-aborting the batch on one file, or accept a caller-owned file list instead of a directory)
+  and/or this plugin (stop passing the whole directory / stop treating the whole batch as atomic for
+  `deleteMaps` purposes). F-2's write-up below already states this two-repo split correctly; this entry
+  originally blamed the plugin alone, which was wrong. Shared by `@bugsee/webpack-plugin` and
+  `@bugsee/vite-plugin` (same engine) — cross-cutting, belongs in `samples/FINDINGS.md` too (not edited
+  here).
+- **Scenario:** PLAN §5.7b/c/d — a production build with `hidden-source-map` + debug-id injection +
+  upload, using this sample's stock webpack config (css-loader + `mini-css-extract-plugin`, the
+  ordinary way to ship CSS from a webpack app; CSS source maps are that combination's DEFAULT).
+- **Expected:** the plugin uploads every JS chunk's source map; a co-located CSS source map (not itself
+  a "source map" bugsee-cli's debug-ID model understands — CSS bundlers don't emit the
+  `//# debugId=`-style runtime stub) is either skipped by the upload step too, or excluded from the walk.
+- **Observed:** `bugsee-cli sourcemaps inject <dir>` writes a debug-ID into every JS bundle + its `.map`,
+  but leaves any `.css.map` untouched (confirmed: `grep debugId` on the CSS map after `inject` — absent).
+  `bugsee-cli debug-files upload <dir> --type sourcemaps ...` then walks the SAME directory for every
+  `*.map` file with no such distinction, reaches the CSS map, and HARD-STOPS the whole batch:
+  ```
+  error: input invalid: source map has no debug_id/debugId/uuid: .../dist/assets/main.<hash>.css.map
+  — run `bugsee-cli sourcemaps inject <bundle-dir>` first to embed one, or pass --uuid to key by a
+  caller-owned id
+  ```
+  exit code 11. **Corrected:** this entry originally claimed the JS map (`main.<hash>.js.map`) had
+  already been identified, packed and successfully uploaded before the CLI hit the CSS map and aborted.
+  In both of the reproductions actually behind this finding, the CLI's own log shows it processed ONLY
+  the CSS map before erroring — it never reached the JS map at all, so nothing was uploaded in those
+  runs. The underlying defect (one incompatible file type aborts the WHOLE batch, not just that file) is
+  unchanged and still blocker-severity; what is withdrawn is the specific claim that a real upload had
+  already succeeded silently before the abort in the runs observed here.
+- **Impact:** with this sample's (and `docs/samples/PLAN.md` §5.7f's) recommended `failOnError: true`,
+  **the entire webpack build fails** the first time a customer's project has both a JS and a CSS source
+  map on disk — an extremely common webpack shape. With the library's own default (`failOnError:
+  false`), the failure is contained (console warning only) but step 3 (delete the client `.map` files,
+  the whole point of `deleteMaps`, a privacy feature) NEVER RUNS, because deletion only happens after a
+  CONFIRMED (non-throwing) `uploadSourcemaps` call (`orchestrate.ts:145-152`) — so with default options,
+  a project that emits CSS source maps silently ships ALL of its `.map` files (JS included) to
+  production, forever, with only a single easy-to-miss console line as evidence.
+- **Reproduce:** `webpack.config.js` with `devtool: 'hidden-source-map'`, `css-loader` at its default
+  `sourceMap` setting (or explicit `true`) + `MiniCssExtractPlugin`, `bugseeWebpackPlugin({ appToken,
+  failOnError: true })`. Run `webpack --mode production` against any real app token. This sample's OWN
+  `webpack.config.js` reproduced it on the very first build attempt (before the workaround below was
+  added) — see the comment left in place at the css-loader rule.
+- **Workaround used (this sample only):** `css-loader` options set `sourceMap: !isProd` — no CSS source
+  map is emitted in production, sidestepping the collision. This is a real-world-plausible choice (many
+  projects don't ship CSS source maps at all) but is a workaround, not a fix — a project that DOES want
+  CSS source maps for its own devtools has no escape hatch from this defect today.
+- **Fix direction (not applied):** either have `sourcemaps inject` also stamp a `debugId` into CSS maps
+  (the Source Map Debug ID spec is language-agnostic — a CSS map is still a JSON file with the same
+  schema), or have the upload step (or its invocation from `orchestrate.ts`) exclude files that were not
+  actually touched by `inject` (e.g. diff the set of injected files against the upload walk, or pass an
+  explicit file list instead of a directory to `debug-files upload`).
+
+### F-2 · A second production build reusing an already-uploaded (unchanged) chunk's debug-ID fails the WHOLE upload batch, not just that one file — makes iterative/CI production builds impossible without every chunk changing every release
+
+- **Status: RESOLVED in `bugsee-cli` 0.7.8** (bugsee/bugsee-cli#35). The root cause was narrower than
+  "per-file dedup is batch-fatal": the appserver answers a duplicate with HTTP 200 and the code NESTED in its
+  envelope (`{ok:false, error:{type:"DuplicateSymbolsFoundError", code:16004}}`), and the CLI matched only a
+  top-level `code`, so its existing `already_existed` skip never fired. 0.7.8 recognises the nested envelope
+  for every format and continues the batch; walks are sorted, so the order is deterministic too. Re-verified
+  against staging with an unchanged vendor chunk: `already on server, skipped debug_id=…` for each chunk
+  already there, `upload complete uploaded=0 already_existed=3 skipped=1`, exit 0. 0.7.8 also derives the
+  debug-id from the bundle AND its map, so a map that changes under byte-identical JS is no longer kept
+  stale by that dedup. The original write-up follows unchanged.
+- **Severity:** blocker
+- **Package:** `@bugsee/bundler-plugin-core` (`packages/bundler-plugin-core/src/orchestrate.ts:132-143`
+  — one `bugsee-cli debug-files upload <outDir> ...` call over the WHOLE output directory) combined
+  with the external `bugsee-cli` binary's own behavior (hard-stops the entire directory batch on the
+  FIRST file it can't upload, rather than skipping a known-duplicate and continuing). Cross-cutting —
+  shared with `@bugsee/vite-plugin`; belongs in `samples/FINDINGS.md` too (not edited here).
+- **Scenario:** PLAN §5.7d — "the upload step against staging", run twice (any real iterative workflow:
+  two CI builds of the same app, a second local `pnpm build`, etc).
+- **Expected:** re-running a production build should either upload new/changed chunks and skip
+  already-uploaded unchanged ones cleanly, or at minimum not let ONE already-known chunk's rejection
+  prevent OTHER, genuinely new chunks in the SAME build from being uploaded.
+- **Observed:** this sample's webpack build code-splits a couple of small numbered chunks that never
+  change (traced to `@bugsee/browser`'s own internal lazy `import()` of `@bugsee/replay`, bundled
+  regardless of whether replay is enabled at runtime — stable content across every build since the
+  chunk's own sources do not change). **Parenthetical corrected in the substrate-flip
+  re-verification:** this used to end "...since nothing in this app touches it", which is no longer
+  true — session replay is now ON BY DEFAULT, so the app DOES load that chunk at runtime (measured:
+  `assets/7.<hash>.chunk.js`, 185 KB, fetched with HTTP 200 from the `pnpm preview` server). The
+  finding itself is unaffected: what makes the chunk trip `DuplicateSymbolsFoundError` is its BYTES
+  being unchanged between builds, not whether anything imports it at runtime. The FIRST production build uploaded everything successfully. Every build
+  since — including ones where the APP's own code (and therefore its main chunk) genuinely changed —
+  fails outright the moment `bugsee-cli` reaches that unchanged vendor chunk:
+  ```
+  error: upload failed: server responded with status 200 — server returned error:
+  type=DuplicateSymbolsFoundError message=A symbol file with the same identifier already exists
+  ```
+  exit code 30. Critically, the CLI's own log shows it processed EXACTLY ONE source map before
+  erroring — it never reached the OTHER chunks in that same build (confirmed across 3 separate repro
+  runs: `7.<hash>.chunk.js.map` was "processing"'d, then the command aborted; `main.<hash>.js.map`,
+  freshly changed and never before uploaded, was never even attempted).
+- **Impact:** given this sample's (and PLAN §5.7f's) recommended `failOnError: true`, the SECOND
+  production build of ANY project that has even one content-stable chunk (extremely common with
+  long-term vendor/dependency splitting) fails outright, forever, unless literally every chunk's bytes
+  change on every single release — an impractical constraint no real CI pipeline satisfies. This makes
+  the plugin's default posture ("fail loudly on a bad upload", which is otherwise exactly correct per
+  §5.7f) actively hostile to the most common real-world usage pattern: building the same app more than
+  once.
+- **Reproduce:** `pnpm build` (real token) twice in a row in this sample with NO source changes between
+  runs — the second run fails identically. Confirmed the root cause is per-file dedup (not a general
+  re-upload prohibition) by resetting `.build-counter` to force a BYTE-IDENTICAL rebuild of the changed
+  (main) chunk too: the resulting debug-ID matched the original exactly
+  (`e0c76509-3d6a-50ea-a949-e69f39d0a7ec`), confirming `bugsee-cli`'s debug-ID derivation is
+  deterministic content hashing, and that the dedup rejection is legitimate (the file really is
+  byte-identical to one already on the server) — the DEFECT is that this single, correct,
+  individually-harmless rejection takes down the WHOLE batch.
+- **Workaround used (this sample only, to obtain the SWEBPACK-1 evidence in README.md/scenarios.md):**
+  reset `.build-counter` to reproduce the exact byte-identical bundle from the one build that DID fully
+  succeed, so the shipped `dist/` carries a debug-ID that is confirmed present on the server, without
+  needing a fresh successful upload. A real customer has no equivalent escape hatch short of changing
+  every chunk's content every release.
+- **Fix direction (not applied):** either have `bugsee-cli debug-files upload` treat a per-file
+  `DuplicateSymbolsFoundError` as a skippable no-op (log and continue) rather than a batch-fatal error,
+  or have `@bugsee/bundler-plugin-core` invoke the upload per-file instead of per-directory so one
+  file's outcome cannot block its siblings.
+- **Additional findings (reviewer-established, added here):**
+  - The duplicate rejection is keyed by **debug_id/content only**, not by `--build`/`--version`: re-
+    running with an explicitly different `--build 99 --version 1.0.0` against the same byte-identical
+    chunk fails identically. There is no per-release escape hatch via those flags.
+  - **Dedup visibility is ASYNCHRONOUS on the server**, which makes "just retry the build" a racy
+    workaround rather than a reliable one: uploading the SAME map twice within about 3 seconds of each
+    other **succeeded twice** (no `DuplicateSymbolsFoundError` on the second, near-immediate attempt);
+    the SAME content THEN failed as a duplicate roughly 30 seconds later. A retry loop that fires
+    quickly after a failure can therefore appear to "fix" the problem while actually racing the
+    server's own dedup-index catch-up, not resolving it.
+  - The CLI already has an `already_existed` counter in its own output/telemetry for exactly this
+    condition (a symbol file the server already has) — i.e. "skip a known duplicate and continue" is
+    an outcome the CLI's own model already represents server-side. That skip-and-continue handling
+    simply isn't applied to `DuplicateSymbolsFoundError` in the upload-batch path today; wiring the
+    existing counter's outcome into a continue-rather-than-abort decision is a smaller change than
+    inventing a new mechanism.
+  - **File-processing order within one `debug-files upload` batch is NOT deterministic across runs**
+    (fix round 2 addendum) — confirmed by three consecutive `pnpm build` invocations against
+    byte-identical source: run 1 processed `main.<hash>.js.map` first (uploaded successfully under a
+    fresh debug-id) and only then hit the unchanged vendor chunk and aborted; the very next run
+    processed the vendor chunk FIRST and aborted before ever attempting `main.<hash>.js.map` at all.
+    This rules out "just re-run the build, the changed file usually gets uploaded before the abort" as
+    a reliable workaround — whether a genuinely NEW chunk in a given build gets uploaded before an
+    unrelated stale chunk aborts the batch depends on an order this plugin/CLI pairing does not
+    control. See `samples/webpack-sourcemaps/README.md`'s "Production build" callout for the
+    counter-reset technique this sample now uses instead (reproduce a specific ALREADY-uploaded
+    chunk's exact bytes, so that chunk's server-side validity does not depend on this build's own
+    upload call succeeding at all).
