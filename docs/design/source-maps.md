@@ -150,6 +150,27 @@ pins a `.js` inside that directory it reports (or, under `failOnError`, throws) 
 is left exactly as the bundler emitted it; verified against the real webpack+SRI build — bytes unchanged, page
 still runs, `{injected: false, uploaded: false}`.
 
+**What the guard does NOT see** (review, 2026-09-18 — each verified against the implementation):
+
+- **Manifest-driven SRI.** `webpack-subresource-integrity` exposes `compilation.assets[*].integrity`
+  for server-rendered templates (`webpack-assets-manifest` with `integrity: true`, shakapacker): the hash
+  lives in `manifest.json` and the page is rendered at request time, so there is no HTML in the output
+  directory to scan. Such a build still breaks.
+- **HTML emitted outside the output directory.** `html-webpack-plugin`'s `filename` can point anywhere
+  (`../templates/index.html` is the usual Django/Rails shape); the scan only walks `outDir`.
+- **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
+  an inline script with no `src`.
+- **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
+  `writeBundle` for vite and rollup only. Users driving `bugsee-cli` directly — Angular 17+, esbuild,
+  Deno — get no guard, and Angular's `subresourceIntegrity: true` is exactly the config this protects
+  against. Tracked: the same check belongs in `sourcemaps inject` itself.
+
+It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
+in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded
+URL. It deliberately does NOT fire on a CDN script, a non-JS target, a path outside the output directory, an
+empty `integrity`, a `data-integrity`/`data-src` attribute, a commented-out tag, a `rel=prefetch` (a failed
+prefetch is discarded, not fatal), or a symlinked page.
+
 **Why not rewrite the hashes instead.** `webpack-subresource-integrity` also embeds the lazy chunks' hashes in
 the runtime chunk (`__webpack_require__.sriHashes = {480: "sha384-…"}`), so patching the HTML alone would still
 break every dynamic import, and Angular's builder has its own shape.

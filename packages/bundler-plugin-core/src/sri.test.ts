@@ -1,7 +1,7 @@
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { basename, join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { findSriProtectedScripts } from './sri';
 
 // Measured, 2026-09-18: a real webpack 5.111 build with `webpack-subresource-integrity` +
@@ -19,7 +19,16 @@ const write = async (dir: string, name: string, body: string) => {
   return full;
 };
 
-const fixture = async () => mkdtemp(join(tmpdir(), 'bugsee-sri-'));
+const made: string[] = [];
+const fixture = async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bugsee-sri-'));
+  made.push(dir);
+  return dir;
+};
+
+afterEach(async () => {
+  await Promise.all(made.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe('findSriProtectedScripts', () => {
   it('finds a script whose integrity pins a file we are about to stamp', async () => {
@@ -149,22 +158,26 @@ describe('findSriProtectedScripts', () => {
     ]);
   });
 
-  it('skips a page it cannot read instead of failing the build', async () => {
-    const dir = await fixture();
-    await write(dir, 'app.js', '1');
-    await write(dir, 'readable.html', '<script src="app.js" integrity="sha384-R"></script>');
-    const locked = await write(
-      dir,
-      'locked.html',
-      '<script src="app.js" integrity="sha384-L"></script>',
-    );
-    await chmod(locked, 0o000);
+  // Skipped as root (a containerised runner): chmod 000 does not stop root from reading.
+  it.skipIf(typeof process.getuid === 'function' && process.getuid() === 0)(
+    'skips a page it cannot read instead of failing the build',
+    async () => {
+      const dir = await fixture();
+      await write(dir, 'app.js', '1');
+      await write(dir, 'readable.html', '<script src="app.js" integrity="sha384-R"></script>');
+      const locked = await write(
+        dir,
+        'locked.html',
+        '<script src="app.js" integrity="sha384-L"></script>',
+      );
+      await chmod(locked, 0o000);
 
-    // The readable page is still scanned: one unreadable file must not blind the whole guard.
-    const found = await findSriProtectedScripts(dir);
-    await chmod(locked, 0o644);
-    expect(found.map((f) => f.html)).toEqual([join(dir, 'readable.html')]);
-  });
+      // The readable page is still scanned: one unreadable file must not blind the whole guard.
+      const found = await findSriProtectedScripts(dir);
+      await chmod(locked, 0o644);
+      expect(found.map((f) => f.html)).toEqual([join(dir, 'readable.html')]);
+    },
+  );
 
   it('never descends into node_modules or a dot-directory', async () => {
     const dir = await fixture();
@@ -175,6 +188,160 @@ describe('findSriProtectedScripts', () => {
       '<script src="/app.js" integrity="sha384-M"></script>',
     );
     await write(dir, '.cache/page.html', '<script src="/app.js" integrity="sha384-C"></script>');
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  // Rollup hands `writeBundle` its `output.dir` verbatim, and an `output.file: 'bundle.js'` config
+  // resolves to '.' — so the guard used to compare an absolute script path against a relative root
+  // and conclude every script was "outside the output directory". It was inert for exactly those
+  // builds, which is worse than not having it: it reports safety it never checked.
+  it('works when given a RELATIVE output directory', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(dir, 'assets/chunk.js', '2');
+    await write(
+      dir,
+      'index.html',
+      `<script src="main.js" integrity="sha384-A"></script>
+       <script src="/assets/chunk.js" integrity="sha384-B"></script>`,
+    );
+
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      // Resolved from INSIDE the directory: on macOS `/var` is a symlink to `/private/var`, so the
+      // fixture's own path and the resolved one differ by that prefix. What matters is that a
+      // relative root finds both scripts, not which spelling of the prefix comes back.
+      const expected = [resolve('main.js'), resolve('assets/chunk.js')].sort();
+      for (const relativeDir of ['.', './', 'assets/..']) {
+        const found = await findSriProtectedScripts(relativeDir);
+        expect(found.map((f) => f.script).sort()).toEqual(expected);
+      }
+      // …and one level up, naming the directory rather than sitting in it.
+      const name = basename(dir);
+      process.chdir(join(dir, '..'));
+      expect((await findSriProtectedScripts(name)).length).toBe(2);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('flags a <link rel=modulepreload> that pins a chunk', async () => {
+    // A failed modulepreload poisons the module map, so the later import() of that chunk fails too.
+    const dir = await fixture();
+    await write(dir, 'chunk.js', '1');
+    await write(dir, 'entry.js', '2');
+    await write(
+      dir,
+      'index.html',
+      `<link rel="modulepreload" href="chunk.js" integrity="sha384-P">
+       <link rel="preload" as="script" href="entry.js" integrity="sha384-Q">`,
+    );
+
+    expect((await findSriProtectedScripts(dir)).map((f) => f.script).sort()).toEqual(
+      [join(dir, 'chunk.js'), join(dir, 'entry.js')].sort(),
+    );
+  });
+
+  it('ignores a <link rel=prefetch> — a failed prefetch is discarded, not fatal', async () => {
+    const dir = await fixture();
+    await write(dir, 'chunk.js', '1');
+    await write(dir, 'index.html', '<link rel="prefetch" href="chunk.js" integrity="sha384-P">');
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('does not follow a symlinked page', async () => {
+    // Pins the walk to regular files. A symlink can point anywhere, and the pages we care about are
+    // the ones the bundler wrote into this directory.
+    const dir = await fixture();
+    const other = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(other, 'real.html', '<script src="main.js" integrity="sha384-L"></script>');
+    await symlink(join(other, 'real.html'), join(dir, 'index.html'));
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('ignores a <link> that pins something other than a script', async () => {
+    const dir = await fixture();
+    await write(dir, 'app.css', 'body{}');
+    await write(dir, 'index.html', '<link rel="stylesheet" href="app.css" integrity="sha384-S">');
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('pins .mjs and .cjs too, which is what a server build emits', async () => {
+    const dir = await fixture();
+    await write(dir, 'a.mjs', '1');
+    await write(dir, 'b.cjs', '2');
+    await write(
+      dir,
+      'index.html',
+      `<script type="module" src="a.mjs" integrity="sha384-M"></script>
+       <script src="b.cjs" integrity="sha384-C"></script>`,
+    );
+
+    expect((await findSriProtectedScripts(dir)).map((f) => f.script).sort()).toEqual(
+      [join(dir, 'a.mjs'), join(dir, 'b.cjs')].sort(),
+    );
+  });
+
+  it('ignores a commented-out script tag', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(dir, 'index.html', '<!-- <script src="main.js" integrity="sha384-X"></script> -->');
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('ignores data-* attributes that merely look like integrity or src', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(
+      dir,
+      'index.html',
+      '<script data-integrity="sha384-X" data-src="main.js"></script>',
+    );
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('ignores an EMPTY integrity attribute, which pins nothing', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(dir, 'index.html', '<script src="main.js" integrity=""></script>');
+
+    expect(await findSriProtectedScripts(dir)).toEqual([]);
+  });
+
+  it('flags a src padded with whitespace, which the browser strips', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', '1');
+    await write(dir, 'index.html', '<script src="  main.js  " integrity="sha384-W"></script>');
+
+    expect((await findSriProtectedScripts(dir)).map((f) => f.script)).toEqual([
+      join(dir, 'main.js'),
+    ]);
+  });
+
+  it('does not treat a SIBLING directory with a shared prefix as inside the output', async () => {
+    const root = await fixture();
+    const outDir = join(root, 'dist');
+    await write(root, 'dist-2/main.js', '1');
+    await write(
+      outDir,
+      'index.html',
+      '<script src="../dist-2/main.js" integrity="sha384-N"></script>',
+    );
+
+    expect(await findSriProtectedScripts(outDir)).toEqual([]);
+  });
+
+  it('ignores a DIRECTORY whose name ends in .html', async () => {
+    const dir = await fixture();
+    await mkdir(join(dir, 'weird.html'), { recursive: true });
 
     expect(await findSriProtectedScripts(dir)).toEqual([]);
   });

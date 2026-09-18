@@ -16,7 +16,7 @@
 // every dynamic import. See docs/design/source-maps.md and docs/review/cli-js-flows.md §7.
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
 export interface SriProtectedScript {
@@ -39,8 +39,18 @@ const MAX_DEPTH = 6;
  * behaviour — this can only ever be MORE cautious than shipping the page blind.
  */
 const SCRIPT_TAG = /<script\b[^>]*>/gi;
-const INTEGRITY_ATTR = /\bintegrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
-const SRC_ATTR = /\bsrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
+// A `<link rel=modulepreload integrity>` pins a chunk just as hard: the preload fails the integrity
+// check, poisons the module map, and the later `import()` of that chunk fails with it. Angular's
+// builder and the Vite SRI plugins emit these alongside the entry `<script>`.
+const PRELOAD_TAG = /<link\b[^>]*>/gi;
+const PRELOADS_SCRIPT = /\brel\s*=\s*("|')?(modulepreload|preload)\1?/i;
+// HTML comments are not markup. `<!-- <script src=app.js integrity=…> -->` used to refuse the build.
+const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+// `[\s"'<]` and not `\b`: `\bintegrity` also matches `data-integrity`, and `\bsrc` matches
+// `data-src` — attributes a framework uses for its own bookkeeping, which pin nothing.
+const INTEGRITY_ATTR = /[\s"'<]integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
+const SRC_ATTR = /[\s"'<]src\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
+const HREF_ATTR = /[\s"'<]href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 
 const unquote = (value: string): string =>
   (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
@@ -54,7 +64,8 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) {
     return undefined;
   }
-  const withoutQuery = src.split(/[?#]/)[0] ?? '';
+  // Browsers strip surrounding whitespace from a URL attribute, so `src=" main.js "` loads main.js.
+  const withoutQuery = (src.split(/[?#]/)[0] ?? '').trim();
   if (withoutQuery === '') {
     return undefined;
   }
@@ -62,8 +73,11 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
     ? // A root-relative `/assets/app.js` is served from the output root.
       join(outDir, withoutQuery)
     : resolve(htmlDir, withoutQuery);
-  const inside = normalize(full).startsWith(normalize(outDir));
-  return inside ? full : undefined;
+  // `outDir` is resolved by the caller, so both sides are absolute. The separator matters: without
+  // it, `dist-2/main.js` counts as inside `dist`.
+  const root = normalize(outDir);
+  const rooted = root.endsWith(sep) ? root : root + sep;
+  return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
 const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
@@ -99,7 +113,12 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
  * Empty means stamping is safe as far as SRI is concerned. Never throws: a path problem is the CLI's
  * to report.
  */
-export async function findSriProtectedScripts(outDir: string): Promise<SriProtectedScript[]> {
+export async function findSriProtectedScripts(outDirInput: string): Promise<SriProtectedScript[]> {
+  // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
+  // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
+  // absolute resolved script path against a relative root made every `src="main.js"` look like it
+  // was outside the output directory, so the guard was silently inert for exactly those builds.
+  const outDir = resolve(outDirInput);
   const pages = await walkHtml(outDir);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
@@ -111,15 +130,20 @@ export async function findSriProtectedScripts(outDir: string): Promise<SriProtec
       continue;
     }
     const htmlDir = join(html, '..');
-    for (const tag of source.match(SCRIPT_TAG) ?? []) {
-      if (!INTEGRITY_ATTR.test(tag)) {
+    const markup = source.replace(HTML_COMMENT, '');
+    const tags = [
+      ...(markup.match(SCRIPT_TAG) ?? []).map((tag) => ({ tag, url: SRC_ATTR.exec(tag)?.[1] })),
+      ...(markup.match(PRELOAD_TAG) ?? [])
+        .filter((tag) => PRELOADS_SCRIPT.test(tag))
+        .map((tag) => ({ tag, url: HREF_ATTR.exec(tag)?.[1] })),
+    ];
+    for (const { tag, url } of tags) {
+      const integrity = INTEGRITY_ATTR.exec(tag)?.[1];
+      // An empty `integrity` pins nothing — browsers treat it as no check at all.
+      if (integrity === undefined || unquote(integrity).trim() === '' || url === undefined) {
         continue;
       }
-      const src = SRC_ATTR.exec(tag)?.[1];
-      if (src === undefined) {
-        continue;
-      }
-      const script = resolveLocalScript(outDir, htmlDir, unquote(src));
+      const script = resolveLocalScript(outDir, htmlDir, unquote(url));
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
       if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(script)) {
         continue;
