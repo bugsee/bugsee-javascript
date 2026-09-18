@@ -21,7 +21,7 @@ so server and edge bundles benefit from the same flow, not only the browser.
 
 ## Findings
 
-### 1. Uploads are fully serial — a large app pays a build-time tax (SEV2, measured) — FIXED in bugsee-cli PR #42 (`--concurrency`, default 6)
+### 1. Uploads are fully serial — a large app pays a build-time tax (SEV2, measured) — **SHIPPED in bugsee-cli 0.7.10**
 
 Each map is two round-trips (metadata POST, presigned PUT) and the loop is sequential
 (`debug_files.rs` `run_sourcemap_upload`). Measured: a synthetic 60-map build (36 KB maps) against a local
@@ -29,10 +29,15 @@ mock with 50 ms of injected latency per request took **7.15 s wall** for 120 req
 A 200-chunk Next.js app at a realistic 100 ms RTT is **~40 s of build time**, every build, and CI runners
 are further away than that.
 
-Nothing in the protocol requires it: each map is independent, and the server dedups. A `--concurrency N`
-(default 4-8) is the obvious fix.
+Nothing in the protocol requires it: each map is independent, and the server dedups.
 
-### 2. "No maps here" is a hard failure (SEV2, measured) — FIXED in bugsee-cli PR #42 (`--allow-empty`)
+**Fixed in 0.7.10** (bugsee-cli #42): `--concurrency N` is a ceiling that, left unset, scales with the batch (one
+per 8 maps, min 4, max 8). Re-measured on the release binary against the same 50 ms mock: 60 maps
+**7.09 s → 1.31 s**, 200 maps **23.58 s → 4.10 s**. The cap stays modest because a CI box on a thin uplink is
+bandwidth-bound, where more streams only add latency. A failure now stops the batch rather than letting the
+rest run into a server that already refused one.
+
+### 2. "No maps here" is a hard failure (SEV2, measured) — **SHIPPED in bugsee-cli 0.7.10**
 
 ```
 $ bugsee-cli debug-files upload <dir-with-js-but-no-maps> --type sourcemaps …
@@ -45,7 +50,11 @@ user's build fails; with the default it is a warning and the maps that DO exist 
 uploaded, because the pass aborted.
 
 The CLI already has the right precedent in `xcode upload-dsyms`, where "nothing to upload" is a success by
-design and only a genuine failure fails the build. Source maps want the same, or an `--allow-empty`.
+design and only a genuine failure fails the build.
+
+**Fixed in 0.7.10** (bugsee-cli #42): `--allow-empty` makes both empty cases exit 0, and
+`@bugsee/bundler-plugin-core` passes it — except under `failOnError`, where a team that asked for strictness
+still hears that their build produced no maps at all. A path that does not exist stays an error either way.
 
 ### 3. `inject` stamps every bundle, including ones with no map (SEV3, measured)
 
