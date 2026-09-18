@@ -21,7 +21,7 @@ so server and edge bundles benefit from the same flow, not only the browser.
 
 ## Findings
 
-### 1. Uploads are fully serial — a large app pays a build-time tax (SEV2, measured)
+### 1. Uploads are fully serial — a large app pays a build-time tax (SEV2, measured) — FIXED in bugsee-cli PR #42 (`--concurrency`, default 6)
 
 Each map is two round-trips (metadata POST, presigned PUT) and the loop is sequential
 (`debug_files.rs` `run_sourcemap_upload`). Measured: a synthetic 60-map build (36 KB maps) against a local
@@ -32,7 +32,7 @@ are further away than that.
 Nothing in the protocol requires it: each map is independent, and the server dedups. A `--concurrency N`
 (default 4-8) is the obvious fix.
 
-### 2. "No maps here" is a hard failure (SEV2, measured)
+### 2. "No maps here" is a hard failure (SEV2, measured) — FIXED in bugsee-cli PR #42 (`--allow-empty`)
 
 ```
 $ bugsee-cli debug-files upload <dir-with-js-but-no-maps> --type sourcemaps …
@@ -90,16 +90,43 @@ size analysis — all of which Android and iOS get from the same CLI.
 Whether web builds SHOULD register is a product decision; today the CLI could not accept one if the JS
 side wanted to send it.
 
-### 7. Stamping after emit can invalidate Subresource Integrity (RISK, unverified)
+### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18)
+
+Confirmed, and it is the worst finding here: the app's entry script is blocked and nothing runs.
 
 The plugin runs at `afterEmit` / `writeBundle`, i.e. after the bundler has written its assets — and
 `inject` then appends bytes to every `.js`. A build that computes SRI hashes during emit
-(`webpack-subresource-integrity`, Angular's `subresourceIntegrity: true`) embeds a hash of the
-pre-stamp bytes in the HTML, and the browser then refuses to run the script.
+(`webpack-subresource-integrity`, Angular's `subresourceIntegrity: true`) has already embedded a hash of
+the pre-stamp bytes in the HTML, so the browser refuses the script.
 
-Not reproduced here (neither plugin is in this repo's dependency tree) and it is a plugin-ordering
-problem as much as a CLI one, but if it holds it breaks the page outright, which is worse than any
-finding above. Worth a deliberate test before a customer finds it.
+Reproduced on a real webpack 5.111 build (`html-webpack-plugin` + `webpack-subresource-integrity`,
+`mode: production`, `crossOriginLoading: 'anonymous'`), loaded over HTTP in **Chromium 151.0.7922.34**
+via Playwright:
+
+| | `window.__ran` | console |
+|---|---|---|
+| before `sourcemaps inject` | `true` | clean |
+| after `sourcemaps inject` | **`false`** | `Failed to find a valid digest in the 'integrity' attribute for resource '…/main.<hash>.js' … The resource has been blocked.` |
+
+`index.html` is byte-identical before and after (319 bytes, `integrity=sha384-KUBb…`); only the JS grew,
+114 → 472 bytes. A second build with a dynamic `import()` behaves the same — and there the stale hashes
+are not only in the HTML: `webpack-subresource-integrity` writes
+`__webpack_require__.sriHashes={480:"sha384-…"}` INTO the runtime chunk for lazily-loaded chunks, so
+anything that rewrote the HTML alone would still break every lazy chunk.
+
+This is a plugin-ordering problem, not a CLI bug — the CLI stamps the files it is pointed at, which is
+all it can do. Three candidate fixes, none free:
+
+1. **Stamp before the hashes are computed.** For webpack that means injecting during `processAssets`
+   (before `webpack-subresource-integrity`'s stage) instead of shelling out at `afterEmit` — the only
+   fix that is correct for both HTML and the runtime-embedded lazy hashes. It needs an in-memory
+   stamping path (or an earlier write), which the CLI does not offer today.
+2. **Recompute the hashes after stamping.** Means rewriting another plugin's runtime data structure;
+   fragile, and Angular's builder has its own shape.
+3. **Detect and fail loudly** — scan the emitted HTML for `integrity=` on a file we are about to stamp,
+   and refuse rather than shipping a page that does not load. Cheap, and strictly better than today.
+
+At minimum the JS plugin must do (3); (1) is the real fix.
 
 ### 8. Not a CLI gap, but in the same flow
 
@@ -118,5 +145,7 @@ finding above. Worth a deliberate test before a customer finds it.
   skipped=0`, `js_injected=39 … maps_updated=12`.
 - Throughput: 60 synthetic maps, mock with 50 ms latency per request, `wall 7.15 s`, 120 requests.
 - Empty case: a directory with one `.js` and no map → `exit 10`, message above.
+- SRI: webpack 5.111 + `webpack-subresource-integrity` 5.2, served over `http.server`, loaded in
+  Chromium 151 via Playwright — probe script and both `dist` trees under the session scratchpad.
 - Nuxt: `packages/nuxt-e2e/.output` — 14 `.mjs.map` (pairing works for `.mjs`), 22 `.mjs` under
   `server/node_modules` with no maps.

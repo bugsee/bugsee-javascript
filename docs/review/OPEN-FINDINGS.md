@@ -274,6 +274,30 @@ Confirmed independently by two reviewers, still unfixed:
 
 ---
 
+### D3 · Source-map stamping breaks Subresource Integrity — **SEV1**, reproduced 2026-09-18
+
+`@bugsee/bundler-plugin-core` runs `bugsee-cli sourcemaps inject` at webpack's `afterEmit` /
+unplugin's `writeBundle`, which appends bytes to every emitted `.js` AFTER the bundler computed its
+SRI hashes. On a real webpack 5.111 build with `webpack-subresource-integrity`, loaded in
+Chromium 151: before inject the app runs clean, after inject the entry script is **blocked**
+(`Failed to find a valid digest in the 'integrity' attribute … The resource has been blocked`) and
+nothing on the page executes. `index.html` is untouched; the JS grew 114 → 472 bytes. Angular's
+`subresourceIntegrity: true` is the same mechanism (untested).
+
+Rewriting the HTML would not be enough: `webpack-subresource-integrity` also writes
+`__webpack_require__.sriHashes={…}` into the runtime chunk for lazy chunks.
+
+Full write-up, table and evidence: `docs/review/cli-js-flows.md` §7. **The decision needed** is which
+fix to build:
+
+1. stamp during `processAssets`, before the hashes are computed (correct for HTML *and* lazy chunks;
+   needs an in-memory stamping path the CLI does not have today),
+2. recompute the hashes after stamping (fragile — rewrites another plugin's runtime data),
+3. detect `integrity=` on a file about to be stamped and fail loudly (cheap; strictly better than
+   shipping a page that does not load).
+
+(3) is owed regardless of which of the others is chosen.
+
 ## Round 2 — DONE (2026-08-31). Gates: lint 0 · typecheck 100/100 · cycles clean · 423 files / 5748 tests
 
 Every item below was fixed unless marked otherwise. Kept for the reasoning, not as a work list.
