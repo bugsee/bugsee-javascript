@@ -64,6 +64,71 @@ describe('uploadSourcemaps', () => {
     expect(calls[1]?.args).not.toContain('--allow-empty');
   });
 
+  // Stamping after emit invalidates a hash the HTML already pins, and the browser then refuses the
+  // script — measured on webpack 5.111 + webpack-subresource-integrity in Chromium 151: the page
+  // loaded and NOTHING ran. Losing symbolication is survivable; shipping a blank page is not.
+  describe('Subresource Integrity', () => {
+    const sriBase = {
+      ...base,
+      findSri: async () => [{ html: '/build/dist/index.html', script: '/build/dist/main.js' }],
+    };
+
+    it('refuses to stamp a build whose HTML pins script hashes, and uploads nothing', async () => {
+      const { run, calls } = fakeRun();
+      const onError = vi.fn();
+      const deleteMapFiles = vi.fn(async () => [] as string[]);
+      const result = await uploadSourcemaps({ ...sriBase, run, onError, deleteMapFiles });
+
+      expect(calls).toEqual([]); // not even `sourcemaps inject`
+      expect(deleteMapFiles).not.toHaveBeenCalled(); // the maps are still the user's only copy
+      expect(result).toEqual({ injected: false, uploaded: false, deletedMaps: [] });
+      expect(String(onError.mock.calls[0]?.[0])).toContain('Subresource Integrity');
+      expect(String(onError.mock.calls[0]?.[0])).toContain('index.html');
+    });
+
+    it('counts the other pinned scripts in the message rather than listing them all', async () => {
+      const { run } = fakeRun();
+      const onError = vi.fn();
+      await uploadSourcemaps({
+        ...base,
+        findSri: async () => [
+          { html: '/build/dist/index.html', script: '/build/dist/main.js' },
+          { html: '/build/dist/index.html', script: '/build/dist/vendor.js' },
+          { html: '/build/dist/about.html', script: '/build/dist/about.js' },
+        ],
+        run,
+        onError,
+        deleteMapFiles: async () => [],
+      });
+      expect(String(onError.mock.calls[0]?.[0])).toContain('(and 2 more)');
+    });
+
+    it('throws under failOnError instead of warning', async () => {
+      const { run } = fakeRun();
+      await expect(
+        uploadSourcemaps({ ...sriBase, failOnError: true, run, deleteMapFiles: async () => [] }),
+      ).rejects.toThrow(/Subresource Integrity/);
+    });
+
+    it('proceeds normally when the build has no pinned scripts', async () => {
+      const { run, calls } = fakeRun();
+      await uploadSourcemaps({
+        ...base,
+        findSri: async () => [],
+        run,
+        deleteMapFiles: async () => [],
+      });
+      expect(calls.map((c) => c.args[0])).toEqual(['sourcemaps', 'debug-files']);
+    });
+
+    it('scans the output directory it was given', async () => {
+      const { run } = fakeRun();
+      const findSri = vi.fn(async () => []);
+      await uploadSourcemaps({ ...base, findSri, run, deleteMapFiles: async () => [] });
+      expect(findSri).toHaveBeenCalledWith('/build/dist');
+    });
+  });
+
   it('deletes the .map files after upload by default and returns them', async () => {
     const { run } = fakeRun();
     const order: string[] = [];

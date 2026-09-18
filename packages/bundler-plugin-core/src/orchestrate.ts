@@ -4,6 +4,7 @@
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
+import { findSriProtectedScripts, type SriProtectedScript } from './sri';
 import type { VcsMetadata } from './vcs';
 
 /** The `runBugseeCli` shape, injectable for tests. */
@@ -28,6 +29,8 @@ export interface UploadSourcemapsOptions {
   run?: RunFn;
   /** Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). */
   deleteMapFiles?: (dir: string) => Promise<string[]>;
+  /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
+  findSri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false` (Wave 7).
    *
@@ -131,6 +134,25 @@ export async function uploadSourcemaps(
     });
 
   try {
+    // 0. Refuse outright if the build pins its own script hashes. `sourcemaps inject` appends bytes
+    //    to every emitted `.js`, and a hash computed during emit is already in the HTML — measured on
+    //    webpack 5.111 + webpack-subresource-integrity in Chromium 151: after stamping, the entry
+    //    script is BLOCKED and the page runs nothing. Losing symbolication on this build is
+    //    survivable; shipping a page that does not load is not. Checked BEFORE anything is written,
+    //    so a refusal leaves the build exactly as the bundler emitted it.
+    const pinned = await (options.findSri ?? findSriProtectedScripts)(outDir);
+    if (pinned.length > 0) {
+      const [first] = pinned as [SriProtectedScript, ...SriProtectedScript[]];
+      throw new Error(
+        `refusing to stamp debug-IDs: this build uses Subresource Integrity — ${first.html} pins a ` +
+          `hash of ${first.script}` +
+          (pinned.length > 1 ? ` (and ${pinned.length - 1} more)` : '') +
+          `. Injecting a debug-ID rewrites that file, so the browser would refuse to run it and the ` +
+          `page would load nothing. Source maps were NOT uploaded. See ` +
+          `https://github.com/bugsee/bugsee-javascript/blob/main/docs/design/source-maps.md#subresource-integrity`,
+      );
+    }
+
     // 1. Inject debug-IDs (rewrites the built .js + .map in place).
     await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
 

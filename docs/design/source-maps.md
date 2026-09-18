@@ -127,6 +127,40 @@ chain maps; a separate minify step must compose — the CLI trusts the on-disk f
 out of scope** — bytecode drops the JS comment+stub, so the running code reports no debug-ID; that's the separate RN
 SDK's concern (needs `hermes-compose-source-map` + a preserved bundle id).
 
+## 7.1 Subresource Integrity
+
+**The plugin refuses to stamp a build that pins its own script hashes** (`sri.ts`,
+`findSriProtectedScripts`). This is not a precaution — it is measured.
+
+`sourcemaps inject` appends the debug-ID comment and the `_bugseeDebugIds` registration to every emitted `.js`.
+A build that computed SRI hashes during emit — `webpack-subresource-integrity`, Angular's
+`subresourceIntegrity: true` — has already written a hash of the PRE-stamp bytes into the HTML. Measured on a
+real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
+
+| | `window.__ran` | console |
+|---|---|---|
+| before inject | `true` | clean |
+| after inject | **`false`** | `Failed to find a valid digest in the 'integrity' attribute for resource '…/main.<hash>.js' … The resource has been blocked.` |
+
+`index.html` is byte-identical across that pair; only the JS grew, 114 → 472 bytes. The page loads and nothing
+runs — strictly worse than having no source maps.
+
+So `uploadSourcemaps` scans the output directory's HTML *before* anything is written, and when a `<script>`
+pins a `.js` inside that directory it reports (or, under `failOnError`, throws) and uploads nothing. The build
+is left exactly as the bundler emitted it; verified against the real webpack+SRI build — bytes unchanged, page
+still runs, `{injected: false, uploaded: false}`.
+
+**Why not rewrite the hashes instead.** `webpack-subresource-integrity` also embeds the lazy chunks' hashes in
+the runtime chunk (`__webpack_require__.sriHashes = {480: "sha384-…"}`), so patching the HTML alone would still
+break every dynamic import, and Angular's builder has its own shape.
+
+**The real fix, not yet built:** stamp during `processAssets` / `generateBundle`, before the bundler computes
+its hashes — the only approach correct for the HTML *and* the runtime-embedded lazy hashes. It needs an
+in-memory (or write-then-read-back) stamping path rather than shelling out over already-emitted files, which
+is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
+
+---
+
 ## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
 - Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.
