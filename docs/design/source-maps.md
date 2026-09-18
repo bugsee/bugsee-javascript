@@ -26,13 +26,21 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
   on disk and re-emits only the map). The server dedups source maps by id alone, so a bundle-only id kept a STALE map
   once a duplicate stopped being an error.
 - **`bugsee-cli [--app-token <t>] [--endpoint <url>] debug-files upload <dir…> --type sourcemaps --version <v>
-  --build <b> [--uuid <id>] [--no-zstd] [--force] [--dry-run]`** — discovers `.map`s, reads the debug-ID + sha1, packs a
+  --build <b> [--uuid <id>] [--no-zstd] [--force] [--concurrency N] [--allow-empty] [--dry-run]`** — discovers
+  `.map`s, reads the debug-ID + sha1, packs a
   zstd zip, and runs the two-stage `POST /v2/apps/{token}/symbols {uuid,version,build,hash}` → presigned `PUT`,
   `16004`-idempotent. **Before v0.7.8 it was not:** the appserver nests `16004` in its error envelope and the CLI
   matched only a top-level `code`, so an already-uploaded map failed the whole batch (exit 30), and a CSS map in the
   directory did too (exit 11). v0.7.8 (bugsee-cli #35) skips both and continues, and
-  `@bugsee/bundler-plugin-core` now REQUIRES it (`^0.7.8`): its `deleteMaps` step runs only after a fully
+  `@bugsee/bundler-plugin-core` now REQUIRES it: its `deleteMaps` step runs only after a fully
   successful upload, which an older CLI never reports for a real web build.
+- **Since v0.7.10** (bugsee-cli #42) the maps upload SEVERAL AT A TIME — `--concurrency N` is a ceiling that, left
+  unset, scales with the batch (one per 8 maps, min 4, max 8). Measured against a mock with 50 ms of latency: 200 maps
+  took 23.58 s serially and 4.10 s scaled. The cap is deliberately modest because a CI box on a thin uplink is
+  bandwidth-bound, where more streams only add latency. A failure now stops the batch instead of letting the rest run.
+  Same release added `--allow-empty` ("nothing to upload" exits 0, not 10), which the plugin passes UNLESS
+  `failOnError` is set — a build that emitted no maps is a legitimate shape, but a team that asked for strictness
+  wants to hear about it. The plugin therefore requires `^0.7.10`.
 - Global `--app-token` (env `BUGSEE_APP_TOKEN`) + `--endpoint` (env `BUGSEE_ENDPOINT`, default `https://api.bugsee.com`).
 
 **Decision (D0): the JS side does NOT reimplement any of this.** No JS upload/discovery/pack/inject. The plugins

@@ -39,10 +39,29 @@ describe('uploadSourcemaps', () => {
       '1.0.0',
       '--build',
       '7',
+      '--allow-empty',
     ]);
     // token + endpoint forwarded to the upload
     expect(calls[1]?.options.token).toBe('tok');
     expect(calls[1]?.options.endpoint).toBe('https://api.test');
+  });
+
+  // A build that emitted no maps is a legitimate shape — a package built without them, a framework
+  // whose server output has none — not a reason to fail someone's deploy. The CLI exits 10 on it
+  // unless told otherwise (bugsee-cli >= 0.7.10).
+  it('passes --allow-empty so an output directory with no maps is not an upload failure', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({ ...base, run, deleteMapFiles: async () => [] });
+    expect(calls[1]?.args).toContain('--allow-empty');
+  });
+
+  // …unless the caller asked for strictness. `failOnError` is for teams who would rather the build
+  // stopped than ship un-symbolicatable crashes, and "this build produced no maps at all" is exactly
+  // the misconfiguration they want it to catch.
+  it('omits --allow-empty under failOnError, so an empty build still fails loudly', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({ ...base, failOnError: true, run, deleteMapFiles: async () => [] });
+    expect(calls[1]?.args).not.toContain('--allow-empty');
   });
 
   it('deletes the .map files after upload by default and returns them', async () => {

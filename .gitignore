@@ -11,6 +11,11 @@ reports/
 .vscode/*
 !.vscode/extensions.json
 
+# `next build` output. The nextjs e2e runs a REAL build (packages/nextjs-e2e), so anyone who runs it —
+# or who builds the sample to measure something — is left with a tree of generated JSON that fails
+# `biome check .` by the thousand.
+.next/
+
 # tsup writes a bundled config next to the package when tsup.config.ts needs transpiling, and leaves
 # it behind if the build is interrupted. Untracked, it fails `biome check .` on a formatting rule.
 tsup.config.bundled_*.mjs

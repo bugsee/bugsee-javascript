@@ -144,6 +144,12 @@ export async function uploadSourcemaps(
     if (dryRun) {
       return { injected: true, uploaded: false, deletedMaps: [], ...vcsEcho };
     }
+    // `--allow-empty` (bugsee-cli >= 0.7.10): an output directory with no maps is a legitimate build
+    // shape — a monorepo package built without them, a framework whose server output has none — and
+    // the CLI otherwise exits 10 on it. Under `failOnError` it is NOT passed: a team that asked for
+    // strictness wants "this build produced no maps at all" to stop the build, which is exactly the
+    // misconfiguration that silently costs them symbolication later.
+    const emptyFlag = options.failOnError === true ? [] : ['--allow-empty'];
     await run(
       [
         'debug-files',
@@ -155,6 +161,7 @@ export async function uploadSourcemaps(
         appVersion,
         '--build',
         appBuild,
+        ...emptyFlag,
       ],
       cliOptions,
     );
