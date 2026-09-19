@@ -728,7 +728,7 @@ Entry shape — the viewer's `RecordingTouchEvent`, so web and mobile render thr
 | field | meaning |
 | --- | --- |
 | `timestamp` | wall-clock ms |
-| `id` | groups the stages of one gesture (omitted on a mouse wheel `scroll` entry — it never opens/closes one) |
+| `id` | groups the stages of one gesture. `input.md` lists this field as always present; this SDK's own convention is to OMIT an optional field rather than emit a placeholder for it when it does not apply — so a mouse wheel `scroll` entry, which opens/closes no gesture, carries no `id` key at all (not `null`, not `""`) |
 | `type` | `begin` \| `move` \| `end` \| `scroll` for device input; the semantic name for `tool: Other`. Web: pointer `move` is recorded for PEN gestures (in contact, on change; none for a gesture that began on a masked target) and, **new in version 3**, for a MOUSE while a button is held (drag, same terms as a pen stroke) plus sampled hover (~10/s, `HOVER_SAMPLE_INTERVAL_MS`) |
 | `x`, `y` | viewport CSS pixels (rounded) |
 | `force` | normalised pressure 0..1 |

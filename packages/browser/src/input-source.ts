@@ -90,6 +90,13 @@ import { penAngles } from './pen-angles';
 // read. `describeTarget` masks anything the SHARED sensitive-input definition matches, or anything
 // under the app's mask selector, to `{ tag, masked }`. And a keystroke aimed at either is dropped
 // OUTRIGHT — see THE SECURE-FIELD EXCLUSION in the keydown handler.
+//
+// Mouse HOVER sampling is DELIBERATELY not masked-target-gated, unlike a drag move: a drag suppresses
+// itself entirely for a gesture that began on a masked target (see the DRAG bullet above) because it
+// carries no target of its own to check — its privacy rides on where it started. Hover has no "began" to
+// key off (no press ever opens it), and it carries only a bare position, exactly like every other pointer
+// coordinate this source already records over a masked field (see the secure-field pointer test below) —
+// a screen recording already shows the cursor there. Withholding it would be inconsistent, not safer.
 
 /** A structural, PII-safe description of an interaction's target element. */
 export interface TargetDescriptor {
