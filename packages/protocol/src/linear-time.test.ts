@@ -23,35 +23,49 @@ const burn = (n: number): void => {
 
 describe('timePerCall', () => {
   it('reports the cost of ONE call, not of the batch it needed to measure it', () => {
-    // The whole point: cheap work is repeated until the sample is trustworthy, and the reported
-    // number is still per-call. Four times the work per call must cost about four times as much,
-    // however many repetitions each needed.
+    // Driven by an INJECTED clock, so the assertion is exact rather than approximate. Twice before
+    // this test measured real work and compared wall-clock ratios: it read 16.7x for 4x work when the
+    // small sample got a quiet moment, and later 1.886x — under the lower bound — when the large one
+    // did. A guard against timing noise cannot itself be a timing measurement, and no amount of
+    // interleaving fixes that; the property under test is arithmetic, not performance.
     //
-    // Measured through `measurePair` — interleaved rounds, best of each — rather than one bare
-    // `timePerCall` per size. This test USED to take a single sample of each, which made it strictly
-    // less noise-resistant than the helper it exists to validate, and it duly failed under the
-    // parallel load of the full per-package coverage run: it read 16.7x for 4x work because the
-    // small sample got a quiet moment and the large one did not. A guard against timing noise that
-    // is itself vulnerable to timing noise reports on the machine, not on the code.
-    const { small: one, large: four } = measurePair(
-      () => burn(200_000),
-      () => burn(800_000),
-    );
+    // Each call to `work` costs exactly `costPerCall` on this clock, whatever the batch.
+    const fakeClock = (costPerCall: number) => {
+      let elapsed = 0;
+      return {
+        clock: () => elapsed,
+        work: () => {
+          elapsed += costPerCall;
+        },
+      };
+    };
 
-    // The LOWER bound is the assertion. If `timePerCall` returned the batch time instead of the
-    // per-call cost, both sizes would land on the same ~25 ms sample floor and the ratio would collapse
-    // to ~1 — so `> 2` is what actually catches the defect this test exists for.
-    expect(four / one).toBeGreaterThan(2);
-    // The upper bound is a loose sanity net, and it has to STAY loose. This file's own helper documents
-    // why: the CI runner inflates a real ratio by ~2.1x, because macOS migrates its low-QoS threads
-    // between performance and efficiency cores. 4 x 2.1 ~= 8.4, so a ceiling of 8 sits underneath the
-    // healthy band and duly failed at 8.31, then 9.15 — twice, on healthy code. It is the same trap
-    // SIZE_SEPARATION was widened from 4x to 16x to escape, left behind in this self-test.
-    //
-    // Nothing real is lost by widening: no defect in `timePerCall` drives this ratio UP. Over-dividing
-    // pushes it below the lower bound; under-dividing pins it near 1. This only catches a wholly
-    // unhinged reading.
-    expect(four / one).toBeLessThan(20);
+    // The sample floor forces MANY repetitions for cheap work — 250 of them here — and the reported
+    // number must still be the cost of one. Returning the batch time would read 25, not 0.1.
+    const cheap = fakeClock(0.1);
+    expect(timePerCall(cheap.work, cheap.clock, 25)).toBeCloseTo(0.1, 10);
+
+    // Work that already exceeds the floor in one call runs exactly once, and is reported as itself.
+    const expensive = fakeClock(40);
+    expect(timePerCall(expensive.work, expensive.clock, 25)).toBeCloseTo(40, 10);
+
+    // And the ratio the real guards depend on is exact: 4x the cost per call, 4x the reading, even
+    // though the cheap side needed 250 repetitions to reach the floor and the dear side needed 63.
+    const one = fakeClock(0.1);
+    const four = fakeClock(0.4);
+    expect(
+      timePerCall(four.work, four.clock, 25) / timePerCall(one.work, one.clock, 25),
+    ).toBeCloseTo(4, 10);
+  });
+
+  it('still measures REAL work, and reports something sane for it', () => {
+    // The fake clock above pins the arithmetic; this pins that the helper is wired to a real clock at
+    // all — a `timePerCall` that always returned 0, or the batch's start time, would satisfy every
+    // assertion above. Deliberately one-sided and unbounded above: any ceiling here is a wall-clock
+    // budget on a shared runner, which is what made this file flaky twice.
+    const cost = timePerCall(() => burn(200_000));
+    expect(cost).toBeGreaterThan(0);
+    expect(Number.isFinite(cost)).toBe(true);
   });
 
   it('repeats cheap work rather than trusting a single unmeasurable reading', () => {
