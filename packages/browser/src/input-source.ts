@@ -36,14 +36,16 @@ import { penAngles } from './pen-angles';
 //   - DRAG: `pointermove` while any button is held. Recorded Android-canonically
 //     (`InputEventGenerationHelper.registerMoveEvent`): only when something recorded (x/y/force) changed,
 //     at the browser's own frame-aligned pointermove rate. Its identity lives on the gesture's `begin`, so
-//     a move carries no target and no button — same as a pen move. A gesture that began on a MASKED target
-//     records no moves at all (mouse or pen): a path there is handwriting — a signature, a PIN drawn on a
-//     pad — or, for a mouse, still traces exactly where the pointer went over that field.
+//     a move carries no target and no `button` — same as a pen move — but it DOES carry `buttonMask` (see
+//     MOUSE BUTTONS below). A gesture that began on a MASKED target records no moves at all (mouse or
+//     pen): a path there is handwriting — a signature, a PIN drawn on a pad — or, for a mouse, still
+//     traces exactly where the pointer went over that field.
 //   - HOVER: `pointermove` with no button held is sampled at about {@link HOVER_SAMPLE_INTERVAL_MS} — a
 //     GUESS (`recording-input-presentation` open item 31; the recording-size cost is unmeasured), so it is
-//     a named constant, never a bare literal. A hover move carries no target and no button, like a pen
-//     move; its `id` identifies one continuous hover run and is freed the moment a real press begins, so
-//     it can never collide with — or, Android's own documented bug, get reused by — a press id.
+//     a named constant, never a bare literal. A hover move carries no target and no `button`, like a pen
+//     move, plus `buttonMask` (reads `0` — hover is exactly "no button held"); its `id` identifies one
+//     continuous hover run and is freed the moment a real press begins, so it can never collide with —
+//     or, Android's own documented bug, get reused by — a press id.
 // A pen move: only while the gesture is in contact (never a hovering pen — that stays future work).
 //
 // `keyup` is a DELIBERATE divergence from the mobile SDKs, not an oversight: a press is recorded once, on
@@ -56,10 +58,13 @@ import { penAngles } from './pen-angles';
 //                     azimuthAngle?, tool, button?, buttonMask?, metaState?, view* }
 //                     (angles: pen only; button/buttonMask/metaState: mouse only — see below)
 //   pointermove   → { type:'move',  id?, x, y, force, majorRadius?, minorRadius?, altitudeAngle?,
-//                     azimuthAngle?, tool:Pen|Mouse }   (pen: in contact; mouse: drag or sampled hover)
+//                     azimuthAngle?, tool:Pen|Mouse, buttonMask? }
+//                     (pen: in contact, no buttonMask; mouse: drag or sampled hover, buttonMask but no
+//                     `button` — a move never changes one)
 //   pointerup     → { type:'end',   …the same, closing the gesture id }
 //   pointercancel → { type:'end',   …the gesture was aborted by the browser }
-//   wheel         → { type:'scroll', x?, y?, scrollX, scrollY, scrollUnit, tool:Mouse, metaState }
+//   wheel         → { type:'scroll', x?, y?, scrollX, scrollY, scrollUnit, tool:Mouse, metaState,
+//                     buttonMask? }
 //                     (no `id` — a wheel occurrence opens/closes no gesture; same-frame deltas coalesced)
 //   keydown       → { type:'keydown', tool:Key, id, key, keyCode, metaState, view* }
 // `type:'keydown'` is Android's InputEventStage.KeyDown (interception/input/InputEventStage.java) —
@@ -72,9 +77,15 @@ import { penAngles } from './pen-angles';
 // `MouseEvent.button` numbers middle and secondary the OTHER WAY ROUND (0 primary, 1 middle, 2
 // secondary), so it is mapped, never passed through. `buttonMask` is the buttons HELD, from
 // `MouseEvent.buttons` — the DOM's bit layout already matches the wire's (1 primary, 2 secondary, 4
-// middle, 8 back, 16 forward), so it passes straight through. `metaState` is written on a mouse
-// `begin`/`end` too (previously key entries only), through the same Android-metaState mapping the keydown
-// path already uses — reused, not re-derived.
+// middle, 8 back, 16 forward), so it passes straight through — and, unlike `button`, it is written on
+// EVERY mouse stage the platform can read it on: `begin`/`end`, a drag or hover `move`, and `scroll` (a
+// native `WheelEvent` inherits `buttons` from `MouseEvent`). A consumer must not read a non-zero
+// `buttonMask` on a `scroll` entry as a press — only as "a button happened to be down while the wheel
+// turned"; only `begin`/`end` ever carries `button`, because only a press or release changes one.
+// `metaState` is written on a mouse `begin`/`end` AND `scroll` (previously key entries only), through the
+// same Android-metaState mapping the keydown path already uses — reused, not re-derived. Ctrl-plus-wheel
+// is a zoom, not a scroll, which is worth being able to tell apart, so it stays on `scroll` too even
+// though the contract's v3 prose did not explicitly call it out there.
 //
 // DELIBERATELY NOT ON THIS STREAM: `change` / `submit` / `focus`. They are not device presses — they are
 // STATE-CHANGE DOM signals, and none of the three is (or structurally can be) a member of Android's
@@ -279,14 +290,23 @@ const MOUSE_BUTTON_MAP: Readonly<Record<number, number>> = { 0: 0, 1: 2, 2: 1, 3
  *  the DOM's own default (`WheelEvent.DOM_DELTA_PIXEL` is `0`). */
 const SCROLL_UNIT_BY_MODE: Readonly<Record<number, string>> = { 0: 'pixel', 1: 'line', 2: 'page' };
 
-/** `button`/`buttonMask` for a mouse pointer stage — never emitted for any other tool (pen/touch carry no
- *  button fields at all, per the wire contract). */
+/** `buttonMask` alone — every mouse stage the platform can read `MouseEvent.buttons` on writes it:
+ *  `begin`/`end`, `move` (drag and sampled hover alike) and `scroll`. `button` (the button that CHANGED)
+ *  is narrower: only a press or release changes a button, so a move or a wheel turn never carries one —
+ *  see {@link mouseButtonFields}, used on `begin`/`end` only. */
+function buttonMaskFor(e: ButtonsEventLike): Partial<InputEventDetail> {
+  const mask = typeof e.buttons === 'number' && Number.isFinite(e.buttons) ? e.buttons : undefined;
+  return mask !== undefined ? { buttonMask: mask } : {};
+}
+
+/** `button`/`buttonMask` for a mouse pointer BEGIN/END — never emitted for any other tool (pen/touch
+ *  carry no button fields at all, per the wire contract), and never for a move or a wheel turn (those get
+ *  {@link buttonMaskFor} alone — no `button`, since neither changes one). */
 function mouseButtonFields(e: PointerEventLike): Partial<InputEventDetail> {
   const mapped = typeof e.button === 'number' ? MOUSE_BUTTON_MAP[e.button] : undefined;
-  const mask = typeof e.buttons === 'number' && Number.isFinite(e.buttons) ? e.buttons : undefined;
   return {
     ...(mapped !== undefined ? { button: mapped } : {}),
-    ...(mask !== undefined ? { buttonMask: mask } : {}),
+    ...buttonMaskFor(e),
   };
 }
 
@@ -361,15 +381,20 @@ function contact(e: PointerEventLike, tool: InputTool): Partial<InputEventDetail
   };
 }
 
-interface PointerEventLike extends ModifierEventLike {
+/** The buttons HELD (DOM `MouseEvent.buttons`) — a bitmask, distinct from `button` (the one that
+ *  changed). A native `WheelEvent` inherits it from `MouseEvent` too (a wheel turn is a `MouseEvent`
+ *  subtype), which is how a chorded wheel turn is told from a plain one. Drives `buttonMask` on every
+ *  mouse stage, plus drag-vs-hover classification for a `pointermove`. */
+interface ButtonsEventLike {
+  buttons?: unknown;
+}
+
+interface PointerEventLike extends ModifierEventLike, ButtonsEventLike {
   pointerId?: unknown;
   pointerType?: unknown;
   clientX?: unknown;
   clientY?: unknown;
   button?: unknown;
-  /** The buttons HELD (DOM `MouseEvent.buttons`) — a bitmask, distinct from `button` (the one that
-   *  changed). Drives both `buttonMask` and drag-vs-hover classification for a mouse `pointermove`. */
-  buttons?: unknown;
   pressure?: unknown;
   width?: unknown;
   height?: unknown;
@@ -381,7 +406,7 @@ interface PointerEventLike extends ModifierEventLike {
 }
 
 /** The `WheelEvent` surface this source reads. */
-interface WheelEventLike extends ModifierEventLike {
+interface WheelEventLike extends ModifierEventLike, ButtonsEventLike {
   deltaX?: unknown;
   deltaY?: unknown;
   deltaMode?: unknown;
@@ -398,6 +423,10 @@ interface WheelAccumulator {
   metaState: number;
   x?: number;
   y?: number;
+  /** Buttons held at the latest event in this window, if any reported one. A non-zero mask here means
+   *  only "a button happened to be down while the wheel turned" — never a press, which only `begin`/`end`
+   *  can carry. */
+  buttonMask?: number;
 }
 
 /** `requestAnimationFrame` where it exists; a 16ms timeout elsewhere (SSR / non-browser construction). */
@@ -567,7 +596,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     return buttonsHeld ? this.#mouseDragMove(e) : this.#mouseHoverMove(e);
   }
 
-  /** A move of an open, unmasked mouse drag — same change-gating as a pen move (see {@link #penMove}). */
+  /** A move of an open, unmasked mouse drag — same change-gating as a pen move (see {@link #penMove}).
+   *  Carries `buttonMask` (the platform can read it here) but no `button` — a move never changes one. */
   #mouseDragMove(e: PointerEventLike): InputEventDetail | undefined {
     if (this.#mouseDragPaths.size === 0) return undefined;
     const last = this.#mouseDragPaths.get(e.pointerId);
@@ -577,6 +607,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       type: 'move',
       ...contact(e, InputTool.Mouse),
       tool: InputTool.Mouse,
+      ...buttonMaskFor(e),
     };
     if (MOVE_FIELDS.every((field) => detail[field] === last[field])) return undefined;
     this.#mouseDragPaths.set(e.pointerId, detail);
@@ -584,7 +615,9 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   }
 
   /** A sampled hover move (no button held): throttled to ~{@link HOVER_SAMPLE_INTERVAL_MS}, carrying no
-   *  target and no button — same shape as a pen move. */
+   *  target and no `button` — same shape as a pen move, plus `buttonMask` (reads as `0` when the event
+   *  reports a usable mask — hover is exactly "no button held" — omitted like any other field the event
+   *  simply didn't report). */
   #mouseHoverMove(e: PointerEventLike): InputEventDetail | undefined {
     const now = this.#now();
     const lastSampleAt = this.#lastHoverSampleAt.get(e.pointerId);
@@ -593,7 +626,13 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     this.#lastHoverSampleAt.set(e.pointerId, now);
     const id = this.#hoverIds.get(e.pointerId) ?? String(this.#nextGestureId++);
     this.#hoverIds.set(e.pointerId, id);
-    return { id, type: 'move', ...contact(e, InputTool.Mouse), tool: InputTool.Mouse };
+    return {
+      id,
+      type: 'move',
+      ...contact(e, InputTool.Mouse),
+      tool: InputTool.Mouse,
+      ...buttonMaskFor(e),
+    };
   }
 
   /** The passive, capture-phase `wheel` listener: accumulates this frame's deltas (never emits directly)
@@ -621,6 +660,11 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       const yField = coord(e.clientY, 'y');
       if ('x' in xField) acc.x = xField.x;
       if ('y' in yField) acc.y = yField.y;
+      // buttonMask: a native WheelEvent inherits `buttons` from MouseEvent, so a chorded wheel turn (a
+      // button happened to be down while it turned — never a press, which only begin/end carries) is
+      // told from a plain one. Same latest-wins, omit-if-unreported treatment as x/y.
+      const maskField = buttonMaskFor(e);
+      if ('buttonMask' in maskField) acc.buttonMask = maskField.buttonMask;
       this.#wheelAccum = acc;
       if (!this.#wheelFrameScheduled) {
         this.#wheelFrameScheduled = true;
@@ -646,6 +690,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       scrollUnit: acc.scrollUnit,
       tool: InputTool.Mouse,
       metaState: acc.metaState,
+      ...(acc.buttonMask !== undefined ? { buttonMask: acc.buttonMask } : {}),
     });
   };
 

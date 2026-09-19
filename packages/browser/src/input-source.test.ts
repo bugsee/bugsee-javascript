@@ -606,7 +606,9 @@ describe('createBrowserInputSource', () => {
       return { now: () => now, advance: (ms: number) => (now += ms) };
     }
 
-    it('records a drag move of an open mouse gesture, without target or button', () => {
+    // buttonMask is written on a move too (every mouse stage the platform can read `buttons` on) — but
+    // never `button`, since a move never changes which one is down.
+    it('records a drag move of an open mouse gesture, with buttonMask but no target or button', () => {
       const target = fakeTarget();
       const { events } = activate({ target });
       target.emit('pointerdown', ptr()); // buttons: 1 (default) — a button is held
@@ -619,7 +621,17 @@ describe('createBrowserInputSource', () => {
         y: 40,
         force: 0.7,
         tool: InputTool.Mouse,
+        buttonMask: 1,
       });
+      expect(events[1]).not.toHaveProperty('button');
+    });
+
+    it('reflects a chorded buttonMask on a drag move (a second button held mid-drag)', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr());
+      target.emit('pointermove', ptr({ clientX: 20, buttons: 1 | 2 })); // primary + secondary now held
+      expect(events[1]?.buttonMask).toBe(3);
     });
 
     it('keeps a drag move under the gesture id opened by its begin', () => {
@@ -696,13 +708,13 @@ describe('createBrowserInputSource', () => {
       expect(events.map((e) => e.type)).toStrictEqual(['begin']);
     });
 
-    it('samples a hovering mouse (no button held), with no target and no button', () => {
+    it('samples a hovering mouse (no button held), with buttonMask 0 but no target and no button', () => {
       const target = fakeTarget();
       const clock = fakeClock();
       const { events } = activate({ target, now: clock.now });
       target.emit('pointermove', ptr({ buttons: 0, clientX: 15, clientY: 25 }));
       expect(events).toStrictEqual([
-        { id: '1', type: 'move', x: 15, y: 25, force: 0.5, tool: InputTool.Mouse },
+        { id: '1', type: 'move', x: 15, y: 25, force: 0.5, tool: InputTool.Mouse, buttonMask: 0 },
       ]);
     });
 
@@ -1295,12 +1307,14 @@ describe('createBrowserInputSource', () => {
       };
     }
 
+    // `buttons: 0` (no button held) is the common case for a wheel turn; override to model a chorded one.
     const wheel = (over: Record<string, unknown> = {}) => ({
       deltaX: 0,
       deltaY: 10,
       deltaMode: 0,
       clientX: 5,
       clientY: 6,
+      buttons: 0,
       ...over,
     });
 
@@ -1314,7 +1328,7 @@ describe('createBrowserInputSource', () => {
       expect(events).toHaveLength(1);
     });
 
-    it('emits one scroll entry: x/y, signed scrollX/scrollY (no flip), scrollUnit, tool, metaState — no id', () => {
+    it('emits one scroll entry: x/y, signed scrollX/scrollY (no flip), scrollUnit, tool, metaState, buttonMask — no id or button', () => {
       const target = fakeTarget();
       const frame = fakeFrame();
       const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
@@ -1330,9 +1344,42 @@ describe('createBrowserInputSource', () => {
           scrollUnit: 'pixel',
           tool: InputTool.Mouse,
           metaState: 4096, // META_CTRL_ON
+          buttonMask: 0, // no button held — the common case
         },
       ]);
       expect(events[0]).not.toHaveProperty('id');
+      expect(events[0]).not.toHaveProperty('button');
+    });
+
+    // The scenario the contract names explicitly: a non-zero mask on a `scroll` entry means only "a
+    // button happened to be down while the wheel turned" — never a press, which only begin/end carries.
+    it('carries buttonMask (not button) on a wheel turn with a button held', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ buttons: 1 })); // primary held while the wheel turns
+      frame.flush();
+      expect(events[0]?.buttonMask).toBe(1);
+      expect(events[0]).not.toHaveProperty('button');
+    });
+
+    it('omits buttonMask on a scroll entry when no event in the window reports a usable buttons mask', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ buttons: undefined }));
+      frame.flush();
+      expect(events[0]).not.toHaveProperty('buttonMask');
+    });
+
+    it('uses the buttonMask of the LATEST event in the coalesced frame, like position and metaState', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ buttons: 1 }));
+      target.emit('wheel', wheel({ buttons: 0 })); // released mid-frame
+      frame.flush();
+      expect(events[0]?.buttonMask).toBe(0);
     });
 
     it('sums same-frame wheel deltas into one coalesced entry', () => {
