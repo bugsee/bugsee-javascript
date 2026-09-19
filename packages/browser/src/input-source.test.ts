@@ -718,6 +718,22 @@ describe('createBrowserInputSource', () => {
       ]);
     });
 
+    // Deliberately NOT masked-target-gated, unlike a drag move (see the reviewer-flagged design
+    // decision in input-source.ts's PII discipline section): hover never opens a gesture, so it has no
+    // "began on" target to check, and it carries only a bare position — the same PII profile as every
+    // other pointer coordinate this source already records over a masked field. Pins that decision
+    // against a well-meaning "fix" that makes hover symmetric with drag and starts dropping it.
+    it('keeps sampling a hovering mouse over a MASKED target — hover is deliberately not mask-gated', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      const secure = el({ tag: 'input', type: 'password' });
+      target.emit('pointermove', ptr({ buttons: 0, target: secure, clientX: 15, clientY: 25 }));
+      expect(events).toStrictEqual([
+        { id: '1', type: 'move', x: 15, y: 25, force: 0.5, tool: InputTool.Mouse, buttonMask: 0 },
+      ]);
+    });
+
     it('throttles hover samples to the named interval, not faster', () => {
       const target = fakeTarget();
       const clock = fakeClock();
