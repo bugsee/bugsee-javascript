@@ -89,15 +89,21 @@ Consequence: a JS crash cannot be joined to a commit, so no "which deploy introd
 source-context-from-VCS, and the plugin's whole VCS collector is dead weight. This is a wire-protocol
 change (appserver + worker + CLI), not a CLI-only fix, but the CLI is where it surfaces.
 
-### 6. There is no build record for a web build (SEV3, verified in code)
+### 6. There is no build record for a web build (SEV3, verified in code) — **DESIGNED, decision taken 2026-09-19**
 
 `upload build` requires an artefact (`--artifact <.aab/.apk/.ipa>`; `src/cli/upload.rs:82`), and
 `upload build-info` takes a producer-built `--payload-json` that only the Gradle plugin and the Xcode
 path know how to assemble. A web build therefore registers nothing: no build list, no build metadata, no
 size analysis — all of which Android and iOS get from the same CLI.
 
-Whether web builds SHOULD register is a product decision; today the CLI could not accept one if the JS
-side wanted to send it.
+Whether web builds SHOULD register was the product decision, and it is taken: **yes, and by default
+only a release build** — following the Android Gradle plugin and the iOS agent for the principles.
+Design, decisions and slices: `docs/design/web-build-registration.md`.
+
+The CLI blocker named above is now precise: `upload build` requires `--artifact` and **always** sends
+`request_artifact_upload: true` (`cli/upload.rs:252-253`), so the case every other platform treats as
+normal — register the build, ship no bytes — is the one a web build cannot express. The register-only
+mode exists in Rust and is used by `xcode post-action`; nothing exposes it on the CLI.
 
 ### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18)
 
