@@ -129,6 +129,67 @@ describe('uploadSourcemaps', () => {
     });
   });
 
+  // bugsee-cli 0.7.11 made `upload --dry-run` tolerate a map with no debug-id, which is exactly what
+  // a dry run produces: `inject --dry-run` writes nothing, so nothing is keyed. Before that the
+  // upload exited 11 and the plugin had to skip step 2 entirely — so the one option documented as the
+  // SAFE diagnostic never exercised the upload path at all.
+  describe('dry run', () => {
+    it('runs the upload too, so the preview covers the whole flow', async () => {
+      const { run, calls } = fakeRun();
+      const deleteMapFiles = vi.fn(async () => [] as string[]);
+      const result = await uploadSourcemaps({ ...base, dryRun: true, run, deleteMapFiles });
+
+      expect(calls.map((c) => c.args.slice(0, 2))).toEqual([
+        ['sourcemaps', 'inject'],
+        ['debug-files', 'upload'],
+      ]);
+      expect(calls[0]?.args).toContain('--dry-run');
+      expect(calls[1]?.args).toContain('--dry-run');
+      // Still nothing uploaded and nothing deleted: a dry run must not touch the build.
+      expect(result).toEqual({ injected: true, uploaded: false, deletedMaps: [] });
+      expect(deleteMapFiles).not.toHaveBeenCalled();
+    });
+
+    it('reports a dry-run failure the same way as a real one', async () => {
+      const onError = vi.fn();
+      const run = vi.fn(async (args: string[]) => {
+        if (args[0] === 'debug-files') throw new Error('upload preview failed');
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      const result = await uploadSourcemaps({
+        ...base,
+        dryRun: true,
+        run,
+        deleteMapFiles: async () => [],
+      });
+      expect(result.uploaded).toBe(false);
+      expect(String(onError.mock.calls[0]?.[0] ?? '')).toBe('');
+      expect(result.injected).toBe(false);
+    });
+  });
+
+  // `--strip-sources-content` (bugsee-cli 0.7.11): a map's `sourcesContent` is the customer's source
+  // verbatim, and it rides into the upload. Opt-in, because stripping it costs the source snippet
+  // beside a symbolicated frame.
+  describe('stripSourcesContent', () => {
+    it('is off by default', async () => {
+      const { run, calls } = fakeRun();
+      await uploadSourcemaps({ ...base, run, deleteMapFiles: async () => [] });
+      expect(calls[1]?.args).not.toContain('--strip-sources-content');
+    });
+
+    it('passes the flag when asked', async () => {
+      const { run, calls } = fakeRun();
+      await uploadSourcemaps({
+        ...base,
+        stripSourcesContent: true,
+        run,
+        deleteMapFiles: async () => [],
+      });
+      expect(calls[1]?.args).toContain('--strip-sources-content');
+    });
+  });
+
   it('deletes the .map files after upload by default and returns them', async () => {
     const { run } = fakeRun();
     const order: string[] = [];
@@ -155,18 +216,23 @@ describe('uploadSourcemaps', () => {
     expect(result.deletedMaps).toEqual([]);
   });
 
-  it('dry-run: injects dry, skips the upload that cannot succeed, and deletes nothing', async () => {
-    // This used to assert `--dry-run` reached BOTH commands — i.e. it pinned the defect. Measured against
-    // the real bugsee-cli v0.7.2: `sourcemaps inject --dry-run` exits 0 and writes nothing, so the maps
-    // still carry no debug_id, and `debug-files upload --dry-run` then exits 11 with "source map has no
-    // debug_id … run 'sourcemaps inject' first" — aborting the build from the one option documented as the
-    // safe diagnostic, on every freshly-built output directory.
+  it('dry-run: both commands run dry, and nothing is deleted', async () => {
+    // Twice-revised, and the history is the point. It first asserted `--dry-run` reached BOTH commands
+    // while the CLI could not survive that (v0.7.2: `inject --dry-run` writes nothing, so every map is
+    // un-keyed and `upload --dry-run` exits 11) — it pinned a defect. Then it asserted the workaround,
+    // skipping the upload, which meant the safe diagnostic never exercised the upload path. bugsee-cli
+    // 0.7.11 made `upload --dry-run` report an un-keyed map instead of failing, so both commands run
+    // again — this time because the CLI actually supports it.
     const { run, calls } = fakeRun();
     const deleteMapFiles = vi.fn(async () => ['x']);
     const result = await uploadSourcemaps({ ...base, run, deleteMapFiles, dryRun: true });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.args).toContain('--dry-run');
-    expect(calls[0]?.args.slice(0, 2)).toEqual(['sourcemaps', 'inject']);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.args.includes('--dry-run'))).toBe(true);
+    expect(calls.map((c) => c.args.slice(0, 2))).toEqual([
+      ['sourcemaps', 'inject'],
+      ['debug-files', 'upload'],
+    ]);
+    // Nothing was uploaded, so nothing justifies deleting the only copy of the user's maps.
     expect(deleteMapFiles).not.toHaveBeenCalled();
     expect(result).toMatchObject({ injected: true, uploaded: false, deletedMaps: [] });
   });
@@ -265,11 +331,13 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
   });
 
   describe('SEV1 #1 — dryRun aborted the build', () => {
-    it('runs INJECT dry, but does not run the upload that cannot succeed', async () => {
-      // Measured against the real bugsee-cli v0.7.2: `sourcemaps inject --dry-run` exits 0 and writes
-      // nothing, so the maps still carry no debug_id — and `debug-files upload --dry-run` then exits 11
-      // ("source map has no debug_id … run 'sourcemaps inject' first"), which aborted the build. dryRun is
-      // documented as the SAFE diagnostic; it failed on every freshly-built output directory.
+    it('previews the whole flow, and claims no upload', async () => {
+      // The original defect: measured against the real bugsee-cli v0.7.2, `sourcemaps inject --dry-run`
+      // wrote nothing, so no map carried a debug_id, and `debug-files upload --dry-run` exited 11 —
+      // aborting the build from the option documented as the SAFE diagnostic. The first fix skipped the
+      // upload step; bugsee-cli 0.7.11 fixed it properly (an un-keyed map is reported, not fatal), so the
+      // preview covers both commands again. What must never come back is a dry run that claims an upload,
+      // or one that deletes the maps.
       const calls: string[][] = [];
       const run = vi.fn(async (args: string[]) => {
         calls.push(args);
@@ -283,8 +351,13 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
         dryRun: true,
         run: run as never,
       });
-      expect(calls.map((c) => c.slice(0, 2))).toEqual([['sourcemaps', 'inject']]);
-      expect(result.uploaded).toBe(false); // …and it says so, rather than claiming an upload
+      expect(calls.map((c) => c.slice(0, 2))).toEqual([
+        ['sourcemaps', 'inject'],
+        ['debug-files', 'upload'],
+      ]);
+      expect(calls.every((c) => c.includes('--dry-run'))).toBe(true);
+      expect(result.uploaded).toBe(false);
+      expect(result.deletedMaps).toEqual([]);
     });
   });
 

@@ -76,10 +76,10 @@ describe('@bugsee source-maps — plugin drives bugsee-cli (e2e, fake binary)', 
 
     expect(lines[1]?.argv).toEqual(['sourcemaps', 'inject', outDir]);
 
-    // The upload argv is UNCHANGED by the probe. The metadata is collected and echoed on the result,
-    // but is not on the wire yet — there is no field for it in the upload protocol (see
-    // docs/design/source-maps.md §9). This assertion is what will fail, deliberately, on the day one
-    // is added.
+    // The upload argv carries no VCS metadata: it is collected and echoed on the result, but there is
+    // no field for it in the upload protocol yet (docs/design/source-maps.md §9). This assertion is
+    // what will fail, deliberately, on the day one is added — and it is also the assertion that
+    // catches a flag appearing or disappearing, which is why it lists the argv in full.
     expect(lines[2]?.argv).toEqual([
       'debug-files',
       'upload',
@@ -90,6 +90,7 @@ describe('@bugsee source-maps — plugin drives bugsee-cli (e2e, fake binary)', 
       '1.2.3',
       '--build',
       '99',
+      '--allow-empty',
     ]);
     // token + endpoint forwarded via env (never on argv).
     expect(lines[2]?.token).toBe('e2e-tok');

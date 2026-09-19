@@ -23,6 +23,15 @@ export interface BugseePluginOptions {
   deleteMaps?: boolean;
   /** Run bugsee-cli with `--dry-run` (no upload, no deletion). */
   dryRun?: boolean;
+  /**
+   * Upload source maps WITHOUT their embedded `sourcesContent` (bugsee-cli >= 0.7.11). Default
+   * `false`.
+   *
+   * The map's `sourcesContent` is your source verbatim, and it is what lets a symbolicated crash show
+   * source lines. Stripping it keeps file/line/column resolution and drops the snippet, for teams who
+   * would rather their code did not leave the build machine. The maps on disk are not modified.
+   */
+  stripSourcesContent?: boolean;
   /** Disable the plugin entirely (e.g. dev builds). */
   disabled?: boolean;
   /**
@@ -70,6 +79,7 @@ export interface ResolvedPluginOptions {
   endpoint: string | undefined;
   deleteMaps: boolean;
   dryRun: boolean;
+  stripSourcesContent: boolean;
   /** Whether a failed upload should abort the build. Default false. */
   failOnError: boolean;
   /** Failure sink for the contained path. */
@@ -113,6 +123,7 @@ export function resolvePluginOptions(
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,
+    stripSourcesContent: options.stripSourcesContent ?? false,
     failOnError: options.failOnError ?? false,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
     vcs: options.vcs ?? true,
@@ -156,6 +167,7 @@ export async function runPluginUpload(
       endpoint: resolved.endpoint,
       deleteMaps: resolved.deleteMaps,
       dryRun: resolved.dryRun,
+      stripSourcesContent: resolved.stripSourcesContent,
       failOnError: resolved.failOnError,
       ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
       // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".

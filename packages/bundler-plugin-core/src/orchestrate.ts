@@ -25,6 +25,14 @@ export interface UploadSourcemapsOptions {
   deleteMaps?: boolean;
   /** Pass `--dry-run` to the CLI + skip deletion. */
   dryRun?: boolean;
+  /**
+   * Upload source maps WITHOUT their embedded `sourcesContent` (bugsee-cli >= 0.7.11).
+   *
+   * The map's `sourcesContent` is your source verbatim, and it is what lets a symbolicated crash show
+   * source lines. Stripping it keeps file/line/column resolution and drops the snippet, for teams who
+   * would rather their code did not leave the build machine. The maps on disk are not modified.
+   */
+  stripSourcesContent?: boolean;
   /** Injectable `bugsee-cli` runner (default {@link runBugseeCli}). */
   run?: RunFn;
   /** Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). */
@@ -158,14 +166,13 @@ export async function uploadSourcemaps(
 
     // 2. Upload the maps, keyed by the injected debug-ID (+ version/build metadata).
     //
-    // SKIPPED entirely on a dry run (Wave 7). `sourcemaps inject --dry-run` writes nothing by design, so
-    // the maps still carry no debug_id and `debug-files upload --dry-run` then hard-fails — measured
-    // against the real bugsee-cli v0.7.2: exit 11, "source map has no debug_id … run 'sourcemaps inject'
-    // first". That failure aborted the user's build, on every freshly-built output directory, from the one
-    // option documented as the SAFE diagnostic.
-    if (dryRun) {
-      return { injected: true, uploaded: false, deletedMaps: [], ...vcsEcho };
-    }
+    // A dry run goes through this step too, as of bugsee-cli 0.7.11. It used to be skipped:
+    // `sourcemaps inject --dry-run` writes nothing by design, so no map carried a debug_id and
+    // `debug-files upload --dry-run` hard-failed on the first one (measured against v0.7.2: exit 11,
+    // "source map has no debug_id … run 'sourcemaps inject' first"). Skipping it meant the one option
+    // documented as the SAFE diagnostic never exercised the upload path at all. The CLI now reports
+    // such a map and counts it (`unkeyed`) instead of failing, so the preview covers the whole flow.
+    //
     // `--allow-empty` (bugsee-cli >= 0.7.10): an output directory with no maps is a legitimate build
     // shape — a monorepo package built without them, a framework whose server output has none — and
     // the CLI otherwise exits 10 on it. Under `failOnError` it is NOT passed: a team that asked for
@@ -184,9 +191,17 @@ export async function uploadSourcemaps(
         '--build',
         appBuild,
         ...emptyFlag,
+        ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
+        ...dryFlag,
       ],
       cliOptions,
     );
+
+    // A dry run stops here: nothing was uploaded, so nothing justifies deleting the only copy of the
+    // user's maps.
+    if (dryRun) {
+      return { injected: true, uploaded: false, deletedMaps: [], ...vcsEcho };
+    }
 
     // 3. Delete the client .map files (privacy) — only after a CONFIRMED upload. Deleting after a failure
     //    would destroy the only copy of the mapping while the symbols were never delivered.

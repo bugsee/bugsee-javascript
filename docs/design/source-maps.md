@@ -34,6 +34,14 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
   directory did too (exit 11). v0.7.8 (bugsee-cli #35) skips both and continues, and
   `@bugsee/bundler-plugin-core` now REQUIRES it: its `deleteMaps` step runs only after a fully
   successful upload, which an older CLI never reports for a real web build.
+- **Since v0.7.11** (bugsee-cli #47, #48, #49) the plugin can preview the WHOLE flow and can keep source out of the
+  upload. `debug-files upload --dry-run` no longer fails on a map with no debug-id (which is every map after
+  `inject --dry-run`, since that writes nothing), so the plugin stopped skipping the upload step on a dry run —
+  the safe diagnostic now exercises the path it is meant to diagnose. And `--strip-sources-content`, surfaced as
+  the plugin option `stripSourcesContent` (default off), uploads each map without its embedded source: file,
+  line and column symbolication are unaffected, the snippet beside a frame is what is lost, and the maps on disk
+  are untouched. Same release refuses to inject into an SRI build from the CLI side too, so a user driving
+  `bugsee-cli` directly (Angular, esbuild, Deno) gets the guard the plugin already had.
 - **Since v0.7.10** (bugsee-cli #42) the maps upload SEVERAL AT A TIME — `--concurrency N` is a ceiling that, left
   unset, scales with the batch (one per 8 maps, min 4, max 8). Measured against a mock with 50 ms of latency: 200 maps
   took 23.58 s serially and 4.10 s scaled. The cap is deliberately modest because a CI box on a thin uplink is
@@ -62,7 +70,8 @@ the existing `/v2/apps/{token}/symbols` envelope as `uuid`. `bugsee-cli` already
  build (vite/webpack)
    │  @bugsee/vite-plugin | @bugsee/webpack-plugin  (thin unplugin entries)
    │     └─ @bugsee/bundler-plugin-core  (unplugin factory)
-   │           ├─ collect context { outDir, appToken, appVersion, appBuild, endpoint, deleteMaps, dryRun }
+   │           ├─ collect context { outDir, appToken, appVersion, appBuild, endpoint, deleteMaps, dryRun,
+   │           │                  stripSourcesContent }
    │           ├─ resolve the bugsee-cli binary (dep @bugsee/bugsee-cli, or PATH / BUGSEE_CLI_PATH)
    │           ├─ after the bundle is written:  spawn `bugsee-cli sourcemaps inject <outDir>`
    │           ├─ then:                          spawn `bugsee-cli debug-files upload <outDir> --type sourcemaps …`

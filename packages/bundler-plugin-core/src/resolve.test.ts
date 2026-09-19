@@ -94,6 +94,7 @@ describe('runPluginUpload', () => {
       endpoint: 'https://e.test',
       deleteMaps: false,
       dryRun: false,
+      stripSourcesContent: false,
       failOnError: false,
     });
   });
@@ -329,6 +330,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
       endpoint: undefined,
       deleteMaps: true,
       dryRun: false,
+      stripSourcesContent: false,
       failOnError: false,
       vcs: { commit_sha: sha, branch: 'main' },
     });
@@ -721,5 +723,16 @@ describe('runPluginUpload — the real VCS resolver is the default', () => {
     // asserts is the half that lives here: nothing is called, nothing is recorded, even with a valid
     // explicit commit.
     expect(uploadSourcemaps.mock.calls[0]?.[0]).not.toHaveProperty('vcs');
+  });
+});
+
+describe('stripSourcesContent', () => {
+  it('defaults to off and passes through when set', () => {
+    // The option is useless if it stops at the plugin surface: the whole point is that it reaches
+    // `bugsee-cli`, which is what removes the source.
+    expect(resolvePluginOptions({ appToken: 't' }, {}).stripSourcesContent).toBe(false);
+    expect(
+      resolvePluginOptions({ appToken: 't', stripSourcesContent: true }, {}).stripSourcesContent,
+    ).toBe(true);
   });
 });
