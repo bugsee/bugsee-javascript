@@ -1,7 +1,12 @@
 import type { InputEventDetail } from '@bugsee/capture';
 import { InputTool } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type BrowserInputEnv, createBrowserInputSource, describeTarget } from './input-source';
+import {
+  type BrowserInputEnv,
+  createBrowserInputSource,
+  describeTarget,
+  HOVER_SAMPLE_INTERVAL_MS,
+} from './input-source';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -231,7 +236,14 @@ function fakeTarget() {
   };
 }
 
-const ALL_INTERACTIONS = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'keydown'];
+const ALL_INTERACTIONS = [
+  'pointerdown',
+  'pointermove',
+  'pointerup',
+  'pointercancel',
+  'keydown',
+  'wheel',
+];
 /** The state-change DOM signals this source deliberately does NOT observe (they are breadcrumbs). */
 const NOT_INPUT = ['change', 'submit', 'focusin'];
 
@@ -242,13 +254,15 @@ function activate(env: BrowserInputEnv) {
   return { events, off };
 }
 
-/** A pointerdown/up-shaped fake event. */
+/** A pointerdown/up-shaped fake event. `buttons: 1` (primary held) matches what a real PointerEvent
+ *  reports on the down that just pressed it; override to `0` to model the mask AFTER a release. */
 const ptr = (over: Record<string, unknown> = {}) => ({
   pointerId: 1,
   pointerType: 'mouse',
   clientX: 12,
   clientY: 34,
   button: 0,
+  buttons: 1,
   pressure: 0.5,
   width: 1,
   height: 1,
@@ -289,7 +303,7 @@ describe('createBrowserInputSource', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
     target.emit('pointerdown', ptr());
-    target.emit('pointerup', ptr({ pressure: 0 }));
+    target.emit('pointerup', ptr({ pressure: 0, buttons: 0 })); // released: nothing held any more
     expect(events).toStrictEqual([
       {
         id: '1',
@@ -299,6 +313,8 @@ describe('createBrowserInputSource', () => {
         force: 0.5,
         tool: InputTool.Mouse,
         button: 0,
+        buttonMask: 1,
+        metaState: 0,
         view_tag: 'button',
         target: { text: 'OK', selector: 'button' },
       },
@@ -310,6 +326,8 @@ describe('createBrowserInputSource', () => {
         force: 0,
         tool: InputTool.Mouse,
         button: 0,
+        buttonMask: 0,
+        metaState: 0,
         view_tag: 'button',
         target: { text: 'OK', selector: 'button' },
       },
@@ -426,12 +444,14 @@ describe('createBrowserInputSource', () => {
       expect(events[2]).toMatchObject({ x: 30, y: 50, altitudeAngle: 0.5, azimuthAngle: 2 });
     });
 
-    it.each(['mouse', 'touch'])('records no moves for a %s gesture', (pointerType) => {
+    // Touch still records no moves at all (unchanged by version 3 — see the dedicated "mouse moves"
+    // describe block below for the mouse drag/hover cases version 3 adds).
+    it('records no moves for a touch gesture', () => {
       const target = fakeTarget();
       const { events } = activate({ target });
-      target.emit('pointerdown', ptr({ pointerType }));
-      target.emit('pointermove', ptr({ pointerType, clientX: 99 }));
-      target.emit('pointerup', ptr({ pointerType, clientX: 99 }));
+      target.emit('pointerdown', ptr({ pointerType: 'touch' }));
+      target.emit('pointermove', ptr({ pointerType: 'touch', clientX: 99 }));
+      target.emit('pointerup', ptr({ pointerType: 'touch', clientX: 99 }));
       expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end']);
     });
 
@@ -446,6 +466,17 @@ describe('createBrowserInputSource', () => {
       target.emit('pointercancel', pen({ pointerId: 2 }));
       target.emit('pointermove', pen({ pointerId: 2, clientX: 3 }));
       expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end', 'begin', 'end']);
+    });
+
+    // Distinct from "records no moves for a HOVERING pen" above: here penPaths is NOT empty (pointer 7's
+    // gesture is open), so the fast size-check bail does not fire — the lookup for pointer 9 itself must
+    // still come back empty and record nothing.
+    it('records no move for a pen pointerId with no open gesture, even while a different pen gesture is open', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', pen({ pointerId: 7 }));
+      target.emit('pointermove', pen({ pointerId: 9, clientX: 1 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
     });
 
     it('skips a move that changes nothing recorded, measured against the last entry of that gesture', () => {
@@ -567,6 +598,188 @@ describe('createBrowserInputSource', () => {
     });
   });
 
+  // ---- mouse moves (version 3): drag while a button is held, plus sampled hover ----
+  describe('mouse moves', () => {
+    /** A clock the test fully controls, for the hover sample throttle. */
+    function fakeClock(start = 0) {
+      let now = start;
+      return { now: () => now, advance: (ms: number) => (now += ms) };
+    }
+
+    it('records a drag move of an open mouse gesture, without target or button', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr()); // buttons: 1 (default) — a button is held
+      target.emit('pointermove', ptr({ clientX: 20, clientY: 40, pressure: 0.7 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'move']);
+      expect(events[1]).toStrictEqual({
+        id: '1',
+        type: 'move',
+        x: 20,
+        y: 40,
+        force: 0.7,
+        tool: InputTool.Mouse,
+      });
+    });
+
+    it('keeps a drag move under the gesture id opened by its begin', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr());
+      target.emit('pointermove', ptr({ clientX: 50 }));
+      target.emit('pointerup', ptr({ buttons: 0 }));
+      expect(events.map((e) => e.id)).toStrictEqual(['1', '1', '1']);
+    });
+
+    it('skips a drag move that changes nothing recorded (measured against the last entry)', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr());
+      target.emit('pointermove', ptr()); // identical to the begin
+      target.emit('pointermove', ptr({ clientX: 12.2 })); // rounds to the same x
+      target.emit('pointermove', ptr({ clientX: 13 })); // x actually changed
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'move']);
+      expect(events[1]?.x).toBe(13);
+    });
+
+    it('records no drag moves for a gesture that began on a masked target', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      const secure = el({ tag: 'input', type: 'password' });
+      target.emit('pointerdown', ptr({ target: secure }));
+      target.emit('pointermove', ptr({ clientX: 99, target: secure }));
+      target.emit('pointerup', ptr({ buttons: 0, target: secure }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin', 'end']);
+    });
+
+    it('records no drag move for a pointerId with no open mouse gesture', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointermove', ptr({ clientX: 99 })); // no preceding pointerdown at all
+      expect(events).toStrictEqual([]);
+    });
+
+    // Distinct from the above: here mouseDragPaths is NOT empty (pointer 7's drag is open), so the fast
+    // size-check bail does not fire — the lookup for pointer 9 itself must still come back empty.
+    it('records no drag move for a pointerId with no open gesture, even while a different drag is open', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr({ pointerId: 7 }));
+      target.emit('pointermove', ptr({ pointerId: 9, clientX: 1 }));
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
+    });
+
+    it('keeps concurrent mouse drags apart: each move joins, and is compared against, its own gesture', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr({ pointerId: 7, clientX: 100 }));
+      target.emit('pointerdown', ptr({ pointerId: 8, clientX: 200 }));
+      target.emit('pointermove', ptr({ pointerId: 7, clientX: 200 })); // equals pointer 8's state
+      target.emit('pointermove', ptr({ pointerId: 8, clientX: 200 })); // unchanged for pointer 8
+      expect(events.map((e) => [e.type, e.id, e.x])).toStrictEqual([
+        ['begin', '1', 100],
+        ['begin', '2', 200],
+        ['move', '1', 200],
+      ]);
+    });
+
+    it('forgets drag state on deactivate, so a re-activation records no move for a stale gesture', () => {
+      const target = fakeTarget();
+      const source = createBrowserInputSource({ target });
+      const events: InputEventDetail[] = [];
+      const off = source.onAny((_s, e) => events.push(e));
+      target.emit('pointerdown', ptr());
+      off();
+      const off2 = source.onAny((_s, e) => events.push(e));
+      target.emit('pointermove', ptr({ clientX: 70 }));
+      off2();
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
+    });
+
+    it('samples a hovering mouse (no button held), with no target and no button', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 15, clientY: 25 }));
+      expect(events).toStrictEqual([
+        { id: '1', type: 'move', x: 15, y: 25, force: 0.5, tool: InputTool.Mouse },
+      ]);
+    });
+
+    it('throttles hover samples to the named interval, not faster', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 1 })); // sampled (first ever)
+      clock.advance(50);
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 2 })); // too soon — dropped
+      clock.advance(49);
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 3 })); // still too soon (99ms total)
+      clock.advance(1);
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 4 })); // exactly the interval — sampled
+      expect(events.map((e) => e.x)).toStrictEqual([1, 4]);
+    });
+
+    it('gives one continuous hover run a stable id across its samples', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 1 }));
+      clock.advance(HOVER_SAMPLE_INTERVAL_MS);
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 2 }));
+      expect(events.map((e) => e.id)).toStrictEqual(['1', '1']);
+    });
+
+    it('opens a fresh hover id after a press interrupts the run (never reuses the press id)', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 1 })); // hover id 'X'
+      target.emit('pointerdown', ptr()); // a real press — its own id
+      target.emit('pointerup', ptr({ buttons: 0 }));
+      clock.advance(HOVER_SAMPLE_INTERVAL_MS);
+      target.emit('pointermove', ptr({ buttons: 0, clientX: 2 })); // fresh hover id
+      const ids = events.map((e) => e.id);
+      const [hover1, press, release, hover2] = ids;
+      expect(new Set([hover1, press, release, hover2]).size).toBe(3); // press === release; both != hovers
+      expect(press).toBe(release);
+      expect(hover1).not.toBe(hover2);
+    });
+
+    it('tracks separate hover runs per pointerId', () => {
+      const target = fakeTarget();
+      const clock = fakeClock();
+      const { events } = activate({ target, now: clock.now });
+      target.emit('pointermove', ptr({ pointerId: 7, buttons: 0, clientX: 1 }));
+      target.emit('pointermove', ptr({ pointerId: 8, buttons: 0, clientX: 2 }));
+      expect(events[0]?.id).not.toBe(events[1]?.id);
+    });
+
+    it('never lets a hostile mouse move event reach the app', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target });
+      target.emit('pointerdown', ptr());
+      const hostile = {
+        pointerType: 'mouse',
+        pointerId: 1,
+        buttons: 1,
+        get clientX(): number {
+          throw new Error('instrumented event');
+        },
+      };
+      expect(() => target.emit('pointermove', hostile)).not.toThrow();
+      expect(events.map((e) => e.type)).toStrictEqual(['begin']);
+    });
+
+    it('defaults the hover sample clock to Date.now when none is injected', () => {
+      const target = fakeTarget();
+      const { events } = activate({ target }); // no `now` → real Date.now
+      target.emit('pointermove', ptr({ buttons: 0 }));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.type).toBe('move');
+    });
+  });
+
   it('records stylus altitude/azimuth on every pen stage (begin, end, cancel)', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
@@ -586,7 +799,7 @@ describe('createBrowserInputSource', () => {
       altitudeAngle: 0.8,
       azimuthAngle: 1.9,
       tool: InputTool.Pen,
-      button: 0,
+      // No button/buttonMask/metaState: version 3 writes those on a MOUSE begin/end only.
       view_tag: 'button',
       target: { text: 'OK', selector: 'button' },
     });
@@ -634,12 +847,72 @@ describe('createBrowserInputSource', () => {
     expect(events[0]).not.toHaveProperty('azimuthAngle');
   });
 
-  it('passes the actual device button through (secondary and middle, not a hardcoded 0)', () => {
+  // input.md v3: `button` is the button that changed, in the SHARED cross-platform numbering (0 primary,
+  // 1 secondary, 2 middle, 3 back, 4 forward). The DOM numbers middle and secondary the other way round
+  // (1 middle, 2 secondary), so this is a MAP, not a passthrough.
+  it.each([
+    [0, 0], // primary → primary
+    [1, 2], // DOM middle → contract middle (2)
+    [2, 1], // DOM secondary → contract secondary (1)
+    [3, 3], // back → back
+    [4, 4], // forward → forward
+  ])('maps DOM button %i to the contract button %i', (domButton, contractButton) => {
     const target = fakeTarget();
     const { events } = activate({ target });
-    target.emit('pointerdown', ptr({ button: 2 })); // secondary / right
-    target.emit('pointerdown', ptr({ pointerId: 2, button: 1 })); // middle
-    expect(events.map((e) => e.button)).toStrictEqual([2, 1]);
+    target.emit('pointerdown', ptr({ button: domButton }));
+    expect(events[0]?.button).toBe(contractButton);
+  });
+
+  it('omits button for a DOM value outside the known 0-4 range, never inventing 0', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ button: 5 }));
+    expect(events[0]).not.toHaveProperty('button');
+  });
+
+  // buttonMask (v3): the buttons HELD, from the DOM's `MouseEvent.buttons` — already the wire's bit
+  // layout (1 primary, 2 secondary, 4 middle, 8 back, 16 forward), so it passes through unchanged.
+  it('passes buttonMask through unchanged (the DOM bit layout already matches the wire)', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ button: 0, buttons: 1 | 4 })); // primary + middle chorded
+    expect(events[0]?.buttonMask).toBe(5);
+  });
+
+  it('omits buttonMask when the event does not report a usable buttons mask', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ buttons: undefined }));
+    expect(events[0]).not.toHaveProperty('buttonMask');
+  });
+
+  // metaState (v3): written on a mouse begin/end too (previously key entries only), through the same
+  // mapping the keydown path uses.
+  it('writes metaState on a mouse begin/end from the held modifier keys', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ shiftKey: true, ctrlKey: true }));
+    // META_CTRL_ON 4096 | META_SHIFT_ON 1
+    expect(events[0]?.metaState).toBe(4096 | 1);
+  });
+
+  it('reports mouse metaState as 0 when no modifier is held, never as an absent field', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr());
+    expect(events[0]?.metaState).toBe(0);
+  });
+
+  it('never writes button/buttonMask/metaState for a pen or touch pointer', () => {
+    const target = fakeTarget();
+    const { events } = activate({ target });
+    target.emit('pointerdown', ptr({ pointerType: 'pen', button: 0, buttons: 1 }));
+    target.emit('pointerdown', ptr({ pointerId: 2, pointerType: 'touch', button: 0, buttons: 1 }));
+    for (const event of events) {
+      expect(event).not.toHaveProperty('button');
+      expect(event).not.toHaveProperty('buttonMask');
+      expect(event).not.toHaveProperty('metaState');
+    }
   });
 
   it('rounds coordinates and omits non-finite ones', () => {
@@ -683,6 +956,8 @@ describe('createBrowserInputSource', () => {
       force: 0.5,
       tool: InputTool.Mouse,
       button: 0,
+      buttonMask: 1,
+      metaState: 0,
       view_tag: 'div',
       target: { selector: 'div' },
     });
@@ -703,16 +978,20 @@ describe('createBrowserInputSource', () => {
       force: 0.5,
       tool: InputTool.Mouse,
       button: 0,
+      buttonMask: 1,
+      metaState: 0,
     });
   });
 
   // Not every pointer event carries `button` (a synthetic or partially-implemented event). Emitting the
   // key anyway would put `"button": null` on the wire, which reads as "button 0 was not pressed".
-  it('omits button when the event does not report one', () => {
+  it('omits button when the event does not report one, but still writes buttonMask/metaState', () => {
     const target = fakeTarget();
     const { events } = activate({ target });
     target.emit('pointerdown', ptr({ button: undefined }));
     expect(events[0]).not.toHaveProperty('button');
+    expect(events[0]?.buttonMask).toBe(1);
+    expect(events[0]?.metaState).toBe(0);
   });
 
   it('masks via the DEFAULT mask selector ([data-bugsee-hidden]) when none is configured', () => {
@@ -915,6 +1194,8 @@ describe('createBrowserInputSource', () => {
       force: 0.5,
       tool: InputTool.Mouse,
       button: 0,
+      buttonMask: 1,
+      metaState: 0,
       view_tag: 'input',
       target: { masked: true },
     });
@@ -997,5 +1278,230 @@ describe('createBrowserInputSource', () => {
     const off = source.onAny(() => {});
     expect(target.count('pointerdown')).toBe(1);
     off();
+  });
+
+  // ---- wheel / scroll (version 3) ----
+  describe('wheel', () => {
+    /** A `scheduleFrame` the test drives by hand: captures the callback instead of using a real timer. */
+    function fakeFrame() {
+      const pending: Array<() => void> = [];
+      return {
+        scheduleFrame: (cb: () => void) => pending.push(cb),
+        flush: () => {
+          const cbs = pending.splice(0);
+          for (const cb of cbs) cb();
+        },
+        pendingCount: () => pending.length,
+      };
+    }
+
+    const wheel = (over: Record<string, unknown> = {}) => ({
+      deltaX: 0,
+      deltaY: 10,
+      deltaMode: 0,
+      clientX: 5,
+      clientY: 6,
+      ...over,
+    });
+
+    it('does not emit a wheel event synchronously — only once the frame is flushed', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel());
+      expect(events).toStrictEqual([]);
+      frame.flush();
+      expect(events).toHaveLength(1);
+    });
+
+    it('emits one scroll entry: x/y, signed scrollX/scrollY (no flip), scrollUnit, tool, metaState — no id', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaX: -3, deltaY: 12, ctrlKey: true }));
+      frame.flush();
+      expect(events).toStrictEqual([
+        {
+          type: 'scroll',
+          x: 5,
+          y: 6,
+          scrollX: -3,
+          scrollY: 12,
+          scrollUnit: 'pixel',
+          tool: InputTool.Mouse,
+          metaState: 4096, // META_CTRL_ON
+        },
+      ]);
+      expect(events[0]).not.toHaveProperty('id');
+    });
+
+    it('sums same-frame wheel deltas into one coalesced entry', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaX: 1, deltaY: 2 }));
+      target.emit('wheel', wheel({ deltaX: 3, deltaY: 4 }));
+      target.emit('wheel', wheel({ deltaX: 5, deltaY: 6 }));
+      frame.flush();
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ scrollX: 9, scrollY: 12 });
+    });
+
+    it('uses the position and modifiers of the LATEST event in the coalesced frame', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ clientX: 1, clientY: 1, shiftKey: true }));
+      target.emit('wheel', wheel({ clientX: 9, clientY: 9 })); // no modifier on the last event
+      frame.flush();
+      expect(events[0]).toMatchObject({ x: 9, y: 9, metaState: 0 });
+    });
+
+    it('schedules exactly one frame callback per coalescing window', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel());
+      target.emit('wheel', wheel());
+      target.emit('wheel', wheel());
+      expect(frame.pendingCount()).toBe(1);
+    });
+
+    it('schedules a fresh frame for the deltas that follow a flush', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaY: 1 }));
+      frame.flush();
+      target.emit('wheel', wheel({ deltaY: 2 }));
+      frame.flush();
+      expect(events.map((e) => e.scrollY)).toStrictEqual([1, 2]);
+    });
+
+    it.each([
+      [0, 'pixel'],
+      [1, 'line'],
+      [2, 'page'],
+      [99, 'pixel'], // unrecognised deltaMode falls back to the DOM's own default
+    ])('maps deltaMode %i to scrollUnit %s', (deltaMode, unit) => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaMode }));
+      frame.flush();
+      expect(events[0]?.scrollUnit).toBe(unit);
+    });
+
+    it('ignores a wheel event with no usable delta on either axis (nothing to coalesce)', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaX: 0, deltaY: 0 }));
+      expect(frame.pendingCount()).toBe(0);
+      frame.flush();
+      expect(events).toStrictEqual([]);
+    });
+
+    it('treats a non-numeric deltaX as 0 and still coalesces deltaY', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaX: undefined, deltaY: 7 }));
+      frame.flush();
+      expect(events[0]).toMatchObject({ scrollX: 0, scrollY: 7 });
+    });
+
+    it('treats a non-numeric deltaY as 0 and still coalesces deltaX', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaX: 3, deltaY: Number.NaN }));
+      frame.flush();
+      expect(events[0]).toMatchObject({ scrollX: 3, scrollY: 0 });
+    });
+
+    it('falls back to pixel scrollUnit when deltaMode is not a number at all', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ deltaMode: undefined }));
+      frame.flush();
+      expect(events[0]?.scrollUnit).toBe('pixel');
+    });
+
+    it('omits x/y on the scroll entry when the wheel event reports no usable position', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      target.emit('wheel', wheel({ clientX: undefined, clientY: undefined }));
+      frame.flush();
+      expect(events[0]).not.toHaveProperty('x');
+      expect(events[0]).not.toHaveProperty('y');
+      expect(events[0]).toMatchObject({ scrollX: 0, scrollY: 10 });
+    });
+
+    it('never lets a hostile wheel event reach the app', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const { events } = activate({ target, scheduleFrame: frame.scheduleFrame });
+      const hostile = {
+        get deltaX(): number {
+          throw new Error('instrumented event');
+        },
+      };
+      expect(() => target.emit('wheel', hostile)).not.toThrow();
+      frame.flush();
+      expect(events).toStrictEqual([]);
+    });
+
+    it('drops a pending accumulation on deactivate — a stale flush emits nothing', () => {
+      const target = fakeTarget();
+      const frame = fakeFrame();
+      const source = createBrowserInputSource({ target, scheduleFrame: frame.scheduleFrame });
+      const events: InputEventDetail[] = [];
+      const off = source.onAny((_s, e) => events.push(e));
+      target.emit('wheel', wheel());
+      off(); // deactivate with an un-flushed accumulator
+      frame.flush(); // the stale rAF callback still fires — must be a no-op
+      expect(events).toStrictEqual([]);
+    });
+
+    it('registers a capture-phase, passive wheel listener, removed on deactivate', () => {
+      const target = fakeTarget();
+      const { off } = activate({ target });
+      expect(target.count('wheel')).toBe(1);
+      expect(target.optionsFor('wheel')).toEqual({ capture: true, passive: true });
+      off();
+      expect(target.count('wheel')).toBe(0);
+      expect(target.removeOptionsFor('wheel')).toEqual({ capture: true });
+    });
+
+    it('defaults scheduleFrame to requestAnimationFrame when the global exists', () => {
+      const target = fakeTarget();
+      const raf = vi.fn((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+      vi.stubGlobal('requestAnimationFrame', raf);
+      const { events } = activate({ target }); // no scheduleFrame injected → the real default
+      target.emit('wheel', wheel());
+      expect(raf).toHaveBeenCalledTimes(1);
+      expect(events).toHaveLength(1);
+    });
+
+    it('falls back to a timeout when requestAnimationFrame does not exist', () => {
+      vi.useFakeTimers();
+      try {
+        vi.stubGlobal('requestAnimationFrame', undefined);
+        const target = fakeTarget();
+        const { events } = activate({ target });
+        target.emit('wheel', wheel());
+        expect(events).toStrictEqual([]);
+        vi.advanceTimersByTime(16);
+        expect(events).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
