@@ -196,10 +196,15 @@ describe('assembleBundle — manifest.json & files', () => {
     const out = unzip(assembleBundle(request(), captured, context()).body);
     expect(out.names).toContain('input.json');
     expect(out.names).toContain('events.user.json');
-    expect(JSON.parse(out.text('input.json'))).toEqual([
-      { timestamp: 2, id: 'g1', type: 'begin', x: 4, y: 5, tool: 1 },
-      { timestamp: 3, id: 'g1', type: 'end', x: 4, y: 5, tool: 1 },
-    ]);
+    // `input.json` v3 (specs/sdk/reporting/bundle/input.md): `{ version, events }`, not a bare array — a
+    // consumer keys its button/scroll decoding on `version`.
+    expect(JSON.parse(out.text('input.json'))).toEqual({
+      version: 3,
+      events: [
+        { timestamp: 2, id: 'g1', type: 'begin', x: 4, y: 5, tool: 1 },
+        { timestamp: 3, id: 'g1', type: 'end', x: 4, y: 5, tool: 1 },
+      ],
+    });
     // The user stream carries the app's event and NOTHING the SDK observed.
     expect(JSON.parse(out.text('events.user.json'))).toEqual([
       { timestamp: 1, name: 'checkout', params: { t: 9 } },
@@ -236,6 +241,23 @@ describe('assembleBundle — manifest.json & files', () => {
     });
     // Only `performance` is object-wrapped; the other file types stay bare arrays.
     expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
+  });
+
+  // input.md v3: input.json is `{ version, events }`; version 3 is stamped for THIS stream only — every
+  // other file type is unaffected, whether bare-array (network) or its own wrapper (performance).
+  it('stamps input.json with the input-stream version 3, and no other file type', () => {
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      [
+        'input',
+        [entry('input', 1, { timestamp: 1, id: 'g1', type: 'begin', x: 1, y: 2, tool: 2 })],
+      ],
+      ['performance', [entry('performance', 2, { traceId: 't', name: 'a' })]],
+      ['network', [entry('network', 3, { url: 'u' })]],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    expect(JSON.parse(out.text('input.json'))).toMatchObject({ version: 3 });
+    expect(JSON.parse(out.text('performance.json'))).not.toHaveProperty('version');
+    expect(Array.isArray(JSON.parse(out.text('network.json')))).toBe(true);
   });
 
   it('serializes the profile file type as the single bare V8 CPU profile object (not an array)', () => {

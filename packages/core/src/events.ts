@@ -66,11 +66,17 @@ export type InputTool = (typeof InputTool)[keyof typeof InputTool];
  * `tool`/`view`/`view_id`/`view_tag`, grouped into gestures by `id`, staged by `type`), so a web
  * interaction and a mobile touch render through ONE path.
  *
- * SDK-AHEAD-OF-CONTRACT — `button`, `key` and `target` are NOT in the viewer's `RecordingTouchEvent`
- * today. Desktop input has buttons and keyboards that the mobile-shaped contract
- * has no room for, and JSON consumers ignore unknown keys, so the SDK emits them as an additive
- * superset rather than waiting on backend/viewer adoption. Nothing may be moved OUT of the contract
- * fields into these; they are additions only.
+ * VERSION 3 (`input.md`): `button` is the button that CHANGED, in the shared cross-platform numbering
+ * (0 primary, 1 secondary, 2 middle, 3 back, 4 forward — the browser tier maps the DOM's own numbering
+ * onto it, never passes it through); `buttonMask` is the buttons HELD, tool = mouse only (the DOM's
+ * `buttons` bitmask already matches this layout); `metaState` is now also written on mouse press/release
+ * (previously key entries only); `scrollX`/`scrollY`/`scrollUnit` carry a mouse wheel occurrence.
+ *
+ * SDK-AHEAD-OF-CONTRACT — `key` and `target` are NOT in the viewer's `RecordingTouchEvent` today.
+ * Desktop input has a keyboard that the mobile-shaped contract has no room for, and JSON consumers
+ * ignore unknown keys, so the SDK emits them as an additive superset rather than waiting on
+ * backend/viewer adoption. Nothing may be moved OUT of the contract fields into these; they are
+ * additions only.
  */
 export interface InputEvent {
   /** Wall-clock ms. */
@@ -124,8 +130,26 @@ export interface InputEvent {
    * `@bugsee/browser`'s `keycodes.ts`.
    */
   keyCode?: number;
-  /** Android `KeyEvent` modifier bitmask for a key entry (`META_SHIFT_ON` etc.); 0 when none are held. */
+  /**
+   * Android `KeyEvent` modifier bitmask (`META_SHIFT_ON` etc.); 0 when none are held. A key entry always
+   * carries it. **Version 3:** also written on a mouse `begin`/`end`, from `ctrlKey`/`shiftKey`/
+   * `altKey`/`metaKey` through the same mapping, so a shift-click is distinguishable from a plain one.
+   */
   metaState?: number;
+  /**
+   * Which device button changed, in the SHARED cross-platform numbering (`input.md` v3): `0` primary,
+   * `1` secondary, `2` middle, `3` back, `4` forward. Mouse `begin`/`end` only; omitted when the button
+   * is unrecognised (never sent as `0`, which means primary) and always omitted for a pen or touch
+   * pointer. The browser tier MAPS the DOM's own numbering (0 primary, 1 **middle**, 2 **secondary** —
+   * the other way round) rather than passing it through.
+   */
+  button?: number;
+  /**
+   * Buttons HELD after the event, as bits `1 << button` (1 primary, 2 secondary, 4 middle, 8 back,
+   * 16 forward). Mouse `begin`/`end` only (`input.md` v3). The DOM's `MouseEvent.buttons` is already
+   * this exact bit layout, so the browser tier passes it through unchanged.
+   */
+  buttonMask?: number;
   /**
    * Which display the input happened on (Android multi-display). Declared for parity and DELIBERATELY
    * never set by the web tier: a document belongs to exactly one display and JS cannot observe which,
@@ -133,10 +157,18 @@ export interface InputEvent {
    * WebView receiver, which does know, is the tier that can fill it.
    */
   displayId?: number;
+  /**
+   * Signed scroll amount from a mouse wheel occurrence (`input.md` v3, `type: 'scroll'`), the browser's
+   * own `deltaX`/`deltaY` convention (positive Y = content scrolled down, positive X = right) — the wire
+   * already matches it, so no sign flip. Coalesced: the browser tier sums same-frame wheel deltas into
+   * one entry rather than one per DOM event.
+   */
+  scrollX?: number;
+  scrollY?: number;
+  /** Unit of {@link scrollX}/{@link scrollY}: `'pixel'` \| `'line'` \| `'page'` (from `WheelEvent.deltaMode`). */
+  scrollUnit?: string;
 
   // ---- SDK-ahead-of-contract (see the note above) ----
-  /** Which device button was pressed (DOM `MouseEvent.button`: 0 primary, 1 middle, 2 secondary…). */
-  button?: number;
   /**
    * The key's IDENTITY as the DOM names it — only ever a NAMED key, or a character reached as a
    * shortcut; typed characters are never recorded. Kept ALONGSIDE the mobile-shaped `keyCode` because it

@@ -3,6 +3,16 @@
 /** Manifest schema version emitted by the JS SDK (§0.16 / §8). Backend accepts v1 (mobile) + v2. */
 export const MANIFEST_VERSION = 2;
 
+/**
+ * `input.json`'s OWN stream version (`specs/sdk/reporting/bundle/input.md`), independent of
+ * {@link MANIFEST_VERSION}: the wire spec is cross-platform and a consumer keys its decoding of the
+ * file's `button`/`buttonMask`/`metaState`/scroll fields on THIS number, not the manifest's. Version 3
+ * fixes the mouse `button` numbering across platforms, adds `buttonMask`, writes `metaState` on a mouse
+ * press/release, and adds `scrollX`/`scrollY`/`scrollUnit` — all landing together in the JS SDK's mouse
+ * capture, so this stream alone moves from unversioned to 3.
+ */
+export const INPUT_STREAM_VERSION = 3;
+
 // Root bundle files (§8.4).
 export const REQUEST_JSON_FILENAME = 'request.json';
 export const MANIFEST_JSON_FILENAME = 'manifest.json';
