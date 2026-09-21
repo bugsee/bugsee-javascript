@@ -555,6 +555,14 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     carrier,
   );
   client.addCaptureProvider(createInputProvider(inputSource));
+  // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
+  // coordinates belong to (`video.aux`) because nothing else knows it; here the native receiver
+  // REWRITES every point before storing it — Android's `BridgeInputMapper` maps viewport-relative CSS
+  // px through the WebView's origin on screen and its scale into native screen coordinates divided by
+  // the density. By the time an entry reaches `input.json` it is in the HOST's frame, which the host's
+  // own `video.aux` already describes. A page-frame record would describe a coordinate space that no
+  // longer exists, and contradict the real one if it ever reached the host's stream. Pinned by a test,
+  // because native silently drops streams it was not told to expect and this would fail invisibly.
   // The STATE-CHANGE half of the same split: `change`/`submit`/`focusin` are not device presses (and are
   // not members of Android's InputEventStage), so they ride the BREADCRUMB trail, not `input`. This tier
   // gets it for the same reason it gets the input source: a WebView is exactly the surface the host SDK

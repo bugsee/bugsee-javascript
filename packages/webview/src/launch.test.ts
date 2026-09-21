@@ -366,6 +366,41 @@ describe('launch (webview)', () => {
     expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
   });
 
+  // The browser tier records the FRAME those coordinates belong to (`video.aux`), because a consumer
+  // with no frame falls back to the device screen and draws the click off the frame. This tier must
+  // NOT — and the symmetry with `@bugsee/browser` is exactly what makes it tempting to add.
+  //
+  // The page's frame is not the frame these coordinates end up in. The native receiver REWRITES every
+  // point before it is stored: Android's `BridgeInputMapper` maps viewport-relative CSS px through the
+  // WebView's origin on screen and its scale into native screen coordinates divided by the density.
+  // By the time the entry reaches `input.json` it is in the HOST's frame, which the host's own
+  // `video.aux` already describes. A page-frame record would therefore describe a coordinate space
+  // that no longer exists, and if it ever reached the host's stream it would contradict the real one.
+  //
+  // Native drops what it was not told to expect (`BridgeCaptureRouter.route` has no else branch, and
+  // `video.aux` is not in the hello capabilities), so today this would be silent dead weight on the
+  // wire. That silence is the reason to pin it rather than rely on noticing.
+  it('never streams the page frame (video.aux) — native owns the frame here', () => {
+    const fake = fakeGlobal();
+    const doc = fakeEventTarget();
+    const win = fakeEventTarget();
+    // A MEASURABLE window: without these the viewport source would decline to emit even if it were
+    // wired, and this test would pass for the wrong reason.
+    Object.assign(win.target, { innerWidth: 390, innerHeight: 844, devicePixelRatio: 3 });
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: win.target as unknown as WindowEvents,
+        document: doc.target as unknown as Document,
+      }),
+    );
+
+    win.emit('resize', {});
+
+    expect(entriesOfType(fake.msgs(), 'video.aux' as EntryMessage['t'])).toStrictEqual([]);
+  });
+
   // The other half of the input/state-change split: `change`/`submit`/`focus` are not device presses and
   // are not members of Android's InputEventStage, so BOTH native receivers now DROP them off the `input`
   // stream (bugsee-android#9, bugsee-cocoa#19). Without this source the WebView loses them entirely —
