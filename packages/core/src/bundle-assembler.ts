@@ -4,6 +4,7 @@ import {
   DEFAULT_FILENAMES,
   type EnvironmentEnvelope,
   type FileType,
+  INPUT_STREAM_VERSION,
   MANIFEST_JSON_FILENAME,
   MANIFEST_VERSION,
   type ManifestFileEntry,
@@ -81,11 +82,13 @@ function fileNameForType(type: FileType): string {
   return type === 'attachment' ? 'attachment' : DEFAULT_FILENAMES[type];
 }
 
-// Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Two exceptions:
-// `performance.json` = `{ transactions: [...] }` (§711/§8.8), and `profile.json` = the SINGLE bare V8 CPU
-// profile object (.cpuprofile — DevTools/speedscope-loadable). Binary streams (§8.4: replay/screenshot/
-// attachment) are platform-tier provider concerns; when those land the assembler branches further
-// (passing a Uint8Array `data` through).
+// Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Three exceptions:
+// `performance.json` = `{ transactions: [...] }` (§711/§8.8); `profile.json` = the SINGLE bare V8 CPU
+// profile object (.cpuprofile — DevTools/speedscope-loadable); and `input.json` = the wire spec's own
+// versioned envelope, `{ version, events: [...] }` (`specs/sdk/reporting/bundle/input.md`) — a consumer
+// keys its decoding of `button`/`buttonMask`/`metaState`/scroll on `version`, so the file must carry it.
+// Binary streams (§8.4: replay/screenshot/attachment) are platform-tier provider concerns; when those
+// land the assembler branches further (passing a Uint8Array `data` through).
 function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   if (type === 'performance') {
     return { transactions: payloads };
@@ -95,6 +98,9 @@ function serializeFileData(type: FileType, payloads: unknown[]): unknown {
     // ≥1 entry (CaptureExporter.drain seeds non-empty groups; the profile snapshot emits 0-or-1 and omits
     // the key when 0), so payloads[0] is always present here.
     return payloads[0];
+  }
+  if (type === 'input') {
+    return { version: INPUT_STREAM_VERSION, events: payloads };
   }
   return payloads;
 }

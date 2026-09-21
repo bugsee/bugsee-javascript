@@ -703,7 +703,7 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | `traces.user` | `traces.user.json` | same |
 | `events.system` | `events.system.json` | JSON array of `{timestamp, name, params?}` |
 | `events.user` | `events.user.json` | same — **application-supplied only** (`client.event()`); SDK code never writes here |
-| `input` | `input.json` | JSON array of device-input events — see §8.4.1 |
+| `input` | `input.json` | `{version, events: [...]}` (version 3 — mouse capture, §8.4.1) |
 | `viewtree` | `viewtree.json` | DOM snapshot |
 | `log` | `logs.json` | `{timestamp, level (1-5), source, tag?, message}` |
 | `log.internal` | `internal.logs.json` | SDK self-diagnostics (only if `debug: true`) |
@@ -728,26 +728,30 @@ Entry shape — the viewer's `RecordingTouchEvent`, so web and mobile render thr
 | field | meaning |
 | --- | --- |
 | `timestamp` | wall-clock ms |
-| `id` | groups the stages of one gesture |
-| `type` | `begin` \| `move` \| `end` for device input; the semantic name for `tool: Other`. Web: `move` is recorded for PEN gestures only (in contact, on change; none for a gesture that began on a masked target) |
+| `id` | groups the stages of one gesture. `input.md` lists this field as always present; this SDK's own convention is to OMIT an optional field rather than emit a placeholder for it when it does not apply — so a mouse wheel `scroll` entry, which opens/closes no gesture, carries no `id` key at all (not `null`, not `""`) |
+| `type` | `begin` \| `move` \| `end` \| `scroll` for device input; the semantic name for `tool: Other`. Web: pointer `move` is recorded for PEN gestures (in contact, on change; none for a gesture that began on a masked target) and, **new in version 3**, for a MOUSE while a button is held (drag, same terms as a pen stroke) plus sampled hover (~10/s, `HOVER_SAMPLE_INTERVAL_MS`) |
 | `x`, `y` | viewport CSS pixels (rounded) |
 | `force` | normalised pressure 0..1 |
 | `majorRadius`, `minorRadius` | contact geometry (touch/pen only) |
 | `altitudeAngle`, `azimuthAngle` | stylus orientation in radians — pen only, and only when the device reports it (iOS names/conventions: altitude 0 flat … π/2 perpendicular; azimuth 0 along +x, clockwise). Web: Pointer Events L3 angles, else converted from `tiltX`/`tiltY`; the spec's no-data defaults (π/2 + 0, tilt 0/0) are omitted (#6) |
 | `tool` | `InputTool`: 0 Unknown, 1 Touch, 2 Mouse, 3 Pen, 4 Remote, 5 Other, 6 Eraser, **7 Key** |
 | `view`, `view_id`, `view_tag` | target class / id / tag (the viewer maps these to `target.class/.id/.tag`) |
+| `button` | **Version 3** (`input.md`): the button that CHANGED, in the shared cross-platform numbering (0 primary, 1 secondary, 2 middle, 3 back, 4 forward). Mouse `begin`/`end` only; omitted for an unrecognised button and always for pen/touch. The web tier MAPS the DOM's `MouseEvent.button` (0 primary, **1 middle**, **2 secondary** — the other way round) onto it, never passes it through |
+| `buttonMask` | **Version 3:** buttons HELD, mouse only — the DOM's `MouseEvent.buttons` bitmask already matches the wire's `1<<button` layout, so it passes through unchanged |
+| `metaState` | **Version 3:** also written on a mouse `begin`/`end` (previously key entries only), from `ctrlKey`/`shiftKey`/`altKey`/`metaKey` through the SDK's Android-metaState mapping |
+| `scrollX`, `scrollY`, `scrollUnit` | **Version 3, `type: 'scroll'`:** a mouse wheel occurrence. Signed deltas, the browser's own sign convention (no flip); `scrollUnit` from `deltaMode` (`pixel`/`line`/`page`). Same-frame wheel events are coalesced into one entry |
 
-**SDK-ahead-of-contract fields.** The viewer's `RecordingTouchEvent` has no `button` and no keyboard
-representation, because it was shaped for mobile. Desktop input has both. The SDK therefore emits, as an
-ADDITIVE superset that JSON consumers ignore until the backend/viewer adopt it:
+**SDK-ahead-of-contract fields.** The viewer's `RecordingTouchEvent` has no keyboard representation,
+because it was shaped for mobile. The SDK therefore emits, as an ADDITIVE superset that JSON consumers
+ignore until the backend/viewer adopt it:
 
-- `button` — the device button (0 primary, 1 middle, 2 secondary…);
 - `key` — the key's identity, and only ever a NAMED key (printable characters are never recorded);
-- `ctrl`/`meta`/`alt`/`shift` — modifier flags on a key press;
 - `target` — the richer PII-safe descriptor (control type, label, component name, `masked`).
 
 Nothing may be moved OUT of the contract fields into these; they are additions only. `tool: 7` (Key) is
-Android's `TOOL_KEY` and is likewise ahead of the viewer's `RecordingTouchTool` enum.
+Android's `TOOL_KEY` and is likewise ahead of the viewer's `RecordingTouchTool` enum. `button`/`buttonMask`/
+`metaState`/scroll are no longer ahead-of-contract as of version 3 — they are the fixed, shared wire fields
+`specs/sdk/reporting/bundle/input.md` documents for every platform.
 
 **Privacy.** The keystroke path never records printable characters, and it records NOTHING at all while
 focus is in a sensitive field — the definition being `@bugsee/core`'s single `SENSITIVE_INPUT_MATCHERS`
