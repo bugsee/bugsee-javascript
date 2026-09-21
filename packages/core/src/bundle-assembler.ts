@@ -12,6 +12,7 @@ import {
   REQUEST_JSON_FILENAME,
   type RequestJson,
   severityToWire,
+  VIDEO_AUX_VERSION,
 } from '@bugsee/protocol';
 import type { AttributeValue, IssueType } from '@bugsee/types';
 import { type BundleFile, writeBundleZip } from './bundle-writer';
@@ -82,16 +83,22 @@ function fileNameForType(type: FileType): string {
   return type === 'attachment' ? 'attachment' : DEFAULT_FILENAMES[type];
 }
 
-// Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Three exceptions:
+// Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Four exceptions:
 // `performance.json` = `{ transactions: [...] }` (§711/§8.8); `profile.json` = the SINGLE bare V8 CPU
-// profile object (.cpuprofile — DevTools/speedscope-loadable); and `input.json` = the wire spec's own
-// versioned envelope, `{ version, events: [...] }` (`specs/sdk/reporting/bundle/input.md`) — a consumer
-// keys its decoding of `button`/`buttonMask`/`metaState`/scroll on `version`, so the file must carry it.
-// Binary streams (§8.4: replay/screenshot/attachment) are platform-tier provider concerns; when those
-// land the assembler branches further (passing a Uint8Array `data` through).
+// profile object (.cpuprofile — DevTools/speedscope-loadable); and `input.json` and `video.aux.json`
+// carry the wire spec's own versioned envelope, `{ version, events: [...] }`
+// (`specs/sdk/reporting/bundle/{input,video-aux}.md`). Those two need the version for the same reason:
+// a consumer keys its decoding on it — `button`/`buttonMask`/`metaState`/scroll for `input`, and for
+// `video.aux` whether the frame is in display pixels (version 1) or in the coordinates' own units
+// (version 2), which are the same numbers meaning different things. Binary streams (§8.4:
+// replay/screenshot/attachment) are platform-tier provider concerns; when those land the assembler
+// branches further (passing a Uint8Array `data` through).
 function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   if (type === 'performance') {
     return { transactions: payloads };
+  }
+  if (type === 'video.aux') {
+    return { version: VIDEO_AUX_VERSION, events: payloads };
   }
   if (type === 'profile') {
     // The single CPU profile captured at report time. The assembler only iterates file types that have

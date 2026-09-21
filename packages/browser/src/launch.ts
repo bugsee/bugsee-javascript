@@ -12,6 +12,7 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  createVideoAuxProvider,
   installNetworkCapture,
   type NetworkCapture,
   type TraceSample,
@@ -63,6 +64,7 @@ import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
+import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
 // @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
@@ -512,6 +514,16 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     carrier,
   );
   client.addCaptureProvider(createInputProvider(inputSource));
+  // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
+  // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,
+  // in CSS px, so it shrinks under page zoom while `clientX` does not, and the click renders off the
+  // frame. Carrier-shared and gated by the same option as `input`, because it exists to place `input`.
+  const viewportSource = getOrCreateInterceptor(
+    'browser-viewport',
+    () => createBrowserViewportSource({ window: win }),
+    carrier,
+  );
+  client.addCaptureProvider(createVideoAuxProvider(viewportSource));
   // STATE-CHANGE signals (change / submit / focusin) are NOT input — they are breadcrumbs. Android draws
   // the same line inside its input-interception coordinator: the INPUT dispatcher feeds `input.json`,
   // while the GESTURE dispatcher feeds `BreadcrumbInputGesture`, whose `ui.<gesture>` breadcrumb shape

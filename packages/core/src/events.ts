@@ -179,3 +179,59 @@ export interface InputEvent {
    *  `TargetDescriptor`: component name, control type, label, masked flag). */
   target?: Record<string, unknown>;
 }
+
+/**
+ * One entry on the `video.aux` capture stream (`video.aux.json`) — the geometry of the recording at a
+ * moment in time: the FRAME every `input` coordinate belongs to, and (on the web) which part of it the
+ * person could see. Version 2 of the stream, which is one shape for every platform — the full contract
+ * is `sdk/reporting/bundle/video-aux.md` in bugsee/specs.
+ *
+ * WHY IT EXISTS: `input`'s `x`/`y` mean nothing without the frame they were measured in, and that frame
+ * moves during a recording (a window resize, a page zoom, a rotation). A consumer with no frame falls
+ * back to `environment.hardware.screen` — `screen.width`/`screen.height`, the whole monitor, captured
+ * once at launch and itself in CSS px, so it SHRINKS as the page is zoomed while `clientX` does not.
+ * That is how a click ends up off the frame.
+ *
+ * FRAME UNITS (binding): `frameW`/`frameH`, `offset*` and `visible*` are in the same unit as the
+ * coordinates — CSS px in the layout viewport on the web. `density` is the ratio to device pixels for a
+ * consumer that needs them; NOTHING in the placement path divides by it. Writing device pixels here
+ * instead is the one mistake that looks harmless and is not: every coordinate would land at `1/density`
+ * of where it belongs, with no plausibility check able to catch it.
+ */
+export interface VideoAuxEvent {
+  /** Wall-clock ms at which the geometry changed. */
+  timestamp: number;
+  /** The frame the coordinates belong to: the layout viewport, CSS px (`innerWidth`/`innerHeight`). */
+  frameW: number;
+  frameH: number;
+  /** Frame units to device pixels (`devicePixelRatio`); moves with page zoom and across monitors. */
+  density: number;
+  /**
+   * Pinch zoom of the visible region relative to the frame (`visualViewport.scale`). Omitted at 1,
+   * which is the overwhelmingly common case — and its absence is what tells a consumer the whole frame
+   * was visible.
+   */
+  scale?: number;
+  /** Where the visible region sits inside the frame (`visualViewport.offsetLeft`/`offsetTop`). */
+  offsetX?: number;
+  offsetY?: number;
+  /**
+   * Size of the visible region in frame units (`visualViewport.width`/`height`). Derivable from
+   * `frameW / scale`, written because browsers round it differently. Emitted with `scale`.
+   */
+  visibleW?: number;
+  visibleH?: number;
+  /**
+   * Which display is being recorded (Android multi-display). DELIBERATELY never set by the web tier: a
+   * page has exactly one viewport, and the spec writes the field only when it is non-zero. A consumer
+   * must therefore treat a missing id as "the only surface this producer records".
+   */
+  displayId?: number;
+  /**
+   * Letterbox padding inside the encoded video, in VIDEO pixels per side. Never set by the web tier,
+   * which has no pixel video — its replay is a DOM stream. Declared because the field is part of the
+   * stream and a consumer reads it from the same entry.
+   */
+  paddingH?: number;
+  paddingV?: number;
+}

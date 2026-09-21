@@ -222,6 +222,7 @@
                   "replay",
                   "screenshot",
                   "video",
+                  "video.aux",
                   "traces.system",
                   "traces.user",
                   "events.system",

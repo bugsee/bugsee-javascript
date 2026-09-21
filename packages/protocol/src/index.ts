@@ -12,6 +12,7 @@ export {
   MANIFEST_VERSION,
   NAME_SOURCE_ATTRIBUTE,
   REQUEST_JSON_FILENAME,
+  VIDEO_AUX_VERSION,
 } from './constants';
 export {
   LogLevel,

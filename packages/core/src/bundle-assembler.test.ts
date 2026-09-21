@@ -260,6 +260,44 @@ describe('assembleBundle — manifest.json & files', () => {
     expect(Array.isArray(JSON.parse(out.text('network.json')))).toBe(true);
   });
 
+  // The geometry sidecar is the one stream whose VERSION a consumer has to read: version 1 wrote the
+  // frame in display pixels and version 2 writes it in the coordinates' own units, so a bare array —
+  // with no version to read — would leave a consumer guessing which it had
+  // (specs sdk/reporting/bundle/video-aux.md).
+  it('wraps the video.aux file type in the spec envelope, with its version', () => {
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      [
+        'video.aux',
+        [
+          entry('video.aux', 1, { timestamp: 1, frameW: 1280, frameH: 720, density: 2 }),
+          entry('video.aux', 2, { timestamp: 2, frameW: 720, frameH: 1280, density: 2 }),
+        ],
+      ],
+      ['network', [entry('network', 3, { url: 'u' })]],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    expect(JSON.parse(out.text('video.aux.json'))).toEqual({
+      version: 2,
+      events: [
+        { timestamp: 1, frameW: 1280, frameH: 720, density: 2 },
+        { timestamp: 2, frameW: 720, frameH: 1280, density: 2 },
+      ],
+    });
+    // Only the wrapped types are objects; the rest stay bare arrays.
+    expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
+  });
+
+  it('routes video.aux to its own manifest entry, separate from the video', () => {
+    const captured = new Map<FileType, CaptureDataEntry[]>([
+      ['video.aux', [entry('video.aux', 1, { timestamp: 1, frameW: 1280, frameH: 720 })]],
+    ]);
+    const out = unzip(assembleBundle(request(), captured, context()).body);
+    const routed = (out.manifest.files as Array<{ type: string; filename: string }>)
+      .filter((f) => f.type === 'video.aux')
+      .map((f) => f.filename);
+    expect(routed).toEqual(['video.aux.json']);
+  });
+
   it('serializes the profile file type as the single bare V8 CPU profile object (not an array)', () => {
     const cpuProfile = {
       nodes: [{ id: 1 }],

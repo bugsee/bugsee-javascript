@@ -852,10 +852,13 @@ describe('launch', () => {
     expect(reg.get('fetch')).toBeDefined();
     expect(reg.get('browser-input')).toBeDefined();
     expect(reg.get('browser-ui-breadcrumbs')).toBeDefined();
-    // console + browser-input + browser-ui-breadcrumbs + the 6 cross-runtime network leaves
-    // (fetch/xhr/sendBeacon/websocket/sse/webtransport) = 9. No node-http.
+    // The frame `browser-input`'s coordinates are measured in — shared on the carrier for the same
+    // reason the input source is: one set of window listeners per process, not one per launch.
+    expect(reg.get('browser-viewport')).toBeDefined();
+    // console + browser-input + browser-ui-breadcrumbs + browser-viewport + the 6 cross-runtime network
+    // leaves (fetch/xhr/sendBeacon/websocket/sse/webtransport) = 10. No node-http.
     expect(reg.get('sendbeacon')).toBeDefined();
-    expect(reg.size).toBe(9);
+    expect(reg.size).toBe(10);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', () => {

@@ -74,6 +74,10 @@ export {
   setTracestateEntry,
   type TracestateEntry,
 } from './tracestate';
+// `VideoAuxSource`/`VideoAuxProviderOptions` are structural-typing helpers with no external consumer,
+// like `InputSource` above. `createVideoAuxProvider`/`VideoAuxEventDetail` are consumed by the browser
+// tier, which owns the DOM source that feeds them.
+export { createVideoAuxProvider, type VideoAuxEventDetail } from './video-aux-provider';
 export {
   createWebSocketInterceptor,
   type WebSocketInterceptorOptions,

@@ -133,7 +133,7 @@ export {
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
-export type { InputEvent, LogEvent } from './events';
+export type { InputEvent, LogEvent, VideoAuxEvent } from './events';
 export { InputTool } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';

@@ -34,6 +34,7 @@ export type FileType =
   | 'replay'
   | 'screenshot'
   | 'video'
+  | 'video.aux'
   | 'traces.system'
   | 'traces.user'
   | 'events.system'
@@ -53,6 +54,13 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   replay: 'replay.bin',
   screenshot: 'screenshot.png',
   video: 'video.webm', // encoded pixel-capture video — Electron opt-in (D8)
+  // The geometry of the recording over time: the frame each `input` coordinate was measured in, and
+  // (web) what part of it the person could see. Version 2 of the stream is one shape for every
+  // platform — specs sdk/reporting/bundle/video-aux.md. Named `video.aux` because mobile emits it
+  // from the video exporter, but a web recording writes it with no pixel video at all: the frame is
+  // the layout viewport, and without it a consumer falls back to `environment.hardware.screen` —
+  // the whole monitor, captured once at launch — and puts clicks off the frame.
+  'video.aux': 'video.aux.json',
   'traces.system': 'traces.system.json',
   'traces.user': 'traces.user.json',
   'events.system': 'events.system.json',
@@ -72,6 +80,17 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   profile: 'profile.json', // V8 CPU profile (.cpuprofile object) — node diagnostics
   crash: 'crash.json',
 };
+
+/**
+ * `video.aux.json`'s document version (specs sdk/reporting/bundle/video-aux.md).
+ *
+ * Version 2 is the unified shape: `frameW`/`frameH` in the coordinates' OWN units — CSS px in the
+ * layout viewport on the web — plus the visible region and the device-pixel ratio. Version 1 was
+ * mobile-only and wrote `screenW`/`screenH` in DISPLAY pixels, which a consumer has to divide by the
+ * density. The JS SDK has only ever written version 2, but the field is what tells a consumer which
+ * of the two it is holding, so it is never omitted.
+ */
+export const VIDEO_AUX_VERSION = 2;
 
 /**
  * The performance-transaction wire attribute that records a transaction NAME's provenance
