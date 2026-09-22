@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { findSriProtectedScripts } from './sri';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
 
 // Measured, 2026-09-18: a real webpack 5.111 build with `webpack-subresource-integrity` +
 // `html-webpack-plugin`, served over HTTP and loaded in Chromium 151. Before `sourcemaps inject` the
@@ -41,7 +42,21 @@ describe('findSriProtectedScripts', () => {
     );
 
     const found = await findSriProtectedScripts(dir);
-    expect(found).toEqual([{ html: join(dir, 'index.html'), script: join(dir, 'main.js') }]);
+    expect(found).toEqual([
+      { html: join(dir, 'index.html'), script: join(dir, 'main.js'), integrity: 'sha384-KUBb' },
+    ]);
+  });
+
+  it('carries the integrity value unquoted and trimmed', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', 'console.log(1)');
+    await write(
+      dir,
+      'index.html',
+      `<script src="main.js" integrity=" sha384-A  sha512-B "></script>`,
+    );
+    const [found] = await findSriProtectedScripts(dir);
+    expect(found?.integrity).toBe('sha384-A  sha512-B');
   });
 
   it('accepts quoted attributes in either order, and several scripts in one page', async () => {
@@ -357,5 +372,86 @@ describe('findSriProtectedScripts', () => {
     // The scan runs before anything else, on a path the caller supplied: a wrong path must surface as
     // the CLI's own "path does not exist", not as an unhandled error from a guard.
     expect(await findSriProtectedScripts(join(await fixture(), 'nope'))).toEqual([]);
+  });
+});
+
+// The question a browser actually asks: does the file's digest match what the page pinned? Used after
+// the in-build stamping path, where nothing is rewritten post-emit — so the only way this build can
+// break its own SRI is if some plugin hashed BEFORE Bugsee stamped (stamp-assets.ts). That is the
+// silent broken page the refusal existed to prevent, and this is what keeps it from being silent.
+describe('findIntegrityMismatches', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'bugsee-sri-verify-'));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const digest = (alg: 'sha256' | 'sha384' | 'sha512', bytes: string): string =>
+    `${alg}-${createHash(alg).update(bytes).digest('base64')}`;
+
+  const page = async (integrity: string, script = 'main.js'): Promise<void> => {
+    await writeFile(
+      join(root, 'index.html'),
+      `<script src="${script}" integrity="${integrity}" crossorigin="anonymous"></script>`,
+    );
+  };
+
+  it('is empty when every pinned script still matches its hash', async () => {
+    await writeFile(join(root, 'main.js'), 'stamped();');
+    await page(digest('sha384', 'stamped();'));
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('reports a script whose bytes changed after it was hashed', async () => {
+    await writeFile(join(root, 'main.js'), 'stamped();');
+    await page(digest('sha384', 'original();'));
+    expect(await findIntegrityMismatches(root)).toEqual([
+      expect.objectContaining({ script: join(root, 'main.js') }),
+    ]);
+  });
+
+  it('checks each supported algorithm', async () => {
+    await writeFile(join(root, 'main.js'), 'x();');
+    for (const alg of ['sha256', 'sha384', 'sha512'] as const) {
+      await page(digest(alg, 'x();'));
+      expect(await findIntegrityMismatches(root), alg).toEqual([]);
+      await page(digest(alg, 'y();'));
+      expect(await findIntegrityMismatches(root), alg).toHaveLength(1);
+    }
+  });
+
+  it('judges only by the STRONGEST algorithm listed, as a browser does', async () => {
+    // SRI: when several algorithms are listed, only the strongest ones are compared. A matching
+    // sha256 beside a stale sha512 does NOT get the script loaded.
+    await writeFile(join(root, 'main.js'), 'x();');
+    await page(`${digest('sha256', 'x();')} ${digest('sha512', 'stale();')}`);
+    expect(await findIntegrityMismatches(root)).toHaveLength(1);
+  });
+
+  it('accepts any one match among several digests of the strongest algorithm', async () => {
+    await writeFile(join(root, 'main.js'), 'x();');
+    await page(`${digest('sha384', 'other();')} ${digest('sha384', 'x();')}`);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('ignores an integrity value it cannot evaluate, as a browser does', async () => {
+    // Unknown algorithms are skipped by the browser, and a value with none it knows means no check.
+    await writeFile(join(root, 'main.js'), 'x();');
+    await page('md5-abc sha1-def');
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('tolerates the ?options suffix the SRI grammar allows', async () => {
+    await writeFile(join(root, 'main.js'), 'x();');
+    await page(`${digest('sha384', 'x();')}?ct=application/javascript`);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('skips a pinned script that is not on disk, rather than failing the check', async () => {
+    // A stale page pinning a deleted bundle is broken, but not by anything this build did.
+    await page(digest('sha384', 'x();'), 'gone.js');
+    expect(await findIntegrityMismatches(root)).toEqual([]);
   });
 });

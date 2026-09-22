@@ -13,8 +13,8 @@
   "dependencies": {
     "@bugsee/browser": "workspace:*",
     "@bugsee/bugsee": "workspace:*",
-    "@bugsee/bundler-plugin-core": "workspace:*",
     "@bugsee/bun": "workspace:*",
+    "@bugsee/bundler-plugin-core": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/deno": "workspace:*",
@@ -27,6 +27,7 @@
     "@bugsee/util": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
     "@bugsee/vite-plugin": "workspace:*",
+    "@bugsee/webpack-plugin": "workspace:*",
     "@bugsee/webview": "workspace:*"
   },
   "devDependencies": {
@@ -38,9 +39,12 @@
     "ajv": "^8.17.1",
     "esbuild": "^0.27.0",
     "fflate": "^0.8.2",
+    "html-webpack-plugin": "^5.6.8",
     "jsdom": "^25.0.1",
     "miniflare": "^4.20260722.0",
     "playwright": "^1.62.1",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "webpack": "^5.111.0",
+    "webpack-subresource-integrity": "^5.1.0"
   }
 }

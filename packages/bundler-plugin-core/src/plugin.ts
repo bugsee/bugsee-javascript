@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
 import type { BundlerBuildContext } from './register-build';
 import { type BugseePluginOptions, resolvePluginOptions, runPluginUpload } from './resolve';
+import { type AssetStore, stampAssets } from './stamp-assets';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -24,10 +25,49 @@ export function resolveOutputDir(output: OutputLike): string | undefined {
   return undefined;
 }
 
+/** The slice of a webpack 5 compilation the in-build stamp reads and writes. */
+interface WebpackCompilationLike {
+  hooks: {
+    processAssets: {
+      tapPromise: (options: { name: string; stage: number }, fn: () => Promise<void>) => void;
+    };
+  };
+  getAssets(): ReadonlyArray<{ name: string }>;
+  getAsset(name: string): { source: { buffer(): Buffer } } | undefined;
+  updateAsset(name: string, source: unknown): void;
+}
+
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
 interface WebpackCompilerLike {
   options: { output?: { path?: string }; mode?: string };
-  hooks: { afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void } };
+  hooks: {
+    afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void };
+    /** webpack 5 only. */
+    thisCompilation?: {
+      tap: (name: string, fn: (compilation: WebpackCompilationLike) => void) => void;
+    };
+  };
+  /**
+   * webpack 5's own API object. Read from the COMPILER, never imported: the stage constant and the
+   * `RawSource` class must be the ones this compilation uses, not a second copy of webpack or
+   * webpack-sources that happens to resolve from this package.
+   */
+  webpack?: {
+    Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: number };
+    sources: { RawSource: new (buffer: Buffer) => unknown };
+  };
+}
+
+/** A compilation's asset table as the core's `AssetStore`. */
+function webpackAssetStore(
+  compilation: WebpackCompilationLike,
+  RawSource: new (buffer: Buffer) => unknown,
+): AssetStore {
+  return {
+    names: () => compilation.getAssets().map((asset) => asset.name),
+    read: (name) => compilation.getAsset(name)?.source.buffer() ?? Buffer.alloc(0),
+    update: (name, content) => compilation.updateAsset(name, new RawSource(content)),
+  };
 }
 
 /**
@@ -104,10 +144,59 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     },
     rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output, {}) },
     webpack(compiler: WebpackCompilerLike) {
+      // Whether THIS compilation's bundles were stamped in the build. Reset per compilation, so in
+      // watch mode a stamp from the previous build cannot vouch for this one.
+      let preStamped = false;
+
+      // THE SRI FIX (docs/review/cli-js-flows.md §7, option 1). On webpack 5, stamp the debug-ids
+      // INSIDE the compilation, at a stage after the maps exist and before any integrity hash is
+      // taken: SourceMapDevToolPlugin emits maps at PROCESS_ASSETS_STAGE_DEV_TOOLING (500, after
+      // minification at 400), and webpack-subresource-integrity hashes at
+      // PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE (700). One stage past 500 sees the final bytes, and the
+      // SRI plugin then hashes the STAMPED bytes — for the HTML and for the lazy-chunk `sriHashes`
+      // table it writes into the runtime chunk alike. Nothing is rewritten after emit.
+      const api = compiler.webpack;
+      const thisCompilation = compiler.hooks.thisCompilation;
+      if (resolved.enabled && api !== undefined && thisCompilation !== undefined) {
+        thisCompilation.tap(name, (compilation) => {
+          preStamped = false;
+          compilation.hooks.processAssets.tapPromise(
+            { name, stage: api.Compilation.PROCESS_ASSETS_STAGE_DEV_TOOLING + 1 },
+            async () => {
+              try {
+                await stampAssets(webpackAssetStore(compilation, api.sources.RawSource), {
+                  dryRun: resolved.dryRun,
+                });
+                // True on a dry run too: the preview must follow the path the real run takes, and the
+                // real run would not refuse an SRI build — it would stamp it here.
+                preStamped = true;
+              } catch (error) {
+                if (resolved.failOnError) {
+                  throw error;
+                }
+                // Contained, and NOT silent about what happens next: the post-emit path takes over,
+                // and it still carries the SRI refusal, so a failed in-build stamp degrades to the old
+                // safe behaviour rather than to an unchecked page.
+                (
+                  resolved.onError ??
+                  ((e: unknown) =>
+                    console.warn(
+                      `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+                    ))
+                )(error);
+              }
+            },
+          );
+        });
+      }
+
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
-          await runPluginUpload(resolved, dir, { bundler: webpackBuild(compiler.options.mode) });
+          await runPluginUpload(resolved, dir, {
+            bundler: webpackBuild(compiler.options.mode),
+            preStamped,
+          });
         }
       });
     },

@@ -12,6 +12,12 @@ vi.mock('./resolve', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./resolve')>()),
   runPluginUpload: uploadSpy,
 }));
+// The in-build stamp is stubbed here: this file tests the HOOK wiring. stamp-assets.test.ts runs the
+// real CLI, and the SRI e2e runs the whole thing through a real webpack build.
+const { stampSpy } = vi.hoisted(() => ({
+  stampSpy: vi.fn(async (_store: unknown, _options?: unknown) => ({ stamped: [] as string[] })),
+}));
+vi.mock('./stamp-assets', () => ({ stampAssets: stampSpy }));
 
 const { bugseeUnpluginFactory } = await import('./plugin');
 
@@ -146,6 +152,200 @@ describe('the output hooks actually drive the upload', () => {
       (makePlugin({ appToken: 'tok' }).webpack as (c: unknown) => void)(compiler);
       await taps[0]?.fn();
       expect(bundlerOf(0)).toEqual({ isProduction: true, configuration: 'production' });
+    });
+  });
+
+  // The real SRI fix (stamp-assets.ts): on webpack 5 the bundles are stamped INSIDE the compilation,
+  // at a stage after the maps exist and before webpack-subresource-integrity takes its hashes.
+  describe('webpack 5: stamps inside the compilation', () => {
+    const DEV_TOOLING = 500;
+
+    class RawSource {
+      constructor(readonly bytes: Buffer) {}
+    }
+
+    function webpack5Compiler(options: { mode?: string } = {}) {
+      const base = fakeCompiler('/build/out', options.mode);
+      const processAssets: Array<{ name: string; stage: number; fn: () => Promise<void> }> = [];
+      const updated: Array<{ name: string; source: unknown }> = [];
+      const compilation = {
+        hooks: {
+          processAssets: {
+            tapPromise: (opts: { name: string; stage: number }, fn: () => Promise<void>) => {
+              processAssets.push({ ...opts, fn });
+            },
+          },
+        },
+        getAssets: () => [{ name: 'main.js' }, { name: 'main.js.map' }],
+        getAsset: (name: string) => ({
+          source: { buffer: () => Buffer.from(`content of ${name}`) },
+        }),
+        updateAsset: (name: string, source: unknown) => {
+          updated.push({ name, source });
+        },
+      };
+      const compilations: Array<(c: unknown) => void> = [];
+      const compiler = {
+        ...base.compiler,
+        webpack: {
+          Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: DEV_TOOLING },
+          sources: { RawSource },
+        },
+        hooks: {
+          ...base.compiler.hooks,
+          thisCompilation: {
+            tap: (_name: string, fn: (c: unknown) => void) => {
+              compilations.push(fn);
+            },
+          },
+        },
+      };
+      const compile = async (): Promise<void> => {
+        for (const fn of compilations) {
+          fn(compilation);
+        }
+        for (const tap of processAssets) {
+          await tap.fn();
+        }
+      };
+      return { compiler, taps: base.taps, processAssets, updated, compile };
+    }
+
+    const apply = (options: BugseePluginOptions, compiler: unknown): void =>
+      (makePlugin(options).webpack as (c: unknown) => void)(compiler);
+
+    beforeEach(() => {
+      stampSpy.mockReset();
+      stampSpy.mockImplementation(async () => ({ stamped: [] }));
+    });
+
+    it('stamps after the maps are emitted and before SRI hashes', async () => {
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok' }, w.compiler);
+      await w.compile();
+
+      expect(w.processAssets).toHaveLength(1);
+      // Maps are emitted AT 500 (SourceMapDevToolPlugin); webpack-subresource-integrity hashes at 700
+      // (PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE). Anything in between sees the final bytes AND is hashed.
+      expect(w.processAssets[0]?.stage).toBe(DEV_TOOLING + 1);
+      expect(w.processAssets[0]?.name).toBe('bugsee');
+      expect(stampSpy).toHaveBeenCalledOnce();
+    });
+
+    it('then uploads WITHOUT re-injecting after emit', async () => {
+      const w = webpack5Compiler({ mode: 'production' });
+      apply({ appToken: 'tok' }, w.compiler);
+      await w.compile();
+      await w.taps[0]?.fn();
+
+      const deps = uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean };
+      expect(deps.preStamped).toBe(true);
+    });
+
+    it('reads and writes the compilation’s own asset table', async () => {
+      stampSpy.mockImplementation(async (store) => {
+        const s = store as {
+          names(): string[];
+          read(n: string): Buffer;
+          update(n: string, c: Buffer): void;
+        };
+        expect(s.names()).toEqual(['main.js', 'main.js.map']);
+        expect(s.read('main.js').toString()).toBe('content of main.js');
+        s.update('main.js', Buffer.from('stamped'));
+        return { stamped: ['main.js'] };
+      });
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok' }, w.compiler);
+      await w.compile();
+
+      // Replaced through webpack's API, as a RawSource from webpack's OWN `sources` — never a copy of
+      // webpack-sources that could differ from the one the compilation uses.
+      expect(w.updated).toHaveLength(1);
+      expect(w.updated[0]?.name).toBe('main.js');
+      expect(w.updated[0]?.source).toBeInstanceOf(RawSource);
+      expect((w.updated[0]?.source as RawSource).bytes.toString()).toBe('stamped');
+    });
+
+    it('passes the dry-run flag to the stamp', async () => {
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok', dryRun: true }, w.compiler);
+      await w.compile();
+      expect(stampSpy.mock.calls[0]?.[1]).toEqual({ dryRun: true });
+    });
+
+    it('falls back to the post-emit path when the in-build stamp fails', async () => {
+      // The post-emit path still carries the SRI refusal, so a failed in-build stamp degrades to the
+      // old, safe behaviour rather than to a page nobody checked.
+      stampSpy.mockImplementation(async () => {
+        throw new Error('bugsee-cli exited 20');
+      });
+      const onError = vi.fn();
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok', onError }, w.compiler);
+      await w.compile();
+      await w.taps[0]?.fn();
+
+      expect(onError).toHaveBeenCalledOnce();
+      expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(false);
+    });
+
+    it('says what happens next when a stamp fails and no handler is set', async () => {
+      // The fallback is not silent: the build is about to take the post-emit path instead.
+      stampSpy.mockImplementation(async () => {
+        throw new Error('bugsee-cli exited 20');
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const w = webpack5Compiler();
+        apply({ appToken: 'tok' }, w.compiler);
+        await w.compile();
+        expect(warn).toHaveBeenCalledOnce();
+        expect(String(warn.mock.calls[0]?.[0])).toMatch(
+          /\[bugsee\] in-build debug-ID stamping failed; falling back to stamping after emit: .*exited 20/,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fails the compilation over a failed stamp under failOnError', async () => {
+      stampSpy.mockImplementation(async () => {
+        throw new Error('bugsee-cli exited 20');
+      });
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok', failOnError: true }, w.compiler);
+      await expect(w.compile()).rejects.toThrow(/exited 20/);
+    });
+
+    it('starts each compilation unstamped (watch mode)', async () => {
+      const w = webpack5Compiler();
+      apply({ appToken: 'tok', onError: () => undefined }, w.compiler);
+      await w.compile();
+      await w.taps[0]?.fn();
+      stampSpy.mockImplementation(async () => {
+        throw new Error('second build failed to stamp');
+      });
+      await w.compile();
+      await w.taps[0]?.fn();
+
+      // A stamp from the PREVIOUS compilation must not vouch for this one.
+      expect((uploadSpy.mock.calls[1]?.[2] as { preStamped?: boolean }).preStamped).toBe(false);
+    });
+
+    it('does not stamp at all for a disabled plugin', async () => {
+      const w = webpack5Compiler();
+      apply({ disabled: true }, w.compiler);
+      await w.compile();
+      expect(w.processAssets).toHaveLength(0);
+      expect(stampSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the post-emit path on a webpack without processAssets (webpack 4)', async () => {
+      const { compiler, taps } = fakeCompiler('/build/out');
+      apply({ appToken: 'tok' }, compiler);
+      await taps[0]?.fn();
+      expect(stampSpy).not.toHaveBeenCalled();
+      expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(false);
     });
   });
 });

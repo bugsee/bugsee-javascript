@@ -197,6 +197,8 @@ export async function runPluginUpload(
     registerWebBuild?: typeof defaultRegisterWebBuild;
     /** What the bundler says about this build — its production signal and configuration name. */
     bundler?: BundlerBuildContext;
+    /** The bundles were stamped inside the build (stamp-assets.ts); skip the post-emit inject. */
+    preStamped?: boolean;
   } = {},
 ): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {
@@ -227,6 +229,9 @@ export async function runPluginUpload(
       ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
       // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".
       ...(vcs !== undefined ? { vcs } : {}),
+      // Omitted unless true, so the orchestrator's argument stays exactly what it was for every
+      // build that did not take the in-build path.
+      ...(deps.preStamped === true ? { preStamped: true } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
     // into the bundles — and regardless of whether the maps made it, because a build exists either

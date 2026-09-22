@@ -70,7 +70,9 @@ describe('uploadSourcemaps', () => {
   describe('Subresource Integrity', () => {
     const sriBase = {
       ...base,
-      findSri: async () => [{ html: '/build/dist/index.html', script: '/build/dist/main.js' }],
+      findSri: async () => [
+        { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+      ],
     };
 
     it('refuses to stamp a build whose HTML pins script hashes, and uploads nothing', async () => {
@@ -92,9 +94,13 @@ describe('uploadSourcemaps', () => {
       await uploadSourcemaps({
         ...base,
         findSri: async () => [
-          { html: '/build/dist/index.html', script: '/build/dist/main.js' },
-          { html: '/build/dist/index.html', script: '/build/dist/vendor.js' },
-          { html: '/build/dist/about.html', script: '/build/dist/about.js' },
+          { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+          {
+            html: '/build/dist/index.html',
+            script: '/build/dist/vendor.js',
+            integrity: 'sha384-X',
+          },
+          { html: '/build/dist/about.html', script: '/build/dist/about.js', integrity: 'sha384-X' },
         ],
         run,
         onError,
@@ -553,5 +559,116 @@ describe('uploadSourcemaps — VCS metadata passthrough', () => {
     const { run } = fakeRun();
     const result = await uploadSourcemaps({ ...base, run, deleteMapFiles: async () => [] });
     expect('vcs' in result).toBe(false);
+  });
+});
+
+// The in-build path (stamp-assets.ts): the bundles were stamped INSIDE the compilation, before any SRI
+// plugin took its hashes, so nothing is rewritten after emit and there is nothing for the refusal to
+// protect. What remains to check is whether some plugin hashed BEFORE the stamp.
+describe('uploadSourcemaps — already stamped in the build', () => {
+  it('skips inject and the SRI refusal, and still uploads', async () => {
+    const { run, calls } = fakeRun();
+    const findSri = vi.fn(async () => [
+      { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+    ]);
+    const result = await uploadSourcemaps({
+      ...base,
+      run,
+      preStamped: true,
+      findSri,
+      verifySri: async () => [],
+      deleteMapFiles: async () => [],
+    });
+
+    // A pinned build is exactly what this path exists to support — refusing it would undo the fix.
+    expect(findSri).not.toHaveBeenCalled();
+    expect(calls.map((c) => c.args.slice(0, 2))).toEqual([['debug-files', 'upload']]);
+    expect(result).toMatchObject({ injected: true, uploaded: true });
+  });
+
+  it('checks that every pinned script still matches its hash', async () => {
+    const verifySri = vi.fn(async () => []);
+    await uploadSourcemaps({
+      ...base,
+      run: fakeRun().run,
+      preStamped: true,
+      verifySri,
+      deleteMapFiles: async () => [],
+    });
+    expect(verifySri).toHaveBeenCalledWith('/build/dist');
+  });
+
+  it('reports a page that will not load, naming the script, and still uploads the maps', async () => {
+    const { run, calls } = fakeRun();
+    const onError = vi.fn();
+    const result = await uploadSourcemaps({
+      ...base,
+      run,
+      preStamped: true,
+      onError,
+      verifySri: async () => [
+        { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+      ],
+      deleteMapFiles: async () => [],
+    });
+
+    expect(onError).toHaveBeenCalledOnce();
+    const message = String(onError.mock.calls[0]?.[0]);
+    expect(message).toMatch(/\/build\/dist\/main\.js/);
+    expect(message).toMatch(/will not run|refuse/i);
+    // The maps are still correct and still worth having; the failure is the PAGE, not them.
+    expect(calls.map((c) => c.args[0])).toEqual(['debug-files']);
+    expect(result).toMatchObject({ uploaded: true });
+  });
+
+  it('does not claim the upload was skipped when it reports a broken page by default', async () => {
+    // The default contained-failure wording is "source-map upload skipped", which would be false
+    // here: the upload goes ahead.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps({
+        ...base,
+        run: fakeRun().run,
+        preStamped: true,
+        verifySri: async () => [
+          { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+        ],
+        deleteMapFiles: async () => [],
+      });
+      expect(warn).toHaveBeenCalledOnce();
+      const text = String(warn.mock.calls[0]?.[0]);
+      expect(text).toMatch(/^\[bugsee\] /);
+      expect(text).not.toMatch(/skipped/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fails the build over it under failOnError, before uploading', async () => {
+    const { run, calls } = fakeRun();
+    await expect(
+      uploadSourcemaps({
+        ...base,
+        run,
+        preStamped: true,
+        failOnError: true,
+        verifySri: async () => [
+          { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
+        ],
+      }),
+    ).rejects.toThrow(/main\.js/);
+    expect(calls).toEqual([]);
+  });
+
+  it('does not verify on the post-emit path, where the refusal already protects the page', async () => {
+    const verifySri = vi.fn(async () => []);
+    await uploadSourcemaps({
+      ...base,
+      run: fakeRun().run,
+      verifySri,
+      findSri: async () => [],
+      deleteMapFiles: async () => [],
+    });
+    expect(verifySri).not.toHaveBeenCalled();
   });
 });

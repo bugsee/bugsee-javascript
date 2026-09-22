@@ -319,8 +319,9 @@ Confirmed independently by two reviewers, still unfixed:
 > `src/inject/sri.rs`, `--allow-sri` to override) and the plugin
 > (`bundler-plugin-core/src/sri.ts`). Both, not one: a user driving the CLI by hand is not covered by a
 > plugin-side check. `docs/review/cli-js-flows.md` §7 carries the detail, the two SEV1s found while
-> reviewing the first cut, and the part that is still open — stamping during `processAssets`, before
-> the hashes are computed, which is the only fix correct for runtime-embedded lazy-chunk hashes.
+> reviewing the first cut. **The real fix — stamping during `processAssets` before the hashes are
+> computed — shipped for webpack 5 on 2026-09-23** and is proven in a real browser by
+> `instrumentation-tests/test/sri.e2e.ts`; Vite/Rollup, Angular and webpack 4 remain on the guard.
 
 `@bugsee/bundler-plugin-core` runs `bugsee-cli sourcemaps inject` at webpack's `afterEmit` /
 unplugin's `writeBundle`, which appends bytes to every emitted `.js` AFTER the bundler computed its

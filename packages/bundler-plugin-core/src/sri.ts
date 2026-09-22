@@ -14,6 +14,7 @@
 // safe alternative: `webpack-subresource-integrity` also embeds the lazy chunks' hashes in the
 // runtime chunk (`__webpack_require__.sriHashes`), so patching the HTML alone would still break
 // every dynamic import. See docs/design/source-maps.md and docs/review/cli-js-flows.md §7.
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
@@ -24,6 +25,8 @@ export interface SriProtectedScript {
   html: string;
   /** Absolute path of the script it pins. */
   script: string;
+  /** The `integrity` value as written, quotes removed — e.g. `sha384-…`, possibly several. */
+  integrity: string;
 }
 
 /** Directories the HTML walk never descends into — same reasoning as the `.map` delete walk. */
@@ -149,8 +152,64 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
         continue;
       }
       seen.add(script);
-      found.push({ html, script });
+      found.push({ html, script, integrity: unquote(integrity).trim() });
     }
   }
   return found;
+}
+
+/** SRI's hash algorithms, weakest to strongest — the order the spec compares them in. */
+const SRI_ALGORITHMS = ['sha256', 'sha384', 'sha512'] as const;
+type SriAlgorithm = (typeof SRI_ALGORITHMS)[number];
+
+/**
+ * Whether `bytes` would pass `integrity`, by the browser's rule (SRI §3.3.5): unknown algorithms are
+ * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
+ * enough. A value with no algorithm the browser knows means no check at all.
+ */
+function passesIntegrity(integrity: string, bytes: Buffer): boolean {
+  const byAlgorithm = new Map<SriAlgorithm, string[]>();
+  for (const token of integrity.split(/\s+/)) {
+    // `alg-base64[?options]` — the options suffix is allowed by the grammar and has no effect here.
+    const [spec = ''] = token.split('?');
+    const dash = spec.indexOf('-');
+    const alg = spec.slice(0, dash) as SriAlgorithm;
+    if (dash > 0 && SRI_ALGORITHMS.includes(alg)) {
+      byAlgorithm.set(alg, [...(byAlgorithm.get(alg) ?? []), spec.slice(dash + 1)]);
+    }
+  }
+  const strongest = [...SRI_ALGORITHMS].reverse().find((alg) => byAlgorithm.has(alg));
+  if (strongest === undefined) {
+    return true;
+  }
+  const actual = createHash(strongest).update(bytes).digest('base64');
+  return (byAlgorithm.get(strongest) as string[]).includes(actual);
+}
+
+/**
+ * Scripts in `outDir`'s HTML whose bytes no longer match the `integrity` value pinning them — i.e.
+ * scripts the browser will refuse to run.
+ *
+ * The check for the IN-BUILD stamping path (stamp-assets.ts). There nothing is rewritten after emit,
+ * so a build that stamped before its SRI plugin hashed is consistent, and this is empty. It is not
+ * empty when some plugin hashed BEFORE the stamp — the one way the in-build path can still ship a page
+ * that loads nothing — and saying so is the difference between a loud failure and a silent one.
+ *
+ * A pin to a file that is not on disk is skipped: a stale page pointing at a deleted bundle is broken,
+ * but not by anything this build did. Never throws.
+ */
+export async function findIntegrityMismatches(outDirInput: string): Promise<SriProtectedScript[]> {
+  const mismatched: SriProtectedScript[] = [];
+  for (const pinned of await findSriProtectedScripts(outDirInput)) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(pinned.script);
+    } catch {
+      continue;
+    }
+    if (!passesIntegrity(pinned.integrity, bytes)) {
+      mismatched.push(pinned);
+    }
+  }
+  return mismatched;
 }

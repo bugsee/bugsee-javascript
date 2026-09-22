@@ -916,3 +916,20 @@ describe('runPluginUpload — build registration', () => {
     expect(registerWebBuild).not.toHaveBeenCalled();
   });
 });
+
+describe('runPluginUpload — in-build stamping', () => {
+  it('tells the orchestrator the bundles were already stamped', async () => {
+    const uploadSourcemaps = vi.fn(async () => ({
+      injected: true,
+      uploaded: true,
+      deletedMaps: [],
+    }));
+    await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
+      uploadSourcemaps,
+      registerWebBuild: async () => ({ registered: false, reason: 'not-release' }),
+      preStamped: true,
+      ...noVcs,
+    });
+    expect(uploadSourcemaps).toHaveBeenCalledWith(expect.objectContaining({ preStamped: true }));
+  });
+});

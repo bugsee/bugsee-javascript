@@ -113,7 +113,7 @@ The CLI blocker named above is now precise: `upload build` requires `--artifact`
 normal — register the build, ship no bytes — is the one a web build cannot express. The register-only
 mode exists in Rust and is used by `xcode post-action`; nothing exposes it on the CLI.
 
-### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18) — **(3) SHIPPED both sides; (1) still the real fix**
+### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18) — **(1) SHIPPED for webpack 5 (2026-09-23); (3) remains the guard elsewhere**
 
 Confirmed, and it is the worst finding here: the app's entry script is blocked and nothing runs.
 
@@ -168,10 +168,30 @@ Two SEV1s were found in review of the first attempt, both worth recording becaus
 Re-running on an already-stamped build used to exit 20 even though `--help` promises a no-op; the guard
 now mirrors `inject`'s own rewrite decision (`would_rewrite`), with a test pinning the two in agreement.
 
-**(1) remains open and is still the real fix.** Stamping during `processAssets`, before the hashes are
-computed, is the only approach correct for the runtime-embedded lazy-chunk hashes as well as the HTML;
-it needs an in-memory stamping path the CLI does not offer. Until then the guard trades a broken page
-for a failed build, which is strictly better but is not the same as working.
+**(1) SHIPPED for webpack 5 on 2026-09-23.** The plugin stamps inside the compilation, at
+`PROCESS_ASSETS_STAGE_DEV_TOOLING + 1`: source maps are emitted at 500 (after minification at 400),
+and `webpack-subresource-integrity` hashes at `PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE` (700) — so it hashes
+the STAMPED bytes, for the HTML and for the lazy-chunk `sriHashes` table in the runtime chunk alike.
+No in-memory CLI mode was needed: the bundles and maps are staged in a temp directory with their
+relative layout and the real `bugsee-cli sourcemaps inject` runs over it, so the Rust implementation
+stays the only one (`bundler-plugin-core/src/stamp-assets.ts`). After emit nothing is rewritten.
+
+Proven by `instrumentation-tests/test/sri.e2e.ts`, which is this finding's reproduction made
+permanent: a real webpack 5.111 + html-webpack-plugin + webpack-subresource-integrity build with a lazy
+chunk, the real CLI, loaded in Chromium. The page runs its entry AND its lazy chunk with debug-ids
+registered; a CONTROL build stamped after emit, the old way, is blocked in the same harness. Moving the
+stage to either side of the window turns it red — after 700 the page is blocked, before 500 the maps
+carry no id.
+
+Because the refusal is skipped on that path (there is nothing post-emit left to protect), it is
+replaced by a check of the real invariant: does every pinned script still match its integrity hash
+(`findIntegrityMismatches`, the browser's strongest-algorithm rule)? A plugin that hashes BEFORE stage
+501 would still break the page, and this makes that loud — a failure under `failOnError`, a warning
+otherwise — rather than silent.
+
+Still on the guard (3), not the fix: **Vite/Rollup** SRI plugins, **Angular**'s esbuild builder, and
+**webpack 4** (no `processAssets`). A failed in-build stamp on webpack 5 also falls back to the
+post-emit path, and so to the refusal.
 
 ### 8. Not a CLI gap, but in the same flow
 
