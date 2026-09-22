@@ -35,11 +35,19 @@ import { expect } from 'vitest';
 const SIZE_SEPARATION = 16;
 
 /**
- * The ceiling. Linear lands near 16, quadratic near 256, so this sits close to the geometric middle
- * — about 1.9x above the worst healthy reading the runner has produced and about 1.9x below the
- * best quadratic one.
+ * The ceiling, expressed as a multiple of what the SAME MACHINE measures for work that is linear by
+ * construction (see `referenceRatioFor`). Healthy work lands near 1x that reference and quadratic
+ * work near `SIZE_SEPARATION`x it, so 4 is the geometric middle with equal room on each side.
+ *
+ * It is a RELATIVE budget because an absolute one is not portable, and that cost two red builds. A
+ * fixed ceiling of 64 was calibrated on one machine; the CI runner measured healthy XML work at 65.8
+ * and 65.3 — twice, once under load and once idle, so it was not noise — while the same work reads
+ * ~15 here. Duration-matching the two samples was tried first and did not move it, which rules out
+ * unequal exposure to scheduling noise and leaves the large side being genuinely disproportionate on
+ * that hardware (a 200 KB input falls out of a cache that a 12.5 KB one sits inside). A reference
+ * measured in the same run, at the same two sizes, with the same memory shape, absorbs exactly that.
  */
-export const LINEAR_BUDGET = 64;
+export const LINEAR_TOLERANCE = 4;
 
 // `performance.now()`, not `Date.now()`: this tier compiles with neither the DOM nor the Node libs
 // (tsconfig.base `lib: ["ES2023"]`, `types: []`), so it is reached through the same globalThis cast
@@ -180,6 +188,67 @@ export const measurePair = (
   return { small: bestSmall, large: bestLarge };
 };
 
+/**
+ * Work that is LINEAR BY CONSTRUCTION — one pass over a string of the given length — used to
+ * calibrate the ceiling on the machine actually running the test.
+ *
+ * It is deliberately STRING-SHAPED rather than a pure arithmetic loop. What makes a machine read a
+ * healthy subject as superlinear is the large input falling out of a cache the small one fits in, and
+ * a reference that touches no memory would not feel that and so would not correct for it. Every
+ * subject this calibrates scans a body, so the reference scans one too.
+ */
+const referenceWork = (input: string): void => {
+  let hits = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    // `0x61` is the character the input is built from, so the body runs on EVERY iteration: the
+    // reference must pay a per-character cost, not just walk the string. Counting something absent
+    // would let the branch predictor skip the work the subjects actually do.
+    if (input.charCodeAt(i) === 0x61) {
+      hits += 1;
+    }
+  }
+  // Consumed so the loop cannot be optimized away, the same guard the subjects' own `burn` uses.
+  /* v8 ignore next 3 -- unreachable by construction: `hits` counts matches, so it is never negative.
+     The comparison exists only to make the loop's result observable to the optimizer. */
+  if (hits === -1) {
+    throw new Error('unreachable — keeps the reference scan from being optimized away');
+  }
+};
+
+/**
+ * The ratio the reference produces at this size on this machine — what "linear" MEASURES here, as
+ * opposed to what it predicts (`SIZE_SEPARATION`). Memoised: it depends only on the size, and several
+ * subjects share one, so a suite pays for each distinct size once.
+ */
+const referenceRatios = new Map<number, number>();
+
+const referenceRatioFor = (size: number): number => {
+  const cached = referenceRatios.get(size);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const small = 'a'.repeat(Math.round(size / SIZE_SEPARATION));
+  const large = 'a'.repeat(Math.round(size));
+  const measured = measurePair(
+    () => referenceWork(small),
+    () => referenceWork(large),
+  );
+  const ratio = measured.large / measured.small;
+  referenceRatios.set(size, ratio);
+  return ratio;
+};
+
+/**
+ * How much MORE than linear the subject grew, in multiples of what linear growth actually measures on
+ * this machine. 1 means "grew exactly like known-linear work"; `SIZE_SEPARATION` means quadratic.
+ *
+ * Extracted so the arithmetic that decides the verdict can be checked against real readings without
+ * needing the machine that produced them — the CI runner reads 65x for work this machine reads at 15x,
+ * and neither number can be conjured locally.
+ */
+export const linearityVerdict = (observed: number, reference: number): number =>
+  observed / reference;
+
 export const expectLinearIn = <T>(
   prepare: (size: number) => T,
   work: (input: T) => void,
@@ -200,11 +269,18 @@ export const expectLinearIn = <T>(
   // at least MIN_SAMPLE_MS, so a per-call cost is always positive and always meaningful. The
   // invariant moved from a defensive branch nothing could reach into the construction of the
   // measurement itself.
-  // The measurements ride along in the message: when this fails on a machine that cannot be
-  // inspected, the ratio alone does not say whether the work got slower or the baseline got faster.
+  const observed = large / small;
+  const reference = referenceRatioFor(size);
+  const verdict = linearityVerdict(observed, reference);
+
+  // EVERY number rides along in the message. This fails on machines that cannot be inspected, and
+  // the verdict alone does not say whether the subject grew, the baseline shrank, or the machine
+  // simply reads a 16x step as more than 16x for everything — which is the whole reason the ceiling
+  // is relative. The reference reading is what separates those.
   expect(
-    large / small,
+    verdict,
     `linearity: ${small.toFixed(4)} ms at n/${SIZE_SEPARATION} vs ${large.toFixed(4)} ms at n ` +
-      `(linear predicts ~${SIZE_SEPARATION}, quadratic ~${SIZE_SEPARATION ** 2})`,
-  ).toBeLessThan(LINEAR_BUDGET);
+      `= ${observed.toFixed(1)}x, against ${reference.toFixed(1)}x for work that is linear by ` +
+      `construction on this machine (quadratic would be ~${SIZE_SEPARATION}x the reference)`,
+  ).toBeLessThan(LINEAR_TOLERANCE);
 };

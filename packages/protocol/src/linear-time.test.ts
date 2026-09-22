@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { expectLinearIn, measurePair, timePerCall } from './linear-time.test-helper';
+import {
+  expectLinearIn,
+  LINEAR_TOLERANCE,
+  linearityVerdict,
+  measurePair,
+  timePerCall,
+} from './linear-time.test-helper';
 
 /**
  * Tests for the complexity guard itself.
@@ -290,5 +296,38 @@ describe('expectLinearIn', () => {
         4_000_000,
       ),
     ).not.toThrow();
+  });
+});
+
+// The CI failure this exists to answer, stated in the numbers that produced it. It cannot be
+// reproduced locally — the runner measured healthy XML work at 65.8x and 65.3x a 16x step, twice,
+// once under load and once idle, while the same work reads ~15x here — so what is pinned is the
+// ARITHMETIC that turns those readings into a verdict, not the machine.
+//
+// What this does NOT prove: that the reference tracks a given machine's inflation. Only that machine
+// can show that. It proves that IF it tracks, a linear subject passes and a quadratic one does not.
+describe('linearityVerdict', () => {
+  it('passes the reading that a fixed ceiling of 64 failed', () => {
+    // The runner's own numbers: subject 65.3x, and known-linear work measured alongside it at ~65x
+    // because the machine, not the subject, is what inflates a 16x step.
+    expect(linearityVerdict(65.3, 65)).toBeLessThan(LINEAR_TOLERANCE);
+  });
+
+  it('passes work that grew exactly like the reference, whatever the machine reads', () => {
+    for (const reference of [15, 16, 65, 400]) {
+      expect(linearityVerdict(reference, reference)).toBeLessThan(LINEAR_TOLERANCE);
+    }
+  });
+
+  it('REJECTS quadratic growth on a fast machine and on an inflated one alike', () => {
+    // Quadratic is SIZE_SEPARATION times the reference wherever the reference lands.
+    expect(linearityVerdict(16 * 16, 16)).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
+    expect(linearityVerdict(65 * 16, 65)).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
+  });
+
+  it('still catches a subject that grew several times faster than the reference', () => {
+    // The point of the tolerance: 4x the reference is already past it, well below quadratic's 16x.
+    expect(linearityVerdict(65 * 4, 65)).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
+    expect(linearityVerdict(65 * 3.9, 65)).toBeLessThan(LINEAR_TOLERANCE);
   });
 });
