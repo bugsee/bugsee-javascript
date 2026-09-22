@@ -253,6 +253,7 @@ export const expectLinearIn = <T>(
   prepare: (size: number) => T,
   work: (input: T) => void,
   size: number,
+  benign?: (size: number) => T,
 ): void => {
   // Warm up BELOW the baseline, purely to get the path JIT-compiled before the baseline is taken. An
   // unwarmed baseline is inflated, which makes the ceiling too generous and could mask a regression.
@@ -270,7 +271,26 @@ export const expectLinearIn = <T>(
   // invariant moved from a defensive branch nothing could reach into the construction of the
   // measurement itself.
   const observed = large / small;
-  const reference = referenceRatioFor(size);
+  // The control, and the best one available: THE SAME `work`, at the same two sizes, on input that
+  // cannot reach the shape under suspicion. Same code path, same allocations, same regexes — only the
+  // hostile shape differs, so whatever the machine does to this function it does to both sides.
+  //
+  // A synthetic scan was tried first and was WRONG in a way worth recording: it read 6.8x on the CI
+  // runner where it reads 14.2x here, because it only walks characters and never allocates, so it
+  // could not feel the thing that actually stretches the subject on a small container. Calibrating
+  // against work of a different shape is calibrating against a different question.
+  const reference =
+    benign === undefined
+      ? referenceRatioFor(size)
+      : (() => {
+          const refSmall = benign(size / SIZE_SEPARATION);
+          const refLarge = benign(size);
+          const pair = measurePair(
+            () => work(refSmall),
+            () => work(refLarge),
+          );
+          return pair.large / pair.small;
+        })();
   const verdict = linearityVerdict(observed, reference);
 
   // EVERY number rides along in the message. This fails on machines that cannot be inspected, and

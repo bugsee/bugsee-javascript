@@ -435,6 +435,9 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
     // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
     // Each shape keeps the size it was originally written with: a single shared size silently changed
     // how much work two of them do.
+    // The control for each shape: the same parser, the same size, on input it handles normally.
+    const benign = (n: number): string =>
+      `{${'"k":1,'.repeat(Math.max(1, Math.round(n / 3)))}"z":1}`;
     for (const [build, size] of [
       [(n: number): string => `{'${"\\'".repeat(n)}`, 128_000],
       [(n: number): string => `{${'ab,'.repeat(n)}`, 80_000],
@@ -445,6 +448,7 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
           sanitizeBody(body, 'application/json');
         },
         size,
+        benign,
       );
     }
   }, 30_000);
@@ -515,6 +519,9 @@ describe('sanitizeBody — XML', () => {
   });
 
   it('stays linear on hostile XML-shaped input', () => {
+    // The control: well-formed markup of the same size, through the same pass.
+    const benign = (n: number): string =>
+      `<r>${'<a>x</a>'.repeat(Math.max(1, Math.round(n / 8)))}</r>`;
     for (const [build, size] of [
       [(n: number): string => `<${'a'.repeat(n)}`, 200_000], // an unterminated tag
       [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
@@ -526,6 +533,7 @@ describe('sanitizeBody — XML', () => {
           sanitizeBody(body, 'application/xml');
         },
         size,
+        benign,
       );
     }
   }, 30_000);

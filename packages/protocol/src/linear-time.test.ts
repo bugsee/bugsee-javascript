@@ -279,6 +279,46 @@ describe('expectLinearIn', () => {
     ).toThrow();
   });
 
+  // The benign control is the same `work` on input that cannot reach the shape under suspicion. Two
+  // ways to get it wrong are invisible on a machine where every reading agrees, so they are stated
+  // here with a work function whose two paths differ BY CONSTRUCTION.
+  //
+  // `hostile` is quadratic, `benign` is linear, so a correct reading is 256 against 16 = 16x the
+  // control, and the guard must refuse. Measuring the "control" on the hostile input instead would
+  // read 256 against 256 = 1x and the guard would NEVER refuse anything — the failure mode that
+  // matters, because it is silent.
+  it('REJECTS quadratic work measured against its own benign control', () => {
+    const work = (input: { n: number; hostile: boolean }): void => {
+      burn(input.hostile ? (input.n / 1000) * (input.n / 1000) : input.n);
+    };
+
+    expect(() =>
+      expectLinearIn(
+        (n) => ({ n, hostile: true }),
+        work,
+        4_000_000,
+        (n) => ({ n, hostile: false }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts linear work against its own benign control', () => {
+    const work = (input: { n: number; hostile: boolean }): void => {
+      // Both paths linear: the hostile shape costs more per byte, but grows at the same rate — which
+      // is exactly the case a guard must NOT refuse.
+      burn(input.hostile ? input.n * 2 : input.n);
+    };
+
+    expect(() =>
+      expectLinearIn(
+        (n) => ({ n, hostile: true }),
+        work,
+        4_000_000,
+        (n) => ({ n, hostile: false }),
+      ),
+    ).not.toThrow();
+  });
+
   it('does NOT charge the work for the cost of preparing its input', () => {
     // The decisive case. `prepare` here is deliberately QUADRATIC while `work` is linear, so the two
     // verdicts disagree: measured separately the ratio is ~4 and this passes; fold `prepare` into the
