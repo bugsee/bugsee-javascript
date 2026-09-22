@@ -4,6 +4,7 @@
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
 import { dirname } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
+import type { BundlerBuildContext } from './register-build';
 import { type BugseePluginOptions, resolvePluginOptions, runPluginUpload } from './resolve';
 
 /** The subset of a rollup/vite output-options object we read. */
@@ -25,8 +26,19 @@ export function resolveOutputDir(output: OutputLike): string | undefined {
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
 interface WebpackCompilerLike {
-  options: { output?: { path?: string } };
+  options: { output?: { path?: string }; mode?: string };
   hooks: { afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void } };
+}
+
+/**
+ * webpack's own answer to "is this a production build". It never writes its default back, so
+ * `options.mode` stays undefined for a config that set none, yet webpack BUILDS that as production:
+ * `const production = mode === "production" || !mode` (lib/config/defaults.js). Mirrored exactly, so
+ * the plugin agrees with what webpack actually emitted.
+ */
+function webpackBuild(mode: string | undefined): BundlerBuildContext {
+  const effective = mode === undefined || mode === '' ? 'production' : mode;
+  return { isProduction: effective === 'production', configuration: effective };
 }
 
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
@@ -35,10 +47,18 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   const resolved = resolvePluginOptions(options, process.env);
   const name = 'bugsee';
 
-  const uploadForOutput = async (output: OutputLike): Promise<void> => {
+  // What the bundler says about THIS build — whether it is production, and the configuration's name.
+  // Vite states it in `configResolved`, before any output is written; Rollup states nothing, and the
+  // run then falls back to NODE_ENV. It decides whether the build registers (register-build.ts, D2).
+  let viteBuild: BundlerBuildContext = {};
+
+  const uploadForOutput = async (
+    output: OutputLike,
+    bundler: BundlerBuildContext,
+  ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir !== undefined) {
-      await runPluginUpload(resolved, outDir);
+      await runPluginUpload(resolved, outDir, { bundler });
     }
   };
 
@@ -70,14 +90,24 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         }
         return undefined;
       },
-      writeBundle: (output: OutputLike) => uploadForOutput(output),
+      /**
+       * `isProduction`, not `mode === 'production'`: `vite build --mode staging` is a production build.
+       * Vite defaults NODE_ENV to `production` for `vite build` whatever the mode, unless NODE_ENV was
+       * already set or the mode's `.env` sets `development`, and `isProduction` is exactly
+       * `NODE_ENV === 'production'` after that. A mode-name check would skip every staging release.
+       * The mode is still what names the configuration.
+       */
+      configResolved(config: { isProduction: boolean; mode: string }) {
+        viteBuild = { isProduction: config.isProduction, configuration: config.mode };
+      },
+      writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
     },
-    rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output) },
+    rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output, {}) },
     webpack(compiler: WebpackCompilerLike) {
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
-          await runPluginUpload(resolved, dir);
+          await runPluginUpload(resolved, dir, { bundler: webpackBuild(compiler.options.mode) });
         }
       });
     },

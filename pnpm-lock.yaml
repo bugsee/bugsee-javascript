@@ -662,6 +662,9 @@ importers:
       '@bugsee/bun':
         specifier: workspace:*
         version: link:../bun
+      '@bugsee/bundler-plugin-core':
+        specifier: workspace:*
+        version: link:../bundler-plugin-core
       '@bugsee/cloudflare':
         specifier: workspace:*
         version: link:../cloudflare

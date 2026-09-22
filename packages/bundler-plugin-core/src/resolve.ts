@@ -6,6 +6,12 @@ import {
   uploadSourcemaps as defaultUploadSourcemaps,
   type UploadSourcemapsResult,
 } from './orchestrate';
+import {
+  type BundlerBuildContext,
+  registerWebBuild as defaultRegisterWebBuild,
+  type RegisterBuildSetting,
+  type RegisterWebBuildResult,
+} from './register-build';
 import type { EnvRecord } from './run-cli';
 import { resolveVcsMetadata as defaultResolveVcsMetadata, type VcsMetadata } from './vcs';
 
@@ -68,6 +74,38 @@ export interface BugseePluginOptions {
    * receives an `Error`. These are plain strings about configuration, not failures.
    */
   onNotice?: (message: string) => void;
+  /**
+   * Register this build with Bugsee (docs/design/web-build-registration.md). Falls back to
+   * `BUGSEE_REGISTER_BUILD` (`release` | `always` | `false`). Default `'release'`.
+   *
+   * `'release'` registers a build the BUNDLER calls production — Vite's resolved `isProduction`,
+   * webpack's `mode: 'production'`, else `NODE_ENV=production` — which is the same default the
+   * Android plugin and the iOS agent ship (`!isDebuggable`; a `Release*` configuration). `'always'`
+   * registers every build; `false` none.
+   *
+   * Register-only: no artefact bytes are uploaded. A failure never fails the build unless
+   * `failOnError` is set, exactly as for the source-map upload.
+   */
+  registerBuild?: RegisterBuildSetting;
+  /**
+   * The build's `package_id`. Default: the `name` of the nearest package.json at or above the build
+   * output (or {@link BugseePluginOptions.projectRoot}), scope included.
+   */
+  packageId?: string;
+}
+
+/** Map `BUGSEE_REGISTER_BUILD` onto the setting. An unrecognised value is NOT a setting. */
+function registerBuildFromEnv(value: string | undefined): RegisterBuildSetting | undefined {
+  switch (value) {
+    case 'release':
+    case 'always':
+      return value;
+    case 'false':
+      return false;
+    default:
+      // A typo must not silently turn registration on for every debug build, or off for releases.
+      return undefined;
+  }
 }
 
 export interface ResolvedPluginOptions {
@@ -104,11 +142,17 @@ export interface ResolvedPluginOptions {
   projectRoot: string | undefined;
   /** Notice sink; `undefined` means the default console warning. */
   onNotice: ((message: string) => void) | undefined;
+  /** Which builds register. Default `'release'`. */
+  registerBuild: RegisterBuildSetting;
+  /** Explicit `package_id`; `undefined` means "the nearest package.json". */
+  packageId: string | undefined;
+  /** NODE_ENV as the plugin was configured under — the release signal for a bundler with no mode. */
+  nodeEnv: string | undefined;
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
 /** In-flight uploads, keyed by output directory (Wave 7.5). Entries are removed as each run settles. */
-const runsByDir = new Map<string, Promise<UploadSourcemapsResult | undefined>>();
+const runsByDir = new Map<string, Promise<PluginRunResult | undefined>>();
 
 export function resolvePluginOptions(
   options: BugseePluginOptions,
@@ -133,8 +177,15 @@ export function resolvePluginOptions(
     allowDirtyCommit: options.allowDirtyCommit ?? false,
     projectRoot: options.projectRoot,
     onNotice: options.onNotice,
+    registerBuild:
+      options.registerBuild ?? registerBuildFromEnv(env.BUGSEE_REGISTER_BUILD) ?? 'release',
+    packageId: options.packageId,
+    nodeEnv: env.NODE_ENV,
   };
 }
+
+/** What a plugin run reports: the source-map upload, plus the build registration when it ran. */
+export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterWebBuildResult };
 
 /** Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled. */
 export async function runPluginUpload(
@@ -143,8 +194,11 @@ export async function runPluginUpload(
   deps: {
     uploadSourcemaps?: typeof defaultUploadSourcemaps;
     resolveVcs?: typeof defaultResolveVcsMetadata;
+    registerWebBuild?: typeof defaultRegisterWebBuild;
+    /** What the bundler says about this build — its production signal and configuration name. */
+    bundler?: BundlerBuildContext;
   } = {},
-): Promise<UploadSourcemapsResult | undefined> {
+): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {
     return undefined;
   }
@@ -158,8 +212,9 @@ export async function runPluginUpload(
     return inFlight;
   }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
-  const run = collectVcs(resolved, deps.resolveVcs).then((vcs) =>
-    uploadSourcemaps({
+  const registerWebBuild = deps.registerWebBuild ?? defaultRegisterWebBuild;
+  const run = collectVcs(resolved, deps.resolveVcs).then(async (vcs): Promise<PluginRunResult> => {
+    const upload = await uploadSourcemaps({
       outDir,
       appToken: resolved.appToken,
       appVersion: resolved.appVersion,
@@ -172,8 +227,31 @@ export async function runPluginUpload(
       ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
       // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".
       ...(vcs !== undefined ? { vcs } : {}),
-    }),
-  );
+    });
+    // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
+    // into the bundles — and regardless of whether the maps made it, because a build exists either
+    // way. It reads the ids from the bundles, not the maps, so the map deletion above cannot race it.
+    const build = await registerWebBuild({
+      outDir,
+      appToken: resolved.appToken,
+      appVersion: resolved.appVersion,
+      appBuild: resolved.appBuild,
+      endpoint: resolved.endpoint,
+      setting: resolved.registerBuild,
+      bundler: deps.bundler ?? {},
+      env: resolved.nodeEnv !== undefined ? { NODE_ENV: resolved.nodeEnv } : {},
+      ...(resolved.packageId !== undefined ? { packageId: resolved.packageId } : {}),
+      // The nearest package.json above the OUTPUT names the package that built it. The process cwd
+      // does not: in a monorepo it is usually the workspace root. It is also the one input here that
+      // cannot throw, where `process.cwd()` can (see `projectRoot` on ResolvedPluginOptions).
+      projectRoot: resolved.projectRoot ?? outDir,
+      ...(vcs !== undefined ? { vcs } : {}),
+      dryRun: resolved.dryRun,
+      failOnError: resolved.failOnError,
+      ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
+    });
+    return { ...upload, build };
+  });
   // The ORIGINAL promise is stored, so a joiner sees the same outcome — including the same failure. The
   // cleanup rides a separate, already-handled chain: storing `run.finally(…)` instead would create a
   // DERIVED promise that nobody awaits, and a failed run would surface as an unhandled rejection.

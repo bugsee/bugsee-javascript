@@ -1,7 +1,47 @@
 # Registering a web build
 
-Status: **designed, not built.** Written 2026-09-19. Closes the design half of §6 of
+Status: **BUILT (slices 1–4), 2026-09-23.** Written 2026-09-19. Closes §6 of
 `docs/review/cli-js-flows.md` ("there is no build record for a web build").
+
+> **What shipped, and where it departs from the design below** — read this first.
+>
+> - **Four repos, not two.** The design put the `format: web` change in the CLI. The CLI never
+>   validates `format`; it forwards the payload. The appserver's Build schema did, with
+>   `enum: ['aab','apk','ipa']`, so a web registration failed Mongoose validation and was never
+>   recorded — **bugsee-appserver#42** adds `web` (and derives the baseline allowlist from the enum).
+>   The viewer's build list drew every non-`ipa` build as Android — **bugsee-web-viewer#64**.
+>   CLI: **bugsee-cli#52** (register-only), released in **0.7.12** (bugsee-cli#54).
+> - **D1 was not actually blocked.** The appserver treats `uuid` as an opaque dedup key — unique
+>   index `(organization, application, uuid)`, replace-then-create, `uuid.v4()` when absent — and
+>   nothing joins a crash to a build on it. So the only contract is "stable across a rebuild of the
+>   same output". Built as designed with two refinements: the ids are read from the **bundles'**
+>   `//# debugId=` comments rather than the maps (the maps are deleted after upload, so reading them
+>   would force registration to run first — a privacy-ordering hazard), and the build id lives in its
+>   **own** UUIDv5 namespace derived from the debug-id one, so the two kinds of id cannot collide. With
+>   no ids (no maps, or a dry run) it falls back to the build's identity, as Android falls back to
+>   manifest+variant. `build-id.ts`, `debug-ids.ts`.
+> - **D2's signals were corrected against the bundlers' source.** Vite: resolved `isProduction`, not
+>   `mode === 'production'` — `vite build --mode staging` defaults NODE_ENV to `production` and is a
+>   production build. webpack: an UNSET `mode` is production — webpack never writes the default back to
+>   `options.mode` but builds with `production = mode === "production" || !mode`
+>   (`lib/config/defaults.js`), so reading the field alone would have skipped those builds.
+> - **D3 starts at the build output**, not the process cwd: the nearest package.json above
+>   `apps/site/dist` is the package that built it, while cwd in a monorepo is usually the workspace
+>   root. `projectRoot` overrides it.
+> - Verified end to end against the real 0.7.12 binary and a local mock collector: a dry run makes no
+>   request; a real one makes exactly one `POST /v2/apps/<token>/builds` with the payload plus the
+>   CLI's own `request_artifact_upload: false`.
+>
+> **Known limitation.** Registration is per OUTPUT DIRECTORY, because that is the unit a bundler's
+> write hook reports. A build that writes two outputs (a Vite SSR config, or a meta-framework's
+> client + server passes) registers two builds with different ids. No meta-framework adapter wires the
+> plugin yet (§8 of the audit), so plain Vite/webpack builds are unaffected today; it needs deciding
+> before one does.
+>
+> **Follow-up.** `@bugsee/bundler-plugin-core` still pins `@bugsee/bugsee-cli ^0.7.11`, because
+> 0.7.12 was not yet on npm and a frozen-lockfile install cannot resolve an unpublished version.
+> Against 0.7.11 a release build's registration fails (no `--artifact`) and is contained as a warning.
+> Bump to `^0.7.12` once it is published.
 
 Product direction (2026-09-19): **a web build SHOULD register a build, and by default only a release
 one.** The Android Gradle plugin and the iOS agent are the reference for both the principles and the

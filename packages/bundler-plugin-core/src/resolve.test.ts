@@ -736,3 +736,183 @@ describe('stripSourcesContent', () => {
     ).toBe(true);
   });
 });
+
+// Web-build registration (docs/design/web-build-registration.md, slice 3). The public option bag is
+// where a team decides, so each part of the decision has to be reachable from it.
+describe('resolvePluginOptions — build registration', () => {
+  it("registers release builds by default — Android's and iOS's own default", () => {
+    expect(resolvePluginOptions({ appToken: 't' }, {}).registerBuild).toBe('release');
+  });
+
+  it('takes an explicit setting, including false', () => {
+    expect(resolvePluginOptions({ appToken: 't', registerBuild: 'always' }, {}).registerBuild).toBe(
+      'always',
+    );
+    expect(resolvePluginOptions({ appToken: 't', registerBuild: false }, {}).registerBuild).toBe(
+      false,
+    );
+  });
+
+  it('falls back to BUGSEE_REGISTER_BUILD, which a CI job can set without touching the config', () => {
+    expect(
+      resolvePluginOptions({ appToken: 't' }, { BUGSEE_REGISTER_BUILD: 'always' }).registerBuild,
+    ).toBe('always');
+    expect(
+      resolvePluginOptions({ appToken: 't' }, { BUGSEE_REGISTER_BUILD: 'false' }).registerBuild,
+    ).toBe(false);
+  });
+
+  it('prefers the explicit option over the env var', () => {
+    expect(
+      resolvePluginOptions(
+        { appToken: 't', registerBuild: false },
+        { BUGSEE_REGISTER_BUILD: 'always' },
+      ).registerBuild,
+    ).toBe(false);
+  });
+
+  it('ignores an unrecognised BUGSEE_REGISTER_BUILD rather than guessing', () => {
+    // A typo must not silently turn registration ON for every debug build, or OFF for releases.
+    expect(
+      resolvePluginOptions({ appToken: 't' }, { BUGSEE_REGISTER_BUILD: 'yes' }).registerBuild,
+    ).toBe('release');
+  });
+
+  it('carries packageId and NODE_ENV through', () => {
+    const resolved = resolvePluginOptions(
+      { appToken: 't', packageId: 'com.acme.web' },
+      { NODE_ENV: 'production' },
+    );
+    expect(resolved.packageId).toBe('com.acme.web');
+    expect(resolved.nodeEnv).toBe('production');
+  });
+});
+
+describe('runPluginUpload — build registration', () => {
+  const uploaded = async (): Promise<UploadSourcemapsResult> => ({
+    injected: true,
+    uploaded: true,
+    deletedMaps: [],
+  });
+
+  it('registers after the source-map upload, with the same build context', async () => {
+    const order: string[] = [];
+    const uploadSourcemaps = vi.fn(async () => {
+      order.push('upload');
+      return uploaded();
+    });
+    const registerWebBuild = vi.fn(async () => {
+      order.push('register');
+      return { registered: false as const, reason: 'not-release' as const };
+    });
+    const vcs: VcsMetadata = { commit_sha: 'a'.repeat(40) };
+    const resolved = resolvePluginOptions(
+      {
+        appToken: 't',
+        appVersion: '1.0.0',
+        appBuild: '4',
+        endpoint: 'https://e.test',
+        packageId: 'com.acme.web',
+        registerBuild: 'always',
+        dryRun: true,
+        failOnError: true,
+      },
+      { NODE_ENV: 'production' },
+    );
+
+    await runPluginUpload(resolved, '/out/dist', {
+      uploadSourcemaps,
+      registerWebBuild,
+      resolveVcs: async () => vcs,
+      bundler: { isProduction: true, configuration: 'production' },
+    });
+
+    // AFTER: the bundles it reads ids from are stamped by the upload's inject step.
+    expect(order).toEqual(['upload', 'register']);
+    expect(registerWebBuild).toHaveBeenCalledWith({
+      outDir: '/out/dist',
+      appToken: 't',
+      appVersion: '1.0.0',
+      appBuild: '4',
+      endpoint: 'https://e.test',
+      setting: 'always',
+      bundler: { isProduction: true, configuration: 'production' },
+      env: { NODE_ENV: 'production' },
+      packageId: 'com.acme.web',
+      // The package that BUILT this output is the nearest one above it, not the process's cwd — in
+      // a monorepo those differ.
+      projectRoot: '/out/dist',
+      vcs,
+      dryRun: true,
+      failOnError: true,
+    });
+  });
+
+  it('looks for package.json from an explicit projectRoot when one is given', async () => {
+    const registerWebBuild = vi.fn(async () => ({
+      registered: false as const,
+      reason: 'not-release' as const,
+    }));
+    const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/repo/app' }, {});
+    await runPluginUpload(resolved, '/repo/app/dist', {
+      uploadSourcemaps: uploaded,
+      registerWebBuild,
+      ...noVcs,
+    });
+    expect(registerWebBuild).toHaveBeenCalledWith(
+      expect.objectContaining({ projectRoot: '/repo/app' }),
+    );
+  });
+
+  it('reports the registration outcome alongside the upload result', async () => {
+    const outcome = {
+      registered: true as const,
+      dryRun: false,
+      payload: { uuid: 'u', format: 'web' as const, version: '1', build: '1' },
+    };
+    const result = await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
+      uploadSourcemaps: uploaded,
+      registerWebBuild: async () => outcome,
+      ...noVcs,
+    });
+    expect(result).toEqual({ injected: true, uploaded: true, deletedMaps: [], build: outcome });
+  });
+
+  it('still registers when the source-map upload failed and was contained', async () => {
+    // A build exists whether or not its maps reached the server; the two are independent records.
+    const registerWebBuild = vi.fn(async () => ({
+      registered: false as const,
+      reason: 'not-release' as const,
+    }));
+    await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
+      uploadSourcemaps: async () => ({ injected: false, uploaded: false, deletedMaps: [] }),
+      registerWebBuild,
+      ...noVcs,
+    });
+    expect(registerWebBuild).toHaveBeenCalledOnce();
+  });
+
+  it('forwards onError so both steps report through the same sink', async () => {
+    const onError = vi.fn();
+    const registerWebBuild = vi.fn(async () => ({
+      registered: false as const,
+      reason: 'not-release' as const,
+    }));
+    await runPluginUpload(resolvePluginOptions({ appToken: 't', onError }, {}), '/out', {
+      uploadSourcemaps: uploaded,
+      registerWebBuild,
+      ...noVcs,
+    });
+    expect(registerWebBuild).toHaveBeenCalledWith(expect.objectContaining({ onError }));
+  });
+
+  it('does not register at all for a disabled plugin', async () => {
+    const registerWebBuild = vi.fn();
+    await runPluginUpload(resolvePluginOptions({}, {}), '/out', {
+      uploadSourcemaps: uploaded,
+      registerWebBuild,
+      ...noVcs,
+    });
+    expect(registerWebBuild).not.toHaveBeenCalled();
+  });
+});

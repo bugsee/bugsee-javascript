@@ -13,6 +13,7 @@
   "dependencies": {
     "@bugsee/browser": "workspace:*",
     "@bugsee/bugsee": "workspace:*",
+    "@bugsee/bundler-plugin-core": "workspace:*",
     "@bugsee/bun": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",

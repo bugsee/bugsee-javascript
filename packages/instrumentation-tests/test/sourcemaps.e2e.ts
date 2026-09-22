@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deriveBuildUuid } from '@bugsee/bundler-plugin-core';
 import { applyDebugIds, formatStack, parseV8Stack, type StackFrame } from '@bugsee/core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -103,6 +104,100 @@ describe('@bugsee source-maps — plugin drives bugsee-cli (e2e, fake binary)', 
     // client .map deleted (privacy default); the .js kept.
     expect(existsSync(join(outDir, 'app.js.map'))).toBe(false);
     expect(existsSync(join(outDir, 'app.js'))).toBe(true);
+
+    // Exactly three: this build is not a release one (no `configResolved`, and vitest runs under
+    // NODE_ENV=test), so it must NOT register a build — a fourth call here would mean every dev build
+    // in the wild creates a build record.
+    expect(lines).toHaveLength(3);
+  });
+
+  it('registers a RELEASE build after the upload, from the bundles the upload stamped', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'bugsee-reg-e2e-'));
+    // The package that built this output — the nearest package.json ABOVE it. Written here so the
+    // lookup is answered inside the test's own directory, not by whatever sits above the temp dir.
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@acme/e2e-web' }));
+    const outDir = join(dir, 'dist');
+    mkdirSync(outDir);
+    // As `sourcemaps inject` leaves a bundle: the runtime stub, then the id comment, LAST. The fake
+    // binary below does not stamp anything, so the stamp is written as the real one would have.
+    const debugId = '3f1d2c4b-8a7e-5d6c-9b0a-1e2f3a4b5c6d';
+    writeFileSync(
+      join(outDir, 'app.js'),
+      `console.log(1)\n;!function(){}();\n//# debugId=${debugId}\n//# sourceMappingURL=app.js.map`,
+    );
+    writeFileSync(join(outDir, 'app.js.map'), `{"version":3,"sources":[],"debugId":"${debugId}"}`);
+
+    // Records argv + token, and — for `upload build` — the payload file's CONTENT, captured while the
+    // file still exists (the plugin removes it once the CLI returns).
+    const logPath = join(dir, 'cli.log');
+    const cliPath = join(dir, 'fake-bugsee-cli.mjs');
+    writeFileSync(
+      cliPath,
+      `#!/usr/bin/env node\nimport { appendFileSync, readFileSync } from 'node:fs';\n` +
+        `const argv = process.argv.slice(2);\n` +
+        `const at = argv.indexOf('--payload-json');\n` +
+        `const payload = at === -1 ? undefined : JSON.parse(readFileSync(argv[at + 1], 'utf8'));\n` +
+        `appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ argv, token: process.env.BUGSEE_APP_TOKEN, endpoint: process.env.BUGSEE_ENDPOINT, payload }) + '\\n');\n`,
+    );
+    chmodSync(cliPath, 0o755);
+    process.env.BUGSEE_CLI_PATH = cliPath;
+
+    const plugin = bugseeVitePlugin({
+      appToken: 'e2e-tok',
+      appVersion: '2.0.0',
+      appBuild: '7',
+      endpoint: 'https://api.e2e.test',
+      vcs: false,
+    });
+    // The DEFAULT setting (`registerBuild: 'release'`), made release by the bundler itself — exactly
+    // as `vite build` resolves its config before writing anything.
+    const one = (Array.isArray(plugin) ? plugin[0] : plugin) as unknown as {
+      configResolved: (c: { isProduction: boolean; mode: string }) => void;
+    };
+    one.configResolved({ isProduction: true, mode: 'production' });
+    await writeBundleHook(plugin)({ dir: outDir });
+
+    const lines = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map(
+        (l) =>
+          JSON.parse(l) as { argv: string[]; token?: string; endpoint?: string; payload?: unknown },
+      );
+
+    // inject → upload → register. Registration LAST: it runs after the maps were deleted, which it
+    // can because it reads the ids from the bundles.
+    expect(lines.map((l) => l.argv.slice(0, 2))).toEqual([
+      ['sourcemaps', 'inject'],
+      ['debug-files', 'upload'],
+      ['upload', 'build'],
+    ]);
+    const register = lines[2] as (typeof lines)[number];
+    // Register-only: no artefact, and nothing but the payload file on argv.
+    expect(register.argv.slice(2, 3)).toEqual(['--payload-json']);
+    expect(register.argv).toHaveLength(4);
+    expect(register.token).toBe('e2e-tok');
+    expect(register.endpoint).toBe('https://api.e2e.test');
+
+    expect(register.payload).toEqual({
+      uuid: deriveBuildUuid([debugId], {
+        packageId: '@acme/e2e-web',
+        version: '2.0.0',
+        build: '7',
+        configuration: 'production',
+      }),
+      format: 'web',
+      package_id: '@acme/e2e-web',
+      version: '2.0.0',
+      build: '7',
+      build_configuration: 'production',
+    });
+    // The token is in the child's environment, never in the file written to disk.
+    expect(JSON.stringify(register.payload)).not.toContain('e2e-tok');
+    // ...and that file is gone.
+    expect(existsSync(register.argv[3] as string)).toBe(false);
+    // The maps were still deleted first — registration did not hold them back.
+    expect(existsSync(join(outDir, 'app.js.map'))).toBe(false);
   });
 
   it('runtime: a report stack carries the debugId a bundle registered via _bugseeDebugIds', () => {
