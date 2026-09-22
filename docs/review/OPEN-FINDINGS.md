@@ -1,9 +1,37 @@
 # Open findings — fix wave of 2026-08-27/28
 
-Live status doc for the in-flight fix + convergent-review cycle, in the shape of
-`docs/review/REMEDIATION-PLAN.md`. **Read this before touching the working tree.**
+Live status doc for the fix + convergent-review cycle, in the shape of
+`docs/review/REMEDIATION-PLAN.md`.
 
-## State at hand-off
+## Status — re-verified 2026-09-22 against the code, not against this file
+
+**Everything in this document is COMMITTED and on `main`.** The hand-off note below is kept for the
+record but no longer describes reality: it says the work is uncommitted, and `main` has since moved
+several hundred commits past `36ec616`. `git status` is clean.
+
+Three items were re-checked in the source because this file still listed them as open. All three are
+**closed**, and each is annotated in place below:
+
+| item | this file said | the code says |
+|---|---|---|
+| **D1** WebView `input` dropped by both native receivers (SEV1) | blocked on a human decision | **CLOSED** — `BridgeCaptureRouter.java` routes `input` via `routeInput`, and `BGSBridgeCaptureRouter.m:223` does the same on iOS. Both landed, with `BridgeInputMapper` mapping page coordinates into the native frame. |
+| **D2** first SEV2 — unreachable `try/catch` around `getAttributes()` | still unfixed | **CLOSED** — `server-instrument.ts:517-520` is a direct read now, with a comment giving the reason no catch is needed. |
+| **D3** source-map stamping breaks SRI (SEV1) | reproduced, unfixed | **CLOSED** — guards shipped on both the CLI (0.7.11) and the plugin. See `docs/review/cli-js-flows.md` §7, which carries the detail and the one part still open. |
+
+**Still genuinely open**, and the reason this file is worth keeping:
+
+- **D2's second SEV2** — `performance/src/controller.ts`'s module-global `active` slot. Partly closed:
+  `activeSpanStore` was built for the node server path (see "D2 part 2" below). The last review round
+  (2026-09-15) fixed 2 SEV2 + 8 SEV3 and **no fresh round has run since**, so CLAUDE.md §6 convergence
+  is owed one clean pass before this can be called done.
+- **`electron/src/launch-main.ts:203-204`** — `flush()` does not wait for renderers (marked OPEN (minor)
+  below, still true). Carrying a deadline is a bridge wire change.
+
+A stale status doc is worse than no status doc: two of the three closed items above were read as open
+SEV1s during a later pass, and one of them had been fixed in another repo weeks earlier. If you close
+something listed here, say so here.
+
+## State at hand-off (2026-08-28 — superseded, kept for the record)
 
 Everything below is **uncommitted work in the working tree** on `main` (80 entries in
 `git status`, last commit `36ec616`). Nothing has been committed or pushed. The tree is
@@ -225,9 +253,17 @@ it can only keep more markers, never delete more. No configuration can hold mark
 
 ---
 
-## Blocked on a human decision
+## Blocked on a human decision — D1 and D3 since CLOSED; only D2's second half remains
 
-### D1 · WebView `input` stream is dropped by both native receivers — **SEV1**
+### D1 · WebView `input` stream is dropped by both native receivers — ~~**SEV1**~~ **CLOSED 2026-09-22**
+
+> **Closed — both receivers landed the branch.** Android: `BridgeCaptureRouter.java` dispatches
+> `"input"` to `routeInput`, which maps each point through `BridgeInputMapper` (viewport CSS px →
+> native screen coordinates ÷ density) before handing it to the native input consumer. iOS:
+> `BGSBridgeCaptureRouter.m:223` — `else if ([fileType isEqualToString:@"input"]) [self routeInput:entry];`.
+> Neither option below was taken in the end: the wire change was completed rather than reverted. The
+> original text is kept because the mapper's existence is the reason `@bugsee/webview` must NOT emit
+> its own `video.aux` — see `packages/webview/src/launch.ts`.
 
 `@bugsee/webview` moved off `events.user` onto the new `input` stream (correct: SDK code must
 never write to a `*.user` stream). Both native routers are `if/else if` chains with **no
@@ -257,8 +293,11 @@ app's own `client.addBreadcrumb()` calls have always streamed over the bridge.
 
 Confirmed independently by two reviewers, still unfixed:
 
-- `packages/node/src/server-instrument.ts:479-483` — a `try/catch` around `getAttributes()`
-  that is **unreachable in production** (`getAttributes` is a required, non-throwing member of
+- **CLOSED 2026-09-22.** `server-instrument.ts:517-520` reads `getAttributes()` directly now, with a
+  comment stating why no defensive catch belongs there (it is a required, non-throwing member of
+  `Span`, and an outer catch already covers a hostile Transaction). The original finding follows.
+  ~~`packages/node/src/server-instrument.ts:479-483` — a `try/catch` around `getAttributes()`
+  that is **unreachable in production**~~ (`getAttributes` is a required, non-throwing member of
   `Span`, and `finishWith` already sits inside an outer catch). What it actually accommodates is
   **nine `Transaction` test doubles across seven adapter packages** that omit the method, so
   every one of their `setName` assertions now passes via the degraded path and **F-4 is untested
@@ -274,7 +313,14 @@ Confirmed independently by two reviewers, still unfixed:
 
 ---
 
-### D3 · Source-map stamping breaks Subresource Integrity — **SEV1**, reproduced 2026-09-18
+### D3 · Source-map stamping breaks Subresource Integrity — ~~**SEV1**~~ **CLOSED 2026-09-19**
+
+> **Closed — the detect-and-refuse guard shipped on both sides**, the CLI (`bugsee-cli` 0.7.11,
+> `src/inject/sri.rs`, `--allow-sri` to override) and the plugin
+> (`bundler-plugin-core/src/sri.ts`). Both, not one: a user driving the CLI by hand is not covered by a
+> plugin-side check. `docs/review/cli-js-flows.md` §7 carries the detail, the two SEV1s found while
+> reviewing the first cut, and the part that is still open — stamping during `processAssets`, before
+> the hashes are computed, which is the only fix correct for runtime-embedded lazy-chunk hashes.
 
 `@bugsee/bundler-plugin-core` runs `bugsee-cli sourcemaps inject` at webpack's `afterEmit` /
 unplugin's `writeBundle`, which appends bytes to every emitted `.js` AFTER the bundler computed its

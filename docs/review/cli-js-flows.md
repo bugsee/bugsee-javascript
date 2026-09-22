@@ -56,7 +56,7 @@ design and only a genuine failure fails the build.
 `@bugsee/bundler-plugin-core` passes it — except under `failOnError`, where a team that asked for strictness
 still hears that their build produced no maps at all. A path that does not exist stays an error either way.
 
-### 3. `inject` stamps every bundle, including ones with no map (SEV3, measured)
+### 3. `inject` stamps every bundle, including ones with no map (SEV3, measured) — **PREMISE DISPROVEN, closed 2026-09-19**
 
 `inject_paths` walks every `.js`/`.cjs`/`.mjs` and appends the runtime registration whether or not the
 bundle has a paired map. Measured on a real `next build` (`productionBrowserSourceMaps: true`):
@@ -68,7 +68,15 @@ Costs: pointless bytes in every server bundle, third-party files modified, and a
 with no map is exactly the case where the id is useless, so skipping it (or an `--exclude` glob, or
 skipping `node_modules`) is free.
 
-### 4. The whole flow cannot be dry-run (SEV3, verified in code + measured earlier)
+**Closed 2026-09-19 — the premise above is wrong, and the finding is withdrawn rather than fixed.** "A
+bundle with no map has a useless id" does not hold: the worker treats a debug-id it cannot resolve as
+`missing_sym` (`crash/javascript.py:406,467`), which is how a crash tells the operator WHICH artefact
+was never uploaded. Strip the id from those bundles and the frame arrives anonymous — the backend can no
+longer name what is missing, and the most common real cause (server maps that were never turned on, §8)
+becomes invisible. The stamped bytes are the price of that diagnostic. `--exclude` was still added for
+callers who want it, but skipping map-less bundles by DEFAULT would trade a diagnostic for a few bytes.
+
+### 4. The whole flow cannot be dry-run (SEV3, verified in code + measured earlier) — **SHIPPED (CLI 0.7.11 + `@bugsee/bundler-plugin-core`)**
 
 `sourcemaps inject --dry-run` writes nothing, so the maps still carry no debug-id, and
 `debug-files upload --dry-run` over the same directory then **fails with exit 11**. The JS plugin works
@@ -78,7 +86,7 @@ comment). So the one option documented as the safe diagnostic cannot exercise th
 Either `inject --dry-run` should report the ids it would write, or `upload --dry-run` should accept a
 map with no id when it is only packing.
 
-### 5. A symbol upload cannot carry the commit it came from (SEV2, verified in code)
+### 5. A symbol upload cannot carry the commit it came from (SEV2, verified in code) — **TRACKED: [bugsee-javascript#8](https://github.com/bugsee/bugsee-javascript/issues/8)**
 
 `bundler-plugin-core` already collects VCS metadata (`vcs.ts`, 315 lines: commit SHA, branch, dirty
 state, CI provider) and then has nowhere to put it: `orchestrate.ts:44-50` carries it only to echo it
@@ -105,7 +113,7 @@ The CLI blocker named above is now precise: `upload build` requires `--artifact`
 normal — register the build, ship no bytes — is the one a web build cannot express. The register-only
 mode exists in Rust and is used by `xcode post-action`; nothing exposes it on the CLI.
 
-### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18)
+### 7. Stamping after emit BREAKS Subresource Integrity (SEV1, reproduced 2026-09-18) — **(3) SHIPPED both sides; (1) still the real fix**
 
 Confirmed, and it is the worst finding here: the app's entry script is blocked and nothing runs.
 
@@ -143,6 +151,28 @@ all it can do. Three candidate fixes, none free:
 
 At minimum the JS plugin must do (3); (1) is the real fix.
 
+**Shipped 2026-09-19 — (3), on BOTH sides, because either alone leaves a hole.** The JS plugin scans the
+output directory before stamping (`bundler-plugin-core/src/sri.ts`, step 0 of `orchestrate`) and the CLI
+refuses independently (`bugsee-cli` `src/inject/sri.rs`, `--allow-sri` to override), so a user who drives
+the CLI by hand is covered too. Both read `<script>` AND `<link rel=modulepreload|preload>`, since a
+preload failing its integrity check poisons the module map just as hard.
+
+Two SEV1s were found in review of the first attempt, both worth recording because both looked correct:
+
+- a **CDN `publicPath`** build was stamped and shipped blank — the pinned URL resolved to nothing in the
+  output tree, so the literal-path lookup missed it. Fixed with a file-name fallback.
+- a page under a dot-directory or `node_modules` was **skipped by the guard but stamped by the walk** —
+  two different lists of files. Fixed by deriving both from one list. A test of mine had asserted that
+  skip as correct behaviour.
+
+Re-running on an already-stamped build used to exit 20 even though `--help` promises a no-op; the guard
+now mirrors `inject`'s own rewrite decision (`would_rewrite`), with a test pinning the two in agreement.
+
+**(1) remains open and is still the real fix.** Stamping during `processAssets`, before the hashes are
+computed, is the only approach correct for the runtime-embedded lazy-chunk hashes as well as the HTML;
+it needs an in-memory stamping path the CLI does not offer. Until then the guard trades a broken page
+for a failed build, which is strictly better but is not the same as working.
+
 ### 8. Not a CLI gap, but in the same flow
 
 - **Next.js server maps.** A stock `next build` emits maps for the client and for edge bundles only —
@@ -153,6 +183,9 @@ At minimum the JS plugin must do (3); (1) is the real fix.
   hand today.
 - **`sourcesContent`** rides into the upload with the map, which is how symbolication shows source lines.
   There is no `--strip-sources-content` for customers who would rather not ship source. Worth an option.
+  — **SHIPPED (CLI 0.7.11 + the plugin's `stripSourcesContent`).** Review caught a SEV1 in the first cut:
+  an INDEXED map (`sections[].map.sourcesContent`) kept shipping its source, silently, because only the
+  top-level key was removed. The removal is recursive now.
 
 ## Evidence
 - Next.js: `packages/nextjs-e2e` built with `productionBrowserSourceMaps: true` (`next build`, exit 0),
