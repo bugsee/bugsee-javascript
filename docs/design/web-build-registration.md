@@ -5,8 +5,8 @@ Status: **BUILT (slices 1–4), 2026-09-23.** Written 2026-09-19. Closes §6 of
 
 > **What shipped, and where it departs from the design below** — read this first.
 >
-> - **The format is `js`, not `web`** (renamed 2026-09-23, bugsee-appserver#44, with migration 061
->   for the records written in between). A format names the ARTEFACT — Android's `aab`/`apk` are two
+> - **The format is `js`, not `web`** (renamed 2026-09-23 in bugsee-appserver#44, before anything
+>   was rolled out, so no data migration). A format names the ARTEFACT — Android's `aab`/`apk` are two
 >   packagings of one platform, iOS's `ipa` a packaging — and a JavaScript build's artefact, bundles
 >   plus maps, is the same shape whatever it runs on. This plugin registers browser bundles, SSR
 >   server bundles (Vite `build.ssr`, Next/Nuxt server), Cloudflare/Vercel edge workers (esbuild),
