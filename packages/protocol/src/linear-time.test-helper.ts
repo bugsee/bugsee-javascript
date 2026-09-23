@@ -49,6 +49,25 @@ const SIZE_SEPARATION = 16;
  */
 export const LINEAR_TOLERANCE = 4;
 
+/**
+ * The time budget for a test that calls {@link expectLinearIn} — a HANG guard, not a performance
+ * assertion, so it is sized from what the measurement genuinely costs and never tuned to pass.
+ *
+ * Each call measures TWO workloads at two sizes over several rounds: the subject, and the control it
+ * is judged against (the same work on benign input, or a reference scan) — twice the work of the
+ * version the old 30 s limit was set for. The slowest caller, the three-shape XML guard, measures
+ * 3.4 s on a developer machine and 4.0 s under coverage instrumentation.
+ *
+ * On 2026-09-23 it took 32.9 s on the CI runner and failed. That is NOT the runner's speed — idle, it
+ * is at least as fast as a developer machine (this guard ran in 618 ms there on 2026-09-22, and
+ * docs/dev-environment.md records the old "runner is 7–18× slower" note as obsolete). Nor is it a
+ * race: the work is CPU-bound with nothing to lose a race against. It is CONTENTION — the runner is
+ * one machine shared by several repositories' jobs — and contention has no fixed ceiling, so the only
+ * honest budget is a generous multiple of the real cost: 120 s is ~30× it, and still stops a
+ * measurement that has genuinely hung.
+ */
+export const LINEARITY_TEST_TIMEOUT_MS = 120_000;
+
 // `performance.now()`, not `Date.now()`: this tier compiles with neither the DOM nor the Node libs
 // (tsconfig.base `lib: ["ES2023"]`, `types: []`), so it is reached through the same globalThis cast
 // the runtime-portable tiers use. Millisecond resolution is NOT ample, which is what the previous

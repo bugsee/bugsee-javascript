@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { expectLinearIn, measure } from './linear-time.test-helper';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS, measure } from './linear-time.test-helper';
 import { redactSensitivePairs } from './pairs';
 
 // The linearity guard these tests lean on lives in `./linear-time.test-helper` — see its header for why it
@@ -112,57 +112,69 @@ describe('redactSensitivePairs — what it must NOT touch', () => {
     expect(redactSensitivePairs('a=1', Number.NaN, 3)).toBe('a=1');
   });
 
-  it('does not walk past the end of the string when `end` overshoots', () => {
-    // An `end` past `length` yields the right ANSWER either way — the scan just reads `undefined` — so only
-    // the cost is observable, and it has to be large enough to see: unclamped costs 31 ms at 10 million and
-    // 301 ms at 100 million, against 0 ms clamped. A 10-million bound passed the assertion at 50 ms.
-    const input = 'a=1&password=x';
-    expect(redactSensitivePairs(input, 0, 100_000_000)).toBe('a=1&password=%3Credacted%3E');
+  it(
+    'does not walk past the end of the string when `end` overshoots',
+    () => {
+      // An `end` past `length` yields the right ANSWER either way — the scan just reads `undefined` — so only
+      // the cost is observable, and it has to be large enough to see: unclamped costs 31 ms at 10 million and
+      // 301 ms at 100 million, against 0 ms clamped. A 10-million bound passed the assertion at 50 ms.
+      const input = 'a=1&password=x';
+      expect(redactSensitivePairs(input, 0, 100_000_000)).toBe('a=1&password=%3Credacted%3E');
 
-    // NOT a linearity check like the two below: the unclamped cost grows LINEARLY with `end`, so a ratio
-    // between two large bounds stays flat and proves nothing. The property here is that `end` must not
-    // affect the cost AT ALL, because it is clamped to the string — so the baseline is the honest bound.
-    redactSensitivePairs(input, 0, input.length); // warm-up
-    const honest = measure(() => {
-      redactSensitivePairs(input, 0, input.length);
-    });
-    const overshooting = measure(() => {
-      redactSensitivePairs(input, 0, 100_000_000);
-    });
-    // An ABSOLUTE ceiling, deliberately, unlike the two linearity guards below. The baseline is a
-    // 14-character scan that no clock resolves, so a ratio built on it would be noise — but the
-    // defect costs 301 ms against ~0, and a six-order-of-magnitude gap needs no ratio to separate.
-    expect(overshooting).toBeLessThan(Math.max(honest, 5) * 8);
-  }, 30_000);
+      // NOT a linearity check like the two below: the unclamped cost grows LINEARLY with `end`, so a ratio
+      // between two large bounds stays flat and proves nothing. The property here is that `end` must not
+      // affect the cost AT ALL, because it is clamped to the string — so the baseline is the honest bound.
+      redactSensitivePairs(input, 0, input.length); // warm-up
+      const honest = measure(() => {
+        redactSensitivePairs(input, 0, input.length);
+      });
+      const overshooting = measure(() => {
+        redactSensitivePairs(input, 0, 100_000_000);
+      });
+      // An ABSOLUTE ceiling, deliberately, unlike the two linearity guards below. The baseline is a
+      // 14-character scan that no clock resolves, so a ratio built on it would be noise — but the
+      // defect costs 301 ms against ~0, and a six-order-of-magnitude gap needs no ratio to separate.
+      expect(overshooting).toBeLessThan(Math.max(honest, 5) * 8);
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 
-  it('scans a long separator run in linear time', () => {
-    // `indexOf('=', pos)` was unbounded by `end`, so every segment in a run carrying no `=` rescanned to
-    // end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M — quadratic, and reachable through
-    // `sanitizeUrl(event.url)`, which has no length cap. The header comment claimed "linear" throughout.
-    const build = (n: number): string => `https://h/p?${'&'.repeat(n)}`;
-    const hostile = build(400_000);
-    expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expectLinearIn(
-      build,
-      (input) => {
-        redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
-      },
-      400_000,
-    );
-  }, 30_000);
+  it(
+    'scans a long separator run in linear time',
+    () => {
+      // `indexOf('=', pos)` was unbounded by `end`, so every segment in a run carrying no `=` rescanned to
+      // end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M — quadratic, and reachable through
+      // `sanitizeUrl(event.url)`, which has no length cap. The header comment claimed "linear" throughout.
+      const build = (n: number): string => `https://h/p?${'&'.repeat(n)}`;
+      const hostile = build(400_000);
+      expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
+      expectLinearIn(
+        build,
+        (input) => {
+          redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+        },
+        400_000,
+      );
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 
-  it('scans a long `;` separator run in linear time too', () => {
-    const build = (n: number): string => `https://h/p?${';'.repeat(n)}`;
-    const hostile = build(400_000);
-    expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
-    expectLinearIn(
-      build,
-      (input) => {
-        redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
-      },
-      400_000,
-    );
-  }, 30_000);
+  it(
+    'scans a long `;` separator run in linear time too',
+    () => {
+      const build = (n: number): string => `https://h/p?${';'.repeat(n)}`;
+      const hostile = build(400_000);
+      expect(redactSensitivePairs(hostile, hostile.indexOf('?') + 1, hostile.length)).toBe(hostile);
+      expectLinearIn(
+        build,
+        (input) => {
+          redactSensitivePairs(input, input.indexOf('?') + 1, input.length);
+        },
+        400_000,
+      );
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 
   it('never throws on a malformed percent escape in the key', () => {
     // decodeURIComponent('%zz') throws; a URL we merely observed must never break capture.

@@ -7,7 +7,7 @@ import {
   sanitizeJson,
   sanitizeParams,
 } from './index';
-import { expectLinearIn } from './linear-time.test-helper';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
 import type { NetworkEvent } from './wire';
 
 // The linearity guard lives in `./linear-time.test-helper` — see its header for why it asserts a
@@ -342,19 +342,23 @@ describe('sanitizeBody — JSON that does not parse', () => {
     );
   });
 
-  it('stays linear on hostile JSON-shaped input', () => {
-    // The unanchored form of this pattern put a candidate start at every `"` — 16 ms at 8 KB, 227 ms at
-    // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
-    // over, which is why it now has a test rather than a comment.
-    const build = (n: number): string => `{"${'\\"'.repeat(n)}`; // escaped quotes, never closed
-    expectLinearIn(
-      build,
-      (body) => {
-        sanitizeBody(body, 'application/json');
-      },
-      128_000,
-    );
-  }, 30_000);
+  it(
+    'stays linear on hostile JSON-shaped input',
+    () => {
+      // The unanchored form of this pattern put a candidate start at every `"` — 16 ms at 8 KB, 227 ms at
+      // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
+      // over, which is why it now has a test rather than a comment.
+      const build = (n: number): string => `{"${'\\"'.repeat(n)}`; // escaped quotes, never closed
+      expectLinearIn(
+        build,
+        (body) => {
+          sanitizeBody(body, 'application/json');
+        },
+        128_000,
+      );
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 
   it('does not apply the JSON pass to a body that is not JSON-shaped', () => {
     // The pass is gated on the JSON branch; prose quoting `"password": x` in a text body is not a document.
@@ -429,29 +433,33 @@ describe('sanitizeBody — JSON-shaped bodies that are not JSON at all', () => {
     );
   });
 
-  it('stays linear after admitting single-quoted and bare keys', () => {
-    // Two new alternatives went into a pattern whose UNANCHORED form was quadratic. Measured across eight
-    // adversarial shapes (unterminated quotes of both kinds, bare idents, dense commas/colons/braces):
-    // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
-    // Each shape keeps the size it was originally written with: a single shared size silently changed
-    // how much work two of them do.
-    // The control for each shape: the same parser, the same size, on input it handles normally.
-    const benign = (n: number): string =>
-      `{${'"k":1,'.repeat(Math.max(1, Math.round(n / 3)))}"z":1}`;
-    for (const [build, size] of [
-      [(n: number): string => `{'${"\\'".repeat(n)}`, 128_000],
-      [(n: number): string => `{${'ab,'.repeat(n)}`, 80_000],
-    ] as const) {
-      expectLinearIn(
-        build,
-        (body) => {
-          sanitizeBody(body, 'application/json');
-        },
-        size,
-        benign,
-      );
-    }
-  }, 30_000);
+  it(
+    'stays linear after admitting single-quoted and bare keys',
+    () => {
+      // Two new alternatives went into a pattern whose UNANCHORED form was quadratic. Measured across eight
+      // adversarial shapes (unterminated quotes of both kinds, bare idents, dense commas/colons/braces):
+      // 1 MB worst case 8 ms. This pins the two that exercise the new branches.
+      // Each shape keeps the size it was originally written with: a single shared size silently changed
+      // how much work two of them do.
+      // The control for each shape: the same parser, the same size, on input it handles normally.
+      const benign = (n: number): string =>
+        `{${'"k":1,'.repeat(Math.max(1, Math.round(n / 3)))}"z":1}`;
+      for (const [build, size] of [
+        [(n: number): string => `{'${"\\'".repeat(n)}`, 128_000],
+        [(n: number): string => `{${'ab,'.repeat(n)}`, 80_000],
+      ] as const) {
+        expectLinearIn(
+          build,
+          (body) => {
+            sanitizeBody(body, 'application/json');
+          },
+          size,
+          benign,
+        );
+      }
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('sanitizeBody — XML', () => {
@@ -518,25 +526,29 @@ describe('sanitizeBody — XML', () => {
     expect(sanitizeBody(html, 'text/html')).toBe(html);
   });
 
-  it('stays linear on hostile XML-shaped input', () => {
-    // The control: well-formed markup of the same size, through the same pass.
-    const benign = (n: number): string =>
-      `<r>${'<a>x</a>'.repeat(Math.max(1, Math.round(n / 8)))}</r>`;
-    for (const [build, size] of [
-      [(n: number): string => `<${'a'.repeat(n)}`, 200_000], // an unterminated tag
-      [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
-      [(n: number): string => `<a ${'b="c" '.repeat(n)}>`, 60_000], // one tag, very many attributes
-    ] as const) {
-      expectLinearIn(
-        build,
-        (body) => {
-          sanitizeBody(body, 'application/xml');
-        },
-        size,
-        benign,
-      );
-    }
-  }, 30_000);
+  it(
+    'stays linear on hostile XML-shaped input',
+    () => {
+      // The control: well-formed markup of the same size, through the same pass.
+      const benign = (n: number): string =>
+        `<r>${'<a>x</a>'.repeat(Math.max(1, Math.round(n / 8)))}</r>`;
+      for (const [build, size] of [
+        [(n: number): string => `<${'a'.repeat(n)}`, 200_000], // an unterminated tag
+        [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
+        [(n: number): string => `<a ${'b="c" '.repeat(n)}>`, 60_000], // one tag, very many attributes
+      ] as const) {
+        expectLinearIn(
+          build,
+          (body) => {
+            sanitizeBody(body, 'application/xml');
+          },
+          size,
+          benign,
+        );
+      }
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('sanitizeBody — multipart/form-data', () => {
