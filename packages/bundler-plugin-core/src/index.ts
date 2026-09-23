@@ -20,11 +20,11 @@ export {
 } from './plugin';
 export {
   type BundlerBuildContext,
+  type JsBuildPayload,
   type RegisterBuildSetting,
-  type RegisterWebBuildOptions,
-  type RegisterWebBuildResult,
-  registerWebBuild,
-  type WebBuildPayload,
+  type RegisterJsBuildOptions,
+  type RegisterJsBuildResult,
+  registerJsBuild,
 } from './register-build';
 export {
   type BugseePluginOptions,

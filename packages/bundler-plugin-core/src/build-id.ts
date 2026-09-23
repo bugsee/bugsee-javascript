@@ -1,4 +1,4 @@
-// The build UUID a web build registers under (docs/design/web-build-registration.md, D1).
+// The build UUID a JavaScript build registers under (docs/design/web-build-registration.md, D1).
 //
 // The server dedups builds on `uuid` — a unique index on (organization, application, uuid), with
 // replace-then-create on a repeat (bugsee-appserver `builds.service.js`). So the only contract is:
@@ -19,7 +19,7 @@ export const DEBUG_ID_NAMESPACE = 'b095ee5e-5300-4da9-8a05-04deb06a9001';
  * The namespace build ids are derived in — its own, derived from the debug-id one. A build id and a
  * debug id are different kinds of identifier, and sharing a namespace would let equal inputs collide.
  */
-export const BUILD_ID_NAMESPACE = uuidV5(DEBUG_ID_NAMESPACE, 'bugsee.web-build');
+export const BUILD_ID_NAMESPACE = uuidV5(DEBUG_ID_NAMESPACE, 'bugsee.js-build');
 
 /** RFC 4122 §4.3 name-based UUID, SHA-1 (version 5). */
 export function uuidV5(namespace: string, name: string): string {

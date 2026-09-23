@@ -28,7 +28,7 @@ describe('DEBUG_ID_NAMESPACE', () => {
     // A build id and a debug id are different kinds of identifier; sharing a namespace would let the
     // two collide for equal inputs.
     expect(BUILD_ID_NAMESPACE).not.toBe(DEBUG_ID_NAMESPACE);
-    expect(BUILD_ID_NAMESPACE).toBe(uuidV5(DEBUG_ID_NAMESPACE, 'bugsee.web-build'));
+    expect(BUILD_ID_NAMESPACE).toBe(uuidV5(DEBUG_ID_NAMESPACE, 'bugsee.js-build'));
   });
 });
 

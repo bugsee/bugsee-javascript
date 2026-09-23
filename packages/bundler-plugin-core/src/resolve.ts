@@ -8,9 +8,9 @@ import {
 } from './orchestrate';
 import {
   type BundlerBuildContext,
-  registerWebBuild as defaultRegisterWebBuild,
+  registerJsBuild as defaultRegisterJsBuild,
   type RegisterBuildSetting,
-  type RegisterWebBuildResult,
+  type RegisterJsBuildResult,
 } from './register-build';
 import type { EnvRecord } from './run-cli';
 import { resolveVcsMetadata as defaultResolveVcsMetadata, type VcsMetadata } from './vcs';
@@ -185,7 +185,7 @@ export function resolvePluginOptions(
 }
 
 /** What a plugin run reports: the source-map upload, plus the build registration when it ran. */
-export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterWebBuildResult };
+export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterJsBuildResult };
 
 /** Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled. */
 export async function runPluginUpload(
@@ -194,7 +194,7 @@ export async function runPluginUpload(
   deps: {
     uploadSourcemaps?: typeof defaultUploadSourcemaps;
     resolveVcs?: typeof defaultResolveVcsMetadata;
-    registerWebBuild?: typeof defaultRegisterWebBuild;
+    registerJsBuild?: typeof defaultRegisterJsBuild;
     /** What the bundler says about this build — its production signal and configuration name. */
     bundler?: BundlerBuildContext;
     /** The bundles were stamped inside the build (stamp-assets.ts); skip the post-emit inject. */
@@ -214,7 +214,7 @@ export async function runPluginUpload(
     return inFlight;
   }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
-  const registerWebBuild = deps.registerWebBuild ?? defaultRegisterWebBuild;
+  const registerJsBuild = deps.registerJsBuild ?? defaultRegisterJsBuild;
   const run = collectVcs(resolved, deps.resolveVcs).then(async (vcs): Promise<PluginRunResult> => {
     const upload = await uploadSourcemaps({
       outDir,
@@ -236,7 +236,7 @@ export async function runPluginUpload(
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
     // into the bundles — and regardless of whether the maps made it, because a build exists either
     // way. It reads the ids from the bundles, not the maps, so the map deletion above cannot race it.
-    const build = await registerWebBuild({
+    const build = await registerJsBuild({
       outDir,
       appToken: resolved.appToken,
       appVersion: resolved.appVersion,

@@ -1,4 +1,4 @@
-// The debug-ids `bugsee-cli sourcemaps inject` stamped into a build — the content a web build's
+// The debug-ids `bugsee-cli sourcemaps inject` stamped into a build — the content a JavaScript build's
 // registration UUID is derived from (build-id.ts).
 //
 // Read from the BUNDLES, not the maps. Inject writes the id into both, but the plugin deletes the

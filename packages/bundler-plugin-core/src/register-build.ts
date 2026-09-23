@@ -1,11 +1,11 @@
-// Register a web build with Bugsee — docs/design/web-build-registration.md (slice 3).
+// Register a JavaScript build with Bugsee — docs/design/web-build-registration.md (slice 3).
 //
-// Product direction (2026-09-19): a web build SHOULD register a build, and by default only a release
-// one. The Android Gradle plugin and the iOS agent are the reference, and this follows them:
+// Product direction (2026-09-19): a JavaScript build SHOULD register a build, and by default only a
+// release one. The Android Gradle plugin and the iOS agent are the reference, and this follows them:
 //
 //   - ON by default, gated only on "release-like" (D2). The analog of AGP's `!isDebuggable` is the
 //     bundler's OWN production signal, not minification and not a name match on the output directory.
-//   - Register-only (D5). A web build has no single artefact to ship, so `bugsee-cli upload build`
+//   - Register-only (D5). A JavaScript build has no single artefact to ship, so `bugsee-cli upload build`
 //     runs with no `--artifact` and the CLI sends `request_artifact_upload: false`.
 //   - A failure never fails the build (D4) — reported and contained, like the source-map upload, and
 //     `failOnError` opts into a hard stop.
@@ -90,9 +90,15 @@ export async function findPackageName(from: string, stopAt?: string): Promise<st
 }
 
 /** The registration payload — the POST body `bugsee-cli upload build` forwards to the appserver. */
-export interface WebBuildPayload {
+export interface JsBuildPayload {
   uuid: string;
-  format: 'web';
+  /**
+   * `js` — the ARTEFACT, like Android's `aab`/`apk` and iOS's `ipa`. Not a runtime: the same plugin
+   * registers browser bundles, SSR server bundles, edge workers, bundled Node services and Electron,
+   * and their artefact is the same shape. The runtime belongs to the application's type/subtype.
+   * (First shipped as `web`, which named only the browser case; renamed in bugsee-appserver#44.)
+   */
+  format: 'js';
   version: string;
   build: string;
   package_id?: string;
@@ -100,7 +106,7 @@ export interface WebBuildPayload {
   vcs?: VcsMetadata;
 }
 
-export interface RegisterWebBuildOptions {
+export interface RegisterJsBuildOptions {
   /** Build output directory — where the stamped bundles are. */
   outDir: string;
   appToken: string;
@@ -125,16 +131,16 @@ export interface RegisterWebBuildOptions {
   findPackageName?: (from: string) => Promise<string | undefined>;
 }
 
-export type RegisterWebBuildResult =
-  | { registered: true; dryRun: boolean; payload: WebBuildPayload }
+export type RegisterJsBuildResult =
+  | { registered: true; dryRun: boolean; payload: JsBuildPayload }
   | { registered: false; reason: 'disabled' | 'not-release' | 'failed' };
 
 /** Register this build, or say why not. Contained: returns `reason: 'failed'` unless `failOnError`. */
-export async function registerWebBuild(
-  options: RegisterWebBuildOptions,
-): Promise<RegisterWebBuildResult> {
+export async function registerJsBuild(
+  options: RegisterJsBuildOptions,
+): Promise<RegisterJsBuildResult> {
   if (options.appToken === '') {
-    throw new Error('registerWebBuild: appToken is required');
+    throw new Error('registerJsBuild: appToken is required');
   }
   const decision = resolveRegistration(options.setting, options.bundler, options.env);
   if (!decision.register) {
@@ -156,14 +162,14 @@ export async function registerWebBuild(
       (await (options.findPackageName ?? findPackageName)(options.projectRoot));
     const configuration = options.bundler.configuration ?? options.env.NODE_ENV;
 
-    const payload: WebBuildPayload = {
+    const payload: JsBuildPayload = {
       uuid: deriveBuildUuid(debugIds, {
         packageId,
         version: options.appVersion,
         build: options.appBuild,
         configuration: configuration ?? '',
       }),
-      format: 'web',
+      format: 'js',
       version: options.appVersion,
       build: options.appBuild,
       // Omitted, never sent empty: absence is how the backend tells "unknown" from "known empty".

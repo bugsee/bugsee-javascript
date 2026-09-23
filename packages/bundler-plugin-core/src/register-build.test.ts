@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deriveBuildUuid } from './build-id';
 import {
   findPackageName,
-  type RegisterWebBuildOptions,
-  registerWebBuild,
+  type RegisterJsBuildOptions,
+  registerJsBuild,
   resolveRegistration,
 } from './register-build';
 import type { RunBugseeCliOptions } from './run-cli';
@@ -120,11 +120,11 @@ describe('findPackageName', () => {
   });
 });
 
-describe('registerWebBuild', () => {
+describe('registerJsBuild', () => {
   type Call = { args: string[]; options: RunBugseeCliOptions; payload?: unknown };
   let calls: Call[];
 
-  const recordingRun = (): RegisterWebBuildOptions['run'] =>
+  const recordingRun = (): RegisterJsBuildOptions['run'] =>
     vi.fn(async (args: string[], options: RunBugseeCliOptions) => {
       const at = args.indexOf('--payload-json');
       // Read the payload WHILE the CLI would be reading it — it is cleaned up afterwards.
@@ -134,7 +134,7 @@ describe('registerWebBuild', () => {
       return { code: 0, stdout: 'build-123\n', stderr: '' };
     });
 
-  const base = (over: Partial<RegisterWebBuildOptions> = {}): RegisterWebBuildOptions => ({
+  const base = (over: Partial<RegisterJsBuildOptions> = {}): RegisterJsBuildOptions => ({
     outDir: '/out',
     appToken: 'tok',
     appVersion: '1.4.0',
@@ -154,7 +154,7 @@ describe('registerWebBuild', () => {
   });
 
   it('registers through `upload build` with no artefact', async () => {
-    const result = await registerWebBuild(base());
+    const result = await registerJsBuild(base());
 
     expect(calls).toHaveLength(1);
     const [call] = calls as [Call];
@@ -167,8 +167,8 @@ describe('registerWebBuild', () => {
     expect(result).toMatchObject({ registered: true, dryRun: false });
   });
 
-  it('sends the web-build payload', async () => {
-    await registerWebBuild(base());
+  it('sends the JavaScript-build payload', async () => {
+    await registerJsBuild(base());
 
     expect(calls[0]?.payload).toEqual({
       uuid: deriveBuildUuid([ID_A], {
@@ -177,7 +177,7 @@ describe('registerWebBuild', () => {
         build: '42',
         configuration: 'production',
       }),
-      format: 'web',
+      format: 'js',
       package_id: '@acme/web-app',
       version: '1.4.0',
       build: '42',
@@ -185,9 +185,17 @@ describe('registerWebBuild', () => {
     });
   });
 
+  it('names the format `js` — the artefact, not a runtime', async () => {
+    // This one plugin registers browser bundles, SSR server bundles, edge workers, bundled Node
+    // services and Electron's main process alike. `web` (its first name, briefly accepted by
+    // bugsee-appserver#42) described only the first; the runtime lives on the application.
+    await registerJsBuild(base());
+    expect((calls[0]?.payload as { format: string }).format).toBe('js');
+  });
+
   it('never puts the app token in the payload file or on argv', async () => {
     // The payload lands on disk in a temp directory; the token belongs in the child's environment.
-    await registerWebBuild(base({ appToken: 'secret-token' }));
+    await registerJsBuild(base({ appToken: 'secret-token' }));
 
     expect(JSON.stringify(calls[0]?.payload)).not.toContain('secret-token');
     expect(calls[0]?.args).not.toContain('secret-token');
@@ -195,19 +203,19 @@ describe('registerWebBuild', () => {
   });
 
   it('forwards the endpoint the source-map upload uses', async () => {
-    await registerWebBuild(base({ endpoint: 'https://apidev.bugsee.com' }));
+    await registerJsBuild(base({ endpoint: 'https://apidev.bugsee.com' }));
     expect(calls[0]?.options.endpoint).toBe('https://apidev.bugsee.com');
   });
 
   it('carries the VCS metadata the plugin already collected', async () => {
     const vcs = { provider: 'github', commit_sha: 'a'.repeat(40), branch: 'main' };
-    await registerWebBuild(base({ vcs }));
+    await registerJsBuild(base({ vcs }));
     expect((calls[0]?.payload as { vcs: unknown }).vcs).toEqual(vcs);
   });
 
   it('omits what it does not know rather than sending it empty', async () => {
     // Absence is how the backend tells "unknown" from "known empty".
-    await registerWebBuild(
+    await registerJsBuild(
       base({ findPackageName: async () => undefined, bundler: { isProduction: true } }),
     );
     const payload = calls[0]?.payload as Record<string, unknown>;
@@ -217,38 +225,38 @@ describe('registerWebBuild', () => {
   });
 
   it('omits an EMPTY configuration too — an empty NODE_ENV names nothing', async () => {
-    await registerWebBuild(base({ bundler: { isProduction: true }, env: { NODE_ENV: '' } }));
+    await registerJsBuild(base({ bundler: { isProduction: true }, env: { NODE_ENV: '' } }));
     expect(calls[0]?.payload as Record<string, unknown>).not.toHaveProperty('build_configuration');
   });
 
   it('prefers an explicit package id over package.json', async () => {
     const findPackageName = vi.fn(async () => '@acme/web-app');
-    await registerWebBuild(base({ packageId: 'com.acme.web', findPackageName }));
+    await registerJsBuild(base({ packageId: 'com.acme.web', findPackageName }));
     expect((calls[0]?.payload as { package_id: string }).package_id).toBe('com.acme.web');
     expect(findPackageName).not.toHaveBeenCalled();
   });
 
   it('looks for package.json from the project root', async () => {
     const findPackageName = vi.fn(async () => 'x');
-    await registerWebBuild(base({ projectRoot: '/proj/apps/site', findPackageName }));
+    await registerJsBuild(base({ projectRoot: '/proj/apps/site', findPackageName }));
     expect(findPackageName).toHaveBeenCalledWith('/proj/apps/site');
   });
 
   it('reads the debug-ids from the output directory', async () => {
     const collectDebugIds = vi.fn(async () => [ID_A]);
-    await registerWebBuild(base({ outDir: '/out/dist', collectDebugIds }));
+    await registerJsBuild(base({ outDir: '/out/dist', collectDebugIds }));
     expect(collectDebugIds).toHaveBeenCalledWith('/out/dist');
   });
 
   it('falls back to NODE_ENV as the configuration when the bundler names none', async () => {
-    await registerWebBuild(base({ bundler: {}, env: { NODE_ENV: 'production' } }));
+    await registerJsBuild(base({ bundler: {}, env: { NODE_ENV: 'production' } }));
     expect((calls[0]?.payload as { build_configuration: string }).build_configuration).toBe(
       'production',
     );
   });
 
   it('passes --dry-run through, and reports it', async () => {
-    const result = await registerWebBuild(base({ dryRun: true }));
+    const result = await registerJsBuild(base({ dryRun: true }));
     expect(calls[0]?.args).toContain('--dry-run');
     expect(result).toMatchObject({ registered: true, dryRun: true });
   });
@@ -256,7 +264,7 @@ describe('registerWebBuild', () => {
   it('skips a non-release build without touching the CLI', async () => {
     const run = recordingRun();
     const collectDebugIds = vi.fn(async () => [ID_A]);
-    const result = await registerWebBuild(
+    const result = await registerJsBuild(
       base({ bundler: { isProduction: false }, run, collectDebugIds }),
     );
     expect(result).toEqual({ registered: false, reason: 'not-release' });
@@ -267,7 +275,7 @@ describe('registerWebBuild', () => {
 
   it('skips entirely when disabled', async () => {
     const run = recordingRun();
-    expect(await registerWebBuild(base({ setting: false, run }))).toEqual({
+    expect(await registerJsBuild(base({ setting: false, run }))).toEqual({
       registered: false,
       reason: 'disabled',
     });
@@ -275,33 +283,33 @@ describe('registerWebBuild', () => {
   });
 
   it('refuses an empty token outright, like the source-map upload', async () => {
-    await expect(registerWebBuild(base({ appToken: '' }))).rejects.toThrow(/appToken/);
+    await expect(registerJsBuild(base({ appToken: '' }))).rejects.toThrow(/appToken/);
   });
 
   describe('a failure (D4 — never fails the build by default)', () => {
-    const failingRun = (): RegisterWebBuildOptions['run'] =>
+    const failingRun = (): RegisterJsBuildOptions['run'] =>
       vi.fn(async () => {
         throw new Error('bugsee-cli exited 30: server said no');
       });
 
     it('is reported and contained', async () => {
       const onError = vi.fn();
-      const result = await registerWebBuild(base({ run: failingRun(), onError }));
+      const result = await registerJsBuild(base({ run: failingRun(), onError }));
       expect(result).toEqual({ registered: false, reason: 'failed' });
       expect(onError).toHaveBeenCalledOnce();
       expect(String(onError.mock.calls[0]?.[0])).toMatch(/server said no/);
     });
 
     it('rethrows under failOnError', async () => {
-      await expect(
-        registerWebBuild(base({ run: failingRun(), failOnError: true })),
-      ).rejects.toThrow(/server said no/);
+      await expect(registerJsBuild(base({ run: failingRun(), failOnError: true }))).rejects.toThrow(
+        /server said no/,
+      );
     });
 
     it('warns on the console, naming the step, when no handler is given', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
-        await registerWebBuild(base({ run: failingRun() }));
+        await registerJsBuild(base({ run: failingRun() }));
         expect(warn).toHaveBeenCalledOnce();
         // Distinct from the source-map upload's own message, so the log says WHICH step failed.
         expect(String(warn.mock.calls[0]?.[0])).toMatch(/\[bugsee\] build registration skipped/);
@@ -312,7 +320,7 @@ describe('registerWebBuild', () => {
 
     it('is contained even when collecting context throws', async () => {
       const onError = vi.fn();
-      const result = await registerWebBuild(
+      const result = await registerJsBuild(
         base({
           collectDebugIds: async () => {
             throw new Error('EACCES');
@@ -327,15 +335,15 @@ describe('registerWebBuild', () => {
 
   it('removes the payload file afterwards, on success and on failure', async () => {
     const seen: string[] = [];
-    const run: RegisterWebBuildOptions['run'] = async (args) => {
+    const run: RegisterJsBuildOptions['run'] = async (args) => {
       seen.push(args[args.indexOf('--payload-json') + 1] as string);
       if (seen.length === 2) {
         throw new Error('boom');
       }
       return { code: 0, stdout: '', stderr: '' };
     };
-    await registerWebBuild(base({ run }));
-    await registerWebBuild(base({ run, onError: () => undefined }));
+    await registerJsBuild(base({ run }));
+    await registerJsBuild(base({ run, onError: () => undefined }));
 
     expect(seen).toHaveLength(2);
     for (const path of seen) {
@@ -376,7 +384,7 @@ describe('registerWebBuild', () => {
       await chmod(cli, 0o755);
       process.env.BUGSEE_CLI_PATH = cli;
 
-      const result = await registerWebBuild({
+      const result = await registerJsBuild({
         outDir: join(root, 'dist'),
         appToken: 'tok',
         appVersion: '1.0.0',

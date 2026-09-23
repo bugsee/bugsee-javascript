@@ -801,7 +801,7 @@ describe('runPluginUpload — build registration', () => {
       order.push('upload');
       return uploaded();
     });
-    const registerWebBuild = vi.fn(async () => {
+    const registerJsBuild = vi.fn(async () => {
       order.push('register');
       return { registered: false as const, reason: 'not-release' as const };
     });
@@ -822,14 +822,14 @@ describe('runPluginUpload — build registration', () => {
 
     await runPluginUpload(resolved, '/out/dist', {
       uploadSourcemaps,
-      registerWebBuild,
+      registerJsBuild,
       resolveVcs: async () => vcs,
       bundler: { isProduction: true, configuration: 'production' },
     });
 
     // AFTER: the bundles it reads ids from are stamped by the upload's inject step.
     expect(order).toEqual(['upload', 'register']);
-    expect(registerWebBuild).toHaveBeenCalledWith({
+    expect(registerJsBuild).toHaveBeenCalledWith({
       outDir: '/out/dist',
       appToken: 't',
       appVersion: '1.0.0',
@@ -849,17 +849,17 @@ describe('runPluginUpload — build registration', () => {
   });
 
   it('looks for package.json from an explicit projectRoot when one is given', async () => {
-    const registerWebBuild = vi.fn(async () => ({
+    const registerJsBuild = vi.fn(async () => ({
       registered: false as const,
       reason: 'not-release' as const,
     }));
     const resolved = resolvePluginOptions({ appToken: 't', projectRoot: '/repo/app' }, {});
     await runPluginUpload(resolved, '/repo/app/dist', {
       uploadSourcemaps: uploaded,
-      registerWebBuild,
+      registerJsBuild,
       ...noVcs,
     });
-    expect(registerWebBuild).toHaveBeenCalledWith(
+    expect(registerJsBuild).toHaveBeenCalledWith(
       expect.objectContaining({ projectRoot: '/repo/app' }),
     );
   });
@@ -868,11 +868,11 @@ describe('runPluginUpload — build registration', () => {
     const outcome = {
       registered: true as const,
       dryRun: false,
-      payload: { uuid: 'u', format: 'web' as const, version: '1', build: '1' },
+      payload: { uuid: 'u', format: 'js' as const, version: '1', build: '1' },
     };
     const result = await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
       uploadSourcemaps: uploaded,
-      registerWebBuild: async () => outcome,
+      registerJsBuild: async () => outcome,
       ...noVcs,
     });
     expect(result).toEqual({ injected: true, uploaded: true, deletedMaps: [], build: outcome });
@@ -880,40 +880,40 @@ describe('runPluginUpload — build registration', () => {
 
   it('still registers when the source-map upload failed and was contained', async () => {
     // A build exists whether or not its maps reached the server; the two are independent records.
-    const registerWebBuild = vi.fn(async () => ({
+    const registerJsBuild = vi.fn(async () => ({
       registered: false as const,
       reason: 'not-release' as const,
     }));
     await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
       uploadSourcemaps: async () => ({ injected: false, uploaded: false, deletedMaps: [] }),
-      registerWebBuild,
+      registerJsBuild,
       ...noVcs,
     });
-    expect(registerWebBuild).toHaveBeenCalledOnce();
+    expect(registerJsBuild).toHaveBeenCalledOnce();
   });
 
   it('forwards onError so both steps report through the same sink', async () => {
     const onError = vi.fn();
-    const registerWebBuild = vi.fn(async () => ({
+    const registerJsBuild = vi.fn(async () => ({
       registered: false as const,
       reason: 'not-release' as const,
     }));
     await runPluginUpload(resolvePluginOptions({ appToken: 't', onError }, {}), '/out', {
       uploadSourcemaps: uploaded,
-      registerWebBuild,
+      registerJsBuild,
       ...noVcs,
     });
-    expect(registerWebBuild).toHaveBeenCalledWith(expect.objectContaining({ onError }));
+    expect(registerJsBuild).toHaveBeenCalledWith(expect.objectContaining({ onError }));
   });
 
   it('does not register at all for a disabled plugin', async () => {
-    const registerWebBuild = vi.fn();
+    const registerJsBuild = vi.fn();
     await runPluginUpload(resolvePluginOptions({}, {}), '/out', {
       uploadSourcemaps: uploaded,
-      registerWebBuild,
+      registerJsBuild,
       ...noVcs,
     });
-    expect(registerWebBuild).not.toHaveBeenCalled();
+    expect(registerJsBuild).not.toHaveBeenCalled();
   });
 });
 
@@ -926,7 +926,7 @@ describe('runPluginUpload — in-build stamping', () => {
     }));
     await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
       uploadSourcemaps,
-      registerWebBuild: async () => ({ registered: false, reason: 'not-release' }),
+      registerJsBuild: async () => ({ registered: false, reason: 'not-release' }),
       preStamped: true,
       ...noVcs,
     });

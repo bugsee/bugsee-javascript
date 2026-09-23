@@ -1,14 +1,31 @@
-# Registering a web build
+# Registering a JavaScript (formerly "web") build
 
 Status: **BUILT (slices 1–4), 2026-09-23.** Written 2026-09-19. Closes §6 of
 `docs/review/cli-js-flows.md` ("there is no build record for a web build").
 
 > **What shipped, and where it departs from the design below** — read this first.
 >
+> - **The format is `js`, not `web`** (renamed 2026-09-23, bugsee-appserver#44, with migration 061
+>   for the records written in between). A format names the ARTEFACT — Android's `aab`/`apk` are two
+>   packagings of one platform, iOS's `ipa` a packaging — and a JavaScript build's artefact, bundles
+>   plus maps, is the same shape whatever it runs on. This plugin registers browser bundles, SSR
+>   server bundles (Vite `build.ssr`, Next/Nuxt server), Cloudflare/Vercel edge workers (esbuild),
+>   bundled Node services and Electron's main process alike; `web` described only the first. The
+>   runtime already lives on the APPLICATION (`type: javascript` with subtypes `browser`, `node`,
+>   `service-worker`, …). If a build ever needs its own runtime — for instance to keep a client and a
+>   server bundle of one package out of the same size baseline — it should be a separate field the
+>   bundler states exactly (webpack `target`, esbuild `platform`, Vite `build.ssr`), never the format.
+>   Unbundled Node/Bun (tsc, tsx) and Deno never reach this path: no bundler hook runs.
+>   "Web build" throughout the ORIGINAL design below means this JavaScript build. The file keeps its
+>   name because merged code in bugsee-appserver and bugsee-cli links to it.
+>
 > - **Four repos, not two.** The design put the `format: web` change in the CLI. The CLI never
 >   validates `format`; it forwards the payload. The appserver's Build schema did, with
 >   `enum: ['aab','apk','ipa']`, so a web registration failed Mongoose validation and was never
->   recorded — **bugsee-appserver#42** adds `web` (and derives the baseline allowlist from the enum).
+>   recorded — **bugsee-appserver#42** added it (as `web`, since renamed — see above) and derives the
+>   baseline allowlist from the enum. **#43**: four MCP build tools restated the old list, so one web
+>   build broke `list_builds` for its whole application; every consumer now reads
+>   `dao.builds.getSupportedBuildsTypes()`.
 >   The viewer's build list drew every non-`ipa` build as Android — **bugsee-web-viewer#64**.
 >   CLI: **bugsee-cli#52** (register-only), released in **0.7.12** (bugsee-cli#54).
 > - **D1 was not actually blocked.** The appserver treats `uuid` as an opaque dedup key — unique
