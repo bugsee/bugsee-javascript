@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { hasDeviceIdAttribute, stampDeviceIdOnWire } from './device-id-attribute';
-import type { TransactionWire } from './span';
+import {
+  hasDeviceIdAttribute,
+  stampDeviceIdOnSpanWire,
+  stampDeviceIdOnWire,
+} from './device-id-attribute';
+import type { SpanWire, TransactionWire } from './span';
 
 const DEVICE = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
 
@@ -32,6 +36,35 @@ describe('hasDeviceIdAttribute', () => {
     expect(hasDeviceIdAttribute({ 'device.id': DEVICE })).toBe(true);
     expect(hasDeviceIdAttribute({ other: 1 })).toBe(false);
     expect(hasDeviceIdAttribute(undefined)).toBe(false);
+  });
+});
+
+const baseSpan = (): SpanWire => ({
+  spanId: 'c'.repeat(16),
+  operation: 'http.client',
+  status: 'OK',
+  startTimestampMs: 1,
+  endTimestampMs: 2,
+});
+
+describe('stampDeviceIdOnSpanWire', () => {
+  it('stamps device_id when the span has no device-id attribute', () => {
+    const span = baseSpan();
+    const out = stampDeviceIdOnSpanWire(span, DEVICE);
+    expect(out).not.toBe(span);
+    expect(out.attributes?.device_id).toBe(DEVICE);
+  });
+
+  it('returns the same span when it already has a device id attribute', () => {
+    for (const attributes of [
+      { device_id: 'caller-owned' },
+      { 'bugsee.device_id': 'caller-owned' },
+      { 'device.id': 'caller-owned' },
+    ]) {
+      const span: SpanWire = { ...baseSpan(), attributes };
+      expect(stampDeviceIdOnSpanWire(span, DEVICE)).toBe(span);
+      expect(span.attributes).toEqual(attributes);
+    }
   });
 });
 
