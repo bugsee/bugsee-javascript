@@ -30,17 +30,17 @@ describe('client entry surface', () => {
 describe('registerClient', () => {
   afterEach(() => launch.mockReset());
 
-  it('launches the batteries-included browser SDK with the appToken + options', () => {
+  it('launches the batteries-included browser SDK with the appToken + options', async () => {
     const sentinel = { id: 'browser-client' };
     launch.mockReturnValue(sentinel);
-    const result = registerClient('tok', { captureLogs: false });
+    const result = await registerClient('tok', { captureLogs: false });
     expect(launch).toHaveBeenCalledWith('tok', { captureLogs: false });
     expect(result).toBe(sentinel);
   });
 
-  it('defaults the options to an empty object', () => {
+  it('defaults the options to an empty object', async () => {
     launch.mockReturnValue({});
-    registerClient('tok');
+    await registerClient('tok');
     expect(launch).toHaveBeenCalledWith('tok', {});
   });
 });

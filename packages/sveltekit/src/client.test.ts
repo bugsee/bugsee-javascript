@@ -8,16 +8,16 @@ import { handleErrorWithBugsee, registerClient, reportSvelteError } from './clie
 describe('registerClient', () => {
   afterEach(() => launch.mockReset());
 
-  it('launches the browser SDK with the appToken + options, returns the client', () => {
+  it('launches the browser SDK with the appToken + options, returns the client', async () => {
     const client = { id: 'browser-client' };
     launch.mockReturnValue(client);
-    const result = registerClient('tok', { captureLogs: false });
+    const result = await registerClient('tok', { captureLogs: false });
     expect(launch).toHaveBeenCalledWith('tok', { captureLogs: false });
     expect(result).toBe(client);
   });
 
-  it('defaults options to an empty object', () => {
-    registerClient('tok');
+  it('defaults options to an empty object', async () => {
+    await registerClient('tok');
     expect(launch).toHaveBeenCalledWith('tok', {});
   });
 });
