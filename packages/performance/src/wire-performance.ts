@@ -34,6 +34,8 @@ export interface WirePerformanceOptions {
   pageloadContinuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
   appVersion?: string;
   appBuild?: string;
+  /** Stamped as `device_id` on every transaction and span unless the caller already set one. */
+  deviceId?: string;
   /** The network interceptor source for http spans (omitted → no http spans). */
   networkSource?: NetworkSource;
   /** The browser navigation source (F1c) — drives `navigation` transactions per SPA route change. Omitted →
@@ -78,6 +80,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     sampler: createRateSampler(options.sampleRate),
     ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
     ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+    ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
     ...(options.activeSpanStore !== undefined ? { activeSpanStore: options.activeSpanStore } : {}),
     // Same sink the uploader uses below: a store breaking its must-not-throw contract is an internal
     // error, and reporting it is the whole point of the guard (R-3).

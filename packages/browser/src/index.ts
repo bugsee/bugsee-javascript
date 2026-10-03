@@ -9,6 +9,18 @@ export {
   type WindowEvents,
 } from './detection-providers';
 export {
+  type DeviceIdAsyncStore,
+  type DeviceIdCookieStorage,
+  type DeviceIdEnv,
+  type DeviceIdLocalStorage,
+  generateDeviceId,
+  isValidDeviceId,
+  peekBrowserDeviceId,
+  realDeviceIdEnv,
+  resetBrowserDeviceIdCache,
+  resolveBrowserDeviceId,
+} from './device-id';
+export {
   type BrowserEnvironmentInput,
   type BrowserProbe,
   BrowserProbeToken,

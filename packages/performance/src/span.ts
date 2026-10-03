@@ -115,6 +115,8 @@ export interface CreateTransactionDeps {
   newTraceId?: () => string;
   /** Span id generator; default a random 8-byte hex. */
   newSpanId?: () => string;
+  /** Stamped as `device_id` on the root and every child span unless the caller already set one. */
+  deviceId?: string;
   /** Called ONCE when the root transaction finishes (child-span finishes do not trigger it). */
   onFinish?: (transaction: Transaction) => void;
 }
@@ -155,6 +157,8 @@ interface TraceEnv {
   readonly newSpanId: () => string;
   /** The shared per-trace recorder: the root span (index 0) followed by every descendant, in order. */
   readonly spans: SerializableSpan[];
+  /** Stamped on every span when the caller has not already set `device_id`. */
+  readonly deviceId?: string;
 }
 
 /** An already-completed span recorded with explicit times (no live Clock capture). */
@@ -220,7 +224,11 @@ class SpanImpl implements Span {
     return this;
   }
   startChildSpan(operation: string, description?: string): Span {
-    return new SpanImpl(this.env, this.#traceId, this.#spanId, operation, description);
+    const child = new SpanImpl(this.env, this.#traceId, this.#spanId, operation, description);
+    if (this.env.deviceId !== undefined && child.getAttributes().device_id === undefined) {
+      child.setAttribute('device_id', this.env.deviceId);
+    }
+    return child;
   }
   recordChildSpan(operation: string, options: RecordChildSpanOptions): void {
     const wire: SpanWire = {
@@ -236,8 +244,12 @@ class SpanImpl implements Span {
       ),
     };
     if (options.description !== undefined) wire.description = options.description;
-    if (options.attributes !== undefined && Object.keys(options.attributes).length > 0) {
-      wire.attributes = options.attributes;
+    const attributes =
+      this.env.deviceId !== undefined && options.attributes?.device_id === undefined
+        ? { device_id: this.env.deviceId, ...options.attributes }
+        : options.attributes;
+    if (attributes !== undefined && Object.keys(attributes).length > 0) {
+      wire.attributes = attributes;
     }
     this.env.spans.push(new RecordedSpan(wire));
   }
@@ -362,9 +374,14 @@ export function createTransaction(
     clock: deps.clock,
     newSpanId: deps.newSpanId ?? defaultSpanId,
     spans: [],
+    ...(deps.deviceId !== undefined ? { deviceId: deps.deviceId } : {}),
   };
   const traceId = (deps.newTraceId ?? defaultTraceId)();
-  return new TransactionImpl(env, traceId, options, deps.onFinish);
+  const transaction = new TransactionImpl(env, traceId, options, deps.onFinish);
+  if (deps.deviceId !== undefined && transaction.getAttributes().device_id === undefined) {
+    transaction.setAttribute('device_id', deps.deviceId);
+  }
+  return transaction;
 }
 
 /** Serialize a transaction (and its spans) to the §8.8 wire shape. */

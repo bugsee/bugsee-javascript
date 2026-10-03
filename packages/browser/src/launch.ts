@@ -53,6 +53,11 @@ import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import {
+  type DeviceIdEnv,
+  realDeviceIdEnv,
+  resolveBrowserDeviceId,
+} from './device-id';
+import {
   type BrowserProbe,
   BrowserProbeToken,
   buildBrowserEnvironment,
@@ -235,6 +240,8 @@ export interface BugseeLaunchOptions {
   locks?: LockManagerLike;
   /** IDBFactory for the durable bundle queue; injectable for tests. Default `globalThis.indexedDB`. */
   indexedDB?: IDBFactory;
+  /** Injectable device-id storage seams (tests). Default real browser stores. */
+  deviceIdEnv?: DeviceIdEnv;
 }
 
 /** The launched Bugsee client — the public browser SDK surface. */
@@ -264,6 +271,8 @@ export interface LaunchInternals {
   appVersion: string | undefined;
   /** app.build, if provided. */
   appBuild: string | undefined;
+  /** Persisted browser device id resolved once per page. */
+  deviceId: string;
   /** The internal-error sink (defaults undefined → extensions use their own no-op). */
   onError: ((error: unknown) => void) | undefined;
   /**
@@ -296,10 +305,16 @@ const internalTagged =
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
 
-export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
+export async function launchCore(
+  appToken: string,
+  options: BugseeLaunchOptions = {},
+): Promise<LaunchResult> {
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
   const win = options.window ?? window;
+  const deviceId = await resolveBrowserDeviceId(
+    realDeviceIdEnv(options.deviceIdEnv ?? {}),
+  );
 
   // Bugsee is a per-process singleton (§1497): if a client was already launched (same SDK version on
   // the process Carrier), warn and return it rather than building a second client / second handler set.
@@ -371,6 +386,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     buildBrowserEnvironment(
       {
         sdkVersion,
+        deviceId,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
@@ -680,15 +696,16 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     network,
     appVersion: options.appVersion,
     appBuild: options.appBuild,
+    deviceId,
     onError: options.onError,
     activeSpanStore: undefined, // the single-slot default is correct here — see the interface note
   };
   return { client: publicClient, internals };
 }
 
-// The public composition root: the launched client. Equivalent to `launchCore(...).client` — `launchCore`
-// additionally surfaces the internal wiring (`LaunchInternals`) that the `bugsee` umbrella uses to wire
-// on-by-default extensions; bare `@bugsee/browser` callers use this and never see the internals.
-export function launch(appToken: string, options: BugseeLaunchOptions = {}): Bugsee {
-  return launchCore(appToken, options).client;
+// The public composition root: the launched client. Equivalent to `(await launchCore(...)).client` —
+// `launchCore` additionally surfaces the internal wiring (`LaunchInternals`) that the `bugsee` umbrella
+// uses to wire on-by-default extensions; bare `@bugsee/browser` callers use this and never see the internals.
+export async function launch(appToken: string, options: BugseeLaunchOptions = {}): Promise<Bugsee> {
+  return (await launchCore(appToken, options)).client;
 }

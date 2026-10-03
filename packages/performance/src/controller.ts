@@ -89,6 +89,8 @@ export interface PerformanceControllerDeps {
   store: TransactionStore;
   appVersion?: string;
   appBuild?: string;
+  /** Stamped as `device_id` on every transaction and span unless the caller already set one. */
+  deviceId?: string;
   /**
    * Where the active transaction lives. Default a process-wide single slot (last-started wins) —
    * correct for a browser's one in-flight navigation/interaction. A concurrent server passes a
@@ -181,6 +183,7 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
           // Trace continuation: adopt the inbound trace id so the upstream trace and this transaction
           // share a trace (the root span starts a new span id under that trace).
           ...(continuation !== undefined ? { newTraceId: () => continuation.traceId } : {}),
+          ...(deps.deviceId !== undefined ? { deviceId: deps.deviceId } : {}),
           onFinish: (finished) => {
             if (finished.isSampled()) {
               const serialized = serializeTransaction(finished);
