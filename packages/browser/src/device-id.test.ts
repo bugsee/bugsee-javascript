@@ -68,7 +68,10 @@ function env(overrides: Partial<DeviceIdEnv> = {}): DeviceIdEnv {
   };
 }
 
-function stubGlobal<K extends keyof typeof globalThis>(key: K, value: (typeof globalThis)[K]): void {
+function stubGlobal<K extends keyof typeof globalThis>(
+  key: K,
+  value: (typeof globalThis)[K],
+): void {
   vi.stubGlobal(key as string, value);
 }
 
@@ -533,7 +536,7 @@ describe('default indexedDB store', () => {
           throw new Error('sync open failed on write');
         }
         const db = {
-          transaction: (_store: string, mode: string) => {
+          transaction: (_store: string, _mode: string) => {
             const tx = {
               objectStore: () => ({
                 get: () => {
