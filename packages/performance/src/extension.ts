@@ -5,8 +5,8 @@ import {
   type PerformanceCaptureProvider,
 } from './capture-provider';
 import { createPerformanceController, type PerformanceApi } from './controller';
-import type { TransactionWire } from './span';
 import { stampDeviceIdOnWire } from './device-id-attribute';
+import type { TransactionWire } from './span';
 import { applySpanFilter } from './span-filter';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
 

@@ -7,7 +7,7 @@ import {
   type DeviceIdLocalStorage,
   resetBrowserDeviceIdCache,
 } from './device-id';
-import { type BrowserProbe } from './environment';
+import type { BrowserProbe } from './environment';
 import { launchCore } from './launch';
 
 const probe: BrowserProbe = {
@@ -40,9 +40,12 @@ function fakeLocalStorage(initial: Record<string, string> = {}): DeviceIdLocalSt
 
 function fakeCookie(initial?: string): DeviceIdCookieStorage {
   let value = initial;
-  return { get: () => value, set: (v) => {
-    value = v;
-  } };
+  return {
+    get: () => value,
+    set: (v) => {
+      value = v;
+    },
+  };
 }
 
 function fakeAsyncStore(initial?: string): DeviceIdAsyncStore {
@@ -106,7 +109,9 @@ describe('device id launch integration', () => {
       recover: false,
     });
     expect(internals).toBeDefined();
-    expect((internals?.getEnvironment().hardware as { device_id: string }).device_id).toBe(VALID_ID);
+    expect((internals?.getEnvironment().hardware as { device_id: string }).device_id).toBe(
+      VALID_ID,
+    );
     expect(internals?.deviceId).toBe(VALID_ID);
   });
 });

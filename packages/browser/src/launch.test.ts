@@ -43,7 +43,7 @@ import {
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resetBrowserDeviceIdCache, type DeviceIdLocalStorage } from './device-id';
+import { type DeviceIdLocalStorage, resetBrowserDeviceIdCache } from './device-id';
 import { type BrowserProbe, BrowserProbeToken } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch, launchCore } from './launch';
 
@@ -344,7 +344,10 @@ describe('launch', () => {
 
   it('registers the systemProbe and captureStore as resolvable services', async () => {
     const store = memStore();
-    const client = await launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ systemProbe: probe, captureStore: store }),
+    );
     expect(client.getService(BrowserProbeToken)).toBe(probe);
     expect(client.getService(CaptureStoreToken)).toBe(store);
   });
@@ -886,7 +889,10 @@ describe('launch', () => {
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', async () => {
     const carrier = {};
     const onError = vi.fn();
-    const first = await launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
+    const first = await launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), carrier, onError }),
+    );
     const second = await launchTracked(
       'tok',
       baseOptions({ captureStore: memStore(), carrier, onError }),
@@ -945,7 +951,10 @@ describe('launch', () => {
     };
     const store = createPersistentBundleStore(blob);
     const transport = uploadTransport();
-    await launchTracked('tok', baseOptions({ transport, bundleStore: store, captureStore: memStore() }));
+    await launchTracked(
+      'tok',
+      baseOptions({ transport, bundleStore: store, captureStore: memStore() }),
+    );
     await new Promise((r) => setTimeout(r, 5));
     expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(false);
     resolveLoad([['left', pendingBundle('prior reload')]]); // hydration surfaces a leftover
@@ -1628,7 +1637,10 @@ describe('launch — capture recovery (multi-instance)', () => {
 
   it('builds no marker store when a captureStore overrides the IndexedDB backend', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const client = await launchTracked('tok', baseOptions({ persist: true, captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ persist: true, captureStore: memStore() }),
+    );
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
@@ -1928,7 +1940,10 @@ describe('launch — session replay (lazy)', () => {
 
       // (3) Positive control: the SAME fresh module DOES evaluate both once a document is present — so the
       // zeros above are real absences, not a broken counter or a launch that died before the import.
-      const dom = await fresh.launch('tok', domReplayOptions({ carrier: {}, replay: { canvas: true } }));
+      const dom = await fresh.launch(
+        'tok',
+        domReplayOptions({ carrier: {}, replay: { canvas: true } }),
+      );
       // ONE wait covering both: the canvas add-on is imported inside replay's own `.then()`, so it lands
       // strictly after replay does — reading it inline races. The explicit budget follows the repo's
       // slow-runner convention (vitest's 1 s waitFor default is short under a loaded parallel `turbo run`).
@@ -2017,7 +2032,10 @@ describe('flush on page hide (Wave 6.2)', () => {
     // (packages/core/src/client.ts: uploadPipeline.flush alone misses reports with no upload enqueued).
     // Without this leg, the last crash before a tab is backgrounded is the one most likely to be lost.
     const win = fakeWindow();
-    const client = await launchTracked('tok', baseOptions({ window: win.win, captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ window: win.win, captureStore: memStore() }),
+    );
     const flush = vi.spyOn(client, 'flush').mockResolvedValue(true);
     win.emit('pagehide', {});
     expect(flush).toHaveBeenCalled();

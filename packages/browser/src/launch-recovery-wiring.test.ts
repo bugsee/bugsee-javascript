@@ -4,7 +4,7 @@ import type { BundleStore, LaunchRecoveryOptions } from '@bugsee/core';
 import { runLaunchRecovery } from '@bugsee/core';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resetBrowserDeviceIdCache, type DeviceIdLocalStorage } from './device-id';
+import { type DeviceIdLocalStorage, resetBrowserDeviceIdCache } from './device-id';
 import type { BrowserProbe } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
@@ -128,6 +128,8 @@ describe('launch — the recovery wiring handed to core', () => {
   });
 
   it('marks an INJECTED bundle store as shared, so the dead-sibling scan gets first refusal', async () => {
-    expect((await recoveryArgs({ bundleStore: memBundleStore(), persist: true })).shared).toBe(true);
+    expect((await recoveryArgs({ bundleStore: memBundleStore(), persist: true })).shared).toBe(
+      true,
+    );
   });
 });

@@ -175,12 +175,16 @@ describe('bugsee umbrella launch', () => {
   });
 
   it('does NOT wire performance when performanceMonitoring is false', async () => {
-    const client = await track(await launch('tok', base({ carrier: {}, performanceMonitoring: false })));
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: false })),
+    );
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
   it('threads performanceSampleRate into the head sampler (0 → the pageload transaction is unsampled)', async () => {
-    const client = await track(await launch('tok', base({ carrier: {}, performanceSampleRate: 0 })));
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceSampleRate: 0 })),
+    );
     expect((client.ext('performance').getActiveSpan() as Transaction).isSampled()).toBe(false);
   });
 
@@ -259,7 +263,9 @@ describe('bugsee umbrella launch', () => {
   it('does NOT wire interactions when traceInteractions is false', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = await track(await launch('tok', base({ carrier: {}, traceInteractions: false })));
+    const client = await track(
+      await launch('tok', base({ carrier: {}, traceInteractions: false })),
+    );
     pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
     // No interaction source was created → the active span stays the pageload transaction.
     expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
@@ -295,7 +301,10 @@ describe('bugsee umbrella launch', () => {
     const { scheduler, fire } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
     const client = await track(
-      await launch('tok', base({ carrier, scheduler, transport, performanceFlushIntervalMs: 7777 })),
+      await launch(
+        'tok',
+        base({ carrier, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+      ),
     );
     (client.ext('performance').getActiveSpan() as Transaction).finish(); // → buffered into the perf store
     await fire(7777); // run the uploader's flush tick at the injected interval
@@ -312,7 +321,10 @@ describe('bugsee umbrella launch', () => {
     const { scheduler } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
     const client = await track(
-      await launch('tok', base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 })),
+      await launch(
+        'tok',
+        base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+      ),
     );
     (client.ext('performance').getActiveSpan() as Transaction).finish(); // buffered, no tick fired
     expect(perfPosts).toHaveLength(0);
@@ -338,7 +350,9 @@ describe('bugsee umbrella launch', () => {
 
   it('starts the uploader at performanceFlushIntervalMs', async () => {
     const { scheduler, intervals } = fakeScheduler();
-    await track(await launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })));
+    await track(
+      await launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })),
+    );
     expect(intervals.some((i) => i.ms === 7777)).toBe(true);
   });
 
@@ -366,7 +380,9 @@ describe('bugsee umbrella launch', () => {
   });
 
   it('threads appVersion/appBuild from the launch onto the performance transaction wire', async () => {
-    const client = await track(await launch('tok', base({ carrier: {}, appVersion: '1.2.3', appBuild: '99' })));
+    const client = await track(
+      await launch('tok', base({ carrier: {}, appVersion: '1.2.3', appBuild: '99' })),
+    );
     const wire = serializeTransaction(client.ext('performance').getActiveSpan() as Transaction);
     expect(wire.appVersion).toBe('1.2.3');
     expect(wire.appBuild).toBe('99');
@@ -483,7 +499,9 @@ describe('bugsee umbrella launch', () => {
       return okResp;
     });
     // Set the origin so the request below WOULD be propagated if the feature were on — proving OFF.
-    await track(await launch('tok', base({ carrier: {}, tracePropagationOrigin: 'https://app.test' }))); // default off
+    await track(
+      await launch('tok', base({ carrier: {}, tracePropagationOrigin: 'https://app.test' })),
+    ); // default off
     const init = { method: 'GET' };
     await globalFetch()('https://app.test/api', init); // same-origin → would get traceparent if on
     expect(received?.init).toBe(init); // unchanged (same ref) — no decorator registered

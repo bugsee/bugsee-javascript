@@ -60,7 +60,7 @@ function buildPage(): { text: HTMLInputElement; password: HTMLInputElement } {
  * masked), a logged exception, and a REAL uncaught error routed through `window.onerror`.
  */
 async function runMain(collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     appBuild: '42',
@@ -120,7 +120,7 @@ function type_(field: HTMLInputElement, value: string): void {
  * engine's — including the transaction-commit durability semantics the round-7 fix depends on.
  */
 async function runPersist(collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     appBuild: '42',

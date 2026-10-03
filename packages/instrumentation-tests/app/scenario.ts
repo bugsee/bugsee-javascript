@@ -6,7 +6,7 @@
 // would be the destination in production.
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 
-export type LaunchFn = (token: string, options?: BugseeLaunchOptions) => Bugsee;
+export type LaunchFn = (token: string, options?: BugseeLaunchOptions) => Bugsee | Promise<Bugsee>;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,7 +37,7 @@ const noteOnError = (e: unknown): void => {
  * report bundle), a rolling CPU profile, and a deliberate event-loop hang (an AppHang report). Exits 0.
  */
 async function runMainScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     appBuild: '42',
@@ -135,7 +135,7 @@ function e2eLocalsThrow(): void {
  * be stamped and matched back, or that any of it survives assembly and upload.
  */
 async function runLocalsScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  launch('e2e-app-token', {
+  await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -157,7 +157,7 @@ async function runLocalsScenario(launch: LaunchFn, collectorUrl: string): Promis
 }
 
 async function runCrashScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  launch('e2e-app-token', {
+  await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -188,7 +188,7 @@ async function runCrashScenario(launch: LaunchFn, collectorUrl: string): Promise
  * harness does not — that path is covered by the unit + per-adapter integration suites.) Exits 0.
  */
 async function runServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -233,7 +233,7 @@ async function runServerScenario(launch: LaunchFn, collectorUrl: string): Promis
 async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
   if (process.env.BUGSEE_E2E_PHASE === 'seed') {
-    const client = launch('e2e-app-token', {
+    const client = await launch('e2e-app-token', {
       endpoint: 'http://127.0.0.1:1', // unreachable → the upload fails, the bundle stays persisted
       dataDir,
       detectHangs: false,
@@ -245,7 +245,7 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
     await client.flush(2000); // assembly+persist complete; the upload fails (unreachable) — bundle kept
     process.exit(1); // die — this instance's pid is now gone (a dead sibling for the recoverer)
   }
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     dataDir,
     detectHangs: false,
@@ -274,7 +274,7 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
 async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
   if (process.env.BUGSEE_E2E_PHASE === 'seed') {
-    const client = launch('e2e-app-token', {
+    const client = await launch('e2e-app-token', {
       endpoint: 'http://127.0.0.1:1', // unreachable → nothing is delivered live
       dataDir, // shared on-disk root; capturedDataStore defaults to 'disk'
       detectHangs: false,
@@ -290,7 +290,7 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
     void client.logException(new Error('e2e disk-recovery incident'));
     process.exit(0);
   }
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     dataDir,
     detectHangs: false,
@@ -316,7 +316,7 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
  */
 async function runWorkerWriterScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     dataDir, // on-disk capture (capturedDataStore defaults to 'disk') → a ChunkStorage writer is used…
@@ -360,7 +360,7 @@ const INBOUND_SPAN = 'b7ad6b7169203331'; // 8-byte upstream span id
  * SAME trace id flows: inbound → report → outbound. Exits 0.
  */
 async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -420,7 +420,7 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
  * every one of these leaks was live. Only the emitted bytes settle it. Exits 0.
  */
 async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -483,7 +483,7 @@ async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promi
  *    crashing service into exit 0. The assertion is the exit code, which is exactly what a supervisor sees.
  */
 async function runExitCleanScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  launch('e2e-app-token', {
+  await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     recover: false,
@@ -501,7 +501,7 @@ async function runExitCleanScenario(launch: LaunchFn, collectorUrl: string): Pro
 }
 
 async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  launch('e2e-app-token', {
+  await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -534,7 +534,7 @@ async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): 
       serve(o: unknown, h?: unknown): { addr: { port: number }; shutdown(): Promise<void> };
     };
   };
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,
@@ -588,7 +588,7 @@ async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): 
  * log and the outgoing call must all agree on ONE identity.
  */
 async function runConcurrentServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     detectHangs: false,

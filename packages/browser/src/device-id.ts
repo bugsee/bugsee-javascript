@@ -12,8 +12,7 @@ const CACHE_NAME = 'bugsee-device-id';
 const CACHE_URL = 'https://bugsee.local/device-id';
 
 /** UUID v4 (or UUID-shaped hex) — reject garbage before trusting a stored value. */
-const UUID_LIKE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function isValidDeviceId(value: string | undefined | null): value is string {
   return typeof value === 'string' && UUID_LIKE.test(value);
@@ -62,8 +61,11 @@ export function resetBrowserDeviceIdCache(): void {
 
 export function generateDeviceId(env: DeviceIdEnv = {}): string {
   if (env.randomUUID !== undefined) return env.randomUUID();
-  const crypto = (globalThis as { crypto?: { randomUUID?: () => string; getRandomValues?: (a: Uint8Array) => Uint8Array } })
-    .crypto;
+  const crypto = (
+    globalThis as {
+      crypto?: { randomUUID?: () => string; getRandomValues?: (a: Uint8Array) => Uint8Array };
+    }
+  ).crypto;
   if (crypto?.randomUUID) return crypto.randomUUID();
   const getRandomValues = env.getRandomValues ?? crypto?.getRandomValues?.bind(crypto);
   if (getRandomValues === undefined) {
@@ -72,8 +74,8 @@ export function generateDeviceId(env: DeviceIdEnv = {}): string {
   const bytes = new Uint8Array(16);
   getRandomValues(bytes);
   // RFC 4122 v4
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  bytes[6] = ((bytes[6] as number) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80;
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
@@ -321,7 +323,10 @@ function createDefaultCacheStore(): DeviceIdAsyncStore {
       if (caches === undefined) return;
       try {
         const cache = await caches.open(CACHE_NAME);
-        await cache.put(CACHE_URL, new Response(value, { headers: { 'Content-Type': 'text/plain' } }));
+        await cache.put(
+          CACHE_URL,
+          new Response(value, { headers: { 'Content-Type': 'text/plain' } }),
+        );
       } catch {
         // swallow
       }
@@ -330,8 +335,6 @@ function createDefaultCacheStore(): DeviceIdAsyncStore {
 }
 
 /** Default env wiring for production launch. */
-export function realDeviceIdEnv(
-  overrides: DeviceIdEnv = {},
-): DeviceIdEnv {
+export function realDeviceIdEnv(overrides: DeviceIdEnv = {}): DeviceIdEnv {
   return overrides;
 }

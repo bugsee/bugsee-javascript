@@ -43,12 +43,14 @@ describe('stampDeviceIdOnWire', () => {
   });
 
   it('does not overwrite an existing device id attribute', () => {
-    const wire = {
+    const child = baseWire().spans[0];
+    if (child === undefined) throw new Error('expected child span');
+    const wire: TransactionWire = {
       ...baseWire(),
       attributes: { device_id: 'caller-owned' },
       spans: [
         {
-          ...baseWire().spans[0],
+          ...child,
           attributes: { 'bugsee.device_id': 'child-owned' },
         },
       ],

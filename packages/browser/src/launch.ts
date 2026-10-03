@@ -52,11 +52,7 @@ import {
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
-import {
-  type DeviceIdEnv,
-  realDeviceIdEnv,
-  resolveBrowserDeviceId,
-} from './device-id';
+import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
 import {
   type BrowserProbe,
   BrowserProbeToken,
@@ -312,9 +308,7 @@ export async function launchCore(
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
   const win = options.window ?? window;
-  const deviceId = await resolveBrowserDeviceId(
-    realDeviceIdEnv(options.deviceIdEnv ?? {}),
-  );
+  const deviceId = await resolveBrowserDeviceId(realDeviceIdEnv(options.deviceIdEnv ?? {}));
 
   // Bugsee is a per-process singleton (§1497): if a client was already launched (same SDK version on
   // the process Carrier), warn and return it rather than building a second client / second handler set.

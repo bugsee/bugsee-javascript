@@ -122,15 +122,15 @@ function fakeElectronBus() {
 }
 
 /** Boot a renderer through the REAL preload + launchRenderer; return the injected store + spies. */
-function bootRenderer(
+async function bootRenderer(
   bus: ReturnType<typeof fakeElectronBus>,
   id: number,
-): {
+): Promise<{
   store: { add(e: StoredEntry): void };
   sessionId: () => string | undefined;
   stop: ReturnType<typeof vi.fn>;
   flush: ReturnType<typeof vi.fn>;
-} {
+}> {
   const { ipcRenderer } = bus.renderer(id);
 
   // The real preload exposes the bridge; we capture what it would put on `window.__bugseeElectron`.
@@ -144,7 +144,7 @@ function bootRenderer(
   let injectedStore: { add(e: StoredEntry): void } | undefined;
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
-  const fakeBrowserLaunch = ((
+  const fakeBrowserLaunch = (async (
     _token: string,
     options: { captureStore: { add(e: StoredEntry): void } },
   ) => {
@@ -153,7 +153,7 @@ function bootRenderer(
   }) as never;
 
   let sessionId: string | undefined;
-  launchRenderer('tok', {
+  await launchRenderer('tok', {
     launch: fakeBrowserLaunch,
     bridge,
     onSessionId: (id2) => {
@@ -202,8 +202,8 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     });
 
     // ── Boot 2 renderers; each says hello on launch and gets the session back ──
-    const r1 = bootRenderer(bus, 1);
-    const r2 = bootRenderer(bus, 2);
+    const r1 = await bootRenderer(bus, 1);
+    const r2 = await bootRenderer(bus, 2);
 
     // The native crash reporter was started once, in harvest mode (uploadToServer:false), session-correlated.
     expect(crashStarts).toHaveLength(1);

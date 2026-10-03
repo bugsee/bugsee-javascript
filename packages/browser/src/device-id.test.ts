@@ -38,7 +38,9 @@ function fakeCookie(initial?: string): DeviceIdCookieStorage & { raw: () => stri
   };
 }
 
-function fakeAsyncStore(initial?: string): DeviceIdAsyncStore & { value: () => string | undefined } {
+function fakeAsyncStore(
+  initial?: string,
+): DeviceIdAsyncStore & { value: () => string | undefined } {
   let stored = initial;
   return {
     read: async () => stored,

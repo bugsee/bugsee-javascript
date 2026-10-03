@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   // at RUNTIME, so this file type-checks against the umbrella's default (browser) options, which do not
   // declare the node-tier diagnostics below. They are turned off deliberately — `detectHangs` defaults to
   // true and would spawn a watchdog worker thread in a process whose whole job is to emit two spans.
-  const client = launch('e2e-app-token', {
+  const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
     appVersion: '1.2.3',
     appBuild: '42',
