@@ -60,11 +60,26 @@ function env(overrides: Partial<DeviceIdEnv> = {}): DeviceIdEnv {
   return {
     localStorage: fakeLocalStorage(),
     cookie: fakeCookie(),
+    cookieStore: fakeAsyncStore(),
     indexedDB: fakeAsyncStore(),
     cache: fakeAsyncStore(),
     randomUUID: () => VALID_ID_2,
     isSecureContext: false,
     ...overrides,
+  };
+}
+
+function fakeGlobalCookieStore(initial?: string) {
+  let value = initial;
+  return {
+    get: async (name: string) => {
+      if (name !== 'bugsee_device_id') return undefined;
+      return value === undefined ? undefined : { value };
+    },
+    set: async (options: { name: string; value: string }) => {
+      if (options.name === 'bugsee_device_id') value = options.value;
+    },
+    value: () => value,
   };
 }
 
@@ -197,15 +212,17 @@ describe('resolveBrowserDeviceId', () => {
   it('generates and writes to all stores when none have a value', async () => {
     const local = fakeLocalStorage();
     const cookie = fakeCookie();
+    const cookieStore = fakeAsyncStore();
     const idb = fakeAsyncStore();
     const cache = fakeAsyncStore();
-    const e = env({ localStorage: local, cookie, indexedDB: idb, cache });
+    const e = env({ localStorage: local, cookie, cookieStore, indexedDB: idb, cache });
 
     const id = await resolveBrowserDeviceId(e);
 
     expect(id).toBe(VALID_ID_2);
     expect(local.getItem('bugsee.device_id')).toBe(VALID_ID_2);
     expect(cookie.get()).toBe(VALID_ID_2);
+    expect(cookieStore.value()).toBe(VALID_ID_2);
     expect(idb.value()).toBe(VALID_ID_2);
     expect(cache.value()).toBe(VALID_ID_2);
   });
@@ -278,6 +295,42 @@ describe('resolveBrowserDeviceId', () => {
     const id = await resolveBrowserDeviceId(e);
     expect(id).toBe(VALID_ID);
     expect(e.localStorage?.getItem('bugsee.device_id')).toBe(VALID_ID);
+  });
+
+  it('recovers from cookieStore when sync stores are empty and heals the other stores', async () => {
+    const cookieStore = fakeAsyncStore(VALID_ID);
+    const local = fakeLocalStorage();
+    const cookie = fakeCookie();
+    const idb = fakeAsyncStore();
+    const cache = fakeAsyncStore();
+    const id = await resolveBrowserDeviceId({
+      localStorage: local,
+      cookie,
+      cookieStore,
+      indexedDB: idb,
+      cache,
+      randomUUID: () => VALID_ID_2,
+    });
+    expect(id).toBe(VALID_ID);
+    expect(local.getItem('bugsee.device_id')).toBe(VALID_ID);
+    expect(cookie.get()).toBe(VALID_ID);
+    expect(idb.value()).toBe(VALID_ID);
+    expect(cache.value()).toBe(VALID_ID);
+  });
+
+  it('swallows cookieStore read and write failures', async () => {
+    const throwing: DeviceIdAsyncStore = {
+      read: async () => {
+        throw new Error('cookieStore read failed');
+      },
+      write: async () => {
+        throw new Error('cookieStore write failed');
+      },
+    };
+    const id = await resolveBrowserDeviceId(
+      env({ cookieStore: throwing, randomUUID: () => VALID_ID_2 }),
+    );
+    expect(id).toBe(VALID_ID_2);
   });
 
   it('exposes the cached id through peekBrowserDeviceId after resolution', async () => {
@@ -673,6 +726,83 @@ describe('default indexedDB store', () => {
       randomUUID: () => VALID_ID_2,
     });
     expect(id).toBe(VALID_ID_2);
+  });
+});
+
+describe('default cookieStore', () => {
+  it('reads a persisted id and heals sync stores', async () => {
+    const store = fakeGlobalCookieStore(VALID_ID);
+    stubGlobal('cookieStore', store);
+
+    const local = fakeLocalStorage();
+    const id = await resolveBrowserDeviceId({
+      localStorage: local,
+      cookie: fakeCookie(),
+      randomUUID: () => VALID_ID_2,
+    });
+
+    expect(id).toBe(VALID_ID);
+    expect(local.getItem('bugsee.device_id')).toBe(VALID_ID);
+  });
+
+  it('generates and persists when cookieStore is empty', async () => {
+    const store = fakeGlobalCookieStore();
+    stubGlobal('cookieStore', store);
+
+    const id = await resolveBrowserDeviceId({
+      localStorage: fakeLocalStorage(),
+      cookie: fakeCookie(),
+      randomUUID: () => VALID_ID_2,
+    });
+
+    expect(id).toBe(VALID_ID_2);
+    expect(store.value()).toBe(VALID_ID_2);
+  });
+
+  it('no-ops when cookieStore is missing', async () => {
+    stubGlobal('cookieStore', undefined as unknown as CookieStore);
+
+    const id = await resolveBrowserDeviceId({
+      localStorage: fakeLocalStorage(),
+      cookie: fakeCookie(),
+      randomUUID: () => VALID_ID_2,
+    });
+
+    expect(id).toBe(VALID_ID_2);
+  });
+
+  it('swallows cookieStore get and set failures', async () => {
+    stubGlobal('cookieStore', {
+      get: async () => {
+        throw new Error('get failed');
+      },
+      set: async () => {
+        throw new Error('set failed');
+      },
+    });
+
+    expect(
+      await resolveBrowserDeviceId({
+        localStorage: fakeLocalStorage(),
+        cookie: fakeCookie(),
+        randomUUID: () => VALID_ID_2,
+      }),
+    ).toBe(VALID_ID_2);
+
+    resetBrowserDeviceIdCache();
+    stubGlobal('cookieStore', {
+      get: async () => ({ value: '' }),
+      set: async () => {
+        throw new Error('set failed');
+      },
+    });
+    expect(
+      await resolveBrowserDeviceId({
+        localStorage: fakeLocalStorage(),
+        cookie: fakeCookie(),
+        randomUUID: () => VALID_ID_2,
+      }),
+    ).toBe(VALID_ID_2);
   });
 });
 

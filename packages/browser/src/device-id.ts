@@ -38,6 +38,8 @@ export interface DeviceIdAsyncStore {
 export interface DeviceIdEnv {
   localStorage?: DeviceIdLocalStorage;
   cookie?: DeviceIdCookieStorage;
+  /** Cookie Store API — async first-party cookies (Chromium); complements `document.cookie`. */
+  cookieStore?: DeviceIdAsyncStore;
   indexedDB?: DeviceIdAsyncStore;
   /** Cache API — a durable first-party store separate from capture IndexedDB. */
   cache?: DeviceIdAsyncStore;
@@ -166,6 +168,25 @@ async function writeIndexedDB(env: DeviceIdEnv, value: string): Promise<void> {
   }
 }
 
+async function readCookieStore(env: DeviceIdEnv): Promise<string | undefined> {
+  try {
+    const store = env.cookieStore ?? createDefaultCookieStore();
+    const value = await store.read();
+    return isValidDeviceId(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeCookieStore(env: DeviceIdEnv, value: string): Promise<void> {
+  try {
+    const store = env.cookieStore ?? createDefaultCookieStore();
+    await store.write(value);
+  } catch {
+    // swallow
+  }
+}
+
 async function readCacheStore(env: DeviceIdEnv): Promise<string | undefined> {
   try {
     const store = env.cache ?? createDefaultCacheStore();
@@ -188,10 +209,11 @@ async function writeCacheStore(env: DeviceIdEnv, value: string): Promise<void> {
 function pickCanonical(
   local: string | undefined,
   cookie: string | undefined,
+  cookieStore: string | undefined,
   idb: string | undefined,
   cache: string | undefined,
 ): string | undefined {
-  return local ?? cookie ?? idb ?? cache;
+  return local ?? cookie ?? cookieStore ?? idb ?? cache;
 }
 
 async function healStores(env: DeviceIdEnv, canonical: string): Promise<void> {
@@ -200,6 +222,9 @@ async function healStores(env: DeviceIdEnv, canonical: string): Promise<void> {
 
   const cookie = readCookie(env);
   if (cookie !== canonical) writeCookie(env, canonical);
+
+  const cookieStore = await readCookieStore(env);
+  if (cookieStore !== canonical) await writeCookieStore(env, canonical);
 
   const idb = await readIndexedDB(env);
   if (idb !== canonical) await writeIndexedDB(env, canonical);
@@ -211,14 +236,18 @@ async function healStores(env: DeviceIdEnv, canonical: string): Promise<void> {
 async function resolveOnce(env: DeviceIdEnv): Promise<string> {
   const fromLocal = readLocalStorage(env);
   const fromCookie = readCookie(env);
-  const syncCanonical = pickCanonical(fromLocal, fromCookie, undefined, undefined);
+  const syncCanonical = pickCanonical(fromLocal, fromCookie, undefined, undefined, undefined);
   if (syncCanonical !== undefined) {
     void healStores(env, syncCanonical);
     return syncCanonical;
   }
 
-  const [fromIdb, fromCache] = await Promise.all([readIndexedDB(env), readCacheStore(env)]);
-  const canonical = pickCanonical(undefined, undefined, fromIdb, fromCache);
+  const [fromCookieStore, fromIdb, fromCache] = await Promise.all([
+    readCookieStore(env),
+    readIndexedDB(env),
+    readCacheStore(env),
+  ]);
+  const canonical = pickCanonical(undefined, undefined, fromCookieStore, fromIdb, fromCache);
   if (canonical !== undefined) {
     await healStores(env, canonical);
     return canonical;
@@ -301,6 +330,38 @@ function createDefaultIndexedDBStore(): DeviceIdAsyncStore {
           resolve();
         }
       }),
+  };
+}
+
+const COOKIE_STORE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+
+function createDefaultCookieStore(): DeviceIdAsyncStore {
+  const cookieStore = (globalThis as { cookieStore?: CookieStore }).cookieStore;
+  return {
+    read: async () => {
+      if (cookieStore === undefined) return undefined;
+      try {
+        const entry = await cookieStore.get(COOKIE_NAME);
+        const value = entry?.value;
+        return typeof value === 'string' && value !== '' ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    write: async (value) => {
+      if (cookieStore === undefined) return;
+      try {
+        await cookieStore.set({
+          name: COOKIE_NAME,
+          value,
+          path: '/',
+          sameSite: 'lax',
+          expires: Date.now() + COOKIE_STORE_MAX_AGE_MS,
+        });
+      } catch {
+        // swallow
+      }
+    },
   };
 }
 
