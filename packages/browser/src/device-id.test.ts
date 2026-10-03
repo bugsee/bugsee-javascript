@@ -83,11 +83,8 @@ function fakeGlobalCookieStore(initial?: string) {
   };
 }
 
-function stubGlobal<K extends keyof typeof globalThis>(
-  key: K,
-  value: (typeof globalThis)[K],
-): void {
-  vi.stubGlobal(key as string, value);
+function stubGlobal(key: string, value: unknown): void {
+  vi.stubGlobal(key, value);
 }
 
 afterEach(() => {
@@ -157,7 +154,7 @@ function fakeCaches(
         put: async (url: string, response: Response) => {
           storage.set(url, await response.text());
         },
-      } as Cache;
+      } as unknown as Cache;
     },
   } as CacheStorage;
 }
@@ -461,7 +458,7 @@ describe('default indexedDB store', () => {
   });
 
   it('no-ops when indexedDB is missing', async () => {
-    stubGlobal('indexedDB', undefined as unknown as IDBFactory);
+    stubGlobal('indexedDB', undefined);
 
     const id = await resolveBrowserDeviceId({
       localStorage: fakeLocalStorage(),
@@ -484,7 +481,7 @@ describe('default indexedDB store', () => {
         queueMicrotask(() => request.onerror?.());
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
 
     const id = await resolveBrowserDeviceId({
       localStorage: fakeLocalStorage(),
@@ -529,7 +526,7 @@ describe('default indexedDB store', () => {
         queueMicrotask(() => request.onsuccess?.());
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
 
     const id = await resolveBrowserDeviceId({
       localStorage: fakeLocalStorage(),
@@ -544,7 +541,7 @@ describe('default indexedDB store', () => {
       open: () => {
         throw new Error('sync open failed');
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
     expect(
       await resolveBrowserDeviceId({
         localStorage: fakeLocalStorage(),
@@ -570,7 +567,7 @@ describe('default indexedDB store', () => {
         queueMicrotask(() => request.onsuccess?.());
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
     expect(
       await resolveBrowserDeviceId({
         localStorage: fakeLocalStorage(),
@@ -621,7 +618,7 @@ describe('default indexedDB store', () => {
         queueMicrotask(() => request.onsuccess?.());
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
     expect(
       await resolveBrowserDeviceId({
         localStorage: fakeLocalStorage(),
@@ -670,7 +667,7 @@ describe('default indexedDB store', () => {
         queueMicrotask(() => request.onsuccess?.());
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
     expect(
       await resolveBrowserDeviceId({
         localStorage: fakeLocalStorage(),
@@ -718,7 +715,7 @@ describe('default indexedDB store', () => {
         });
         return request;
       },
-    } as IDBFactory);
+    } as unknown as IDBFactory);
 
     const id = await resolveBrowserDeviceId({
       localStorage: fakeLocalStorage(),
