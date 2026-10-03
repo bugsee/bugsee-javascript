@@ -43,8 +43,24 @@ import {
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type DeviceIdLocalStorage, resetBrowserDeviceIdCache } from './device-id';
 import { type BrowserProbe, BrowserProbeToken } from './environment';
-import { type BugseeLaunchOptions, launch, launchCore } from './launch';
+import { type Bugsee, type BugseeLaunchOptions, launch, launchCore } from './launch';
+
+const TEST_DEVICE_ID = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
+
+function testDeviceIdLocalStorage(): DeviceIdLocalStorage {
+  const data = new Map([['bugsee.device_id', TEST_DEVICE_ID]]);
+  return {
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => {
+      data.set(key, value);
+    },
+    removeItem: (key) => {
+      data.delete(key);
+    },
+  };
+}
 
 // Mock the lazy-loaded @bugsee/replay so replay tests don't spin up real rrweb; assert it's wired only when on.
 const { registerReplay } = vi.hoisted(() => ({ registerReplay: vi.fn() }));
@@ -136,9 +152,10 @@ function uploadTransport() {
 
 // --- harness -------------------------------------------------------------------------------------
 
-const clients: ReturnType<typeof launch>[] = [];
+const clients: Bugsee[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
+  resetBrowserDeviceIdCache();
   vi.restoreAllMocks();
   registerReplay.mockClear(); // vi.fn call history isn't cleared by restoreAllMocks
   createCanvasRecordConfig.mockClear();
@@ -146,8 +163,8 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-const launchTracked = (token: string, options: BugseeLaunchOptions) => {
-  const client = launch(token, options);
+const launchTracked = async (token: string, options: BugseeLaunchOptions = {}) => {
+  const client = await launch(token, options);
   clients.push(client);
   return client;
 };
@@ -160,6 +177,11 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
+  deviceIdEnv: {
+    localStorage: testDeviceIdLocalStorage(),
+    randomUUID: () => TEST_DEVICE_ID,
+    ...(over.deviceIdEnv ?? {}),
+  },
   ...over,
 });
 
@@ -254,14 +276,14 @@ function brokenDbFactory(real: IDBFactory, brokenDbName: string): IDBFactory {
 }
 
 describe('launch', () => {
-  it('returns a launched client', () => {
-    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+  it('returns a launched client', async () => {
+    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
     expect(client.isLaunched()).toBe(true);
   });
 
   it('registers the fetch transport as a resolvable service that internal-tags requests', async () => {
     const transport = uploadTransport();
-    const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    const client = await launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
     const svc = client.getService(TransportToken);
     expect(typeof svc).toBe('function');
     await svc('https://x.test/v2/sessions', { headers: { 'x-custom': 'keep' } });
@@ -271,15 +293,15 @@ describe('launch', () => {
     expect(headers?.['x-custom']).toBe('keep'); // caller headers are MERGED, not replaced
   });
 
-  it('uses the default fetch transport when none is injected', () => {
-    const client = launchTracked(
+  it('uses the default fetch transport when none is injected', async () => {
+    const client = await launchTracked(
       'tok',
       baseOptions({ transport: undefined, captureStore: memStore() }),
     );
     expect(typeof client.getService(TransportToken)).toBe('function');
   });
 
-  it('wires an injected clock + scheduler and the default store/sampler when overrides are omitted', () => {
+  it('wires an injected clock + scheduler and the default store/sampler when overrides are omitted', async () => {
     const fixedClock = { wallNow: () => 1000, monotonicNow: () => 0 };
     const calls: Array<{ cb: () => void; ms: number }> = [];
     const scheduler = {
@@ -289,7 +311,7 @@ describe('launch', () => {
       },
       clearInterval: () => {},
     };
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         captureStore: undefined, // → default in-memory store (+ its clock spread)
@@ -302,12 +324,12 @@ describe('launch', () => {
     expect(calls.length).toBeGreaterThan(0); // scheduler drove the capture-store tick / traces sampling
   });
 
-  it('falls back to the global window, realBrowserProbe, and the default store when nothing is injected', () => {
+  it('falls back to the global window, realBrowserProbe, and the default store when nothing is injected', async () => {
     const w = fakeWindow();
     vi.stubGlobal('window', w.win);
     vi.stubGlobal('navigator', { userAgent: 'Real-UA' });
     vi.stubGlobal('screen', { width: 100, height: 200 });
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         window: undefined, // → global window
@@ -320,28 +342,31 @@ describe('launch', () => {
     expect(w.count('error')).toBe(1); // detection wired to the resolved global window
   });
 
-  it('registers the systemProbe and captureStore as resolvable services', () => {
+  it('registers the systemProbe and captureStore as resolvable services', async () => {
     const store = memStore();
-    const client = launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ systemProbe: probe, captureStore: store }),
+    );
     expect(client.getService(BrowserProbeToken)).toBe(probe);
     expect(client.getService(CaptureStoreToken)).toBe(store);
   });
 
-  it('registers an injected bundleStore as the resolvable service (by identity)', () => {
+  it('registers an injected bundleStore as the resolvable service (by identity)', async () => {
     const { store } = bundleMemStore();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ bundleStore: store, captureStore: memStore() }),
     );
     expect(client.getService(BundleStoreToken)).toBe(store);
   });
 
-  it('does not register bundleStore in in-memory mode', () => {
-    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+  it('does not register bundleStore in in-memory mode', async () => {
+    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
     expect(() => client.getService(BundleStoreToken)).toThrow();
   });
 
-  it('runs a carrier-contributed service manifest against the launched container', () => {
+  it('runs a carrier-contributed service manifest against the launched container', async () => {
     contributeServiceManifest((internal) => {
       internal.addService(
         defineService(DemoExtToken, () => ({
@@ -349,13 +374,13 @@ describe('launch', () => {
         })),
       );
     });
-    const client = launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
     expect(client.getService(DemoExtToken)).toEqual({ storeIsRegistered: true });
   });
 
   it('captures console output as log entries (captureLogs default on)', async () => {
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store }));
+    await launchTracked('tok', baseOptions({ captureStore: store }));
     console.log('hello-from-browser-launch');
     const logs = await drain(store, 'log');
     expect(logs?.some((e) => JSON.stringify(e.data).includes('hello-from-browser-launch'))).toBe(
@@ -376,7 +401,7 @@ describe('launch', () => {
         'handler@https://app.test/x.js:4:2\n@https://app.test/y.js:9:1';
     });
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store }));
+    await launchTracked('tok', baseOptions({ captureStore: store }));
 
     console.trace('traced-in-firefox');
 
@@ -389,7 +414,7 @@ describe('launch', () => {
 
   it('applies a log filter set on the returned client', async () => {
     const store = memStore();
-    const client = launchTracked('tok', baseOptions({ captureStore: store }));
+    const client = await launchTracked('tok', baseOptions({ captureStore: store }));
     client.setLogEventFilter((e) => ({ ...e, message: e.message.replace('secret', '***') }));
     console.log('my secret data');
     const logs = await drain(store, 'log');
@@ -399,14 +424,14 @@ describe('launch', () => {
 
   it('does not capture console output when captureLogs is disabled', async () => {
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store, captureLogs: false }));
+    await launchTracked('tok', baseOptions({ captureStore: store, captureLogs: false }));
     console.log('not-captured-by-browser-launch');
     expect(await drain(store, 'log')).toBeUndefined();
   });
 
   it('records the process_started system event on launch', async () => {
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store }));
+    await launchTracked('tok', baseOptions({ captureStore: store }));
     const events = await drain(store, 'events.system');
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
@@ -418,7 +443,7 @@ describe('launch', () => {
   it('captures a document interaction (pointer press) as an `input` entry', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
@@ -457,7 +482,7 @@ describe('launch', () => {
   it('keeps events.user for client.event() ONLY — captured interactions never land there', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
@@ -513,7 +538,7 @@ describe('launch', () => {
   it('routes change / submit / focus to ui.* breadcrumbs, never to the input stream', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
@@ -568,7 +593,7 @@ describe('launch', () => {
   it('runs the app breadcrumb filter over a ui.* breadcrumb (it goes through addBreadcrumb)', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
@@ -591,7 +616,7 @@ describe('launch', () => {
   it('withholds a ui.* breadcrumb for a sensitive field (the secure-field exclusion)', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
     );
@@ -611,7 +636,7 @@ describe('launch', () => {
   it('does not capture interactions when captureInteractions is disabled', async () => {
     const store = memStore();
     const doc = fakeWindow();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         captureStore: store,
@@ -652,7 +677,7 @@ describe('launch', () => {
   it('captures a DOM viewtree into the report bundle at report time', async () => {
     const transport = uploadTransport();
     const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ transport, captureStore: memStore(), document: doc }),
     );
@@ -672,7 +697,7 @@ describe('launch', () => {
   it('omits the viewtree when captureViewHierarchy is disabled', async () => {
     const transport = uploadTransport();
     const doc = fakeDocument(viewEl('body'));
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -689,14 +714,14 @@ describe('launch', () => {
 
   it('takes an initial system-traces sample from the injected sampler', async () => {
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store }));
+    await launchTracked('tok', baseOptions({ captureStore: store }));
     const traces = await drain(store, 'traces.system');
     expect(traces?.map((e) => (e.data as { name: string }).name)).toContain('ram_js_heap_used');
   });
 
   it('does not capture system traces when disabled', async () => {
     const store = memStore();
-    launchTracked('tok', baseOptions({ captureStore: store, captureSystemTraces: false }));
+    await launchTracked('tok', baseOptions({ captureStore: store, captureSystemTraces: false }));
     expect(await drain(store, 'traces.system')).toBeUndefined();
   });
 
@@ -714,7 +739,7 @@ describe('launch', () => {
     });
     const store = memStore();
     try {
-      launchTracked('tok', baseOptions({ captureNetwork: true, captureStore: store }));
+      await launchTracked('tok', baseOptions({ captureNetwork: true, captureStore: store }));
       await (slot.fetch as (i: unknown) => Promise<unknown>)('https://x.test/');
       await new Promise((r) => setTimeout(r, 0));
       const net = await drain(store, 'network');
@@ -727,7 +752,7 @@ describe('launch', () => {
   it('passes onError to the client (a throwing log filter routes its error to onError)', async () => {
     const store = memStore();
     const onError = vi.fn();
-    const client = launchTracked('tok', baseOptions({ captureStore: store, onError }));
+    const client = await launchTracked('tok', baseOptions({ captureStore: store, onError }));
     client.setLogEventFilter(() => {
       throw new Error('filter boom');
     });
@@ -736,16 +761,16 @@ describe('launch', () => {
     expect(onError).toHaveBeenCalled(); // the client received launch's onError sink
   });
 
-  it('registers window error + unhandledrejection detection providers on the window', () => {
+  it('registers window error + unhandledrejection detection providers on the window', async () => {
     const w = fakeWindow();
-    launchTracked('tok', baseOptions({ window: w.win, captureStore: memStore() }));
+    await launchTracked('tok', baseOptions({ window: w.win, captureStore: memStore() }));
     expect(w.count('error')).toBe(1);
     expect(w.count('unhandledrejection')).toBe(1);
   });
 
-  it('registers no detection listeners when detectCrashes is false', () => {
+  it('registers no detection listeners when detectCrashes is false', async () => {
     const w = fakeWindow();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ window: w.win, captureStore: memStore(), detectCrashes: false }),
     );
@@ -755,7 +780,7 @@ describe('launch', () => {
 
   it('removes the detection listeners on stop', async () => {
     const w = fakeWindow();
-    const client = launch('tok', baseOptions({ window: w.win, captureStore: memStore() }));
+    const client = await launch('tok', baseOptions({ window: w.win, captureStore: memStore() }));
     expect(w.count('error')).toBe(1);
     await client.stop();
     expect(w.count('error')).toBe(0);
@@ -764,7 +789,7 @@ describe('launch', () => {
 
   it('tags every SDK request with X-Bugsee-Internal and targets the default endpoint', async () => {
     const transport = uploadTransport();
-    const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    const client = await launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
     await client.logException(new Error('x'));
     expect(transport.mock.calls[0]?.[0]).toBe('https://api.bugsee.com/v2/sessions');
     const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
@@ -773,7 +798,7 @@ describe('launch', () => {
 
   it('honours a custom endpoint', async () => {
     const transport = uploadTransport();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ transport, captureStore: memStore(), endpoint: 'https://eu.bugsee.test' }),
     );
@@ -783,7 +808,7 @@ describe('launch', () => {
 
   it('builds a web environment envelope with sdk version, gates, and app defaults', async () => {
     const transport = uploadTransport();
-    const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    const client = await launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
     await client.logException(new Error('x'));
     const env = (
       JSON.parse(String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body)) as {
@@ -806,7 +831,7 @@ describe('launch', () => {
   it('reports maxDataSize (default 10 MB) in the wire-form sdk.options, and honors an override', async () => {
     const sdkOptions = async (over: Partial<BugseeLaunchOptions>) => {
       const transport = uploadTransport();
-      const client = launchTracked(
+      const client = await launchTracked(
         'tok',
         baseOptions({ transport, captureStore: memStore(), carrier: {}, ...over }),
       );
@@ -825,7 +850,7 @@ describe('launch', () => {
 
   it('passes app identity through to the environment', async () => {
     const transport = uploadTransport();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -844,9 +869,9 @@ describe('launch', () => {
     expect(env.app).toMatchObject({ package_id: 'com.acme.web', version: '2.0', build: '9' });
   });
 
-  it('registers the process-global interceptor singletons on the carrier (one patch each)', () => {
+  it('registers the process-global interceptor singletons on the carrier (one patch each)', async () => {
     const carrier = {};
-    launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
+    await launchTracked('tok', baseOptions({ captureStore: memStore(), carrier }));
     const reg = getCarrier(carrier).interceptors;
     expect(reg.get('console')).toBeDefined();
     expect(reg.get('fetch')).toBeDefined();
@@ -861,11 +886,14 @@ describe('launch', () => {
     expect(reg.size).toBe(10);
   });
 
-  it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', () => {
+  it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', async () => {
     const carrier = {};
     const onError = vi.fn();
-    const first = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
-    const second = launchTracked(
+    const first = await launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), carrier, onError }),
+    );
+    const second = await launchTracked(
       'tok',
       baseOptions({ captureStore: memStore(), carrier, onError }),
     );
@@ -880,7 +908,7 @@ describe('launch', () => {
     map.set(id, pendingBundle('a prior crash'));
     const transport = uploadTransport();
     // onError passed alongside a bundleStore so the durable pipeline's onError wiring is exercised.
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ transport, bundleStore: store, captureStore: memStore(), onError: vi.fn() }),
     );
@@ -892,7 +920,7 @@ describe('launch', () => {
     const { store, map } = bundleMemStore();
     const id = 'leftover-2';
     map.set(id, pendingBundle('a prior crash'));
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ bundleStore: store, captureStore: memStore(), recover: false }),
     );
@@ -903,7 +931,7 @@ describe('launch', () => {
   it('persists then removes a bundle through the durable queue on a successful upload', async () => {
     const { store, puts, map } = bundleMemStore();
     const transport = uploadTransport();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ transport, bundleStore: store, captureStore: memStore() }),
     );
@@ -923,7 +951,10 @@ describe('launch', () => {
     };
     const store = createPersistentBundleStore(blob);
     const transport = uploadTransport();
-    launchTracked('tok', baseOptions({ transport, bundleStore: store, captureStore: memStore() }));
+    await launchTracked(
+      'tok',
+      baseOptions({ transport, bundleStore: store, captureStore: memStore() }),
+    );
     await new Promise((r) => setTimeout(r, 5));
     expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(false);
     resolveLoad([['left', pendingBundle('prior reload')]]); // hydration surfaces a leftover
@@ -942,7 +973,7 @@ describe('launch', () => {
     });
     await shared.put('priorinst/left-1', pendingBundle('prior crash'));
     const transport = uploadTransport();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -973,7 +1004,7 @@ describe('launch', () => {
     await shared.put('livesib/b2', pendingBundle('live tab, in flight'));
 
     const transport = uploadTransport();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({ transport, persist: true, captureStore: memStore(), indexedDB: idb, locks }),
     );
@@ -988,14 +1019,14 @@ describe('launch', () => {
   it('persist:true wraps the capture store in an IndexedDB-backed persistent store', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
     // No captureStore override → launch builds the persistent capture store (db 'bugsee-capture-<hash>').
-    const client = launchTracked('tok', baseOptions({ persist: true }));
+    const client = await launchTracked('tok', baseOptions({ persist: true }));
     expect(client.isLaunched()).toBe(true);
     await new Promise((r) => setTimeout(r, 0)); // let async hydration settle
   });
 
   it('threads onError into the persistent capture store', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const client = launchTracked('tok', baseOptions({ persist: true, onError: vi.fn() }));
+    const client = await launchTracked('tok', baseOptions({ persist: true, onError: vi.fn() }));
     expect(client.isLaunched()).toBe(true);
     await new Promise((r) => setTimeout(r, 0));
   });
@@ -1011,7 +1042,7 @@ describe('launch', () => {
       },
       clearInterval: () => {},
     };
-    launchTracked('tok', baseOptions({ persist: true, scheduler, indexedDB: idb })); // no captureStore override
+    await launchTracked('tok', baseOptions({ persist: true, scheduler, indexedDB: idb })); // no captureStore override
     console.log('persist-me');
     await new Promise((r) => setTimeout(r, 0)); // let the log reach the store (persisted as captured)
     for (const cb of tickCbs) cb(); // a tick closes the part (rewrites its durable meta)
@@ -1136,7 +1167,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await seedSibling(idb, 'livesib', 700, { m: 'live-buffer' }, true); // a LIVE tab's incident + capture
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1185,7 +1216,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     );
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1224,7 +1255,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await bundleShared.put('deadsib/other', pendingBundle('a DIFFERENT incident', 'inc-other'));
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1279,7 +1310,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     map.set('staged', pendingBundle('inc-deadsib (staged)', 'inc-deadsib'));
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1318,7 +1349,7 @@ describe('launch — capture recovery (multi-instance)', () => {
       body: new Uint8Array(),
     }));
 
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1355,7 +1386,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     map.set('sB', pendingBundle('inc-deadB (staged)', 'inc-deadB'));
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1390,7 +1421,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     };
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1417,7 +1448,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     map.set('orphan', pendingBundle('nobody-claims-me', 'inc-other'));
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1443,7 +1474,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     const onError = vi.fn();
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1481,7 +1512,7 @@ describe('launch — capture recovery (multi-instance)', () => {
 
     // No `onError` in baseOptions: the internal default no-op sink swallows the broken source's
     // failure without throwing into launch, and the other (working) sources still recover normally.
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1509,7 +1540,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     const onError = vi.fn();
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1541,7 +1572,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await seedSibling(idb, 'deadsib', 1000, { m: 'same-gen-crash' }, true); // gen == recoveryClock wallNow
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1563,7 +1594,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await seedSibling(idb, 'deadsib', 500, { m: 'orphan' }, false); // chunks, but NO marker
     const { fn: transport, puts } = recordingTransport();
 
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1582,7 +1613,7 @@ describe('launch — capture recovery (multi-instance)', () => {
 
   it('writes a recovery marker for a live incident through the launch wiring', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const client = launchTracked('tok', baseOptions({ persist: true, clock: recoveryClock }));
+    const client = await launchTracked('tok', baseOptions({ persist: true, clock: recoveryClock }));
     const putSpy = vi.spyOn(client.getService(ReportMarkerStoreToken), 'put');
 
     await client.logException(new Error('live boom'));
@@ -1593,20 +1624,23 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(marker?.request.report.summary).toBe('live boom');
   });
 
-  it('registers the marker store as a service in persist (recovery) mode', () => {
+  it('registers the marker store as a service in persist (recovery) mode', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const client = launchTracked('tok', baseOptions({ persist: true }));
+    const client = await launchTracked('tok', baseOptions({ persist: true }));
     expect(typeof client.getService(ReportMarkerStoreToken).put).toBe('function');
   });
 
-  it('builds no marker store without persist', () => {
-    const client = launchTracked('tok', baseOptions({})); // in-memory store
+  it('builds no marker store without persist', async () => {
+    const client = await launchTracked('tok', baseOptions({})); // in-memory store
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
-  it('builds no marker store when a captureStore overrides the IndexedDB backend', () => {
+  it('builds no marker store when a captureStore overrides the IndexedDB backend', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
-    const client = launchTracked('tok', baseOptions({ persist: true, captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ persist: true, captureStore: memStore() }),
+    );
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
@@ -1614,7 +1648,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     const idb = new IDBFactory();
     await seedSibling(idb, 'deadsib', 500, { m: 'x' }, true); // a dead sibling's pending incident
     const { fn: transport, puts } = recordingTransport();
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         transport,
@@ -1638,9 +1672,9 @@ describe('launch — capture recovery (multi-instance)', () => {
 // the internal wiring (api/transport/baseUrl/getEnvironment/network/app metadata) the umbrella needs to
 // build the performance `send` + http-span source. launch() is just `launchCore(...).client`.
 describe('launchCore', () => {
-  it('returns the public client plus a populated internals bag', () => {
+  it('returns the public client plus a populated internals bag', async () => {
     const carrier = {};
-    const { client, internals } = launchCore(
+    const { client, internals } = await launchCore(
       'tok',
       baseOptions({ carrier, appVersion: '1.2.3', appBuild: '99' }),
     );
@@ -1659,10 +1693,10 @@ describe('launchCore', () => {
     expect(internals?.onError).toBeUndefined();
   });
 
-  it('carries the injected endpoint + onError on the internals bag', () => {
+  it('carries the injected endpoint + onError on the internals bag', async () => {
     const carrier = {};
     const onError = vi.fn();
-    const { client, internals } = launchCore(
+    const { client, internals } = await launchCore(
       'tok',
       baseOptions({ carrier, endpoint: 'https://eu.bugsee.test', onError }),
     );
@@ -1673,23 +1707,23 @@ describe('launchCore', () => {
     expect(internals?.appBuild).toBeUndefined();
   });
 
-  it('returns internals: undefined on a repeat launch (the process singleton is already owned)', () => {
+  it('returns internals: undefined on a repeat launch (the process singleton is already owned)', async () => {
     const carrier = {};
-    const first = launchCore('tok', baseOptions({ carrier }));
+    const first = await launchCore('tok', baseOptions({ carrier }));
     clients.push(first.client);
     const onError = vi.fn();
-    const second = launchCore('tok', baseOptions({ carrier, onError }));
+    const second = await launchCore('tok', baseOptions({ carrier, onError }));
     expect(second.client).toBe(first.client); // the existing client, not a second one
     expect(second.internals).toBeUndefined(); // nothing to re-wire
     expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning still fires
   });
 
-  it('launch() returns exactly launchCore().client (public surface unchanged)', () => {
+  it('launch() returns exactly launchCore().client (public surface unchanged)', async () => {
     const carrier = {};
-    const client = launch('tok', baseOptions({ carrier }));
+    const client = await launch('tok', baseOptions({ carrier }));
     clients.push(client);
     // A second entry via launchCore resolves the same singleton client.
-    expect(launchCore('tok', baseOptions({ carrier })).client).toBe(client);
+    expect((await launchCore('tok', baseOptions({ carrier }))).client).toBe(client);
   });
 });
 
@@ -1704,7 +1738,7 @@ describe('launch — session replay (lazy)', () => {
   // Replay is ON BY DEFAULT (parity with the iOS/Android SDKs, which record by default): the option is an
   // opt-OUT. `replay: false` is what carries the errors-only guarantees the old default used to carry.
   it('records by DEFAULT — replay is enabled when the option is absent', async () => {
-    launchTracked('tok', domReplayOptions());
+    await launchTracked('tok', domReplayOptions());
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const call = registerReplay.mock.calls[0] as unknown[];
     expect(typeof (call[0] as { addCaptureProvider?: unknown }).addCaptureProvider).toBe(
@@ -1718,7 +1752,7 @@ describe('launch — session replay (lazy)', () => {
     // The gate must read the RESOLVED `domDocument` — `options.document ?? win.document` — not just the
     // injected seam. In a real browser nobody passes `document`; it comes off the window.
     const win = Object.assign(fakeWindow().win, { document: fakeDocument(viewEl('body')) });
-    launchTracked('tok', baseOptions({ window: win })); // no `document` option at all
+    await launchTracked('tok', baseOptions({ window: win })); // no `document` option at all
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
   });
 
@@ -1727,7 +1761,7 @@ describe('launch — session replay (lazy)', () => {
     // the default path and not merely on the opted-in one. Asserting the forwarded options object is `{}`
     // proves nothing on its own — what matters is what `{}` RESOLVES to, so run the real resolver over
     // exactly what launch forwards (importActual: this module is mocked for the rest of the file).
-    launchTracked('tok', domReplayOptions());
+    await launchTracked('tok', domReplayOptions());
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const forwarded = registerReplay.mock.calls[0]?.[2] as Record<string, unknown>;
     const { MEDIA_SELECTOR, resolveReplayMaskingOptions } =
@@ -1739,7 +1773,7 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('does NOT load @bugsee/replay-canvas on the DEFAULT path — canvas stays opt-in', async () => {
-    launchTracked('tok', domReplayOptions());
+    await launchTracked('tok', domReplayOptions());
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).not.toHaveBeenCalled();
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1747,7 +1781,7 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('lazy-loads @bugsee/replay + registers it when replay is enabled, forwarding the options', async () => {
-    launchTracked(
+    await launchTracked(
       'tok',
       domReplayOptions({ replay: { maskAllText: false, checkoutEveryNms: 5000 } }),
     );
@@ -1765,13 +1799,13 @@ describe('launch — session replay (lazy)', () => {
     // Wave 1.4. @bugsee/replay reports an invalid selector it had to drop; that report needs a sink on the
     // production path, or the fix is only reachable from replay's own tests.
     const onError = vi.fn();
-    launchTracked('tok', domReplayOptions({ replay: { blockSelector: 'div[' }, onError }));
+    await launchTracked('tok', domReplayOptions({ replay: { blockSelector: 'div[' }, onError }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect((registerReplay.mock.calls[0]?.[2] as { onError?: unknown }).onError).toBe(onError);
   });
 
   it('enables replay with default options when replay is `true`', async () => {
-    launchTracked('tok', domReplayOptions({ replay: true }));
+    await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({}); // no options object → {}
   });
@@ -1781,7 +1815,7 @@ describe('launch — session replay (lazy)', () => {
   it('does NOT register replay when replay is `false` — the errors-only opt-out', async () => {
     // A DOM IS present here: this asserts the OPT-OUT, so it must not pass merely for want of a document
     // (with `baseOptions` it would pass even if the opt-out were deleted — the DOM-less gate would carry it).
-    launchTracked('tok', domReplayOptions({ replay: false }));
+    await launchTracked('tok', domReplayOptions({ replay: false }));
     await new Promise((r) => setTimeout(r, 10));
     expect(registerReplay).not.toHaveBeenCalled(); // no recorder, and no replay.bin encoder registered
     expect(createCanvasRecordConfig).not.toHaveBeenCalled();
@@ -1792,13 +1826,13 @@ describe('launch — session replay (lazy)', () => {
       throw new Error('replay boom');
     });
     const onError = vi.fn();
-    launchTracked('tok', domReplayOptions({ replay: true, onError }));
+    await launchTracked('tok', domReplayOptions({ replay: true, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });
 
   it('wires canvas when replay.canvas is set — resolves the config + threads it into registerReplay', async () => {
-    launchTracked('tok', domReplayOptions({ replay: { canvas: { fps: 4 } } }));
+    await launchTracked('tok', domReplayOptions({ replay: { canvas: { fps: 4 } } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).toHaveBeenCalledWith({ fps: 4 });
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1810,12 +1844,12 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('enables canvas with default options when replay.canvas is `true`', async () => {
-    launchTracked('tok', domReplayOptions({ replay: { canvas: true } }));
+    await launchTracked('tok', domReplayOptions({ replay: { canvas: true } }));
     await vi.waitFor(() => expect(createCanvasRecordConfig).toHaveBeenCalledWith({}));
   });
 
   it('does NOT load @bugsee/replay-canvas when canvas is off (replay without canvas)', async () => {
-    launchTracked('tok', domReplayOptions({ replay: true }));
+    await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).not.toHaveBeenCalled();
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1823,7 +1857,7 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('does NOT load @bugsee/replay-canvas when replay.canvas is explicitly false', async () => {
-    launchTracked('tok', domReplayOptions({ replay: { canvas: false } }));
+    await launchTracked('tok', domReplayOptions({ replay: { canvas: false } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     expect(createCanvasRecordConfig).not.toHaveBeenCalled(); // explicit opt-out must not load the add-on
     const opts = registerReplay.mock.calls[0]?.[2] as { canvas?: unknown };
@@ -1831,7 +1865,7 @@ describe('launch — session replay (lazy)', () => {
   });
 
   it('forwards blockAllCanvas through to the replay masking options', async () => {
-    launchTracked('tok', domReplayOptions({ replay: { blockAllCanvas: true } }));
+    await launchTracked('tok', domReplayOptions({ replay: { blockAllCanvas: true } }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     const opts = registerReplay.mock.calls[0]?.[2] as { blockAllCanvas?: boolean };
     expect(opts.blockAllCanvas).toBe(true); // not stripped by the canvas destructure; flows to masking
@@ -1845,7 +1879,7 @@ describe('launch — session replay (lazy)', () => {
   // swallowed by `.catch(onError)` when no onError is configured.
   it('does NOT register replay when there is no DOM (SSR / pre-render), and stays silent', async () => {
     const onError = vi.fn();
-    launchTracked('tok', baseOptions({ onError })); // the default path — and no document anywhere
+    await launchTracked('tok', baseOptions({ onError })); // the default path — and no document anywhere
     await new Promise((r) => setTimeout(r, 10));
     expect(registerReplay).not.toHaveBeenCalled();
     // Silence is deliberate: a DOM-less host is not a misconfiguration, and this is the DEFAULT path — an
@@ -1858,7 +1892,7 @@ describe('launch — session replay (lazy)', () => {
     // Meta-framework integrations share ONE options object across the server and the client render, so an
     // explicit `replay: true` reaches the server render too. It cannot conjure a DOM — skip, silently.
     const onError = vi.fn();
-    launchTracked('tok', baseOptions({ replay: { canvas: true }, onError }));
+    await launchTracked('tok', baseOptions({ replay: { canvas: true }, onError }));
     await new Promise((r) => setTimeout(r, 10));
     expect(registerReplay).not.toHaveBeenCalled();
     expect(createCanvasRecordConfig).not.toHaveBeenCalled(); // nor the canvas add-on chunk
@@ -1892,13 +1926,13 @@ describe('launch — session replay (lazy)', () => {
       const fresh = await import('./launch');
 
       // (1) The errors-only opt-out, with a DOM present — so this measures the opt-out and nothing else.
-      const off = fresh.launch('tok', domReplayOptions({ carrier: {}, replay: false }));
+      const off = await fresh.launch('tok', domReplayOptions({ carrier: {}, replay: false }));
       await new Promise((r) => setTimeout(r, 10));
       expect(evaluated.replay).toBe(0); // the chunk was never fetched/evaluated
       await off.stop();
 
       // (2) SSR / pre-render: opted IN explicitly (the shared server+client config case) and DOM-less.
-      const ssr = fresh.launch('tok', baseOptions({ carrier: {}, replay: { canvas: true } }));
+      const ssr = await fresh.launch('tok', baseOptions({ carrier: {}, replay: { canvas: true } }));
       await new Promise((r) => setTimeout(r, 10));
       expect(evaluated.replay).toBe(0); // no rrweb chunk fetched on a server render
       expect(evaluated.canvas).toBe(0); // nor the canvas add-on
@@ -1906,7 +1940,10 @@ describe('launch — session replay (lazy)', () => {
 
       // (3) Positive control: the SAME fresh module DOES evaluate both once a document is present — so the
       // zeros above are real absences, not a broken counter or a launch that died before the import.
-      const dom = fresh.launch('tok', domReplayOptions({ carrier: {}, replay: { canvas: true } }));
+      const dom = await fresh.launch(
+        'tok',
+        domReplayOptions({ carrier: {}, replay: { canvas: true } }),
+      );
       // ONE wait covering both: the canvas add-on is imported inside replay's own `.then()`, so it lands
       // strictly after replay does — reading it inline races. The explicit budget follows the repo's
       // slow-runner convention (vitest's 1 s waitFor default is short under a loaded parallel `turbo run`).
@@ -1937,16 +1974,18 @@ describe('launch — session replay (lazy)', () => {
 describe('launchCore — triggerPipeline seam', () => {
   it('routes reports through an injected pipeline instead of assembling + uploading', async () => {
     const reported: unknown[] = [];
-    const client = launchCore(
-      'tok',
-      baseOptions({
-        triggerPipeline: {
-          report: async (request: unknown) => {
-            reported.push(request);
-            return { ok: true };
+    const client = (
+      await launchCore(
+        'tok',
+        baseOptions({
+          triggerPipeline: {
+            report: async (request: unknown) => {
+              reported.push(request);
+              return { ok: true };
+            },
           },
-        },
-      } as Partial<BugseeLaunchOptions>),
+        } as Partial<BugseeLaunchOptions>),
+      )
     ).client;
     await client.logException(new Error('renderer boom'));
     expect(reported).toHaveLength(1);
@@ -1957,7 +1996,7 @@ describe('launchCore — triggerPipeline seam', () => {
   it('falls back to the built-in assemble+upload pipeline when none is injected', async () => {
     // The compatibility guarantee: every existing consumer is untouched.
     const transport = uploadTransport();
-    const client = launchCore('tok', baseOptions({ transport })).client;
+    const client = (await launchCore('tok', baseOptions({ transport }))).client;
     await client.logException(new Error('boom'));
     await client.flush();
     expect(transport.mock.calls.some(([url]) => String(url).includes('/v2/issues'))).toBe(true);
@@ -1979,31 +2018,34 @@ describe('flush on page hide (Wave 6.2)', () => {
     return store;
   };
 
-  it('commits the capture store’s pending writes when the page hides', () => {
+  it('commits the capture store’s pending writes when the page hides', async () => {
     const win = fakeWindow();
     const captureStore = flushableStore();
-    launchTracked('tok', baseOptions({ window: win.win, captureStore }));
+    await launchTracked('tok', baseOptions({ window: win.win, captureStore }));
     win.emit('pagehide', {});
     expect(captureStore.flush).toHaveBeenCalled();
   });
 
-  it('flushes the CLIENT too, draining a report that is still assembling', () => {
+  it('flushes the CLIENT too, draining a report that is still assembling', async () => {
     // Committing the capture store is only half of it. A report can be mid-assembly when the page hides,
     // and an assembling report has not reached the durable queue yet — `client.flush()` is what awaits it
     // (packages/core/src/client.ts: uploadPipeline.flush alone misses reports with no upload enqueued).
     // Without this leg, the last crash before a tab is backgrounded is the one most likely to be lost.
     const win = fakeWindow();
-    const client = launchTracked('tok', baseOptions({ window: win.win, captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ window: win.win, captureStore: memStore() }),
+    );
     const flush = vi.spyOn(client, 'flush').mockResolvedValue(true);
     win.emit('pagehide', {});
     expect(flush).toHaveBeenCalled();
   });
 
-  it('does not flush on a visibilitychange back to VISIBLE', () => {
+  it('does not flush on a visibilitychange back to VISIBLE', async () => {
     const win = fakeWindow();
     const doc = fakeWindow();
     const captureStore = flushableStore();
-    launchTracked(
+    await launchTracked(
       'tok',
       baseOptions({
         window: win.win,
@@ -2020,7 +2062,7 @@ describe('flush on page hide (Wave 6.2)', () => {
     const captureStore = flushableStore();
     // System events off, so the only `pagehide` listener in play is the flush hook's — the system-event
     // SOURCE also listens for one, and counting both would hide a leak in either.
-    const client = launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({ window: win.win, captureStore, captureSystemEvents: false }),
     );
@@ -2031,14 +2073,14 @@ describe('flush on page hide (Wave 6.2)', () => {
     expect(captureStore.flush).not.toHaveBeenCalled(); // …and it is genuinely disconnected
   });
 
-  it('a failing flush never throws back into the browser’s dispatch', () => {
+  it('a failing flush never throws back into the browser’s dispatch', async () => {
     const win = fakeWindow();
     const onError = vi.fn();
     const captureStore = memStore();
     captureStore.flush = () => {
       throw new Error('commit failed');
     };
-    launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
+    await launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
     expect(() => win.emit('pagehide', {})).not.toThrow();
     expect(onError).toHaveBeenCalled();
   });

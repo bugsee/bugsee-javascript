@@ -22,25 +22,25 @@ describe('installBugseeClient', () => {
     installBugseeErrorHandler.mockReset();
   });
 
-  it('launches the browser SDK with the appToken + forwarded options, returns the client', () => {
+  it('launches the browser SDK with the appToken + forwarded options, returns the client', async () => {
     const sentinel = { id: 'browser-client' };
     launch.mockReturnValue(sentinel);
-    const result = installBugseeClient(fakeNuxt(), { appToken: 'tok', captureLogs: false });
+    const result = await installBugseeClient(fakeNuxt(), { appToken: 'tok', captureLogs: false });
     expect(launch).toHaveBeenCalledWith('tok', { captureLogs: false }); // appToken/launch stripped, opts kept
     expect(result).toBe(sentinel);
   });
 
-  it("installs @bugsee/vue's error handler on THIS Nuxt vueApp (by reference)", () => {
+  it("installs @bugsee/vue's error handler on THIS Nuxt vueApp (by reference)", async () => {
     const nuxtApp = fakeNuxt();
-    installBugseeClient(nuxtApp, { appToken: 'tok' });
+    await installBugseeClient(nuxtApp, { appToken: 'tok' });
     // Referential (not deep) — must be the app's OWN vueApp, not a same-shaped object.
     expect(installBugseeErrorHandler.mock.calls[0]?.[0]).toBe(nuxtApp.vueApp);
   });
 
-  it('accepts a test launch seam and forwards only launch options', () => {
+  it('accepts a test launch seam and forwards only launch options', async () => {
     const client = { id: 'c' };
     const testLaunch = vi.fn(() => client as never);
-    const result = installBugseeClient(fakeNuxt(), { appToken: 'tok', launch: testLaunch });
+    const result = await installBugseeClient(fakeNuxt(), { appToken: 'tok', launch: testLaunch });
     expect(testLaunch).toHaveBeenCalledWith('tok', {});
     expect(result).toBe(client);
     expect(launch).not.toHaveBeenCalled(); // the default browser launch was not used

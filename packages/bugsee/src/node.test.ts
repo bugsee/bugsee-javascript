@@ -2,6 +2,7 @@ import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bu
 import {
   type Bugsee,
   type LaunchResult,
+  launchCore,
   type NodeRuntime,
   RequestContextStoreToken,
   type SystemProbe,
@@ -244,6 +245,11 @@ describe('bugsee node umbrella launch', () => {
     await fire(7777); // flush → the app.start transaction tees to /v1/traces
     const body = JSON.parse(otlpBodies[0] ?? '{}');
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.nodejs/performance');
+  });
+
+  it('does not mint a device id on node launch', () => {
+    const { internals } = launchCore('tok-nomint', base({ carrier: {} }));
+    expect((internals?.getEnvironment().hardware as { device_id: unknown }).device_id).toBeNull();
   });
 
   it('a repeat launch returns the same client (singleton) and does not re-wire', () => {

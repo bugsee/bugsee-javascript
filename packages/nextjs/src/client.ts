@@ -34,8 +34,11 @@ export interface NextjsClientOptions extends BugseeLaunchOptionsWithPerformance 
  * export { onRouterTransitionStart } from '@bugsee/nextjs/client';
  * ```
  */
-export function registerClient(appToken: string, options: NextjsClientOptions = {}): Bugsee {
-  return launch(appToken, options);
+export async function registerClient(
+  appToken: string,
+  options: NextjsClientOptions = {},
+): Promise<Bugsee> {
+  return await launch(appToken, options);
 }
 
 /** The Next.js 15.3 `onRouterTransitionStart` client hook signature. */

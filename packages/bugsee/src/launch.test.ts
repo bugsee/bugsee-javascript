@@ -1,4 +1,5 @@
-import type { BrowserProbe, Bugsee } from '@bugsee/browser';
+import type { BrowserProbe, Bugsee, DeviceIdLocalStorage } from '@bugsee/browser';
+import { launchCore, resetBrowserDeviceIdCache } from '@bugsee/browser';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { serializeTransaction, type Transaction } from '@bugsee/performance';
@@ -108,12 +109,28 @@ function fakeScheduler() {
   return { scheduler, intervals, cleared, fire };
 }
 
+const TEST_DEVICE_ID = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
+
+function testDeviceIdLocalStorage(): DeviceIdLocalStorage {
+  const data = new Map([['bugsee.device_id', TEST_DEVICE_ID]]);
+  return {
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => {
+      data.set(key, value);
+    },
+    removeItem: (key) => {
+      data.delete(key);
+    },
+  };
+}
+
 // --- harness -------------------------------------------------------------------------------------
 
 const launched: Bugsee[] = [];
-const track = (client: Bugsee): Bugsee => {
-  launched.push(client);
-  return client;
+const track = async (client: Bugsee | Promise<Bugsee>): Promise<Bugsee> => {
+  const resolved = await client;
+  launched.push(resolved);
+  return resolved;
 };
 
 beforeEach(() => {
@@ -126,6 +143,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(launched.splice(0).map((c) => c.stop()));
+  resetBrowserDeviceIdCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -139,45 +157,54 @@ const base = (
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
+  deviceIdEnv: {
+    localStorage: testDeviceIdLocalStorage(),
+    randomUUID: () => TEST_DEVICE_ID,
+    ...(over.deviceIdEnv ?? {}),
+  },
   ...over,
 });
 
 // --- tests ---------------------------------------------------------------------------------------
 
 describe('bugsee umbrella launch', () => {
-  it('wires performance on by default: registers ext(performance) + starts an active pageload transaction', () => {
-    const client = track(launch('tok', base({ carrier: {} })));
+  it('wires performance on by default: registers ext(performance) + starts an active pageload transaction', async () => {
+    const client = await track(await launch('tok', base({ carrier: {} })));
     expect(() => client.ext('performance')).not.toThrow(); // the extension is registered
     expect(client.ext('performance').getActiveSpan()).toBeDefined(); // the pageload transaction is active
   });
 
-  it('does NOT wire performance when performanceMonitoring is false', () => {
-    const client = track(launch('tok', base({ carrier: {}, performanceMonitoring: false })));
+  it('does NOT wire performance when performanceMonitoring is false', async () => {
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: false })),
+    );
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
-  it('threads performanceSampleRate into the head sampler (0 → the pageload transaction is unsampled)', () => {
-    const client = track(launch('tok', base({ carrier: {}, performanceSampleRate: 0 })));
+  it('threads performanceSampleRate into the head sampler (0 → the pageload transaction is unsampled)', async () => {
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceSampleRate: 0 })),
+    );
     expect((client.ext('performance').getActiveSpan() as Transaction).isSampled()).toBe(false);
   });
 
-  it('names the pageload transaction from options.pageName', () => {
-    const client = track(launch('tok', base({ carrier: {}, pageName: '/checkout' })));
+  it('names the pageload transaction from options.pageName', async () => {
+    const client = await track(await launch('tok', base({ carrier: {}, pageName: '/checkout' })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/checkout');
   });
 
-  it('defaults the pageload name to location.pathname when present', () => {
+  it('defaults the pageload name to location.pathname when present', async () => {
     vi.stubGlobal('location', { pathname: '/dashboard' });
-    const client = track(launch('tok', base({ carrier: {} })));
+    const client = await track(await launch('tok', base({ carrier: {} })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/dashboard');
   });
 
-  it('defaults the pageload name to "pageload" when no location is available', () => {
-    const client = track(launch('tok', base({ carrier: {} })));
+  it('defaults the pageload name to "pageload" when no location is available', async () => {
+    const client = await track(await launch('tok', base({ carrier: {} })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
-  it('continues the pageload trace from a server-injected <meta name="traceparent"> (F2/D4)', () => {
+  it('continues the pageload trace from a server-injected <meta name="traceparent"> (F2/D4)', async () => {
     vi.stubGlobal('document', {
       querySelector: (s: string) =>
         s === 'meta[name="traceparent"]'
@@ -187,18 +214,18 @@ describe('bugsee umbrella launch', () => {
       removeEventListener: () => {},
       visibilityState: 'visible',
     });
-    const client = track(launch('tok', base({ carrier: {} })));
+    const client = await track(await launch('tok', base({ carrier: {} })));
     const active = client.ext('performance').getActiveSpan() as Transaction;
     expect(active.getTraceId()).toBe('0af7651916cd43dd8448eb211c80319c'); // pageload joined the SSR trace
   });
 
-  it('opens a `navigation` transaction on a real history.pushState (F1 navigation wiring)', () => {
+  it('opens a `navigation` transaction on a real history.pushState (F1 navigation wiring)', async () => {
     const pushState = vi.fn();
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
     const location = { pathname: '/home' };
     vi.stubGlobal('location', location);
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = track(launch('tok', base({ carrier: {} })));
+    const client = await track(await launch('tok', base({ carrier: {} })));
     // The launch wired + activated the navigation source, which patched history.pushState.
     location.pathname = '/users/42'; // the browser updated the URL …
     (globalThis as { history: { pushState: (...a: unknown[]) => void } }).history.pushState(
@@ -213,10 +240,10 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['nav.source']).toBe('url');
   });
 
-  it('opens a `ui.interaction` transaction on a real Event Timing entry (F4 interaction wiring)', () => {
+  it('opens a `ui.interaction` transaction on a real Event Timing entry (F4 interaction wiring)', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = track(launch('tok', base({ carrier: {} })));
+    const client = await track(await launch('tok', base({ carrier: {} })));
     // The active span is the pageload — which must NOT block interactions (D12).
     expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
       'pageload',
@@ -233,10 +260,12 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['ui.interaction_type']).toBe('click');
   });
 
-  it('does NOT wire interactions when traceInteractions is false', () => {
+  it('does NOT wire interactions when traceInteractions is false', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = track(launch('tok', base({ carrier: {}, traceInteractions: false })));
+    const client = await track(
+      await launch('tok', base({ carrier: {}, traceInteractions: false })),
+    );
     pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
     // No interaction source was created → the active span stays the pageload transaction.
     expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
@@ -244,8 +273,8 @@ describe('bugsee umbrella launch', () => {
     );
   });
 
-  it('exposes the public naming seam: ext(performance).setRouteName refines the active transaction (F5/D5)', () => {
-    const client = track(launch('tok', base({ carrier: {}, pageName: '/raw' })));
+  it('exposes the public naming seam: ext(performance).setRouteName refines the active transaction (F5/D5)', async () => {
+    const client = await track(await launch('tok', base({ carrier: {}, pageName: '/raw' })));
     const perf = client.ext('performance');
     expect((perf.getActiveSpan() as Transaction).getName()).toBe('/raw'); // the active pageload
     perf.setRouteName('/checkout/:step'); // the manual escape hatch (what a router adapter calls)
@@ -254,12 +283,12 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['bugsee.name_source']).toBe('route');
   });
 
-  it('does NOT wire navigation when traceNavigations is false', () => {
+  it('does NOT wire navigation when traceNavigations is false', async () => {
     const pushState = vi.fn();
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
     vi.stubGlobal('location', { pathname: '/home' });
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = track(launch('tok', base({ carrier: {}, traceNavigations: false })));
+    const client = await track(await launch('tok', base({ carrier: {}, traceNavigations: false })));
     expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState); // NOT patched
     // the active span stays the pageload transaction (no navigation wiring)
     expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
@@ -271,8 +300,11 @@ describe('bugsee umbrella launch', () => {
     const carrier = {};
     const { scheduler, fire } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
-    const client = track(
-      launch('tok', base({ carrier, scheduler, transport, performanceFlushIntervalMs: 7777 })),
+    const client = await track(
+      await launch(
+        'tok',
+        base({ carrier, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+      ),
     );
     (client.ext('performance').getActiveSpan() as Transaction).finish(); // → buffered into the perf store
     await fire(7777); // run the uploader's flush tick at the injected interval
@@ -288,8 +320,11 @@ describe('bugsee umbrella launch', () => {
   it('flush() delivers buffered transactions instead of waiting for the interval', async () => {
     const { scheduler } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
-    const client = track(
-      launch('tok', base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 })),
+    const client = await track(
+      await launch(
+        'tok',
+        base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+      ),
     );
     (client.ext('performance').getActiveSpan() as Transaction).finish(); // buffered, no tick fired
     expect(perfPosts).toHaveLength(0);
@@ -303,9 +338,8 @@ describe('bugsee umbrella launch', () => {
   it('stop() delivers what was buffered rather than dropping it on teardown', async () => {
     const { scheduler } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
-    const client = launch(
-      'tok',
-      base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 }),
+    const client = await track(
+      launch('tok', base({ carrier: {}, scheduler, transport, performanceFlushIntervalMs: 7777 })),
     );
     (client.ext('performance').getActiveSpan() as Transaction).finish();
 
@@ -314,17 +348,18 @@ describe('bugsee umbrella launch', () => {
     expect(perfPosts).toHaveLength(1);
   });
 
-  it('starts the uploader at performanceFlushIntervalMs', () => {
+  it('starts the uploader at performanceFlushIntervalMs', async () => {
     const { scheduler, intervals } = fakeScheduler();
-    track(launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })));
+    await track(
+      await launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })),
+    );
     expect(intervals.some((i) => i.ms === 7777)).toBe(true);
   });
 
   it('stop() tears performance down: the uploader interval is cleared', async () => {
     const { scheduler, intervals, cleared } = fakeScheduler();
-    const client = launch(
-      'tok',
-      base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 }),
+    const client = await track(
+      launch('tok', base({ carrier: {}, scheduler, performanceFlushIntervalMs: 7777 })),
     );
     const perfInterval = intervals.find((i) => i.ms === 7777);
     expect(perfInterval).toBeDefined();
@@ -332,8 +367,22 @@ describe('bugsee umbrella launch', () => {
     expect(cleared).toContain(perfInterval?.id); // wired.stop() → uploader.stop() → clearInterval(handle)
   });
 
-  it('threads appVersion/appBuild from the launch onto the performance transaction wire', () => {
-    const client = track(launch('tok', base({ carrier: {}, appVersion: '1.2.3', appBuild: '99' })));
+  it('threads the persisted device id onto environment hardware.device_id and performance spans', async () => {
+    const envCarrier = {};
+    const { internals } = await launchCore('tok', base({ carrier: envCarrier }));
+    expect((internals?.getEnvironment().hardware as { device_id: string }).device_id).toBe(
+      TEST_DEVICE_ID,
+    );
+    const perfCarrier = {};
+    const client = await track(await launch('tok', base({ carrier: perfCarrier })));
+    const wire = serializeTransaction(client.ext('performance').getActiveSpan() as Transaction);
+    expect(wire.attributes?.device_id).toBe(TEST_DEVICE_ID);
+  });
+
+  it('threads appVersion/appBuild from the launch onto the performance transaction wire', async () => {
+    const client = await track(
+      await launch('tok', base({ carrier: {}, appVersion: '1.2.3', appBuild: '99' })),
+    );
     const wire = serializeTransaction(client.ext('performance').getActiveSpan() as Transaction);
     expect(wire.appVersion).toBe('1.2.3');
     expect(wire.appBuild).toBe('99');
@@ -352,8 +401,8 @@ describe('bugsee umbrella launch', () => {
       }
       return { status: 200, headers: {}, body: new Uint8Array() };
     });
-    const client = track(
-      launch(
+    const client = await track(
+      await launch(
         'tok',
         base({ carrier, scheduler, transport, onError, performanceFlushIntervalMs: 7777 }),
       ),
@@ -365,12 +414,12 @@ describe('bugsee umbrella launch', () => {
     );
   });
 
-  it('a repeat launch returns the same client and does not double-wire (no "already registered" throw)', () => {
+  it('a repeat launch returns the same client and does not double-wire (no "already registered" throw)', async () => {
     const carrier = {};
     const onError = vi.fn();
-    const first = track(launch('tok', base({ carrier })));
+    const first = await track(await launch('tok', base({ carrier })));
     // A second launch on the same carrier must NOT run wirePerformance again (registerExt would throw).
-    const second = launch('tok', base({ carrier, onError }));
+    const second = await launch('tok', base({ carrier, onError }));
     expect(second).toBe(first); // the existing singleton client
     expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning fired
     expect(() => second.ext('performance')).not.toThrow(); // still wired exactly once
@@ -387,8 +436,8 @@ describe('bugsee umbrella launch', () => {
       received = { init };
       return okResp;
     });
-    const client = track(
-      launch(
+    const client = await track(
+      await launch(
         'tok',
         base({ carrier: {}, propagateTrace: true, tracePropagationOrigin: 'https://app.test' }),
       ),
@@ -407,8 +456,8 @@ describe('bugsee umbrella launch', () => {
       received = { init };
       return okResp;
     });
-    track(
-      launch(
+    await track(
+      await launch(
         'tok',
         base({
           carrier: {},
@@ -436,7 +485,7 @@ describe('bugsee umbrella launch', () => {
       return okResp;
     });
     // propagateTrace on, NO explicit origin → the decorator falls back to globalThis.location.origin.
-    track(launch('tok', base({ carrier: {}, propagateTrace: true })));
+    await track(await launch('tok', base({ carrier: {}, propagateTrace: true })));
     await globalFetch()('https://default.test/api', { method: 'GET' });
     expect(
       (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
@@ -450,7 +499,9 @@ describe('bugsee umbrella launch', () => {
       return okResp;
     });
     // Set the origin so the request below WOULD be propagated if the feature were on — proving OFF.
-    track(launch('tok', base({ carrier: {}, tracePropagationOrigin: 'https://app.test' }))); // default off
+    await track(
+      await launch('tok', base({ carrier: {}, tracePropagationOrigin: 'https://app.test' })),
+    ); // default off
     const init = { method: 'GET' };
     await globalFetch()('https://app.test/api', init); // same-origin → would get traceparent if on
     expect(received?.init).toBe(init); // unchanged (same ref) — no decorator registered
@@ -466,8 +517,8 @@ describe('bugsee umbrella launch', () => {
       calls.push({ url, body: opts.body as string, headers: opts.headers });
       return { status: 200, headers: {}, body: new Uint8Array() };
     });
-    const client = track(
-      launch(
+    const client = await track(
+      await launch(
         'tok',
         base({
           carrier: {},
@@ -491,6 +542,10 @@ describe('bugsee umbrella launch', () => {
       key: 'service.name',
       value: { stringValue: 'web' },
     });
+    expect(body.resourceSpans[0].resource.attributes).toContainEqual({
+      key: 'device_id',
+      value: { stringValue: TEST_DEVICE_ID },
+    });
     expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
     // Profile v1 §5: the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
@@ -510,8 +565,8 @@ describe('bugsee umbrella launch', () => {
       bugseePosted = true; // /v2/performance/transactions
       return { status: 200, headers: {}, body: new Uint8Array() };
     });
-    const client = track(
-      launch(
+    const client = await track(
+      await launch(
         'tok',
         base({
           carrier: {},
@@ -533,8 +588,8 @@ describe('bugsee umbrella launch', () => {
     const { scheduler, fire } = fakeScheduler();
     const { fn: transport, perfPosts } = recordingTransport();
     let sp: BugseeSpanProcessor | undefined;
-    track(
-      launch(
+    await track(
+      await launch(
         'tok',
         base({
           carrier: {},
@@ -565,7 +620,8 @@ describe('bugsee umbrella launch', () => {
     expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions[0].name).toBe('GET /api');
   });
 
-  it('otelConsume without onOtelSpanProcessor wires no SpanProcessor (no throw)', () => {
-    expect(() => track(launch('tok', base({ carrier: {}, otelConsume: true })))).not.toThrow();
+  it('otelConsume without onOtelSpanProcessor wires no SpanProcessor (no throw)', async () => {
+    const client = await track(await launch('tok', base({ carrier: {}, otelConsume: true })));
+    expect(client).toBeDefined();
   });
 });

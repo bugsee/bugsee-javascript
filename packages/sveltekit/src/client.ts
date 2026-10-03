@@ -18,6 +18,9 @@ export interface SvelteKitClientOptions extends BugseeLaunchOptionsWithPerforman
  * Start Bugsee for the SvelteKit client (browser). Returns the started client (a per-isolate singleton — a
  * repeat call returns the existing client).
  */
-export function registerClient(appToken: string, options: SvelteKitClientOptions = {}): Bugsee {
-  return launch(appToken, options);
+export async function registerClient(
+  appToken: string,
+  options: SvelteKitClientOptions = {},
+): Promise<Bugsee> {
+  return await launch(appToken, options);
 }

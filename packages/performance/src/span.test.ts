@@ -333,6 +333,30 @@ describe('serializeTransaction (§8.8 wire)', () => {
     ]);
   });
 
+  it('stamps device_id on the root and child spans when configured', () => {
+    const deviceId = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
+    const txn = createTransaction(
+      { name: 'pageload', operation: 'pageload' },
+      { clock: clockAt(1, 0), deviceId },
+    );
+    const child = txn.startChildSpan('http.client', 'GET /');
+    child.finish();
+    txn.finish();
+    const wire = serializeTransaction(txn);
+    expect(wire.attributes?.device_id).toBe(deviceId);
+    expect(wire.spans[0]?.attributes?.device_id).toBe(deviceId);
+  });
+
+  it('does not overwrite a caller-set device_id attribute', () => {
+    const txn = createTransaction(
+      { name: 'pageload', operation: 'pageload' },
+      { clock: clockAt(1, 0), deviceId: 'generated-id' },
+    );
+    txn.setAttribute('device_id', 'caller-id');
+    txn.finish();
+    expect(serializeTransaction(txn).attributes?.device_id).toBe('caller-id');
+  });
+
   it('carries transaction-level attributes and the isSnapshot flag', () => {
     const txn = mk(clockAt(1, 0), { isSnapshot: true }).setAttribute('page', '/checkout');
     const wire = serializeTransaction(txn);

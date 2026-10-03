@@ -18,8 +18,11 @@ export interface BugseeLaunchOptionsWithPerformance
   extends BugseeLaunchOptions,
     UmbrellaExtensionOptions {}
 
-export function launch(appToken: string, options: BugseeLaunchOptionsWithPerformance = {}): Bugsee {
-  const { client, internals } = launchCore(appToken, options);
+export async function launch(
+  appToken: string,
+  options: BugseeLaunchOptionsWithPerformance = {},
+): Promise<Bugsee> {
+  const { client, internals } = await launchCore(appToken, options);
   // No internals → a prior launch already owns the process singleton (and already wired the extensions).
   // Browser: pageload transaction. The browser-only capture sources are injected here (as factories) so
   // the shared wireUmbrella — and therefore the node umbrella entry — never imports @bugsee/browser.

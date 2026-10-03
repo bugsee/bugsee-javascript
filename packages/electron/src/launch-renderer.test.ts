@@ -12,7 +12,7 @@ function fakeLaunch() {
     flush: vi.fn(() => Promise.resolve(true)),
   } as unknown as Bugsee;
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
-  const launch = vi.fn((appToken: string, options: BugseeLaunchOptions) => {
+  const launch = vi.fn(async (appToken: string, options: BugseeLaunchOptions) => {
     received = { appToken, options };
     return { client, internals: undefined };
   });
@@ -48,9 +48,9 @@ function fakeBridge() {
 }
 
 describe('launchRenderer', () => {
-  it('runs the browser launch with a streaming captureStore injected + forwards options', () => {
+  it('runs the browser launch with a streaming captureStore injected + forwards options', async () => {
     const f = fakeLaunch();
-    const client = launchRenderer('tok', { launch: f.launch, post: () => {}, replay: true });
+    const client = await launchRenderer('tok', { launch: f.launch, post: () => {}, replay: true });
 
     expect(client).toBe(f.client);
     expect(f.received?.appToken).toBe('tok');
@@ -62,10 +62,10 @@ describe('launchRenderer', () => {
     expect('launch' in (f.received?.options ?? {})).toBe(false);
   });
 
-  it("the injected store streams capture to the caller's post (encoded)", () => {
+  it("the injected store streams capture to the caller's post (encoded)", async () => {
     const f = fakeLaunch();
     const posted: string[] = [];
-    launchRenderer('tok', { launch: f.launch, post: (raw: string) => posted.push(raw) });
+    await launchRenderer('tok', { launch: f.launch, post: (raw: string) => posted.push(raw) });
     const store = f.received?.options.captureStore as CaptureStore;
     store.add({ type: 'log', timestamp: 42, serialized: '{"m":1}' } as StoredEntry);
     expect(decodeStreamEntry(posted[0] as string)).toMatchObject({
@@ -75,13 +75,13 @@ describe('launchRenderer', () => {
     });
   });
 
-  it('falls back to the preload sink (default post) when none is given', () => {
+  it('falls back to the preload sink (default post) when none is given', async () => {
     const f = fakeLaunch();
     const g = globalThis as { __bugseeElectron?: { post?: (raw: string) => void } };
     const seen: string[] = [];
     g.__bugseeElectron = { post: (raw) => seen.push(raw) };
     try {
-      launchRenderer('tok', { launch: f.launch });
+      await launchRenderer('tok', { launch: f.launch });
       const store = f.received?.options.captureStore as CaptureStore;
       store.add({ type: 'log', timestamp: 1, serialized: '{}' } as StoredEntry);
       expect(seen).toHaveLength(1);
@@ -90,18 +90,18 @@ describe('launchRenderer', () => {
     }
   });
 
-  it('announces itself with a hello handshake on launch', () => {
+  it('announces itself with a hello handshake on launch', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
-    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     expect(b.hellos).toHaveLength(1);
     expect(isHello(b.hellos[0] as string)).toBe(true);
   });
 
-  it('a main→renderer pause drops the UP stream; resume restores it', () => {
+  it('a main→renderer pause drops the UP stream; resume restores it', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
-    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     const store = f.received?.options.captureStore as CaptureStore;
     const entry = { type: 'log', timestamp: 1, serialized: '{}' } as StoredEntry;
 
@@ -114,27 +114,27 @@ describe('launchRenderer', () => {
     expect(b.posted).toHaveLength(1); // resumed → streaming again
   });
 
-  it('a main→renderer stop stops the renderer client', () => {
+  it('a main→renderer stop stops the renderer client', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
-    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     b.drive(encodeControl({ command: 'stop' }));
     expect(f.client.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('a main→renderer flush flushes the renderer client', () => {
+  it('a main→renderer flush flushes the renderer client', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
-    launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     b.drive(encodeControl({ command: 'flush' }));
     expect(f.client.flush).toHaveBeenCalledTimes(1);
   });
 
-  it('the session handshake reply is delivered to onSessionId', () => {
+  it('the session handshake reply is delivered to onSessionId', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     const onSessionId = vi.fn();
-    launchRenderer('tok', { launch: f.launch, bridge: b.bridge, onSessionId });
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge, onSessionId });
     b.drive(encodeControl({ command: 'session', sessionId: 'owner-sess' }));
     expect(onSessionId).toHaveBeenCalledWith('owner-sess');
   });
@@ -202,24 +202,28 @@ describe('resolveRendererBridge', () => {
 });
 
 describe('launchRenderer — incidents forward instead of uploading (R2)', () => {
-  it('injects a forwarding triggerPipeline into the browser launch', () => {
+  it('injects a forwarding triggerPipeline into the browser launch', async () => {
     let injected: { triggerPipeline?: { report: (r: unknown) => Promise<unknown> } } | undefined;
-    const fakeLaunch = ((_t: string, o: never) => {
+    const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
       return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
     }) as never;
-    launchRenderer('tok', { bridge: fakeBridge().bridge, launch: fakeLaunch, post: () => {} });
+    await launchRenderer('tok', {
+      bridge: fakeBridge().bridge,
+      launch: fakeLaunch,
+      post: () => {},
+    });
     expect(typeof injected?.triggerPipeline?.report).toBe('function');
   });
 
-  it('IGNORES a caller-supplied triggerPipeline — it would restore the broken local-upload path', () => {
+  it('IGNORES a caller-supplied triggerPipeline — it would restore the broken local-upload path', async () => {
     const mine = { report: () => Promise.resolve({ ok: true }) };
     let injected: { triggerPipeline?: unknown } | undefined;
-    const fakeLaunch = ((_t: string, o: never) => {
+    const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
       return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
     }) as never;
-    launchRenderer('tok', {
+    await launchRenderer('tok', {
       bridge: fakeBridge().bridge,
       launch: fakeLaunch,
       post: () => {},
@@ -238,12 +242,12 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
     let injected:
       | { triggerPipeline: { report: (r: unknown) => Promise<{ ok: boolean }> } }
       | undefined;
-    const fakeLaunch = ((_t: string, o: never) => {
+    const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
       return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
     }) as never;
     const harness = fakeBridge();
-    launchRenderer('tok', {
+    await launchRenderer('tok', {
       bridge: harness.bridge,
       launch: fakeLaunch,
       post: (raw) => posted.push(raw),
@@ -264,12 +268,12 @@ describe('launchRenderer — default post path', () => {
   it('posts through the resolved bridge when no explicit post is supplied', async () => {
     // Covers the default `post` closure: without an override the pipeline must reach the bridge itself.
     let injected: { triggerPipeline: { report: (r: unknown) => Promise<unknown> } } | undefined;
-    const fakeLaunch = ((_t: string, o: never) => {
+    const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
       return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
     }) as never;
     const harness = fakeBridge();
-    launchRenderer('tok', { bridge: harness.bridge, launch: fakeLaunch });
+    await launchRenderer('tok', { bridge: harness.bridge, launch: fakeLaunch });
     harness.drive(JSON.stringify({ k: 'control', c: 'session', sid: 's' }));
     await injected?.triggerPipeline.report({ source: {}, report: { summary: 'x' } });
     expect(harness.posted.some((raw) => JSON.parse(raw).k === 'report')).toBe(true);

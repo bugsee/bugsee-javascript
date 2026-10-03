@@ -13,6 +13,9 @@ export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {
  * Start Bugsee for the Astro client (browser). Returns the started client (a per-isolate singleton — a
  * repeat call returns the existing client).
  */
-export function registerClient(appToken: string, options: AstroClientOptions = {}): Bugsee {
-  return launch(appToken, options);
+export async function registerClient(
+  appToken: string,
+  options: AstroClientOptions = {},
+): Promise<Bugsee> {
+  return await launch(appToken, options);
 }

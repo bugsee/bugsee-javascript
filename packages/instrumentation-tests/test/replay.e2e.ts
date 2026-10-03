@@ -79,15 +79,17 @@ describe('@bugsee/replay — real rrweb integration (jsdom)', () => {
     document.body.innerHTML = `<div id="app"><p>${SECRET}</p><input value="${SECRET}" /></div>`;
     const cap = captureTransport();
 
-    const client = launchCore('tok', {
-      replay: true, // → lazy-load the REAL @bugsee/replay → REAL rrweb record on the jsdom DOM
-      transport: cap.transport,
-      systemProbe: fakeProbe,
-      systemMetricsSampler: () => [],
-      captureNetwork: false,
-      detectCrashes: false,
-      captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
-    }).client;
+    const client = (
+      await launchCore('tok', {
+        replay: true, // → lazy-load the REAL @bugsee/replay → REAL rrweb record on the jsdom DOM
+        transport: cap.transport,
+        systemProbe: fakeProbe,
+        systemMetricsSampler: () => [],
+        captureNetwork: false,
+        detectCrashes: false,
+        captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+      })
+    ).client;
     stop = async () => {
       await client.stop();
     };

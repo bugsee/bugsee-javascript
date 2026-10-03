@@ -16,6 +16,7 @@ export {
   type StartTransactionOptions,
   type TransactionNameSource,
 } from './controller';
+export { hasDeviceIdAttribute, stampDeviceIdOnWire } from './device-id-attribute';
 export {
   createPerformanceExtension,
   type PerformanceExtension,

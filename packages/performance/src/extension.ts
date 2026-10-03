@@ -5,6 +5,7 @@ import {
   type PerformanceCaptureProvider,
 } from './capture-provider';
 import { createPerformanceController, type PerformanceApi } from './controller';
+import { stampDeviceIdOnWire } from './device-id-attribute';
 import type { TransactionWire } from './span';
 import { applySpanFilter } from './span-filter';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
@@ -27,6 +28,8 @@ declare module '@bugsee/types' {
 export interface PerformanceExtensionOptions {
   appVersion?: string;
   appBuild?: string;
+  /** Stamped as `device_id` on every transaction and span unless the caller already set one. */
+  deviceId?: string;
   /** Head sampling decision (built from performanceSampleRate by the launch). Default: sample all. */
   sampler?: () => boolean;
   /** Buffer capacity before FIFO eviction. Default 100. */
@@ -86,9 +89,13 @@ export function createPerformanceExtension(
   // so this stays undefined until then and the filter simply does not run yet — there is no client to
   // have configured one on.
   let filters: FilterStore | undefined;
+  const stampDeviceId = (transaction: TransactionWire): TransactionWire =>
+    options.deviceId === undefined
+      ? transaction
+      : stampDeviceIdOnWire(transaction, options.deviceId);
   const filterTransaction = (transaction: TransactionWire): TransactionWire | null =>
     applySpanFilter(
-      transaction,
+      stampDeviceId(transaction),
       filters?.span ?? null,
       (error) => filters?.onError(error),
       options.sanitizeSpans ?? true,
@@ -107,6 +114,7 @@ export function createPerformanceExtension(
         filterTransaction,
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
         ...(options.sampler !== undefined ? { sampler: options.sampler } : {}),
         ...(options.activeSpanStore !== undefined
           ? { activeSpanStore: options.activeSpanStore }

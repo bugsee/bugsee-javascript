@@ -17,6 +17,7 @@ import {
   createPerformanceSend,
   defaultSpanId,
   defaultTraceId,
+  hasDeviceIdAttribute,
   PERFORMANCE_OPTION_DEFINITIONS,
   PerformanceOption,
   type TransactionWire,
@@ -51,6 +52,8 @@ interface UmbrellaInternals {
   network: NetworkCapture;
   appVersion: string | undefined;
   appBuild: string | undefined;
+  /** Persisted browser device id (undefined on Node unless the caller supplied one). */
+  deviceId: string | undefined;
   onError: ((error: unknown) => void) | undefined;
   /**
    * Where the performance controller's active transaction lives. The server `launchCore` supplies a
@@ -144,6 +147,15 @@ function teeSend(
   };
 }
 
+/** Merge `device_id` into an OTLP resource when the caller did not already set a recognized key. */
+function otlpResourceWithDeviceId(
+  resource: Record<string, unknown> | undefined,
+  deviceId: string | undefined,
+): Record<string, unknown> | undefined {
+  if (deviceId === undefined || hasDeviceIdAttribute(resource)) return resource;
+  return { ...resource, device_id: deviceId };
+}
+
 /** The pageload transaction name: the current path where a runtime exposes one, else a stable default. */
 function defaultPageName(): string {
   const location = (globalThis as { location?: { pathname?: string } }).location;
@@ -177,6 +189,7 @@ export function wireUmbrella(
   const scopeName = `com.bugsee.${platform.pageload ? 'webjs' : 'nodejs'}/performance`;
   // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
   // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
+  const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
   const otlpSend =
     options.otelExportUrl !== undefined
       ? createOtlpTraceExporter({
@@ -186,9 +199,7 @@ export function wireUmbrella(
           ...(options.otelExportHeaders !== undefined
             ? { headers: options.otelExportHeaders }
             : {}),
-          ...(options.otelExportResource !== undefined
-            ? { resource: options.otelExportResource }
-            : {}),
+          ...(otlpResource !== undefined ? { resource: otlpResource } : {}),
         })
       : undefined;
   const send = otlpSend !== undefined ? teeSend(bugseeSend, otlpSend) : bugseeSend;
@@ -230,6 +241,7 @@ export function wireUmbrella(
     ...(pageloadContinuation !== undefined ? { pageloadContinuation } : {}),
     ...(internals.appVersion !== undefined ? { appVersion: internals.appVersion } : {}),
     ...(internals.appBuild !== undefined ? { appBuild: internals.appBuild } : {}),
+    ...(internals.deviceId !== undefined ? { deviceId: internals.deviceId } : {}),
     ...(internals.onError !== undefined ? { onError: internals.onError } : {}),
     ...(internals.activeSpanStore !== undefined
       ? { activeSpanStore: internals.activeSpanStore }

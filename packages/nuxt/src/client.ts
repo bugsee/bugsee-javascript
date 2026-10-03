@@ -22,7 +22,10 @@ export interface InstallBugseeClientOptions extends BugseeLaunchOptionsWithPerfo
   /** The Bugsee app token. */
   appToken: string;
   /** Test/advanced seam: the browser launch. Default the batteries-included `bugsee` browser umbrella launch. */
-  launch?: (appToken: string, options: BugseeLaunchOptionsWithPerformance) => Bugsee;
+  launch?: (
+    appToken: string,
+    options: BugseeLaunchOptionsWithPerformance,
+  ) => Bugsee | Promise<Bugsee>;
 }
 
 /**
@@ -30,12 +33,12 @@ export interface InstallBugseeClientOptions extends BugseeLaunchOptionsWithPerfo
  * (which captures Vue errors + reports them to the launched client). Returns the started client. Call from a
  * `.client` Nuxt plugin: `defineNuxtPlugin((nuxtApp) => installBugseeClient(nuxtApp, …))`.
  */
-export function installBugseeClient(
+export async function installBugseeClient(
   nuxtApp: NuxtAppLike,
   options: InstallBugseeClientOptions,
-): Bugsee {
+): Promise<Bugsee> {
   const { appToken, launch = browserLaunch, ...launchOptions } = options;
-  const client = launch(appToken, launchOptions);
+  const client = await launch(appToken, launchOptions);
   installBugseeErrorHandler(nuxtApp.vueApp);
   return client;
 }

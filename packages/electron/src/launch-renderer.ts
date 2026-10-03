@@ -6,7 +6,7 @@
 // Call it from renderer code:
 //
 //   import { launchRenderer } from '@bugsee/electron/renderer';
-//   launchRenderer(appToken, {});                 // replay is ON by default and rides the same stream (D8);
+//   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream (D8);
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import type { BugseeElectronBridge } from './preload-bridge';
@@ -60,7 +60,10 @@ export function resolveRendererBridge(): BugseeElectronBridge {
 }
 
 /** Launch Bugsee in an Electron renderer: capture streams to the main process; main bundles + uploads. */
-export function launchRenderer(appToken: string, options: LaunchRendererOptions = {}): Bugsee {
+export async function launchRenderer(
+  appToken: string,
+  options: LaunchRendererOptions = {},
+): Promise<Bugsee> {
   const { post, bridge, onSessionId, launch, ...browserOptions } = options;
   const resolved = bridge ?? resolveRendererBridge();
 
@@ -86,12 +89,12 @@ export function launchRenderer(appToken: string, options: LaunchRendererOptions 
     canDeliver: () => handshaken,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
-  const client = (launch ?? launchCore)(appToken, {
+  const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
     // AFTER the caller's options, deliberately — see above.
     triggerPipeline,
-  } as never).client;
+  } as never);
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.
   resolved.onControl(

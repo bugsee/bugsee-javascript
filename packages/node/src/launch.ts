@@ -180,6 +180,8 @@ export interface BugseeLaunchOptions {
   appVersion?: string;
   /** app.build. */
   appBuild?: string;
+  /** hardware.device_id — caller-supplied only; Node never generates or persists one. */
+  deviceId?: string;
 
   /** Capture console output as logs. Default true. */
   captureLogs?: boolean;
@@ -408,6 +410,8 @@ export interface LaunchInternals {
   appVersion: string | undefined;
   /** app.build, if provided. */
   appBuild: string | undefined;
+  /** Caller-supplied device id only — Node never mints one. */
+  deviceId: string | undefined;
   /** The internal-error sink. */
   onError: ((error: unknown) => void) | undefined;
   /**
@@ -568,6 +572,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
       },
       probe,
     );
@@ -1102,6 +1107,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     network,
     appVersion: options.appVersion,
     appBuild: options.appBuild,
+    deviceId: options.deviceId,
     onError: options.onError,
     // The request-context store is the SAME instance registered as the ContextProvider above, so the
     // request the auto-instrumentation opens a context for is the request this store keys off. A

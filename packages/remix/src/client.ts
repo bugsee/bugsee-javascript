@@ -28,8 +28,11 @@ export interface RemixClientOptions extends BugseeLaunchOptionsWithPerformance {
  * hydrateRoot(document, <HydratedRouter onError={bugseeOnError} />);
  * ```
  */
-export function registerClient(appToken: string, options: RemixClientOptions = {}): Bugsee {
-  return launch(appToken, options);
+export async function registerClient(
+  appToken: string,
+  options: RemixClientOptions = {},
+): Promise<Bugsee> {
+  return await launch(appToken, options);
 }
 
 /**
