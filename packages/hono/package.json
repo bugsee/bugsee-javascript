@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.4",
     "hono": "^4.6.0"
   },
   "publishConfig": {

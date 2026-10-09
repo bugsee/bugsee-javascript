@@ -34,7 +34,7 @@
     "@bugsee/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1"
+    "@types/node": "^26.6.4"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
