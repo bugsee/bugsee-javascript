@@ -40,7 +40,7 @@
   "devDependencies": {
     "@bugsee/util": "workspace:*",
     "@types/node": "^22.0.0",
-    "hono": "^4.6.0"
+    "hono": "^4.13.13"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
