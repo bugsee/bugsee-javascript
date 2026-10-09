@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Workflow actions run with repository credentials; keep them current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Runtime dependencies of the published packages. Dev tooling churns too much to review weekly; its
+  # security fixes still arrive through Dependabot security updates.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

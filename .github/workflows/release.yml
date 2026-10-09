@@ -5,9 +5,8 @@ name: Release
 # (`node scripts/npm-trust-all.mjs`), so npm accepts the short-lived identity token GitHub mints for
 # this run and nothing long-lived exists to leak.
 #
-# ⚠️ GITHUB-HOSTED RUNNER ON PURPOSE. CI runs on a self-hosted macOS runner, but npm trusted
-# publishing does not support self-hosted runners (docs.npmjs.com/trusted-publishers), so this one job
-# uses ubuntu-latest. It is manual-only, so it spends hosted minutes only on an actual release.
+# GitHub-hosted runner: npm trusted publishing does not support self-hosted runners
+# (docs.npmjs.com/trusted-publishers). Every workflow in this repository uses GitHub-hosted runners.
 #
 # The file NAME is part of the trust relationship. Renaming it silently breaks publishing until every
 # package is re-registered.
@@ -62,5 +61,16 @@ jobs:
       - name: Build
         run: pnpm exec turbo run build
 
+      # Inputs go in through the environment, never interpolated into the script text: a `${{ }}` inside
+      # `run:` is textually pasted into the shell, so a crafted tag could execute commands with the
+      # job's id-token.
       - name: Publish
-        run: node scripts/publish-all.mjs --tag "${{ inputs.tag }}" ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          NPM_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/publish-all.mjs --tag "$NPM_TAG" --dry-run
+          else
+            node scripts/publish-all.mjs --tag "$NPM_TAG"
+          fi

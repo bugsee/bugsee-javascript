@@ -5,29 +5,28 @@ name: CI
 # tests with the per-package coverage gate (vitest via turbo — each package
 # enforces its own 100% line/fn/stmt + ≥90% branch threshold).
 #
-# ⚠️ BOTH JOBS RUN ON A SELF-HOSTED arm64 macOS RUNNER (hosted Actions minutes are
-# exhausted — the appserver repo moved for the same reason). Three things follow, and
-# every one of them has a counterpart below:
+# ⚠️ GITHUB-HOSTED RUNNERS, ON PURPOSE. This repository is PUBLIC. A self-hosted runner must never run
+# a public repository's workflows: any fork can open a pull request, and `pull_request` workflows
+# execute the PR's own code — on a self-hosted machine that is arbitrary code execution on a host that
+# also holds other repositories' checkouts and credentials. The org's runner group refuses public
+# repositories for exactly that reason (allows_public_repositories=false), so a self-hosted label here
+# would not even start. Standard GitHub-hosted runners are free for public repositories, which also
+# removes the old "hosted minutes are exhausted" constraint. macOS arm64 keeps parity with how the
+# gate is developed (`pnpm ci:local`).
 #
-#   1. THE HOST OUTLIVES THE RUN. Leaked processes, held ports and stale directories
-#      survive into the NEXT run instead of dying with a VM, and show up there as
-#      flakiness. See the port-hygiene steps around the e2e suites.
-#   2. THE HOST IS SHARED. A hung job holds the runner against every other repo
-#      queued behind it, so both jobs carry an explicit `timeout-minutes`.
-#   3. IT IS FAST, and that is not purely good news. The old ubuntu runner was
-#      roughly 7-18x slower than a dev machine, which papered over races by never
-#      losing them; a runner at dev-machine speed can lose races the hosted one
-#      always won. (That is not hypothetical — it is exactly how a start-up race
-#      surfaced in the appserver deploy job after its move.) A test that newly fails
-#      here is more likely a real race than a bad runner.
-#
-# The platform changed with the move: linux-x64 → darwin-arm64. That is deliberate
-# parity with how the gate is actually developed — `pnpm ci:local` has always run it
-# on macOS — but it does mean CI no longer exercises Linux at all.
+# What follows from hosted runners: every run starts on a clean VM, so there is no leaked-process or
+# stale-port hygiene to do between runs (the port steps in the e2e job are kept; they are cheap and
+# still guard against a hung harness inside one run).
+
 on:
   push:
     branches: [main]
   pull_request:
+
+# Least privilege: nothing in this workflow writes to the repository. A job that needs more asks for it
+# itself.
+permissions:
+  contents: read
 
 # One in-flight run per ref; a new push cancels the previous run.
 concurrency:
@@ -37,10 +36,10 @@ concurrency:
 jobs:
   check:
     name: Lint · Typecheck · Cycles · Coverage
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-latest
     # The runner is shared. Without a bound, a hung vitest worker holds it against
     # every other repo's queue until someone notices by hand.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -106,14 +105,11 @@ jobs:
   # a runtime whose binary is absent (packages/instrumentation-tests/test/runtimes.ts),
   # so without them CI would go green while testing strictly less.
   #
-  # "Alongside" is now aspirational rather than guaranteed: two jobs only run at once if
-  # the pool has two free runners, and a single self-hosted runner serialises them. That
-  # costs wall-clock, not correctness, and adding a runner restores the parallelism
-  # without touching this file.
+  # Hosted runners are provisioned per job, so the two jobs run in parallel.
   e2e:
     name: E2E (node · bun · deno · real frameworks)
-    runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 30
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -156,20 +152,15 @@ jobs:
 
       # Playwright ships a downloader, not the browsers: `pnpm install` does not fetch them, so
       # `browser.e2e.ts` fails with "Executable doesn't exist at .../chrome-headless-shell".
-      # Scoped to chromium — it is the only engine the browser harness drives. Like the pnpm store,
-      # ~/Library/Caches/ms-playwright survives on this self-hosted machine, so after the first run
-      # this step is a no-op rather than a download.
+      # Scoped to chromium — it is the only engine the browser harness drives.
+      # On a fresh hosted VM this always downloads; it is a few seconds, not a failure.
       - name: Install Playwright's Chromium
         run: pnpm --filter @bugsee/instrumentation-tests exec playwright install chromium
 
-      # ⚠️ SELF-HOSTED HYGIENE. The nuxt/sveltekit/astro harnesses each boot a real dev
-      # server on a FIXED port. On a hosted VM a leaked server died with the VM; here the
-      # machine persists, and this workflow sets `cancel-in-progress`, so a superseded
-      # run's dev-server child can outlive its parent and keep holding the port. The next
-      # run then fails with EADDRINUSE on a change that is perfectly fine — leftover state
-      # wearing the costume of a flaky suite. The script reads the ports out of the
-      # harnesses and fails if it can no longer find them, so moving a port cannot quietly
-      # disarm it.
+      # The nuxt/sveltekit/astro harnesses each boot a real dev server on a FIXED port. A fresh hosted VM
+      # starts clean, so this only guards a hung harness within one run (and a developer's machine, where
+      # the same script is used). The script reads the ports out of the harnesses and fails if it can no
+      # longer find them, so moving a port cannot quietly disarm it.
       - name: Free the harness ports
         run: scripts/free-e2e-ports.sh
 

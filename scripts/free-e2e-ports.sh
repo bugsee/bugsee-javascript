@@ -4,7 +4,7 @@
 # WHY THIS EXISTS: the nuxt, sveltekit and astro harnesses each boot a REAL dev
 # server on a FIXED port (`const port = …` in packages/*-e2e/test/*.e2e.ts).
 # On a throwaway CI VM a leaked server dies with the VM, so nobody ever had to
-# think about it. On a self-hosted runner — and on a developer's machine — the
+# think about it. On a developer's machine (and for a hung harness within one CI run) — the
 # host outlives the run: the workflow sets `cancel-in-progress`, and a cancelled
 # job's dev-server child can survive its parent and keep holding the port. The
 # NEXT run then dies with EADDRINUSE on a change that is perfectly fine, which
