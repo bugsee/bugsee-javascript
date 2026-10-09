@@ -64,7 +64,13 @@ export function topologicalOrder(packages) {
 
 const published = (name, version) => {
   try {
-    return run('npm', ['view', `${name}@${version}`, 'version']).trim() === version;
+    // stderr is piped, not inherited: a never-published package is an expected E404 here, and npm's
+    // red error text for it reads like a failed publish.
+    return (
+      run('npm', ['view', `${name}@${version}`, 'version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim() === version
+    );
   } catch {
     return false; // E404: never published
   }
