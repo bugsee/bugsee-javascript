@@ -40,6 +40,24 @@ async function askOtp() {
 
 const isOtpError = (error) => /EOTP|one-time password/i.test(String(error.stderr ?? error.message));
 
+// The registry now rejects a trust without an explicit permission ("permissions is required and must
+// contain at least one valid route"). npm added the `--allow-publish` flag for it in 12.x; an older
+// npm cannot send the field at all, so fail early with the fix instead of 49 identical 400s.
+const helpText = (() => {
+  try {
+    return npm(['trust', 'github', '--help']);
+  } catch (error) {
+    return String(error.stdout ?? '');
+  }
+})();
+const supportsPermissions = helpText.includes('allow-publish');
+if (!supportsPermissions) {
+  console.error(
+    'This npm cannot set the trust permission the registry requires. Upgrade it first:\n  npm install -g npm@latest',
+  );
+  process.exit(2);
+}
+
 let consecutiveFailures = 0;
 let configured = 0;
 let skipped = 0;
@@ -47,7 +65,17 @@ const failures = [];
 
 packages: for (const { json } of loadPackages()) {
   const name = json.name;
-  const args = ['trust', 'github', name, '--file', WORKFLOW, '--repo', REPO, '--yes'];
+  const args = [
+    'trust',
+    'github',
+    name,
+    '--file',
+    WORKFLOW,
+    '--repo',
+    REPO,
+    '--allow-publish',
+    '--yes',
+  ];
   if (dryRun) args.push('--dry-run');
   let attempts = 0;
   for (;;) {

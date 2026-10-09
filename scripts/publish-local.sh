@@ -46,8 +46,9 @@ echo "main @ $(git rev-parse --short HEAD)"
 
 user=$(npm whoami 2>/dev/null) || die "not logged in to npm — run: npm login   (or export NODE_AUTH_TOKEN)"
 echo "npm user: $user"
-npm --version | awk -F. '{ if ($1 < 11 || ($1 == 11 && $2 < 10)) { print "npm " $0 " is too old for `npm trust` (need >= 11.10)"; exit 1 } }' \
-  || [ "$TRUST" = 0 ] || die "upgrade npm or pass --skip-trust"
+if [ "$TRUST" = 1 ] && ! npm trust github --help 2>/dev/null | grep -q allow-publish; then
+  die "this npm ($(npm --version)) cannot set the trust permission the registry requires — run: npm install -g npm@latest   (or pass --skip-trust)"
+fi
 
 pnpm check:publishable
 
