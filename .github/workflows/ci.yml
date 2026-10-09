@@ -57,7 +57,7 @@ jobs:
       # wipes node_modules (`git clean -ffdx`) but never touches the store — so the cache
       # would be uploading and re-downloading something already on disk.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -118,7 +118,7 @@ jobs:
 
       # No `cache: pnpm` — see the note in the `check` job.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
