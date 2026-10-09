@@ -19,8 +19,14 @@ const dryRun = argv.includes('--dry-run');
 const otpIndex = argv.indexOf('--otp');
 let otp = otpIndex === -1 ? undefined : argv[otpIndex + 1];
 
+// The code goes in through the environment: `npm trust` parses its own flags strictly and rejects
+// `--otp <code>` ("Unknown positional argument"), while npm_config_otp is read like any other config.
 const npm = (args) =>
-  execFileSync('npm', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('npm', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: otp ? { ...process.env, npm_config_otp: otp } : process.env,
+  });
 
 /** Ask for a fresh 2FA code. A TOTP code lives ~30s, so it is reused until npm says it expired. */
 async function askOtp() {
@@ -34,20 +40,22 @@ async function askOtp() {
 
 const isOtpError = (error) => /EOTP|one-time password/i.test(String(error.stderr ?? error.message));
 
+let consecutiveFailures = 0;
 let configured = 0;
 let skipped = 0;
 const failures = [];
 
-for (const { json } of loadPackages()) {
+packages: for (const { json } of loadPackages()) {
   const name = json.name;
   const args = ['trust', 'github', name, '--file', WORKFLOW, '--repo', REPO, '--yes'];
   if (dryRun) args.push('--dry-run');
   let attempts = 0;
   for (;;) {
     try {
-      npm(otp ? [...args, '--otp', otp] : args);
+      npm(args);
       console.log(`${dryRun ? 'dry-run ' : 'trusted '} ${name}`);
       configured++;
+      consecutiveFailures = 0;
       break;
     } catch (error) {
       // A missing or expired code: ask once more and retry this package (max 3 asks per package).
@@ -61,6 +69,8 @@ for (const { json } of loadPackages()) {
         break;
       }
       failures.push(name);
+      consecutiveFailures++;
+      if (consecutiveFailures >= 3) break packages;
       const line = String(error.stderr ?? error.message)
         .split('\n')
         .find((l) => l.includes('npm error'));
@@ -69,5 +79,7 @@ for (const { json } of loadPackages()) {
     }
   }
 }
+if (consecutiveFailures >= 3)
+  console.error('\nStopping: 3 failures in a row means something systemic, not one package.');
 console.log(`\n${configured} configured, ${skipped} skipped, ${failures.length} failed.`);
 process.exit(failures.length ? 1 : 0);
