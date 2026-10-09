@@ -3,65 +3,77 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// The SDK reports its own version to the collector, which enforces a minimum. That version is a
-// hardcoded constant in each platform's launch, NOT read from package.json — so the two drift
-// silently. They had: every package sat at `0.0.0`, below the collector's `0.1.0` floor, and every
-// session was rejected with `UnsupportedSdkError`. Nothing failed; the SDK simply never delivered.
+// The SDK reports its own version to the collector, which enforces a minimum. That version is ONE
+// constant — BUGSEE_SDK_VERSION in core/src/carrier.ts — not read from package.json, so the two can
+// drift silently. They had: every package sat at `0.0.0`, below the collector's `0.1.0` floor, and
+// every session was rejected with `UnsupportedSdkError`. Nothing failed; the SDK simply never
+// delivered.
 //
-// These constants are the thing a customer's data depends on, so they are pinned to the package
-// version here rather than left to be noticed.
+// The constant is the thing a customer's data depends on, so it is pinned to every package version
+// here rather than left to be noticed. (scripts/check-publishable.mjs enforces the same invariant
+// at release time; this keeps it inside `pnpm test`.)
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-/** Where each platform hardcodes the version it reports (and, for core, keys the carrier registry). */
-const VERSION_CONSTANTS: ReadonlyArray<{ file: string; pkg: string }> = [
-  { file: 'packages/browser/src/launch.ts', pkg: 'packages/browser/package.json' },
-  { file: 'packages/core/src/carrier.ts', pkg: 'packages/core/package.json' },
-  { file: 'packages/node/src/launch.ts', pkg: 'packages/node/package.json' },
-  { file: 'packages/vercel-edge/src/launch.ts', pkg: 'packages/vercel-edge/package.json' },
-  { file: 'packages/webview/src/launch.ts', pkg: 'packages/webview/package.json' },
-  { file: 'packages/webworker/src/launch.ts', pkg: 'packages/webworker/package.json' },
+const read = (path: string): string => readFileSync(join(root, path), 'utf8');
+const versionOf = (pkg: string): string => (JSON.parse(read(pkg)) as { version: string }).version;
+
+/** The platform entry points that report a version; each must take it from core, never hardcode it. */
+const LAUNCH_FILES = [
+  'packages/browser/src/launch.ts',
+  'packages/node/src/launch.ts',
+  'packages/vercel-edge/src/launch.ts',
+  'packages/webview/src/launch.ts',
+  'packages/webworker/src/launch.ts',
 ];
 
-/** The collector rejects anything below this (appserver `cfg.core.sdk.javascript.<family>.minimum`). */
-const COLLECTOR_MINIMUM = [0, 1, 0];
+const PACKAGES = [
+  'packages/browser/package.json',
+  'packages/core/package.json',
+  'packages/node/package.json',
+  'packages/vercel-edge/package.json',
+  'packages/webview/package.json',
+  'packages/webworker/package.json',
+];
 
-const parse = (v: string): number[] => v.split('.').map(Number);
-const gte = (a: number[], b: number[]): boolean =>
-  a[0] !== b[0]
-    ? (a[0] as number) > (b[0] as number)
-    : a[1] !== b[1]
-      ? (a[1] as number) > (b[1] as number)
-      : (a[2] as number) >= (b[2] as number);
+const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+const reportedVersion = (): string => {
+  const match = /BUGSEE_SDK_VERSION\s*=\s*'([^']+)'/.exec(read('packages/core/src/carrier.ts'));
+  expect(match, 'no BUGSEE_SDK_VERSION constant in packages/core/src/carrier.ts').not.toBeNull();
+  return match?.[1] as string;
+};
 
 describe('the version the SDK reports to the collector', () => {
-  it.each(VERSION_CONSTANTS)('$file matches its package version', ({ file, pkg }) => {
-    const source = readFileSync(join(root, file), 'utf8');
-    const version = (JSON.parse(readFileSync(join(root, pkg), 'utf8')) as { version: string })
-      .version;
-    const match = /SDK_VERSION\s*=\s*'([^']+)'/.exec(source);
-    expect(match, `no SDK_VERSION constant in ${file}`).not.toBeNull();
-    expect(match?.[1], `${file} reports a version its package does not declare`).toBe(version);
+  it.each(PACKAGES)('%s declares the version the SDK reports', (pkg) => {
+    expect(versionOf(pkg), `${pkg} declares a version the SDK does not report`).toBe(
+      reportedVersion(),
+    );
   });
 
-  it.each(VERSION_CONSTANTS)('$pkg is at or above the collector floor', ({ pkg }) => {
-    const version = (JSON.parse(readFileSync(join(root, pkg), 'utf8')) as { version: string })
-      .version;
-    expect(
-      gte(parse(version), COLLECTOR_MINIMUM),
-      `${version} is below the collector minimum ${COLLECTOR_MINIMUM.join('.')} — every session would be rejected with UnsupportedSdkError`,
-    ).toBe(true);
+  it.each(LAUNCH_FILES)('%s takes its version from core instead of hardcoding one', (file) => {
+    const source = read(file);
+    expect(source, `${file} must import BUGSEE_SDK_VERSION from @bugsee/core`).toMatch(
+      /\bBUGSEE_SDK_VERSION\b/,
+    );
+    expect(source, `${file} hardcodes a version literal — a second copy to drift`).not.toMatch(
+      /SDK_VERSION\s*=\s*'\d/,
+    );
+  });
+
+  it('is a valid semver the collector can compare (a prerelease is allowed)', () => {
+    // The appserver floor is `0.0.0-0` (the lowest semver), precisely so that `0.1.0-beta.N`
+    // sessions are admitted. A version that is not semver at all would fail `semver.gt` and be
+    // rejected as unsupported.
+    expect(reportedVersion()).toMatch(SEMVER);
   });
 
   it('every package carries the same version', () => {
     // Independent versions are legitimate for some monorepos, but these packages depend on each
     // other by exact version once packed; a split would make a published set unresolvable.
     const versions = new Map<string, string>();
-    for (const { pkg } of VERSION_CONSTANTS) {
-      const j = JSON.parse(readFileSync(join(root, pkg), 'utf8')) as {
-        name: string;
-        version: string;
-      };
+    for (const pkg of PACKAGES) {
+      const j = JSON.parse(read(pkg)) as { name: string; version: string };
       versions.set(j.name, j.version);
     }
     expect(existsSync(join(root, 'packages'))).toBe(true);
