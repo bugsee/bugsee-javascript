@@ -99,8 +99,21 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const args = ['publish', tarball, '--tag', tag, '--access', 'public'];
     if (dryRun) args.push('--dry-run');
     console.log(`${dryRun ? 'dry-run ' : 'publish '} ${name}@${version} (tag ${tag})`);
-    run('npm', args, { stdio: 'inherit' });
-    done++;
+    try {
+      process.stdout.write(run('npm', args, { stdio: ['ignore', 'pipe', 'pipe'] }));
+      done++;
+    } catch (error) {
+      const text = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+      // The registry accepts a publish (202) and makes it readable a few minutes later, so a re-run can
+      // find a package that is "not there" to `npm view` yet but is already published.
+      if (/cannot publish over the previously published versions?/i.test(text)) {
+        console.log(`skip     ${name}@${version} (accepted earlier; not readable yet)`);
+        skipped++;
+        continue;
+      }
+      process.stderr.write(text);
+      throw error;
+    }
   }
   console.log(
     `\n${done} ${dryRun ? 'checked' : 'published'}, ${skipped} skipped, of ${packages.length}.`,

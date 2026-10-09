@@ -68,14 +68,22 @@ fi
 step "Publish"
 node scripts/publish-all.mjs --tag "$TAG"
 
-step "Verify (every package must now be on the registry)"
-missing=0
+step "Verify (every package must be readable on the registry)"
+# The registry accepts a publish (HTTP 202) and only serves it a few minutes later, so poll instead of
+# failing on the first 404.
 version=$(node -p "require('./packages/core/package.json').version")
-while read -r name; do
-  got=$(npm view "$name@$version" version 2>/dev/null || true)
-  if [ "$got" != "$version" ]; then echo "MISSING $name@$version"; missing=$((missing + 1)); fi
-done < <(node scripts/check-publishable.mjs --list)
-[ "$missing" = 0 ] || die "$missing package(s) not on the registry — re-run to retry"
+deadline=$((SECONDS + 900))
+while :; do
+  missing=()
+  while read -r name; do
+    got=$(npm view "$name@$version" version --prefer-online 2>/dev/null || true)
+    [ "$got" = "$version" ] || missing+=("$name")
+  done < <(node scripts/check-publishable.mjs --list)
+  [ "${#missing[@]}" = 0 ] && break
+  [ "$SECONDS" -lt "$deadline" ] || die "still not readable after 15 min: ${missing[*]} — re-run to retry"
+  echo "waiting for the registry: ${#missing[@]} package(s) not readable yet"
+  sleep 30
+done
 echo "all published at $version"
 
 if [ "$TRUST" = 1 ]; then
