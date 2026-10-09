@@ -9,6 +9,7 @@
 // npm may ask for a 2FA code per call; pass `--otp <code>` to reuse a fresh one, or run it with an
 // auth session that skips it.
 import { execFileSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { loadPackages } from './check-publishable.mjs';
 
 const REPO = 'bugsee/bugsee-javascript';
@@ -16,10 +17,22 @@ const WORKFLOW = 'release.yml';
 const argv = process.argv.slice(2);
 const dryRun = argv.includes('--dry-run');
 const otpIndex = argv.indexOf('--otp');
-const otp = otpIndex === -1 ? undefined : argv[otpIndex + 1];
+let otp = otpIndex === -1 ? undefined : argv[otpIndex + 1];
 
 const npm = (args) =>
   execFileSync('npm', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+/** Ask for a fresh 2FA code. A TOTP code lives ~30s, so it is reused until npm says it expired. */
+async function askOtp() {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question('npm 2FA code: ')).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+const isOtpError = (error) => /EOTP|one-time password/i.test(String(error.stderr ?? error.message));
 
 let configured = 0;
 let skipped = 0;
@@ -27,32 +40,33 @@ const failures = [];
 
 for (const { json } of loadPackages()) {
   const name = json.name;
-  try {
-    const existing = npm(['trust', 'list', name, '--json']);
-    if (existing.includes(WORKFLOW)) {
-      console.log(`skip     ${name} (already trusts ${WORKFLOW})`);
-      skipped++;
-      continue;
-    }
-  } catch {
-    // no relationship yet (or list unsupported for this package) — fall through and try to create it
-  }
   const args = ['trust', 'github', name, '--file', WORKFLOW, '--repo', REPO, '--yes'];
   if (dryRun) args.push('--dry-run');
-  if (otp) args.push('--otp', otp);
-  try {
-    npm(args);
-    console.log(`${dryRun ? 'dry-run ' : 'trusted '} ${name}`);
-    configured++;
-  } catch (error) {
-    failures.push(name);
-    console.error(
-      `FAILED   ${name}: ${
-        String(error.stderr ?? error.message)
-          .split('\n')
-          .find((l) => l.includes('npm error')) ?? error.message
-      }`,
-    );
+  let attempts = 0;
+  for (;;) {
+    try {
+      npm(otp ? [...args, '--otp', otp] : args);
+      console.log(`${dryRun ? 'dry-run ' : 'trusted '} ${name}`);
+      configured++;
+      break;
+    } catch (error) {
+      // A missing or expired code: ask once more and retry this package (max 3 asks per package).
+      if (isOtpError(error) && process.stdin.isTTY && attempts++ < 3) {
+        otp = await askOtp();
+        continue;
+      }
+      if (/already|exists|conflict|409/i.test(String(error.stderr ?? ''))) {
+        console.log(`skip     ${name} (a trusted publisher is already configured)`);
+        skipped++;
+        break;
+      }
+      failures.push(name);
+      const line = String(error.stderr ?? error.message)
+        .split('\n')
+        .find((l) => l.includes('npm error'));
+      console.error(`FAILED   ${name}: ${line ?? error.message}`);
+      break;
+    }
   }
 }
 console.log(`\n${configured} configured, ${skipped} skipped, ${failures.length} failed.`);
