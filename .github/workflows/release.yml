@@ -38,16 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # @bugsee/rrweb inlines a prebuilt bundle from the PRIVATE github:bugsee/rrweb fork at build
-      # time, and the default GITHUB_TOKEN cannot read another private repository. REPO_READ_TOKEN is a
-      # read-only token (fine-grained PAT or app token) for that one repository.
-      - name: Allow git to read private dependencies
-        env:
-          REPO_READ_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${REPO_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git config --global --add url."https://x-access-token:${REPO_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
