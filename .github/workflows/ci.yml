@@ -11,8 +11,8 @@ name: CI
 # also holds other repositories' checkouts and credentials. The org's runner group refuses public
 # repositories for exactly that reason (allows_public_repositories=false), so a self-hosted label here
 # would not even start. Standard GitHub-hosted runners are free for public repositories, which also
-# removes the old "hosted minutes are exhausted" constraint. macOS arm64 keeps parity with how the
-# gate is developed (`pnpm ci:local`).
+# removes the old "hosted minutes are exhausted" constraint. Linux runners (ubuntu-latest) are the
+# cheapest and most plentiful; `pnpm ci:local` runs the same gate on a developer's Mac.
 #
 # What follows from hosted runners: every run starts on a clean VM, so there is no leaked-process or
 # stale-port hygiene to do between runs (the port steps in the e2e job are kept; they are cheap and
@@ -36,7 +36,7 @@ concurrency:
 jobs:
   check:
     name: Lint · Typecheck · Cycles · Coverage
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     # The runner is shared. Without a bound, a hung vitest worker holds it against
     # every other repo's queue until someone notices by hand.
     timeout-minutes: 45
@@ -108,7 +108,7 @@ jobs:
   # Hosted runners are provisioned per job, so the two jobs run in parallel.
   e2e:
     name: E2E (node · bun · deno · real frameworks)
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

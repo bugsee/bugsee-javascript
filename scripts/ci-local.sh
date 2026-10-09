@@ -37,8 +37,9 @@ yellow() { printf '\033[33m%s\033[0m\n' "$1"; }
 # The runner uses Node 22 (pinned in the workflow). A different major here is a real source of
 # divergence — a syntax or API difference can pass locally and fail there, or vice versa.
 #
-# CI runs on GitHub-hosted macOS (arm64), so the OS and architecture match this machine, which makes
-# this script a close stand-in. The Node major is the main thing left to diverge.
+# CI runs on GitHub-hosted Linux (ubuntu-latest) and this script usually runs on macOS, so an
+# OS-specific difference (paths, case sensitivity, a missing binary) can pass here and fail there.
+# The Node major is the other thing that can diverge.
 CI_NODE_MAJOR=22
 LOCAL_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "$LOCAL_NODE_MAJOR" != "$CI_NODE_MAJOR" ]; then
