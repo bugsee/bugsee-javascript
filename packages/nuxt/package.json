@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/nuxt",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/nuxt"
+  },
   "description": "Nuxt meta-adapter: a Nuxt Module wiring @bugsee/vue (client) + @bugsee/node (Nitro node server) + @bugsee/vercel-edge (Nitro edge preset)",
   "type": "module",
   "main": "./src/index.ts",
@@ -87,7 +91,8 @@
           "default": "./dist/nitro-edge.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   },
   "peerDependencies": {
     "@nuxt/kit": ">=3.0.0",

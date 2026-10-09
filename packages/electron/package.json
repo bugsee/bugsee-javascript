@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/electron",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/electron"
+  },
   "description": "Electron SDK: converges the main (Node), renderer (Chromium) and native (crashReporter) layers into one Bugsee session. See docs/design/electron.md.",
   "type": "module",
   "main": "./src/index.ts",
@@ -90,6 +94,7 @@
           "default": "./dist/main.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

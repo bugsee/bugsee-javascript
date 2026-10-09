@@ -1,0 +1,76 @@
+name: Release
+
+# Publishes every @bugsee package to npm through TRUSTED PUBLISHING (OIDC) — there is no npm token in
+# this repository. Each package on npm has this workflow file registered as its trusted publisher
+# (`node scripts/npm-trust-all.mjs`), so npm accepts the short-lived identity token GitHub mints for
+# this run and nothing long-lived exists to leak.
+#
+# ⚠️ GITHUB-HOSTED RUNNER ON PURPOSE. CI runs on a self-hosted macOS runner, but npm trusted
+# publishing does not support self-hosted runners (docs.npmjs.com/trusted-publishers), so this one job
+# uses ubuntu-latest. It is manual-only, so it spends hosted minutes only on an actual release.
+#
+# The file NAME is part of the trust relationship. Renaming it silently breaks publishing until every
+# package is re-registered.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: npm dist-tag to publish under
+        default: latest
+        required: true
+      dry_run:
+        description: Pack and `npm publish --dry-run` only — publishes nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token npm exchanges for publish rights
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # @bugsee/rrweb inlines a prebuilt bundle from the PRIVATE github:bugsee/rrweb fork at build
+      # time, and the default GITHUB_TOKEN cannot read another private repository. REPO_READ_TOKEN is a
+      # read-only token (fine-grained PAT or app token) for that one repository.
+      - name: Allow git to read private dependencies
+        env:
+          REPO_READ_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${REPO_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:${REPO_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1; fail loudly rather than fall back to a token prompt.
+      - name: Check npm version
+        run: |
+          npm --version
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm >= 11.5.1 required"); process.exit(1) }' "$(npm --version)"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Release gate (metadata + one version)
+        run: pnpm check:publishable
+
+      - name: Build
+        run: pnpm exec turbo run build
+
+      - name: Publish
+        run: node scripts/publish-all.mjs --tag "${{ inputs.tag }}" ${{ inputs.dry_run && '--dry-run' || '' }}

@@ -18,6 +18,7 @@ import {
   installNetworkCapture,
 } from '@bugsee/capture';
 import {
+  BUGSEE_SDK_VERSION,
   type BugseeClient,
   type BundleStore,
   BundleStoreToken,
@@ -73,7 +74,7 @@ import {
 // ctx.waitUntil). Remaining follow-up: persisting the ROLLING capture buffer across activations (an IDB chunk
 // capture store + marker recovery — only the rarer cross-activation case). The returned client IS the surface.
 
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = BUGSEE_SDK_VERSION;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Browser/worker capture buffer ceiling (design §966: 10 MB on browser/worker).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;

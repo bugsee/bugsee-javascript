@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/service",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/service"
+  },
   "description": "Service / Provider / ServiceContainer registry",
   "type": "module",
   "main": "./src/index.ts",
@@ -41,6 +45,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

@@ -10,6 +10,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
   type BundleAssemblyContext,
@@ -120,7 +121,7 @@ import { buildTracePropagationDecorator } from './trace-propagation';
 // Each option toggle gates its provider via the coordinator; the returned client IS the public
 // surface (event/trace/log/addBreadcrumb/logException/setUserIdentifier/stop/flush).
 
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = BUGSEE_SDK_VERSION;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 3000;
 // Node/Electron capture buffer ceiling (design §966: 50 MB on Node, 10 MB on browser/edge).

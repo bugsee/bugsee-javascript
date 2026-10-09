@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/webview",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/webview"
+  },
   "description": "Advanced JS SDK for embedded native WebViews: streams capture across the WebView boundary to the hosting native Bugsee SDK (Android-first)",
   "type": "module",
   "main": "./src/index.ts",
@@ -46,6 +50,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

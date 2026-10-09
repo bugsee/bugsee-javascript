@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/astro",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/astro"
+  },
   "description": "Astro meta-adapter: an Integration (astro:config:setup) wiring a browser launch + a middleware (error capture + trace) + server/edge init",
   "type": "module",
   "main": "./src/index.ts",
@@ -94,7 +98,8 @@
           "default": "./dist/edge.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",

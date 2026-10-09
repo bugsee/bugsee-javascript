@@ -21,10 +21,11 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "check:cycles": "madge --circular --extensions ts packages",
+    "check:publishable": "node scripts/check-publishable.mjs",
     "mutation": "turbo run mutation",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build && changeset publish",
+    "release": "turbo run build && node scripts/publish-all.mjs",
     "test:mutation": "node scripts/mutation.mjs",
     "ci:local": "bash scripts/ci-local.sh"
   },

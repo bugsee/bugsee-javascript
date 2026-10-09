@@ -74,6 +74,11 @@ jobs:
       - name: Dependency cycles (madge)
         run: pnpm check:cycles
 
+      # Every publishable package is public, carries npm's metadata and ships the one version the SDK
+      # reports about itself — so a release never discovers a drift at publish time.
+      - name: Publishable packages
+        run: pnpm check:publishable
+
       # Per-package coverage gate (turbo runs each package's own test:coverage,
       # each enforcing 100% line/fn/stmt + ≥90% branch). NOT the root merged
       # `pnpm test:coverage`, whose single aggregate threshold the scaffold-only

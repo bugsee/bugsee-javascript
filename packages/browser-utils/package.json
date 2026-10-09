@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/browser-utils",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/browser-utils"
+  },
   "description": "fetch transport + IndexedDB storage + DOM helpers shared by browser/web-worker/service-worker",
   "type": "module",
   "main": "./src/index.ts",
@@ -46,6 +50,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

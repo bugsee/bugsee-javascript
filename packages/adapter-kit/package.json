@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/adapter-kit",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/adapter-kit"
+  },
   "description": "Shared runtime-portable primitives for the SSR meta-framework adapters (server-error bridge + trace-data)",
   "type": "module",
   "main": "./src/index.ts",
@@ -41,6 +45,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

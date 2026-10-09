@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/nextjs",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/nextjs"
+  },
   "description": "Next.js meta-adapter: client + server + edge entries",
   "type": "module",
   "main": "./src/index.ts",
@@ -124,6 +128,7 @@
           "default": "./dist/middleware.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/rrweb",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/rrweb"
+  },
   "description": "Thin swappable wrapper over the rrweb RECORD path (the Bugsee-hardened rrweb fork) — the single rrweb import point for @bugsee/replay + @bugsee/replay-canvas",
   "type": "module",
   "main": "./src/index.ts",
@@ -46,6 +50,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

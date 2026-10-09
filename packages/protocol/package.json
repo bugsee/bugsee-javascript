@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/protocol",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/protocol"
+  },
   "description": "Canonical wire shapes: types + sanitizer lists + shape redaction + option-key translator + enum maps",
   "type": "module",
   "main": "./src/index.ts",
@@ -45,6 +49,7 @@
         }
       },
       "./upload-contract.schema.json": "./upload-contract.schema.json"
-    }
+    },
+    "access": "public"
   }
 }

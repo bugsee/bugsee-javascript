@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/capture",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/capture"
+  },
   "description": "Cross-runtime capture sources (console/fetch interceptors) + runtime-agnostic capture providers",
   "type": "module",
   "main": "./src/index.ts",
@@ -44,6 +48,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

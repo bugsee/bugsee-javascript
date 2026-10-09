@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/bugsee",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/bugsee"
+  },
   "description": "Batteries-included umbrella: the platform composition root + the on-by-default extensions (performance + opentelemetry) wired in, with per-runtime (browser/node) exports conditions",
   "type": "module",
   "main": "./src/index.ts",
@@ -224,7 +228,8 @@
           "default": "./dist/index.worker.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",

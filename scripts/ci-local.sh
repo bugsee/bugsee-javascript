@@ -73,6 +73,7 @@ fi
 step "Lint (biome)" pnpm lint
 step "Typecheck (tsc)" pnpm typecheck
 step "Dependency cycles (madge)" pnpm check:cycles
+step "Publishable packages" pnpm check:publishable
 step "Test + per-package coverage gate (vitest)" pnpm exec turbo run test:coverage $FORCE
 step "Harness unit tests (vitest)" pnpm exec turbo run test:unit $FORCE
 

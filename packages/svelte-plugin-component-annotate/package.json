@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/svelte-plugin-component-annotate",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/svelte-plugin-component-annotate"
+  },
   "description": "Svelte preprocessor: annotate host elements with data-bugsee-component for component attribution",
   "type": "module",
   "main": "./src/index.ts",
@@ -44,6 +48,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

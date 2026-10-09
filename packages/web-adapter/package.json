@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/web-adapter",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/web-adapter"
+  },
   "description": "Shared utilities for the web framework adapters (client resolution, error reporting, route naming)",
   "type": "module",
   "main": "./src/index.ts",
@@ -44,6 +48,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

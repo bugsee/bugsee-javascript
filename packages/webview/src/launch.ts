@@ -20,6 +20,7 @@ import {
 } from '@bugsee/capture';
 import {
   type BreadcrumbFilter,
+  BUGSEE_SDK_VERSION,
   type BugseeClient,
   type CaptureStore,
   type Clock,
@@ -64,7 +65,7 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 // WebView-originated report TRIGGERING is gated behind `reportTrigger` (D5, default off) — wired in slice 2.
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
-export const SDK_VERSION = '0.1.0';
+export const SDK_VERSION = BUGSEE_SDK_VERSION;
 
 /**
  * The launched client, held HERE rather than on the process-global carrier.

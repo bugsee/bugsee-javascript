@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/core",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/core"
+  },
   "description": "SDK kernel (tier 1): Client, single global Environment, event hubs + EventEmitter, capture/detection providers + extension registry, capture aggregator/store, trigger + upload pipelines, BundleWriter",
   "type": "module",
   "main": "./src/index.ts",
@@ -44,6 +48,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

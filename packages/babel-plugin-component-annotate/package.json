@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/babel-plugin-component-annotate",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/babel-plugin-component-annotate"
+  },
   "description": "Babel plugin: annotate host JSX elements with data-bugsee-component for component attribution",
   "type": "module",
   "main": "./src/index.ts",
@@ -46,6 +50,7 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   }
 }

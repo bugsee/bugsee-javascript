@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/angular",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/angular"
+  },
   "description": "Angular adapter: ErrorHandler + Router naming",
   "type": "module",
   "main": "./src/index.ts",
@@ -55,7 +59,8 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   },
   "devDependencies": {
     "@bugsee/core": "workspace:*"

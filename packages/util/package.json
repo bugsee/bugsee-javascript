@@ -1,8 +1,12 @@
 {
   "name": "@bugsee/util",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bugsee/bugsee-javascript.git",
+    "directory": "packages/util"
+  },
   "description": "Pure utilities: env detection, Deferred, base64, sha256, deep-merge, json-safe-stringify, exponential-backoff, fflate re-export",
   "type": "module",
   "main": "./src/index.ts",
@@ -38,7 +42,8 @@
           "default": "./dist/index.cjs"
         }
       }
-    }
+    },
+    "access": "public"
   },
   "dependencies": {
     "fflate": "^0.8.3"
