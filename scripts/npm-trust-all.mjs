@@ -71,10 +71,13 @@ packages: for (const { json } of loadPackages()) {
       failures.push(name);
       consecutiveFailures++;
       if (consecutiveFailures >= 3) break packages;
-      const line = String(error.stderr ?? error.message)
+      // Every npm error line, not just the first: the code (E400) alone says nothing about the cause.
+      const detail = String(error.stderr ?? error.message)
         .split('\n')
-        .find((l) => l.includes('npm error'));
-      console.error(`FAILED   ${name}: ${line ?? error.message}`);
+        .filter((l) => l.includes('npm error'))
+        .map((l) => l.replace(/^npm error\s*/, ''))
+        .join(' | ');
+      console.error(`FAILED   ${name}: ${detail || error.message}`);
       break;
     }
   }
