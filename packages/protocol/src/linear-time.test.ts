@@ -144,12 +144,18 @@ describe('timePerCall', () => {
           calls += 1;
         },
         () => 0,
+        // A small cap: the production one (10^8) takes tens of seconds under coverage on a hosted
+        // runner. This still has to be reached by GROWING the batch, which is what is asserted below.
+        undefined,
+        100_000,
       ),
     ).toThrow(/never accumulated/);
 
     // And it must keep GROWING the batch while it tries. Without that the loop would give up after
     // 40 identical single-call attempts, and genuinely cheap work would never reach the floor.
     expect(calls).toBeGreaterThan(1_000);
+    // ...and stop at the cap rather than overshooting it (1 + 8 + 64 + ... summed is under 2x the cap).
+    expect(calls).toBeLessThan(300_000);
   });
 });
 

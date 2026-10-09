@@ -131,7 +131,9 @@ const MAX_SCALE_STEPS = 40;
  * iterations well before step 40, so the INNER loop spins forever and the escape above never runs.
  * A stopped clock hits this cap instead and fails in about a tenth of a second. Sized far above what
  * genuinely cheap work needs — a no-op batch this long already runs for ~100 ms, four times the
- * sample floor.
+ * sample floor. Injectable (`timePerCall`'s last parameter) because the stopped-clock test must reach
+ * it: 10^8 iterations is a tenth of a second bare but tens of seconds under V8 coverage on a hosted
+ * runner, so that test passes a small cap instead of paying for the real one.
  */
 const MAX_ITERATIONS = 1e8;
 
@@ -146,6 +148,7 @@ export const timePerCall = (
   fn: () => void,
   clock: () => number = now,
   minSampleMs: number = MIN_SAMPLE_MS,
+  maxIterations: number = MAX_ITERATIONS,
 ): number => {
   let iterations = 1;
   for (let step = 0; step < MAX_SCALE_STEPS; step += 1) {
@@ -158,11 +161,11 @@ export const timePerCall = (
       return elapsed / iterations;
     }
     // Scale toward the floor, but always advance: a zero reading would otherwise multiply by zero.
-    if (iterations >= MAX_ITERATIONS) {
+    if (iterations >= maxIterations) {
       break;
     }
     iterations = Math.min(
-      MAX_ITERATIONS,
+      maxIterations,
       elapsed > 0
         ? Math.max(iterations + 1, Math.ceil(iterations * (minSampleMs / elapsed)))
         : iterations * 8,
