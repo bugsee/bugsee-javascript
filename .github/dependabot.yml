@@ -25,6 +25,27 @@ updates:
       # test suite) and the pinned $schema in biome.json. Take it as a deliberate change, not in a group.
       - dependency-name: '@biomejs/biome'
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
+      # The bundler plugins SPAWN this binary and depend on its flag contract (`sourcemaps inject`,
+      # `debug-files upload --allow-empty`, ...). 0.x minors are breaking; bump it by hand, against the
+      # real CLI, together with `minimumReleaseAgeExclude` in pnpm-workspace.yaml.
+      - dependency-name: '@bugsee/bugsee-cli'
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
+      # React, react-dom and their typings move together; a lone bump produces an invalid pair (react-dom
+      # 19 with react 18). Adapters declare `react >= 18`, so a major is a compatibility decision.
+      - dependency-name: 'react'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'react-dom'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/react'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/react-dom'
+        update-types: ['version-update:semver-major']
+      # A compiler rewrite (7.x), and every package typechecks with it: take it deliberately.
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      # @bugsee/nuxt declares `@nuxt/kit >= 3`; the dev copy is what proves the v3 path.
+      - dependency-name: '@nuxt/kit'
+        update-types: ['version-update:semver-major']
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
       - dependency-name: 'next'
