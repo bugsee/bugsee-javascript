@@ -16,3 +16,22 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    # Majors of the things we TEST AGAINST are a compatibility decision, not a routine bump: each one
+    # needs the adapter, its declared peer range and its e2e harness updated together (see the daily
+    # compat-watch issue). `@types/node` is held at the oldest Node we build on: its typings decide
+    # which APIs shared code may call, and the SDK supports Node >= 18.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'next'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'astro'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@astrojs/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@nestjs/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@sveltejs/kit'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'preact'
+        update-types: ['version-update:semver-major']
