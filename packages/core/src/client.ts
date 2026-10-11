@@ -1,3 +1,4 @@
+import type { FileType } from '@bugsee/protocol';
 import {
   type EnvironmentEnvelope,
   type LogLevel,
@@ -171,6 +172,18 @@ export interface UploadOptions {
   trigger?: 'code_upload' | 'code_dialog';
 }
 
+/**
+ * A report prepared ahead of time (Android: the report is built BEFORE the dialog is shown). The capture
+ * is frozen at the moment of preparation, so what the user does while filling in a form never pushes the
+ * incident out of the rolling buffer or into the report.
+ */
+export interface PreparedUpload {
+  /** Send the report, carrying the capture as it was when prepared. At most once; `{ ok: false }` after. */
+  send(options?: UploadOptions): Promise<UploadResult>;
+  /** Release the frozen capture without sending anything. */
+  discard(): void;
+}
+
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
 export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar {
   registerExt<K extends keyof NameExtensionMapping>(name: K, api: NameExtensionMapping[K]): void;
@@ -218,6 +231,12 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * (`{ ok: false }`) after `stop()` or once the SDK has been killed.
    */
   upload(options?: UploadOptions): Promise<UploadResult>;
+
+  /**
+   * Freeze the capture NOW and return a handle that sends it later (the report dialog uses this, as the
+   * mobile SDKs do). `null` after `stop()` or once the SDK has been killed.
+   */
+  prepareUpload(): PreparedUpload | null;
 
   // Lifecycle (§7.1).
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
@@ -425,6 +444,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // classifies as `permanent` (drop this bundle) and leaves the client recording.
   let killed = false;
   let tickTimer: unknown = null;
+  // Captures frozen by `prepareUpload`, keyed by the request they will be sent with (see assemble).
+  const frozenCaptures = new WeakMap<
+    ReportingRequest,
+    Promise<Map<FileType, CaptureDataEntry[]>>
+  >();
+  let collectCapture: (owner?: string) => Promise<Map<FileType, CaptureDataEntry[]>> = async () =>
+    new Map();
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
@@ -435,18 +461,20 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   }
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
-    const assemble = async (request: ReportingRequest): Promise<Bundle> => {
-      // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
-      // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
-      // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
-      // where the partitioned store is a no-op and this is byte-identical to an unscoped drain.
-      const reportContext = reportContexts.get(request);
+    // The captured data for a report: the exporter's drain plus the report-time snapshot sources (e.g. the
+    // DOM viewtree). Used LIVE at assembly, and EARLY by `prepareUpload` so the dialog's report is the
+    // moment it was opened, not the moment Send was pressed.
+    //
+    // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable Objects)
+    // an unscoped drain would put every other tenant's capture into this bundle — the leak proven on real
+    // workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else, where the
+    // partitioned store is a no-op and this is byte-identical to an unscoped drain.
+    collectCapture = async (owner?: string): Promise<Map<FileType, CaptureDataEntry[]>> => {
       const capturedByType = await captureExporter.drain(
-        reportContext?.owner !== undefined ? { owner: reportContext.owner } : undefined,
+        owner !== undefined ? { owner } : undefined,
       );
-      // Merge report-time snapshots (e.g. the DOM viewtree) into the drained map. Each source is
-      // isolated: a throw goes to onError and the report still uploads (a missing snapshot must never
-      // block delivery).
+      // Merge report-time snapshots into the drained map. Each source is isolated: a throw goes to
+      // onError and the report still uploads (a missing snapshot must never block delivery).
       if (options.reportSnapshots !== undefined) {
         const snapshotAt = clock.wallNow();
         for (const source of options.reportSnapshots) {
@@ -464,6 +492,20 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           }
         }
       }
+      return capturedByType;
+    };
+    const assemble = async (request: ReportingRequest): Promise<Bundle> => {
+      // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
+      // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
+      // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
+      // where the partitioned store is a no-op and this is byte-identical to an unscoped drain.
+      const reportContext = reportContexts.get(request);
+      // A prepared upload carries the capture it froze; anything else drains live. A frozen capture that
+      // could not be read falls back to the live one — a stale-but-present report beats none.
+      const frozen = frozenCaptures.get(request);
+      const capturedByType =
+        (frozen !== undefined ? await frozen.catch(() => undefined) : undefined) ??
+        (await collectCapture(reportContext?.owner));
       const captured = reportContext;
       // Submit-time identity (see reportIdentity). Absent only on a hypothetical assembly that did not
       // come through submitReport, where reading the Environment live is the previous behaviour and a
@@ -490,6 +532,31 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
+
+  // Build, filter and submit a report someone explicitly asked for (`upload` / a prepared upload).
+  const sendUpload = (
+    uploadOptions: UploadOptions,
+    frozen?: Promise<Map<FileType, CaptureDataEntry[]>>,
+  ): Promise<UploadResult> => {
+    const request = createReportingRequest({
+      source: { type: uploadOptions.trigger ?? 'code_upload' },
+      ...(uploadOptions.summary !== undefined ? { summary: uploadOptions.summary } : {}),
+      ...(uploadOptions.description !== undefined
+        ? { description: uploadOptions.description }
+        : {}),
+      ...(uploadOptions.severity !== undefined ? { severity: uploadOptions.severity } : {}),
+      ...(uploadOptions.labels !== undefined ? { labels: uploadOptions.labels } : {}),
+      ...(uploadOptions.email !== undefined ? { email: uploadOptions.email } : {}),
+    });
+    const handled = applyReportBefore(request);
+    if (handled === null) {
+      return Promise.resolve({ ok: false }); // vetoed by the report handler
+    }
+    if (frozen !== undefined) {
+      frozenCaptures.set(handled, frozen);
+    }
+    return submitReport(handled);
+  };
 
   // In-flight report promises (logException + detection submissions). A report promise resolves
   // only after its full path completes (assemble → enqueue → upload), so flush()/stop() await these
@@ -846,21 +913,38 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
-      const request = createReportingRequest({
-        source: { type: uploadOptions.trigger ?? 'code_upload' },
-        ...(uploadOptions.summary !== undefined ? { summary: uploadOptions.summary } : {}),
-        ...(uploadOptions.description !== undefined
-          ? { description: uploadOptions.description }
-          : {}),
-        ...(uploadOptions.severity !== undefined ? { severity: uploadOptions.severity } : {}),
-        ...(uploadOptions.labels !== undefined ? { labels: uploadOptions.labels } : {}),
-        ...(uploadOptions.email !== undefined ? { email: uploadOptions.email } : {}),
-      });
-      const handled = applyReportBefore(request);
-      if (handled === null) {
-        return Promise.resolve({ ok: false }); // vetoed by the report handler
+      return sendUpload(uploadOptions);
+    },
+
+    prepareUpload(): PreparedUpload | null {
+      if (stopped || killed) {
+        return null;
       }
-      return submitReport(handled);
+      // Freeze the capture now. The tenant scope is the one the eventual report will carry: the active
+      // request context at THIS call (a dialog is opened from the context it was asked for in).
+      let owner: string | undefined;
+      try {
+        owner = contextProvider?.getCurrent()?.owner;
+      } catch {
+        owner = undefined;
+      }
+      const frozen = collectCapture(owner);
+      // A rejected freeze is handled at assembly (live-drain fallback); this keeps it from being reported
+      // as unhandled in the meantime.
+      frozen.catch(() => undefined);
+      let spent = false;
+      return {
+        send(sendOptions: UploadOptions = {}): Promise<UploadResult> {
+          if (spent || stopped || killed) {
+            return Promise.resolve({ ok: false });
+          }
+          spent = true;
+          return sendUpload(sendOptions, frozen);
+        },
+        discard(): void {
+          spent = true;
+        },
+      };
     },
 
     isLaunched(): boolean {

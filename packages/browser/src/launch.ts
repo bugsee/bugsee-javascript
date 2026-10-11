@@ -65,6 +65,7 @@ import { createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
   createReportDialogLauncher,
+  parseSeverityName,
   type ReportDialogOptions,
   type SeverityName,
 } from './report-dialog';
@@ -725,13 +726,25 @@ export async function launchCore(
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
   const reportUi = resolved.options;
+  // The default bug priority comes from an unvalidated launch option: a typo ('urgent') or a number must
+  // not leave a report with no severity at all, so it is normalised once, here, with a warning.
+  const configuredPriority = reportUi.get(BugseeOption.ReportingDefaultBugPriority, 'high');
+  const defaultSeverity = parseSeverityName(configuredPriority) ?? 'high';
+  if (parseSeverityName(configuredPriority) === undefined) {
+    options.onError?.(
+      new Error(
+        `reportDefaultBugPriority must be one of low | medium | high | critical | blocker (got ${String(configuredPriority)}); using high`,
+      ),
+    );
+  }
   const showReportDialog = createReportDialogLauncher({
     // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.
     document: domDocument as Document,
-    upload: (uploadOptions) => client.upload(uploadOptions),
+    prepare: () => client.prepareUpload(),
     isLaunched: () => domDocument !== undefined && client.isLaunched(),
     getUserIdentifier: () => client.getUserIdentifier(),
     setUserIdentifier: (email) => client.setUserIdentifier(email),
+    clearUserIdentifier: () => client.clearUserIdentifier(),
     sdkVersion: SDK_VERSION,
     ui: {
       summaryRequired: reportUi.get(BugseeOption.ReportingUiSummaryRequired, false),
@@ -740,15 +753,15 @@ export async function launchCore(
       labelsEnabled: reportUi.get(BugseeOption.ReportingUiLabelsEnabled, false),
       labelsRequired: reportUi.get(BugseeOption.ReportingUiLabelsRequired, false),
       prioritySelectorEnabled: reportUi.get(BugseeOption.ReportingUiPrioritySelectorEnabled, false),
-      defaultSeverity: reportUi.get(
-        BugseeOption.ReportingDefaultBugPriority,
-        'high',
-      ) as SeverityName,
+      defaultSeverity,
     },
   });
   const publicClient: Bugsee = {
     ...client,
     showReportDialog,
+    // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
+    upload: (uploadOptions) =>
+      client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
     stop(timeout?: number): Promise<boolean> {
       setCarrierClient(undefined, carrier);
       uninstallPageHideFlush();

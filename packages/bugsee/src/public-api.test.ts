@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 // Type-level assertions: these imports fail `tsc --noEmit` (the typecheck gate) if the umbrella stops
 // re-exporting the curated manual-instrumentation argument types — that is the "mutation catch" for a
 // type-only export, which has no runtime footprint to assert on.
-import type { AttributeValue, Breadcrumb, BreadcrumbInput, LogExceptionOptions } from './index';
+import type {
+  AttributeValue,
+  Breadcrumb,
+  BreadcrumbInput,
+  LogExceptionOptions,
+  ReportDialogOptions,
+  ReportDialogStrings,
+  UploadOptions,
+} from './index';
 import * as publicApi from './index';
 
 describe('@bugsee/bugsee public API surface', () => {
@@ -17,5 +25,12 @@ describe('@bugsee/bugsee public API surface', () => {
     const crumb = {} as Breadcrumb;
     const options = {} as LogExceptionOptions;
     expect([attr, input, crumb, options]).toHaveLength(4);
+  });
+
+  it('re-exports the types of the manual-report API (upload) and of the report dialog', () => {
+    const upload = {} as UploadOptions;
+    const dialog = {} as ReportDialogOptions;
+    const strings = {} as ReportDialogStrings;
+    expect([upload, dialog, strings]).toHaveLength(3);
   });
 });

@@ -58,6 +58,7 @@ export {
   type CreateClientOptions,
   createClient,
   type LogExceptionOptions,
+  type PreparedUpload,
   type ReportSnapshotSource,
   type Scheduler,
   SchedulerToken,

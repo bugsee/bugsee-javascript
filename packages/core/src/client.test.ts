@@ -2035,6 +2035,37 @@ describe('createClient — per-tenant capture isolation', () => {
     expect(text).not.toContain('SECRET-OF-B');
   });
 
+  it('a prepared upload freezes only the tenant it was prepared in', async () => {
+    let current: RequestContext | undefined;
+    const store = createPartitionedCaptureStore({
+      createPartition: () => createMemoryCaptureStore(),
+    });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      captureStore: store,
+      contextProvider: { getCurrent: () => current },
+    });
+    current = { contextId: 'ca', owner: 'tenant-A' };
+    client.log('SECRET-OF-A');
+    current = { contextId: 'cc', owner: 'tenant-C' };
+    client.log('MINE-IN-C');
+
+    await client.prepareUpload()?.send({ summary: 'from C' });
+
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as { body: Uint8Array }).body) as Record<
+      string,
+      Uint8Array
+    >;
+    const text = Object.values(files)
+      .map((b) => strFromU8(b))
+      .join('\n');
+    expect(text).toContain('MINE-IN-C');
+    expect(text).not.toContain('SECRET-OF-A');
+  });
+
   it('with no owners in play, the bundle still carries everything (single-tenant unchanged)', async () => {
     const store = createPartitionedCaptureStore({
       createPartition: () => createMemoryCaptureStore(),
@@ -2138,5 +2169,134 @@ describe('createClient — upload (manual report)', () => {
 
     expect(await client.upload({ summary: 'late' })).toEqual({ ok: false });
     expect(enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe('createClient — prepareUpload (capture frozen at preparation)', () => {
+  const setup = () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    const log = (msg: string, at: number) =>
+      client.captureAggregator.addEntry(new CaptureDataEntryBase('log', at, { msg }));
+    const sentLogs = (): string[] => {
+      const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+      const raw = files['logs.json'];
+      return raw === undefined
+        ? []
+        : (JSON.parse(strFromU8(raw)) as Array<{ msg: string }>).map((e) => e.msg);
+    };
+    return { client, enqueue, log, sentLogs };
+  };
+
+  it('sends the capture as it was when prepared, not as it is when sent', async () => {
+    const { client, log, sentLogs } = setup();
+    log('before the dialog', 1);
+
+    const prepared = client.prepareUpload();
+    log('typed into the dialog', 2);
+    await prepared?.send({ summary: 'bug', trigger: 'code_dialog' });
+
+    expect(sentLogs()).toEqual(['before the dialog']);
+  });
+
+  it('builds the same report fields as upload()', async () => {
+    const { client, enqueue } = setup();
+    const prepared = client.prepareUpload();
+
+    await prepared?.send({
+      summary: 's',
+      description: 'd',
+      severity: 'critical',
+      labels: ['x'],
+      email: 'a@b.co',
+      trigger: 'code_dialog',
+    });
+
+    const request = JSON.parse(
+      strFromU8(
+        unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body)['request.json'] as Uint8Array,
+      ),
+    ) as Record<string, unknown>;
+    expect(request).toMatchObject({
+      summary: 's',
+      description: 'd',
+      severity: 4,
+      labels: ['x'],
+      email: 'a@b.co',
+    });
+    expect((request.source as { type: string }).type).toBe('code_dialog');
+  });
+
+  it('runs the report handler at send time, and a veto still vetoes', async () => {
+    const { client, enqueue } = setup();
+    client.setReportHandler({ before: () => null });
+    const prepared = client.prepareUpload();
+
+    expect(await prepared?.send({ summary: 'x' })).toEqual({ ok: false });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('sends at most once, and not after a discard', async () => {
+    const { client, enqueue } = setup();
+    const first = client.prepareUpload();
+    await first?.send();
+    expect(await first?.send()).toEqual({ ok: false });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+
+    const second = client.prepareUpload();
+    second?.discard();
+    expect(await second?.send()).toEqual({ ok: false });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('is unavailable after stop()', async () => {
+    const { client } = setup();
+    client.launch();
+    await client.stop();
+
+    expect(client.prepareUpload()).toBeNull();
+  });
+
+  it('still prepares and reports ok:false on a client with no upload pipeline', async () => {
+    const client = createClient();
+
+    expect(await client.prepareUpload()?.send({ summary: 'nowhere to go' })).toEqual({ ok: false });
+  });
+
+  it('prepares even when the context provider throws (a broken binding never breaks reporting)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      contextProvider: {
+        getCurrent: () => {
+          throw new Error('binding broke');
+        },
+      },
+    });
+
+    expect(await client.prepareUpload()?.send({ summary: 'ok' })).toEqual({ ok: true });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a live drain when the frozen capture could not be read', async () => {
+    const { client, enqueue } = setup();
+    const store = client.getService(CaptureStoreToken);
+    vi.spyOn(store, 'snapshot').mockImplementationOnce(() => {
+      throw new Error('snapshot failed');
+    });
+    const prepared = client.prepareUpload();
+
+    const result = await prepared?.send({ summary: 'still sent' });
+
+    expect(result).toEqual({ ok: true });
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 });

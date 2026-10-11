@@ -1,20 +1,27 @@
-import type { UploadOptions, UploadResult } from '@bugsee/core';
+import type { PreparedUpload, UploadResult } from '@bugsee/core';
 import { DEFAULT_REPORT_DIALOG_STRINGS, type ReportDialogStrings } from './report-dialog-strings';
-import { REPORT_DIALOG_CSS } from './report-dialog-styles';
+import { REPORT_DIALOG_CLASS_PREFIX, REPORT_DIALOG_CSS } from './report-dialog-styles';
 
 // The browser's `showReportDialog()` — the web counterpart of the mobile SDKs' report form (Android
 // `BugReportingActivity`, iOS `BGSReportController`). Same fields, order, strings and validation; shown
 // as a modal over a shaded page rather than full screen. Design: docs/design/report-dialog.md.
 //
 // Hard rules this file keeps:
-//   - the UI lives in ONE shadow root on ONE host element, so page CSS cannot restyle it;
+//   - the UI lives in ONE shadow root on ONE host element, so page CSS cannot accidentally restyle it.
+//     Embedders restyle it ON PURPOSE through three doors: every element carries a `bugsee-reporting-
+//     dialog-*` class AND the same name as a `part` (so `host::part(bugsee-reporting-dialog-card)` works
+//     from the page's own stylesheet), every colour is a `--bugsee-reporting-dialog-*` custom property,
+//     and `showReportDialog({ css })` appends a stylesheet inside the shadow root;
 //   - it is built with DOM APIs only, so user text is never parsed as HTML;
 //   - it sits in the TOP LAYER (`<dialog>.showModal()`), above every z-index and above any modal the page
 //     already has open; the fixed/max-z-index fallback exists only for browsers without `showModal`;
-//   - it never throws into the host page: a dialog that cannot be built resolves `null`.
+//   - the report is PREPARED when the dialog opens (the capture is frozen then), so what the user does
+//     while typing never pushes the incident out of the rolling buffer;
+//   - it never throws into the host page: a dialog that cannot be built resolves `null` and leaves no
+//     trace (no host element, no scroll lock).
 
 /** A severity by name; `low` and `verylow` are the same wire value. */
-export type SeverityName = NonNullable<UploadOptions['severity']>;
+export type SeverityName = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
 
 export type { ReportDialogStrings } from './report-dialog-strings';
 export { DEFAULT_REPORT_DIALOG_STRINGS } from './report-dialog-strings';
@@ -23,7 +30,21 @@ export { DEFAULT_REPORT_DIALOG_STRINGS } from './report-dialog-strings';
 const SEVERITIES = ['low', 'medium', 'high', 'critical', 'blocker'] as const;
 type PickerSeverity = (typeof SEVERITIES)[number];
 
-/** Per-call options of {@link createReportDialogLauncher}'s function — `client.showReportDialog(options)`. */
+const ALL_SEVERITIES: readonly string[] = ['verylow', ...SEVERITIES];
+
+/**
+ * A severity name from untrusted input (a launch option, a per-call option): the canonical name, or
+ * `undefined` for anything else. Case and surrounding space are forgiven; a number or `'urgent'` is not.
+ */
+export function parseSeverityName(value: unknown): SeverityName | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const name = value.trim().toLowerCase();
+  return ALL_SEVERITIES.includes(name) ? (name as SeverityName) : undefined;
+}
+
+/** Per-call options of `client.showReportDialog(options)`. */
 export interface ReportDialogOptions {
   /** Pre-fill the summary. */
   summary?: string;
@@ -37,6 +58,12 @@ export interface ReportDialogOptions {
   strings?: Partial<ReportDialogStrings>;
   /** `auto` follows the system colour scheme (default); `light` / `dark` pin it. */
   theme?: 'auto' | 'light' | 'dark';
+  /**
+   * Extra CSS, appended inside the dialog's shadow root after the built-in styles. Write ordinary rules
+   * against the `bugsee-reporting-dialog-*` classes, e.g. `.bugsee-reporting-dialog-send { color: navy }`.
+   * (Rules in the PAGE's stylesheet reach the dialog through `::part(...)` and custom properties only.)
+   */
+  css?: string;
 }
 
 /** The reporting-UI launch options, resolved (see `reportSummaryRequired` … `reportDefaultBugPriority`). */
@@ -53,12 +80,13 @@ export interface ReportDialogUiOptions {
 /** What the dialog needs from the client and the page — injected so it is testable without either. */
 export interface ReportDialogDeps {
   document: Document;
-  /** Submit the report (`client.upload`). */
-  upload(options: UploadOptions): Promise<UploadResult>;
+  /** Freeze the capture and return the report-in-waiting (`client.prepareUpload`); `null` = cannot. */
+  prepare(): PreparedUpload | null;
   /** The dialog does nothing, as on mobile, while the SDK is not running. */
   isLaunched(): boolean;
   getUserIdentifier(): string | null;
   setUserIdentifier(email: string): void;
+  clearUserIdentifier(): void;
   /** Shown in the footer as `v<sdkVersion>`. */
   sdkVersion: string;
   ui: ReportDialogUiOptions;
@@ -78,7 +106,7 @@ const LOGO_HORN =
   'm330.4 52.1c9.6-4.1 16.9-13 18.2-24.1s-3.5-21.5-11.9-27.8c-9.6 4.1-16.9 13-18.2 24.1s3.5 21.5 11.9 27.8z';
 const BUGSEE_URL = 'https://bugsee.com';
 
-const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
+const P = REPORT_DIALOG_CLASS_PREFIX;
 
 /** A severity the picker can show; `verylow` is the same wire value as `low`. */
 const pickerSeverity = (name: SeverityName): PickerSeverity => (name === 'verylow' ? 'low' : name);
@@ -122,10 +150,18 @@ interface Refs {
   close: HTMLButtonElement;
   confirm: HTMLElement;
   keep: HTMLButtonElement;
+  discard: HTMLButtonElement;
   fields: Partial<Record<FieldName, HTMLInputElement | HTMLTextAreaElement>>;
   errors: Partial<Record<FieldName, HTMLElement>>;
   radios: HTMLInputElement[];
 }
+
+const definedStrings = (
+  strings: Partial<ReportDialogStrings> | undefined,
+): Partial<ReportDialogStrings> =>
+  Object.fromEntries(
+    Object.entries(strings ?? {}).filter(([, value]) => typeof value === 'string'),
+  );
 
 function showDialog(
   deps: ReportDialogDeps,
@@ -133,10 +169,26 @@ function showDialog(
   finish: (result: UploadResult | null) => void,
 ): void {
   const { document: doc, ui } = deps;
-  const strings: ReportDialogStrings = { ...DEFAULT_REPORT_DIALOG_STRINGS, ...options.strings };
+  // Freeze the capture FIRST, before any UI exists: the report is the moment the dialog was asked for.
+  const prepared = deps.prepare();
+  if (prepared === null) {
+    finish(null);
+    return;
+  }
+  const strings: ReportDialogStrings = {
+    ...DEFAULT_REPORT_DIALOG_STRINGS,
+    ...definedStrings(options.strings),
+  };
   const initialEmail = deps.getUserIdentifier() ?? '';
-  const initialSeverity = pickerSeverity(options.severity ?? ui.defaultSeverity);
-  const refs = build(doc, strings, ui, options, initialEmail, initialSeverity, deps.sdkVersion);
+  const defaultSeverity = parseSeverityName(options.severity) ?? ui.defaultSeverity;
+  const initialSeverity = pickerSeverity(defaultSeverity);
+  let refs: Refs;
+  try {
+    refs = build(doc, strings, ui, options, initialEmail, initialSeverity, deps.sdkVersion);
+  } catch (error) {
+    prepared.discard();
+    throw error;
+  }
 
   const previousFocus = doc.activeElement as HTMLElement | null;
   const previousOverflow = doc.documentElement.style.overflow;
@@ -157,11 +209,15 @@ function showDialog(
     ]);
   const pristine = snapshot();
 
+  /** Tear everything down and settle. Idempotent; leaves no host element and no scroll lock behind. */
   const closeDialog = (result: UploadResult | null): void => {
     if (closed) {
       return;
     }
     closed = true;
+    if (result === null) {
+      prepared.discard();
+    }
     refs.host.remove();
     doc.documentElement.style.overflow = previousOverflow;
     try {
@@ -236,11 +292,10 @@ function showDialog(
     if (ui.labelsEnabled && ui.labelsRequired && parseLabels(fieldValue('labels')).length === 0) {
       problems.push(['labels', strings.labelsRequired]);
     }
-    const email = fieldValue('email');
-    if (email === '' && ui.emailRequired) {
+    // No format check, as on Android and iOS: the "email" is the app's user identifier, which is often
+    // not an address, and refusing to send a report over it helps nobody.
+    if (ui.emailRequired && fieldValue('email') === '') {
       problems.push(['email', strings.emailRequired]);
-    } else if (email !== '' && !EMAIL_PATTERN.test(email)) {
-      problems.push(['email', strings.emailInvalid]);
     }
     return problems;
   };
@@ -265,17 +320,20 @@ function showDialog(
     const description = fieldValue('description');
     const email = fieldValue('email');
     const labels = ui.labelsEnabled ? parseLabels(fieldValue('labels')) : (options.labels ?? []);
-    const severity: SeverityName = ui.prioritySelectorEnabled
-      ? severityValue()
-      : (options.severity ?? ui.defaultSeverity);
+    const severity: SeverityName = ui.prioritySelectorEnabled ? severityValue() : defaultSeverity;
 
+    // The reporter email IS the global user identifier (mobile parity). A changed value is remembered;
+    // an ERASED one is cleared (iOS `clearEmail`), otherwise the report would quietly carry it anyway
+    // through the identifier fallback.
     if (email !== '' && email !== initialEmail) {
       deps.setUserIdentifier(email);
+    } else if (email === '' && initialEmail !== '') {
+      deps.clearUserIdentifier();
     }
     setBusy(true);
     let sent: Promise<UploadResult>;
     try {
-      sent = deps.upload({
+      sent = prepared.send({
         trigger: 'code_dialog',
         ...(summary !== '' ? { summary } : {}),
         ...(description !== '' ? { description } : {}),
@@ -298,14 +356,22 @@ function showDialog(
   });
   refs.close.addEventListener('click', requestCancel);
   refs.keep.addEventListener('click', () => showConfirm(false));
-  refs.confirm
-    .querySelector('[data-action="discard"]')
-    ?.addEventListener('click', () => closeDialog(null));
-  // Escape: the browser would close a modal dialog on its own, discarding the form silently.
+  refs.discard.addEventListener('click', () => closeDialog(null));
+  // Escape. The browser would close a modal dialog on its own, discarding the form silently, so a
+  // cancellable `cancel` is turned into the usual cancel flow. Chrome makes `cancel` NON-cancellable when
+  // there was no user activation since the last one (a second Escape): the dialog is then going to close
+  // whatever we do, and the `close` listener below does the cleanup.
   refs.dialog.addEventListener('cancel', (event) => {
+    if (!event.cancelable) {
+      return;
+    }
     event.preventDefault();
     requestCancel();
   });
+  // The browser closed the dialog under us (the non-cancellable Escape above, or a page script calling
+  // `close()`): without this the host element, the scroll lock and the launcher's "already open" flag
+  // would all stay behind, and `showReportDialog()` would stay dead until a reload.
+  refs.dialog.addEventListener('close', () => closeDialog(null));
   // A click on the shading (the dialog element itself, not the card) is a cancel; clicks inside the card
   // have the card's descendants as their target.
   refs.dialog.addEventListener('click', (event) => {
@@ -313,20 +379,45 @@ function showDialog(
       requestCancel();
     }
   });
+  const controls = Object.values(refs.fields);
   for (const name of Object.keys(refs.fields) as FieldName[]) {
     refs.fields[name]?.addEventListener('input', () => setError(name, ''));
   }
-
-  doc.documentElement.append(refs.host);
-  doc.documentElement.style.overflow = 'hidden';
-  const dialog = refs.dialog as HTMLDialogElement;
-  if (typeof dialog.showModal === 'function') {
-    dialog.showModal();
-  } else {
-    refs.dialog.setAttribute('data-fallback', 'true');
-    refs.dialog.setAttribute('open', '');
+  // Enter in a single-line field moves to the next field (the summary is followed by the description),
+  // instead of sending a half-written report through implicit form submission. Enter in the LAST field
+  // sends. An Enter that confirms an IME composition (CJK input) is the IME's, not ours.
+  for (const [index, control] of controls.entries()) {
+    if (control instanceof HTMLTextAreaElement) {
+      continue;
+    }
+    control.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      const next = controls[index + 1];
+      if (next === undefined) {
+        submit();
+      } else {
+        next.focus();
+      }
+    });
   }
-  refs.fields.summary?.focus();
+
+  try {
+    doc.documentElement.append(refs.host);
+    doc.documentElement.style.overflow = 'hidden';
+    const dialog = refs.dialog as HTMLDialogElement;
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal();
+    } else {
+      refs.dialog.setAttribute('data-fallback', 'true');
+      refs.dialog.setAttribute('open', '');
+    }
+    refs.fields.summary?.focus();
+  } catch {
+    closeDialog(null);
+  }
 }
 
 const parseLabels = (text: string): string[] =>
@@ -346,6 +437,12 @@ function build(
   initialSeverity: PickerSeverity,
   sdkVersion: string,
 ): Refs {
+  /** A styling hook: the class AND the same-named `part`, so page CSS can use `::part()` too. */
+  const hook = (element: Element, ...names: string[]): void => {
+    const tokens = names.map((name) => `${P}${name}`).join(' ');
+    element.setAttribute('class', tokens);
+    element.setAttribute('part', tokens);
+  };
   const make = <K extends keyof HTMLElementTagNameMap>(
     tag: K,
     attributes: Record<string, string> = {},
@@ -360,10 +457,11 @@ function build(
     }
     return element;
   };
-  const icon = (path: string): SVGElement => {
+  const icon = (path: string, ...names: string[]): SVGElement => {
     const svg = doc.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
+    hook(svg, ...names);
     const shape = doc.createElementNS(SVG_NS, 'path');
     shape.setAttribute('d', path);
     svg.append(shape);
@@ -374,22 +472,32 @@ function build(
     'data-bugsee-report-dialog': '',
     'data-theme': options.theme ?? 'auto',
   });
+  // The host carries the root class (and is the element a page rule targets for custom properties).
+  host.setAttribute('class', P.slice(0, -1));
   const shadow = host.attachShadow({ mode: 'open' });
-  shadow.append(make('style', {}, REPORT_DIALOG_CSS));
+  attachStyles(doc, shadow, options.css);
 
-  const titleId = 'bugsee-report-title';
-  const dialog = make('dialog', { class: 'overlay', 'aria-labelledby': titleId });
-  const form = make('form', { class: 'card', novalidate: '' });
+  const titleId = 'bugsee-reporting-dialog-title';
+  const dialog = make('dialog', { 'aria-labelledby': titleId });
+  hook(dialog, 'overlay');
+  const form = make('form', { novalidate: '' });
+  hook(form, 'card');
 
-  const close = make('button', { type: 'button', class: 'close', 'aria-label': strings.close });
+  const close = make('button', { type: 'button', 'aria-label': strings.close });
+  hook(close, 'close');
   close.setAttribute('data-action', 'cancel');
-  close.append(icon(CLOSE_PATH));
-  const send = make('button', { type: 'submit', class: 'send' }, strings.send);
+  close.append(icon(CLOSE_PATH, 'close-icon'));
+  const send = make('button', { type: 'submit' }, strings.send);
+  hook(send, 'send');
   send.setAttribute('data-action', 'send');
-  const bar = make('div', { class: 'bar' });
-  bar.append(close, make('h2', { id: titleId, class: 'title' }, strings.title), send);
+  const bar = make('div');
+  hook(bar, 'bar');
+  const title = make('h2', { id: titleId }, strings.title);
+  hook(title, 'title');
+  bar.append(close, title, send);
 
-  const body = make('div', { class: 'body' });
+  const body = make('div');
+  hook(body, 'body');
   const fields: Refs['fields'] = {};
   const errors: Refs['errors'] = {};
 
@@ -399,17 +507,22 @@ function build(
     placeholder: string,
     value: string,
   ): void => {
-    const id = `bugsee-report-${name}`;
+    const id = `bugsee-reporting-dialog-${name}`;
     control.id = id;
     control.setAttribute('data-field', name);
-    control.setAttribute('class', 'input');
+    hook(control, 'input', `input-${name}`);
     control.setAttribute('placeholder', placeholder);
     control.setAttribute('aria-describedby', `${id}-error`);
     control.value = value;
-    const label = make('label', { for: id, class: 'sr-only' }, placeholder);
-    const error = make('p', { id: `${id}-error`, class: 'error', 'aria-live': 'polite' });
+    // A real <label> for assistive tech; visually hidden by default (the placeholder is the visible
+    // label, as on mobile) and restyleable through `.bugsee-reporting-dialog-label`.
+    const label = make('label', { for: id }, placeholder);
+    hook(label, 'label');
+    const error = make('p', { id: `${id}-error`, 'aria-live': 'polite' });
+    hook(error, 'error');
     error.setAttribute('data-error-for', name);
-    const row = make('div', { class: 'row' });
+    const row = make('div');
+    hook(row, 'row', `row-${name}`);
     row.append(label, control, error);
     body.append(row);
     fields[name] = control;
@@ -418,7 +531,7 @@ function build(
 
   addField(
     'summary',
-    make('input', { type: 'text', autocomplete: 'off' }),
+    make('input', { type: 'text', autocomplete: 'off', enterkeyhint: 'next' }),
     strings.summaryPlaceholder,
     options.summary ?? '',
   );
@@ -431,11 +544,8 @@ function build(
 
   const radios: HTMLInputElement[] = [];
   if (ui.prioritySelectorEnabled) {
-    const group = make('div', {
-      class: 'severity',
-      role: 'radiogroup',
-      'aria-label': strings.severityLegend,
-    });
+    const group = make('div', { role: 'radiogroup', 'aria-label': strings.severityLegend });
+    hook(group, 'severity');
     const names: Record<PickerSeverity, string> = {
       low: strings.severityLow,
       medium: strings.severityMedium,
@@ -446,14 +556,15 @@ function build(
     for (const severity of SEVERITIES) {
       const radio = make('input', {
         type: 'radio',
-        name: 'bugsee-report-severity',
+        name: 'bugsee-reporting-dialog-severity',
         value: severity,
-        class: 'sr-only',
       });
+      hook(radio, 'severity-radio');
       radio.checked = severity === initialSeverity;
       radios.push(radio);
-      const label = make('label', { class: `sev-${severity}` });
-      label.append(radio, icon(BUG_PATH), doc.createTextNode(names[severity]));
+      const label = make('label');
+      hook(label, 'severity-option', `severity-${severity}`);
+      label.append(radio, icon(BUG_PATH, 'severity-icon'), doc.createTextNode(names[severity]));
       group.append(label);
     }
     body.append(group);
@@ -462,26 +573,33 @@ function build(
   if (ui.labelsEnabled) {
     addField(
       'labels',
-      make('input', { type: 'text', autocomplete: 'off' }),
+      make('input', { type: 'text', autocomplete: 'off', enterkeyhint: 'next' }),
       strings.labelsPlaceholder,
       (options.labels ?? []).join(', '),
     );
   }
   addField(
     'email',
-    make('input', { type: 'email', autocomplete: 'email', inputmode: 'email' }),
+    make('input', {
+      type: 'email',
+      autocomplete: 'email',
+      inputmode: 'email',
+      enterkeyhint: 'send',
+    }),
     strings.emailPlaceholder,
     initialEmail,
   );
 
-  const footer = make('p', { class: 'footer' }, `v${sdkVersion}`);
-  footer.setAttribute('data-footer', '');
+  const version = make('p', {}, `v${sdkVersion}`);
+  hook(version, 'version');
+  version.setAttribute('data-footer', '');
 
   // "Powered by Bugsee": opens bugsee.com in a NEW tab that gets no `window.opener` (noopener) and no
   // Referer (noreferrer — the host page's URL can carry tokens or ids and must not leak to us).
   const logo = doc.createElementNS(SVG_NS, 'svg');
   logo.setAttribute('viewBox', '0 0 495 252');
   logo.setAttribute('aria-hidden', 'true');
+  hook(logo, 'logo');
   const mark = doc.createElementNS(SVG_NS, 'g');
   mark.setAttribute('fill-rule', 'evenodd');
   const eye = doc.createElementNS(SVG_NS, 'ellipse');
@@ -503,35 +621,39 @@ function build(
   }
   mark.append(eye, brand);
   logo.append(mark);
-  const powered = make('a', {
-    class: 'powered',
-    href: BUGSEE_URL,
-    target: '_blank',
-    rel: 'noopener noreferrer',
-  });
+  const powered = make('a', { href: BUGSEE_URL, target: '_blank', rel: 'noopener noreferrer' });
+  hook(powered, 'powered');
   powered.setAttribute('data-powered', '');
   powered.append(logo, doc.createTextNode(strings.poweredBy));
-  const footerRow = make('div', { class: 'footer-row' });
-  footerRow.append(footer, powered);
+  const footerRow = make('div');
+  hook(footerRow, 'footer-row');
+  footerRow.append(version, powered);
 
   const confirm = make('div', {
-    class: 'confirm',
     role: 'alertdialog',
-    'aria-labelledby': 'bugsee-report-discard',
+    'aria-labelledby': 'bugsee-reporting-dialog-discard-title',
     hidden: '',
   });
+  hook(confirm, 'confirm');
   confirm.setAttribute('data-confirm', '');
   const keep = make('button', { type: 'button' }, strings.discardKeep);
+  hook(keep, 'confirm-button', 'confirm-keep');
   keep.setAttribute('data-action', 'keep');
-  const discard = make('button', { type: 'button', class: 'danger' }, strings.discardConfirm);
+  const discard = make('button', { type: 'button' }, strings.discardConfirm);
+  hook(discard, 'confirm-button', 'confirm-discard');
   discard.setAttribute('data-action', 'discard');
-  const actions = make('div', { class: 'confirm-actions' });
+  const actions = make('div');
+  hook(actions, 'confirm-actions');
   actions.append(keep, discard);
-  confirm.append(
-    make('h3', { id: 'bugsee-report-discard' }, strings.discardTitle),
-    make('p', {}, strings.discardBody),
-    actions,
+  const discardTitle = make(
+    'h3',
+    { id: 'bugsee-reporting-dialog-discard-title' },
+    strings.discardTitle,
   );
+  hook(discardTitle, 'confirm-title');
+  const discardBody = make('p', {}, strings.discardBody);
+  hook(discardBody, 'confirm-body');
+  confirm.append(discardTitle, discardBody, actions);
 
   form.append(bar, body, footerRow, confirm);
   dialog.append(form);
@@ -545,8 +667,41 @@ function build(
     close,
     confirm,
     keep,
+    discard,
     fields: fields as Refs['fields'],
     errors,
     radios,
   };
+}
+
+/**
+ * Put the stylesheets in the shadow root. Constructable stylesheets are preferred: a strict
+ * `style-src` Content-Security-Policy (no `'unsafe-inline'`, no nonce) blocks a `<style>` element —
+ * shadow roots included — and the dialog would render unstyled, but it does not block
+ * `adoptedStyleSheets`. Where they are unavailable, or throw, a `<style>` element is the fallback.
+ */
+function attachStyles(doc: Document, shadow: ShadowRoot, userCss: string | undefined): void {
+  const sheets = [
+    REPORT_DIALOG_CSS,
+    ...(typeof userCss === 'string' && userCss !== '' ? [userCss] : []),
+  ];
+  const Sheet = (doc.defaultView as { CSSStyleSheet?: typeof CSSStyleSheet } | null)?.CSSStyleSheet;
+  if (Sheet !== undefined && 'adoptedStyleSheets' in shadow && 'replaceSync' in Sheet.prototype) {
+    try {
+      const adopted = sheets.map((css) => {
+        const sheet = new Sheet();
+        sheet.replaceSync(css);
+        return sheet;
+      });
+      (shadow as ShadowRoot & { adoptedStyleSheets: CSSStyleSheet[] }).adoptedStyleSheets = adopted;
+      return;
+    } catch {
+      // fall through to <style> elements
+    }
+  }
+  for (const css of sheets) {
+    const style = doc.createElement('style');
+    style.textContent = css;
+    shadow.append(style);
+  }
 }

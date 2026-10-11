@@ -10,6 +10,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  UploadOptions,
 } from '@bugsee/core';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 export { type BugseeBunLaunchOptions, launch } from './bun';

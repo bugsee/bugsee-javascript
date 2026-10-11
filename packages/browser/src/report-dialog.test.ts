@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import type { UploadOptions, UploadResult } from '@bugsee/core';
+import type { PreparedUpload, UploadOptions, UploadResult } from '@bugsee/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createReportDialogLauncher,
+  parseSeverityName,
   type ReportDialogDeps,
   type ReportDialogUiOptions,
 } from './report-dialog';
@@ -20,8 +21,12 @@ const UI: ReportDialogUiOptions = {
 
 interface Harness {
   deps: ReportDialogDeps;
+  /** `PreparedUpload.send` — what the dialog submits. */
   upload: ReturnType<typeof vi.fn<(options: UploadOptions) => Promise<UploadResult>>>;
+  discard: ReturnType<typeof vi.fn<() => void>>;
+  prepare: ReturnType<typeof vi.fn<() => PreparedUpload | null>>;
   setUserIdentifier: ReturnType<typeof vi.fn<(email: string) => void>>;
+  clearUserIdentifier: ReturnType<typeof vi.fn<() => void>>;
   show: ReturnType<typeof createReportDialogLauncher>;
 }
 
@@ -32,18 +37,30 @@ const harness = (
   const upload = vi.fn<(options: UploadOptions) => Promise<UploadResult>>(async () => ({
     ok: true,
   }));
+  const discard = vi.fn<() => void>();
+  const prepare = vi.fn<() => PreparedUpload | null>(() => ({ send: upload, discard }));
   const setUserIdentifier = vi.fn<(email: string) => void>();
+  const clearUserIdentifier = vi.fn<() => void>();
   const deps: ReportDialogDeps = {
     document,
-    upload,
+    prepare,
     isLaunched: () => true,
     getUserIdentifier: () => null,
     setUserIdentifier,
+    clearUserIdentifier,
     sdkVersion: '0.1.0-test',
     ui: { ...UI, ...ui },
     ...overrides,
   };
-  return { deps, upload, setUserIdentifier, show: createReportDialogLauncher(deps) };
+  return {
+    deps,
+    upload,
+    discard,
+    prepare,
+    setUserIdentifier,
+    clearUserIdentifier,
+    show: createReportDialogLauncher(deps),
+  };
 };
 
 const host = (): HTMLElement | null => document.querySelector('[data-bugsee-report-dialog]');
@@ -127,7 +144,10 @@ describe('opening', () => {
     void show();
 
     const css = root().querySelector('style')?.textContent ?? '';
-    expect(css).toMatch(/\.overlay[^}]*background:\s*rgba\(0,\s*0,\s*0/);
+    expect(css).toMatch(
+      /\.bugsee-reporting-dialog-overlay[^}]*background:\s*var\(--bugsee-reporting-dialog-shade\)/,
+    );
+    expect(css).toContain('--bugsee-reporting-dialog-shade: rgba(0, 0, 0');
   });
 
   it('focuses the summary field', () => {
@@ -367,20 +387,15 @@ describe('validation', () => {
     expect(field('summary').getAttribute('aria-invalid')).toBeNull();
   });
 
-  it('rejects an email that is not an address, but accepts a blank optional one', async () => {
+  it("does not insist the email is an address — it is the app's user identifier (mobile parity)", async () => {
     const { show, upload } = harness();
     void show();
-    type('email', 'not-an-address');
+    type('email', 'user-42');
 
     send();
     await settle();
-    expect(q('[data-error-for="email"]').textContent).toBe('Enter a valid email address');
-    expect(upload).not.toHaveBeenCalled();
 
-    type('email', '');
-    send();
-    await settle();
-    expect(upload).toHaveBeenCalledTimes(1);
+    expect(upload).toHaveBeenCalledWith(expect.objectContaining({ email: 'user-42' }));
   });
 });
 
@@ -591,19 +606,33 @@ describe('edge behaviour', () => {
     expect(host()).toBeNull();
   });
 
-  it('resolves null instead of throwing into the page when the dialog cannot be built', async () => {
-    const { show } = harness({
+  it('resolves null instead of throwing into the page when the dialog cannot be built, and is not left locked', async () => {
+    let broken = true;
+    const real = document.createElement.bind(document);
+    const { show, prepare, discard } = harness({
       document: {
         ...document,
-        createElement: () => {
-          throw new Error('no DOM');
+        documentElement: document.documentElement,
+        defaultView: window,
+        activeElement: null,
+        createElement: (tag: string) => {
+          if (broken) throw new Error('no DOM');
+          return real(tag);
         },
+        createElementNS: document.createElementNS.bind(document),
+        createTextNode: document.createTextNode.bind(document),
       } as unknown as Document,
     });
 
     expect(await show()).toBeNull();
-    // ...and the failure did not leave the launcher locked.
-    expect(await show()).toBeNull();
+    expect(discard).toHaveBeenCalledTimes(1); // the frozen capture is released, not leaked
+    expect(host()).toBeNull();
+
+    // The launcher was not left "open": once DOM works again the next call goes through.
+    broken = false;
+    void show();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(host()).not.toBeNull();
   });
 });
 
@@ -702,5 +731,351 @@ describe('powered-by link', () => {
     void show({ strings: { poweredBy: 'Bereitgestellt von Bugsee' } });
 
     expect(link().textContent?.trim()).toBe('Bereitgestellt von Bugsee');
+  });
+});
+
+describe('the report is prepared when the dialog opens', () => {
+  it('freezes the capture before any UI exists, and sends from that same handle', async () => {
+    const { show, prepare, upload } = harness();
+    const pending = show();
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    send();
+    await pending;
+
+    expect(prepare).toHaveBeenCalledTimes(1); // Send does not prepare again
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves null and shows nothing when the client cannot prepare (stopped/killed)', async () => {
+    const { show } = harness({ prepare: () => null });
+
+    expect(await show()).toBeNull();
+    expect(host()).toBeNull();
+  });
+
+  it('releases the frozen capture when the user cancels or discards, but not when they send', async () => {
+    const cancelled = harness();
+    const first = cancelled.show();
+    click('[data-action="cancel"]');
+    await first;
+    expect(cancelled.discard).toHaveBeenCalledTimes(1);
+
+    const sent = harness();
+    const second = sent.show();
+    send();
+    await second;
+    expect(sent.discard).not.toHaveBeenCalled();
+  });
+});
+
+describe('the browser closing the dialog itself', () => {
+  it('cleans up on the native close event: host gone, scroll restored, launcher free again', async () => {
+    document.documentElement.style.overflow = 'scroll';
+    const { show, discard } = harness();
+    const pending = show();
+
+    q('dialog').dispatchEvent(new Event('close'));
+
+    expect(await pending).toBeNull();
+    expect(host()).toBeNull();
+    expect(document.documentElement.style.overflow).toBe('scroll');
+    expect(discard).toHaveBeenCalledTimes(1);
+    void show();
+    expect(host()).not.toBeNull(); // not dead until reload
+  });
+
+  it('leaves a non-cancellable cancel (a second Escape) to the browser instead of fighting it', () => {
+    const { show } = harness();
+    void show();
+    type('summary', 'edited');
+    const cancel = new Event('cancel', { cancelable: false });
+
+    q('dialog').dispatchEvent(cancel);
+
+    expect(host()).not.toBeNull(); // no discard prompt either: the close event cleans up
+    expect(q('[data-confirm]').hasAttribute('hidden')).toBe(true);
+  });
+
+  it('leaves no host element and no scroll lock when showModal throws', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'showModal', {
+      configurable: true,
+      value: () => {
+        throw new Error('InvalidStateError');
+      },
+    });
+    try {
+      document.documentElement.style.overflow = 'auto';
+      const { show } = harness();
+
+      expect(await show()).toBeNull();
+      expect(host()).toBeNull();
+      expect(document.documentElement.style.overflow).toBe('auto');
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).showModal;
+    }
+  });
+});
+
+describe('the reporter email', () => {
+  it('clears the stored identifier when the user erases it, and sends no email', async () => {
+    const { show, upload, clearUserIdentifier, setUserIdentifier } = harness({
+      getUserIdentifier: () => 'jane@example.com',
+    });
+    const pending = show();
+    type('email', '');
+
+    send();
+    await pending;
+
+    expect(clearUserIdentifier).toHaveBeenCalledTimes(1);
+    expect(setUserIdentifier).not.toHaveBeenCalled();
+    expect(upload.mock.calls[0]?.[0]).not.toHaveProperty('email');
+  });
+
+  it('does not touch the identifier when it was empty and still is', async () => {
+    const { show, clearUserIdentifier } = harness();
+    const pending = show();
+
+    send();
+    await pending;
+
+    expect(clearUserIdentifier).not.toHaveBeenCalled();
+  });
+});
+
+describe('severity input', () => {
+  it('accepts the canonical names, forgiving case and space, and nothing else', () => {
+    expect(parseSeverityName('Critical')).toBe('critical');
+    expect(parseSeverityName('  blocker ')).toBe('blocker');
+    expect(parseSeverityName('verylow')).toBe('verylow');
+    expect(parseSeverityName('urgent')).toBeUndefined();
+    expect(parseSeverityName(3)).toBeUndefined();
+    expect(parseSeverityName(undefined)).toBeUndefined();
+  });
+
+  it('falls back to the default when a per-call severity is invalid, and still checks a radio', async () => {
+    const { show, upload } = harness(
+      {},
+      { prioritySelectorEnabled: true, defaultSeverity: 'medium' },
+    );
+    const pending = show({ severity: 'urgent' as unknown as 'high' });
+
+    expect(q<HTMLInputElement>('input[type="radio"]:checked').value).toBe('medium');
+    send();
+    await pending;
+    expect(upload).toHaveBeenCalledWith(expect.objectContaining({ severity: 'medium' }));
+  });
+});
+
+describe('the Enter key', () => {
+  const enter = (name: string, init: KeyboardEventInit = {}): KeyboardEvent => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
+    field(name).dispatchEvent(event);
+    return event;
+  };
+
+  it('moves from the summary to the next field instead of sending a half-written report', async () => {
+    const { show, upload } = harness();
+    void show();
+    type('summary', 'halfway');
+
+    const event = enter('summary');
+    await settle();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(upload).not.toHaveBeenCalled();
+    expect(root().activeElement).toBe(field('description'));
+  });
+
+  it('leaves Enter in the multi-line description alone (it is a newline)', () => {
+    const { show } = harness();
+    void show();
+
+    expect(enter('description').defaultPrevented).toBe(false);
+  });
+
+  it('sends from the last field', async () => {
+    const { show, upload } = harness();
+    const pending = show();
+
+    enter('email');
+    await pending;
+
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an Enter that confirms an IME composition', () => {
+    const { show, upload } = harness();
+    void show();
+
+    const event = enter('summary', { isComposing: true });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(upload).not.toHaveBeenCalled();
+    expect(root().activeElement).toBe(field('summary'));
+  });
+
+  it('ignores other keys', () => {
+    const { show } = harness();
+    void show();
+    const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+
+    field('summary').dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('styling hooks for embedders', () => {
+  const prefix = 'bugsee-reporting-dialog-';
+
+  it('prefixes every class, and exposes each one as a part of the same name', () => {
+    const { show } = harness({}, { labelsEnabled: true, prioritySelectorEnabled: true });
+    void show();
+
+    const classed = [...root().querySelectorAll('[class]')];
+    expect(classed.length).toBeGreaterThan(20);
+    for (const element of classed) {
+      const tokens = (element.getAttribute('class') ?? '').split(/\s+/);
+      expect(
+        tokens.every((token) => token.startsWith(prefix)),
+        `${element.tagName}.${tokens.join('.')}`,
+      ).toBe(true);
+      expect(element.getAttribute('part'), element.tagName).toBe(element.getAttribute('class'));
+    }
+  });
+
+  it('puts the root class on the host and prefixes the custom properties', () => {
+    const { show } = harness();
+    void show();
+
+    expect(host()?.getAttribute('class')).toBe('bugsee-reporting-dialog');
+    const css = root().querySelector('style')?.textContent ?? '';
+    // every custom property is namespaced, so a page can set them and nothing else collides
+    const properties = [...css.matchAll(/--([a-z-]+):/g)].map((m) => m[1] as string);
+    expect(properties.length).toBeGreaterThan(8);
+    expect(properties.every((name) => name.startsWith(prefix))).toBe(true);
+    // and no un-prefixed class selector survives in the built-in stylesheet
+    expect(css).not.toMatch(/(^|[\s,}])\.(?!bugsee-reporting-dialog-)[a-z]/m);
+  });
+
+  it('names the main parts an embedder will want', () => {
+    const { show } = harness({}, { prioritySelectorEnabled: true, labelsEnabled: true });
+    void show();
+
+    for (const part of [
+      'overlay',
+      'card',
+      'bar',
+      'title',
+      'send',
+      'close',
+      'body',
+      'input-summary',
+      'input-description',
+      'input-email',
+      'input-labels',
+      'row-summary',
+      'error',
+      'severity',
+      'severity-option',
+      'severity-critical',
+      'powered',
+      'logo',
+      'footer-row',
+      'version',
+      'confirm',
+      'confirm-keep',
+      'confirm-discard',
+    ]) {
+      expect(root().querySelector(`[part~="${prefix}${part}"]`), part).not.toBeNull();
+    }
+  });
+
+  it('appends the css option inside the shadow root, after the built-in styles', () => {
+    const { show } = harness();
+    void show({ css: '.bugsee-reporting-dialog-send { color: navy; }' });
+
+    const styles = [...root().querySelectorAll('style')].map((el) => el.textContent ?? '');
+    expect(styles).toHaveLength(2);
+    expect(styles[1]).toBe('.bugsee-reporting-dialog-send { color: navy; }');
+  });
+
+  it('adds nothing for an empty css option', () => {
+    const { show } = harness();
+    void show({ css: '' });
+
+    expect(root().querySelectorAll('style')).toHaveLength(1);
+  });
+
+  it('uses constructable stylesheets when available, so a strict style-src CSP cannot blank it', () => {
+    const adopted: string[] = [];
+    class FakeSheet {
+      replaceSync(css: string): void {
+        adopted.push(css);
+      }
+    }
+    const sheet = window as unknown as { CSSStyleSheet: unknown };
+    const original = sheet.CSSStyleSheet;
+    sheet.CSSStyleSheet = FakeSheet;
+    Object.defineProperty(ShadowRoot.prototype, 'adoptedStyleSheets', {
+      configurable: true,
+      writable: true,
+      value: [],
+    });
+    try {
+      const { show } = harness();
+      void show({ css: '.x { color: red; }' });
+
+      expect(adopted).toHaveLength(2);
+      expect(adopted[0]).toContain('.bugsee-reporting-dialog-card');
+      expect(adopted[1]).toBe('.x { color: red; }');
+      expect(root().querySelectorAll('style')).toHaveLength(0); // nothing for the CSP to block
+    } finally {
+      sheet.CSSStyleSheet = original;
+      delete (ShadowRoot.prototype as unknown as Record<string, unknown>).adoptedStyleSheets;
+    }
+  });
+
+  it('falls back to <style> elements when adopting a stylesheet throws', () => {
+    class ThrowingSheet {
+      replaceSync(): void {
+        throw new Error('SecurityError');
+      }
+    }
+    const sheet = window as unknown as { CSSStyleSheet: unknown };
+    const original = sheet.CSSStyleSheet;
+    sheet.CSSStyleSheet = ThrowingSheet;
+    Object.defineProperty(ShadowRoot.prototype, 'adoptedStyleSheets', {
+      configurable: true,
+      writable: true,
+      value: [],
+    });
+    try {
+      const { show } = harness();
+      void show();
+
+      expect(root().querySelectorAll('style')).toHaveLength(1);
+    } finally {
+      sheet.CSSStyleSheet = original;
+      delete (ShadowRoot.prototype as unknown as Record<string, unknown>).adoptedStyleSheets;
+    }
+  });
+});
+
+describe('strings overrides', () => {
+  it('ignores a non-string override instead of printing "undefined"', () => {
+    const { show } = harness();
+    void show({
+      strings: { summaryPlaceholder: undefined } as unknown as { summaryPlaceholder: string },
+    });
+
+    expect(field('summary').placeholder).toBe('Short summary');
   });
 });

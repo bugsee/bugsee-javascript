@@ -12,4 +12,5 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  UploadOptions,
 } from '@bugsee/core';

@@ -26,7 +26,6 @@ export interface ReportDialogStrings {
   descriptionRequired: string;
   emailRequired: string;
   labelsRequired: string;
-  emailInvalid: string;
   discardTitle: string;
   discardBody: string;
   discardKeep: string;
@@ -54,7 +53,6 @@ export const DEFAULT_REPORT_DIALOG_STRINGS: ReportDialogStrings = {
   descriptionRequired: 'Description is required',
   emailRequired: 'Email is required',
   labelsRequired: 'Labels must be specified',
-  emailInvalid: 'Enter a valid email address',
   discardTitle: 'Cancel report',
   discardBody: 'The recorded session up to this point will be discarded. Are you sure?',
   discardKeep: 'Keep editing',

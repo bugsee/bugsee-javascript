@@ -160,6 +160,20 @@ describe('client.showReportDialog (launched browser client)', () => {
     expect(input('email').value).toBe('jane@example.com');
   });
 
+  it('clears the stored identifier when the user erases the email, and the report carries none', async () => {
+    const { client, http } = await start();
+    client.setUserIdentifier('jane@example.com');
+    const pending = client.showReportDialog();
+    expect(input('email').value).toBe('jane@example.com');
+    fill('email', '');
+
+    dialog()?.querySelector<HTMLButtonElement>('[data-action="send"]')?.click();
+    await pending;
+
+    expect(client.getUserIdentifier()).toBeNull();
+    expect(sentRequest(http).email).toBeUndefined(); // not smuggled back in through the identifier fallback
+  });
+
   it('does nothing after the client is stopped', async () => {
     const { client } = await start();
     await client.stop();
@@ -176,5 +190,65 @@ describe('client.showReportDialog (launched browser client)', () => {
     const { client } = await start({ document: undefined, window: noDomWindow });
 
     expect(await client.showReportDialog()).toBeNull();
+  });
+});
+
+describe('reportDefaultBugPriority', () => {
+  it('applies to client.upload() too, as on Android, unless the call names a severity', async () => {
+    const { client, http } = await start({ reportDefaultBugPriority: 'critical' });
+
+    await client.upload({ summary: 'default' });
+    expect(sentRequest(http).severity).toBe(4);
+  });
+
+  it('lets a call override it', async () => {
+    const { client, http } = await start({ reportDefaultBugPriority: 'critical' });
+
+    await client.upload({ summary: 'explicit', severity: 'medium' });
+
+    expect(sentRequest(http).severity).toBe(2);
+  });
+
+  it('falls back to high, and says so, when the option is not a severity name', async () => {
+    const onError = vi.fn();
+    const { client, http } = await start({
+      reportDefaultBugPriority: 'urgent' as unknown as 'high',
+      onError,
+    });
+
+    await client.upload({ summary: 'bad option' });
+
+    expect(sentRequest(http).severity).toBe(3);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('reportDefaultBugPriority') }),
+    );
+  });
+
+  it('calls upload() with no arguments as a default-priority bug report', async () => {
+    const { client, http } = await start({ reportDefaultBugPriority: 'blocker' });
+
+    await client.upload();
+
+    expect(sentRequest(http).severity).toBe(5);
+  });
+});
+
+describe('the dialog report is frozen when the dialog opens', () => {
+  it('does not carry what happened while the user was typing', async () => {
+    const { client, http } = await start();
+    client.log('before the dialog opened');
+    const pending = client.showReportDialog();
+    client.log('while the user was typing');
+
+    dialog()?.querySelector<HTMLButtonElement>('[data-action="send"]')?.click();
+    await pending;
+
+    const put = http.mock.calls.find(([url]) => url === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    const logs = JSON.parse(strFromU8(files['logs.json'] as Uint8Array)) as Array<{
+      message: string;
+    }>;
+    expect(logs.map((l) => l.message)).toContain('before the dialog opened');
+    expect(logs.map((l) => l.message)).not.toContain('while the user was typing');
   });
 });
