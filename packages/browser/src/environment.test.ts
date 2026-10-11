@@ -113,6 +113,21 @@ describe('buildBrowserEnvironment — browser identity', () => {
     expect(env.runtime).toEqual({ type: 'web', version: '119.0.0.0' });
   });
 
+  it('reports an OS it cannot place as "unknown", never as an empty string', () => {
+    // `platform.type: ''` is "missing" to the session endpoint, which rejects it PERMANENTLY — so a
+    // visitor on an unrecognised agent (a console browser, a bot, a stripped-down embedded view) lost
+    // every report they would ever have sent. The OS field is mandatory; "unknown" is a valid answer.
+    const unknown: BrowserProbe = {
+      ...fullProbe,
+      userAgent: () => 'SomeRobot/1.0',
+      uaDataPlatform: () => undefined,
+    };
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, unknown);
+
+    expect(env.platform.type).toBe('unknown');
+    expect(env.platform.version).toBe('');
+  });
+
   it('omits the browser block entirely when the agent cannot be identified', () => {
     // A half-filled `{type: '', version: ''}` would render as an empty, icon-less Browser section in
     // the viewer. Absent is better than blank.

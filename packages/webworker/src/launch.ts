@@ -186,7 +186,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     defineService(TransportToken, () => internalTagged(options.transport ?? fetchTransport)),
   );
   const transport = services.getProvider(TransportToken).getImmediate();
-  const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion });
+  const api = createBugseeApi(transport, { baseUrl, appToken, sdkVersion, sendUserAgent: false });
   const uploader = createBundleUploader(transport);
   const baseUploadPipeline = createUploadPipeline({ api, uploader });
 

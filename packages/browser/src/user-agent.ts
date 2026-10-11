@@ -36,6 +36,13 @@ export interface Identity {
 const UNKNOWN: Identity = { type: '', version: '' };
 
 /**
+ * What `platform.type` carries for an OS that could not be placed. The identities above use '' for "no
+ * answer", but the session endpoint treats an empty `platform.type` as MISSING and rejects it for good,
+ * so the environment builders substitute this — "unknown" is a valid value, an empty string is not.
+ */
+export const UNKNOWN_OS = 'unknown';
+
+/**
  * `Windows NT <n>` → the marketing name. Windows 10 and 11 are INDISTINGUISHABLE here — UA reduction
  * froze the token at `10.0` for both — so 11 is deliberately reported as "10" rather than guessed.
  * Resolving that needs `getHighEntropyValues(['platformVersion'])`, which is async.

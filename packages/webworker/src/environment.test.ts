@@ -18,6 +18,17 @@ const probe = (over: Partial<WorkerProbe> = {}): WorkerProbe => ({
   ...over,
 });
 
+describe('buildWorkerEnvironment — an OS it cannot place', () => {
+  it('is reported as "unknown", never as an empty string the session endpoint rejects for good', () => {
+    const env = buildWorkerEnvironment(
+      { sdkVersion: '1.0.0', platformType: 'web-worker' },
+      probe({ userAgent: () => 'SomeRobot/1.0', uaDataPlatform: () => undefined }),
+    );
+
+    expect(env.platform.type).toBe('unknown');
+  });
+});
+
 describe('buildWorkerEnvironment', () => {
   it('builds the worker envelope: platform identity + navigator hardware (NO screen)', () => {
     const env = buildWorkerEnvironment(

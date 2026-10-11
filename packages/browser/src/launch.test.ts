@@ -281,6 +281,17 @@ describe('launch', () => {
     expect(client.isLaunched()).toBe(true);
   });
 
+  it('sends no user-agent header: a script-set one forces a CORS preflight the collector does not allow', async () => {
+    const transport = uploadTransport();
+    const client = await launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    await client.logException(new Error('boom'));
+
+    const session = transport.mock.calls.find(([url]) => url.endsWith('/v2/sessions'));
+    const headers = (session?.[1] as HttpRequestOptions).headers as Record<string, string>;
+    expect(headers['x-app-token']).toBe('tok');
+    expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('user-agent');
+  });
+
   it('registers the fetch transport as a resolvable service that internal-tags requests', async () => {
     const transport = uploadTransport();
     const client = await launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));

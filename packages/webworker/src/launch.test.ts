@@ -259,6 +259,17 @@ async function seedSibling(
 }
 
 describe('launch — capture recovery (#165: persist the rolling buffer)', () => {
+  it('sends no user-agent header: a script-set one forces a CORS preflight the collector does not allow', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    await client.logException(new Error('boom'));
+
+    const session = transport.mock.calls.find(([url]) => url.endsWith('/v2/sessions'));
+    const headers = (session?.[1] as HttpRequestOptions).headers as Record<string, string>;
+    expect(headers['x-app-token']).toBe('tok');
+    expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('user-agent');
+  });
+
   it('persist ON (service-worker) registers the report-marker store', () => {
     const client = track(
       'tok',
@@ -1176,25 +1187,21 @@ describe('launch — endpoint / app token / SDK version wiring', () => {
     expect(JSON.parse(session.body as string)).toMatchObject({ app_token: 'my-app-token' });
   });
 
-  it('reports the package SDK version (user-agent + environment.sdk.version) by default', async () => {
+  it('reports the package SDK version in environment.sdk.version by default', async () => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport }));
     await client.logException(new Error('x'));
     await client.flush();
-    const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
-    expect(session.headers?.['user-agent']).toBe(`BugseeJS/${packageVersion}`);
     expect(
       (issueJson(transport).environment as unknown as { sdk: { version: string } }).sdk.version,
     ).toBe(packageVersion);
   });
 
-  it('honors an explicit sdkVersion override everywhere it is reported', async () => {
+  it('honors an explicit sdkVersion override in the environment it reports', async () => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport, sdkVersion: '9.9.9' }));
     await client.logException(new Error('x'));
     await client.flush();
-    const session = callTo(transport, '/v2/sessions')?.[1] as HttpRequestOptions;
-    expect(session.headers?.['user-agent']).toBe('BugseeJS/9.9.9');
     expect(
       (issueJson(transport).environment as unknown as { sdk: { version: string } }).sdk.version,
     ).toBe('9.9.9');

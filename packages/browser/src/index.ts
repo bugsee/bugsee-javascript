@@ -82,6 +82,7 @@ export {
   normalizeUaDataPlatform,
   parseBrowserFromUserAgent,
   parseOsFromUserAgent,
+  UNKNOWN_OS,
 } from './user-agent';
 export {
   createDomSnapshot,

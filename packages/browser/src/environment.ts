@@ -1,6 +1,6 @@
 import { serviceToken } from '@bugsee/core';
 import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
-import { detectBrowser, detectOs } from './user-agent';
+import { detectBrowser, detectOs, UNKNOWN_OS } from './user-agent';
 
 // Builds the §8.6 environment envelope for the browser from navigator/screen/window/Intl. System reads
 // go through an injectable BrowserProbe so the mapping is testable deterministically (the DOM globals
@@ -98,7 +98,7 @@ export function buildBrowserEnvironment(
   return {
     // The OS, matching what every other Bugsee SDK puts here.
     platform: {
-      type: os.type,
+      type: os.type || UNKNOWN_OS,
       version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),

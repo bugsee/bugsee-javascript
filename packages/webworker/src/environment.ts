@@ -1,4 +1,4 @@
-import { detectBrowser, detectOs } from '@bugsee/browser';
+import { detectBrowser, detectOs, UNKNOWN_OS } from '@bugsee/browser';
 import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
 // The §8.6 environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
@@ -77,7 +77,7 @@ export function buildWorkerEnvironment(
   const browser = detectBrowser(userAgent);
   return {
     platform: {
-      type: os.type,
+      type: os.type || UNKNOWN_OS,
       version: os.version,
       utc_offset: probe.utcOffsetMinutes(),
       locale: probe.locale(),

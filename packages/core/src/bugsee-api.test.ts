@@ -128,6 +128,18 @@ describe('createBugseeApi — ensureSession', () => {
     expect(h['x-bugsee-internal']).toBe('1');
   });
 
+  it('omits the user-agent header when the platform cannot send one (browser CORS)', async () => {
+    // A browser sends `user-agent` itself, and a script-set one makes the request non-simple: the preflight
+    // then has to allow the header, and the collector's CORS allow-list does not name it (Firefox fails the
+    // preflight). The browser tiers opt out; every server-side tier keeps the SDK identification.
+    const { transport, calls } = recorder(() => sessionOk());
+    await api(transport, { sdkVersion: '2.3.4', sendUserAgent: false }).ensureSession(env);
+    const h = headersOf(calls[0]?.options);
+
+    expect('user-agent' in h).toBe(false);
+    expect(h['x-app-token']).toBe('app-1'); // everything else is still sent
+  });
+
   it('throws when session creation returns a non-2xx status', async () => {
     const { transport } = recorder(() => ({ status: 500, headers: {}, body: enc({}) }));
     await expect(api(transport).ensureSession(env)).rejects.toThrow(/session/);

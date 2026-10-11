@@ -20,6 +20,12 @@ export interface BugseeApiOptions {
   appToken: string;
   /** SDK version for the user-agent header. */
   sdkVersion: string;
+  /**
+   * Send the `user-agent: BugseeJS/<version>` header. Default true. Browser tiers pass false: a browser
+   * supplies its own, and a script-set one turns every request into a CORS preflight that the collector's
+   * allowed-headers list does not cover.
+   */
+  sendUserAgent?: boolean;
   /** The per-launch session-correlation id. Default a fresh `randomId()`; injectable for deterministic tests. */
   sessionId?: string;
 }
@@ -126,7 +132,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
     // only `web`/`unknown`/absent take (`populate.middleware.js`); that risk was the reason `web` was
     // chosen, and it does not apply. Resolves design open question #1 (sdk-design.md §wire C3).
     'x-client-type': 'javascript',
-    'user-agent': `BugseeJS/${sdkVersion}`,
+    ...(options.sendUserAgent === false ? {} : { 'user-agent': `BugseeJS/${sdkVersion}` }),
     'x-bugsee-internal': '1',
     'x-app-token': appToken,
   });

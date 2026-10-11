@@ -81,7 +81,9 @@ describe('buildWorkerEnvironment — properties', () => {
         const env = buildWorkerEnvironment(input as WorkerEnvironmentInput, asProbe(values));
         // Derived a second time from the probe rather than restated from the implementation.
         const os = detectOs(values.userAgent, values.uaDataPlatform);
-        expect(env.platform.type).toBe(os.type);
+        // An OS that cannot be placed is reported as 'unknown': an empty `platform.type` is MISSING to
+        // the session endpoint, which rejects it permanently.
+        expect(env.platform.type).toBe(os.type === '' ? 'unknown' : os.type);
         expect(env.platform.version).toBe(os.version);
         // The worker kind is `runtime`'s job — it is not an operating system.
         expect(env.runtime.type).toBe(input.platformType);
