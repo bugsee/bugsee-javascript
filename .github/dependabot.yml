@@ -21,6 +21,10 @@ updates:
     # compat-watch issue). `@types/node` is held at the oldest Node we build on: its typings decide
     # which APIs shared code may call, and the SDK supports Node >= 18.
     ignore:
+      # A Biome minor changes the lint rule set (2.4 -> 2.5 flags `noUnsafeOptionalChaining` across the
+      # test suite) and the pinned $schema in biome.json. Take it as a deliberate change, not in a group.
+      - dependency-name: '@biomejs/biome'
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
       - dependency-name: 'next'
