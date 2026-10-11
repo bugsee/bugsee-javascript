@@ -1,5 +1,12 @@
-import type { BugseeApi, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import {
+  type BugseeApi,
+  BugseeError,
+  type HttpRequestOptions,
+  type HttpResponse,
+  type HttpTransport,
+} from '@bugsee/core';
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { strToU8 } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { createPerformanceSend } from './performance-send';
 import type { TransactionWire } from './span';
@@ -56,5 +63,54 @@ describe('createPerformanceSend', () => {
       getEnvironment: () => env,
     });
     await expect(send([wire('a')])).resolves.toBeUndefined();
+  });
+
+  describe('a rejection that arrives with HTTP 200', () => {
+    // The collector answers `/v2/*` rejections with 200 and the verdict in the envelope (see
+    // bugsee-api.ts `unwrap`), so the status alone reports success for a batch that was thrown away.
+    const body = (value: unknown): Uint8Array => strToU8(JSON.stringify(value));
+    const sendWith = (response: HttpResponse) =>
+      createPerformanceSend({
+        api: fakeApi(),
+        transport: async () => response,
+        baseUrl: 'https://api.test',
+        getEnvironment: () => env,
+      });
+
+    it('throws, carrying the collector error, instead of reporting success', async () => {
+      const send = sendWith({
+        status: 200,
+        headers: {},
+        body: body({
+          ok: false,
+          error: { type: 'UnsupportedSdkError', message: 'too old', code: 99098 },
+        }),
+      });
+
+      const failure = await send([wire('a')]).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(BugseeError);
+      expect((failure as BugseeError).message).toMatch(/UnsupportedSdkError: too old/);
+      expect((failure as BugseeError).serverCode).toBe(99098);
+    });
+
+    it('still throws for a bare {ok:false} with no error detail', async () => {
+      const send = sendWith({ status: 200, headers: {}, body: body({ ok: false }) });
+
+      await expect(send([wire('a')])).rejects.toThrow(/rejected/);
+    });
+
+    it('treats {ok:true}, an empty body and a non-JSON body as success', async () => {
+      for (const response of [
+        body({ ok: true, result: {} }),
+        new Uint8Array(),
+        strToU8('not json at all'),
+        body({ something: 'else' }),
+      ]) {
+        await expect(
+          sendWith({ status: 200, headers: {}, body: response })([wire('a')]),
+        ).resolves.toBeUndefined();
+      }
+    });
   });
 });
