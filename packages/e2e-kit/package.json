@@ -16,9 +16,9 @@
   "dependencies": {
     "@bugsee/protocol": "workspace:*",
     "@bugsee/util": "workspace:*",
-    "ajv": "^8.17.1"
+    "ajv": "^8.20.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.20.5"
   }
 }
