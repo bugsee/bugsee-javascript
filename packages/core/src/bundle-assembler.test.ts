@@ -515,6 +515,42 @@ describe('assembleBundle — binary file encoders (replay)', () => {
   });
 });
 
+describe('assembleBundle — the video entry names its container', () => {
+  // `video.webm` is a WebM file, but a manifest entry with no attrs is read by the worker and the viewer as
+  // the default (an h264 MP4): the worker skipped the transcode a WebM needs and the viewer labelled it
+  // `video/mp4`. The format is stated on the entry, taken from the file's own extension.
+  const manifestOf = (bundle: ReturnType<typeof assembleBundle>) =>
+    JSON.parse(strFromU8(unzipSync(bundle.body)['manifest.json'] as Uint8Array)) as {
+      files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
+    };
+
+  it('puts format "webm" on the video entry', () => {
+    const map = new Map<FileType, CaptureDataEntry[]>([
+      ['video', [entry('video', 1, new Uint8Array([1, 2, 3]))]],
+    ]);
+    const bundle = assembleBundle(
+      createReportingRequest({ source: { type: 'error' }, id: 'r' }),
+      map,
+      context({ fileEncoders: { video: (payloads) => payloads[0] as Uint8Array } }),
+    );
+
+    const video = manifestOf(bundle).files.find((f) => f.type === 'video');
+    expect(video?.filename).toBe('video.webm');
+    expect(video?.attrs).toEqual({ format: 'webm' });
+  });
+
+  it('leaves every other entry without attrs', () => {
+    const map = new Map<FileType, CaptureDataEntry[]>([['log', [entry('log', 1, { m: 1 })]]]);
+    const bundle = assembleBundle(
+      createReportingRequest({ source: { type: 'error' }, id: 'r' }),
+      map,
+      context(),
+    );
+
+    expect(manifestOf(bundle).files.find((f) => f.type === 'log')).not.toHaveProperty('attrs');
+  });
+});
+
 describe('assembleBundle — crash.json', () => {
   const crash: CrashJson = {
     exception_type: 'error',

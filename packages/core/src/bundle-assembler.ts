@@ -164,7 +164,16 @@ export function assembleBundle(
       }
     }
     const filename = fileNameForType(type);
-    files.push({ filename, type });
+    files.push({
+      filename,
+      type,
+      // A video entry with no attrs reads as the default — an h264 MP4 — to the worker (which then skips the
+      // transcode a WebM needs) and to the viewer (which labels it `video/mp4`). The container is whatever
+      // the file name says it is.
+      ...(type === 'video'
+        ? { attrs: { format: filename.slice(filename.lastIndexOf('.') + 1) } }
+        : {}),
+    });
     const payloads = entries.map((entry) => entry.data);
     // A BINARY file type (e.g. `replay` → gzipped `replay.bin`) goes through its injected encoder → bytes;
     // every other type is JSON. Core stays codec-free — the encoder is provided by the platform/extension.
