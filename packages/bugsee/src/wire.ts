@@ -164,13 +164,13 @@ function defaultPageName(): string {
 
 /** Wire the on-by-default extensions onto a launched client. Returns the same client (stop() now also
  *  tears the extensions down). `internals` must be present (the caller skips this on a repeat launch). */
-export function wireUmbrella(
-  client: BugseeClient,
+export function wireUmbrella<C extends BugseeClient>(
+  client: C,
   internals: UmbrellaInternals,
   options: UmbrellaExtensionOptions,
   platform: UmbrellaPlatform,
   browserSources: UmbrellaBrowserSources = {},
-): BugseeClient {
+): C {
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,

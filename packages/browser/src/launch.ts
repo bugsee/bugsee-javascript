@@ -49,6 +49,7 @@ import {
   setCarrierClient,
   TransportToken,
   type TriggerPipeline,
+  type UploadResult,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import type { WindowEvents } from './detection-providers';
@@ -62,6 +63,11 @@ import {
 } from './environment';
 import { createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
+import {
+  createReportDialogLauncher,
+  type ReportDialogOptions,
+  type SeverityName,
+} from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
@@ -100,6 +106,31 @@ const BROWSER_OPTION_DEFINITIONS = [
   { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
   // View hierarchy is browser/DOM-only too.
   { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
+  // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
+  // required, labels and the severity picker hidden, new bugs start at `high`.
+  {
+    friendly: 'reportSummaryRequired',
+    key: BugseeOption.ReportingUiSummaryRequired,
+    default: false,
+  },
+  {
+    friendly: 'reportDescriptionRequired',
+    key: BugseeOption.ReportingUiDescriptionRequired,
+    default: false,
+  },
+  { friendly: 'reportEmailRequired', key: BugseeOption.ReportingUiEmailRequired, default: false },
+  { friendly: 'reportLabelsEnabled', key: BugseeOption.ReportingUiLabelsEnabled, default: false },
+  { friendly: 'reportLabelsRequired', key: BugseeOption.ReportingUiLabelsRequired, default: false },
+  {
+    friendly: 'reportPrioritySelectorEnabled',
+    key: BugseeOption.ReportingUiPrioritySelectorEnabled,
+    default: false,
+  },
+  {
+    friendly: 'reportDefaultBugPriority',
+    key: BugseeOption.ReportingDefaultBugPriority,
+    default: 'high',
+  },
 ];
 
 /** Session-replay options (a structural subset of `@bugsee/replay`'s options — no runtime dep here; replay
@@ -166,6 +197,20 @@ export interface BugseeLaunchOptions {
   captureInteractions?: boolean;
   /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
   captureViewHierarchy?: boolean;
+  /** Report dialog: the summary must be filled in before Send. Default false (as on mobile). */
+  reportSummaryRequired?: boolean;
+  /** Report dialog: the description must be filled in. Default false. */
+  reportDescriptionRequired?: boolean;
+  /** Report dialog: the reporter email must be filled in. Default false. */
+  reportEmailRequired?: boolean;
+  /** Report dialog: show the labels field. Default false. */
+  reportLabelsEnabled?: boolean;
+  /** Report dialog: at least one label is required (only with `reportLabelsEnabled`). Default false. */
+  reportLabelsRequired?: boolean;
+  /** Report dialog: show the severity picker. Default false. */
+  reportPrioritySelectorEnabled?: boolean;
+  /** Severity a dialog report starts with: `low | medium | high | critical | blocker`. Default `high`. */
+  reportDefaultBugPriority?: SeverityName;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /**
@@ -242,7 +287,16 @@ export interface BugseeLaunchOptions {
 }
 
 /** The launched Bugsee client — the public browser SDK surface. */
-export type Bugsee = BugseeClient;
+export type Bugsee = BugseeClient & {
+  /**
+   * Show the built-in bug-report form over the page (the web counterpart of the mobile
+   * `showReportDialog()`), and send what the user fills in as a `code_dialog` report.
+   *
+   * Resolves the upload result, or `null` when the user cancels, a dialog is already open, or the SDK is
+   * not running. Never throws into the page.
+   */
+  showReportDialog(options?: ReportDialogOptions): Promise<UploadResult | null>;
+};
 
 /**
  * The internal wiring `launchCore` hands back alongside the client — the seam the `bugsee` umbrella uses
@@ -670,8 +724,31 @@ export async function launchCore(
   );
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
+  const reportUi = resolved.options;
+  const showReportDialog = createReportDialogLauncher({
+    // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.
+    document: domDocument as Document,
+    upload: (uploadOptions) => client.upload(uploadOptions),
+    isLaunched: () => domDocument !== undefined && client.isLaunched(),
+    getUserIdentifier: () => client.getUserIdentifier(),
+    setUserIdentifier: (email) => client.setUserIdentifier(email),
+    sdkVersion: SDK_VERSION,
+    ui: {
+      summaryRequired: reportUi.get(BugseeOption.ReportingUiSummaryRequired, false),
+      descriptionRequired: reportUi.get(BugseeOption.ReportingUiDescriptionRequired, false),
+      emailRequired: reportUi.get(BugseeOption.ReportingUiEmailRequired, false),
+      labelsEnabled: reportUi.get(BugseeOption.ReportingUiLabelsEnabled, false),
+      labelsRequired: reportUi.get(BugseeOption.ReportingUiLabelsRequired, false),
+      prioritySelectorEnabled: reportUi.get(BugseeOption.ReportingUiPrioritySelectorEnabled, false),
+      defaultSeverity: reportUi.get(
+        BugseeOption.ReportingDefaultBugPriority,
+        'high',
+      ) as SeverityName,
+    },
+  });
   const publicClient: Bugsee = {
     ...client,
+    showReportDialog,
     stop(timeout?: number): Promise<boolean> {
       setCarrierClient(undefined, carrier);
       uninstallPageHideFlush();

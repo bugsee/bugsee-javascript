@@ -6,7 +6,6 @@
 // stitches to a failing request.
 
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
-import type { BugseeClient } from '@bugsee/core';
 import { type ReactErrorInfo, reportReactError } from '@bugsee/react';
 
 export type { Bugsee } from '@bugsee/bugsee';
@@ -66,7 +65,7 @@ function isRouteErrorResponse(error: unknown): boolean {
  */
 export function captureRemixErrorBoundaryError(
   error: unknown,
-  options: { getClient?: () => BugseeClient | undefined } = {},
+  options: { getClient?: () => Bugsee | undefined } = {},
 ): void {
   if (isRouteErrorResponse(error)) return;
   reportReactError(error, options.getClient !== undefined ? { getClient: options.getClient } : {});

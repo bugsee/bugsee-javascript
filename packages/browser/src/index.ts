@@ -59,6 +59,11 @@ export {
   type NavigationSource,
   type NavigationType,
 } from './navigation-source';
+export {
+  DEFAULT_REPORT_DIALOG_STRINGS,
+  type ReportDialogOptions,
+  type ReportDialogStrings,
+} from './report-dialog';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
