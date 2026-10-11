@@ -61,6 +61,7 @@ export {
   type ReportSnapshotSource,
   type Scheduler,
   SchedulerToken,
+  type UploadOptions,
 } from './client';
 export { type Clock, ClockToken, createSystemClock } from './clock';
 export type {

@@ -2058,3 +2058,85 @@ describe('createClient — per-tenant capture isolation', () => {
     expect(text).toContain('SECOND');
   });
 });
+
+describe('createClient — upload (manual report)', () => {
+  const upload = () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const sent = (): Bundle['request'] => (enqueue.mock.calls[0]?.[0] as Bundle).request;
+    return { client, enqueue, sent };
+  };
+
+  it('reports with the code_upload trigger and the supplied fields', async () => {
+    const { client, sent } = upload();
+
+    const result = await client.upload({
+      summary: 'Checkout is stuck',
+      description: 'Spinner never stops',
+      severity: 'critical',
+      labels: ['checkout', 'payments'],
+      email: 'jane@example.com',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(sent().source.type).toBe('code_upload');
+    expect(sent().summary).toBe('Checkout is stuck');
+    expect(sent().description).toBe('Spinner never stops');
+    expect(sent().labels).toEqual(['checkout', 'payments']);
+    expect(sent().email).toBe('jane@example.com');
+    expect(sent().severity).toBe(4); // critical on the wire
+  });
+
+  it('defaults to a high-severity bug with nothing else set', async () => {
+    const { client, sent } = upload();
+
+    await client.upload();
+
+    expect(sent().type).toBe('bug');
+    expect(sent().severity).toBe(3); // high
+    expect(sent().summary).toBe('Bug Report'); // the assembler's default title, not an empty one
+  });
+
+  it('marks a report from the dialog with the code_dialog trigger', async () => {
+    const { client, sent } = upload();
+
+    await client.upload({ trigger: 'code_dialog', summary: 's' });
+
+    expect(sent().source.type).toBe('code_dialog');
+  });
+
+  it('is not instance-deduped or rate-limited: every explicit request is a report', async () => {
+    const { client, enqueue } = upload();
+
+    for (let i = 0; i < 25; i += 1) {
+      await client.upload({ summary: `report ${i}` });
+    }
+
+    expect(enqueue).toHaveBeenCalledTimes(25);
+  });
+
+  it('runs the report handler: before can mutate the report or veto it', async () => {
+    const { client, enqueue, sent } = upload();
+    client.setReportHandler({
+      before: (r) => {
+        r.report.summary = 'masked';
+        return r;
+      },
+    });
+    await client.upload({ summary: 'private' });
+    expect(sent().summary).toBe('masked');
+
+    client.setReportHandler({ before: () => null });
+    expect(await client.upload({ summary: 'vetoed' })).toEqual({ ok: false });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a silent no-op after stop()', async () => {
+    const { client, enqueue } = upload();
+    client.launch();
+    await client.stop();
+
+    expect(await client.upload({ summary: 'late' })).toEqual({ ok: false });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+});

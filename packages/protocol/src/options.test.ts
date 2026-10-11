@@ -68,6 +68,32 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.MaxDataSize).toBe('com.bugsee.option.config.data-size');
   });
 
+  // The report dialog's options are Android's `Options.ReportingUI*` / `ReportingDefaultBugPriority`,
+  // byte for byte: the collector and the mobile SDKs read these exact strings.
+  it('match the Android reporting-UI option identifiers', () => {
+    expect(BugseeOption.ReportingUiSummaryRequired).toBe(
+      'com.bugsee.option.reporting.ui.summary-required',
+    );
+    expect(BugseeOption.ReportingUiDescriptionRequired).toBe(
+      'com.bugsee.option.reporting.ui.description-required',
+    );
+    expect(BugseeOption.ReportingUiEmailRequired).toBe(
+      'com.bugsee.option.reporting.ui.email-required',
+    );
+    expect(BugseeOption.ReportingUiLabelsEnabled).toBe(
+      'com.bugsee.option.reporting.ui.labels-enabled',
+    );
+    expect(BugseeOption.ReportingUiLabelsRequired).toBe(
+      'com.bugsee.option.reporting.ui.labels-required',
+    );
+    expect(BugseeOption.ReportingUiPrioritySelectorEnabled).toBe(
+      'com.bugsee.option.reporting.ui.priority-selector-enabled',
+    );
+    expect(BugseeOption.ReportingDefaultBugPriority).toBe(
+      'com.bugsee.option.reporting.defaults.bug-priority',
+    );
+  });
+
   it('are all namespaced under com.bugsee.option. and unique', () => {
     const keys = Object.values(BugseeOption);
     expect(keys.every((k) => k.startsWith('com.bugsee.option.'))).toBe(true);

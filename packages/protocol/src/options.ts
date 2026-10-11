@@ -70,6 +70,20 @@ export const BugseeOption = {
   Duration: 'com.bugsee.option.config.duration',
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
   MaxDataSize: 'com.bugsee.option.config.data-size',
+  /** Report dialog: the summary field must be filled in (Android `ReportingUISummaryRequired`). */
+  ReportingUiSummaryRequired: 'com.bugsee.option.reporting.ui.summary-required',
+  /** Report dialog: the description field must be filled in. */
+  ReportingUiDescriptionRequired: 'com.bugsee.option.reporting.ui.description-required',
+  /** Report dialog: the reporter email must be filled in. */
+  ReportingUiEmailRequired: 'com.bugsee.option.reporting.ui.email-required',
+  /** Report dialog: show the labels field (off by default, as on mobile). */
+  ReportingUiLabelsEnabled: 'com.bugsee.option.reporting.ui.labels-enabled',
+  /** Report dialog: at least one label must be given (only meaningful with labels enabled). */
+  ReportingUiLabelsRequired: 'com.bugsee.option.reporting.ui.labels-required',
+  /** Report dialog: show the severity picker (off by default, as on mobile). */
+  ReportingUiPrioritySelectorEnabled: 'com.bugsee.option.reporting.ui.priority-selector-enabled',
+  /** Severity a bug report starts with: `low | medium | high | critical | blocker`. Default `high`. */
+  ReportingDefaultBugPriority: 'com.bugsee.option.reporting.defaults.bug-priority',
 } as const;
 
 /** A canonical option identifier value (one of {@link BugseeOption}'s string values). */
@@ -98,4 +112,11 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.detect.hang.level.severe': number;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;
+  'com.bugsee.option.reporting.ui.summary-required': boolean;
+  'com.bugsee.option.reporting.ui.description-required': boolean;
+  'com.bugsee.option.reporting.ui.email-required': boolean;
+  'com.bugsee.option.reporting.ui.labels-enabled': boolean;
+  'com.bugsee.option.reporting.ui.labels-required': boolean;
+  'com.bugsee.option.reporting.ui.priority-selector-enabled': boolean;
+  'com.bugsee.option.reporting.defaults.bug-priority': string;
 }

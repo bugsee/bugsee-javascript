@@ -150,6 +150,27 @@ export interface LogExceptionOptions {
   labels?: string[];
 }
 
+/**
+ * Options for {@link BugseeClient.upload} — a report the application (or the report dialog) asks for
+ * explicitly, as opposed to one the SDK detects. Mirrors Android's `Bugsee.upload` /
+ * `showReportDialog` field set.
+ */
+export interface UploadOptions {
+  summary?: string;
+  description?: string;
+  /** Default `high`, as on mobile. */
+  severity?: SeverityName;
+  labels?: string[];
+  /** Reporter email; when absent the global user identifier is used, as for any report. */
+  email?: string;
+  /**
+   * Who asked: `code_upload` (the default — the app called `upload()` directly) or `code_dialog` (the
+   * user filled in the report dialog). It is the report's `source.type` on the wire, which the viewer
+   * shows and filters on.
+   */
+  trigger?: 'code_upload' | 'code_dialog';
+}
+
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
 export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar {
   registerExt<K extends keyof NameExtensionMapping>(name: K, api: NameExtensionMapping[K]): void;
@@ -189,6 +210,14 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
 
   /** Capture an exception (instance-deduped + rate-limited) and trigger a report. */
   logException(error: unknown, options?: LogExceptionOptions): Promise<UploadResult>;
+
+  /**
+   * Send a report on request (Android `Bugsee.upload`). Unlike {@link logException} it is neither
+   * instance-deduped nor rate-limited — every call is something a person or the app explicitly wanted
+   * — but it still runs the report handler (`before` may mutate or veto it). A silent no-op
+   * (`{ ok: false }`) after `stop()` or once the SDK has been killed.
+   */
+  upload(options?: UploadOptions): Promise<UploadResult>;
 
   // Lifecycle (§7.1).
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
@@ -805,6 +834,27 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           ? { severity: exceptionOptions.severity }
           : {}),
         ...(exceptionOptions?.labels !== undefined ? { labels: exceptionOptions.labels } : {}),
+      });
+      const handled = applyReportBefore(request);
+      if (handled === null) {
+        return Promise.resolve({ ok: false }); // vetoed by the report handler
+      }
+      return submitReport(handled);
+    },
+
+    upload(uploadOptions: UploadOptions = {}): Promise<UploadResult> {
+      if (stopped || killed) {
+        return Promise.resolve({ ok: false });
+      }
+      const request = createReportingRequest({
+        source: { type: uploadOptions.trigger ?? 'code_upload' },
+        ...(uploadOptions.summary !== undefined ? { summary: uploadOptions.summary } : {}),
+        ...(uploadOptions.description !== undefined
+          ? { description: uploadOptions.description }
+          : {}),
+        ...(uploadOptions.severity !== undefined ? { severity: uploadOptions.severity } : {}),
+        ...(uploadOptions.labels !== undefined ? { labels: uploadOptions.labels } : {}),
+        ...(uploadOptions.email !== undefined ? { email: uploadOptions.email } : {}),
       });
       const handled = applyReportBefore(request);
       if (handled === null) {
