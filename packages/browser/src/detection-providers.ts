@@ -61,7 +61,10 @@ function crashOfErrorEvent(event: ErrorEvent): CrashJson {
     const frame = parseLocation(`${event.filename}:${event.lineno}:${event.colno}`);
     crash.exception.frames = [{ trace: formatStack([frame]).trim(), user: true }];
   } else {
-    crash.exception.frames = [];
+    // A cross-origin "Script error." has neither a thrown value nor a filename, and the page cannot learn
+    // more (hiding that is the point of the restriction). An issue is grouped on its frames, so ZERO
+    // frames made every occurrence an issue of its own. One fixed frame makes them one issue.
+    crash.exception.frames = [{ trace: 'at <cross-origin script>', user: true }];
   }
   return crash;
 }

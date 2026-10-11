@@ -146,6 +146,30 @@ describe('createWindowErrorProvider', () => {
     expect(requests[0]?.report.description).toBeUndefined();
   });
 
+  it('gives every cross-origin "Script error." the SAME single frame, so they group into one issue', () => {
+    // With no thrown value and no filename the crash used to carry ZERO frames, and an issue is grouped on
+    // its frames — so every occurrence was an issue of its own. The page genuinely cannot say more (that
+    // is what "Script error." means), so the one honest, STABLE frame is "a cross-origin script".
+    const w = fakeWindow();
+    const requests = started(createWindowErrorProvider(w.win));
+    for (const lineno of [0, 5, 99]) {
+      w.emit('error', {
+        error: null,
+        message: 'Script error.',
+        filename: '',
+        lineno,
+        colno: lineno,
+      });
+    }
+
+    const frames = requests.map(
+      (r) => (r.report.crash as { exception: { frames: unknown[] } }).exception.frames,
+    );
+    expect(frames[0]).toEqual([{ trace: 'at <cross-origin script>', user: true }]);
+    expect(frames[1]).toEqual(frames[0]);
+    expect(frames[2]).toEqual(frames[0]);
+  });
+
   it('uses String(value) and no description for a non-Error thrown value', () => {
     const w = fakeWindow();
     const requests = started(createWindowErrorProvider(w.win));
