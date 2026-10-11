@@ -192,7 +192,26 @@ textarea.input { min-height: 7.5em; resize: vertical; }
 .sev-critical svg { color: #E03D3D; }
 .sev-blocker svg { color: #8C0101; }
 
-.footer { margin: 0; padding: 0 12px; font-size: 12px; color: var(--hint); }
+.footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 12px;
+  flex: none;
+}
+.footer { margin: 0; font-size: 12px; color: var(--hint); }
+.powered {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--hint);
+  text-decoration: none;
+}
+.powered:hover { color: var(--text); text-decoration: underline; }
+.powered:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.powered svg { display: block; height: 14px; width: auto; }
 
 .confirm {
   position: absolute;

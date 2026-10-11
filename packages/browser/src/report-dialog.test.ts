@@ -651,3 +651,56 @@ describe('mutation-driven gaps', () => {
     expect(upload).toHaveBeenCalledWith(expect.objectContaining({ labels: ['seeded', 'kept'] }));
   });
 });
+
+describe('powered-by link', () => {
+  const link = (): HTMLAnchorElement => q<HTMLAnchorElement>('a[data-powered]');
+
+  it('shows the Bugsee logo with "Powered by Bugsee" at the bottom of the dialog', () => {
+    const { show } = harness();
+    void show();
+
+    expect(link().textContent?.trim()).toBe('Powered by Bugsee');
+    const logo = link().querySelector('svg');
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute('viewBox')).toBe('0 0 495 252');
+    expect(logo?.getAttribute('aria-hidden')).toBe('true');
+    // the brand mark, not a placeholder: its red body and white eye
+    expect(logo?.querySelector('path')?.parentElement?.getAttribute('fill')).toBe('#ff5858');
+    expect(logo?.querySelector('ellipse')?.getAttribute('fill')).toBe('#fff');
+    // bottom of the card: after every field, and after the version line
+    const after = (a: Element, b: Element): boolean =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(after(field('email'), link())).toBe(true);
+    expect(after(q('[data-footer]'), link())).toBe(true);
+  });
+
+  it('opens bugsee.com in a new tab that has no opener and sends no referrer', () => {
+    const { show } = harness();
+    void show();
+
+    expect(link().getAttribute('href')).toBe('https://bugsee.com');
+    expect(link().getAttribute('target')).toBe('_blank');
+    const rel = (link().getAttribute('rel') ?? '').split(/\s+/);
+    expect(rel).toContain('noopener'); // the new page gets no window.opener
+    expect(rel).toContain('noreferrer'); // ...and no Referer: the page URL stays private
+  });
+
+  it('is reached by keyboard like any link, and a click on it does not cancel the dialog', () => {
+    const { show } = harness();
+    void show();
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link().addEventListener('click', (event) => event.preventDefault()); // do not navigate in jsdom
+
+    link().dispatchEvent(click);
+
+    expect(host()).not.toBeNull();
+    expect(link().tabIndex).toBe(0);
+  });
+
+  it('follows the strings override', () => {
+    const { show } = harness();
+    void show({ strings: { poweredBy: 'Bereitgestellt von Bugsee' } });
+
+    expect(link().textContent?.trim()).toBe('Bereitgestellt von Bugsee');
+  });
+});

@@ -31,6 +31,8 @@ export interface ReportDialogStrings {
   discardBody: string;
   discardKeep: string;
   discardConfirm: string;
+  /** The attribution link next to the Bugsee logo, at the bottom of the dialog. */
+  poweredBy: string;
 }
 
 export const DEFAULT_REPORT_DIALOG_STRINGS: ReportDialogStrings = {
@@ -57,4 +59,5 @@ export const DEFAULT_REPORT_DIALOG_STRINGS: ReportDialogStrings = {
   discardBody: 'The recorded session up to this point will be discarded. Are you sure?',
   discardKeep: 'Keep editing',
   discardConfirm: 'Discard',
+  poweredBy: 'Powered by Bugsee',
 };

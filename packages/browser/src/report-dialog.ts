@@ -71,6 +71,13 @@ const BUG_PATH =
 const CLOSE_PATH =
   'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z';
 
+// The Bugsee mark (brand red body, white eye) — the same artwork as the viewer's logo.svg.
+const LOGO_BODY =
+  'm102 251.9h30.4v-31h10v31.1h30.4v-31h40v31.1h30.4v-31h10v31.1h33.7c-2.8-9.2-4.3-19-4.3-29.1 0-55.4 45.2-100.4 100.9-100.4 40.6 0 75.6 23.9 91.6 58.3h19.1c-17.6-59.2-56.5-109.3-108-141.4 1.7-7.8.2-15.9-3.9-22.6-7.7.3-15.1 3.5-20.6 9.1-33.1-15.9-70.2-24.8-109.5-24.8-139.3 0-252.3 112.3-252.3 250.9h82v-31h20v31.1zm240-149.5c13.9 0 25.2-11.2 25.2-25.1s-11.3-25.1-25.2-25.1-25.2 11.2-25.2 25.1 11.3 25.1 25.2 25.1zm9.1-7c5.6 0 10.1-4.5 10.1-10s-4.5-10-10.1-10-10.1 4.5-10.1 10 4.5 10 10.1 10zm-20.7-43.3';
+const LOGO_HORN =
+  'm330.4 52.1c9.6-4.1 16.9-13 18.2-24.1s-3.5-21.5-11.9-27.8c-9.6 4.1-16.9 13-18.2 24.1s3.5 21.5 11.9 27.8z';
+const BUGSEE_URL = 'https://bugsee.com';
+
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 /** A severity the picker can show; `verylow` is the same wire value as `low`. */
@@ -470,6 +477,43 @@ function build(
   const footer = make('p', { class: 'footer' }, `v${sdkVersion}`);
   footer.setAttribute('data-footer', '');
 
+  // "Powered by Bugsee": opens bugsee.com in a NEW tab that gets no `window.opener` (noopener) and no
+  // Referer (noreferrer — the host page's URL can carry tokens or ids and must not leak to us).
+  const logo = doc.createElementNS(SVG_NS, 'svg');
+  logo.setAttribute('viewBox', '0 0 495 252');
+  logo.setAttribute('aria-hidden', 'true');
+  const mark = doc.createElementNS(SVG_NS, 'g');
+  mark.setAttribute('fill-rule', 'evenodd');
+  const eye = doc.createElementNS(SVG_NS, 'ellipse');
+  for (const [name, value] of Object.entries({
+    cx: '341.766',
+    cy: '77.303',
+    rx: '30.315',
+    ry: '30.522',
+    fill: '#fff',
+  })) {
+    eye.setAttribute(name, value);
+  }
+  const brand = doc.createElementNS(SVG_NS, 'g');
+  brand.setAttribute('fill', '#ff5858');
+  for (const d of [LOGO_BODY, LOGO_HORN]) {
+    const shape = doc.createElementNS(SVG_NS, 'path');
+    shape.setAttribute('d', d);
+    brand.append(shape);
+  }
+  mark.append(eye, brand);
+  logo.append(mark);
+  const powered = make('a', {
+    class: 'powered',
+    href: BUGSEE_URL,
+    target: '_blank',
+    rel: 'noopener noreferrer',
+  });
+  powered.setAttribute('data-powered', '');
+  powered.append(logo, doc.createTextNode(strings.poweredBy));
+  const footerRow = make('div', { class: 'footer-row' });
+  footerRow.append(footer, powered);
+
   const confirm = make('div', {
     class: 'confirm',
     role: 'alertdialog',
@@ -489,7 +533,7 @@ function build(
     actions,
   );
 
-  form.append(bar, body, footer, confirm);
+  form.append(bar, body, footerRow, confirm);
   dialog.append(form);
   shadow.append(dialog);
 
