@@ -39,8 +39,8 @@
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",
-    "@types/node": "^22.0.0",
-    "elysia": "^1.1.0"
+    "@types/node": "^22.20.5",
+    "elysia": "^1.4.30"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

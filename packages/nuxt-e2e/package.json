@@ -13,7 +13,7 @@
     "@bugsee/util": "workspace:*"
   },
   "devDependencies": {
-    "nuxt": "^4.4.8",
+    "nuxt": "^4.6.0",
     "vitest": "^4.0.0"
   }
 }
