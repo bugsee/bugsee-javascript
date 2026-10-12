@@ -436,6 +436,20 @@ describe('bugsee umbrella launch', () => {
     expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions).toHaveLength(1);
   });
 
+  it("performanceUploadMode 'realtime' sends a finished transaction without waiting for the tick", async () => {
+    const { scheduler } = fakeScheduler();
+    const { fn: transport, perfPosts } = recordingTransport();
+    const client = await track(
+      await launch(
+        'tok',
+        base({ carrier: {}, scheduler, transport, performanceUploadMode: 'realtime' }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish(); // no tick fired
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(perfPosts).toHaveLength(1);
+  });
+
   // A 30s tick is the ONLY delivery path the uploader had, so anything buffered since the last one was
   // lost whenever the process ended first — which for a serverless invocation, a CLI, or a test is every
   // time. `flush()` is documented as "get everything out"; it drained reports but not transactions.

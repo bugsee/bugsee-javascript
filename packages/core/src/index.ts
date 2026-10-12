@@ -19,6 +19,8 @@ export type { AttributeValue } from '@bugsee/types';
 export { describeValue, reportGuarded } from '@bugsee/util';
 export {
   addReportAttachment,
+  decodeRequestFromMarker,
+  encodeRequestForMarker,
   MAX_USER_ATTACHMENT_BYTES,
   MAX_USER_ATTACHMENTS,
 } from './attachments';

@@ -1,4 +1,4 @@
-import type { ReportingRequest, UploadResult } from '@bugsee/core';
+import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from '@bugsee/core';
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage, reportMessage } from './protocol';
 
@@ -49,7 +49,11 @@ export function createWebViewReportPipeline(
         timestamp: wallNow(),
         mono: now(),
         timeOrigin,
-        payload: JSON.stringify({ source: request.source, report: request.report }),
+        payload: JSON.stringify({
+          source: request.source,
+          // bytes do not survive JSON as typed arrays: user attachments cross as base64
+          report: encodeRequestForMarker(request).report,
+        }),
         // D3 provenance: did a JS-side report handler run before this crossed? (native still re-applies).
         redacted: redacted(),
       };

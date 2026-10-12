@@ -1,4 +1,4 @@
-import type { ReportingRequest } from '@bugsee/core';
+import { decodeRequestFromMarker, type ReportingRequest } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { decodeReport } from './protocol';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
@@ -35,6 +35,22 @@ describe('createElectronRendererReportPipeline', () => {
     const decoded = decodeReport(posted[0] as string);
     expect(decoded?.report.summary).toBe('renderer boom');
     expect(decoded?.timestamp).toBe(1234);
+  });
+
+  it('carries binary user attachments across the JSON hop (base64), restorable on the main side', async () => {
+    const { p, posted } = pipeline();
+    const bytes = new Uint8Array([1, 2, 3, 250]);
+    await p.report(
+      request({
+        report: { type: 'crash', summary: 's', userAttachments: [{ name: 'bin', data: bytes }] },
+      } as Partial<ReportingRequest>),
+    );
+    const decoded = decodeReport(posted[0] as string);
+    const restored = decodeRequestFromMarker(
+      { source: decoded?.source, report: decoded?.report } as unknown as ReportingRequest,
+      () => undefined,
+    );
+    expect(restored.report.userAttachments?.[0]?.data).toEqual(bytes);
   });
 
   it('PRESERVES the mechanism — the attribution main must not re-file away', () => {

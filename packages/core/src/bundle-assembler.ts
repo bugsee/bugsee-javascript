@@ -204,9 +204,28 @@ export function assembleBundle(
   // Report-level attachments (§8.4 `attachment`) — extra binary/text files written verbatim (e.g. a
   // harvested native-crash `.dmp` referenced by `crash.minidumpFile`). Listed in the manifest by their own
   // filename so the backend can enumerate them.
+  // The name is a zip member name and must be unique among the bundle's members: a clash (a `before` handler
+  // or a forwarded renderer report supplying one) would make the zip writer throw and lose the whole
+  // incident, so the offending attachment is skipped and reported instead.
+  const taken = new Set<string>([
+    REQUEST_JSON_FILENAME,
+    MANIFEST_JSON_FILENAME,
+    APP_TOKEN_FILENAME,
+    ...typedFiles.map((file) => file.name),
+  ]);
   for (const attachment of report.attachments ?? []) {
-    files.push({ filename: attachment.name, type: 'attachment' });
-    typedFiles.push({ name: attachment.name, data: attachment.data });
+    const name: unknown = attachment?.name;
+    if (typeof name !== 'string' || name === '' || name === '__proto__' || taken.has(name)) {
+      context.onError?.(
+        new Error(
+          `Report attachment skipped: ${typeof name === 'string' ? JSON.stringify(name) : 'its name is not a string'} is not a usable, unused bundle file name`,
+        ),
+      );
+      continue;
+    }
+    taken.add(name);
+    files.push({ filename: name, type: 'attachment' });
+    typedFiles.push({ name, data: attachment.data });
   }
 
   // Application attachments (`Report.userAttachments`, mobile `Report.addAttachment`): limits applied here,

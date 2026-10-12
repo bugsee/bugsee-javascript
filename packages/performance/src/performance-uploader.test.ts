@@ -22,6 +22,39 @@ function fakeScheduler() {
 }
 
 describe('createPerformanceUploader', () => {
+  it('realtime mode sends each finished transaction at once, and stops doing so after stop()', async () => {
+    const store = createTransactionStore();
+    const send = vi.fn(async () => {});
+    const uploader = createPerformanceUploader({
+      store,
+      send,
+      scheduler: fakeScheduler().scheduler,
+      realtime: true,
+    });
+    uploader.start();
+    store.add(wire('a'));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenLastCalledWith([wire('a')]);
+    store.add(wire('b'));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(2);
+    uploader.stop();
+    store.add(wire('c'));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(store.size()).toBe(1);
+  });
+
+  it('batched mode (the default) leaves the store untouched between ticks', async () => {
+    const store = createTransactionStore();
+    const send = vi.fn(async () => {});
+    createPerformanceUploader({ store, send, scheduler: fakeScheduler().scheduler }).start();
+    store.add(wire('a'));
+    await Promise.resolve();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('flush() drains the store and sends the transactions; an empty store sends nothing', async () => {
     const store = createTransactionStore();
     const send = vi.fn(async () => {});

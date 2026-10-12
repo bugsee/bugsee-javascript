@@ -17,6 +17,8 @@ export interface PerformanceUploaderDeps {
   scheduler: Scheduler;
   /** Batched-flush interval in ms. Default 30000. */
   flushIntervalMs?: number;
+  /** `performanceUploadMode: 'realtime'`: send each transaction as soon as it is stored, not on the tick. */
+  realtime?: boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -44,15 +46,33 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
     }
   };
 
+  // Realtime: every add to the store triggers a flush. Done by wrapping `add` while started, so neither the
+  // controller nor the OTel consume path needs to know about the mode; stop() puts the original back.
+  let restoreAdd: (() => void) | undefined;
+  const watchAdds = (): void => {
+    const store = deps.store;
+    const add = store.add;
+    store.add = (transaction): void => {
+      add.call(store, transaction);
+      void flush();
+    };
+    restoreAdd = () => {
+      store.add = add;
+    };
+  };
+
   return {
     flush,
     start() {
       if (handle !== null) return;
+      if (deps.realtime === true) watchAdds();
       handle = deps.scheduler.setInterval(() => {
         void flush();
       }, flushIntervalMs);
     },
     stop() {
+      restoreAdd?.();
+      restoreAdd = undefined;
       if (handle === null) return;
       deps.scheduler.clearInterval(handle);
       handle = null;

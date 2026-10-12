@@ -285,6 +285,9 @@ export function wireUmbrella<C extends BugseeClient>(
     monitoring: perf.options.get(PerformanceOption.Monitoring, true),
     sampleRate: perf.options.get(PerformanceOption.SampleRate, 1),
     flushIntervalMs: perf.options.get(PerformanceOption.FlushIntervalMs, 30000),
+    realtime:
+      perf.options.get<PerformanceUploadMode>(PerformanceOption.UploadMode, 'batched') ===
+      'realtime',
     pageload: platform.pageload,
     networkSource: internals.network.interceptor,
     ...(navigationSource !== undefined ? { navigationSource } : {}),

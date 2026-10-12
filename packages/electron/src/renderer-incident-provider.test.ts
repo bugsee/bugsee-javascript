@@ -26,6 +26,25 @@ describe('RendererIncidentProvider — forwarded incidents', () => {
     expect(submitted[0]?.source).toEqual({ type: 'crash', mechanism: 'uncaught' });
   });
 
+  it('decodes base64 user attachments and drops a renderer-supplied report-level attachments field', () => {
+    const { provider, submitted } = started();
+    provider.submitForwarded(
+      decoded({
+        report: {
+          summary: 'x',
+          attachments: [{ name: 'request.json', data: 'evil' }],
+          userAttachments: [{ name: 'bin', data: '', dataBase64: 'AQID/g==' }],
+        },
+      }) as never,
+      7,
+    );
+    const report = submitted[0]?.report as unknown as Record<string, unknown>;
+    expect(report.attachments).toBeUndefined();
+    expect((report.userAttachments as Array<{ data: Uint8Array }>)[0]?.data).toEqual(
+      new Uint8Array([1, 2, 3, 254]),
+    );
+  });
+
   it('stamps the faulting window id onto the report', () => {
     const { provider, submitted } = started();
     provider.submitForwarded(decoded() as never, 7);
