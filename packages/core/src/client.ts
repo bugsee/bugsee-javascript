@@ -183,6 +183,8 @@ export interface UploadOptions {
   labels?: string[];
   /** Reporter email; when absent the global user identifier is used, as for any report. */
   email?: string;
+  /** Files to attach (3 of 3 MB each at most; over-limit ones are dropped and reported via `onError`). */
+  attachments?: ReportAttachmentInput[];
 }
 
 /**
@@ -196,8 +198,6 @@ export interface InternalUploadOptions extends UploadOptions {
    * shows and filters on.
    */
   trigger?: 'code_upload' | 'code_dialog';
-  /** Files to attach (3 of 3 MB each at most; over-limit ones are dropped and reported via `onError`). */
-  attachments?: ReportAttachmentInput[];
 }
 
 /**

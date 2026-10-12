@@ -2,14 +2,14 @@
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
 
+// Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.
+export type { ReportAttachmentInput } from '@bugsee/core';
 // Lifecycle events: the event-name constants + listener type for `setLifecycleEventsListener`.
 export {
   LifecycleEvents,
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
-// Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.
-export type { ReportAttachmentInput } from '@bugsee/core';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
