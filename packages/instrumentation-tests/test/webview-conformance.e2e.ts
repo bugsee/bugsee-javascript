@@ -8,7 +8,7 @@
 // checkable JSON Schema (`packages/webview/bridge-protocol.schema.json`), and (b) the exact semantic round-trips
 // native must implement. The schema + this scenario together define the wire contract the native receiver
 // consumes; if this is green, a conforming native receiver can be written against the same schema.
-import { type Bugsee, launch } from '@bugsee/webview';
+import { type Bugsee, launchWithSeams as launch } from '@bugsee/webview';
 import { Ajv } from 'ajv';
 import { afterEach, describe, expect, it } from 'vitest';
 // The machine-checkable JSON Schema (the cross-language artifact handed to the native team). Imported directly so

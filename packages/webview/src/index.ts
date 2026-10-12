@@ -36,7 +36,7 @@ export {
   type BridgeControlConfig,
   createBridgeControl,
 } from './host-bridge-control';
-export { type Bugsee, type BugseeWebViewLaunchOptions, launch } from './launch';
+export { type Bugsee, type BugseeWebViewLaunchOptions, launch, launchWithSeams } from './launch';
 export {
   createObscuringChannel,
   type ObscuringChannel,
