@@ -14,6 +14,7 @@ import {
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
+  BugseeStatus,
   type BundleAssemblyContext,
   type BundleStore,
   BundleStoreToken,
@@ -21,6 +22,7 @@ import {
   ChunkStorageToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   composeFrameEnrichers,
   createBugseeApi,
   createBundleUploader,
@@ -33,7 +35,9 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
@@ -42,11 +46,14 @@ import {
   type ReconcileOwnQueue,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
+  relaunchWith,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
   SchedulerToken,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   setStackAppRoot,
   TransportToken,
 } from '@bugsee/core';
@@ -59,6 +66,7 @@ import {
   createWorkerThreadRingWorker,
   httpRequest,
   nodeSha256Fallback,
+  writeFileSecure,
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
@@ -468,7 +476,18 @@ const safeCwd = (): string | undefined => {
   }
 };
 
+// The public composition root's lifecycle shell: it publishes Launched once a client was built (the Node
+// launch is synchronous, so Launching is never observable here) and records the arguments for relaunch().
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
+  const result = buildLaunch(appToken, options);
+  if (result.internals !== undefined) {
+    setCarrierLastLaunch(appToken, options, options.carrier);
+    setCarrierStatus(BugseeStatus.Launched, options.carrier);
+  }
+  return result;
+}
+
+function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   const proc = options.process ?? (process as unknown as NodeRuntime);
   // Tell core's frame scrubber where the application starts, so stack frames beneath it ship RELATIVE
   // (`./src/checkout.js`) instead of carrying the OS username, the home-directory layout and often an
@@ -720,6 +739,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       ? { onReportSite: (error: unknown) => localVariables.captureReportSite(error) }
       : {}),
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,
     appToken,
@@ -1083,9 +1103,44 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // detection providers but knows nothing about this listener — and (b) clears the process Carrier slot
   // so a later launch() starts a fresh client (the singleton is released on stop).
   const stopCore = client.stop;
+  let tornDown = false;
+  // A CLEAN stop (everything drained) marks this instance's subtree recoverable. The owning pid stays
+  // alive across a launch -> stop -> launch cycle, so no sibling would ever judge the subtree dead and every
+  // cycle stranded up to `maxDataSize` of capture files; the marker lets the NEXT launch recover whatever
+  // is undelivered (retained bundles, pending incident markers) and remove the rest. A timed-out drain is
+  // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
+  const markStopped = (drained: boolean): void => {
+    if (!drained || instanceLayout === undefined) {
+      return;
+    }
+    try {
+      writeFileSecure(instanceLayout.stoppedFile, '');
+    } catch (error) {
+      options.onError?.(error);
+    }
+  };
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      // Settled: Stopped — unless a relaunch has already taken the process state over.
+      const settle = (): void => {
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      };
+      // A repeat stop() (or one after the collector killed the SDK) has nothing left to tear down; running
+      // the teardown again would double-dispose the writer and could evict a relaunched client's slot.
+      if (tornDown) {
+        return stopCore(timeout);
+      }
+      tornDown = true;
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(
+          client.isLaunched() ? BugseeStatus.Stopping : BugseeStatus.Stopped,
+          carrier,
+        );
+      }
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
         // …and the rejection policy listener. Leaving it behind meant a STOPPED SDK still suppressed
@@ -1110,8 +1165,13 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       for (const installable of serverInstallables) {
         installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
       }
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+      clearCarrierClient(publicClient, carrier);
+      return stopCore(timeout)
+        .then((drained) => {
+          markStopped(drained);
+          return drained;
+        })
+        .finally(settle);
     },
   };
   setCarrierClient(publicClient, carrier);
@@ -1136,6 +1196,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     }),
   };
   return { client: publicClient, internals };
+}
+
+/** The process lifecycle state (Stopped / Launching / Launched / Stopping), also while no client exists.
+ *  `carrier` is the host the launch used (default `globalThis`). */
+export function getStatus(carrier?: object): BugseeStatus {
+  return getProcessStatus(carrier);
+}
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. Uses the process carrier of `options.carrier` (default `globalThis`). */
+export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
+  return relaunchWith(launch, options, options?.carrier);
 }
 
 // The public composition root: the launched client. Equivalent to `launchCore(...).client` — `launchCore`

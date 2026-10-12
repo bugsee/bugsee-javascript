@@ -1,9 +1,10 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import type { Bugsee, NodeRuntime } from '@bugsee/node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { launch as launchBun } from './bun';
-import { launch as launchDeno } from './deno';
-import { launch as launchNode } from './node';
+import { launch as launchBun, relaunch as relaunchBun } from './bun';
+import { launch as launchDeno, relaunch as relaunchDeno } from './deno';
+import { launch as launchNode, relaunch as relaunchNode } from './node';
+import { BugseeStatus, getStatus } from './status';
 
 // WAVE 3b.1 / 4.1 — the umbrella's three SERVER entries.
 //
@@ -114,5 +115,26 @@ describe('the umbrella server entries bind their OWN runtime', () => {
       expect(typeof client.logException).toBe('function');
       expect(typeof client.stop).toBe('function');
     }
+  });
+});
+
+describe('the umbrella server entries relaunch through their OWN composition root', () => {
+  it.each([
+    ['node', launchNode, relaunchNode],
+    ['bun', launchBun, relaunchBun],
+    ['deno', launchDeno, relaunchDeno],
+  ] as const)('%s: relaunch returns a fresh client of the same runtime and status follows', async (type, launch, relaunch) => {
+    const { fn, sessions } = recordingTransport();
+    const carrier = {};
+    const options = { ...base(fn), carrier };
+    const first = track(launch('tok', options));
+    expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
+    const second = track(await relaunch(options));
+    expect(second).not.toBe(first);
+    expect(first.getStatus()).toBe(BugseeStatus.Stopped);
+    expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
+    second.logException(new Error('x'));
+    await second.flush(5000);
+    expect(sessions.at(-1)?.runtime.type).toBe(type); // the relaunch ran this entry's composition root
   });
 });

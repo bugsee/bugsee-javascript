@@ -24,6 +24,7 @@ import {
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { STOPPED_FILE } from './liveness';
 import { recoverInstances } from './recover-instances';
 
 const dirs: string[] = [];
@@ -201,6 +202,28 @@ describe('recoverInstances', () => {
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     expect(pipe.bundles[0]?.request.summary).toBe('prior crash');
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully delivered → subtree removed
+  });
+
+  it('recovers a CLEANLY STOPPED sibling although its owning pid is alive, and leaves an un-stopped live one', async () => {
+    const dir = mkDir();
+    // Both siblings belong to THIS (live) process; only the first shut down cleanly.
+    seedPendingBundle(dir, '1-0-stopped', 'b1', aBundle('left by a clean stop'));
+    seedPendingBundle(dir, '1-0-running', 'b2', aBundle('belongs to a live instance'));
+    writeOwner(dir, '1-0-stopped', process.pid);
+    writeOwner(dir, '1-0-running', process.pid);
+    writeFileSync(join(dir, '1-0-stopped', STOPPED_FILE), '');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['left by a clean stop']);
+    expect(existsSync(join(dir, '1-0-stopped'))).toBe(false);
+    expect(existsSync(join(dir, '1-0-running'))).toBe(true);
   });
 
   it('rebuilds + delivers a dead sibling’s detected incident from its chunks, then removes the subtree', async () => {

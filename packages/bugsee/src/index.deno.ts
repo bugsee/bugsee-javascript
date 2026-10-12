@@ -22,5 +22,6 @@ export {
   type LifecycleEventType,
 } from '@bugsee/core';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-export { type BugseeDenoLaunchOptions, launch } from './deno';
+export { type BugseeDenoLaunchOptions, launch, relaunch } from './deno';
 export type { Bugsee } from './server-launch';
+export { BugseeStatus, getStatus } from './status';

@@ -22,5 +22,6 @@ export {
   type LifecycleEventType,
 } from '@bugsee/core';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-export { type BugseeBunLaunchOptions, launch } from './bun';
+export { type BugseeBunLaunchOptions, launch, relaunch } from './bun';
 export type { Bugsee } from './server-launch';
+export { BugseeStatus, getStatus } from './status';

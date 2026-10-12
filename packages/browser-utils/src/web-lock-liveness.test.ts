@@ -81,6 +81,46 @@ describe('createWebLockLiveness — available', () => {
   });
 });
 
+// A manager that, unlike the lifetime fake above, frees a held lock when its callback's promise settles —
+// the real Web Locks contract, which is what `holdSelf`'s release relies on.
+function releasingLocks() {
+  const held = new Set<string>();
+  const manager: LockManagerLike = {
+    request(name, options, callback) {
+      if (options.ifAvailable && held.has(name)) {
+        return Promise.resolve(callback(null));
+      }
+      held.add(name);
+      return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+    },
+  };
+  return { manager, held };
+}
+
+describe('createWebLockLiveness — clean release', () => {
+  it('holdSelf returns a release that frees the lock so the instance reads as dead', async () => {
+    const locks = releasingLocks();
+    const liveness = createWebLockLiveness(locks.manager);
+    const release = liveness.holdSelf('inst-A');
+    expect(locks.held.has('inst-A')).toBe(true);
+    const skipped = vi.fn(() => Promise.resolve());
+    await liveness.recoverIfDead('inst-A', skipped);
+    expect(skipped).not.toHaveBeenCalled(); // alive while held
+
+    release();
+    release(); // idempotent
+    await vi.waitFor(() => expect(locks.held.has('inst-A')).toBe(false));
+    const ran = vi.fn(() => Promise.resolve());
+    await liveness.recoverIfDead('inst-A', ran);
+    expect(ran).toHaveBeenCalledTimes(1); // released -> dead -> recoverable
+  });
+
+  it('the degraded (no Web Locks) holdSelf returns a callable no-op release', () => {
+    const release = createWebLockLiveness(undefined).holdSelf('x');
+    expect(() => release()).not.toThrow();
+  });
+});
+
 describe('createWebLockLiveness — unavailable (degrade)', () => {
   it('warns ONCE on holdSelf and never cross-recovers', async () => {
     const warn = vi.fn();

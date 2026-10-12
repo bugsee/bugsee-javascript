@@ -4,7 +4,8 @@ import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/co
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { serializeTransaction, type Transaction } from '@bugsee/performance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from './launch';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch, relaunch } from './launch';
+import { BugseeStatus, getStatus } from './status';
 
 // --- fakes ---------------------------------------------------------------------------------------
 
@@ -665,5 +666,31 @@ describe('bugsee umbrella launch', () => {
   it('otelConsume without onOtelSpanProcessor wires no SpanProcessor (no throw)', async () => {
     const client = await track(await launch('tok', base({ carrier: {}, otelConsume: true })));
     expect(client).toBeDefined();
+  });
+});
+
+describe('umbrella relaunch / getStatus (browser)', () => {
+  it('relaunch stops the old client and returns a fresh one with the extensions re-wired', async () => {
+    const first = await track(launch('tok', base()));
+    expect(getStatus()).toBe(BugseeStatus.Launched);
+    const second = await track(relaunch());
+    expect(second).not.toBe(first);
+    expect(first.getStatus()).toBe(BugseeStatus.Stopped);
+    expect(second.getStatus()).toBe(BugseeStatus.Launched);
+    expect(() => second.ext('performance')).not.toThrow(); // the on-by-default extension is wired again
+    expect(getStatus()).toBe(BugseeStatus.Launched);
+  });
+
+  it('relaunch with new options replaces the previous host options', async () => {
+    await track(launch('tok', base({ captureLogs: false })));
+    const second = await track(relaunch(base({ maxRecordingTime: 20 })));
+    expect(second.getHostLaunchOptions()).not.toHaveProperty(['com.bugsee.option.capture.logs']);
+    expect(second.getLaunchOptions()['com.bugsee.option.config.duration']).toBe(20);
+  });
+
+  it('getStatus reports Stopped once the client has been stopped', async () => {
+    const client = await track(launch('tok', base()));
+    await client.stop();
+    expect(getStatus()).toBe(BugseeStatus.Stopped);
   });
 });

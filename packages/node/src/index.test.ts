@@ -29,6 +29,7 @@ import * as publicApi from './index';
 
 /** Every VALUE the package exports (types are erased and cannot be asserted at runtime). */
 const EXPECTED_EXPORTS = [
+  'BugseeStatus',
   'PROFILING_OPTION_DEFINITIONS',
   'ProfilingOption',
   'RequestContextStoreToken',
@@ -52,6 +53,8 @@ const EXPECTED_EXPORTS = [
   'guarded',
   'launch',
   'launchCore',
+  'getStatus',
+  'relaunch',
   'neverThrow',
   'openServerContext',
   'openServerRequest',

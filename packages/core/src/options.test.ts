@@ -64,6 +64,15 @@ describe('resolveLaunchOptions', () => {
     });
   });
 
+  it('reports only the host-supplied options, by canonical key (no defaults, no unknown names)', () => {
+    const r = resolveLaunchOptions(
+      { captureNetwork: false, appToken: 'secret', transport: 1 },
+      defs,
+    );
+    expect(r.host).toEqual({ 'com.bugsee.option.capture.network': false });
+    expect(resolveLaunchOptions({}, defs).host).toEqual({});
+  });
+
   it('applies all defaults for an empty bag', () => {
     expect(resolveLaunchOptions({}, defs).canonical).toEqual({
       'com.bugsee.option.capture.network': true,

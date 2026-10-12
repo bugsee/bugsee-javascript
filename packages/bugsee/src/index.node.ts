@@ -30,5 +30,6 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/no
 // to reach this token, as every framework adapter's own hooks.ts already does internally.
 export { type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-export { type BugseeNodeLaunchOptions, launch } from './node';
+export { type BugseeNodeLaunchOptions, launch, relaunch } from './node';
 export type { Bugsee } from './server-launch';
+export { BugseeStatus, getStatus } from './status';

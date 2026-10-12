@@ -14,6 +14,7 @@ import { ensureDir, writeFileSecure } from '@bugsee/node-utils';
 
 const LIVE_FILE = '.live';
 const OWNER_FILE = 'owner.json';
+const STOPPED_FILE = '.stopped';
 const NONCE_LEN = 8;
 
 /** Identity + the per-instance subtree paths under a shared `dataDir`. */
@@ -29,6 +30,8 @@ export interface InstanceLayout {
   /** The liveness heartbeat file — its mtime is touched from the watchdog thread. */
   readonly liveFile: string;
   readonly ownerFile: string;
+  /** Written by a clean `stop()`: tells a later launch this subtree is recoverable although its pid lives. */
+  readonly stoppedFile: string;
 }
 
 /** The record persisted to `owner.json`, read by a peer to attribute + liveness-check a subtree. */
@@ -71,6 +74,7 @@ export function createInstanceLayout(
     incidentsDir: join(root, 'incidents'),
     liveFile: join(root, LIVE_FILE),
     ownerFile: join(root, OWNER_FILE),
+    stoppedFile: join(root, STOPPED_FILE),
   };
 }
 

@@ -40,4 +40,10 @@ export type {
   Transaction,
   TransactionNameSource,
 } from '@bugsee/performance';
-export { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from './launch';
+export {
+  type Bugsee,
+  type BugseeLaunchOptionsWithPerformance,
+  launch,
+  relaunch,
+} from './launch';
+export { BugseeStatus, getStatus } from './status';

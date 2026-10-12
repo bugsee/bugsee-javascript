@@ -49,15 +49,20 @@ export {
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
+  clearCarrierClient,
   contributeServiceManifest,
   getCarrier,
   getCarrierClient,
+  getCarrierStatus,
   getFilters,
   getInternal,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
 } from './carrier';
 export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
@@ -174,6 +179,7 @@ export {
   type ReconcileOwnQueue,
   runLaunchRecovery,
 } from './launch-recovery';
+export { BugseeStatus } from './launch-status';
 export {
   createLifecycleEmitter,
   type LifecycleEmitter,
@@ -215,6 +221,7 @@ export {
   type RateLimiter,
   type RateLimiterOptions,
 } from './rate-limiter';
+export { relaunchWith } from './relaunch';
 export {
   type ReportMarker,
   type ReportMarkerStore,

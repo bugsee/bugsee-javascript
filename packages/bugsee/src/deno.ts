@@ -1,3 +1,4 @@
+import { relaunchWith } from '@bugsee/core';
 import { launchCore } from '@bugsee/deno';
 import { type Bugsee, type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
 
@@ -12,3 +13,8 @@ export type BugseeDenoLaunchOptions = BugseeServerLaunchOptions;
 
 export const launch: (appToken: string, options?: BugseeDenoLaunchOptions) => Bugsee =
   createServerLaunch(launchCore);
+
+/** Stop the running client (if any) and launch again with the same token, re-wiring the on-by-default
+ *  extensions; `options` replace the previous launch options when given. */
+export const relaunch = (options?: BugseeDenoLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

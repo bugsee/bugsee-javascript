@@ -6,6 +6,7 @@
 export type { ReportAttachmentInput } from '@bugsee/core';
 // Lifecycle events: the event-name constants + listener type for `setLifecycleEventsListener`.
 export {
+  BugseeStatus,
   LifecycleEvents,
   type LifecycleEventsListener,
   type LifecycleEventType,
@@ -50,10 +51,12 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  getStatus,
   type LaunchInternals,
   type LaunchResult,
   launch,
   launchCore,
+  relaunch,
 } from './launch';
 export {
   type MetaTraceContinuation,

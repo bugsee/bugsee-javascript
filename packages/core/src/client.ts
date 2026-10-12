@@ -59,6 +59,7 @@ import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 export type { Breadcrumb, BreadcrumbInput } from './events';
 
 import { createExtensionRegistry } from './extension-registry';
+import { BugseeStatus } from './launch-status';
 import {
   createLifecycleEmitter,
   LifecycleEvents,
@@ -327,6 +328,12 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
   launch(): void;
   isLaunched(): boolean;
+  /** The lifecycle state (Stopped / Launching / Launched / Stopping). `Stopping` lasts until the drain settles. */
+  getStatus(): BugseeStatus;
+  /** The effective launch options (host-supplied over defaults), by canonical `com.bugsee.option.*` key. */
+  getLaunchOptions(): Record<string, unknown>;
+  /** Only the options the host supplied at launch, by canonical key. */
+  getHostLaunchOptions(): Record<string, unknown>;
   /** Stop capture + detection and drain pending uploads. Resolves true if drained within `timeout`. */
   stop(timeout?: number): Promise<boolean>;
   /** Drain pending uploads. Resolves true if drained within `timeout`. */
@@ -406,6 +413,14 @@ export interface CreateClientOptions {
   isEnabled?: OptionGate;
   /** Launch options passed to each provider's start(options) for per-launch reconfiguration. */
   launchOptions?: OptionsContainer;
+  /**
+   * The introspectable form of the launch options for `getLaunchOptions()` / `getHostLaunchOptions()`
+   * (canonical keys). Never put secrets in here — the platform passes only registered option definitions.
+   */
+  launchOptionsView?: {
+    effective: Readonly<Record<string, unknown>>;
+    host: Readonly<Record<string, unknown>>;
+  };
   /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
   captureRateLimit?: RateLimiterOptions;
   /** Upload pipeline (built by the platform from BugseeApi/BundleUploader); enables flush/stop drain. */
@@ -590,6 +605,8 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
+  // True from stop() until its upload drain settles (BugseeStatus.Stopping).
+  let stopping = false;
   // Permanent kill-state (§1435/§1504): set when a report comes back with the collector's KILL_SDK
   // verdict (code 99099) — the app token has been switched OFF at the server. All capture goes no-op,
   // capture+detection halt, onError fires ONCE. An INVALID app token is a different thing entirely: it
@@ -1172,6 +1189,21 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       return blackout.isActive();
     },
 
+    getStatus(): BugseeStatus {
+      if (stopping) {
+        return BugseeStatus.Stopping;
+      }
+      return launched ? BugseeStatus.Launched : BugseeStatus.Stopped;
+    },
+
+    getLaunchOptions(): Record<string, unknown> {
+      return { ...options.launchOptionsView?.effective };
+    },
+
+    getHostLaunchOptions(): Record<string, unknown> {
+      return { ...options.launchOptionsView?.host };
+    },
+
     launch(): void {
       // A killed client (collector KILL_SDK) is permanently dead: re-launching must not re-arm it.
       if (killed || launched) {
@@ -1218,10 +1250,16 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       launched = false;
       stopped = true;
       haltCapture(); // launch() always sets tickTimer first, so it is set here (stop runs only if launched)
-      return drainPending(timeout).then((drained) => {
-        lifecycle.emit(LifecycleEvents.Stopped);
-        return drained;
-      });
+      stopping = true;
+      return drainPending(timeout)
+        .finally(() => {
+          stopping = false;
+        })
+        .then((drained) => {
+          // After `stopping` clears, so a listener that reads getStatus() sees Stopped, not Stopping.
+          lifecycle.emit(LifecycleEvents.Stopped);
+          return drained;
+        });
     },
 
     flush(timeout?: number): Promise<boolean> {
