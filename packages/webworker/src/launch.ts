@@ -130,6 +130,8 @@ export interface BugseeWorkerLaunchOptions {
   reportDefaultCrashPriority?: SeverityLevel;
   /** Severity an error report starts with. Default `high`. */
   reportDefaultErrorPriority?: SeverityLevel;
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: SeverityLevel;
   /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
   notifyFlushDelay?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */

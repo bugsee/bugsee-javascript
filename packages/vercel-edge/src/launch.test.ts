@@ -616,6 +616,17 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
     return transport;
   };
 
+  it('reportDefaultBugPriority applies to client.upload() at the edge too (R2D-3)', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, reportDefaultBugPriority: 'critical' }),
+    );
+    await client.upload({ summary: 'bug' });
+    await client.flush();
+    expect((issueJson(transport) as unknown as { severity: number }).severity).toBe(4);
+  });
+
   it('posts to https://api.bugsee.com by default', async () => {
     const transport = await upload({});
     expect(controlPlaneUrls(transport).length).toBeGreaterThan(0);

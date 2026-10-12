@@ -90,3 +90,144 @@ describe('templatePathSegment', () => {
     expect(templatePathSegment('100%')).toBe('100%');
   });
 });
+
+// R2P-8. Short ids and PII the first rule set missed, and the over-templating it did.
+describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', () => {
+  it.each([
+    // nanoid(21) and a Firebase push id (20): mixed case + digits
+    ['V1StGXR8_Z5jdHi6B-myT', '{id}'],
+    ['-NxK3d9fQwErTyUiOp1A', '{id}'],
+    // a prefixed numeric id keeps its (non-PII) prefix
+    ['ord_12345', 'ord_{id}'],
+    ['user-9981', 'user-{id}'],
+    // a numeric / uuid / hex stem with a file extension keeps the extension
+    ['42.json', '{id}.json'],
+    ['123e4567-e89b-12d3-a456-426614174000.json', '{uuid}.json'],
+    ['0123456789ABCDEF0123.png', '{hex}.png'],
+    // phone numbers
+    ['+15551234567', '{phone}'],
+    ['555-123-4567', '{phone}'],
+    ['(555)%20123-4567', '{phone}'],
+    // IPs
+    ['192.168.0.1', '{ip}'],
+    ['2001:db8::8a2e:370:7334', '{ip}'],
+    ['::1', '{ip}'],
+    // dates and timestamps
+    ['2024-01-15', '{date}'],
+    ['2024-01-15T10:20:30Z', '{date}'],
+    ['2024-01-15T10:20:30.123Z', '{date}'],
+    // upper-case hex is hex too (mutation survivor m13)
+    ['0123456789ABCDEF', '{hex}'],
+    ['ABCDEFABCDEFABCDEFABCDEF', '{hex}'],
+    ['AbCdEfAbCdEfAbCdEf', '{hex}'],
+  ])('%j -> %j', (segment, expected) => {
+    expect(templatePathSegment(segment)).toBe(expected);
+  });
+
+  it.each([
+    // long slugs that merely contain a digit are NOT tokens
+    'the-quick-brown-fox-jumps-over-2-lazy-dogs',
+    'release-notes-for-version-2-1-final',
+    'Quick-Start-Guide-12',
+    'my_long_snake_case_name_v2_final',
+    // ordinary segments, versions and short words
+    'v1',
+    'api-v2',
+    'v1.2',
+    '1.2.3',
+    'users',
+    'sha',
+    '3-2',
+    'part-2',
+    'a.b',
+    'index.html',
+    'ABCDEFGHIJKLMNOPQRST', // 20 upper-case letters: no digit, not an id
+    'abcdefghijklmnopqrstu', // 21 lower-case letters
+  ])('leaves %j alone', (segment) => {
+    expect(templatePathSegment(segment)).toBe(segment);
+  });
+
+  it.each([
+    // UUIDs in either case
+    ['123E4567-E89B-12D3-A456-426614174000', '{uuid}'],
+    // phone-number length bounds: 7..15 numbers, a `+` only first
+    ['555-1234', '{phone}'],
+    ['555-123', '555-123'],
+    ['+123456789012345', '{phone}'],
+    ['+1234567890123456', '+1234567890123456'],
+    ['555+1234567', '555+1234567'],
+    ['++15551234567', '++15551234567'],
+    // IPv6 spelled out in full (no `::`); a clock time is not an address
+    ['2001:0db8:85a3:0000:0000:8a2e:0370:7334', '{ip}'],
+    ['10:20:30', '10:20:30'],
+    ['1000.1.1.1', '{phone}'], // not an IPv4 (octet too long), still a number run
+    // a date with a time, percent-encoded as it arrives in a path
+    ['2024-01-15%2010:20:30', '{date}'],
+    // prefixed ids need 3+ numbers
+    ['ord_12', 'ord_12'],
+    ['ord_123', 'ord_{id}'],
+    // slug detection: 3 plain words is a slug, 2 is not
+    ['abcdefghijklmnopqrstuvwx-yz-ab1', 'abcdefghijklmnopqrstuvwx-yz-ab1'],
+    ['abcdefghijklmnopqrstuvwx-yz1', '{token}'],
+    // fixed-length ids need a number AND both cases, and exactly 20 or 21 characters
+    ['abcdefghijklmnopqrst1', 'abcdefghijklmnopqrst1'],
+    ['ABCDEFGHIJKLMNOPQRST1', 'ABCDEFGHIJKLMNOPQRST1'],
+    ['AbCdEfGhIjKlMnOpQrStU', 'AbCdEfGhIjKlMnOpQrStU'],
+    ['AbCdEfGhIjKlMnOpQrSt1u', 'AbCdEfGhIjKlMnOpQrSt1u'],
+    ['AbCdEfGhIjKlMnOpQr1', 'AbCdEfGhIjKlMnOpQr1'],
+    ['AbCdEfGhIjKlMnOpQrS1', '{id}'],
+    ['AbCdEfGhIjKlMnOpQrSt1', '{id}'],
+  ])('boundary: %j -> %j', (segment, expected) => {
+    expect(templatePathSegment(segment)).toBe(expected);
+  });
+
+  it('templates the same ids inside a whole URL', () => {
+    expect(
+      sanitizeDetectorUrl(
+        'https://a.test/orders/ord_12345/items/42.json/by/V1StGXR8_Z5jdHi6B-myT/on/2024-01-15/call/+15551234567/from/10.0.0.7',
+      ),
+    ).toBe(
+      'https://a.test/orders/ord_{id}/items/{id}.json/by/{id}/on/{date}/call/{phone}/from/{ip}',
+    );
+  });
+});
+
+describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded time (R2P-8)', () => {
+  const BIG = 1_000_000;
+  const shapes: Array<[string, string]> = [
+    ['digits then a letter', `${'1'.repeat(BIG)}x`],
+    ['hex-ish then a non-hex', `${'a'.repeat(BIG)}!`],
+    ['token chars then an invalid', `${'a1'.repeat(BIG / 2)}!`],
+    ['dashes', '-'.repeat(BIG)],
+    ['phone punctuation', `+${'1-'.repeat(BIG / 2)}x`],
+    ['colons', ':'.repeat(BIG)],
+    ['dots', '.'.repeat(BIG)],
+    ['an @ run', '@'.repeat(BIG)],
+    ['almost an email', `${'a'.repeat(BIG)}@b`],
+    ['percent run', '%'.repeat(BIG)],
+    ['date-looking', `2024-01-15T${'1:'.repeat(BIG / 2)}`],
+    ['underscore words', `${'ab_'.repeat(BIG / 3)}1`],
+  ];
+
+  it.each(shapes)('segment: %s', (_name, input) => {
+    const started = Date.now();
+    templatePathSegment(input);
+    // A generous bound: linear work is ~tens of ms; a catastrophic regex would be minutes.
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('a whole URL with a huge authority, huge userinfo and a huge path', () => {
+    const started = Date.now();
+    sanitizeDetectorUrl(`https://${'a'.repeat(BIG)}/x`);
+    sanitizeDetectorUrl(`https://${'a:'.repeat(BIG / 2)}@h.test/${'/'.repeat(1000)}`);
+    sanitizeDetectorUrl(`${'a'.repeat(BIG)}://x`);
+    sanitizeDetectorUrl(`/${'1/'.repeat(BIG / 2)}`);
+    expect(Date.now() - started).toBeLessThan(6000);
+  });
+
+  it('a segment past any plausible identifier length is never echoed into a summary', () => {
+    expect(templatePathSegment('a'.repeat(5000))).toBe('{token}');
+    expect(templatePathSegment('g'.repeat(256))).toBe('g'.repeat(256)); // the cap is exclusive
+    expect(templatePathSegment('a'.repeat(257))).toBe('{token}');
+  });
+});

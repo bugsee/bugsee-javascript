@@ -12,6 +12,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -154,7 +155,7 @@ const NODE_OPTION_DEFINITIONS = [
   ...PROFILING_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
-  { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true },
+  { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true, ...BOOLEAN_OPTION },
   { friendly: 'hangFairMs', key: BugseeOption.DetectHangFairMs, default: 3000 },
   { friendly: 'hangMediumMs', key: BugseeOption.DetectHangMediumMs, default: 5000 },
   { friendly: 'hangSevereMs', key: BugseeOption.DetectHangSevereMs, default: 10_000 },
@@ -248,6 +249,8 @@ export interface BugseeLaunchOptions {
   reportDefaultCrashPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
   /** Severity an error report starts with. Default `high`. */
   reportDefaultErrorPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
   /**
    * `notify()` batching window in ms: after the first notification, wait this long so more can join its
    * request. Default 0 (send as soon as the current tick ends); `urgent` notifications skip the wait.

@@ -220,8 +220,10 @@ export {
 } from './notify-relay';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
+  BOOLEAN_OPTION,
   COMMON_OPTION_DEFINITIONS,
   createOptionsContainer,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   type OptionDefinition,
   type ResolvedLaunchOptions,
   resolveLaunchOptions,

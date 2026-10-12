@@ -1,4 +1,4 @@
-import type { OptionDefinition } from '@bugsee/core';
+import { BOOLEAN_OPTION, type OptionDefinition } from '@bugsee/core';
 
 // @bugsee/node owns its platform-specific diagnostic options. These have NO Android counterpart and no
 // cross-SDK identity, so — per the @bugsee/protocol convention (and as @bugsee/performance does) — they are
@@ -22,7 +22,7 @@ declare module '@bugsee/protocol' {
 
 /** Friendly → canonical option definitions for the launch resolver. Profiling is opt-in (overhead). */
 export const PROFILING_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
-  { friendly: 'profiling', key: ProfilingOption.Enabled, default: false },
+  { friendly: 'profiling', key: ProfilingOption.Enabled, default: false, ...BOOLEAN_OPTION },
   {
     friendly: 'profilingSamplingIntervalMicros',
     key: ProfilingOption.SamplingInterval,

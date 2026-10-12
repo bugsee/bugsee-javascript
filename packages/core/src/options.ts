@@ -40,6 +40,13 @@ export interface OptionDefinition {
   readonly normalize?: (value: unknown) => unknown;
   /** What `normalize` accepts, for the error message (e.g. `a boolean`). */
   readonly expected?: string;
+  /**
+   * The value in effect when the SUPPLIED value is invalid, if that must differ from {@link default}. Absent:
+   * an invalid value falls back to the default. Present (even `false`): used instead - the FAIL-CLOSED
+   * rule for an option that captures data and is on by default, where a malformed value (`0`, `null`,
+   * `''`, `'false'`) must mean "off", never "the default, on".
+   */
+  readonly invalid?: unknown;
 }
 
 const normalizeBoolean = (value: unknown): unknown =>
@@ -47,7 +54,30 @@ const normalizeBoolean = (value: unknown): unknown =>
 const normalizeLogLevel = (value: unknown): unknown => parseLogLevelName(value);
 const normalizeSeverity = (value: unknown): unknown => parseSeverityName(value);
 
-const boolean = { normalize: normalizeBoolean, expected: 'a boolean' } as const;
+const normalizeFlushDelay = (value: unknown): unknown =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+/**
+ * A boolean option. An invalid value (anything but `true`/`false`) falls back to the DEFAULT and is
+ * reported. Right for options that are OFF by default (only boolean `true` turns them on) and for ones
+ * whose default is the safe side (the default sanitizer, crash detection).
+ */
+export const BOOLEAN_OPTION = { normalize: normalizeBoolean, expected: 'a boolean' } as const;
+/**
+ * A boolean option that CAPTURES data and is ON by default: an invalid value turns it OFF (and is
+ * reported) rather than silently leaving it on. Privacy fails closed (review round 2, R2P-4).
+ */
+export const FAIL_CLOSED_BOOLEAN_OPTION = {
+  normalize: normalizeBoolean,
+  expected: 'a boolean',
+  invalid: false,
+} as const;
+const boolean = BOOLEAN_OPTION;
+const failClosed = FAIL_CLOSED_BOOLEAN_OPTION;
+const flushDelay = {
+  normalize: normalizeFlushDelay,
+  expected: 'a number of milliseconds >= 0',
+} as const;
 const logLevel = {
   normalize: normalizeLogLevel,
   expected: 'one of error | warning | info | debug | verbose, or an integer 1-5',
@@ -72,11 +102,12 @@ function reportInvalid(
   onError: ((error: Error) => void) | undefined,
   def: OptionDefinition,
   supplied: unknown,
+  effective: unknown,
 ): void {
   try {
     onError?.(
       new Error(
-        `${def.friendly} must be ${def.expected ?? 'valid'} (got ${String(supplied)}); using ${String(def.default)}`,
+        `${def.friendly} must be ${def.expected ?? 'valid'} (got ${String(supplied)}); using ${String(effective)}`,
       ),
     );
   } catch {
@@ -103,8 +134,15 @@ export function resolveLaunchOptions(
     // The value IN EFFECT is what is stored (and sent as sdk.options), not the raw host input.
     const value = def.normalize === undefined ? supplied : def.normalize(supplied);
     if (value === undefined) {
-      canonical[def.key] = def.default;
-      reportInvalid(onError, def, supplied);
+      if ('invalid' in def) {
+        // Fail closed: the value in effect is the host's (invalid) answer resolved to the safe side.
+        canonical[def.key] = def.invalid;
+        host[def.key] = def.invalid;
+        reportInvalid(onError, def, supplied, def.invalid);
+      } else {
+        canonical[def.key] = def.default;
+        reportInvalid(onError, def, supplied, def.default);
+      }
       continue;
     }
     host[def.key] = value;
@@ -118,15 +156,24 @@ export function resolveLaunchOptions(
   };
 }
 
-/** The cross-platform launch options every JS runtime shares; platform packages append their own. */
+/**
+ * The cross-platform launch options every JS runtime shares.
+ *
+ * Boolean options and what an INVALID value (not `true`/`false`: `0`, `null`, `''`, `'false'`, `1`...) does:
+ * - OFF + reported (fail-closed, data capture on by default): captureLogs, captureNetwork,
+ *   captureNetworkBodies, captureSystemTraces, captureSystemEvents, captureBreadcrumbs.
+ * - default kept + reported: captureNetworkDefaultSanitizer (default ON: redaction stays on),
+ *   detectCrashes (ON), captureNetworkBodyWithoutType and detectHttpErrors (OFF: only boolean `true` enables).
+ * Platform packages apply the same rules to their own booleans (see `FAIL_CLOSED_BOOLEAN_OPTION`).
+ * Platform packages append their own. */
 export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
-  { friendly: 'captureLogs', key: BugseeOption.CaptureLogs, default: true, ...boolean },
-  { friendly: 'captureNetwork', key: BugseeOption.CaptureNetwork, default: true, ...boolean },
+  { friendly: 'captureLogs', key: BugseeOption.CaptureLogs, default: true, ...failClosed },
+  { friendly: 'captureNetwork', key: BugseeOption.CaptureNetwork, default: true, ...failClosed },
   {
     friendly: 'captureNetworkBodies',
     key: BugseeOption.CaptureNetworkBodies,
     default: true,
-    ...boolean,
+    ...failClosed,
   },
   {
     friendly: 'maxNetworkBodySize',
@@ -143,13 +190,13 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     friendly: 'captureSystemTraces',
     key: BugseeOption.CaptureSystemTraces,
     default: true,
-    ...boolean,
+    ...failClosed,
   },
   {
     friendly: 'captureSystemEvents',
     key: BugseeOption.CaptureSystemEvents,
     default: true,
-    ...boolean,
+    ...failClosed,
   },
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true, ...boolean },
   { friendly: 'maxRecordingTime', key: BugseeOption.Duration, default: 60 },
@@ -165,7 +212,7 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     friendly: 'captureBreadcrumbs',
     key: BugseeOption.CaptureBreadcrumbs,
     default: true,
-    ...boolean,
+    ...failClosed,
   },
   { friendly: 'detectHttpErrors', key: BugseeOption.DetectHttpErrors, default: false, ...boolean },
   {
@@ -186,6 +233,19 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: 'high',
     ...severity,
   },
+  // Android applies this to EVERY bug report (an upload, a shake, the report dialog), so it is common, not
+  // browser-only. Core applies it to derived bug severities; the browser dialog pre-selects it.
+  {
+    friendly: 'reportDefaultBugPriority',
+    key: BugseeOption.ReportingDefaultBugPriority,
+    default: 'high',
+    ...severity,
+  },
   // `notify()` batching window in ms (Android `NotifyFlushDelay`); 0 = send as soon as the tick ends.
-  { friendly: 'notifyFlushDelay', key: BugseeOption.NotifyFlushDelay, default: 0 },
+  {
+    friendly: 'notifyFlushDelay',
+    key: BugseeOption.NotifyFlushDelay,
+    default: 0,
+    ...flushDelay,
+  },
 ];

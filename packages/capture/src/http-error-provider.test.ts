@@ -169,6 +169,20 @@ describe('createHttpErrorDetectionProvider (Android BugseeDetectionHttpError par
     expect(report).toHaveBeenCalledTimes(4);
   });
 
+  it('the method is case-insensitive in the de-dup key and reported upper-case (R2P-8)', () => {
+    const { source, report } = setup();
+    source.emit('complete', netEvent({ method: 'get' }));
+    source.emit('complete', netEvent({ method: 'GET' }));
+    source.emit('complete', netEvent({ method: 'Get' }));
+    expect(report).toHaveBeenCalledTimes(1);
+    const request = first(report);
+    expect(request.report.attributes.http_method).toBe('GET');
+    expect(
+      (request.report.crash as { exception: { frames: Array<{ trace: string }> } }).exception
+        .frames[0]?.trace,
+    ).toBe('HttpError.GET https://api.example.com/orders/list 500');
+  });
+
   it('a method-less event de-duplicates under the HTTP placeholder', () => {
     const { source, report } = setup();
     const e = netEvent({ method: undefined as unknown as string });

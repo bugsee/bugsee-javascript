@@ -22,7 +22,11 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { isThenable } from '@bugsee/util';
-import { encodeRequestForMarker, normalizeReportAttachments } from './attachments';
+import {
+  encodeRequestForMarker,
+  limitAttachmentsForMarker,
+  normalizeReportAttachments,
+} from './attachments';
 import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
@@ -192,6 +196,13 @@ export interface LogExceptionOptions {
 export interface InternalLogExceptionOptions extends LogExceptionOptions {
   /** Capture mechanism for the wire source (default 'programmatic'). */
   mechanism?: Mechanism;
+  /**
+   * The function whose caller is the application, when it is NOT the method the crash is built in: the
+   * public `logException` wrapper supplies itself here so a non-Error throwable's synthetic stack starts
+   * at the app's call site and `skipFrames` counts from there (R2P-1). The wrapper always overwrites it.
+   * `sdkFrames` is the frames above the application when `Error.captureStackTrace` is unavailable.
+   */
+  callSite?: { boundary: (...args: never[]) => unknown; sdkFrames: number };
 }
 
 /**
@@ -450,8 +461,14 @@ function exposePublicSurface(client: InternalBugseeClient): InternalBugseeClient
   };
   return {
     ...client,
-    logException: (error, options) =>
-      internal.logException(error, withoutWireOptions(options, 'mechanism')),
+    logException: function logException(error, options) {
+      // The wrapper is itself an SDK frame: it names itself as the boundary so the application, not
+      // `Object.logException`, is frame 0 of a non-Error's synthetic stack (R2P-1).
+      return internal.logException(error, {
+        ...withoutWireOptions(options, 'mechanism'),
+        callSite: { boundary: logException, sdkFrames: 2 },
+      });
+    },
     upload: (options) => internal.upload(withoutWireOptions(options, 'trigger')),
     prepareUpload: () => {
       const prepared = internal.prepareUpload();
@@ -739,6 +756,13 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     'reportDefaultErrorPriority',
     'high',
   );
+  // Android applies `ReportingDefaultBugPriority` to every bug report (an upload, a shake, the report
+  // dialog), so it is applied here for every platform, not only the browser dialog (R2D-3).
+  const bugPriority = resolvePriority(
+    BugseeOption.ReportingDefaultBugPriority,
+    'reportDefaultBugPriority',
+    'high',
+  );
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
@@ -880,8 +904,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       // assembly has not started. The handler may still mutate the request (labels, attributes,
       // attachments) and the bundle below carries the result. Reaching here is what "created" means, so a
       // veto, a missing pipeline, a queue overflow and a failed capture drain never call it.
+      const afterHandler = filters.report?.after;
       try {
-        filters.report?.after?.(request);
+        afterHandler?.(request);
       } catch (error) {
         onErrorSafe(error);
       }
@@ -890,6 +915,26 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       // come through submitReport, where reading the Environment live is the previous behaviour and a
       // strictly better degrade than shipping no attributes at all.
       const identity = reportIdentity.get(request) ?? liveIdentity();
+      // What `after` just changed is part of the report, so it belongs in the recovery marker too (R2P-7).
+      // The marker is written at SUBMIT, before assembly - the crash-safety point - and `after` runs at
+      // assembly, so it is REPLACED here (same id) rather than the handler being run earlier, which would
+      // change when `after` fires for a refused or failed report. The remaining difference is a crash in the
+      // window between submit and this point, which recovers the report as `before` left it.
+      if (afterHandler !== undefined && reportMarkers !== undefined) {
+        try {
+          const rewritten = reportMarkers.store.put({
+            generation: reportMarkers.generation,
+            request: encodeRequestForMarker(limitAttachmentsForMarker(request)),
+            attributes: identity.attributes,
+            userIdentifier: identity.userIdentifier,
+          });
+          if (isThenable(rewritten)) {
+            Promise.resolve(rewritten).catch(onErrorSafe);
+          }
+        } catch (error) {
+          onErrorSafe(error);
+        }
+      }
       // Stamp the incident's id onto the bundle (NOT onto `request.json` — this never goes on the wire).
       // The durable queue writes it into its frame header, which is the only thing that later lets
       // recovery tell "this staged blob IS the incident that marker is still holding open" from "this
@@ -901,7 +946,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
           clock,
-          onError,
+          onError: onErrorSafe,
           ...(captured !== undefined ? { requestContext: captured } : {}),
           ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
           ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
@@ -1041,7 +1086,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
 
   // Apply the report handler's `before` (mutate/veto) at report entry — before assembly. null = veto.
   // Before the handler runs, a crash/error report whose severity was only DERIVED takes the configured
-  // `reportDefault{Crash,Error}Priority`; the handler (and any explicit severity) still wins.
+  // `reportDefault{Crash,Error,Bug}Priority`; the handler (and any explicit severity) still wins.
   const applyReportBefore = (request: ReportingRequest): ReportingRequest | null => {
     const { report } = request;
     if (hasDefaultSeverity(report)) {
@@ -1049,6 +1094,8 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
         report.severity = crashPriority;
       } else if (report.type === 'error') {
         report.severity = errorPriority;
+      } else if (report.type === 'bug') {
+        report.severity = bugPriority;
       }
     }
     return runFilter(filters.report?.before ?? null, request, onError);
@@ -1086,16 +1133,20 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     let markerDurable: boolean | Promise<boolean> = true;
     // Apply the attachment limits NOW, so the marker below persists at most 3 x 3 MB of valid data (not an
     // arbitrary pile of bytes) and assembly never meets a malformed one. Never lets the report be lost.
+    let markerRequest = handled;
     try {
       normalizeReportAttachments(handled.report, onErrorSafe);
     } catch (error) {
       onErrorSafe(error);
+      // The limits could not be applied in place (a handler froze the report): the marker still must not
+      // persist what they would drop, so it encodes a limited COPY (R2P-9). Assembly applies them again.
+      markerRequest = limitAttachmentsForMarker(handled);
     }
     if (reportMarkers !== undefined) {
       try {
         const written = reportMarkers.store.put({
           generation: reportMarkers.generation,
-          request: encodeRequestForMarker(handled),
+          request: encodeRequestForMarker(markerRequest),
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
         });
@@ -1368,7 +1419,12 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       const syntheticFrames =
         error instanceof Error
           ? undefined
-          : callSiteFrames(new Error(), logException, options.stackParser ?? parseV8Stack);
+          : callSiteFrames(
+              new Error(),
+              exceptionOptions?.callSite?.boundary ?? logException,
+              options.stackParser ?? parseV8Stack,
+              exceptionOptions?.callSite?.sdkFrames,
+            );
       const crash = buildCrashJson(error, {
         parseStack: options.stackParser,
         handled: true,

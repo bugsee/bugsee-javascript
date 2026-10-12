@@ -141,6 +141,10 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   let killed = false;
   /** A 429's `retryAfter`, consumed by the next `scheduleRetry`. */
   let retryHintMs: number | undefined;
+  /** Consecutive 429 answers; a second one in a row halves the batch (the collector may be refusing its size). */
+  let consecutiveRateLimits = 0;
+  /** The current batch-size ceiling: MAX_BATCH_COUNT, halved by repeated 429s, doubled back by successes. */
+  let batchCap = MAX_BATCH_COUNT;
   const sizes = new WeakMap<NotifyItem, number>();
   const sizeOf = (item: NotifyItem): number => {
     let size = sizes.get(item);
@@ -199,6 +203,8 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     }
     if (result.outcome === 'sent') {
       retryDelay = RETRY_INITIAL_MS;
+      consecutiveRateLimits = 0;
+      batchCap = Math.min(batchCap * 2, MAX_BATCH_COUNT);
       return true;
     }
     if (result.outcome === 'kill') {
@@ -218,6 +224,14 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
       report(new Error(`notify: the collector rejected ${batch.length} notification(s); dropped`));
       return true;
     }
+    if (result.rateLimited === true) {
+      consecutiveRateLimits += 1;
+      if (consecutiveRateLimits >= 2) {
+        batchCap = Math.max(1, Math.floor(batchCap / 2));
+      }
+    } else {
+      consecutiveRateLimits = 0;
+    }
     if (result.retryAfterMs !== undefined) {
       retryHintMs = Math.min(Math.max(result.retryAfterMs, 0), MAX_RETRY_AFTER_MS);
     }
@@ -231,7 +245,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   const takeBatch = (): NotifyItem[] => {
     let bytes = 0;
     let count = 0;
-    while (count < queue.length && count < MAX_BATCH_COUNT) {
+    while (count < queue.length && count < batchCap) {
       // MAX_ITEM_BYTES <= MAX_BATCH_BYTES, so the first item always fits and a batch is never empty.
       const size = jsonBytes(queue[count] as NotifyItem);
       if (bytes + size > MAX_BATCH_BYTES) {
@@ -278,13 +292,14 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     if (stopped) {
       return; // a stopped SDK keeps no timer, and so sends no request, alive
     }
+    // The collector's hint is a floor-raiser, never a floor-remover: `Retry-After: 0` (or 0.0001 s) must
+    // not become a hammer loop, so the wait is never below the current backoff step, which keeps growing.
     let wait = retryDelay;
     if (retryHintMs !== undefined) {
-      wait = retryHintMs; // the collector named the wait: honour it, leave the backoff where it is
+      wait = Math.max(retryHintMs, retryDelay);
       retryHintMs = undefined;
-    } else {
-      retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     }
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     retryTimer = timers.setTimeout(() => {
       retryTimer = null;
       void flush();
