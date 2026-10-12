@@ -29,17 +29,10 @@ async function bounded(work: Promise<unknown>, ms: number): Promise<void> {
   }
 }
 
+// The carrier already stores ONLY the kept seams ({@link RELAUNCH_KEPT_OPTIONS}, filtered in
+// `setCarrierLastLaunch`), so a copy of what it holds is exactly what a relaunch carries over.
 function keptOptions(previous: unknown): Record<string, unknown> {
-  const kept: Record<string, unknown> = {};
-  if (typeof previous !== 'object' || previous === null) {
-    return kept;
-  }
-  for (const key of RELAUNCH_KEPT_OPTIONS) {
-    if (key in previous) {
-      kept[key] = (previous as Record<string, unknown>)[key];
-    }
-  }
-  return kept;
+  return { ...(previous as Record<string, unknown> | undefined) };
 }
 
 /**
