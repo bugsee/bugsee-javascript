@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Real-SvelteKit boot e2e: vite-builds a fixture app using @bugsee/sveltekit (adapter-node) and asserts a thrown route uploads a bundle + the trace <meta> is injected. Not in `pnpm test`.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "test:e2e": "vitest run"

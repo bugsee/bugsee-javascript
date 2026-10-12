@@ -29,3 +29,7 @@ pnpm test              # vitest
 pnpm lint              # biome
 pnpm check:cycles      # madge --circular
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE). Every published `@bugsee/*` package carries the same license in its `package.json` and ships a copy of the `LICENSE` file.

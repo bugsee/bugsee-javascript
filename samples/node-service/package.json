@@ -19,5 +19,6 @@
     "@bugsee/opentelemetry": "file:../../.local-registry/bugsee-opentelemetry.tgz",
     "@types/ws": "^8.18.1",
     "ws": "^8.21.3"
-  }
+  },
+  "license": "MIT"
 }

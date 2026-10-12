@@ -44,5 +44,6 @@
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^5.2.0",
     "ws": "^8.18.0"
-  }
+  },
+  "license": "MIT"
 }

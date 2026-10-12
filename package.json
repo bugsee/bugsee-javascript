@@ -3,8 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Bugsee JavaScript SDK \u2014 monorepo root (see docs/design/sdk-design.md)",
-  "license": "UNLICENSED",
+  "description": "Bugsee JavaScript SDK — monorepo root (see docs/design/sdk-design.md)",
+  "license": "MIT",
   "packageManager": "pnpm@11.3.0",
   "engines": {
     "node": ">=18"

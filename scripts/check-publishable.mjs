@@ -8,11 +8,12 @@
 //
 //   node scripts/check-publishable.mjs          # exits 1 and lists every violation
 //   node scripts/check-publishable.mjs --list   # print the publishable package names, one per line
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const MIN_README_CHARS = 400;
 const REPO_URL = 'git+https://github.com/bugsee/bugsee-javascript.git';
 
 // Test harnesses and sample fixtures are never published.
@@ -37,6 +38,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const carrier = readFileSync(join(root, 'packages/core/src/carrier.ts'), 'utf8');
   const sdkVersion = /BUGSEE_SDK_VERSION = '([^']+)'/.exec(carrier)?.[1];
   const errors = [];
+  const rootLicense = readFileSync(join(root, 'LICENSE'), 'utf8');
+  if (!/^MIT License/.test(rootLicense)) errors.push('LICENSE: the repository license is not MIT');
+  if (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).license !== 'MIT')
+    errors.push('package.json: root license must be "MIT"');
   if (!sdkVersion) errors.push('core/src/carrier.ts: BUGSEE_SDK_VERSION not found');
 
   for (const { dir, json } of packages) {
@@ -48,6 +53,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       errors.push(`${where}: publishConfig.access must be "public"`);
     if (json.repository?.url !== REPO_URL)
       errors.push(`${where}: repository.url must be ${REPO_URL}`);
+    // MIT, shown by npm (the `license` field) and shipped as a LICENSE file identical to the repository's.
+    if (json.license !== 'MIT') errors.push(`${where}: license must be "MIT" (is ${json.license})`);
+    const licensePath = join(root, 'packages', dir, 'LICENSE');
+    if (!existsSync(licensePath)) errors.push(`${where}: LICENSE file missing`);
+    else if (readFileSync(licensePath, 'utf8') !== rootLicense)
+      errors.push(`${where}: LICENSE differs from the repository LICENSE`);
+    // The README is the npm page. A one-line placeholder published as-is is what this catches.
+    const readmePath = join(root, 'packages', dir, 'README.md');
+    const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '';
+    if (readme.length < MIN_README_CHARS)
+      errors.push(`${where}: README.md missing or shorter than ${MIN_README_CHARS} characters`);
+    else if (/\bstub\b/i.test(readme)) errors.push(`${where}: README.md still says "stub"`);
+    else if (!/^## License\b/m.test(readme))
+      errors.push(`${where}: README.md has no "## License" section`);
     if (json.repository?.directory !== `packages/${dir}`)
       errors.push(`${where}: repository.directory must be packages/${dir}`);
     for (const [dep, range] of Object.entries({

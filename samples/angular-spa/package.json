@@ -37,5 +37,6 @@
     "playwright": "^1.49.1",
     "typescript": "~5.5.2",
     "ws": "^8.18.0"
-  }
+  },
+  "license": "MIT"
 }

@@ -57,5 +57,6 @@
     "@bugsee/webpack-plugin": "workspace:*",
     "@bugsee/webview": "workspace:*",
     "@bugsee/webworker": "workspace:*"
-  }
+  },
+  "license": "MIT"
 }
