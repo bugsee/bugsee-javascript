@@ -27,6 +27,11 @@ describe('@bugsee/bugsee public API surface', () => {
     expect([attr, input, crumb, options]).toHaveLength(4);
   });
 
+  it('exports getDefaultNetworkSanitizer so a custom network filter can keep the default redaction', () => {
+    const sanitizer = publicApi.getDefaultNetworkSanitizer();
+    expect(sanitizer.sanitizeUrl('https://a.test/x?token=SECRET')).not.toContain('SECRET');
+  });
+
   it('re-exports the types of the manual-report API (upload) and of the report dialog', () => {
     const upload = {} as UploadOptions;
     const dialog = {} as ReportDialogOptions;

@@ -87,6 +87,49 @@ describe('createLogCaptureProvider', () => {
     expect((entries?.[0]?.data as LogEvent).message).toBe('X');
   });
 
+  describe('captureLogsLevel', () => {
+    const at = (level: LogEvent['level'], message: string): LogEvent => ({
+      timestamp: 1,
+      level,
+      source: 'console',
+      message,
+    });
+    const run = async (opts: OptionsContainer, events: LogEvent[]) => {
+      const store = mkStore();
+      const source = mkSource();
+      const p = createLogCaptureProvider(source);
+      p.init(buildInit(store));
+      p.start(opts);
+      for (const e of events) {
+        source.emit('log', e);
+      }
+      return (await drainLog(store))?.map((e) => (e.data as LogEvent).message) ?? [];
+    };
+    const level = (value: unknown): OptionsContainer =>
+      createOptionsContainer({ [BugseeOption.CaptureLogsLevel]: value });
+
+    it('drops console records below the configured level', async () => {
+      const all = [at('error', 'e'), at('warning', 'w'), at('info', 'i'), at('debug', 'd')];
+      expect(await run(level('warning'), all)).toEqual(['e', 'w']);
+      expect(await run(level('error'), all)).toEqual(['e']);
+    });
+
+    it('captures every level by default (verbose) and for an unknown level', async () => {
+      const all = [at('error', 'e'), at('verbose', 'v')];
+      expect(await run(options, all)).toEqual(['e', 'v']);
+      expect(await run(level('chatty'), all)).toEqual(['e', 'v']);
+    });
+
+    it('applies before the user log filter (a dropped level never reaches it)', async () => {
+      const seen = vi.fn((e: LogEvent) => e);
+      const filters = createFilterStore(vi.fn());
+      filters.log = seen;
+      publishFilters(filters);
+      expect(await run(level('error'), [at('info', 'i'), at('error', 'e')])).toEqual(['e']);
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('captures multiple events in order', async () => {
     const store = mkStore();
     const source = mkSource();

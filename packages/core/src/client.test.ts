@@ -2300,3 +2300,159 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('createClient — mobile-parity options (T6)', () => {
+  const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+  const drain = async (store: CaptureStore, type: FileType) =>
+    (await createCaptureExporter(store).drain()).get(type);
+  const noScheduler = { setInterval: () => 'h', clearInterval: () => {} };
+
+  describe('captureBreadcrumbs', () => {
+    it('drops addBreadcrumb when the option is switched off', async () => {
+      const store = memStore();
+      const client = createClient({
+        captureStore: store,
+        clock: fixedClock(1000),
+        isEnabled: (key) => key !== 'com.bugsee.option.capture.breadcrumbs',
+      });
+      client.addBreadcrumb({ message: 'clicked' });
+      expect(await drain(store, 'breadcrumbs')).toBeUndefined();
+    });
+
+    it('keeps capturing when the option is on (the JS default)', async () => {
+      const store = memStore();
+      const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+      client.addBreadcrumb({ message: 'clicked' });
+      expect(await drain(store, 'breadcrumbs')).toHaveLength(1);
+    });
+  });
+
+  describe('captureLogsLevel', () => {
+    const levelled = (level: unknown, onError?: (e: unknown) => void) => {
+      const store = memStore();
+      const client = createClient({
+        captureStore: store,
+        clock: fixedClock(1000),
+        launchOptions: createOptionsContainer({ 'com.bugsee.option.capture.logs.level': level }),
+        ...(onError !== undefined ? { onError } : {}),
+      });
+      return { store, client };
+    };
+
+    it('drops client.log records below the level and keeps the rest', async () => {
+      const { store, client } = levelled('warning');
+      client.log('chatty', 'info');
+      client.log('verbose-ish', 'debug');
+      client.log('bad', 'error');
+      client.log('careful', 'warning');
+      const messages = (await drain(store, 'log'))?.map(
+        (e) => (e.data as { message: string }).message,
+      );
+      expect(messages).toEqual(['bad', 'careful']);
+    });
+
+    it('also applies to a numeric wire level', async () => {
+      const { store, client } = levelled('error');
+      client.log('x', 3 as unknown as 'info');
+      expect(await drain(store, 'log')).toBeUndefined();
+    });
+
+    it('captures everything by default (verbose)', async () => {
+      const store = memStore();
+      const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+      client.log('v', 'verbose');
+      expect(await drain(store, 'log')).toHaveLength(1);
+    });
+
+    it('warns through onError and falls back to verbose on an unknown level', async () => {
+      const onError = vi.fn();
+      const { store, client } = levelled('chatty', onError);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(String((onError.mock.calls[0]?.[0] as Error).message)).toBe(
+        'captureLogsLevel must be one of error | warning | info | debug | verbose (got chatty); using verbose',
+      );
+      client.log('v', 'verbose');
+      expect(await drain(store, 'log')).toHaveLength(1);
+    });
+  });
+
+  describe('reportDefaultCrashPriority / reportDefaultErrorPriority', () => {
+    const configured = (values: Record<string, unknown>, onError?: (e: unknown) => void) => {
+      const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+      const provider = detectionProvider('d');
+      const client = createClient({
+        triggerPipeline: { report } as TriggerPipeline,
+        launchOptions: createOptionsContainer(values),
+        scheduler: noScheduler,
+        ...(onError !== undefined ? { onError } : {}),
+      });
+      client.addDetectionProvider(provider);
+      client.launch();
+      const sink = (provider.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as (
+        r: ReportingRequest,
+      ) => void;
+      return { client, report, sink };
+    };
+    const CRASH = 'com.bugsee.option.reporting.defaults.crash-priority';
+    const ERROR = 'com.bugsee.option.reporting.defaults.error-priority';
+    const severities = (report: { mock: { calls: unknown[][] } }) =>
+      report.mock.calls.map((c) => (c[0] as ReportingRequest).report.severity);
+
+    it('applies the configured crash priority to a detected crash with no explicit severity', () => {
+      const { report, sink } = configured({ [CRASH]: 'critical' });
+      sink(createReportingRequest({ source: { type: 'crash', mechanism: 'uncaught' } }));
+      expect(severities(report)).toEqual(['critical']);
+    });
+
+    it('applies the configured error priority to a detected error and to logException', async () => {
+      const { client, report, sink } = configured({ [ERROR]: 'low' });
+      sink(createReportingRequest({ source: { type: 'error' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['low', 'low']);
+    });
+
+    it('lets an explicit per-call severity win over the configured default', async () => {
+      const { client, report, sink } = configured({ [ERROR]: 'low', [CRASH]: 'low' });
+      sink(createReportingRequest({ source: { type: 'crash' }, severity: 'blocker' }));
+      await client.logException(new Error('x'), { severity: 'critical' });
+      expect(severities(report)).toEqual(['blocker', 'critical']);
+    });
+
+    it('keeps the mobile defaults (crash blocker, error high) when unconfigured', async () => {
+      const { client, report, sink } = configured({});
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['blocker', 'high']);
+    });
+
+    it('does not touch a bug-type report (that default is reportDefaultBugPriority)', async () => {
+      const { client, report } = configured({ [CRASH]: 'low', [ERROR]: 'low' });
+      await client.upload({});
+      expect(severities(report)).toEqual(['high']);
+    });
+
+    it('lets the report handler still rewrite the severity afterwards', () => {
+      const { client, report, sink } = configured({ [CRASH]: 'low' });
+      client.setReportHandler({
+        before: (request) => {
+          request.report.severity = 'medium';
+          return request;
+        },
+      });
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      expect(severities(report)).toEqual(['medium']);
+    });
+
+    it('warns through onError and falls back to the mobile default for an invalid value', () => {
+      const onError = vi.fn();
+      const { report, sink } = configured({ [CRASH]: 'urgent', [ERROR]: 7 }, onError);
+      const messages = onError.mock.calls.map((c) => String((c[0] as Error).message));
+      expect(messages).toEqual([
+        'reportDefaultCrashPriority must be one of verylow | low | medium | high | critical | blocker (got urgent); using blocker',
+        'reportDefaultErrorPriority must be one of verylow | low | medium | high | critical | blocker (got 7); using high',
+      ]);
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      expect(severities(report)).toEqual(['blocker']);
+    });
+  });
+});

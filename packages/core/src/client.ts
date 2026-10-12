@@ -1,5 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 import {
+  BugseeOption,
   type EnvironmentEnvelope,
   type LogLevel,
   logLevelToWire,
@@ -57,12 +58,18 @@ import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 export type { Breadcrumb, BreadcrumbInput } from './events';
 
 import { createExtensionRegistry } from './extension-registry';
+import { isLogLevelEnabled, parseLogLevelName } from './log-level';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import type { ReportMarkerStore } from './report-marker-store';
-import { createReportingRequest, type ReportingRequest } from './reporting';
+import {
+  createReportingRequest,
+  hasDefaultSeverity,
+  parseSeverityName,
+  type ReportingRequest,
+} from './reporting';
 import { type ContextProvider, ContextProviderToken, type RequestContext } from './request-context';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
@@ -201,6 +208,25 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
 
   // Redaction filters (§4.1#4 / §7.1): each runs per captured event to mutate it or DROP it (return
   // null). A network filter REPLACES the built-in sanitizer. Pass null to clear. Settable any time.
+  /**
+   * Filter captured network events: mutate one, or return null to drop it.
+   *
+   * **A network filter REPLACES the built-in sanitizer — it does not layer on top of it.** Once a filter is
+   * set, nothing is redacted unless the filter does it: URLs, headers, bodies and error text are captured
+   * as-is. To keep the default redaction and add rules of your own, call the default sanitizer from inside
+   * the filter:
+   *
+   * ```ts
+   * import { getDefaultNetworkSanitizer } from '@bugsee/bugsee';
+   * const defaults = getDefaultNetworkSanitizer(); // { sanitize, sanitizeUrl, sanitizeErrorMessage }
+   * client.setNetworkEventFilter((event) =>
+   *   event.url.includes('/health') ? null : defaults.sanitize(event),
+   * );
+   * ```
+   *
+   * The filter runs once per stage (`before`, `complete`, `error`, …) of a request, so a veto must be
+   * returned for every stage of the requests you want gone.
+   */
   setNetworkEventFilter(filter: NetworkEventFilter | null): void;
   setLogEventFilter(filter: LogEventFilter | null): void;
   setBreadcrumbFilter(filter: BreadcrumbFilter | null): void;
@@ -429,6 +455,43 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const captureProviderInit: CaptureProviderInit = { operations, captureAggregator };
   const captureCoordinator = createCaptureCoordinator(captureProviderInit);
   const launchOptions = options.launchOptions ?? createOptionsContainer();
+  // Launch options that arrive as untrusted strings are normalised once, here, with a warning: a typo
+  // ('urgent', 'warn') must not leave a report with no severity or silently change what is captured.
+  const logsLevelOption = launchOptions.get<unknown>(BugseeOption.CaptureLogsLevel, 'verbose');
+  const logsLevel = parseLogLevelName(logsLevelOption) ?? 'verbose';
+  if (parseLogLevelName(logsLevelOption) === undefined) {
+    onError(
+      new Error(
+        `captureLogsLevel must be one of error | warning | info | debug | verbose (got ${String(logsLevelOption)}); using verbose`,
+      ),
+    );
+  }
+  const resolvePriority = (
+    key: string,
+    friendly: string,
+    fallback: 'blocker' | 'high',
+  ): SeverityName => {
+    const configured = launchOptions.get<unknown>(key, fallback);
+    const parsed = parseSeverityName(configured);
+    if (parsed === undefined) {
+      onError(
+        new Error(
+          `${friendly} must be one of verylow | low | medium | high | critical | blocker (got ${String(configured)}); using ${fallback}`,
+        ),
+      );
+    }
+    return parsed ?? fallback;
+  };
+  const crashPriority = resolvePriority(
+    BugseeOption.ReportingDefaultCrashPriority,
+    'reportDefaultCrashPriority',
+    'blocker',
+  );
+  const errorPriority = resolvePriority(
+    BugseeOption.ReportingDefaultErrorPriority,
+    'reportDefaultErrorPriority',
+    'high',
+  );
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
@@ -624,8 +687,19 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   };
 
   // Apply the report handler's `before` (mutate/veto) at report entry — before assembly. null = veto.
-  const applyReportBefore = (request: ReportingRequest): ReportingRequest | null =>
-    runFilter(filters.report?.before ?? null, request, onError);
+  // Before the handler runs, a crash/error report whose severity was only DERIVED takes the configured
+  // `reportDefault{Crash,Error}Priority`; the handler (and any explicit severity) still wins.
+  const applyReportBefore = (request: ReportingRequest): ReportingRequest | null => {
+    const { report } = request;
+    if (hasDefaultSeverity(report)) {
+      if (report.type === 'crash') {
+        report.severity = crashPriority;
+      } else if (report.type === 'error') {
+        report.severity = errorPriority;
+      }
+    }
+    return runFilter(filters.report?.before ?? null, request, onError);
+  };
 
   // Submit a finalized (post-before-filter) report. When a capture-recovery marker hook is present,
   // persist a pending marker (with the incident-time attributes + user identifier) BEFORE assembly, then
@@ -794,7 +868,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
-      if (killed) {
+      if (killed || !isEnabled(BugseeOption.CaptureBreadcrumbs)) {
         return;
       }
       const timestamp = breadcrumb.timestamp ?? clock.wallNow();
@@ -808,7 +882,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     log(message: string, level: LogLevel | LogLevelName = 'info', timestamp?: number): void {
-      if (killed) {
+      if (killed || !isLogLevelEnabled(level, logsLevel)) {
         return;
       }
       const ts = timestamp ?? clock.wallNow();

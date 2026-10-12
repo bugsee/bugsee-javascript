@@ -8,6 +8,7 @@ import {
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
@@ -178,10 +179,22 @@ export interface BugseeLaunchOptions {
 
   /** Capture console output as logs. Default true. */
   captureLogs?: boolean;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+  /**
+   * Capture breadcrumbs (`addBreadcrumb` and the automatic UI-interaction ones). Default true. Mobile SDKs
+   * default this to false; on the web UI breadcrumbs are a core signal, so JS keeps them on.
+   */
+  captureBreadcrumbs?: boolean;
   /** Capture network (fetch/xhr/ws/sse/webtransport). Default true. */
   captureNetwork?: boolean;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true. A
+   * `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
@@ -214,6 +227,12 @@ export interface BugseeLaunchOptions {
   reportDefaultBugPriority?: SeverityName;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Report failed fetch/XHR exchanges (status >= 400, or no response) as `error` reports. Default false. */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityName;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityName;
   /**
    * Session replay (rrweb). **On by default** — parity with the iOS/Android SDKs, which record by default.
    * An options object customises it; `false` opts out entirely. Masking is FAIL-CLOSED (mask all
@@ -641,6 +660,8 @@ export async function launchCore(
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));
   client.addDetectionProvider(createUnhandledRejectionProvider(win));
+  // Failed fetch/xhr exchanges → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   client.launch();
 

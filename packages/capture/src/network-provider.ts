@@ -130,6 +130,34 @@ const sanitize = (event: NetworkEvent): NetworkEvent => {
   };
 };
 
+/**
+ * The built-in network redaction, as an object (Android `Bugsee.getDefaultNetworkSanitizer()`).
+ *
+ * Installing a network filter REPLACES the default sanitizer, so a filter that only drops or tweaks events
+ * silently ships URLs, headers and bodies unredacted. Call `sanitize` from inside the filter to keep the
+ * default redaction and then add your own rules on top.
+ */
+export interface DefaultNetworkSanitizer {
+  /** Redacts the URL, sensitive headers, body and error text of an event; returns a new event (or the same
+   *  one when there is nothing to redact). Does not mutate its input. */
+  sanitize(event: NetworkEvent): NetworkEvent;
+  /** Redacts sensitive query/fragment parameters and `user:pass@` credentials in a URL. */
+  sanitizeUrl(url: string): string;
+  /** Redacts URLs and secrets quoted inside a free-text error message. */
+  sanitizeErrorMessage(message: string): string;
+}
+
+const DEFAULT_NETWORK_SANITIZER: DefaultNetworkSanitizer = {
+  sanitize,
+  sanitizeUrl,
+  sanitizeErrorMessage,
+};
+
+/** The built-in network sanitizer, for composing with a custom `setNetworkEventFilter` filter. */
+export function getDefaultNetworkSanitizer(): DefaultNetworkSanitizer {
+  return DEFAULT_NETWORK_SANITIZER;
+}
+
 class NetworkCaptureProvider extends CaptureProviderBase {
   readonly name = 'network';
   readonly controllingOption = BugseeOption.CaptureNetwork;

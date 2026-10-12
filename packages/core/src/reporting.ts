@@ -93,6 +93,34 @@ function defaultType(trigger: ReportingTriggerType): IssueType {
   return 'bug';
 }
 
+const SEVERITY_NAMES: readonly string[] = [
+  'verylow',
+  'low',
+  'medium',
+  'high',
+  'critical',
+  'blocker',
+];
+
+/** A severity name from untrusted input (a launch option): the canonical name, else `undefined`. */
+export function parseSeverityName(value: unknown): SeverityName | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const name = value.trim().toLowerCase();
+  return SEVERITY_NAMES.includes(name) ? (name as SeverityName) : undefined;
+}
+
+// Reports whose severity was DERIVED from their type rather than given. The client replaces those with
+// the configured `reportDefault{Crash,Error}Priority`; an explicit severity always wins. Tracked
+// out-of-band so the `Report` shape (and everything that serializes or compares it) is unchanged.
+const derivedSeverity = new WeakSet<Report>();
+
+/** True when the report's severity is the built-in per-type default, not one a caller asked for. */
+export function hasDefaultSeverity(report: Report): boolean {
+  return derivedSeverity.has(report);
+}
+
 function defaultSeverity(type: IssueType): SeverityName {
   return type === 'crash' ? 'blocker' : 'high';
 }
@@ -117,5 +145,8 @@ export function createReportingRequest(
     ...(init.crash !== undefined ? { crash: init.crash } : {}),
     ...(init.attachments !== undefined ? { attachments: init.attachments } : {}),
   };
+  if (init.severity === undefined) {
+    derivedSeverity.add(report);
+  }
   return { id, source: init.source, report };
 }

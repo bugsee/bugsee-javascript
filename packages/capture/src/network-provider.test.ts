@@ -16,7 +16,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type NetworkEvent, type NetworkStage, sanitizeUrl } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNetworkCaptureProvider } from './network-provider';
+import { createNetworkCaptureProvider, getDefaultNetworkSanitizer } from './network-provider';
 
 // Publish a filter store as the singleton client's `filters` service on the global carrier (the
 // provider reads it via getFilters()); reset between tests.
@@ -842,5 +842,43 @@ describe('network URL absolutization', () => {
     );
     expect(captured.url).toBe('https://app.example.com/shop/products;api_key=%3Credacted%3E/list');
     expect(captured.url).not.toContain('MATRIXPATHSECRET');
+  });
+});
+
+describe('getDefaultNetworkSanitizer', () => {
+  const sanitizer = getDefaultNetworkSanitizer();
+
+  it('redacts a URL, an error message and a whole event exactly as the built-in sanitizer does', () => {
+    const raw = netEvent({
+      url: 'https://api/x?token=SECRET',
+      customError: 'failed GET https://api/x?token=SECRET',
+      custom: { headers: { Authorization: 'Bearer SECRET' } },
+    });
+    expect(sanitizer.sanitizeUrl('https://api/x?token=SECRET')).toBe(
+      sanitizeUrl('https://api/x?token=SECRET'),
+    );
+    expect(sanitizer.sanitizeUrl('https://api/x?token=SECRET')).not.toContain('SECRET');
+    expect(sanitizer.sanitizeErrorMessage('failed GET https://api/x?token=SECRET')).not.toContain(
+      'SECRET',
+    );
+    const out = sanitizer.sanitize(raw);
+    expect(JSON.stringify(out)).not.toContain('SECRET');
+    expect(JSON.stringify(raw)).toContain('SECRET'); // the input is not mutated
+  });
+
+  it('lets a custom network filter re-apply the default redaction (which a filter otherwise replaces)', async () => {
+    const store = mkStore();
+    const source = mkSource();
+    const filters = createFilterStore(vi.fn());
+    filters.network = (e) => (e.url.includes('/health') ? null : sanitizer.sanitize(e));
+    publishFilters(filters);
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(options);
+    source.emit('complete', netEvent({ url: 'https://api/x?token=SECRET' }));
+    source.emit('complete', netEvent({ url: 'https://api/health' }));
+    const captured = (await drainNetwork(store))?.map((e) => e.data as NetworkEvent);
+    expect(captured).toHaveLength(1);
+    expect(captured?.[0]?.url).not.toContain('SECRET');
   });
 });
