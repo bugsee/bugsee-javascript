@@ -1,35 +1,55 @@
 # @bugsee/deno
 
-Deno platform (tier 2, design §5). Deno 2 runs on a node-compatible API surface, so this package re-exports
-the entire `@bugsee/node` composition and overrides only the Deno-specific bits:
+The Bugsee SDK for Deno: crash and error capture, console and network capture, incoming `Deno.serve` request instrumentation, and on-disk capture with crash recovery.
 
-- **Runtime identity** — `launch()`/`launchCore()` default the system probe to `denoSystemProbe`, so the
-  environment envelope reports `platform.type: 'deno'` and the Deno version (`Deno.version.deno`).
-- **System metrics** — the shared guarded `perf_hooks` sampler (`createGuardedSystemMetricsSampler`, in
-  `@bugsee/node`) that degrades the event-loop metrics to zero rather than crashing on Deno's partial
-  `perf_hooks` support.
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Everything else — transport, fs storage, `node:http` capture, crash detection, durable queue + capture
-recovery, CPU profiling, ANR/hang detection — is inherited from `@bugsee/node` and capability-guarded, so a
-diagnostic that touches a partially-supported Deno API self-disables rather than breaking. Both defaults stay
-overridable. `launch`/`launchCore` shadow the same-named `@bugsee/node` exports.
+Install this package directly in Deno projects. It runs the same pipeline as `@bugsee/node` through Deno's `node:` compatibility layer and only changes how the runtime is identified in reports (`deno` and its version).
+
+## Install
+
+```sh
+deno add npm:@bugsee/deno
+```
+
+Requires Deno 2.0 or newer. Core capture works on 2.0. The CPU profiler and the hang detector depend on Deno's Node compatibility and disable themselves where it is missing; they are fully available on Deno 2.8 and newer.
+
+## Usage
+
+Call `launch()` at the top of your entry file. It returns the client directly (not a `Promise`).
 
 ```ts
 import { launch } from '@bugsee/deno';
-const bugsee = launch(appToken, { appVersion: '1.0.0' });
+
+const bugsee = launch('YOUR_APP_TOKEN', { appVersion: '1.0.0' });
 ```
 
-**Deno permissions.** The SDK uses Deno's `node:` compatibility, which is subject to Deno's permission
-model: report upload needs `--allow-net`, file-backed capture/recovery (`dataDir`) needs
-`--allow-read`/`--allow-write`, and the ANR watchdog spawns a worker. The ANR watchdog and CPU profiler are
-capability-guarded (they degrade to a no-op if their API is unavailable); under denied network/fs
-permissions the corresponding paths surface errors via the `onError` sink rather than the bundle.
+Run with the permissions the SDK needs:
 
-**Supported Deno version:** **≥ 2.0** (matches `@sentry/deno`; verified on real Deno 2.0.0). The core
-(error/crash capture, network/console, the request-context framework adapters, durable queue + recovery)
-works on 2.0; the **diagnostics degrade gracefully** there — CPU profiling (`node:inspector`) and the ANR
-watchdog (`worker_threads`) self-disable until Deno's node-compat gains them. **Full support incl. CPU
-profiling + ANR on Deno 2.8+.** (Note: `Deno.version.deno` is the real version; `process.version` is the
-node-compat version — the probe reads the former.)
+```sh
+deno run --allow-net --allow-read --allow-write main.ts
+```
 
-**Status:** implemented. Built test-first per `docs/implementation-standards.md`.
+`--allow-net` is for report upload. `--allow-read` and `--allow-write` are for on-disk capture and crash recovery (`dataDir`). If a permission is denied, the affected feature fails and the error goes to the `onError` callback instead of your app.
+
+## Options
+
+`launch(appToken, options)` accepts the same options as `@bugsee/node`. Common ones:
+
+- `appVersion`, `appBuild`, `appId`: identify your release in reports.
+- `captureLogs`, `captureNetwork`, `captureNetworkBodies`: capture streams, all on by default.
+- `maxRecordingTime`: rolling recording window in seconds (default 60).
+- `dataDir`: where the on-disk capture buffer lives (default `<os tmpdir>/bugsee`).
+- `instrumentIncomingRequests`: automatic `Deno.serve` request instrumentation (on by default).
+- `onError`: receives errors the SDK itself hits, such as denied permissions.
+
+On Deno, local-variable capture (`captureLocalVariables`) is always off, and the event-loop lag traces are omitted, because Deno's debugger and event-loop APIs do not behave the way those features need.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/deno
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
