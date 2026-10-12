@@ -698,7 +698,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     onError,
     processCarrier !== undefined ? getCarrierLifecycleSlot(processCarrier) : undefined,
   );
-  if (options.lifecycleEventsListener !== undefined) {
+  // Own property only: a page that plants `lifecycleEventsListener` on `Object.prototype` must not be handed
+  // the lifecycle stream through an options bag that simply omits it.
+  if (
+    Object.hasOwn(options, 'lifecycleEventsListener') &&
+    options.lifecycleEventsListener !== undefined
+  ) {
     lifecycle.set(options.lifecycleEventsListener);
   }
   // Requests whose bundle was assembled: only these have an upload to report on (a vetoed report, a

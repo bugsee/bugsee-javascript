@@ -2337,6 +2337,33 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     }
   });
 
+  it('accessor plants on Object.prototype (getter+setter, getter-only) and inherited non-seam options do not re-enter', async () => {
+    const fake = fakeGlobal();
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    const seen: string[] = [];
+    Object.defineProperty(Object.prototype, 'global', {
+      get: () => fake.global,
+      set: () => {},
+      configurable: true,
+    });
+    Object.defineProperty(Object.prototype, 'carrier', { get: () => ({}), configurable: true });
+    Object.defineProperty(Object.prototype, 'lifecycleEventsListener', {
+      get: () => (type: string) => seen.push(type),
+      configurable: true,
+    });
+    try {
+      const client = publicLaunch('tok', { captureNetwork: false });
+      expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+      expect(seen).toEqual([]);
+      await client.stop();
+    } finally {
+      delete proto.global;
+      delete proto.carrier;
+      delete proto.lifecycleEventsListener;
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+    }
+  });
+
   it('a page-supplied fresh carrier (or global) cannot mint a second live client', () => {
     const fake = fakeGlobal();
     const first = track('tok', baseOptions({ global: fake.global, carrier: {} }));

@@ -386,17 +386,13 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     string,
     unknown
   >;
-  const safe: Record<string, unknown> = {};
+  // A null-prototype bag: nothing planted on `Object.prototype` (a data property OR an accessor, and the
+  // non-seam options `controlNonce` / `lifecycleEventsListener` too) can be inherited into the launch.
+  const safe: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(given)) {
     if (!PAGE_STRIPPED_SEAMS.includes(key)) {
       safe[key] = given[key];
     }
-  }
-  // Each seam is set as an OWN `undefined`, which shadows anything planted on `Object.prototype`: the rest of
-  // the launch reads `options.global` etc. through the prototype chain, and a polluted prototype would
-  // otherwise re-introduce the seam this function exists to remove.
-  for (const key of PAGE_STRIPPED_SEAMS) {
-    safe[key] = undefined;
   }
   return launchWithSeams(appToken, safe as BugseeWebViewLaunchOptions);
 }

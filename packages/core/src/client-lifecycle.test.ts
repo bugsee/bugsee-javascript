@@ -336,6 +336,29 @@ describe('ReportHandler.after (Android onAfterReportCreated)', () => {
     expect(replacement).not.toHaveBeenCalled();
   });
 
+  it('does not take the lifecycle listener from Object.prototype', () => {
+    const seen: string[] = [];
+    Object.defineProperty(Object.prototype, 'lifecycleEventsListener', {
+      get: () => (type: string) => seen.push(type),
+      configurable: true,
+    });
+    try {
+      const client = createClient({
+        uploadPipeline: {
+          enqueue: async () => ({ ok: true }),
+          flush: async () => true,
+          drop: vi.fn(),
+        },
+        appToken: 'tok',
+        getEnvironment,
+      });
+      client.launch();
+      expect(seen).toEqual([]);
+    } finally {
+      delete (Object.prototype as unknown as Record<string, unknown>).lifecycleEventsListener;
+    }
+  });
+
   it('stop() still emits Stopped and resolves false when the upload pipeline flush rejects', async () => {
     const uploadPipeline: UploadPipeline = {
       enqueue: async () => ({ ok: true }),
