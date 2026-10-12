@@ -540,6 +540,24 @@ describe('retry and failure handling', () => {
     expect(sends).toHaveLength(2);
   });
 
+  it('an urgent notification does not skip an active retry backoff', async () => {
+    let calls = 0;
+    const { relay } = make({ flushDelayMs: 1000 }, async () => {
+      calls += 1;
+      return calls === 1 ? { outcome: 'retry' } : SENT;
+    });
+    relay.enqueue({ title: 'first', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sends).toHaveLength(1); // failed: the retry timer is now running
+    relay.enqueue({ title: 'second', urgent: true });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sends).toHaveLength(1); // held for the backoff, not sent at once
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sends).toHaveLength(2);
+    expect(sends[1]?.map((item) => item.title)).toEqual(['first', 'second']);
+    expect(relay.pending()).toBe(0);
+  });
+
   it('drops a rejected urgent send', async () => {
     const { relay, onError } = make({}, async () => ({ outcome: 'rejected' }));
     relay.enqueue({ title: 'u', urgent: true });

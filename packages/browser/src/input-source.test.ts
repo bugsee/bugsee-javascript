@@ -300,6 +300,45 @@ describe('createBrowserInputSource', () => {
     }
   });
 
+  describe('blackout (pointer gestures)', () => {
+    const pen = (over: Record<string, unknown> = {}) => ptr({ pointerType: 'pen', ...over });
+
+    it('a pen gesture that STARTS in the dark does not resurface as a path after the blackout ends', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      blackout.start();
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen({ clientX: 50, clientY: 60 }));
+      blackout.end(); // the pointer is still down
+      target.emit('pointermove', pen({ clientX: 70, clientY: 80 }));
+      expect(events).toStrictEqual([]);
+    });
+
+    it('a gesture open when the blackout starts cannot be continued after it ends', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      target.emit('pointerdown', pen());
+      blackout.start();
+      blackout.end();
+      target.emit('pointermove', pen({ clientX: 70, clientY: 80 }));
+      expect(events.map((e) => [e.type, e.id])).toStrictEqual([['begin', '1']]);
+    });
+
+    it('nothing is built while dark, and the gesture ids resume cleanly afterwards', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      blackout.start();
+      target.emit('pointerdown', ptr());
+      target.emit('pointerup', ptr({ pressure: 0, buttons: 0 }));
+      blackout.end();
+      target.emit('pointerdown', ptr());
+      expect(events.map((e) => [e.type, e.id])).toStrictEqual([['begin', '1']]);
+    });
+  });
+
   it('maps a mouse pointerdown/up to a begin/end pair sharing one gesture id', () => {
     const target = fakeTarget();
     const { events } = activate({ target });

@@ -716,6 +716,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #dispatch(build: (event: Event) => InputEventDetail | undefined): (event: Event) => void {
     return (event) => {
       try {
+        // Dark: not collected at all (as for wheel), so no gesture state can be opened from sensitive content.
+        if (this.#blackout?.isActive() === true) return;
         const detail = build(event);
         if (detail !== undefined) this.emit('input', detail);
       } catch {
@@ -738,6 +740,9 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #watchBlackout(): void {
     this.#offBlackout = this.#blackout?.onChange(() => {
       this.#wheelAccum = null;
+      // A gesture cannot span the blackout: one started in the dark must not leave a path to continue after
+      // it, and one open before it cannot be continued after it (its `up` may be dropped).
+      this.#clearGestures();
     });
   }
 
@@ -751,9 +756,18 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     this.#offBlackout = undefined;
     this.#blackout = gate;
     this.#wheelAccum = null;
+    this.#clearGestures();
     if (this.#activated) {
       this.#watchBlackout();
     }
+  }
+
+  #clearGestures(): void {
+    this.#openGestures.clear();
+    this.#penPaths.clear();
+    this.#mouseDragPaths.clear();
+    this.#hoverIds.clear();
+    this.#lastHoverSampleAt.clear();
   }
 
   protected override onDeactivate(): void {
@@ -765,11 +779,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     // leak one Map entry per pointer and let a stale id resurface on the next activation. A pending wheel
     // accumulator is dropped the same way — no listener can feed it again until the next activate(), and
     // a stale already-scheduled frame callback finds it `null` and flushes nothing.
-    this.#openGestures.clear();
-    this.#penPaths.clear();
-    this.#mouseDragPaths.clear();
-    this.#hoverIds.clear();
-    this.#lastHoverSampleAt.clear();
+    this.#clearGestures();
     this.#wheelAccum = null;
     this.#offBlackout?.();
     this.#offBlackout = undefined;

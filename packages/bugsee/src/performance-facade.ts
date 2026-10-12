@@ -10,10 +10,15 @@ import {
 // the launched client so the same calls work directly. Entries that never wire performance (workers,
 // edge) get the same methods, backed by no-ops, exactly as the mobile SDKs behave with performance off.
 
-/** `ext('performance')` throws when nothing registered it (performance off, or a runtime without it). */
+/**
+ * `ext('performance')` throws when nothing registered it (performance off, or a runtime without it). A client
+ * that is not launched (never started, stopped, or killed by the collector) records nothing, as on the mobile
+ * SDKs: the extension stays registered after `stop()`, so without this check new transactions would still be
+ * created and a later flush would upload them.
+ */
 function performanceApiOf(client: BugseeClient): PerformanceApi | undefined {
   try {
-    return client.ext('performance');
+    return client.isLaunched() ? client.ext('performance') : undefined;
   } catch {
     return undefined;
   }

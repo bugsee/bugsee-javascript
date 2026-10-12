@@ -410,7 +410,9 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
         report(new Error('notify: notification is larger than 256 KB; ignored'));
         return;
       }
-      if (item.urgent === true && !stopped) {
+      // Urgent skips the flush WINDOW, never the retry backoff: during one it waits with the rest, or an urgent
+      // loop against a rate-limiting collector would hammer it.
+      if (item.urgent === true && !stopped && retryTimer === null) {
         sendUrgent(item);
         return;
       }

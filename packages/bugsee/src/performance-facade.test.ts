@@ -26,6 +26,7 @@ describe('withPerformanceFacade', () => {
 
   it('passes through to ext("performance") once it is registered, even after installation', () => {
     const client = withPerformanceFacade(createClient());
+    client.launch();
     const api = createPerformanceController({ clock, store: createTransactionStore() });
     client.registerExt('performance', api);
     const txn = client.startTransaction('Checkout', 'ui.load', { cart: 2 });
@@ -35,6 +36,21 @@ describe('withPerformanceFacade', () => {
     const child = client.startSpan('db.query', 'select');
     expect(child.getTraceId()).toBe(txn.getTraceId());
     expect(api.getActiveSpan()).toBe(txn);
+  });
+
+  it('records nothing before launch() and after stop(), while the extension stays registered', async () => {
+    const client = withPerformanceFacade(createClient());
+    const api = createPerformanceController({ clock, store: createTransactionStore() });
+    client.registerExt('performance', api);
+    expect(client.startTransaction('Early', 'ui.load').isSampled()).toBe(false);
+    client.launch();
+    const live = client.startTransaction('Live', 'ui.load');
+    expect(live.isSampled()).toBe(true);
+    await client.stop();
+    const after = client.startTransaction('Late', 'ui.load');
+    expect(after.isSampled()).toBe(false);
+    expect(client.startSpan('db', 'q').getTraceId()).not.toBe(live.getTraceId());
+    expect(client.getActiveSpan()).toBeUndefined();
   });
 
   it('is idempotent: a second install keeps the first methods', () => {
