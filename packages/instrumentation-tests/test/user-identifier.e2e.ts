@@ -1,6 +1,6 @@
-// The REAL-BROWSER e2e for user-identifier persistence: `setUserIdentifier` survives a page reload (iOS
-// parity), `clearUserIdentifier` does not, and the `persistUserIdentifier: false` opt-out keeps the PII out
-// of localStorage entirely. jsdom's localStorage is a stand-in; this asserts it against a real Chromium.
+// The REAL-BROWSER e2e for user-identifier persistence, which is OPT-IN (PII): with `persistUserIdentifier:
+// true` `setUserIdentifier` survives a page reload (iOS parity) and `clearUserIdentifier` does not; by default
+// nothing reaches localStorage, and a value an opted-in launch left behind is removed. jsdom's localStorage is a stand-in; this asserts it against a real Chromium.
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,8 @@ async function startPageServer(
       }),
   };
 }
+
+const OPT_IN = { persistUserIdentifier: true };
 
 type Api = {
   setUserIdentifier(id: string): void;
@@ -125,13 +127,13 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
 
   it('set -> reload: the next report already carries the identifier', async () => {
     await scenario(async ({ context, url, collector }) => {
-      const first = await open(context, url, collector);
+      const first = await open(context, url, collector, OPT_IN);
       await first.evaluate(() =>
         (window as unknown as { __bugsee: Api }).__bugsee.setUserIdentifier('ann@example.com'),
       );
       await first.close();
 
-      const second = await open(context, url, collector);
+      const second = await open(context, url, collector, OPT_IN);
       expect(
         await second.evaluate(() =>
           (window as unknown as { __bugsee: Api }).__bugsee.getUserIdentifier(),
@@ -146,14 +148,14 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
 
   it('set -> clear -> reload: the identifier is gone', async () => {
     await scenario(async ({ context, url, collector }) => {
-      const first = await open(context, url, collector);
+      const first = await open(context, url, collector, OPT_IN);
       await first.evaluate(() => {
         (window as unknown as { __bugsee: Api }).__bugsee.setUserIdentifier('ann@example.com');
         (window as unknown as { __bugsee: Api }).__bugsee.clearUserIdentifier();
       });
       await first.close();
 
-      const second = await open(context, url, collector);
+      const second = await open(context, url, collector, OPT_IN);
       expect(
         await second.evaluate(() =>
           (window as unknown as { __bugsee: Api }).__bugsee.getUserIdentifier(),
@@ -163,9 +165,9 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
     });
   });
 
-  it('persistUserIdentifier: false never writes the identifier to localStorage', async () => {
+  it('is OFF by default: the identifier never reaches localStorage and is not restored', async () => {
     await scenario(async ({ context, url, collector }) => {
-      const first = await open(context, url, collector, { persistUserIdentifier: false });
+      const first = await open(context, url, collector);
       await first.evaluate(() =>
         (window as unknown as { __bugsee: Api }).__bugsee.setUserIdentifier('ann@example.com'),
       );
@@ -181,6 +183,28 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
           (window as unknown as { __bugsee: Api }).__bugsee.getUserIdentifier(),
         ),
       ).toBeNull();
+    });
+  });
+
+  it('a launch with persistence off removes a value an opted-in launch left behind', async () => {
+    await scenario(async ({ context, url, collector }) => {
+      const first = await open(context, url, collector, OPT_IN);
+      await first.evaluate(() =>
+        (window as unknown as { __bugsee: Api }).__bugsee.setUserIdentifier('ann@example.com'),
+      );
+      await first.close();
+
+      const second = await open(context, url, collector); // default: off
+      expect(
+        await second.evaluate(() =>
+          (window as unknown as { __bugsee: Api }).__bugsee.getUserIdentifier(),
+        ),
+      ).toBeNull();
+      expect(
+        await second.evaluate(() =>
+          Object.keys(localStorage).filter((k) => k.startsWith('bugsee.user_identifier.')),
+        ),
+      ).toEqual([]);
     });
   });
 });

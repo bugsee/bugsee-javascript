@@ -145,7 +145,7 @@ const BROWSER_OPTION_DEFINITIONS = [
   },
   // iOS persists the user identifier across launches; the browser does too (localStorage, per app token).
   // Browser-only: server tiers keep it in memory. Opt out when the identifier is PII not to be stored.
-  { friendly: 'persistUserIdentifier', key: BugseeOption.PersistUserIdentifier, default: true },
+  { friendly: 'persistUserIdentifier', key: BugseeOption.PersistUserIdentifier, default: false },
 ];
 
 /** Session-replay options (a structural subset of `@bugsee/replay`'s options — no runtime dep here; replay
@@ -240,9 +240,12 @@ export interface BugseeLaunchOptions {
   reportDefaultBugPriority?: SeverityName;
   /**
    * Persist the user identifier (`setUserIdentifier`) in `localStorage` — one entry per app token — and
-   * restore it on the next page load, before any report, as the iOS SDK does across app launches.
-   * `clearUserIdentifier()` removes it. Default true; pass `false` to keep the identifier (often an email,
-   * i.e. PII) in memory only. Storage failures never break the SDK; they go to `onError`.
+   * restore it on the next page load, before any report (iOS persists it across app launches).
+   * **Opt-in, default false:** the identifier is often an email, i.e. PII, and a browser may be shared —
+   * whoever opens the page next would be reported as the previous user. Enable it only for an app whose
+   * users sign in on their own device, and call `clearUserIdentifier()` on logout. While off, nothing is
+   * written, a value left by an earlier opted-in launch is removed at launch, and `clearUserIdentifier()`
+   * always removes it. Storage failures never break the SDK; they go to `onError`.
    */
   persistUserIdentifier?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
@@ -623,18 +626,23 @@ async function buildLaunch(
 
   clientRef = client;
 
-  // Restore the persisted user identifier NOW — synchronously, before any provider starts, any service
-  // manifest runs or the client is handed back — so the first report already carries it and an identifier
-  // the app (or a manifest) sets afterwards simply overwrites it. Skipped entirely when opted out.
-  const identifierStore = resolved.options.get(BugseeOption.PersistUserIdentifier, true)
-    ? createUserIdentifierStore(appToken, {
-        storage: options.deviceIdEnv?.localStorage,
-        ...(options.onError !== undefined ? { onError: options.onError } : {}),
-      })
-    : undefined;
-  const restoredIdentifier = identifierStore?.read();
-  if (restoredIdentifier !== null && restoredIdentifier !== undefined) {
-    client.setUserIdentifier(restoredIdentifier);
+  // The identifier store. Persistence is OPT-IN (PII): when off the store is still created, but only ever
+  // used to REMOVE a value an earlier opted-in launch (or another tab) left behind. When on, restore the
+  // persisted identifier NOW — synchronously, before any provider starts, any service manifest runs or the
+  // client is handed back — so the first report already carries it and an identifier the app (or a
+  // manifest) sets afterwards simply overwrites it.
+  const persistIdentifier = resolved.options.get(BugseeOption.PersistUserIdentifier, false);
+  const identifierStore = createUserIdentifierStore(appToken, {
+    storage: options.deviceIdEnv?.localStorage,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
+  if (persistIdentifier) {
+    const restoredIdentifier = identifierStore.read();
+    if (restoredIdentifier !== null) {
+      client.setUserIdentifier(restoredIdentifier);
+    }
+  } else {
+    identifierStore.clear();
   }
 
   // Run every contributed service manifest against the now-populated container.
@@ -852,13 +860,20 @@ async function buildLaunch(
   }
   // The public setters: update the Environment (authoritative, in memory), then persist best-effort. The
   // report dialog goes through these too, so what the reporter types survives a reload.
-  const setUserIdentifier = (id: string): void => {
-    client.setUserIdentifier(id);
-    identifierStore?.write(id);
-  };
   const clearUserIdentifier = (): void => {
     client.clearUserIdentifier();
-    identifierStore?.clear();
+    identifierStore.clear(); // always: a value stored by an earlier opted-in launch must be erasable
+  };
+  const setUserIdentifier = (id: string): void => {
+    // `null` / `undefined` / a non-string is "clear" on the mobile SDKs; never store the text "null".
+    if (typeof id !== 'string') {
+      clearUserIdentifier();
+      return;
+    }
+    client.setUserIdentifier(id);
+    if (persistIdentifier) {
+      identifierStore.write(id);
+    }
   };
   const showReportDialog = createReportDialogLauncher({
     // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.

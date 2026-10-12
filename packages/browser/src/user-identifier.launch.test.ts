@@ -68,7 +68,9 @@ afterEach(async () => {
 
 type Storage = ReturnType<typeof fakeStorage>;
 
-const start = async (storage: Storage, over: Partial<BugseeLaunchOptions> = {}) => {
+// Persistence is OPT-IN (the identifier is often an email, i.e. PII), so the persistence tests opt in here;
+// `optIn: false` launches with the option left at its default.
+const start = async (storage: Storage, over: Partial<BugseeLaunchOptions> = {}, optIn = true) => {
   const http = transport();
   const client = await launch('tok', {
     window,
@@ -83,6 +85,7 @@ const start = async (storage: Storage, over: Partial<BugseeLaunchOptions> = {}) 
       localStorage: storage,
       randomUUID: () => 'a1b2c3d4-e5f6-4789-a012-3456789abcde',
     },
+    ...(optIn ? { persistUserIdentifier: true } : {}),
     ...over,
   });
   clients.push(client);
@@ -146,16 +149,41 @@ describe('persistUserIdentifier', () => {
     expect((await start(storage)).client.getUserIdentifier()).toBe('dialog@example.com');
   });
 
-  it('does not touch storage with persistUserIdentifier: false (and ignores a stored value)', async () => {
+  it('is OFF by default: nothing is written, a stored value is not restored', async () => {
     const storage = fakeStorage();
     storage.data.set(`${USER_IDENTIFIER_KEY_PREFIX}tok`, 'stale@example.com');
-    const { client } = await start(storage, { persistUserIdentifier: false });
+    const { client } = await start(storage, {}, false);
     expect(client.getUserIdentifier()).toBeNull();
     client.setUserIdentifier('mem@example.com');
     expect(client.getUserIdentifier()).toBe('mem@example.com');
+    expect(storage.data.get(`${USER_IDENTIFIER_KEY_PREFIX}tok`)).toBeUndefined();
+  });
+
+  it('removes a value stored by an earlier opted-in launch when persistence is off', async () => {
+    const storage = fakeStorage();
+    storage.data.set(`${USER_IDENTIFIER_KEY_PREFIX}tok`, 'stale@example.com');
+    await start(storage, { persistUserIdentifier: false });
+    expect(storage.data.has(`${USER_IDENTIFIER_KEY_PREFIX}tok`)).toBe(false);
+  });
+
+  it('clearUserIdentifier() always removes a stored value, even with persistence off', async () => {
+    const storage = fakeStorage();
+    const { client } = await start(storage, {}, false);
+    storage.data.set(`${USER_IDENTIFIER_KEY_PREFIX}tok`, 'late@example.com'); // e.g. another tab
     client.clearUserIdentifier();
-    // neither written nor removed
-    expect(storage.data.get(`${USER_IDENTIFIER_KEY_PREFIX}tok`)).toBe('stale@example.com');
+    expect(storage.data.has(`${USER_IDENTIFIER_KEY_PREFIX}tok`)).toBe(false);
+  });
+
+  it('treats null / undefined / non-string as a clear, never persisting the text "null"', async () => {
+    const storage = fakeStorage();
+    const { client } = await start(storage);
+    client.setUserIdentifier('ann@example.com');
+    for (const bad of [null, undefined, 42, {}]) {
+      client.setUserIdentifier('ann@example.com');
+      (client.setUserIdentifier as (id: unknown) => void)(bad);
+      expect(client.getUserIdentifier()).toBeNull();
+      expect(storage.data.has(`${USER_IDENTIFIER_KEY_PREFIX}tok`)).toBe(false);
+    }
   });
 
   it('is scoped per app token', async () => {

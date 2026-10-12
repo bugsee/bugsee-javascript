@@ -74,10 +74,11 @@ Canonical `com.bugsee.option.reporting.*` keys, defaults equal to mobile (all of
   presses Enter after the summary does not send a half-written report. An IME's Enter is left alone.
 - **No email format check.** The "email" is the app's user identifier, which is often not an address;
   neither mobile SDK validates it. Erasing it clears the identifier (iOS `clearEmail`), a changed value is
-  remembered as the user identifier. The identifier is persisted across page loads like the mobile SDKs
-  (browser tier, `localStorage`, per app token; see PROGRESS.md "User identifier persistence"), so the
-  next page load pre-fills the field. The dialog goes through the same persisting setters. It is PII at
-  rest: `persistUserIdentifier: false` keeps it in memory only.
+  remembered as the user identifier for this page. It is NOT kept across page loads unless the app opts in
+  with `persistUserIdentifier: true` (browser tier, `localStorage`, per app token; see PROGRESS.md "User
+  identifier persistence"): the identifier is often an email (PII) and a browser may be shared, so the
+  next person to open the page must not be pre-filled with, or reported as, the previous user. When the
+  app does opt in, the dialog goes through the same persisting setters and pre-fills on the next load.
 - **A browser-initiated close is a cancel.** Chrome makes a second Escape non-cancellable; the dialog's
   `close` listener tears everything down (host, scroll lock, launcher state) instead of leaving the page
   locked.
