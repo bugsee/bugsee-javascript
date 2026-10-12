@@ -111,6 +111,10 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.PersistUserIdentifier).toBe('com.bugsee.option.user.persist-identifier');
   });
 
+  it('matches the Android notify flush delay identifier (T7)', () => {
+    expect(BugseeOption.NotifyFlushDelay).toBe('com.bugsee.option.config.notify-flush-delay');
+  });
+
   it('are all namespaced under com.bugsee.option. and unique', () => {
     const keys = Object.values(BugseeOption);
     expect(keys.every((k) => k.startsWith('com.bugsee.option.'))).toBe(true);

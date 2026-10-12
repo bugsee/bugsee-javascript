@@ -408,6 +408,108 @@ describe('createBugseeApi — a NON-2xx that also carries a collector code', () 
   });
 });
 
+describe('createBugseeApi — notify', () => {
+  const item = { id: 'n1', timestamp: 5, title: 'Deploy done' };
+  const ok = (notifications?: Record<string, string>): HttpResponse =>
+    enveloped(notifications === undefined ? {} : { notifications });
+
+  it('POSTs the batch to /v2/notifications with the app token in the body, and no session', async () => {
+    const { transport, calls } = recorder(() => ok({ n1: 'accepted' }));
+    const second = { id: 'n2', timestamp: 6, title: 't' };
+    const result = await api(transport).notify([item, second]);
+    expect(result).toEqual({ outcome: 'sent' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('https://api.test/v2/notifications');
+    expect(calls[0]?.options?.method).toBe('POST');
+    expect(bodyJson(calls[0]?.options)).toEqual({
+      app_token: 'app-1',
+      notifications: [item, second],
+    });
+    const headers = headersOf(calls[0]?.options);
+    expect(headers['x-app-token']).toBe('app-1');
+    expect(headers['x-client-type']).toBe('javascript');
+    expect(headers['content-type']).toBe('application/json');
+    expect(headers.authorization).toBeUndefined();
+  });
+
+  it('treats a missing status map as every item sent', async () => {
+    const { transport } = recorder(() => ok());
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'sent' });
+  });
+
+  it('reads a status map that is not wrapped in the v2 envelope', async () => {
+    const { transport } = recorder(() => ({
+      status: 200,
+      headers: {},
+      body: enc({ notifications: { n1: 'failed' } }),
+    }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry', retryIds: ['n1'] });
+  });
+
+  it('asks to retry only the items the collector marked failed', async () => {
+    const { transport } = recorder(() =>
+      ok({ a: 'accepted', b: 'failed', c: 'skipped', d: 'invalid' }),
+    );
+    const batch = ['a', 'b', 'c', 'd'].map((id) => ({ id, timestamp: 1, title: id }));
+    expect(await api(transport).notify(batch)).toEqual({ outcome: 'retry', retryIds: ['b'] });
+  });
+
+  it('settles an item the map does not mention', async () => {
+    const { transport } = recorder(() => ok({ other: 'failed' }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'sent' });
+  });
+
+  it('ignores a malformed status map and a non-object body', async () => {
+    for (const body of [enc({ ok: true, result: { notifications: 'x' } }), enc(null), enc('s')]) {
+      const { transport } = recorder(() => ({ status: 200, headers: {}, body }));
+      expect(await api(transport).notify([item])).toEqual({ outcome: 'sent' });
+    }
+  });
+
+  it('drops the batch when the collector rejects it inside a 200 envelope', async () => {
+    const { transport } = recorder(() => rejected('InvalidAppToken', 'bad', 401));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'rejected' });
+  });
+
+  it('retries on 408, 429 and every 5xx without a status map', async () => {
+    for (const status of [408, 429, 500, 503]) {
+      const { transport } = recorder(() => ({ status, headers: {}, body: enc({}) }));
+      expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+    }
+  });
+
+  it('on a 5xx settles the items the collector named as not failed', async () => {
+    const { transport } = recorder(() => ({
+      status: 500,
+      headers: {},
+      body: enc({ ok: false, notifications: { n1: 'accepted', n2: 'failed' } }),
+    }));
+    const batch = ['n1', 'n2'].map((id) => ({ id, timestamp: 1, title: id }));
+    expect(await api(transport).notify(batch)).toEqual({ outcome: 'retry', retryIds: ['n2'] });
+  });
+
+  it('drops the batch on any other 4xx', async () => {
+    for (const status of [400, 401, 403, 404, 499]) {
+      const { transport } = recorder(() => ({ status, headers: {}, body: enc({}) }));
+      expect(await api(transport).notify([item])).toEqual({ outcome: 'rejected' });
+    }
+  });
+
+  it('retries when the transport throws or a 200 body is not JSON', async () => {
+    const throwing = async (): Promise<HttpResponse> => {
+      throw new Error('offline');
+    };
+    expect(await api(throwing).notify([item])).toEqual({ outcome: 'retry' });
+    const { transport } = recorder(() => ({ status: 200, headers: {}, body: strToU8('<html>') }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+  });
+
+  it('retries on a non-success status below 400', async () => {
+    const { transport } = recorder(() => ({ status: 302, headers: {}, body: enc({}) }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+  });
+});
+
 describe('createBugseeApi — invalidateSession', () => {
   it('forces the next ensureSession to re-authenticate', async () => {
     const { transport, calls } = recorder(() => sessionOk());

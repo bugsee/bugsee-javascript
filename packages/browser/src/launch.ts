@@ -254,6 +254,11 @@ export interface BugseeLaunchOptions {
   /** Severity an error report starts with. Default `high`. */
   reportDefaultErrorPriority?: SeverityName;
   /**
+   * `notify()` batching window in ms: after the first notification, wait this long so more can join its
+   * request. Default 0 (send as soon as the current tick ends); `urgent` notifications skip the wait.
+   */
+  notifyFlushDelay?: number;
+  /**
    * Session replay (rrweb). **On by default** — parity with the iOS/Android SDKs, which record by default.
    * An options object customises it; `false` opts out entirely. Masking is FAIL-CLOSED (mask all
    * text/inputs, block all media) whether or not the option is given.
@@ -597,6 +602,8 @@ async function buildLaunch(
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
+    // `client.notify()` rides the same transport and app token as the session/issue calls.
+    notifySender: (items) => api.notify(items),
     appToken,
     getEnvironment,
     captureStore,

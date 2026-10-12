@@ -79,6 +79,12 @@ export const BugseeOption = {
   Duration: 'com.bugsee.option.config.duration',
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
   MaxDataSize: 'com.bugsee.option.config.data-size',
+  /**
+   * `notify()` coalescing window in milliseconds (Android `Options.NotifyFlushDelay`). `0` (default) sends
+   * a burst of notifications as one request the moment the current tick ends; a larger value waits that
+   * long after the first one so more can join the batch. An `urgent` notification skips the wait.
+   */
+  NotifyFlushDelay: 'com.bugsee.option.config.notify-flush-delay',
   /** Report dialog: the summary field must be filled in (Android `ReportingUISummaryRequired`). */
   ReportingUiSummaryRequired: 'com.bugsee.option.reporting.ui.summary-required',
   /** Report dialog: the description field must be filled in. */
@@ -134,6 +140,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.detect.hang.level.severe': number;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;
+  'com.bugsee.option.config.notify-flush-delay': number;
   'com.bugsee.option.reporting.ui.summary-required': boolean;
   'com.bugsee.option.reporting.ui.description-required': boolean;
   'com.bugsee.option.reporting.ui.email-required': boolean;

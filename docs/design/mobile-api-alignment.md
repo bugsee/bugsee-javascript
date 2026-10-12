@@ -17,7 +17,7 @@ Each task is test-first with the mutator loop, keeps the coverage gate, and land
 | T4 | Blackout: `startBlackout` / `endBlackout` / `isBlackout`; suspends replay, input and viewtree capture while logs and network continue | `Bugsee.startBlackout` | emits the T1 events once T1 lands |
 | T5 | Launch state: `getStatus()` with the Stopped/Launching/Launched/Stopping enum, `relaunch(options?)`, `getLaunchOptions()`, `getHostLaunchOptions()`; verify launch → stop → launch works | `getStatus`, `relaunch`, `getLaunchOptions` | |
 | T6 | Missing options: `captureLogsLevel`, `captureBreadcrumbs`, `detectHttpErrors`, `captureNetworkDefaultSanitizer`, `reportDefaultCrashPriority`, `reportDefaultErrorPriority`; `getDefaultNetworkSanitizer()` so a custom filter can reuse the default redaction | `OptionsDescriptors` keys under `com.bugsee.option.*` | canonical keys already exist for some |
-| T7 | `notify(title, body?, severity?, fields?, urgent?)` | `Bugsee.notify` | needs a backend check first: which endpoint carries it, and does the collector accept it from a browser |
+| T7 | `notify(title, body?, severity?, fields?, urgent?)` | `Bugsee.notify` | **Done.** The collector already accepts it from a browser; see "T7 findings" |
 | T8 | `logException` options: `domain`; check what `mergingRules` does on iOS | Android `ExceptionOptions.Domain`, iOS `BugseeExceptionLoggingOptions` | Done: `domain` + `skipFrames` (see T8 findings) |
 | T9 | Browser: persist the user identifier across page loads, as iOS does | iOS `setUserIdentifier` | storage-failure tolerant |
 
@@ -67,6 +67,68 @@ Investigated 2026-10 against Android `library/.../reporting/exceptions/`, iOS `B
 - **`includeVideo`**: forces a video-less report. Not applicable: JS has no video; replay is governed by the
   `replay` launch option. Kept difference.
 - Invalid values (empty/non-string `domain`, non-integer or negative `skipFrames`) are ignored and routed to `onError`.
+
+## T7 findings: `notify()`
+
+Read from Android (`library/.../relay/*`, `BugseeInternal.notify`), iOS (`BGSNotificationRelay*`, `Bugsee.h`) and the
+appserver (`code/components/app/notification-relay/*`, `code/routing/routes/api/v2.routes.js:116-124`,
+`config/default.js` `web.cors.public`).
+
+**What it is.** A message relayed to the app's configured messaging integrations (Slack, webhooks, ...) by the
+collector. It never enters the report pipeline: no video, logs or events, no issue, no bundle upload.
+
+**Endpoint.** `POST {api}/v2/notifications`. Body `{ "app_token": "...", "notifications": [ item, ... ] }`; iOS also
+sends `access_token` when it has one, Android authenticates through its session instead. The server needs neither:
+`resolveOrgAndApp` (`notification-relay.service.js:~118-150`) takes the app from `body.app_token`, then `?app_token=`,
+then a session. No access token and no `/v2/sessions` call are needed, so `notify()` works before the first report.
+
+**Item** (`RelayNotification`, identical on both platforms; the server's `sanitizeItem` keeps exactly these keys):
+`id` (client UUID, the dedup and status key), `timestamp` (ms), `title` (required), `body`, `severity` (1 to 5, the same
+numbers as report severity), `fields` (string to string), `urgent` (true only), `delivery` (`immediate` or `deferred`,
+stamped when it is sent), `user`, `environment`, `attributes` (snapshots taken at the call).
+An item without an `id` or a non-empty `title` is `invalid` server-side.
+
+**Response.** `{ ok: true, result: { notifications: { <id>: accepted | skipped | invalid | failed } } }`.
+`failed` means the enqueue failed and the item should be sent again; the other three are final. `429 QuotaExceeded`
+(`retryAfter`), `503 ServerTooBusy` (version blacklist), `401 InvalidAppToken`, `403 KillSdk`, `400 InvalidBatch`,
+`500 EnqueueFailed` (with the per-item map). If relay is switched off for the app the server still answers
+`accepted`, so the SDK drops the batch rather than retrying forever.
+
+**Browser access (the question this task was blocked on): yes, it works.**
+- `v2.routes.js:116-124` puts `middleware.common.publicCors` on `/notifications`, the same policy as `POST /sessions`:
+  origin `*`, no credentials, methods `POST, OPTIONS`, preflight answered by the route.
+- Allowed request headers (`config/default.js:249-253`): `origin, content-type, accept, authorization, x-app-token,
+  x-client-type, x-bugsee-internal, x-tid`. The JS SDK's headers (`content-type`, `accept`, `x-client-type`,
+  `x-bugsee-internal`, `x-app-token`) are all inside it, and the browser tier sends no `user-agent`.
+- No application-type check on this route: `utils.isValidForClient` runs only in `session.service.js:979` and
+  `issue.service.js:1131`. A `javascript` application (`x-client-type: javascript`) is therefore fine, and so is any
+  other type.
+- Authentication is the app token, which a browser SDK ships in the page anyway; the abuse limiter is the server's
+  (`notification-relay.limiter.js`, unlimited in v1).
+- Nothing is needed from the backend.
+
+**Mobile semantics reproduced.**
+- No-op for an empty title, before `launch()`, after `stop()`, and when the SDK was killed.
+- Batch limits 50 notifications / 256 KB; one notification at most 256 KB (dropped with an `onError` otherwise).
+- Flush window `notifyFlushDelay` (`com.bugsee.option.config.notify-flush-delay`, default 0 ms). The first
+  notification arms the window and later ones join it. Delivery is stamped `immediate` when the delay is 0 and
+  `deferred` otherwise; an `urgent` notification skips the window and is sent alone, stamped `immediate`
+  (Android `RelayNotification.flushDelivery`).
+- Retry: network error, 408, 429, 5xx, or a per-item `failed` back off 2 s doubling to 60 s, keeping order. Other
+  4xx and a `{ ok: false }` envelope drop the batch (the error router answers HTTP 200 for a refusal).
+- `fields` keeps only string values; severity is the report severity names.
+- `client.flush()` and `client.stop()` deliver what is pending, so `await bugsee.stop()` before exit loses nothing.
+
+**Kept differences.**
+- The queue is **in memory**, not persisted. Mobile writes each notification to disk and a background job sends it
+  after a restart. A page closed or a process killed with an unsent notification loses it. A durable queue would
+  need its own IndexedDB / file store with multi-instance coexistence, which the bundle queue only gets through the
+  per-instance prefix and liveness machinery, so it is not cheap. Use `urgent`, `flush()` or a short `notifyFlushDelay`
+  where loss matters. The queue is capped at 1000 (oldest dropped) and survives `stop()` then `launch()` on one page.
+- Wired in `@bugsee/browser` and `@bugsee/node` (so Bun, Deno and the umbrella). The Vercel edge, web worker and
+  Cloudflare entries compile `notify()` but have no sender, so it is a silent no-op there; an isolate that is frozen
+  after the response would lose a queued message anyway.
+- A rejected or oversize notification is reported through `onError`, never thrown.
 
 ## Kept differences (documented, not changed)
 

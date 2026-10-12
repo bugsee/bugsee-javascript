@@ -246,6 +246,11 @@ export interface BugseeLaunchOptions {
   reportDefaultCrashPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
   /** Severity an error report starts with. Default `high`. */
   reportDefaultErrorPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /**
+   * `notify()` batching window in ms: after the first notification, wait this long so more can join its
+   * request. Default 0 (send as soon as the current tick ends); `urgent` notifications skip the wait.
+   */
+  notifyFlushDelay?: number;
   /** Detect main-thread/event-loop hangs and report them (Android BugseeDetectionHang). Default true. */
   detectHangs?: boolean;
   /**
@@ -742,6 +747,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,
+    // `client.notify()` rides the same transport and app token as the session/issue calls.
+    notifySender: (items) => api.notify(items),
     appToken,
     getEnvironment,
     captureStore,

@@ -54,6 +54,7 @@ import {
   runFilter,
   type SpanFilter,
 } from './filters';
+import { createNotifyRelay } from './notify-relay';
 import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
 export type { Breadcrumb, BreadcrumbInput } from './events';
@@ -84,6 +85,8 @@ import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
   type Bundle,
   isUploadSettled,
+  type NotifyItem,
+  type NotifyResult,
   type UploadPipeline,
   UploadPipelineToken,
   type UploadResult,
@@ -312,6 +315,24 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   logException(error: unknown, options?: LogExceptionOptions): Promise<UploadResult>;
 
   /**
+   * Relay a message to the app's configured messaging integrations (Slack, webhooks, ...) — mobile
+   * `Bugsee.notify`. It skips the bug-report pipeline: no video, logs or events, just the message.
+   *
+   * Notifications are queued, sent in batches (window: the `notifyFlushDelay` launch option, default 0 =
+   * the end of the current tick) and retried with backoff. `urgent` sends this one at once, ahead of
+   * the window. An empty `title`, a call before `launch()` or after `stop()`, and a SDK killed by the
+   * collector are silent no-ops. `fields` keeps only string values. `flush()`/`stop()` deliver what is
+   * pending. Unlike mobile the queue is in memory: a page closed with an unsent message loses it.
+   */
+  notify(
+    title: string,
+    body?: string,
+    severity?: SeverityName,
+    fields?: Record<string, string>,
+    urgent?: boolean,
+  ): void;
+
+  /**
    * Send a report on request (Android `Bugsee.upload`). Unlike {@link logException} it is neither
    * instance-deduped nor rate-limited — every call is something a person or the app explicitly wanted
    * — but it still runs the report handler (`before` may mutate or veto it). A silent no-op
@@ -412,6 +433,11 @@ export interface CreateClientOptions {
    * {@link FrameEnricher}.
    */
   onReportSite?: (error: unknown) => void;
+  /**
+   * Delivers a `notify()` batch (the platform wires this to `BugseeApi.notify`). Without it `notify()` is
+   * a silent no-op, as on a build that has no collector transport.
+   */
+  notifySender?: (items: readonly NotifyItem[]) => Promise<NotifyResult>;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
@@ -640,6 +666,37 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
   const { uploadPipeline, appToken, getEnvironment } = options;
+  // `notify()` (T7). The window is read once: a non-number, negative or non-finite value is treated as the
+  // default 0 rather than reported, because a typo here only changes batching, never what is sent.
+  const notifyDelayOption = launchOptions.get<unknown>(BugseeOption.NotifyFlushDelay, 0);
+  const notifyFlushDelayMs =
+    typeof notifyDelayOption === 'number' &&
+    Number.isFinite(notifyDelayOption) &&
+    notifyDelayOption > 0
+      ? Math.floor(notifyDelayOption)
+      : 0;
+  const notifyRelay =
+    options.notifySender === undefined
+      ? undefined
+      : createNotifyRelay({
+          send: options.notifySender,
+          clock,
+          flushDelayMs: notifyFlushDelayMs,
+          onError: onErrorSafe,
+          snapshot: () => {
+            let builtEnvironment: EnvironmentEnvelope | undefined;
+            try {
+              builtEnvironment = getEnvironment?.();
+            } catch (error) {
+              onError(error); // the message still goes out, without the device block
+            }
+            return {
+              userIdentifier: environment.getUserIdentifier(),
+              attributes: environment.getAllAttributes(),
+              ...(builtEnvironment !== undefined ? { environment: builtEnvironment } : {}),
+            };
+          },
+        });
   // The platform's assembled upload orchestrator, when present, is also a container service (DI Phase 3).
   if (uploadPipeline !== undefined) {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
@@ -795,9 +852,14 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
   // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded
   // by `timeout` so a hung assemble/upload can't block shutdown. Resolves true if drained in time.
   const drainPending = (timeout?: number): Promise<boolean> => {
-    const drained = Promise.allSettled([...pendingReports]).then(
-      () => uploadPipeline?.flush(timeout) ?? true,
-    );
+    const drained = Promise.allSettled([...pendingReports]).then(async () => {
+      // Notifications go out alongside the report uploads; either one still pending makes this false.
+      const [uploaded, notified] = await Promise.all([
+        uploadPipeline?.flush(timeout) ?? true,
+        notifyRelay?.flush() ?? true,
+      ]);
+      return uploaded && notified;
+    });
     if (timeout === undefined) {
       return drained;
     }
@@ -821,6 +883,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     }
     killed = true;
     onError(error);
+    notifyRelay?.suspend(); // a switched-off SDK sends nothing more, notifications included
     if (launched) {
       launched = false;
       haltCapture();
@@ -1182,6 +1245,30 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       return sendUpload(uploadOptions);
     },
 
+    notify(
+      title: string,
+      body?: string,
+      severity?: SeverityName,
+      fields?: Record<string, string>,
+      urgent?: boolean,
+    ): void {
+      // `killed` implies `!launched` (the kill-state halts the client and a killed client never re-launches).
+      if (!launched) {
+        return;
+      }
+      try {
+        notifyRelay?.enqueue({
+          title,
+          ...(body !== undefined ? { body } : {}),
+          ...(severity !== undefined ? { severity } : {}),
+          ...(fields !== undefined ? { fields } : {}),
+          ...(urgent !== undefined ? { urgent } : {}),
+        });
+      } catch (error) {
+        onError(error); // notify() must never throw into the host (hostile `fields`, ...)
+      }
+    },
+
     prepareUpload(): InternalPreparedUpload | null {
       if (stopped || killed) {
         return null;
@@ -1294,6 +1381,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       return drainPending(timeout)
         .finally(() => {
           stopping = false;
+          // A notification still waiting (offline) keeps its place for a re-launch but stops retrying: a
+          // stopped SDK must not keep a timer, and so a request, alive.
+          notifyRelay?.suspend();
         })
         .then((drained) => {
           // After `stopping` clears, so a listener that reads getStatus() sees Stopped, not Stopping.
