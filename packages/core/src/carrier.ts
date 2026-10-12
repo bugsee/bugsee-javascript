@@ -79,6 +79,12 @@ export interface BugseeCarrier {
   blackoutOwner?: CarrierBlackoutOwner;
   /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
   relaunching?: boolean;
+  /**
+   * Bumped each time a `relaunch()` attempt FAILS (R4L-2). A client that handed its notifications over records the
+   * value when its stop() was issued; a hand-back that arrives after the value moved belongs to an attempt nobody
+   * will complete, so it is dropped instead of parked on `globalThis` (user-identifying titles/e-mail).
+   */
+  relaunchEpoch?: number;
   /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds (R2L-6). */
   notifyBacklog?: NotifyItem[];
   /**
@@ -387,6 +393,17 @@ export function setCarrierPendingLaunch(
 /** Whether `relaunch()` is in progress on this carrier (the old client hands its notify backlog over). */
 export function getCarrierRelaunching(globalObj: object = globalThis): boolean {
   return getCarrier(globalObj).relaunching === true;
+}
+
+/** The failed-relaunch counter a notify hand-over is tied to (R4L-2). */
+export function getCarrierRelaunchEpoch(globalObj: object = globalThis): number {
+  return getCarrier(globalObj).relaunchEpoch ?? 0;
+}
+
+/** Record that a `relaunch()` attempt failed: every hand-over issued before now is stale. */
+export function bumpCarrierRelaunchEpoch(globalObj: object = globalThis): void {
+  const carrier = getCarrier(globalObj);
+  carrier.relaunchEpoch = (carrier.relaunchEpoch ?? 0) + 1;
 }
 
 /** Mark `relaunch()` in progress (or finished). */

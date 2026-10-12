@@ -211,7 +211,7 @@ async function boot(
   const app = await NestFactory.create(AppModule, { logger: false });
   apps.push(app);
   setupNest(app, { user: (req) => hdr(req as never, 'x-user'), ...setup });
-  await app.listen(0);
+  await app.listen(0, '127.0.0.1');
   const url = (await app.getUrl()).replace('[::1]', '127.0.0.1');
   return { url, bundles, client };
 }
@@ -222,7 +222,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     for (const path of ['/handler-error', '/service-error', '/not-found', '/ok']) {
       await fetchWithDeadline(url + path).then((r) => r.text());
     }
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     // 2 genuine errors reported; the 404 + the ok route produced nothing.
     await waitForBundles(bundles, 2);
     expect(bundles).toHaveLength(2);
@@ -234,14 +234,14 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
   it('interceptor (default) does NOT see guard-thrown errors (the documented gap)', async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'interceptor' });
     await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(0); // interceptor is subscribed AFTER guards run
   });
 
   it("the global filter ('filter') DOES capture a guard-thrown error", async () => {
     const { url, bundles, client } = await boot({ errorCapture: 'filter' });
     await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     await waitForBundles(bundles, 1);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
@@ -251,7 +251,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     const { url, bundles, client } = await boot({ errorCapture: 'both' });
     await fetchWithDeadline(`${url}/guard-error`).then((r) => r.text());
     await fetchWithDeadline(`${url}/handler-error`).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     // guard (filter only) + handler (seen by both, deduped to one) = 2 — NOT 3.
     await waitForBundles(bundles, 2);
     expect(bundles).toHaveLength(2);
@@ -261,7 +261,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     const { url, bundles, client } = await boot({ errorCapture: 'both' });
     await fetchWithDeadline(`${url}/not-found`).then((r) => r.text());
     await fetchWithDeadline(`${url}/guard-forbidden`).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(0);
   });
 
@@ -271,7 +271,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
     expect(notFound.status).toBe(404); // Nest still maps the HttpException
     const okRes = await fetchWithDeadline(`${url}/ok`);
     expect(await okRes.text()).toBe('ok'); // success unaffected
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
   });
 
   it('attributes each CONCURRENT request to its own user + contextId with no bleed', async () => {
@@ -286,7 +286,7 @@ describe('@bugsee/nestjs — real Nest app (e2e)', () => {
         );
       }),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(3);
@@ -334,7 +334,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
       headers: { 'x-user': 'fast@x.com', 'content-type': 'application/json' },
       body: JSON.stringify({ some: 'payload' }),
     }).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     await waitForBundles(bundles, 1);
     expect(bundles).toHaveLength(1);
@@ -360,7 +360,7 @@ describe('@bugsee/nestjs — real Nest app on the FASTIFY platform (e2e)', () =>
         }).then((r) => r.text());
       }),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(2);

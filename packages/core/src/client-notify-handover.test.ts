@@ -32,7 +32,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const build = (host: object, sender: Sender, uploadPipeline?: UploadPipeline) => {
+const build = (
+  host: object,
+  sender: Sender,
+  uploadPipeline?: UploadPipeline,
+  onError?: (error: unknown) => void,
+) => {
   const client = createClient({
     carrier: host,
     captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
@@ -41,6 +46,7 @@ const build = (host: object, sender: Sender, uploadPipeline?: UploadPipeline) =>
     getEnvironment,
     appToken: 'tok',
     ...(uploadPipeline !== undefined ? { uploadPipeline } : {}),
+    ...(onError !== undefined ? { onError } : {}),
   });
   client.launch();
   setCarrierClient(client, host);
@@ -174,6 +180,78 @@ describe('R3L-5 — relaunch failure', () => {
       (error: Error) => error.message,
     );
     await vi.advanceTimersByTimeAsync(50);
+    expect(await settled).toBe('launch failed');
+    expect(getCarrier(host).notifyBacklog).toBeUndefined();
+  });
+});
+
+describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dropped, not parked', () => {
+  it('in flight -> relaunch fails -> the request fails: the backlog stays empty and onError says what was dropped', async () => {
+    const host = {};
+    let failOld: () => void = () => {};
+    const errors: unknown[] = [];
+    const old = build(
+      host,
+      () =>
+        new Promise<NotifyResult>((resolve) => {
+          failOld = () => resolve({ outcome: 'retry' });
+        }),
+      undefined,
+      (error) => errors.push(error),
+    );
+    old.notify('secret title');
+    await vi.advanceTimersByTimeAsync(0); // the request is out
+    const relaunching = relaunchWith(
+      async () => {
+        throw new Error('launch failed');
+      },
+      undefined,
+      host,
+      { stopTimeoutMs: 20 },
+    );
+    const settled = relaunching.then(
+      () => 'ok',
+      (error: Error) => error.message,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await settled).toBe('launch failed');
+    failOld(); // the old request fails AFTER the attempt failed: nobody will adopt it
+    await vi.advanceTimersByTimeAsync(10);
+    expect(getCarrier(host).notifyBacklog).toBeUndefined();
+    expect(errors.some((e) => /dropped 1 notification/.test(String((e as Error).message)))).toBe(
+      true,
+    );
+  });
+
+  it('a queued item stashed by the late old stop after the attempt failed is dropped too', async () => {
+    const host = {};
+    const errors: unknown[] = [];
+    const hungUpload: UploadPipeline = {
+      enqueue: async () => ({ ok: true }),
+      flush: () => new Promise<boolean>(() => {}),
+      drop: vi.fn(),
+    };
+    const old = build(
+      host,
+      async () => ({ outcome: 'retry' }),
+      hungUpload,
+      (e) => errors.push(e),
+    );
+    old.notify('queued offline');
+    await vi.advanceTimersByTimeAsync(0);
+    const relaunching = relaunchWith(
+      async () => {
+        throw new Error('launch failed');
+      },
+      undefined,
+      host,
+      { stopTimeoutMs: 20 },
+    );
+    const settled = relaunching.then(
+      () => 'ok',
+      (error: Error) => error.message,
+    );
+    await vi.advanceTimersByTimeAsync(400);
     expect(await settled).toBe('launch failed');
     expect(getCarrier(host).notifyBacklog).toBeUndefined();
   });

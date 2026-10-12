@@ -3,15 +3,18 @@ import {
   BugseeStatus,
   type CaptureStore,
   type Clock,
+  clearCarrierClient,
   contributeServiceManifest,
   FiltersToken,
   getCarrierBlackout,
   getCarrierClient,
+  getCarrierStatus,
   LifecycleEvents,
   type Scheduler,
   type StoredEntry,
   setCarrierBlackout,
   setCarrierClient,
+  setCarrierStatus,
   setProcessLifecycleEventsListener,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -571,9 +574,9 @@ describe('launch (webview)', () => {
         client.startBlackout(); // idempotent: no second message
         client.endBlackout();
         const msgs = blackoutMsgs(fake);
-        expect(msgs.map((m) => m.a)).toEqual([true, false]);
-        expect(msgs[0]?.b).toBe(1);
-        expect(typeof msgs[0]?.ts).toBe('number');
+        expect(msgs.map((m) => m.a)).toEqual([false, true, false]); // the post-hello state, then the two changes
+        expect(msgs[1]?.b).toBe(1);
+        expect(typeof msgs[1]?.ts).toBe('number');
         expect(bridgeSchema.definitions.blackout.required).toEqual(['b', 'k', 'a', 'ts']);
       });
 
@@ -594,7 +597,7 @@ describe('launch (webview)', () => {
         client.startBlackout();
         client.endBlackout();
         expect(errors).toEqual([]);
-        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([true, false]);
+        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false, true, false]);
       });
 
       it('a native that later withdraws support is warned about again', () => {
@@ -626,9 +629,33 @@ describe('launch (webview)', () => {
         expect(blackoutMsgs(fake)[0]?.a).toBe(true);
       });
 
-      it('R3V-5: no blackout is posted after hello when none is in force', () => {
+      // R4L-3: native resets the JS-reported flag on `bye`/`hello`, so the state is ALWAYS restated after `hello`,
+      // `a:false` included: a client that never posts it can leave native paused for a session that is not dark.
+      it('R4L-3: the current state is posted after hello even when no blackout is in force (a:false)', () => {
         const { fake } = bootWith({ carrier: {} });
-        expect(blackoutMsgs(fake)).toEqual([]);
+        const kinds = fake.msgs().map((m) => (m as { k: string }).k);
+        expect(kinds.slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false]);
+      });
+
+      it('R4L-3: A dark -> A.stop() -> A.endBlackout() -> launch B: B tells native a:false right after its hello', async () => {
+        const carrier = {};
+        const fake = fakeGlobal();
+        const a = launch('tok', baseOptions({ global: fake.global, carrier }));
+        a.startBlackout();
+        await a.stop(); // `bye` posted; native's flag reset by it, but a late/old receiver may not
+        a.endBlackout(); // lifts the carried flag quietly: nothing may be posted toward native from the torn A
+        const before = fake.msgs().length;
+        track('tok', baseOptions({ global: fake.global, carrier }));
+        const after = fake.msgs().slice(before) as Array<{ k: string; a?: boolean }>;
+        expect(after.map((m) => m.k).slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(after[1]?.a).toBe(false);
+      });
+
+      it('R4L-3: a launch without any bridge posts nothing and warns about nothing for an inactive blackout', () => {
+        const errors: unknown[] = [];
+        track('tok', baseOptions({ global: {}, onError: (e) => errors.push(e) }));
+        expect(errors.filter((e) => /blackout/i.test(String(e)))).toEqual([]);
       });
 
       // R3V-5 (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
@@ -671,6 +698,51 @@ describe('launch (webview)', () => {
         expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
           1,
         );
+      });
+
+      // R4V-9: a legacy receiver that never answers the handshake used to leave the judgement pending for ever
+      // (one blackout change, no reply): the integrator was never told the native video keeps running.
+      describe('R4V-9: the "native has not declared support" judgement is bounded', () => {
+        const notDeclared = (errors: unknown[]): number =>
+          errors.filter((e) => /not declared blackout support/.test(String(e))).length;
+
+        it('is judged at the deadline when native never replies (one change, then silence)', () => {
+          vi.useFakeTimers();
+          try {
+            const { client, errors } = bootWith({ carrier: {} });
+            client.startBlackout(); // first announcement: waits for the reply
+            expect(notDeclared(errors)).toBe(0);
+            vi.advanceTimersByTime(4_999);
+            expect(notDeclared(errors)).toBe(0); // not before the deadline
+            vi.advanceTimersByTime(1); // exactly the 5 s deadline
+            expect(notDeclared(errors)).toBe(1);
+            vi.advanceTimersByTime(60_000);
+            expect(notDeclared(errors)).toBe(1); // once
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('a reply that declares support before the deadline cancels the judgement', () => {
+          vi.useFakeTimers();
+          try {
+            const { fake, client, errors } = bootWith({ carrier: {} });
+            client.startBlackout();
+            sendControl(fake.global, { session: 'native-1', config: { blackout: true } });
+            vi.advanceTimersByTime(60_000);
+            expect(notDeclared(errors)).toBe(0);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('is judged at stop() when it is still pending', async () => {
+          const { client, errors } = bootWith({ carrier: {} });
+          client.startBlackout();
+          expect(notDeclared(errors)).toBe(0);
+          await client.stop();
+          expect(notDeclared(errors)).toBe(1);
+        });
       });
 
       it('a throwing onError never breaks the call', () => {
@@ -720,7 +792,7 @@ describe('launch (webview)', () => {
           first.startBlackout();
           expect(second.isBlackout()).toBe(true);
           expect(getCarrierBlackout(carrier)).toBe(true);
-          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([true]);
+          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false, false, true]); // each launch's post-hello state, then the forwarded start once
         });
 
         it('a client whose carrier slot another client has taken tells native nothing', () => {
@@ -729,7 +801,7 @@ describe('launch (webview)', () => {
           const client = track('tok', baseOptions({ global: fake.global, carrier }));
           setCarrierClient({ another: 'client' }, carrier);
           client.startBlackout();
-          expect(blackoutMsgs(fake)).toEqual([]);
+          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false]); // only the post-hello state; the start said nothing
         });
 
         it('a stopped client that is still the last owner lifts the carried flag quietly, posting nothing after bye', async () => {
@@ -1416,6 +1488,36 @@ describe('launch (webview)', () => {
     expect(() => repeat.event('still allowed')).not.toThrow();
   });
 
+  // R4L-6 (= R4V-7): a page must not gain control over REDACTION. Ending a blackout un-redacts the visual capture
+  // and a lifecycle listener observes the session's internals; `startBlackout` only fails closed, so it stays.
+  it('R4L-6: a repeat launch cannot end the blackout or install a lifecycle listener, but may still start one', () => {
+    const onError = vi.fn();
+    const carrier = {};
+    const opts = baseOptions({ onError, carrier });
+    const first = track('tok', opts);
+    const events: string[] = [];
+    first.startBlackout();
+    const repeat = launch('tok', opts);
+    const said = (n: string): boolean =>
+      onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${n}\``));
+
+    repeat.endBlackout();
+    expect(said('endBlackout')).toBe(true);
+    expect(first.isBlackout()).toBe(true); // the blackout was NOT lifted from the page
+    expect(getCarrierBlackout(carrier)).toBe(true);
+
+    repeat.setLifecycleEventsListener(((type: string) => events.push(type)) as never);
+    expect(said('setLifecycleEventsListener')).toBe(true);
+    first.endBlackout(); // the owner may still end it: the page's listener must not hear anything
+    first.startBlackout();
+    expect(events).toEqual([]);
+
+    first.endBlackout();
+    repeat.startBlackout(); // fails closed: allowed
+    expect(first.isBlackout()).toBe(true);
+    expect(said('startBlackout')).toBe(false);
+  });
+
   it('a repeat launch cannot end or drain the session the embedder owns', async () => {
     // `stop()` from page script is a kill switch on the host app's capture; `flush()` forces an upload
     // the embedder did not ask for. Both report and return false rather than throwing, so an embedder who
@@ -1443,6 +1545,7 @@ describe('launch (webview)', () => {
     // page. An inert client is diagnosable; a crash in someone else's page is not.
     const carrier: Record<string, unknown> = {};
     setCarrierClient({ isLaunched: () => true } as never, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
     const onError = vi.fn();
     const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
       string,
@@ -1491,6 +1594,7 @@ describe('launch (webview)', () => {
   it('R3V-7: the inert client has EVERY method of a real client; blackout/status/listener calls report through onError', async () => {
     const carrier: Record<string, unknown> = {};
     setCarrierClient({ isLaunched: () => true } as never, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
     const onError = vi.fn();
     const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
       string,
@@ -1506,7 +1610,7 @@ describe('launch (webview)', () => {
     expect(() => inert.startBlackout?.()).not.toThrow();
     expect(() => inert.endBlackout?.()).not.toThrow();
     expect(inert.isBlackout?.()).toBe(false);
-    expect(inert.getStatus?.()).toBe(BugseeStatus.Launched); // consistent with isLaunched() === true
+    expect(inert.getStatus?.()).toBe(BugseeStatus.Launched); // the owner's published state; consistent with isLaunched()
     expect(() => inert.setLifecycleEventsListener?.(() => {})).not.toThrow();
     expect(inert.getLaunchOptions?.()).toEqual({});
     expect(inert.getHostLaunchOptions?.()).toEqual({});
@@ -1549,6 +1653,35 @@ describe('launch (webview)', () => {
         .map(([e]) => (e as Error).message)
         .filter((m) => /logException|upload/.test(m)),
     ).toHaveLength(2);
+  });
+
+  it('R4V-10: the inert client reads the shared carrier: isBlackout() is the process flag, getStatus() follows the owner', () => {
+    const carrier: Record<string, unknown> = {};
+    const owner = { isLaunched: () => true } as never;
+    setCarrierClient(owner, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
+    const inert = launch('tok', baseOptions({ carrier }));
+    expect(inert.isBlackout()).toBe(false);
+    setCarrierBlackout(true, carrier);
+    expect(inert.isBlackout()).toBe(true);
+    setCarrierBlackout(false, carrier);
+    expect(inert.isBlackout()).toBe(false);
+    expect(inert.getStatus()).toBe(BugseeStatus.Launched);
+    expect(inert.isLaunched()).toBe(true);
+    setCarrierStatus(BugseeStatus.Stopping, carrier);
+    expect(inert.getStatus()).toBe(BugseeStatus.Stopping);
+    expect(inert.isLaunched()).toBe(false);
+    clearCarrierClient(owner, carrier);
+    setCarrierStatus(BugseeStatus.Stopped, carrier);
+    expect(inert.getStatus()).toBe(BugseeStatus.Stopped); // the owner has stopped: no more "Launched"
+  });
+
+  it('R4V-10: a real WebView launch publishes Launched on the carrier and Stopped after stop()', async () => {
+    const carrier = {};
+    const client = launch('tok', baseOptions({ carrier }));
+    expect(getCarrierStatus(carrier)).toBe(BugseeStatus.Launched);
+    await client.stop();
+    expect(getCarrierStatus(carrier)).toBe(BugseeStatus.Stopped);
   });
 
   it('the inert client refuses to end a session it does not own', async () => {

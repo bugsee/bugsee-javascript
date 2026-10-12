@@ -1,4 +1,5 @@
 import {
+  bumpCarrierRelaunchEpoch,
   getCarrier,
   getCarrierClient,
   getCarrierPendingLaunch,
@@ -89,6 +90,7 @@ export async function relaunchWith<
     // The new client never came up, so nothing will adopt what the old one handed over: do not leave user-identifying
     // notifications parked on `globalThis` until some later, unrelated launch (R3L-5).
     getCarrier(globalObj).notifyBacklog = undefined;
+    bumpCarrierRelaunchEpoch(globalObj); // …and a hand-back still in flight is now stale: dropped, not parked (R4L-2)
     throw error;
   } finally {
     setCarrierRelaunching(false, globalObj);

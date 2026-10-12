@@ -79,6 +79,25 @@ export function createInstanceLayout(
   };
 }
 
+// Process-level count of LIVE launches per subtree root (R4L-1). Two launches share a root only through a pinned
+// `instanceIdentity`; a plain relaunch gets a fresh root, so "a newer client exists" is NOT "this subtree is live".
+const liveRoots = new Map<string, number>();
+
+/** Release one launch's claim on its subtree root (called once, when that launch begins to stop). */
+export function releaseInstanceRoot(layout: InstanceLayout): void {
+  const count = (liveRoots.get(layout.root) ?? 0) - 1;
+  if (count > 0) {
+    liveRoots.set(layout.root, count);
+  } else {
+    liveRoots.delete(layout.root);
+  }
+}
+
+/** True while some launch that has NOT begun to stop is writing into this subtree root. */
+export function isInstanceRootLive(layout: InstanceLayout): boolean {
+  return (liveRoots.get(layout.root) ?? 0) > 0;
+}
+
 /**
  * Create the subtree root and persist `owner.json` (the identity + this launch's start time + SDK version).
  * A `.stopped` marker left by an earlier clean stop of the same subtree is removed FIRST (R3L-3): this launch is
@@ -100,4 +119,5 @@ export function writeInstanceOwner(
     version,
   };
   writeFileSecure(layout.ownerFile, JSON.stringify(owner));
+  liveRoots.set(layout.root, (liveRoots.get(layout.root) ?? 0) + 1); // only after the launch is really live here
 }
