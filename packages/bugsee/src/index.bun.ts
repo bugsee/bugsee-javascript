@@ -13,4 +13,5 @@ export type {
   UploadOptions,
 } from '@bugsee/core';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-export { type BugseeBunLaunchOptions, launch } from './bun';
+export { type BugseeBunLaunchOptions, launch, relaunch } from './bun';
+export { BugseeStatus, getStatus } from './status';

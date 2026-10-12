@@ -2,17 +2,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
+  clearCarrierClient,
   contributeServiceManifest,
   getCarrier,
   getCarrierClient,
+  getCarrierStatus,
   getFilters,
   getInternal,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
 } from './carrier';
 import type { Interceptor } from './contracts';
+import { BugseeStatus } from './launch-status';
 
 // A minimal Interceptor stand-in: the carrier only stores/returns the instance (never calls its
 // methods), so identity is all that matters.
@@ -136,6 +142,85 @@ describe('getCarrierClient / setCarrierClient (per-process singleton slot)', () 
     const client = { id: 'global-client' };
     setCarrierClient(client);
     expect(getCarrierClient()).toBe(client);
+  });
+});
+
+describe('clearCarrierClient (release only your own slot)', () => {
+  it('clears the slot when it still holds the given client', () => {
+    const g = {};
+    const client = { id: 'a' };
+    setCarrierClient(client, g);
+    clearCarrierClient(client, g);
+    expect(getCarrierClient(g)).toBeUndefined();
+  });
+
+  it('leaves a NEWER client in the slot (a stale stop() must not evict a relaunch)', () => {
+    const g = {};
+    const oldClient = { id: 'old' };
+    const newClient = { id: 'new' };
+    setCarrierClient(newClient, g);
+    clearCarrierClient(oldClient, g);
+    expect(getCarrierClient(g)).toBe(newClient);
+  });
+
+  it('defaults to the real globalThis', () => {
+    const client = { id: 'g' };
+    setCarrierClient(client);
+    clearCarrierClient(client);
+    expect(getCarrierClient()).toBeUndefined();
+  });
+});
+
+describe('getCarrierStatus / setCarrierStatus (process lifecycle state)', () => {
+  it('is Stopped until set, and stores each status', () => {
+    const g = {};
+    expect(getCarrierStatus(g)).toBe(BugseeStatus.Stopped);
+    setCarrierStatus(BugseeStatus.Launching, g);
+    expect(getCarrierStatus(g)).toBe(BugseeStatus.Launching);
+    setCarrierStatus(BugseeStatus.Launched, g);
+    expect(getCarrier(g).status).toBe(BugseeStatus.Launched);
+  });
+
+  it('defaults to the real globalThis', () => {
+    setCarrierStatus(BugseeStatus.Stopping);
+    expect(getCarrierStatus()).toBe(BugseeStatus.Stopping);
+  });
+});
+
+describe('getProcessStatus', () => {
+  it("reports the launched client's own status over the carrier's", () => {
+    const g = {};
+    setCarrierStatus(BugseeStatus.Launching, g);
+    setCarrierClient({ getStatus: () => BugseeStatus.Stopped }, g); // e.g. a killed SDK
+    expect(getProcessStatus(g)).toBe(BugseeStatus.Stopped);
+    setCarrierClient({ getStatus: () => BugseeStatus.Launched }, g);
+    expect(getProcessStatus(g)).toBe(BugseeStatus.Launched);
+  });
+
+  it("falls back to the carrier's status with no client (Launching / Stopping / Stopped)", () => {
+    const g = {};
+    expect(getProcessStatus(g)).toBe(BugseeStatus.Stopped);
+    setCarrierStatus(BugseeStatus.Launching, g);
+    expect(getProcessStatus(g)).toBe(BugseeStatus.Launching);
+  });
+
+  it('defaults to the real globalThis', () => {
+    setCarrierStatus(BugseeStatus.Stopping);
+    expect(getProcessStatus()).toBe(BugseeStatus.Stopping);
+  });
+});
+
+describe('setCarrierLastLaunch', () => {
+  it('stores the token and options on the carrier slot', () => {
+    const g = {};
+    const options = { a: 1 };
+    setCarrierLastLaunch('tok', options, g);
+    expect(getCarrier(g).lastLaunch).toEqual({ appToken: 'tok', options });
+  });
+
+  it('defaults to the real globalThis', () => {
+    setCarrierLastLaunch('tok2', undefined);
+    expect(getCarrier().lastLaunch?.appToken).toBe('tok2');
   });
 });
 

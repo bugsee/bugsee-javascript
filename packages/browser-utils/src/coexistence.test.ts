@@ -231,6 +231,81 @@ describe('createCoexistence — the dead-sibling age bound, end to end', () => {
   });
 });
 
+describe('createCoexistence — clean release', () => {
+  it('release() frees the instance lock so the next launch recovers this instance as a dead sibling', async () => {
+    const idb = new IDBFactory();
+    const held = new Set<string>();
+    const locks: LockManagerLike = {
+      request(name, options, callback) {
+        if (options.ifAvailable && held.has(name)) {
+          return Promise.resolve(callback(null));
+        }
+        held.add(name);
+        return Promise.resolve(callback({ name })).finally(() => held.delete(name));
+      },
+    };
+    const first = createCoexistence({ appToken: TOK, persist: true, indexedDB: idb, locks });
+    const store = first.bundleStore as NonNullable<typeof first.bundleStore> & {
+      whenReady: Promise<void>;
+    };
+    await store.whenReady;
+    store.put('left-over', serializeBundle(aBundle('left over')));
+    await vi.waitFor(async () => expect(await rawKeys(idb)).toHaveLength(1));
+    expect(held.size).toBe(1);
+
+    // While held, a second instance must leave it alone (live).
+    const second = createCoexistence({ appToken: TOK, persist: true, indexedDB: idb, locks });
+    const pipeline = okPipeline();
+    await second.recoverDeadSiblings({ uploadPipeline: pipeline });
+    expect(pipeline.enqueue).not.toHaveBeenCalled();
+
+    first.release();
+    first.release(); // idempotent
+    await vi.waitFor(() => expect(held.size).toBe(1)); // only second's own lock remains
+    await second.recoverDeadSiblings({ uploadPipeline: pipeline });
+    expect(pipeline.enqueue).toHaveBeenCalledTimes(1); // released -> dead -> recovered
+  });
+
+  it('release() closes every shared IndexedDB connection (bundles, capture and markers)', async () => {
+    const real = new IDBFactory();
+    let open = 0;
+    const idb = {
+      open: (name: string, version?: number) => {
+        const request = real.open(name, version);
+        request.addEventListener('success', () => {
+          open += 1;
+          const db = request.result;
+          const close = db.close.bind(db);
+          db.close = () => {
+            open -= 1;
+            close();
+          };
+        });
+        return request;
+      },
+    } as unknown as IDBFactory;
+    const coex = createCoexistence({
+      appToken: TOK,
+      persist: true,
+      captureRecovery: true,
+      indexedDB: idb,
+      locks: fakeLocks().manager,
+    });
+    // Touch all three databases so each opens a connection.
+    await (coex.bundleStore as unknown as { whenReady: Promise<void> }).whenReady;
+    await coex.captureView?.put('k', new Uint8Array([1]));
+    await coex.markerView?.loadAll();
+    expect(open).toBe(3);
+    coex.release();
+    await vi.waitFor(() => expect(open).toBe(0));
+  });
+
+  it('release() with nothing coexisting (no persistence) is a harmless no-op', () => {
+    const coex = createCoexistence({ appToken: TOK, persist: false });
+    expect(() => coex.release()).not.toThrow();
+  });
+});
+
 describe('createCoexistence — bundle queue', () => {
   it('writes under a per-token database + per-instance prefix and holds the instance lock', async () => {
     const idb = new IDBFactory();

@@ -22,6 +22,7 @@ import {
 } from '@bugsee/node-utils';
 import {
   DEFAULT_PATIENT_MS,
+  isCleanlyStopped,
   isSiblingDead,
   pidAlive,
   readLiveMtimeMs,
@@ -221,6 +222,7 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
         continue;
       }
       if (
+        !isCleanlyStopped(sub) &&
         !isSiblingDead(
           pidAlive(owner.pid, options.kill),
           readLiveMtimeMs(join(sub, '.live')),

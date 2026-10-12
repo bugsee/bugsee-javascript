@@ -22,8 +22,10 @@ export interface LockManagerLike {
 export interface WebLockLiveness {
   /** False when Web Locks is unavailable — cross-instance recovery then degrades to a no-op. */
   readonly available: boolean;
-  /** Acquire `name` and HOLD it for the realm's lifetime (released automatically on tab/worker death). */
-  holdSelf(name: string): void;
+  /** Acquire `name` and HOLD it for the realm's lifetime (released automatically on tab/worker death).
+   *  Returns an idempotent `release` for a CLEAN shutdown (`stop()`), so the instance reads as dead and its
+   *  leftovers become recoverable by the next launch. */
+  holdSelf(name: string): () => void;
   /** If `name` is DEAD (its lock is acquirable), run `fn` while HOLDING the lock (so concurrent peers skip),
    *  then release. Resolves immediately (no-op) when the lock is held (alive) or Web Locks is unavailable. */
   recoverIfDead(name: string, fn: () => Promise<void>): Promise<void>;
@@ -43,6 +45,7 @@ export function createWebLockLiveness(
           warned = true;
           warn(WEB_LOCKS_UNAVAILABLE_WARNING);
         }
+        return () => {};
       },
       recoverIfDead: () => Promise.resolve(),
     };
@@ -50,14 +53,20 @@ export function createWebLockLiveness(
   return {
     available: true,
     holdSelf(name) {
-      // Hold for the realm's lifetime: a never-resolving callback keeps the lock until the realm is destroyed.
+      // Hold for the realm's lifetime: a callback that only settles on `release` keeps the lock until the
+      // realm is destroyed or the instance shuts down cleanly.
       // A rejected request (e.g. an invalid lock name, or a sandboxed context) must NOT surface as an
       // unhandledrejection — Bugsee would self-report its own internal lock failure as an app error. Swallow
       // it to `warn` and degrade (this instance simply won't be lock-protected; siblings may double-recover
       // its bundles, which the server dedupes by signature).
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       void locks
-        .request(name, { mode: 'exclusive' }, () => new Promise<never>(() => {}))
+        .request(name, { mode: 'exclusive' }, () => held)
         .catch((error) => warn(`failed to hold the instance liveness lock: ${String(error)}`));
+      return release;
     },
     recoverIfDead(name, fn) {
       return locks.request(name, { mode: 'exclusive', ifAvailable: true }, async (lock) => {

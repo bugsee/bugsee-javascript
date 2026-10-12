@@ -1,5 +1,6 @@
 import type { Interceptor } from './contracts';
 import { type FilterStore, FiltersToken } from './filters';
+import { BugseeStatus } from './launch-status';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 
 /**
@@ -35,6 +36,10 @@ export interface BugseeCarrier {
   readonly interceptors: Map<string, Interceptor<unknown>>;
   /** The process-global launched client (Bugsee is a per-process singleton, §1497/§473); else undefined. */
   client?: unknown;
+  /** The process lifecycle state; absent means {@link BugseeStatus.Stopped}. */
+  status?: BugseeStatus;
+  /** The arguments of the last launch that built a client — what `relaunch()` reuses (token + options). */
+  lastLaunch?: { appToken: string; options: unknown };
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
   serviceManifests?: ServiceManifest[];
 }
@@ -113,6 +118,46 @@ export function getCarrierClient<T = unknown>(globalObj: object = globalThis): T
 /** Set (or, with `undefined`, clear) the process-global launched client. */
 export function setCarrierClient(client: unknown, globalObj: object = globalThis): void {
   getCarrier(globalObj).client = client;
+}
+
+/**
+ * Clear the process-global client slot, but ONLY if it still holds `client`. A stale `stop()` (called
+ * twice, or after a relaunch) must not evict the newer client that has since taken the slot.
+ */
+export function clearCarrierClient(client: unknown, globalObj: object = globalThis): void {
+  const carrier = getCarrier(globalObj);
+  if (carrier.client === client) {
+    carrier.client = undefined;
+  }
+}
+
+/** The process lifecycle state (Stopped until a launch begins). */
+export function getCarrierStatus(globalObj: object = globalThis): BugseeStatus {
+  return getCarrier(globalObj).status ?? BugseeStatus.Stopped;
+}
+
+/** Record the process lifecycle state. */
+export function setCarrierStatus(status: BugseeStatus, globalObj: object = globalThis): void {
+  getCarrier(globalObj).status = status;
+}
+
+/**
+ * The process lifecycle state a top-level `getStatus()` reports: the launched client's own state when
+ * there is one (so a killed SDK reads Stopped), else the carrier's (Launching during an async launch,
+ * Stopping while the previous client drains, Stopped otherwise).
+ */
+export function getProcessStatus(globalObj: object = globalThis): BugseeStatus {
+  const client = getCarrierClient<{ getStatus(): BugseeStatus }>(globalObj);
+  return client !== undefined ? client.getStatus() : getCarrierStatus(globalObj);
+}
+
+/** Remember the arguments of a launch that built a client, for `relaunch()`. */
+export function setCarrierLastLaunch(
+  appToken: string,
+  options: unknown,
+  globalObj: object = globalThis,
+): void {
+  getCarrier(globalObj).lastLaunch = { appToken, options };
 }
 
 /**

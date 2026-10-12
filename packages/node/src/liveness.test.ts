@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_PATIENT_MS,
+  isCleanlyStopped,
   isSiblingDead,
   pidAlive,
   readLiveMtimeMs,
   readOwner,
+  STOPPED_FILE,
 } from './liveness';
 
 const dirs: string[] = [];
@@ -141,5 +143,15 @@ describe('isSiblingDead', () => {
       // instance's data; guessing "main" only defers reclamation to the age-based sweep.
       expect(isSiblingDead(true, stale, now, DEFAULT_PATIENT_MS, undefined)).toBe(false);
     });
+  });
+});
+
+describe('isCleanlyStopped', () => {
+  it('is true only when the subtree carries the .stopped marker', () => {
+    const dir = mkDir();
+    expect(isCleanlyStopped(dir)).toBe(false);
+    writeFileSync(join(dir, STOPPED_FILE), '');
+    expect(isCleanlyStopped(dir)).toBe(true);
+    expect(STOPPED_FILE).toBe('.stopped');
   });
 });

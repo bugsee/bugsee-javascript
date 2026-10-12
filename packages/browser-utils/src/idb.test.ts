@@ -5,6 +5,27 @@ import { createIdbBlobStore, createIdbKeyedStore } from './idb';
 
 const bytes = (...n: number[]) => new Uint8Array(n);
 
+// An IDBFactory that counts connections opened and closed, so a clean shutdown can be asserted.
+function countingIdb(real: IDBFactory): { idb: IDBFactory; open: () => number } {
+  let open = 0;
+  const idb = {
+    open: (name: string, version?: number) => {
+      const request = real.open(name, version);
+      request.addEventListener('success', () => {
+        open += 1;
+        const db = request.result;
+        const originalClose = db.close.bind(db);
+        db.close = () => {
+          open -= 1;
+          originalClose();
+        };
+      });
+      return request;
+    },
+  } as unknown as IDBFactory;
+  return { idb, open: () => open };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -364,5 +385,46 @@ describe('createIdbBlobStore — error handling', () => {
   it('falls back to a generic error when the loadAll transaction carries no error object', async () => {
     const store = createIdbBlobStore({ indexedDB: requestsFailFactory(null) });
     await expect(store.loadAll()).rejects.toThrow('indexedDB loadAll failed');
+  });
+});
+
+describe('close (clean shutdown)', () => {
+  it('releases the blob store connection and lazily reopens on a later call', async () => {
+    const { idb, open } = countingIdb(new IDBFactory());
+    const store = createIdbBlobStore({ indexedDB: idb });
+    await store.put('a', bytes(1));
+    expect(open()).toBe(1);
+    store.close?.();
+    await vi.waitFor(() => expect(open()).toBe(0));
+    store.close?.(); // idempotent
+    expect(await store.loadAll()).toEqual([['a', bytes(1)]]); // data intact, connection reopened
+    expect(open()).toBe(1);
+  });
+
+  it('releases the keyed store connection and lazily reopens on a later call', async () => {
+    const { idb, open } = countingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    await store.put('k/1', bytes(2));
+    expect(open()).toBe(1);
+    store.close?.();
+    await vi.waitFor(() => expect(open()).toBe(0));
+    expect(await store.keys('k/')).toEqual(['k/1']);
+    expect(open()).toBe(1);
+  });
+
+  it('close before any use is a no-op, and a failed open does not throw on close', async () => {
+    const store = createIdbBlobStore({ indexedDB: new IDBFactory() });
+    expect(() => store.close?.()).not.toThrow();
+    const failing = {
+      open: () => {
+        const request = {} as IDBOpenDBRequest;
+        queueMicrotask(() => (request.onerror as () => void)());
+        return request;
+      },
+    } as unknown as IDBFactory;
+    const broken = createIdbBlobStore({ indexedDB: failing });
+    await expect(broken.loadAll()).rejects.toBeDefined();
+    expect(() => broken.close?.()).not.toThrow();
+    await Promise.resolve();
   });
 });

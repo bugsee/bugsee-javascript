@@ -20,6 +20,7 @@ import {
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import { type FilterableSpan, FiltersToken } from './filters';
+import { BugseeStatus } from './launch-status';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createPartitionedCaptureStore } from './partitioned-capture-store';
@@ -1316,6 +1317,45 @@ describe('createClient — lifecycle', () => {
     expect(await createClient().flush()).toBe(true);
   });
 
+  it('getStatus walks Stopped -> Launched -> Stopping -> Stopped around a draining stop', async () => {
+    let release!: () => void;
+    const flush = vi.fn(() => new Promise<boolean>((r) => (release = () => r(true))));
+    const client = createClient({ uploadPipeline: { flush } as unknown as UploadPipeline });
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+    client.launch();
+    expect(client.getStatus()).toBe(BugseeStatus.Launched);
+    const stopping = client.stop();
+    expect(client.getStatus()).toBe(BugseeStatus.Stopping);
+    await vi.waitFor(() => expect(flush).toHaveBeenCalled());
+    expect(client.getStatus()).toBe(BugseeStatus.Stopping); // still draining
+    release();
+    await stopping;
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+  });
+
+  it('a stop whose drain times out still ends Stopped', async () => {
+    const flush = vi.fn(() => new Promise<boolean>(() => {}));
+    const client = createClient({ uploadPipeline: { flush } as unknown as UploadPipeline });
+    client.launch();
+    expect(await client.stop(5)).toBe(false);
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+  });
+
+  it('getLaunchOptions / getHostLaunchOptions return copies of the supplied view (empty by default)', () => {
+    expect(createClient().getLaunchOptions()).toEqual({});
+    expect(createClient().getHostLaunchOptions()).toEqual({});
+    const effective = { a: 1, b: 2 };
+    const host = { b: 2 };
+    const client = createClient({ launchOptionsView: { effective, host } });
+    const got = client.getLaunchOptions();
+    expect(got).toEqual(effective);
+    expect(got).not.toBe(effective);
+    got.a = 99;
+    expect(client.getLaunchOptions()).toEqual({ a: 1, b: 2 });
+    expect(client.getHostLaunchOptions()).toEqual({ b: 2 });
+    expect(client.getHostLaunchOptions()).not.toBe(host);
+  });
+
   it('can relaunch after stop', () => {
     const client = createClient();
     const provider = gatedCaptureProvider('net');
@@ -1707,6 +1747,7 @@ describe('createClient — kill-state (collector KILL_SDK)', () => {
 
     expect(onError).toHaveBeenCalledWith(err);
     expect(client.isLaunched()).toBe(false); // capture/detection halted
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped); // a killed SDK is not 'Launched'
     expect(provider.stop).toHaveBeenCalled(); // the capture coordinator was stopped
     // Subsequent captures are no-ops.
     client.log('after-kill');

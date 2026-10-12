@@ -36,6 +36,8 @@ export interface OptionDefinition {
 export interface ResolvedLaunchOptions {
   /** Canonical identifier → value (defaults applied). Serialize via optionsToWire for the wire. */
   readonly canonical: Record<string, unknown>;
+  /** ONLY the options the host supplied, by canonical identifier (no defaults, no unknown names). */
+  readonly host: Record<string, unknown>;
   /** Launch options keyed by canonical identifier, passed to each provider's start(). */
   readonly options: OptionsContainer;
   /** A boolean option is enabled unless explicitly set to false (an unknown key defaults enabled). */
@@ -48,11 +50,18 @@ export function resolveLaunchOptions(
   definitions: readonly OptionDefinition[],
 ): ResolvedLaunchOptions {
   const canonical: Record<string, unknown> = {};
+  const host: Record<string, unknown> = {};
   for (const def of definitions) {
-    canonical[def.key] = Object.hasOwn(values, def.friendly) ? values[def.friendly] : def.default;
+    if (Object.hasOwn(values, def.friendly)) {
+      host[def.key] = values[def.friendly];
+      canonical[def.key] = values[def.friendly];
+    } else {
+      canonical[def.key] = def.default;
+    }
   }
   return {
     canonical,
+    host,
     options: createOptionsContainer(canonical),
     isEnabled: (key) => canonical[key] !== false,
   };

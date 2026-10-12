@@ -13,4 +13,5 @@ export type {
 } from '@bugsee/core';
 export type { Bugsee } from '@bugsee/deno';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-export { type BugseeDenoLaunchOptions, launch } from './deno';
+export { type BugseeDenoLaunchOptions, launch, relaunch } from './deno';
+export { BugseeStatus, getStatus } from './status';

@@ -21,11 +21,13 @@ import {
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
+  BugseeStatus,
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -36,17 +38,22 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   ReportMarkerStoreToken,
   recoverReports,
+  relaunchWith,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   TransportToken,
   type TriggerPipeline,
   type UploadResult,
@@ -357,7 +364,34 @@ const internalTagged =
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
 
+// The public composition root's lifecycle shell: publishes Launching while the (async) composition is in
+// flight, Launched once it has built a client, and falls back to Stopped if it throws. A repeat launch
+// (a client already owns the slot) leaves the state alone.
 export async function launchCore(
+  appToken: string,
+  options: BugseeLaunchOptions = {},
+): Promise<LaunchResult> {
+  const carrier = options.carrier;
+  const owned = getCarrierClient(carrier) === undefined;
+  if (owned) {
+    setCarrierStatus(BugseeStatus.Launching, carrier);
+  }
+  try {
+    const result = await buildLaunch(appToken, options);
+    if (result.internals !== undefined) {
+      setCarrierLastLaunch(appToken, options, carrier);
+      setCarrierStatus(BugseeStatus.Launched, carrier);
+    }
+    return result;
+  } catch (error) {
+    if (owned && getCarrierClient(carrier) === undefined) {
+      setCarrierStatus(BugseeStatus.Stopped, carrier);
+    }
+    throw error;
+  }
+}
+
+async function buildLaunch(
   appToken: string,
   options: BugseeLaunchOptions = {},
 ): Promise<LaunchResult> {
@@ -520,6 +554,7 @@ export async function launchCore(
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
     appToken,
@@ -665,7 +700,7 @@ export async function launchCore(
   // incidents its bundle-queue leg already settled with (`skipReportIds`), so one incident is delivered
   // once even when the sibling left BOTH a staged bundle and that incident's marker (the SEV1
   // double-upload — reconciled in browser-utils).
-  void runLaunchRecovery({
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
     // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
@@ -680,12 +715,13 @@ export async function launchCore(
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                const backend = createIdbChunkBackend(captureView, {
+                  generation: -1,
+                  cleanOtherGenerations: false,
+                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                });
                 await recoverReports({
-                  backend: createIdbChunkBackend(captureView, {
-                    generation: -1,
-                    cleanOtherGenerations: false,
-                    ...(options.onError !== undefined ? { onError: options.onError } : {}),
-                  }),
+                  backend,
                   currentGeneration: -1,
                   markers,
                   context: () => ({ appToken, environment: getEnvironment(), clock }),
@@ -693,6 +729,10 @@ export async function launchCore(
                   skipReportIds,
                   ...(options.onError !== undefined ? { onError: options.onError } : {}),
                 });
+                // recoverReports deletes the sibling's generations through the backend's write QUEUE, which
+                // it does not await. Settle it here so the cleanup lands before this scan counts as done
+                // (and before a stop() closes the connection under it).
+                await backend.flush?.();
               },
             }
           : {}),
@@ -762,10 +802,41 @@ export async function launchCore(
     // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
     upload: (uploadOptions) =>
       client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
-    stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
+    async stop(timeout?: number): Promise<boolean> {
+      const wasLaunched = client.isLaunched();
+      // Release the process slot, but only if it is still OURS: a repeat/late stop() must not evict a
+      // client that has since been relaunched.
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(wasLaunched ? BugseeStatus.Stopping : BugseeStatus.Stopped, carrier);
+        clearCarrierClient(publicClient, carrier);
+      }
       uninstallPageHideFlush();
-      return stopCore(timeout);
+      if (!wasLaunched) {
+        return stopCore(timeout);
+      }
+      try {
+        return await stopCore(timeout);
+      } finally {
+        // Everything below is idempotent; the drain is over, so now make the data durable, then let go of
+        // the instance liveness lock (this instance now reads as dead, so the NEXT launch can recover any
+        // leftovers) and the IndexedDB connections.
+        try {
+          await captureStore.flush?.();
+        } catch (error) {
+          options.onError?.(error);
+        }
+        // The launch-time dead-sibling scan may still be reading IndexedDB (a quick launch -> stop); closing
+        // under it would just make it reopen the connection and leak it. Let it settle first — bounded by
+        // the caller's own timeout, since a long recovery upload must not hold up a deadline-bound stop.
+        await (timeout === undefined
+          ? recoveryDone
+          : Promise.race([recoveryDone, new Promise<void>((r) => setTimeout(r, timeout))]));
+        coexistence.release();
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      }
     },
   };
 
@@ -786,6 +857,18 @@ export async function launchCore(
     activeSpanStore: undefined, // the single-slot default is correct here — see the interface note
   };
   return { client: publicClient, internals };
+}
+
+/** The process lifecycle state (Stopped / Launching / Launched / Stopping), also while no client exists.
+ *  `carrier` is the host the launch used (default `globalThis`). */
+export function getStatus(carrier?: object): BugseeStatus {
+  return getProcessStatus(carrier);
+}
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. Uses the process carrier of `options.carrier` (default `globalThis`). */
+export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
+  return relaunchWith(launch, options, options?.carrier);
 }
 
 // The public composition root: the launched client. Equivalent to `(await launchCore(...)).client` —

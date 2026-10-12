@@ -2080,8 +2080,10 @@ describe('flush on page hide (Wave 6.2)', () => {
     expect(win.count('pagehide')).toBe(1);
     await client.stop();
     expect(win.count('pagehide')).toBe(0);
+    // stop() itself commits the store once (the shutdown flush); the hook must add nothing after that.
+    const flushesAtStop = vi.mocked(captureStore.flush as () => Promise<void>).mock.calls.length;
     win.emit('pagehide', {});
-    expect(captureStore.flush).not.toHaveBeenCalled(); // …and it is genuinely disconnected
+    expect(captureStore.flush).toHaveBeenCalledTimes(flushesAtStop); // …and it is genuinely disconnected
   });
 
   it('a failing flush never throws back into the browser’s dispatch', async () => {

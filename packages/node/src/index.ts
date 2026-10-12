@@ -10,8 +10,7 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/co
 // Re-exported so the backend adapters can contain their OWN pre-request work (header reads, route
 // extraction, the application-supplied `user` callback) without each taking a direct @bugsee/core
 // dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.
-export { guarded, neverThrow } from '@bugsee/core';
-
+export { BugseeStatus, guarded, neverThrow } from '@bugsee/core';
 // R-7/F4: the request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two
 // live stores over the same source alias on it. The launch builds and owns one; hand-wirers must
@@ -79,11 +78,13 @@ export type { InstanceIdentity } from './instance-layout';
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  getStatus,
   type LaunchInternals,
   type LaunchResult,
   launch,
   launchCore,
   type NodeRuntime,
+  relaunch,
 } from './launch';
 export { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 export {

@@ -2,6 +2,7 @@
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
 
+export { BugseeStatus } from '@bugsee/core';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
@@ -42,10 +43,12 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  getStatus,
   type LaunchInternals,
   type LaunchResult,
   launch,
   launchCore,
+  relaunch,
 } from './launch';
 export {
   type MetaTraceContinuation,

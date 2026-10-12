@@ -6,6 +6,7 @@ import {
   launchCore,
   readMetaTraceContinuation,
 } from '@bugsee/browser';
+import { relaunchWith } from '@bugsee/core';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
 // The `bugsee` umbrella launch() for the BROWSER — the batteries-included entry. It runs the browser
@@ -39,4 +40,10 @@ export async function launch(
           readMetaTraceContinuation,
         },
       );
+}
+
+/** Stop the running client (if any) and launch again with the same token, re-wiring the on-by-default
+ *  extensions; `options` replace the previous launch options when given. */
+export function relaunch(options?: BugseeLaunchOptionsWithPerformance): Promise<Bugsee> {
+  return relaunchWith(launch, options, options?.carrier);
 }
