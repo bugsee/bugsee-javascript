@@ -29,7 +29,7 @@ import * as webview from '@bugsee/webview';
 import * as webworker from '@bugsee/webworker';
 import { describe, expect, it } from 'vitest';
 
-// EXPORT PARITY across the directly imported packages and the framework-adapter subpaths (review R2D-4).
+// EXPORT PARITY across the directly imported packages and the framework-adapter subpaths.
 //
 // The umbrella entries are pinned in `packages/bugsee/src/export-parity.test.ts`. A user who imports
 // `@bugsee/vercel-edge`, `@bugsee/webworker`, `@bugsee/nextjs/server`... directly gets the same product, so the
@@ -155,7 +155,7 @@ describe('the re-exports are the SAME functions, not look-alikes', () => {
   });
 });
 
-// FORBIDDEN names (R5H-4). `relaunchEdge` / `rememberEdgeLaunch` are the SEAM of the meta-framework edge adapters
+// FORBIDDEN names. `relaunchEdge` / `rememberEdgeLaunch` are the SEAM of the meta-framework edge adapters
 // (`@bugsee/vercel-edge/relaunch-edge`). They once leaked into `@bugsee/bugsee/edge-light` and `@bugsee/cloudflare`
 // through `export *` from the vercel-edge index, where a plain `relaunchEdge()` silently re-ran `launchEdge` and
 // dropped the umbrella's extensions / the Cloudflare launch. They must never be public on any package entry.
