@@ -179,9 +179,12 @@ async function bootRenderer(
   }) as never;
 
   let sessionId: string | undefined;
+  // Each call here stands for a SEPARATE renderer page: the one-instance-per-page slot is per JS realm.
+  delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('bugsee.electron.renderer')];
   await launchRenderer('tok', {
     launch: fakeBrowserLaunch,
     bridge,
+    carrier: {}, // the renderer's own realm: it does not share the main process's carrier
     onSessionId: (id2) => {
       sessionId = id2;
     },

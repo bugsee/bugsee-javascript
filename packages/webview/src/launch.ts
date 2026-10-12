@@ -25,12 +25,14 @@ import {
   type BreadcrumbFilter,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   clearCarrierClient,
   createClient,
   createServiceContainer,
+  FAIL_ON_BOOLEAN_OPTION,
   type FilterStore,
   FiltersToken,
   getCarrierClient,
@@ -40,6 +42,7 @@ import {
   type LogEventFilter,
   type NetworkEventFilter,
   neverThrow,
+  type OptionDefinition,
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
@@ -71,6 +74,20 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
 export const SDK_VERSION = BUGSEE_SDK_VERSION;
+
+/** WebView-local identifier of the `captureObscuring` switch: no cross-SDK identity. */
+const OBSCURING_OPTION_KEY = 'com.bugsee.option.capture.obscuring';
+
+/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported (R3V-3). */
+const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
+  ...COMMON_OPTION_DEFINITIONS,
+  {
+    friendly: 'captureObscuring',
+    key: OBSCURING_OPTION_KEY,
+    default: true,
+    ...FAIL_ON_BOOLEAN_OPTION,
+  },
+];
 
 /**
  * The launched client, held HERE rather than on the process-global carrier.
@@ -364,9 +381,11 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
 
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
-    COMMON_OPTION_DEFINITIONS,
+    WEBVIEW_OPTION_DEFINITIONS,
     options.onError,
   );
+  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON (R3V-3).
+  const obscuringEnabled = resolved.options.get<boolean>(OBSCURING_OPTION_KEY, true);
 
   const services = createServiceContainer();
 
@@ -415,7 +434,16 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const nativeSecret = options.controlNonce;
   const controlToken =
     nativeSecret === undefined && bridge.available ? mintControlToken() : undefined;
+  // Set once native has answered the handshake (the control reply): until then it cannot have declared anything,
+  // so "native has not declared blackout support" is not yet a finding (R3V-5). `judgeNativeBlackout` is bound
+  // below, where the blackout state exists.
+  let nativeReplied = false;
+  let judgeNativeBlackout: (() => void) | undefined;
   const control = createBridgeControl({
+    onApplied: () => {
+      nativeReplied = true;
+      judgeNativeBlackout?.();
+    },
     token: controlToken,
     ...(nativeSecret !== undefined ? { nativeSecret } : {}),
     // The latch lives on the per-global slot, not in this closure, so a page-forced relaunch inherits it.
@@ -545,7 +573,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // HAS a window. `isTopFrame` is derived from `win`, so `!isTopFrame` already implies it is defined —
   // spelling it here keeps the composer's `window` unconditional instead of leaving an unreachable branch.
   if (win !== undefined && !isTopFrame) {
-    if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+    if (obscuringEnabled && domDocument !== undefined) {
       const childComposer = createObscuringComposer({
         document: domDocument as unknown as ComposerDocument,
         window: win as unknown as ComposerWindow,
@@ -613,8 +641,11 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
   // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
   let warnedNativeBlackout = false;
-  const announceBlackout = (active: boolean): void => {
-    bridge.post(encode(blackoutMessage(active, Date.now())));
+  // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
+  // blackout is announced at launch, before any reply could possibly have arrived): R3V-5.
+  let judgementPending = false;
+  const judge = (): void => {
+    judgementPending = false;
     const delivered = bridge.available;
     if (warnedNativeBlackout || (delivered && control.config.nativeBlackout)) {
       return;
@@ -631,6 +662,19 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
         ),
       undefined,
     );
+  };
+  judgeNativeBlackout = () => {
+    if (judgementPending) {
+      judge();
+    }
+  };
+  const announceBlackout = (active: boolean): void => {
+    bridge.post(encode(blackoutMessage(active, Date.now())));
+    if (bridge.available && !nativeReplied && !judgementPending && !warnedNativeBlackout) {
+      judgementPending = true; // wait for the handshake reply; a later change before it forces the judgement
+      return;
+    }
+    judge();
   };
   blackout.onChange(announceBlackout);
   const inputSource = getOrCreateInterceptor(
@@ -688,7 +732,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
   //     by the sub-frame branch above, which returns before reaching here.
   // (Native never drops its own masking for this — D-A7. The union is what makes the whole path monotone.)
-  if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+  if (obscuringEnabled && domDocument !== undefined) {
     obscuring = createObscuringChannel({
       bridge,
       document: domDocument as unknown as ComposerDocument,
@@ -740,6 +784,12 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   bridge.post(
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
+
+  // A blackout CARRIED over from a previous client is already in force and never fires `onChange`, so native has
+  // to be told here, after `hello` (R3V-5). Silent no-op when there is none.
+  if (blackout.isActive()) {
+    announceBlackout(true);
+  }
 
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
@@ -853,7 +903,62 @@ function inertClient(onError?: (error: unknown) => void): Bugsee {
     undefined,
   );
   const noop = (): void => {};
+  // Every other call is a no-op that SAYS so, once per method (R3V-7): a page can call these at will, so the
+  // report is rate-limited the way every other once-only diagnostic here is.
+  const told = new Set<string>();
+  const say = (method: string): void => {
+    if (told.has(method)) {
+      return;
+    }
+    told.add(method);
+    neverThrow(
+      () =>
+        onError?.(
+          new Error(
+            `Bugsee: \`${method}\` is a no-op on this client: the session belongs to another module copy of the SDK.`,
+          ),
+        ),
+      undefined,
+    );
+  };
+  const ignored =
+    (method: string): (() => void) =>
+    (): void => {
+      say(method);
+    };
+  const refused = (method: string): (() => never) => {
+    return (): never => {
+      say(method);
+      throw new Error(`Bugsee: ${method} is not available on this client`);
+    };
+  };
+  const failedUpload = (method: string) => async (): Promise<{ ok: false }> => {
+    say(method);
+    return { ok: false };
+  };
   return {
+    startBlackout: ignored('startBlackout'),
+    endBlackout: ignored('endBlackout'),
+    isBlackout: (): boolean => false,
+    getStatus: (): BugseeStatus => BugseeStatus.Launched, // consistent with isLaunched() below
+    getLaunchOptions: (): Record<string, never> => ({}),
+    getHostLaunchOptions: (): Record<string, never> => ({}),
+    setLifecycleEventsListener: ignored('setLifecycleEventsListener'),
+    setSpanFilter: ignored('setSpanFilter'),
+    notify: ignored('notify'),
+    logException: failedUpload('logException'),
+    upload: failedUpload('upload'),
+    prepareUpload: (): null => {
+      say('prepareUpload');
+      return null;
+    },
+    registerExt: ignored('registerExt'),
+    addService: ignored('addService'),
+    addCaptureProvider: ignored('addCaptureProvider'),
+    addDetectionProvider: ignored('addDetectionProvider'),
+    ext: refused('ext'),
+    getService: refused('getService'),
+    getServiceProvider: refused('getServiceProvider'),
     isLaunched: (): boolean => true,
     launch: noop,
     stop: async (): Promise<boolean> => false,

@@ -148,11 +148,16 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     }
     if (this.#canvasStarts >= MAX_CANVAS_STARTS) {
       this.#canvasDropped = true;
-      this.#onError?.(
-        new Error(
-          `replay: canvas recording stopped after ${MAX_CANVAS_STARTS} recorder starts (rrweb cannot release canvas resources on stop); DOM replay continues`,
-        ),
-      );
+      // `onError` is host code: a throw here must not stop the recorder from starting (replay would stay off).
+      try {
+        this.#onError?.(
+          new Error(
+            `replay: canvas recording stopped after ${MAX_CANVAS_STARTS} recorder starts (rrweb cannot release canvas resources on stop); DOM replay continues`,
+          ),
+        );
+      } catch {
+        /* a throwing sink is the host's problem, never the recording's */
+      }
       return undefined;
     }
     this.#canvasStarts += 1;

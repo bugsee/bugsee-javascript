@@ -22,6 +22,7 @@ import {
   asInternalClient,
   BlackoutToken,
   BOOLEAN_OPTION,
+  BOOLEAN_OR_BAG_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -42,6 +43,7 @@ import {
   createUploadPipeline,
   defineService,
   FAIL_CLOSED_BOOLEAN_OPTION,
+  FAIL_ON_BOOLEAN_OPTION,
   getCarrierClient,
   getCarrierPendingLaunch,
   getCarrierStatus,
@@ -53,9 +55,11 @@ import {
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
+  type OptionDefinition,
   ReportMarkerStoreToken,
   recoverReports,
   relaunchWith,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
@@ -116,7 +120,10 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
-const BROWSER_OPTION_DEFINITIONS = [
+/** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
+const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
+
+const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   // Input capture is browser/DOM-only (Node has no user input), so its gate lives here, not in COMMON.
@@ -138,8 +145,12 @@ const BROWSER_OPTION_DEFINITIONS = [
     friendly: 'startInBlackout',
     key: BugseeOption.CaptureStartInBlackout,
     default: false,
-    ...BOOLEAN_OPTION,
+    // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark" (R3V-2).
+    ...FAIL_ON_BOOLEAN_OPTION,
   },
+  // Session replay: on by default, `false` opts out, an object customises it. An invalid scalar keeps the
+  // default (masking is fail-closed regardless) and is reported; it must never throw (R3V-3).
+  { friendly: 'replay', key: REPLAY_OPTION_KEY, default: true, ...BOOLEAN_OR_BAG_OPTION },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -676,7 +687,8 @@ async function buildLaunch(
   // the server and client renders — an explicit `replay: true` legitimately reaches the server render, and
   // the correct behaviour there is to record nothing and say nothing. This matches how every cross-runtime
   // capture interceptor treats a missing global (see @bugsee/capture's sse/web-socket interceptors).
-  const replayEnabled = options.replay !== false && domDocument !== undefined;
+  const replayEnabled =
+    resolved.options.get<boolean>(REPLAY_OPTION_KEY, true) !== false && domDocument !== undefined;
   const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
@@ -723,7 +735,7 @@ async function buildLaunch(
   const blackout = client.getService(BlackoutToken);
   const startInBlackout = resolved.options.get(BugseeOption.CaptureStartInBlackout, false);
   const wasBlackedOut = blackout.isActive();
-  if (startInBlackout || options.holdBlackout === true) {
+  if (startInBlackout || resolveFailOnBoolean(options.holdBlackout, false)) {
     // SILENT: the client has not launched yet, and a BlackoutStarted that precedes Launching describes a
     // client the application cannot observe. The event for a real `startInBlackout` is emitted after launch.
     blackout.start({ silent: true });
@@ -829,8 +841,14 @@ async function buildLaunch(
   // recorder + register the replay.bin encoder into the shared map. The
   // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
   if (replayEnabled && fileEncoders !== undefined) {
+    // The bag is read from the host's own options (the resolved record only says "on"); an invalid value
+    // resolved to the default, so anything that is not a plain object is `{}`.
     const replayOptions: ReplayLaunchOptions =
-      typeof options.replay === 'object' ? options.replay : {};
+      typeof options.replay === 'object' &&
+      options.replay !== null &&
+      !Array.isArray(options.replay)
+        ? options.replay
+        : {};
     const { canvas: canvasOption, ...replayMasking } = replayOptions;
     const canvasEnabled = canvasOption !== undefined && canvasOption !== false;
     void import('@bugsee/replay')

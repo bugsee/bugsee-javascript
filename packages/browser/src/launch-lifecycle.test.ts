@@ -458,8 +458,12 @@ describe('launch options introspection', () => {
       expect(JSON.stringify(view)).not.toContain('SECRET-APP-TOKEN');
       for (const key of Object.keys(view)) expect(key).toMatch(/^com\.bugsee\.option\./);
     }
-    // Only the harness's own captureNetwork:false is host-supplied; endpoint/transport/token are not options.
-    expect(Object.keys(client.getHostLaunchOptions())).toEqual([BugseeOption.CaptureNetwork]);
+    // Only the harness's own captureNetwork:false and replay:false are host-supplied (replay is recorded as the
+    // effective boolean, never the options object); endpoint/transport/token are not options.
+    expect(Object.keys(client.getHostLaunchOptions()).sort()).toEqual([
+      BugseeOption.CaptureNetwork,
+      'com.bugsee.option.replay.enabled',
+    ]);
   });
 
   it('the host options are replaced on each launch, not merged', async () => {

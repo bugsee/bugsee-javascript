@@ -221,11 +221,15 @@ export {
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   BOOLEAN_OPTION,
+  BOOLEAN_OR_BAG_OPTION,
   COMMON_OPTION_DEFINITIONS,
   createOptionsContainer,
   FAIL_CLOSED_BOOLEAN_OPTION,
+  FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  FAIL_ON_BOOLEAN_OPTION,
   type OptionDefinition,
   type ResolvedLaunchOptions,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
 } from './options';
 export {

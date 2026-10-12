@@ -1,9 +1,13 @@
 import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import {
+  BOOLEAN_OR_BAG_OPTION,
   COMMON_OPTION_DEFINITIONS,
   createOptionsContainer,
+  FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  FAIL_ON_BOOLEAN_OPTION,
   type OptionDefinition,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
 } from './options';
 
@@ -409,5 +413,93 @@ describe('reportDefaultBugPriority is a COMMON option (R2D-3)', () => {
       resolveLaunchOptions({ reportDefaultBugPriority: ' Critical ' }, COMMON_OPTION_DEFINITIONS)
         .canonical[BugseeOption.ReportingDefaultBugPriority],
     ).toBe('critical');
+  });
+});
+
+// R3V-2 / R3V-3. The three normalisers added in round 3, over every kind of value.
+describe('round-3 option normalisers', () => {
+  const run = (def: OptionDefinition, value: unknown) => {
+    const errors: Error[] = [];
+    const r = resolveLaunchOptions({ opt: value }, [def], (e) => errors.push(e));
+    return { value: r.canonical[def.key], host: r.host[def.key], errors };
+  };
+  const bad: unknown[] = [null, 0, '', 'false', 'true', 1, [], 'x', () => 1];
+
+  describe('FAIL_ON_BOOLEAN_OPTION (protective, default off): invalid => ON + onError', () => {
+    const def: OptionDefinition = {
+      friendly: 'opt',
+      key: 'k',
+      default: false,
+      ...FAIL_ON_BOOLEAN_OPTION,
+    };
+    it('treats every non-boolean as ON, reported, and records the host value', () => {
+      for (const v of bad) {
+        const r = run(def, v);
+        expect(r.value, String(v)).toBe(true);
+        expect(r.host, String(v)).toBe(true);
+        expect(r.errors, String(v)).toHaveLength(1);
+        expect(r.errors[0]?.message).toContain('using true');
+      }
+    });
+    it('honours booleans and undefined without reporting', () => {
+      expect(run(def, true)).toMatchObject({ value: true, errors: [] });
+      expect(run(def, false)).toMatchObject({ value: false, errors: [] });
+      expect(run(def, undefined)).toMatchObject({ value: false, errors: [] });
+    });
+  });
+
+  describe('FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION (collects more data, default off)', () => {
+    const def: OptionDefinition = {
+      friendly: 'opt',
+      key: 'k',
+      default: false,
+      ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+    };
+    it('non-boolean non-object => OFF + onError', () => {
+      for (const v of bad) {
+        const r = run(def, v);
+        expect(r.value, String(v)).toBe(false);
+        expect(r.errors, String(v)).toHaveLength(1);
+      }
+    });
+    it('true and an option bag => ON (recorded as true, never the bag), false => OFF, silently', () => {
+      expect(run(def, true)).toMatchObject({ value: true, errors: [] });
+      expect(run(def, { session: () => 1 })).toMatchObject({ value: true, host: true, errors: [] });
+      expect(run(def, {})).toMatchObject({ value: true, errors: [] });
+      expect(run(def, false)).toMatchObject({ value: false, errors: [] });
+    });
+  });
+
+  describe('BOOLEAN_OR_BAG_OPTION (default on, e.g. replay): invalid => default + onError', () => {
+    const def: OptionDefinition = {
+      friendly: 'opt',
+      key: 'k',
+      default: true,
+      ...BOOLEAN_OR_BAG_OPTION,
+    };
+    it('invalid => the default (ON), reported', () => {
+      for (const v of bad) {
+        const r = run(def, v);
+        expect(r.value, String(v)).toBe(true);
+        expect(r.errors, String(v)).toHaveLength(1);
+        expect(r.errors[0]?.message).toContain('using true');
+      }
+    });
+    it('false => OFF, true / a bag => ON, silently', () => {
+      expect(run(def, false)).toMatchObject({ value: false, errors: [] });
+      expect(run(def, true)).toMatchObject({ value: true, errors: [] });
+      expect(run(def, { canvas: true })).toMatchObject({ value: true, errors: [] });
+    });
+  });
+
+  describe('resolveFailOnBoolean (renderer side of the same rule)', () => {
+    it('undefined => fallback; false => false; anything else (true, "true", 1, null, 0) => true', () => {
+      expect(resolveFailOnBoolean(undefined, false)).toBe(false);
+      expect(resolveFailOnBoolean(undefined, true)).toBe(true);
+      expect(resolveFailOnBoolean(false, true)).toBe(false);
+      for (const v of [true, 'true', 1, null, 0, '', 'false', {}]) {
+        expect(resolveFailOnBoolean(v, false), String(v)).toBe(true);
+      }
+    });
   });
 });
