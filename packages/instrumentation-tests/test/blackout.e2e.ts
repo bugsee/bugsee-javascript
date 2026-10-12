@@ -103,7 +103,11 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
     await browser?.close();
   });
 
-  async function openPage(collector: MockCollector, serverUrl: string): Promise<Page> {
+  async function openPage(
+    collector: MockCollector,
+    serverUrl: string,
+    extraOptions: Record<string, unknown> = {},
+  ): Promise<Page> {
     const context = await browser.newContext({ viewport: { width: 900, height: 600 } });
     const page = await context.newPage();
     await page.addInitScript(
@@ -114,7 +118,7 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       },
       // maskAllText off so the markers are readable in the replay (the default is fail-closed masking,
       // under which this test could not tell "blacked out" from "masked").
-      [collector.url, { replay: { maskAllText: false } }] as const,
+      [collector.url, { replay: { maskAllText: false }, ...extraOptions }] as const,
     );
     await page.goto(serverUrl);
     await page.waitForFunction(() => (window as unknown as { __ready?: boolean }).__ready === true);
@@ -237,6 +241,18 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       // the end of the window is, by definition, on screen afterwards, so the fresh snapshot shows it.
       expect(afterReplay.text).toContain('BLACKOUT_PERSISTENT_TEXT');
 
+      // The replay brackets the span with rrweb custom events, so a player can show "blacked out" instead
+      // of a frozen pre-blackout screen: start (active:true) strictly before end (active:false).
+      const markers = (
+        afterReplay.events as Array<{
+          type: number;
+          data?: { tag?: string; payload?: { active?: boolean } };
+        }>
+      )
+        .filter((e) => e.type === 5 && e.data?.tag === 'bugsee.blackout')
+        .map((e) => e.data?.payload?.active);
+      expect(markers).toEqual([true, false]);
+
       // The viewtree is back, and the interaction streams record again.
       expect(after.files['viewtree.json']).toBeDefined();
       const afterInput = readJson<{ events: unknown[] }>(after, 'input.json').events;
@@ -249,6 +265,48 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
         crumbs.filter((c) => c.category === 'ui.focus').length;
       expect(focusCount(duringCrumbs)).toBe(2); // pre-blackout: #btn then #field; none from inside
       expect(focusCount(afterCrumbs)).toBe(3); // + the post-blackout #btn focus; the blackout ones never landed
+      assertNoContractViolations(collector);
+      await page.context().close();
+    } finally {
+      await server.close();
+      await collector.close();
+    }
+  }, 90_000);
+
+  it('startInBlackout: a page that loads already blacked out captures NOTHING visual until endBlackout()', async () => {
+    const collector = await startMockCollector();
+    const server = await startPageServer(script);
+    try {
+      const page = await openPage(collector, server.url, { startInBlackout: true });
+      expect(
+        await page.evaluate(() => (window as unknown as BlackoutWindow).__bugsee.isBlackout()),
+      ).toBe(true);
+      // The page already rendered PRE_MARKER_ALPHA before anyone could call startBlackout(): none of it,
+      // and none of what the user does, may be in the report.
+      await page.click('#btn');
+      await page.focus('#field');
+      await page.keyboard.type('x');
+      await page.waitForTimeout(400);
+      const dark = await sendReport(page, collector, 'dark');
+      const darkReplay = dark.files['replay.bin'] === undefined ? undefined : replayOf(dark);
+      expect(darkReplay?.text ?? '').not.toContain('PRE_MARKER_ALPHA');
+      expect(darkReplay?.events.filter((e) => e.type === FULL_SNAPSHOT) ?? []).toHaveLength(0);
+      expect(dark.files['viewtree.json']).toBeUndefined();
+      expect(dark.files['input.json']).toBeUndefined();
+      const darkCrumbs =
+        dark.files.breadcrumbs === undefined
+          ? []
+          : readJson<Array<{ category: string }>>(dark, 'breadcrumbs');
+      expect(darkCrumbs.filter((c) => c.category.startsWith('ui.'))).toHaveLength(0);
+
+      // Releasing it starts recording (a fresh snapshot of the then-current page).
+      await page.evaluate(() => (window as unknown as BlackoutWindow).__bugsee.endBlackout());
+      await page.waitForTimeout(400);
+      await page.click('#btn');
+      await page.waitForTimeout(300);
+      const lit = await sendReport(page, collector, 'lit');
+      expect(replayOf(lit).text).toContain('PRE_MARKER_ALPHA');
+      expect(lit.files['viewtree.json']).toBeDefined();
       assertNoContractViolations(collector);
       await page.context().close();
     } finally {

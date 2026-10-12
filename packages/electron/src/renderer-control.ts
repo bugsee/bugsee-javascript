@@ -14,6 +14,11 @@ export interface RendererControlHandlerOptions {
   onSession?(sessionId: string): void;
   /** Flush the renderer client (main sent `flush`). Optional — streaming has nothing local to drain. */
   flush?(): void;
+  /**
+   * The owner's blackout began (`true`) or ended (`false`) — also delivered with the `session` handshake
+   * reply, AFTER `onSession`. Optional.
+   */
+  onBlackout?(active: boolean): void;
 }
 
 /** Build the renderer's control dispatcher: `handle(raw)` applies one main→renderer control message. */
@@ -42,6 +47,15 @@ export function createRendererControlHandler(
         if (message.sessionId !== undefined) {
           options.onSession?.(message.sessionId);
         }
+        if (message.blackout !== undefined) {
+          options.onBlackout?.(message.blackout);
+        }
+        break;
+      case 'blackout-start':
+        options.onBlackout?.(true);
+        break;
+      case 'blackout-end':
+        options.onBlackout?.(false);
         break;
     }
   };

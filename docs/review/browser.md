@@ -58,6 +58,8 @@
 
 ### 6. `client.startBlackout()` is unreachable from the browser SDK — consumer-side confirmation of the already-filed replay finding
 
+> **RESOLVED (historical finding, kept for the record).** The core client now exposes `startBlackout()/endBlackout()/isBlackout()` and the browser launch gates replay, input, `ui.*` breadcrumbs and the viewtree on it (plus the `startInBlackout` launch option). The text below describes the code as reviewed. Current contract: `docs/design/blackout.md`.
+
 - **Where:** `packages/browser/src/launch.ts:464` — `m.registerReplay(client, fileEncoders, {…});` as a bare statement, discarding the returned `ReplayRecorder`.
 - **What:** that return value is the *only* handle on `startBlackout`/`stopBlackout` (`packages/replay/src/register.ts:39`, `packages/replay/src/recorder.ts:89-95`), and `@bugsee/core`'s client exposes no blackout method (repo-wide grep: `startBlackout` appears only in `packages/replay`, the design docs, and `docs/review/replay.md`). `docs/design/sdk-design.md:401` specifies it as public API and `:45`/`:1409` name it the replacement for the removed consent API.
 - **Status:** already reported as `docs/review/replay.md` §5 — recorded here only to pin the consumer-side `file:line`, per the brief's blast-radius instruction. Not counted as a new finding.

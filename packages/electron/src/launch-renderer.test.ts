@@ -1,5 +1,10 @@
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/browser';
-import type { CaptureStore, StoredEntry } from '@bugsee/core';
+import {
+  BlackoutToken,
+  type CaptureStore,
+  createBlackoutState,
+  type StoredEntry,
+} from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchRenderer, resolveRendererBridge, resolveRendererPost } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
@@ -7,9 +12,11 @@ import { decodeStreamEntry, encodeControl, isHello } from './protocol';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
+  const blackout = createBlackoutState();
   const client = {
     stop: vi.fn(() => Promise.resolve(true)),
     flush: vi.fn(() => Promise.resolve(true)),
+    getService: vi.fn((token: unknown) => (token === BlackoutToken ? blackout : undefined)),
   } as unknown as Bugsee;
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
   const launch = vi.fn(async (appToken: string, options: BugseeLaunchOptions) => {
@@ -19,6 +26,7 @@ function fakeLaunch() {
   return {
     launch: launch as never,
     client,
+    blackout,
     get received() {
       return received;
     },
@@ -277,5 +285,53 @@ describe('launchRenderer — default post path', () => {
     harness.drive(JSON.stringify({ k: 'control', c: 'session', sid: 's' }));
     await injected?.triggerPipeline.report({ source: {}, report: { summary: 'x' } });
     expect(harness.posted.some((raw) => JSON.parse(raw).k === 'report')).toBe(true);
+  });
+});
+
+describe('launchRenderer - follows the main blackout (privacy: fail closed)', () => {
+  it('launches blacked out regardless of the caller, so nothing is captured before the handshake', async () => {
+    const f = fakeLaunch();
+    await launchRenderer('tok', { launch: f.launch, bridge: fakeBridge().bridge });
+    expect(f.received?.options.startInBlackout).toBe(true);
+    const g = fakeLaunch();
+    await launchRenderer('tok', {
+      launch: g.launch,
+      bridge: fakeBridge().bridge,
+      startInBlackout: false,
+    });
+    expect(g.received?.options.startInBlackout).toBe(true); // a caller cannot switch this off
+  });
+
+  it('a session reply saying main is NOT blacked out releases the launch hold', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    f.blackout.start(); // what startInBlackout does inside the real browser launch
+    b.drive(encodeControl({ command: 'session', sessionId: 's', blackout: false }));
+    expect(f.blackout.isActive()).toBe(false);
+  });
+
+  it('a session reply saying main IS blacked out keeps this renderer dark', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    f.blackout.start();
+    b.drive(encodeControl({ command: 'session', sessionId: 's', blackout: true }));
+    expect(f.blackout.isActive()).toBe(true);
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(false);
+  });
+
+  it('blackout-start / blackout-end control commands drive the BlackoutToken state', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const seen: boolean[] = [];
+    f.blackout.onChange((a) => seen.push(a));
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    expect(f.blackout.isActive()).toBe(true);
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(false);
+    expect(seen).toEqual([true, false]);
   });
 });

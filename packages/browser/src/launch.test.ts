@@ -765,6 +765,35 @@ describe('launch', () => {
       ]);
     });
 
+    it('a wheel turn made DURING a blackout is never emitted, even if the frame flushes after it ended', async () => {
+      const store = memStore();
+      const doc = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+      );
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 11,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60)); // the frame (16ms fallback) flushes
+      expect(await drain(store, 'input')).toBeUndefined();
+    });
+
     it('does NOT suppress non-visual capture: logs, events and app breadcrumbs continue', async () => {
       const store = memStore();
       const client = await launchTracked('tok', baseOptions({ captureStore: store }));
@@ -796,6 +825,90 @@ describe('launch', () => {
       client.endBlackout();
       await client.upload({ summary: 'after' });
       expect(bundleFiles(1)['viewtree.json']).toBeDefined();
+    });
+
+    describe('startInBlackout (V11: a page that loads already blacked out)', () => {
+      it('defaults to NOT blacked out', async () => {
+        const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+        expect(client.isBlackout()).toBe(false);
+      });
+
+      it('launches with the blackout already in force, so isBlackout() is true from the first tick', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true }),
+        );
+        expect(client.isBlackout()).toBe(true);
+        client.endBlackout();
+        expect(client.isBlackout()).toBe(false);
+      });
+
+      it('captures NO input / ui breadcrumbs / wheel between launch and endBlackout()', async () => {
+        const store = memStore();
+        const doc = fakeWindow();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: store,
+            document: doc.win as unknown as Document,
+            startInBlackout: true,
+          }),
+        );
+        press(doc, 1);
+        doc.emit('focusin', { target: field });
+        doc.emit('change', { target: field });
+        client.endBlackout();
+        press(doc, 2);
+        const input = await drain(store, 'input');
+        expect(input?.map((e) => (e.data as { x: number }).x)).toEqual([2]);
+        expect(await drain(store, 'breadcrumbs')).toBeUndefined();
+      });
+
+      it('a report built before endBlackout() carries no viewtree', async () => {
+        const transport = uploadTransport();
+        const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            transport,
+            captureStore: memStore(),
+            document: doc,
+            startInBlackout: true,
+          }),
+        );
+        await client.upload({ summary: 'dark' });
+        const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+        const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+        expect(files['viewtree.json']).toBeUndefined();
+      });
+
+      it('the replay recorder is handed a gate that is ALREADY active when it is registered', async () => {
+        await launchTracked(
+          'tok',
+          baseOptions({ document: fakeDocument(viewEl('body')), startInBlackout: true }),
+        );
+        await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+        const options = registerReplay.mock.calls[0]?.[2] as { blackout: { isActive(): boolean } };
+        expect(options.blackout.isActive()).toBe(true);
+      });
+
+      it('the canonical key `com.bugsee.option.capture.start-in-blackout` is reported in sdk.options', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true }),
+        );
+        expect(client.getLaunchOptions()).toMatchObject({
+          'com.bugsee.option.capture.start-in-blackout': true,
+        });
+      });
+
+      it('a non-true value does not black the page out', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: false }),
+        );
+        expect(client.isBlackout()).toBe(false);
+      });
     });
 
     it('hands the replay recorder the client blackout gate so it follows the blackout', async () => {

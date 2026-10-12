@@ -1,5 +1,5 @@
 import type { InputEventDetail } from '@bugsee/capture';
-import { InputTool } from '@bugsee/core';
+import { createBlackoutState, InputTool } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type BrowserInputEnv,
@@ -1332,6 +1332,79 @@ describe('createBrowserInputSource', () => {
       clientY: 6,
       buttons: 0,
       ...over,
+    });
+
+    describe('blackout (V7: wheel deltas are gated when COLLECTED, and pending ones are cleared)', () => {
+      it('a wheel turn during a blackout is not collected at all (nothing is scheduled)', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        blackout.start();
+        target.emit('wheel', wheel({ deltaY: 40 }));
+        expect(frame.pendingCount()).toBe(0);
+        frame.flush();
+        expect(events).toEqual([]);
+      });
+
+      it('a wheel turn collected just BEFORE the blackout is cleared, so it cannot surface after it', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        target.emit('wheel', wheel({ deltaY: 7 }));
+        blackout.start();
+        blackout.end(); // the whole blackout falls inside one frame
+        frame.flush();
+        expect(events).toEqual([]);
+      });
+
+      it('deltas turned during the blackout never merge into the first post-blackout entry', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        blackout.start();
+        target.emit('wheel', wheel({ deltaY: 100 }));
+        blackout.end();
+        target.emit('wheel', wheel({ deltaY: 3 }));
+        frame.flush();
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: 'scroll', scrollY: 3 });
+      });
+
+      it('capture is normal outside a blackout and after it', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        target.emit('wheel', wheel({ deltaY: 1 }));
+        frame.flush();
+        blackout.start();
+        blackout.end();
+        target.emit('wheel', wheel({ deltaY: 2 }));
+        frame.flush();
+        expect(events.map((e) => (e as { scrollY: number }).scrollY)).toEqual([1, 2]);
+      });
+
+      it('unsubscribes from the gate when the source deactivates', () => {
+        const target = fakeTarget();
+        const blackout = createBlackoutState();
+        const off = vi.fn();
+        const gate = {
+          isActive: () => blackout.isActive(),
+          onChange: (l: (a: boolean) => void) => {
+            const u = blackout.onChange(l);
+            return () => {
+              off();
+              u();
+            };
+          },
+        };
+        const { off: deactivate } = activate({ target, blackout: gate });
+        deactivate();
+        expect(off).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('does not emit a wheel event synchronously — only once the frame is flushed', () => {

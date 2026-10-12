@@ -173,6 +173,51 @@ describe('createCapturePageVideoSource', () => {
   });
 });
 
+describe('createCapturePageVideoSource.clear (blackout: nothing may survive)', () => {
+  it('empties the ring, so a later snapshot has no pre-clear frames', async () => {
+    const s = fakeScheduler();
+    const encode = vi.fn(
+      (frames: readonly { bytes: Uint8Array }[]) => new Uint8Array([frames.length]),
+    );
+    const source = createCapturePageVideoSource({
+      capturePage: async () => new Uint8Array([1]),
+      scheduler: s.scheduler,
+      encode,
+      now: () => 0,
+    });
+    source.start();
+    await s.tick();
+    await s.tick();
+    source.clear();
+    expect(await source.snapshot(1)).toEqual([]);
+    expect(encode).not.toHaveBeenCalled();
+    await s.tick(); // capture resumes into a clean ring
+    await source.snapshot(2);
+    expect(encode.mock.calls[0]?.[0]).toHaveLength(1);
+  });
+
+  it('discards a grab that was IN FLIGHT when clear() ran (it may show the pre-blackout screen)', async () => {
+    const s = fakeScheduler();
+    let release: ((bytes: Uint8Array) => void) | undefined;
+    const encode = vi.fn((frames: readonly unknown[]) => new Uint8Array([frames.length]));
+    const source = createCapturePageVideoSource({
+      capturePage: () =>
+        new Promise<Uint8Array>((resolve) => {
+          release = resolve;
+        }),
+      scheduler: s.scheduler,
+      encode,
+      now: () => 0,
+    });
+    source.start();
+    const pending = s.tick();
+    source.clear(); // blackout begins while the grab is outstanding
+    release?.(new Uint8Array([9]));
+    await pending;
+    expect(await source.snapshot(1)).toEqual([]);
+  });
+});
+
 /** A fake MediaRecorder that emits queued chunks on start. */
 function fakeRecorder(chunks: unknown[]) {
   const rec: MediaRecorderLike & { started: boolean; stopped: boolean } = {
@@ -249,5 +294,52 @@ describe('createMediaRecorderVideoSource', () => {
     source.start();
     source.stop();
     expect(rec.stopped).toBe(true);
+  });
+});
+
+describe('createMediaRecorderVideoSource.clear (blackout: nothing may survive)', () => {
+  it('drops the recorded chunks, so a later snapshot has none of them', async () => {
+    const rec = fakeRecorder(['a', 'b']);
+    const toBytes = vi.fn(async () => new Uint8Array([1]));
+    const source = createMediaRecorderVideoSource({
+      recorderFactory: () => rec,
+      toBytes,
+      now: () => 0,
+    });
+    source.start();
+    source.clear();
+    expect(await source.snapshot(1)).toEqual([]);
+    expect(toBytes).not.toHaveBeenCalled();
+  });
+
+  it('ignores a LATE chunk the stopped recorder flushes after clear() (MediaRecorder emits one on stop)', async () => {
+    const rec = fakeRecorder([]);
+    const toBytes = vi.fn(async (chunks: unknown[]) => new Uint8Array([chunks.length]));
+    const source = createMediaRecorderVideoSource({
+      recorderFactory: () => rec,
+      toBytes,
+      now: () => 0,
+    });
+    source.start();
+    const late = rec.ondataavailable;
+    source.stop();
+    source.clear();
+    late?.({ data: 'pre-blackout-flush' });
+    expect(await source.snapshot(1)).toEqual([]);
+  });
+
+  it('a restart after clear records into a clean buffer', async () => {
+    const rec = fakeRecorder(['x']);
+    const toBytes = vi.fn(async (chunks: unknown[]) => new Uint8Array([chunks.length]));
+    const source = createMediaRecorderVideoSource({
+      recorderFactory: () => rec,
+      toBytes,
+      now: () => 0,
+    });
+    source.start();
+    source.clear();
+    source.start();
+    const [entry] = await source.snapshot(1);
+    expect(entry?.data).toEqual(new Uint8Array([1])); // only the post-restart chunk
   });
 });

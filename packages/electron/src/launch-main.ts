@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { CaptureStoreToken } from '@bugsee/core';
+import { BlackoutToken, CaptureStoreToken } from '@bugsee/core';
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/node';
 import {
   type CrashReporterLike,
@@ -80,15 +80,12 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
   let videoController: PixelVideoController | undefined;
   if (video !== undefined) {
-    videoController = createPixelVideoController({
-      source: video.source,
-      ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
-      ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
-    });
-    const controller = videoController;
+    // The controller needs the client's blackout state, which exists only after the node launch below, so it
+    // is built there; until then a report snapshot simply carries no video (it cannot be reported on
+    // before the launch returns anyway).
     nodeOptions.reportSnapshots = [
       ...(nodeOptions.reportSnapshots ?? []),
-      (now: number) => controller.snapshot(now),
+      async (now: number) => (await videoController?.snapshot(now)) ?? [],
     ];
     nodeOptions.fileEncoders = { ...nodeOptions.fileEncoders, video: encodePixelVideo };
   }
@@ -118,8 +115,20 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     return client;
   }
 
-  // Start pixel capture (async permission check; a report before it's active just carries no video).
-  videoController?.start();
+  // The main client's blackout: the one state the whole session follows (renderers and pixel video).
+  const blackout = client.getService(BlackoutToken);
+
+  // Start pixel capture (async permission check; a report before it's active just carries no video). The
+  // controller follows the blackout: frames stop, the ring is cleared, and snapshots are empty for the span.
+  if (video !== undefined) {
+    videoController = createPixelVideoController({
+      source: video.source,
+      blackout,
+      ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
+      ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+    });
+    void videoController.start();
+  }
 
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
   const store = client.getService(CaptureStoreToken);
@@ -167,8 +176,23 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
   // and propagate pause/resume/flush/stop to every renderer.
-  const control = createElectronMainControl({ ipcMain, sessionId: internals.api.sessionId });
+  const control = createElectronMainControl({
+    ipcMain,
+    sessionId: internals.api.sessionId,
+    // A renderer that says hello mid-blackout is told in its session reply and starts dark.
+    isBlackout: () => blackout.isActive(),
+  });
   control.start();
+  // Forward the main client's blackout to EVERY renderer. Without this a blackout applied in main only
+  // blacked out main's own capture while each renderer kept recording its DOM replay, input and
+  // breadcrumbs into the same session.
+  const offBlackout = blackout.onChange((active) => {
+    if (active) {
+      control.blackoutStart();
+    } else {
+      control.blackoutEnd();
+    }
+  });
 
   // Native crashes (all processes): start Electron's crashReporter in harvest mode (uploadToServer:false),
   // session-correlated. The dumps are harvested + bundled on the next launch (see electron-native-crashes.md).
@@ -187,6 +211,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
+      offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture

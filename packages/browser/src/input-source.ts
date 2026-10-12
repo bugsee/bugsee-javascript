@@ -1,5 +1,11 @@
 import type { InputEventDetail } from '@bugsee/capture';
-import { InputTool, type Interceptor, InterceptorBase, isSensitiveInput } from '@bugsee/core';
+import {
+  type BlackoutGate,
+  InputTool,
+  type Interceptor,
+  InterceptorBase,
+  isSensitiveInput,
+} from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
 import { androidKeyCode, androidMetaState } from './keycodes';
 import { penAngles } from './pen-angles';
@@ -244,6 +250,13 @@ export interface BrowserInputEnv {
    * timeout where it does not exist (SSR / non-browser contexts this source may still be constructed in).
    */
   scheduleFrame?: (callback: () => void) => void;
+  /**
+   * The client's blackout gate. Wheel turns are COALESCED over a frame, so the provider-level gate (read
+   * at emission) is not enough: a turn made during a blackout would otherwise be flushed after it ended.
+   * With the gate the source refuses to collect during a blackout and drops any pending deltas at both
+   * edges.
+   */
+  blackout?: BlackoutGate;
 }
 
 // Capture phase so we observe before the app's bubbling handlers; passive so the browser knows we never
@@ -463,6 +476,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #wheelAccum: WheelAccumulator | null = null;
   #wheelFrameScheduled = false;
   #nextGestureId = 1;
+  readonly #blackout: BlackoutGate | undefined;
+  #offBlackout: (() => void) | undefined;
 
   // Each handler is wrapped by #dispatch: it builds the entry (returning undefined to skip) inside a
   // try/catch, so a malformed/exotic event, an instrumented DOM target, or an invalid app-supplied
@@ -506,8 +521,10 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     mask: string,
     now: () => number,
     scheduleFrame: (callback: () => void) => void,
+    blackout?: BlackoutGate,
   ) {
     super();
+    this.#blackout = blackout;
     this.#target = target;
     this.#mask = mask;
     this.#now = now;
@@ -640,6 +657,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
    *  emits synchronously — but the same observe-only guarantee applies via its own try/catch. */
   readonly #onWheel = (event: Event): void => {
     try {
+      if (this.#blackout?.isActive() === true) return; // blackout: not collected at all
       const e = event as WheelEventLike;
       const dx = typeof e.deltaX === 'number' && Number.isFinite(e.deltaX) ? e.deltaX : 0;
       const dy = typeof e.deltaY === 'number' && Number.isFinite(e.deltaY) ? e.deltaY : 0;
@@ -710,6 +728,11 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       this.#target?.addEventListener(type, this.#handlers[type], ADD_OPTIONS);
     }
     this.#target?.addEventListener('wheel', this.#onWheel, ADD_OPTIONS);
+    // Both edges drop whatever is pending: deltas turned before the blackout must not surface after it,
+    // and nothing collected around it may be merged into the first post-blackout entry.
+    this.#offBlackout = this.#blackout?.onChange(() => {
+      this.#wheelAccum = null;
+    });
   }
 
   protected override onDeactivate(): void {
@@ -727,6 +750,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     this.#hoverIds.clear();
     this.#lastHoverSampleAt.clear();
     this.#wheelAccum = null;
+    this.#offBlackout?.();
+    this.#offBlackout = undefined;
   }
 }
 
@@ -740,5 +765,6 @@ export function createBrowserInputSource(
     env.maskSelector ?? '[data-bugsee-hidden]',
     env.now ?? (() => Date.now()),
     env.scheduleFrame ?? defaultScheduleFrame,
+    env.blackout,
   );
 }

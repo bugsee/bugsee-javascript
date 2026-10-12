@@ -9,6 +9,7 @@
 //   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream (D8);
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
+import { BlackoutToken } from '@bugsee/core';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
@@ -94,6 +95,11 @@ export async function launchRenderer(
     captureStore,
     // AFTER the caller's options, deliberately — see above.
     triggerPipeline,
+    // Born dark, released by the handshake. Main owns the blackout: until this renderer has heard the
+    // session reply it cannot know whether main is blacked out, and everything captured in that window
+    // (replay's opening snapshot, input) would already be in the session. Also after the caller's options:
+    // a caller must not be able to switch the fail-closed start off.
+    startInBlackout: true,
   } as never);
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.
@@ -111,6 +117,16 @@ export async function launchRenderer(
       onSession: (id: string): void => {
         handshaken = true;
         onSessionId?.(id);
+      },
+      // The owner's blackout (broadcast, and carried by the session reply): applied through the same state
+      // service `client.startBlackout()` drives, so every visual/interaction provider follows it.
+      onBlackout: (active: boolean): void => {
+        const blackout = client.getService(BlackoutToken);
+        if (active) {
+          blackout.start();
+        } else {
+          blackout.end();
+        }
       },
     }),
   );

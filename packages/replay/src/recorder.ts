@@ -53,11 +53,26 @@ export interface ReplayRecorder extends CaptureProvider {
   startBlackout(): void;
   /**
    * Resume replay capture by restarting the recorder, which opens with a fresh Meta + FullSnapshot. The
-   * replayed stream therefore jumps from the pre-blackout DOM straight to the post-blackout DOM; the
-   * intermediate mutations never existed in it, so nothing recorded during the blackout can be replayed.
+   * intermediate mutations were never recorded, so none of them can be replayed.
+   *
+   * CAVEAT (privacy): the fresh snapshot is taken from the LIVE DOM at the moment blackout ends, so it
+   * contains whatever the DOM holds then. With `maskAllInputs: false` (or an unmasked field) that includes
+   * values the user typed DURING the blackout, if the sensitive view is still on screen. Integrators must
+   * call `endBlackout()` only after the sensitive view is gone. A pair of `bugsee.blackout` custom events
+   * brackets the span in the stream.
    */
   stopBlackout(): void;
 }
+
+/** rrweb `EventType.Custom`. */
+const CUSTOM_EVENT_TYPE = 5;
+/**
+ * The tag of the rrweb custom events the recorder emits at the start (`payload.active: true`) and end
+ * (`false`) of a blackout, so a player can show "blacked out" instead of a frozen pre-blackout screen.
+ * Backwards compatible: players that do not know the tag ignore custom events. The viewer rendering is a
+ * follow-up (see docs/design/blackout.md).
+ */
+export const BLACKOUT_MARKER_TAG = 'bugsee.blackout';
 
 class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorder {
   readonly name = 'replay';
@@ -136,8 +151,23 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
   }
 
   startBlackout(): void {
+    // Mark the span in the stream FIRST (only if this provider was actually recording): the recorder is
+    // about to stop, and without a marker the player would show the last pre-blackout frame as if it were
+    // still live. It is an rrweb custom event (type 5), ignored by players that do not know the tag.
+    if (this.#stop !== undefined) {
+      this.#mark(true);
+    }
     this.#blackedOut = true;
     this.#halt();
+  }
+
+  #mark(active: boolean): void {
+    const timestamp = Date.now();
+    this.capture('replay', timestamp, {
+      type: CUSTOM_EVENT_TYPE,
+      data: { tag: BLACKOUT_MARKER_TAG, payload: { active } },
+      timestamp,
+    });
   }
 
   stopBlackout(): void {
@@ -146,6 +176,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     }
     this.#blackedOut = false;
     if (this.#started) {
+      this.#mark(false); // before the restarted recorder's fresh Meta + FullSnapshot
       this.#begin(); // a restarted recorder opens with a fresh full snapshot
     }
   }

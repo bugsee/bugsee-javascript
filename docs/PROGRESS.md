@@ -951,6 +951,18 @@ The SSR meta-frameworks are the shipped `@bugsee/nextjs` adapter with different 
 
 ---
 
+### Blackout — `startBlackout`/`endBlackout`/`isBlackout` + `startInBlackout` — BUILT; completeness pass 2026-10-12 → `docs/design/blackout.md`
+Kernel state (`BlackoutToken`/`BlackoutGate`, `@bugsee/core`) gates every visual/interaction source: replay
+(recorder stopped, fresh snapshot at the end, `bugsee.blackout` rrweb custom markers), input, wheel deltas,
+`ui.*` breadcrumbs, the viewtree, performance interactions (judged by event time, not delivery time), WebView
+(input + ui + wheel) and Electron (main's blackout forwarded to every renderer over the control channel, session
+reply carries the state, renderers launch dark until the handshake; the opt-in pixel video stops, clears its
+buffer and returns no snapshot for the span). Browser option `startInBlackout`
+(`com.bugsee.option.capture.start-in-blackout`) launches already blacked out. **Does NOT stop** request/response
+bodies, navigation URLs, `video.aux` geometry, logs/traces/events: see the contract in `docs/design/blackout.md`.
+Integrators must call `endBlackout()` only after the sensitive view is gone (the fresh snapshot is of the live
+page). Open follow-ups: viewer rendering of the `bugsee.blackout` markers; relaunch carrying blackout (G1).
+
 ## 7b. Adversarial-review remediation — Waves 0–7 + V0 COMPLETE (2026-08-06, on `main`)
 
 The 53-package adversarial review (`docs/review/`, ~90 SEV1s) was remediated wave by wave. The plan, every

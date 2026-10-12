@@ -65,6 +65,13 @@ export const BugseeOption = {
   CaptureInteractions: 'com.bugsee.option.capture.interactions',
   /** Capture a view hierarchy (DOM tree → viewtree) at report time. Browser/DOM only. */
   CaptureViewHierarchy: 'com.bugsee.option.capture.view-hierarchy',
+  /**
+   * Launch with a blackout ALREADY in force (as if `startBlackout()` had run before anything else): visual
+   * and interaction capture stays suppressed until `endBlackout()`. For a page that renders sensitive
+   * content from its first frame, where there is no moment to call `startBlackout()` before capture could
+   * begin. Default false. Browser only.
+   */
+  CaptureStartInBlackout: 'com.bugsee.option.capture.start-in-blackout',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Report failed HTTP responses (>= 400) and network failures as `error` reports. Default false. */
@@ -133,6 +140,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.system-events': boolean;
   'com.bugsee.option.capture.interactions': boolean;
   'com.bugsee.option.capture.view-hierarchy': boolean;
+  'com.bugsee.option.capture.start-in-blackout': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.detect.hang': boolean;
   'com.bugsee.option.detect.hang.level.fair': number;
