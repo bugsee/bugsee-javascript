@@ -334,3 +334,27 @@ describe('ReportHandler.after', () => {
     expect(after).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('lifecycle events — blackout', () => {
+  it('emits BlackoutStarted then BlackoutEnded on real transitions only', () => {
+    const { client, types } = setup();
+    client.startBlackout();
+    client.startBlackout();
+    client.endBlackout();
+    client.endBlackout();
+    expect(types()).toEqual([LifecycleEvents.BlackoutStarted, LifecycleEvents.BlackoutEnded]);
+  });
+
+  it('reports the new state to the listener through isBlackout()', () => {
+    const client = createClient();
+    const seen: boolean[] = [];
+    client.setLifecycleEventsListener((type) => {
+      if (type === LifecycleEvents.BlackoutStarted || type === LifecycleEvents.BlackoutEnded) {
+        seen.push(client.isBlackout());
+      }
+    });
+    client.startBlackout();
+    client.endBlackout();
+    expect(seen).toEqual([true, false]);
+  });
+});

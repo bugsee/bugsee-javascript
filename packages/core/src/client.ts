@@ -526,6 +526,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
   // internal subscription the lifecycle events (BlackoutStarted/Ended) hang off.
   const blackout: BlackoutState = createBlackoutState(onErrorSafe);
   services.addService(defineService(BlackoutToken, () => blackout));
+  blackout.onChange((active) =>
+    lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded),
+  );
   // The active-request context provider (framework adapters). When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
   const contextProvider = options.contextProvider;
