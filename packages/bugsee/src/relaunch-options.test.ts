@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { RELAUNCH_KEPT_OPTIONS } from '@bugsee/core';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { createSharedProgram, TS_PROGRAM_TEST_TIMEOUT_MS } from './ts-program-cache.test-helper';
 
 // R2P-3: `relaunch()` starts from DEFAULTS for Bugsee behaviour options but must keep the integration seams
 // AND the deployment identity (endpoint, app version, ...): forgetting one uploads to the default production
@@ -47,9 +48,6 @@ const INTERFACES: Array<[string, string, string]> = [
   ['deno', 'src/launch.ts', 'launch'],
 ];
 
-// One program per target file (building it is the expensive step on a shared CI runner).
-const programs = new Map<string, ts.Program>();
-
 function optionKeys(pkg: string, file: string, name: string): string[] {
   const root = join(packages, pkg);
   const configPath = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
@@ -59,11 +57,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
   const target = join(root, file);
-  let program = programs.get(target);
-  if (program === undefined) {
-    program = ts.createProgram([target], { ...parsed.options, noEmit: true });
-    programs.set(target, program);
-  }
+  const program = createSharedProgram(target, parsed.options);
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(target);
   if (source === undefined) {
@@ -212,7 +206,9 @@ const RESET_OPTIONS: readonly string[] = [
 ];
 
 // Builds a TypeScript program per platform interface: far slower on a shared CI runner than locally.
-describe('relaunch() option classification (R2P-3)', { timeout: 180_000 }, () => {
+describe('relaunch() option classification (R2P-3)', {
+  timeout: TS_PROGRAM_TEST_TIMEOUT_MS,
+}, () => {
   const all = new Map<string, string[]>();
   for (const [pkg, file, name] of INTERFACES) {
     for (const key of optionKeys(pkg, file, name)) {

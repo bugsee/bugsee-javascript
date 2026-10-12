@@ -12,6 +12,7 @@ import {
 } from '@bugsee/core';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { createSharedProgram, TS_PROGRAM_TEST_TIMEOUT_MS } from './ts-program-cache.test-helper';
 
 // R3V-3. EVERY boolean-typed launch option of EVERY platform has an explicit fail direction, and that direction is
 // pinned HERE. The test reads three things STATICALLY (so a future option cannot dodge it):
@@ -147,8 +148,6 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions', ['core', 'browser']],
 ];
 
-const programs = new Map<string, ts.Program>();
-
 function interfaceOf(
   pkg: string,
   file: string,
@@ -164,11 +163,7 @@ function interfaceOf(
   const target = join(root, file);
   // One program per target file for the whole file: building a TypeScript program is the expensive step (seconds
   // on a shared CI runner), and several tests read the same interfaces.
-  let program = programs.get(target);
-  if (program === undefined) {
-    program = ts.createProgram([target], { ...parsed.options, noEmit: true });
-    programs.set(target, program);
-  }
+  const program = createSharedProgram(target, parsed.options);
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(target);
   let declaration = source?.statements.find(
@@ -312,7 +307,7 @@ const directionOf = (definition: Definition): Direction | undefined =>
 // Reads many TypeScript programs from source: seconds locally, a minute on a shared CI runner. A timeout is a slow
 // machine, never a verdict.
 describe('every boolean launch option has an explicit, tested fail direction (R3V-3)', {
-  timeout: 180_000,
+  timeout: TS_PROGRAM_TEST_TIMEOUT_MS,
 }, () => {
   it('finds the definitions it is meant to audit (guards the scanner itself)', () => {
     const names = definitions.map((d) => d.friendly);

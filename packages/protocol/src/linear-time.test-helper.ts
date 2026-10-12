@@ -63,10 +63,10 @@ export const LINEAR_TOLERANCE = 4;
  * docs/dev-environment.md records the old "runner is 7–18× slower" note as obsolete). Nor is it a
  * race: the work is CPU-bound with nothing to lose a race against. It is CONTENTION — the runner is
  * one machine shared by several repositories' jobs — and contention has no fixed ceiling, so the only
- * honest budget is a generous multiple of the real cost: 120 s is ~30× it, and still stops a
+ * honest budget is a generous multiple of the real cost: 180 s is ~45× it, and still stops a
  * measurement that has genuinely hung.
  */
-export const LINEARITY_TEST_TIMEOUT_MS = 120_000;
+export const LINEARITY_TEST_TIMEOUT_MS = 180_000;
 
 // `performance.now()`, not `Date.now()`: this tier compiles with neither the DOM nor the Node libs
 // (tsconfig.base `lib: ["ES2023"]`, `types: []`), so it is reached through the same globalThis cast
