@@ -146,6 +146,8 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
 
 ## Kept differences (documented, not changed)
 
+- **Node `.stopped` is written when the stop drain completes, not at `stop()`** (PR #41 review). An overlapping `stop()` + `launch()` leaves the old subtree un-marked until its drain finishes; writing it earlier would let a sibling recover (upload twice or delete) a subtree still uploading (round-1 L5/L7). Nothing is lost: the marker lands when the drain does, and the next launch recovers it.
+
 - **Lifecycle upload events and `ReportHandler.after` cover the live path only** (PR #37 review). They follow trigger → assemble → upload. A report delivered another way (durable recovery on the next launch, native-crash harvest, trigger-queue overflow, WebView/Electron-renderer hand-off, where `after` still runs) is not announced with `BeforeReportAssembled`/`AfterReportUploaded`. Accepted for the beta: Android announces from its single report builder, JS has several delivery paths; unifying them is a follow-up.
 
 - **`detectHttpErrors` vs mobile.** Same: 5xx only, per-session de-duplication on (method, normalized URL, status),

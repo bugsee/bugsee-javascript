@@ -566,6 +566,30 @@ describe('retry and failure handling', () => {
     expect(onError).toHaveBeenCalled();
   });
 
+  it('a failed urgent send at the 1000-item cap keeps the urgent item and drops the oldest queued one', async () => {
+    let now = 1_700_000_000_000;
+    let outcome: NotifyResult = SENT;
+    const { relay, onError } = make(
+      { flushDelayMs: 60_000, clock: { wallNow: () => now++, monotonicNow: () => 0 } },
+      async () => outcome,
+    );
+    for (let i = 0; i < 1000; i++) {
+      relay.enqueue({ title: `d${i}` });
+    }
+    outcome = { outcome: 'retry' };
+    relay.enqueue({ title: 'urgent', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(relay.pending()).toBe(1000);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('dropped the oldest') }),
+    );
+    outcome = SENT;
+    await relay.flush();
+    const titles = sends.flat().map((item) => item.title);
+    expect(titles).toContain('urgent');
+    expect(titles).not.toContain('d0');
+  });
+
   it('keeps at most 1000 pending notifications, dropping the oldest', async () => {
     const { relay, onError } = make({}, async () => ({ outcome: 'retry' }));
     for (let i = 0; i < 1005; i++) {

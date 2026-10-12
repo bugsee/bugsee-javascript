@@ -262,7 +262,9 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
       }
       return false;
     }
-    queue = [...back, ...queue];
+    // Back in timestamp order (stable): a failed urgent send is the NEWEST item, so the cap drops the oldest
+    // queued ones, not it.
+    queue = [...back, ...queue].sort((a, b) => a.timestamp - b.timestamp);
     trim();
     return false;
   };
