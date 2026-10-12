@@ -31,20 +31,10 @@ const PUBLIC_RUNTIME_API = [
   'LifecycleEvents',
 ] as const;
 
-// `relaunch` / `getStatus` / `BugseeStatus` are being added to the edge/worker entries by the lifecycle work
-// (group G2 of the mobile-alignment review) in a separate change. The names stay in the REQUIRED list above;
-// this exemption only keeps this test green until that change merges. DELETE it afterwards.
-const PENDING_LIFECYCLE_EXPORTS: Record<string, readonly string[]> = {
-  'edge-light': ['relaunch', 'getStatus', 'BugseeStatus'],
-  worker: ['relaunch', 'getStatus', 'BugseeStatus'],
-  workerd: ['relaunch', 'getStatus', 'BugseeStatus'],
-};
-
 describe('public API export parity across the umbrella entries', () => {
   for (const [entryName, entry] of Object.entries(entries)) {
     for (const name of PUBLIC_RUNTIME_API) {
-      const exempt = PENDING_LIFECYCLE_EXPORTS[entryName]?.includes(name) === true;
-      it.skipIf(exempt)(`${entryName} exports ${name}`, () => {
+      it(`${entryName} exports ${name}`, () => {
         expect(name in entry).toBe(true);
         expect((entry as Record<string, unknown>)[name]).toBeDefined();
       });
