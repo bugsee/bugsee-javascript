@@ -54,7 +54,7 @@ export const scenarioApi = {
     // Nothing listens on 5399 — a genuine connection-refused, not a fabricated error.
     fetch('http://localhost:5398/nope'),
   getSlow: (ms: number): Promise<Response> => fetch(`${BASE}/scenario/slow?ms=${ms}`),
-  // network-filter fixtures: a secret header + a secret body field the filter must strip/redact
+  // Network-filter fixtures: a secret header + a secret body field the filter must strip/redact
   // before the event reaches the capture ring, and a URL the filter vetoes outright.
   postSecret: (): Promise<Response> =>
     fetch(`${BASE}/scenario/echo`, {

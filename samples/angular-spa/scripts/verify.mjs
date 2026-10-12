@@ -238,7 +238,7 @@ async function main() {
   // several `/api/expenses` requests through Angular's default XHR backend. Force a report right now
   // (via `window.__bugsee`) so its network.json necessarily includes them, then inspect the tee'd copy
   // of the UPLOADED bundle directly — closing the gap the earlier build only had `SANGULAR-7` (an
-  // EXCEPTION report, not a network entry) for.
+  // EXCEPTION report, not a network entry) to go on.
   await page.evaluate(() => {
     void window.__bugsee?.logException(new Error('S7: wire-level marker for the HttpClient network entry'));
   });
@@ -314,7 +314,7 @@ async function main() {
   // ---------------------------------------------------------------------------------- Scenario panel
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
 
-  // relaunch demos first (each rebuilds the client) — minimal, then a direct stop() probe, then full.
+  // Relaunch demos first (each rebuilds the client) — minimal, then a direct stop() probe, then full.
   //
   // `calls.every(c => c.ok)` was the whole wire half of these two checks, and it is VACUOUS: a relaunch
   // issues no Bugsee HTTP traffic of its own (nothing is uploaded until a report exists), so the slice is
@@ -462,7 +462,7 @@ async function main() {
     `isLaunched=${s3Launched}; breadcrumb=${JSON.stringify(s3Crumb ?? null)}`,
   );
 
-  // exceptions
+  // Exceptions
   sinceCheckpoint();
   await click(page, 's4-error', { wait: 0 });
   record('s4-error', 'logException(new Error)', (await waitForCalls(isIssueCall)).some((c) => isIssueCall(c) && c.ok));
@@ -514,7 +514,7 @@ async function main() {
   // s4-storm runs LAST (see the note by the react-spa sweep it mirrors): 200 logException calls trips
   // the rate limiter, whose window would otherwise swallow unrelated scenarios that follow it.
 
-  // crashes
+  // Crashes
   sinceCheckpoint();
   newPageErrors();
   await click(page, 's5-uncaught', { wait: 0 });
@@ -528,7 +528,7 @@ async function main() {
   await click(page, 's5-rejection', { wait: 0 });
   record('s5-rejection', 'unhandled promise rejection', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
-  // console
+  // Console
   //
   // `newPageErrors() === 0` alone was UNFALSIFIABLE here and is no longer the pass condition. This app
   // installs an app-wide `BugseeErrorHandler` (`src/app/app.config.ts`), which absorbs every throw that
@@ -585,7 +585,7 @@ async function main() {
   // argument, which the interceptor passes through untouched (`stringifyArg`,
   // `packages/capture/src/console-interceptor.ts:33-35`). It therefore said nothing about the SERIALIZER,
   // which is the only thing the circular fixture exists to exercise: replacing `jsonSafeStringify` with
-  // `String(arg)` at `console-interceptor.ts:41` yields `: circular object [object Object]` and the old
+  // `String(arg)` at `console-interceptor.ts:41` yields `S6: circular object [object Object]` and the old
   // form still passed. The discriminating evidence was already in the same `logMessages` — the safe
   // stringifier replaces a back-reference with the literal `"[Circular]"`
   // (`packages/util/src/json-safe-stringify.ts:44-45`), and the fixture's back-reference is `obj.self`
@@ -611,7 +611,7 @@ async function main() {
       `trace:false is a KNOWN SDK defect, not asserted on`,
   );
 
-  // network — per-control content assertions (reading the shared `s7-status` line after each click)
+  // Network — per-control content assertions (reading the shared `s7-status` line after each click)
   // instead of a bare `true`; still LOCAL/WIRE only, not a wire-level inspection of the CAPTURED copy
   // (documented gap, covered by the S7 wire-level checks below).
   newPageErrors();
@@ -748,7 +748,7 @@ async function main() {
     )}`,
   );
 
-  // filters — reads the `filter-log` list the filter callbacks themselves append to, so this checks
+  // Filters — reads the `filter-log` list the filter callbacks themselves append to, so this checks
   // that every installed filter actually FIRED with the expected redaction/veto content, not just that
   // clicking the controls didn't throw. Still LOCAL only (network-entry content itself isn't visible via
   // `get_issue` — documented gap).
@@ -809,12 +809,12 @@ async function main() {
   // — S7's `s7-post-json` control POSTs to the SAME `/api/scenario/echo` path earlier in the sweep, and
   // its entry is still in the capture ring when this bundle is assembled. `find()` returned S7's entry
   // (body `{"hello":"world","n":42}`), so the check asserted "no x-secret-token, no SSN" about a request
-  // that never carried either — it could not fail. Select on what 's request actually CARRIES instead:
+  // that never carried either — it could not fail. Select on what the filter scenario's request actually CARRIES instead:
   //   * `type === 'before'` — the REQUEST stage (the only stage that carries the request headers the
   //     filter is supposed to have stripped; the `complete` stage carries the echoed RESPONSE),
   //   * `method === 'POST'`,
-  // * a body containing 's own unredacted marker field (`ordinary field, not redacted`), which the
-  // filter deliberately leaves untouched — 's echo payload has no such field.
+  //   * a body containing the filter scenario's own unredacted marker field (`ordinary field, not redacted`), which the
+  //     filter deliberately leaves untouched — the plain network echo payload has no such field.
   const s8NetworkEntry = mutateBundle?.bundle?.network?.find(
     (n) =>
       n.url?.includes('/scenario/echo') &&
@@ -843,7 +843,7 @@ async function main() {
       `headers=${JSON.stringify(s8NetworkHeaders ?? null)}; body=${JSON.stringify(s8NetworkBody ?? null)}`,
   );
   // Absence checks need a PRECONDITION, or they pass on an empty/missing bundle for the wrong reason.
-  // `s8NetworkEntry` above is that precondition here: it proves this bundle really does carry 's
+  // `s8NetworkEntry` above is that precondition here: it proves this bundle really does carry the filter scenario's
   // network entries, so the vetoed one being missing means the veto worked — not that nothing was captured.
   const s8VetoedNetworkEntry = mutateBundle?.bundle?.network?.find((n) => n.url?.includes('veto-me'));
   record(
@@ -881,7 +881,7 @@ async function main() {
 
   await click(page, 's8-uninstall');
 
-  // performance
+  // Performance
   sinceCheckpoint();
   // `s9Status.ok && text.includes('6 child spans')` was NOT a computed result, even though `statusOk` is meant only for
   // controls that really compute one. Both halves come from
@@ -1045,7 +1045,7 @@ async function main() {
   // The TARGET route is what makes this discriminating, and a static one would not be
   // falsifiable: navigating to `/expenses` and expecting the name `/expenses` passes even with
   // the ENTIRE route-naming seam neutralised, because the browser tier already names every navigation
-  // transaction after `location.pathname` in (`packages/browser/src/navigation-source.ts:109-119`
+  // transaction after `location.pathname` in the first phase (`packages/browser/src/navigation-source.ts:109-119`
   // / `:144-148` -> `packages/performance/src/navigations.ts:58`), and for a static route the raw
   // pathname IS the pattern. So navigate to the PARAMETERISED route instead (`app.routes.ts:13-16`,
   // `expenses/:id`) by clicking a real expense row: with the seam working the active transaction is named
@@ -1079,7 +1079,7 @@ async function main() {
     `getActiveSpan().getName() -> ${navRouteName}; concrete url path=${navUrlPath} (the two must differ — that is what makes this falsifiable)`,
   );
 
-  // session replay
+  // Session replay
   //
   // These four used to have `newPageErrors() === 0` as their SOLE condition, justified by a claim that a
   // rejection from one of these async handlers surfaces as an unhandled rejection and so reaches
@@ -1144,7 +1144,7 @@ async function main() {
   await page.fill('[data-testid="s11-masked-field"]', s11MaskedValue);
   await page.fill('[data-testid="s11-shown-field"]', s11ShownValue);
 
-  /** Click an relaunch control, then force a report through the NEW client and return both the
+  /** Click a relaunch control, then force a report through the NEW client and return both the
    *  new-instance signal and the uploaded bundle's file list. `marker` must be unique per call. */
   const relaunchAndCaptureFiles = async (testid, marker) => {
     await page.evaluate(() => {
@@ -1306,7 +1306,7 @@ async function main() {
     `isLaunched=${baselineLaunched}; newClientInstance=${baseline.isNewClient}; uploaded bundle files=${JSON.stringify(baseline.files ?? null)} (precondition: a bundle arrived at all=${baseline.files !== undefined})`,
   );
 
-  // storm — deliberately last: 200 logException calls in ~1s must rate-limit, app stays responsive.
+  // Storm — deliberately last: 200 logException calls in ~1s must rate-limit, app stays responsive.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   sinceCheckpoint();
   await click(page, 's4-storm', { wait: 0 });

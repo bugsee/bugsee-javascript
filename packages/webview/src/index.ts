@@ -4,8 +4,8 @@
 // (native is the ring buffer + the bundler). `launch(appToken, options)` returns the started client; it opens a
 // `hello` handshake, streams console→log + network capture across the bridge, and exposes `__bugsee_bridge`
 // for native→JS control (incl. a synchronous secure-area `snapshot()` pull). Obscuring (secure-area pixel
-// masking rects) is built in so the advanced SDK fully replaces the legacy masking script. Redaction provenance
-// + the IIFE build + the e2e conformance harness land in later slices.
+// masking rects) is built in so the advanced SDK fully replaces the legacy masking script. Redaction provenance,
+// the IIFE build + the e2e conformance harness land in later slices.
 
 // API parity with the umbrella entries: the same VALUE surface, thin re-exports, EXCEPT
 // `getStatus` and `relaunch`, deliberately absent here. In a WebView the process carrier holds only a

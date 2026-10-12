@@ -2,7 +2,7 @@
 // test is the webpack SOURCE-MAP plugin, on the client build side). Serves:
 //   - a genuine feature: GET /api/prompt (a random writing-prompt suggestion for a new note) and
 //     POST /api/backup (a fake "backup my notes" sync target the app's Backup button posts to);
-// - a handful of /api/scenario/* routes purpose-built to exercise (network capture) edge cases:
+// - a handful of /api/scenario/* routes purpose-built to exercise network-capture edge cases:
 //     a 4xx, a 5xx, a response with no Content-Type, a body over maxNetworkBodySize, a connection
 //     failure target, and an SSE feed;
 // - a WebSocket "presence" channel (WS coverage) — a trivial broadcast of "someone is editing".

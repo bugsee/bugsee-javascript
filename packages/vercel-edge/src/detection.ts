@@ -8,7 +8,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
-// Edge crash/error detection (/ E5b). On edge there is no reliable global
+// Edge crash/error detection. On edge there is no reliable global
 // `error` / `process.on('uncaughtException')`, but Cloudflare (with nodejs_compat) and Vercel Edge DO expose
 // `addEventListener('unhandledrejection')` — the safety net for FLOATING-promise rejections the fetch-handler
 // wrapper's try/catch misses. Reports them as an error (mechanism 'unhandledrejection') with a V8-parsed stack

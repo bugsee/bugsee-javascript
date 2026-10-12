@@ -5,7 +5,7 @@ import { type Bugsee, EdgeContextStoreToken } from './launch';
 import type { EdgeRequestContextStore } from './request-context-store';
 import { type EdgeExecutionContext, resolveWaitUntil } from './wait-until';
 
-// The generic edge-invocation core (E5/C2). EVERY edge handler — fetch, and on
+// The generic edge-invocation core. EVERY edge handler — fetch, and on
 // Cloudflare scheduled/queue/email/tail/Durable-Object/RPC — runs the same shape: open a per-invocation Bugsee
 // context, run the handler INSIDE it (so an incident report is correlated), capture + RETHROW a thrown error,
 // then flush the incident upload via the resolved `waitUntil` so it survives the isolate freeze. This module

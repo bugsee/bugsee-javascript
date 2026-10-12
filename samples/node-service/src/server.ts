@@ -521,14 +521,14 @@ const server = createServer((req, res) => {
         return;
       }
 
-      // ---- echo endpoints for -----------------------------------------------------------------
+      // ---- echo endpoints -----------------------------------------------------------------
       if (url.pathname === '/echo/json') {
         const body = req.method === 'POST' ? await readBody(req) : '{}';
         json(res, 200, {
           method: req.method,
           query: Object.fromEntries(url.searchParams),
           body: body ? JSON.parse(body) : null,
-          // evidence: echo back trace-propagation headers so a caller (curl, verify.ts, a human)
+          // Evidence: echo back trace-propagation headers so a caller (curl, verify.ts, a human)
           // can see whether propagateTrace + tracePropagationTargets actually decorated this request.
           traceparent: req.headers['traceparent'] ?? null,
           tracestate: req.headers['tracestate'] ?? null,
@@ -588,7 +588,7 @@ const server = createServer((req, res) => {
 
       json(res, 404, { error: 'not found' });
     } catch (error) {
-      // A route THROWING synchronously/asynchronously is itself /adapter-error-surface coverage: let
+      // A route THROWING synchronously/asynchronously is itself adapter-error-surface coverage: let
       // it become an uncaught exception path by rethrowing on the next tick would kill the request
       // instead; log + report explicitly here so the HTTP response is still well-formed.
       void client

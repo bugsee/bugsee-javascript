@@ -107,7 +107,7 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * the caller-supplied options are empty — but NOT a truly-minimal launch end to end. `relaunch()`
+ * The caller-supplied options are empty — but NOT a truly-minimal launch end to end. `relaunch()`
  * below always injects `endpoint`/`appId`/`appVersion`/`appBuild`/`onError` ahead of whatever is passed
  * here, deliberately: a genuinely-default `endpoint` resolves to Bugsee PRODUCTION, and this sample's
  * data must land on staging only. So "relaunch minimal" demonstrates every
@@ -177,7 +177,7 @@ export async function relaunch(
   client.setUserIdentifier(SAMPLE_USER_ID);
   // Re-applied: relaunch() builds a BRAND NEW client, which starts with no attributes even though
   // launchApp() set 'build'/'sample' on the original one. Without this, every issue created after the
-  // first Scenario-panel relaunch (which is most of them, since 's relaunch controls run first) would
+  // first Scenario-panel relaunch (which is most of them, since the launch-lifecycle relaunch controls run first) would
   // carry no identifying attributes at all.
   client.setAttribute('build', APP_BUILD);
   client.setAttribute('sample', 'angular-spa');

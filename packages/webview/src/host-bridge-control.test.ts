@@ -6,7 +6,7 @@ const reply = (m: Omit<ControlMessage, 'k' | 'b'>): string =>
   JSON.stringify({ b: PROTOCOL_VERSION, k: 'control', ...m });
 
 describe('createBridgeControl', () => {
-  // a NATIVE-minted secret closes the channel from the first message.
+  // A NATIVE-minted secret closes the channel from the first message.
   //
   // `token` is minted by JS and published in `hello`, which means a page script can mint one too and
   // native cannot tell the two apart. It is why the channel has to start OPEN and wait to latch: until a
@@ -126,7 +126,7 @@ describe('createBridgeControl', () => {
 //
 // This whole path is now the FALLBACK, reached only when native injected no nonce. A current native receiver
 // mints its own secret and the channel is closed from the first message with no open window — see the
-// `with a native-minted secret` block above (D-A10).
+// `with a native-minted secret` block above.
 describe('createBridgeControl — token authentication', () => {
   const TOKEN = 'tok-abc123';
   const raw = (msg: Record<string, unknown>): string =>
@@ -160,7 +160,7 @@ describe('createBridgeControl — token authentication', () => {
   });
 
   it('keeps accepting tokened control AFTER the latch arms — native is not locked out', () => {
-    // SEV1: every tokened test sent exactly ONE message, so `if (tok === token &&
+    // Every tokened test sent exactly ONE message, so `if (tok === token &&
     // !authenticated)` — one word — locked native permanently out of its own channel and the whole suite
     // stayed green. Native sends many control messages per session (pause on background, flush before a
     // frame, stop on teardown); the second must work as well as the first.
@@ -224,7 +224,7 @@ describe('createBridgeControl — token authentication', () => {
   });
 });
 
-// WAVE 0.3 — the rejection report is itself page-reachable, so it needs the same treatment
+// The rejection report is itself page-reachable, so it needs the same treatment
 // as any other host callback.
 describe('createBridgeControl — the rejection report is contained and bounded', () => {
   const TOKEN = 'tok-abc123';
@@ -251,8 +251,8 @@ describe('createBridgeControl — the rejection report is contained and bounded'
 
   it('reports at most ONCE, however many times the page calls it', () => {
     // A page script can loop on `__bugsee_bridge.control(...)`, allocating an Error per call into the
-    // host's error sink. refused to report sink swaps for precisely this reason; the same rule has
-    // to hold here or the two decisions in one wave contradict each other.
+    // host's error sink. The bridge deliberately does not report sink swaps, for precisely this reason; the same rule has
+    // to hold here or the two decisions contradict each other.
     const onError = vi.fn();
     const control = upgraded({ onError });
     for (let i = 0; i < 50; i++) {

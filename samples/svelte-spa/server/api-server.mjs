@@ -1,6 +1,6 @@
 // A small local API for the Habit tracker — plain node:http, no framework (the framework under test is
 // on the client side: @bugsee/svelte / @bugsee/svelte-plugin-component-annotate). Also hosts a handful
-// of `/api/scenario/*` routes purpose-built to exercise (network capture) edge cases: a 4xx, a 5xx, a
+// of `/api/scenario/*` routes purpose-built to exercise network-capture edge cases: a 4xx, a 5xx, a
 // response with no Content-Type, a body over maxNetworkBodySize, and an SSE feed — mirrors
 // samples/react-spa/server/api-server.mjs so the two samples' network-capture coverage is comparable.
 import { randomUUID } from 'node:crypto';
@@ -133,7 +133,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, now: Date.now() });
       }
       if (which === 'echo-headers' && req.method === 'GET') {
-        // lets the app confirm a traceparent/tracestate header it cannot read off its own
+        // Lets the app confirm a traceparent/tracestate header it cannot read off its own
         // outgoing fetch actually left the process — the server echoes back what it received.
         return json(res, 200, req.headers);
       }

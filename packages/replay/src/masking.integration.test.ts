@@ -6,13 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { type ReplayMaskingOptions, resolveReplayMaskingOptions } from './masking';
 import { type ReplayClientLike, type ReplayFileEncoders, registerReplay } from './register';
 
-// the masking guarantees asserted against REAL rrweb over a REAL DOM.
+// The masking guarantees asserted against REAL rrweb over a REAL DOM.
 //
 // Every masking test in this package used to assert the RESOLVER'S RETURN VALUE ("maskInputOptions equals
 // {password:true}") and the recorder tests drove a FAKE `record`. That is why three fail-open defects
 // survived a suite at 100% coverage: rrweb never consults `maskInputOptions` on the unmask path, so a
-// property of the config object says nothing about what is serialized (/#2/#3,
-// and its "Masking fail-closed audit" table, whose right-hand column is ✗ on every row).
+// property of the config object says nothing about what is serialized.
 //
 // These tests read the bytes rrweb actually emits. A guarantee that cannot be observed here is not a
 // guarantee.
@@ -44,7 +43,7 @@ async function drive(
   // ANTI-VACUITY GUARD, applied to every test that uses this harness.
   //
   // Almost every assertion in this file is `expect(json).not.toContain(secret)`, and an EMPTY payload
-  // satisfies that perfectly. proved the risk was live rather than theoretical: gutting the
+  // satisfies that perfectly. Mutation testing proved the risk was live rather than theoretical: gutting the
   // capture (`blockSelector: '*'`) left three of the tests added in 3eb7fa2 still passing against a
   // payload containing nothing at all. They were covered only by positive assertions living in other
   // tests, which is coverage by luck — the canary and the test that needs it must not be separable.
@@ -175,7 +174,7 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
 });
 
 describe('the sensitive floor holds on the LIVE input path too, with maskAllInputs off', () => {
-  // (replay reviewer): this block previously covered ONLY `tel` and `password` —
+  // This block previously covered ONLY `tel` and `password` —
   // the two categories that happened to work — while the module header claimed a floor "no option and no
   // DOM marking can lift". `maskInputOptions` is keyed by input TYPE, so it cannot name a field declared
   // sensitive by `autocomplete`, and the fork's live observer gates on that map alone. Those values were
@@ -383,7 +382,7 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
 
 describe('an invalid caller selector fails CLOSED and never reaches the DOM', () => {
   it('never emits a selector the DOM cannot parse — whatever the caller passes', async () => {
-    // The property that closes. rrweb's canvas manager calls its
+    // The property that matters here: rrweb's canvas manager calls its
     // block check from INSIDE the patch it installs on `HTMLCanvasElement.prototype.getContext`, and that
     // check is NOT wrapped — so a malformed selector reaching the joined string threw a DOMException out of
     // the host application's own `getContext('2d')` call, before the original method ran. Chart.js,
@@ -503,11 +502,11 @@ describe('masking cannot be downgraded by prototype pollution or a non-boolean',
   });
 });
 
-// THE MUTUAL-MOCKING BLIND SPOT (adjudication row).
+// THE MUTUAL-MOCKING BLIND SPOT.
 //
 // Mutating `register.ts` to call `resolveReplayMaskingOptions({})` — i.e. DISCARDING every masking option
 // the caller passed — was undetectable across @bugsee/browser's 208 tests, @bugsee/replay-canvas's 12, AND
-// the e2e. Not because any suite is weak individually, but because each mocks the other side of this
+// the e2e suite. Not because any suite is weak individually, but because each mocks the other side of this
 // exact seam: `browser` mocks `@bugsee/replay`, and `replay` mocks `record`. Nothing ran the whole path.
 //
 // The consequence would be a PRIVACY failure of the worst kind — a customer sets `maskTextSelector` and the

@@ -1,4 +1,4 @@
-// A tiny local OTLP/HTTP-JSON "collector" for (produce direction): accepts POST /v1/traces, saves
+// A tiny local OTLP/HTTP-JSON "collector" for OpenTelemetry (produce direction): accepts POST /v1/traces, saves
 // every payload to data/otel-collector-received.json, and prints a one-line summary per request. Not a
 // real collector — just enough to prove the SDK's otelExportUrl option posts valid OTLP/JSON.
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';

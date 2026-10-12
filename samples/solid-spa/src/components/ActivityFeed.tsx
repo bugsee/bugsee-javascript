@@ -4,7 +4,7 @@ import type { JSX } from 'solid-js';
 /**
  * A real (if small) feature: a live "issue activity" feed over a WebSocket to the local API server —
  * every browser tab open on the tracker sees every other tab's issue/comment activity in real time.
- * Also exercises 's WebSocket capture path with genuine bidirectional traffic (not a synthetic
+ * Also exercises the WebSocket capture path with genuine bidirectional traffic (not a synthetic
  * ping).
  */
 export default function ActivityFeed(): JSX.Element {

@@ -146,7 +146,7 @@ declare global {
     __bugseeTee?: {
       getCapturedBundles: typeof getCapturedBundles;
       clearCapturedCalls: typeof clearCapturedCalls;
-      /** decode one uploaded bundle's `replay.bin` on demand (see `ReplayDigest`). */
+      /** Decode one uploaded bundle's `replay.bin` on demand (see `ReplayDigest`). */
       getReplayDigest: typeof getReplayDigest;
     };
   }
@@ -156,7 +156,7 @@ if (typeof window !== 'undefined' && !IS_PRODUCTION) {
 }
 
 /**
- * the CALLER-supplied options for the "relaunch minimal" control — deliberately empty, so anything
+ * The CALLER-supplied options for the "relaunch minimal" control — deliberately empty, so anything
  * the sample does not itself have to pin stays at its SDK default.
  *
  * Note that the launch is not token-only:
@@ -188,7 +188,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one).
  */
 export function attemptDuplicateLaunch(): { sameInstance: boolean } {

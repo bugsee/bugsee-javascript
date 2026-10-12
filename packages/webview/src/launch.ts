@@ -186,7 +186,7 @@ export interface BugseeWebViewLaunchOptions {
   captureObscuring?: boolean;
 
   /**
-   * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug.:
+   * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug:
    * default OFF. Native is the authority on opening bugs; the incident ALWAYS streams up as a `crash` timeline
    * entry regardless, so the web error enriches whatever report native opens. Native may also toggle this via
    * the handshake config.
@@ -231,7 +231,7 @@ export interface BugseeWebViewLaunchOptions {
 
   /**
    * Which native sink to use, declared by native in the bootstrap it interpolates into the injected
-   * bundle ('s out-of-band route).
+   * bundle (the out-of-band route for the capture nonce).
    *
    * Native knows which handler it registered and the page does not. That asymmetry is the whole value:
    * each native populates one of the two interface names and leaves the other permanently VACANT — so a
@@ -285,7 +285,7 @@ interface BridgeSession {
 
 /** The stopped state. `snapshot()` must still answer `'[]'` rather than throw: native pulls it synchronously
  *  at frame-capture time, and an exception there propagates into `evaluateJavascript` — the fail-open shape
- * fixed as. A stopped SDK legitimately has no rects. */
+ * fixed earlier. A stopped SDK legitimately has no rects. */
 const INERT_SESSION: BridgeSession = {
   control: (): void => {},
   snapshot: (): string => '[]',
@@ -309,8 +309,7 @@ interface BridgeSlot {
 const BRIDGE_SLOTS = new WeakMap<object, BridgeSlot>();
 
 /**
- * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
- * (Wave 0.3 / D-A3).
+ * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to.
  *
  * `Object.freeze(obj)` — what this used to do — protects the object and leaves the binding
  * `{writable: true, configurable: true}`, so a page script could swap the whole thing: `snapshot()` then
@@ -609,13 +608,13 @@ export function launchWithSeams(
   // Everything below this branch is deliberately skipped in a sub-frame:
   //  - `hello`: the protocol is one handshake per WebView. N frames posting N hellos makes the session id,
   //    N sessions' worth of handshakes for one WebView. (The sharper version — whichever frame's hello decided
-  // the retained token and the obscuring capability — is gone: native retains nothing, and `caps`
-  // decides nothing.)
+  //    the retained token and the obscuring capability — is gone: native retains nothing, and `caps`
+  //    decides nothing.)
   //  - the control token: a sub-frame can never RECEIVE control — `evaluateJavascript` targets the top
   //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
   //    would be rejected as a mismatch.
   //  - capture: each frame keeps its own `seq` from 0, so entries from different frames collide in
-  // ordering. And D9 exists to keep Bugsee OUT of third-party content (66) — running
+  //    ordering. And the design keeps Bugsee OUT of third-party content — running
   //    a full capture stack inside every ad/OAuth/payment iframe is the opposite of that.
   //  - `client.launch()`: `isLaunched()` stays false, which is truthful. This frame captures nothing.
   //
@@ -709,7 +708,7 @@ export function launchWithSeams(
     return current === undefined || current === ownFacade;
   };
   // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
-  // blackout is announced at launch, before any reply could possibly have arrived):.
+  // blackout is announced at launch, before any reply could possibly have arrived).
   let judgementPending = false;
   // …but not for ever: a legacy receiver that never answers the handshake, with a single blackout change,
   // would leave the integrator unwarned that the native video keeps running. The wait is bounded; `stop()` judges too.
@@ -819,7 +818,7 @@ export function launchWithSeams(
   // capability, which native adds to its own mask rather than standing that mask down;
   //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
   //     by the sub-frame branch above, which returns before reaching here.
-  // (Native never drops its own masking for this —. The union is what makes the whole path monotone.)
+  // (Native never drops its own masking for this. The union is what makes the whole path monotone.)
   if (obscuringEnabled && domDocument !== undefined) {
     obscuring = createObscuringChannel({
       bridge,
@@ -860,7 +859,7 @@ export function launchWithSeams(
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // is recorded nowhere by native and decides nothing.
   //
-  // The token rides this message ONLY when a native sink is already attached (SEV1). When
+  // The token rides this message ONLY when a native sink is already attached. When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
   // later — and a page script can be that sink, which is precisely the tap this whole wave exists to stop.
   // Handing it the token would be worse than sending none: it could then authenticate, arm the one-way

@@ -7,7 +7,7 @@ export interface ActivityFeedHandle {
 /**
  * A real (if small) feature: a live "board activity" feed over a WebSocket to the local API server —
  * every browser tab open on the board sees every other tab's card moves/creates in real time. Also
- * exercises 's WebSocket capture path with genuine bidirectional traffic (not a synthetic ping).
+ * exercises the WebSocket capture path with genuine bidirectional traffic (not a synthetic ping).
  */
 const ActivityFeed = forwardRef<ActivityFeedHandle>(function ActivityFeed(_props, ref) {
   const [messages, setMessages] = useState<string[]>([]);

@@ -1,6 +1,6 @@
 // A small local API for the Expense report app — plain node:http, no framework (the framework under
 // test is on the client side: @bugsee/angular). Also hosts `/api/scenario/*` routes purpose-built to
-// exercise (network capture) edge cases, and (when STATIC_DIR is set) serves the production
+// exercise network-capture edge cases, and (when STATIC_DIR is set) serves the production
 // `ng build` output + falls back to index.html for client-side routing — so `pnpm preview` is a single
 // process on one port, the same way a customer would deploy this app.
 import { randomUUID } from 'node:crypto';
@@ -90,7 +90,7 @@ function serveStatic(req, res, pathname) {
 
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  // needs a genuinely CROSS-ORIGIN request that carries a `traceparent` header: the app is served
+  // The distributed-tracing scenario needs a genuinely CROSS-ORIGIN request that carries a `traceparent` header: the app is served
   // by `ng serve` on :5306 while this API is on :5336, so a direct call here (bypassing the `/api`
   // dev-server proxy) is cross-origin, and `traceparent` is not a CORS-safelisted request header —
   // the browser sends a preflight OPTIONS first and drops the real request unless the preflight
@@ -125,7 +125,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, now: Date.now() });
       }
       if (which === 'echo-headers' && req.method === 'GET') {
-        // lets the client confirm a traceparent/tracestate header it cannot read off its own
+        // Lets the client confirm a traceparent/tracestate header it cannot read off its own
         // outgoing request actually left the process — the server echoes back what it received.
         return json(res, 200, req.headers);
       }

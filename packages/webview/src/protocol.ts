@@ -1,13 +1,13 @@
 import type { FileType } from '@bugsee/protocol';
 
-// The JSON intrinsics, captured at MODULE LOAD (SEV1).
+// The JSON intrinsics, captured at MODULE LOAD.
 //
 // `JSON.parse` and `JSON.stringify` are page-writable globals. Reading them at call time let a script do:
 //
 //   const orig = JSON.parse;
 //   JSON.parse = s => { if (s.includes('"k":"control"')) steal(orig(s).tok); return orig(s); };
 //
-// which reads the token out of NATIVE's control message — defeating, whose guarantee is stated
+// which reads the token out of NATIVE's control message — defeating the control token's guarantee, which is stated
 // only in outbound terms ("sent once, on hello"). The same trick on `stringify` (or an
 // `Object.prototype.toJSON`) reads the outbound hello and can silently replace the payload.
 //
@@ -58,7 +58,7 @@ export interface HelloMessage {
   /** The JS-side session id (until native supplies its own via the control reply). */
   readonly session: string;
   /**
-   * SUPERSEDED by — a native receiver MUST NOT store or echo this.
+   * SUPERSEDED by the native-minted control secret — a native receiver MUST NOT store or echo this.
    *
    * It is minted by this SDK and published here so native could learn it, which authenticates nobody:
    * `hello` arrives on the same `@JavascriptInterface` any frame can post to, so native cannot tell it from
@@ -66,7 +66,7 @@ export interface HelloMessage {
    * script could stop capture inside that window. Native mints its OWN secret instead and delivers it
    * inside the bundle it injects — see {@link ControlMessage.tok}.
    *
-   * Still emitted only when no `controlNonce` was injected, i.e. against a host that predates.
+   * Still emitted only when no `controlNonce` was injected, i.e. against a host that predates the native-minted secret.
    */
   readonly tok?: string;
 }
@@ -367,7 +367,7 @@ export function parseControl(raw: string): ControlMessage | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  // Cut the prototype chain BEFORE any field is read (SEV1). Every subsequent read —
+  // Cut the prototype chain BEFORE any field is read. Every subsequent read —
   // `k`, `b`, `tok`, `command`, `config`, `session` — is a plain property lookup, so without this a single
   // line of page script forges an authenticated message by riding native's own:
   //

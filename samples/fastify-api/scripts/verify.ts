@@ -35,7 +35,7 @@ interface Result {
    *  What IS invariant: `ms` is this harness's clock for a WHOLE HTTP round trip, so it is only an
    *  UPPER bound on whatever the route did inside it. A check may assert on `ms` ONLY when no narrower
    *  measurement of the quantity it claims exists. The moment a route can measure the operation itself
-   * and return it (.flush's `flushMs` is the worked example), the check MUST read that field and not
+   * and return it (the flush route's `flushMs` is the worked example), the check MUST read that field and not
    *  this one — otherwise delay landing anywhere else in the request satisfies the assertion. Every
    *  check that does assert on a duration carries its own justification, its own bound, and its own
    *  appended observation record at its own call site; that is the only place those numbers live. */
@@ -368,7 +368,7 @@ async function main(): Promise<void> {
     );
 
     // ---- Identity & attributes ----
-    // POSITIVE CONTROL for the attribute getters. ` .clear-attributes` below is a NEGATIVE pair —
+    // POSITIVE CONTROL for the attribute getters. The clear-attributes check below is a NEGATIVE pair —
     // `afterClearOne === null` and `afterClearAll` empty — and a negative pair alone is satisfied by a
     // `getAttribute()` regressed to always return `undefined` and a `getAllAttributes()` regressed to
     // always return `{}`. Nothing in this gate asserted either getter returning a VALUE, even though this
@@ -492,7 +492,7 @@ async function main(): Promise<void> {
     // deduplication this sample can obtain. `hit()` asserts only HTTP 200, so these fields are checked here.
     // The wire check below ("exactly ONE bundle") is the same claim
     // seen from the other end; both together distinguish "deduped" from "the second upload silently
-    // failed". NB: this check inherits .dedupe's client-side budget exposure — if the local hit
+    // failed". NB: this check inherits the dedupe route's client-side budget exposure — if the local hit
     // aborts at DEDUPE_TIMEOUT_MS the body is undefined and this fails loudly rather than vacuously
     // passing, which is the intended direction (see the budget note above for why that budget is
     // derived from the route's requested work rather than left on the flat default).
@@ -649,7 +649,7 @@ async function main(): Promise<void> {
     await hit('S8.report-veto', 'POST', '/scenarios/s8/report-veto');
     const s8NetworkFilter = await hit('S8.network-filter', 'POST', '/scenarios/s8/network-filter');
     // The route reports whether `setNetworkEventFilter`'s callback was ever INVOKED (it flips a flag
-    // inside the filter). Without this, every .network-filter wire check below is consistent with a
+    // inside the filter). Without this, every network-filter wire check below is consistent with a
     // filter that was installed but never called — the header simply never having been sent — and
     // nothing read `filterInvoked: true` to rule that out.
     wireCheck(
@@ -730,7 +730,7 @@ async function main(): Promise<void> {
       ms: Math.max(...concurrencyResults.map((r) => r.ms)),
     });
 
-    // ---- storm, last: it deliberately spends the rate-limit window ----
+    // ---- Storm, last: it deliberately spends the rate-limit window ----
     const s4Storm = await hit('S4.storm', 'POST', '/scenarios/s4/storm');
     const stormBody = s4Storm.body as { responsivenessMs?: number; stillResponsive?: boolean } | undefined;
     wireCheck(
@@ -763,7 +763,7 @@ async function main(): Promise<void> {
     // no-op returning `false` immediately would otherwise leave the gate green.
     //
     // What is asserted is deliberately NOT `flushed === true`. This flush is placed LAST on purpose —
-    // after .storm's 200 `logException` calls and the 50-way concurrency batch — so it meets a real
+    // after the storm's 200 `logException` calls and the 50-way concurrency batch — so it meets a real
     // ~100-bundle backlog, and `false` is the honest, reproducible outcome here: `drainPending`
     // (packages/core/src/client.ts:440-447) races the drain against `sleep(timeout)`. Moving the flush
     // to a low-load point would let it assert `true`, at the cost of no longer exercising the case
@@ -775,7 +775,7 @@ async function main(): Promise<void> {
     // stopping marginally before, the SDK's own internal timer.
     //
     // ==> THE OBSERVATION RECORD FOR THIS CHECK LIVES HERE, AND ONLY HERE. APPEND TO IT, NEVER TRIM IT
-    // (same discipline as the .dedupe ceiling above; each run's round trip is also in
+    // (same discipline as the dedupe ceiling above; each run's round trip is also in
     // `data/verify-run.json` as `ms`, but the flush's OWN duration is only ever printed in the label
     // below, so it has to be copied here by hand or it is lost). Each observation is recorded once, here.
     //   15002 ms · 15004 ms   (2026-08-27, the pair the earlier notes were describing. The other four sweeps
@@ -894,7 +894,7 @@ async function main(): Promise<void> {
         .length === 1,
     );
 
-    // ----: process-level crashes must carry the RIGHT report `type` — "crash" (detectCrashes /
+    // ---- Process-level crashes must carry the RIGHT report `type` — "crash" (detectCrashes /
     // uncaughtException) vs "error" (unhandledRejections:'warn') — not just a 202 the route hardcodes
     // regardless of whether anything was ever reported at all.
     const timeoutThrowBundle = bundles.find((b) =>
@@ -912,7 +912,7 @@ async function main(): Promise<void> {
       unhandledRejectionBundle?.bundle?.request?.type === 'error',
     );
 
-    // ---- .log-redaction: a POSITIVE control alongside the negative check below. The negative check
+    // ---- Log redaction: a POSITIVE control alongside the negative check below. The negative check
     // alone (no SECRET_LOG_VALUE anywhere) passes vacuously if setLogEventFilter regressed to DROPPING
     // the entry entirely, or if this bundle simply never uploaded — neither of those is "redaction
     // working". Assert the redacted FORM actually reached logs.json.
@@ -934,7 +934,7 @@ async function main(): Promise<void> {
       !bundles.some((b) => String(b.bundle?.request?.summary ?? '').includes('VETO_ME')),
     );
 
-    // ---- /: logs.json actually carries the manual telemetry (not just "a report arrived") ----
+    // ---- Manual telemetry and console: logs.json actually carries the manual telemetry (not just "a report arrived") ----
     const s3Bundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s3-${RUN_MARKER}`),
     );
@@ -956,7 +956,7 @@ async function main(): Promise<void> {
       ) && s6Messages.some((m) => m.includes('s6-circular')),
     );
 
-    // ---- .breadcrumb-drop: the filtered breadcrumb array itself, not just "a report arrived" ----
+    // ---- Breadcrumb drop: the filtered breadcrumb array itself, not just "a report arrived" ----
     // NOTE: breadcrumbs are a ROLLING trail (like network — not reset per report), so this bundle can
     // legitimately also carry earlier scenarios' own breadcrumbs (e.g. the `s3-breadcrumb-*`, or an
     // earlier run's own "kept" one) if they fall inside the same recording window. The real assertion
@@ -974,7 +974,7 @@ async function main(): Promise<void> {
         !bundles.some((b) => (b.bundle?.breadcrumbs ?? []).some((c) => c.category === 'secret')),
     );
 
-    // ----: network.json is actually present with real entries (not asserted anywhere before this) ----
+    // ---- network.json is actually present with real entries (not asserted anywhere before this) ----
     //
     // RUN SCOPING. `recover: true` + on-disk capture means a PRIOR run's undelivered report can be
     // recovered at launch and uploaded through THIS run's tee, landing in `bundles`. Every check that
@@ -1029,10 +1029,10 @@ async function main(): Promise<void> {
       largeBodyEntry?.custom?.no_body_reason === 'size_too_large',
     );
 
-    // ----: tracePropagationTargets, the EXCLUDE half ----
+    // ---- tracePropagationTargets, the EXCLUDE half ----
     // `propagateTrace` + `tracePropagationTargets` is a two-sided contract: listed targets GET a
     // `traceparent`, unlisted ones must NOT. Only the include half was ever checked (the third party
-    // echoes the header back, asserted at .outbound-trace and on the filtered network entry above),
+    // echoes the header back, asserted at the outbound-trace check and on the filtered network entry above),
     // and the exclude half could not have been checked, because the list carried a catch-all
     // `/127\.0\.0\.1/` regex alongside the exact `127.0.0.1:<third-party-port>` string — and every
     // outbound call this sample makes goes to 127.0.0.1. The regex matched all of them, so "only
@@ -1040,7 +1040,7 @@ async function main(): Promise<void> {
     // the claim was recorded as verified locally.
     //
     // The regex is gone (src/bugsee.ts:71 now lists exactly one target) and the app's existing call to
-    // `http://127.0.0.1:1/unreachable` (.connection-failure) is now a genuine NON-listed target: same
+    // `http://127.0.0.1:1/unreachable` (the connection-failure scenario) is now a genuine NON-listed target: same
     // client, same run, same interceptor, differing from the listed target ONLY in being absent from
     // the list. Its captured 'before' entry must carry no `traceparent`/`tracestate`, while the
     // `/echo-headers` entry asserted below (`'traceparent' in filteredEntry.custom.headers`) shows the
@@ -1073,7 +1073,7 @@ async function main(): Promise<void> {
         ),
     );
 
-    // ---- .network-filter: compare the FILTERED call against an unfiltered control call ----
+    // ---- Network filter: compare the FILTERED call against an unfiltered control call ----
     const networkFilterBundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s8-network-filter-${RUN_MARKER}`),
     );
@@ -1114,7 +1114,7 @@ async function main(): Promise<void> {
       controlEntry?.custom?.headers?.['content-type'] === 'application/json',
     );
     // Global negative: the secret must not survive ANYWHERE in ANY uploaded bundle's network trail —
-    // the same positive-plus-negative pairing .log-redaction uses. The per-entry check above cannot
+    // the same positive-plus-negative pairing the log-redaction check uses. The per-entry check above cannot
     // see a leak into some other entry (a redirect hop, the 'complete' stage, another bundle's copy of
     // the rolling trail).
     wireCheck(
@@ -1253,7 +1253,7 @@ async function main(): Promise<void> {
     //   (a) Of the checks that select from `bundles` — the stale-bundle hazard's actual surface,
     //       since `bundles` is the only thing a recovered previous-run report can land in — every
     //       check that POSITIVELY selects a bundle is run-scoped: by a summary marker, by `http.url`,
-    // or, for the two network checks, by narrowing to this run's bundles first. The
+    //       or, for the two network checks, by narrowing to this run's bundles first. The
     //       remainder of the bundle-selecting checks are global NEGATIVES ("no bundle anywhere
     //       contains X"), which a recovered stale bundle can only make stricter, never falsely green.
     //   (b) Three positive selectors are NEITHER run-scoped nor negatives — the two route-naming

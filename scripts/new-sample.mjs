@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Scaffold a sample application under samples/<name>/ with the SHARED harness every sample needs:
 // the pnpm overrides that pin every @bugsee/* dependency to a local pre-publish tarball, the .env
-// convention for the staging app token, and the the sample records SDK defects in.
+// convention for the staging app token, and the FINDINGS.md the sample records SDK defects in.
 //
 //   node scripts/new-sample.mjs react-spa "@bugsee/react"
 //

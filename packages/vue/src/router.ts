@@ -1,6 +1,6 @@
 import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/vue ROUTER NAMING integration (+ the F5/D5 two-phase naming seam). On a
+// The @bugsee/vue ROUTER NAMING integration (and the two-phase naming seam). On a
 // navigation, vue-router knows the matched route PATTERN (`/users/:id` — the matcher rewrites a
 // relatively-configured child to its absolute path at addRoute time, and an absolute-configured child is
 // already full, so the DEEPEST matched record's `path` is the full pattern either way); refine the active

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
-// (persistence & recovery): capture a crash, then KILL the browser process before it can finish
+// Persistence & recovery: capture a crash, then KILL the browser process before it can finish
 // uploading, then relaunch against the SAME profile dir (so IndexedDB persists) and confirm the SDK
 // recovers and uploads the crash on the next launch.
 

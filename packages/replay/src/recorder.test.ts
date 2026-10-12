@@ -374,7 +374,7 @@ describe('createReplayCaptureProvider', () => {
     expect(o?.recordCrossOriginIframes).toBe(false); // canvas does not disturb the other options
   });
 
-  describe('canvas restarts are bounded (: rrweb cannot release canvas workers / rAF loops)', () => {
+  describe('canvas restarts are bounded (rrweb cannot release canvas workers / rAF loops)', () => {
     const canvas = {
       recordCanvas: true as const,
       sampling: { canvas: 2 },

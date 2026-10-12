@@ -66,10 +66,10 @@ export function getPerformanceApi(
 /**
  * Report an (already framework-preprocessed) error to the launched client. A no-op when no SDK is launched.
  *
- * contained. This runs INSIDE the host framework's error seam — the one place whose purpose is to
+ * Contained. This runs INSIDE the host framework's error seam — the one place whose purpose is to
  * make an error survivable — so an SDK-internal failure here did two things at once: it escaped into the
  * framework, and it stopped the customer's own handler from ever running. Measured against real Vue, that
- * turned a fully-recovered mount into a throw out of `app.mount()` and an empty DOM
+ * turned a fully-recovered mount into a throw out of `app.mount()` and an empty DOM.
  * `neverThrow` also attaches a rejection
  * handler to `logException`'s promise, so the fire-and-forget call cannot surface as an unhandled rejection
  * in the host either.

@@ -6,7 +6,7 @@ import { seedRecipes, type Recipe } from '../data/recipes';
 // A tiny in-process "backend" for the Recipe Book sample, mounted as a Vite dev/preview server
 // middleware so `pnpm dev` and `pnpm build && pnpm preview` are both a single command. It is a REAL
 // API — recipes are actually stored (in-memory) and actually mutated by the editor — plus a family of
-// deliberately-broken endpoints the Scenario panel drives to exercise (network capture).
+// deliberately-broken endpoints the Scenario panel drives to exercise network capture.
 
 let recipes: Recipe[] = seedRecipes.map((r) => ({ ...r }));
 
@@ -108,7 +108,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
 
   if (path === '/api/scenarios/big') {
     // Larger than the SDK default maxNetworkBodySize (20480 bytes) so the capture must truncate, not
-    // buffer unbounded — the "body over maxNetworkBodySize" leg of.
+    // buffer unbounded — the "body over maxNetworkBodySize" leg of the network-capture scenario.
     const big = 'x'.repeat(60_000);
     sendJson(res, 200, { big });
     return true;

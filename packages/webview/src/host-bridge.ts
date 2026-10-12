@@ -84,7 +84,7 @@ export function createHostBridge(opts?: {
   const transport = opts?.transport;
   const buffer: string[] = [];
 
-  // PINNED on first resolve (Wave 0.3 / D-A4).
+  // PINNED on first resolve.
   //
   // This used to re-read `global.BugseeBridge` on every post, so any script loading after the SDK could
   // assign its own `{post}` and receive the whole capture stream — logs, request URLs, bodies — while the

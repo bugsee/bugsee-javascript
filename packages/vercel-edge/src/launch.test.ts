@@ -338,7 +338,7 @@ describe('launchEdge', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// Wave 0.1a: supplying AsyncLocalStorage explicitly.
+// Supplying AsyncLocalStorage explicitly.
 //
 // The adversarial review proved on real workerd 1.20260722.1 that `globalThis.AsyncLocalStorage` does NOT
 // exist on Cloudflare under ANY compatibility flag — it is reachable only as an export of
@@ -379,7 +379,7 @@ describe('launchEdge — asyncLocalStorage injection', () => {
   });
 });
 
-// S4.5: the partitioned store must actually be WIRED IN.
+// The partitioned store must actually be WIRED IN.
 //
 // Earlier changes built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
 // selected the partitioned store, so the whole chain was inert. This is the switch.
@@ -412,7 +412,7 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     [0],
     [''],
     [{}],
-  ])('an invalid partitionCaptureByTenant %j FAILS ON (partitioned) and is reported (R4V-1)', async (value) => {
+  ])('an invalid partitionCaptureByTenant %j FAILS ON (partitioned) and is reported', async (value) => {
     const errors: Error[] = [];
     const client = launchEdge('tok', {
       partitionCaptureByTenant: value,
@@ -580,7 +580,7 @@ describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
 
 describe('launchEdge — reused non-partitioned client diagnostic', () => {
   it('names the isolation loss when a partitioning launch reuses a non-partitioned client', () => {
-    // Review pass 2: `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
+    // `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
     // then a Durable Object's lazy launcher reuses that carrier client — which does not partition. The
     // only signal was the generic "called more than once", which does not mention the leak.
     const carrier = {};
@@ -632,7 +632,7 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
 });
 
 describe('launchEdge — the partition bound and the budget divisor cannot disagree', () => {
-  // Review pass 2-fixes: the store coerced maxPartitions but launchEdge's divisor used the RAW
+  // The store coerced maxPartitions but launchEdge's divisor used the RAW
   // value, so `0` restored a full budget per partition (the 90 MB blow-up) and `NaN` produced a NaN budget
   // that disabled the byte cap outright. Both now route through the one exported coercion.
   const budgetsFor = async (maxTenantPartitions: unknown): Promise<number[]> => {

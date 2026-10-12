@@ -2,7 +2,7 @@ import { setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reportError } from './adapter';
 
-// the shared host boundary for @bugsee/vue, angular, svelte and solid.
+// The shared host boundary for @bugsee/vue, angular, svelte and solid.
 //
 // `reportError` runs INSIDE the framework's error seam, whose whole purpose is to make an error survivable.
 // Unguarded, an SDK-internal failure escaped into the framework AND prevented the customer's own handler

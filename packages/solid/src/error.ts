@@ -5,7 +5,7 @@ import {
   reportError,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/solid ERROR SEAM (fan-out — the F6-thin pattern for Solid). Solid catches
+// The @bugsee/solid ERROR SEAM (the thin seam pattern shared by the frontend adapters, here for Solid). Solid catches
 // render/reactive errors via the built-in `<ErrorBoundary>` component and the `onError(handler)` /
 // `catchError(fn, handler)` primitives — all of which hand a plain `error` to a USER callback. So (unlike
 // React) we don't ship a boundary component; we provide the reporter the user wires into Solid's own seam:

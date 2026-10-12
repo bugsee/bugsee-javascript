@@ -1,4 +1,4 @@
-// Integration (cross-package boundary, standards): @bugsee/replay-canvas's resolved config must COMPOSE
+// Integration (cross-package boundary): @bugsee/replay-canvas's resolved config must COMPOSE
 // with @bugsee/replay's recorder seam — i.e. flow through registerReplay into the rrweb `record()` options.
 // Uses the REAL registerReplay + REAL createCanvasRecordConfig with a fake `record` (no rrweb).
 import type { CaptureProviderInit } from '@bugsee/core';

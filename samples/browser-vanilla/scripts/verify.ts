@@ -124,7 +124,7 @@ async function runScenarioPanel(page: Page): Promise<Row[]> {
     const title = (await page.locator(`tr[data-row="${id}"] strong`).textContent()) ?? id;
     await page.locator(`button[data-scenario="${id}"]`).click();
     await page.waitForTimeout(250);
-    // The 200-exception storm (storm) and a couple of others take longer than the default poll.
+    // The 200-exception storm and a couple of others take longer than the default poll.
     const cell = page.locator(`td[data-result="${id}"]`);
     await page
       .waitForFunction(

@@ -80,11 +80,11 @@ export function createBridgeControl(opts?: {
   // protocol. A page script cannot force the latch (it needs the secret) or release it (no path back).
   //
   // With a native-minted secret there is no upgrade and no latch: the channel is closed from the first
-  // message (see `admits`). The open period is precisely what removed, because a page script could
+  // message (see `admits`). The open period is precisely what the native-minted secret removed, because a page script could
   // stop capture inside it — and forever, when the realm had no CSPRNG to mint a token with.
   const auth = opts?.auth ?? { authenticated: false };
   // A page script can call `__bugsee_bridge.control(...)` in a loop, so the rejection report is ONCE per
-  // handler. declined to report sink swaps for exactly this reason ("a page could trigger it at will
+  // handler. The host bridge declined to report sink swaps for exactly this reason ("a page could trigger it at will
   // to flood `onError`"); applying the opposite rule here would have been inconsistent.
   let reportedRejection = false;
 
@@ -126,7 +126,7 @@ export function createBridgeControl(opts?: {
         // Rejected wholesale: config as well as commands. Flipping `reportTrigger` from the page is the
         // quiet half of this attack (the WebView opens native bug reports at will, past the gate).
         // Contained AND rate-limited. `control()` is documented "never throws" because an exception here
-        // propagates into native's `evaluateJavascript` — the fail-open shape fixed as — and a host
+        // propagates into native's `evaluateJavascript` — the fail-open shape fixed earlier — and a host
         // `onError` is arbitrary app code that may throw.
         if (!reportedRejection) {
           reportedRejection = true;

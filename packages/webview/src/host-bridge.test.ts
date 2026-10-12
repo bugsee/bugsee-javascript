@@ -76,7 +76,7 @@ describe('createHostBridge', () => {
   });
 });
 
-// WAVE 0.3 / — the sink is pinned on FIRST resolve.
+// The sink is pinned on FIRST resolve.
 //
 // `resolve()` re-read `global.BugseeBridge` inside every `post()`, so any script loading after the
 // SDK — an ad tag, an analytics snippet, a chat widget — could assign its own `{post}` and receive 100% of
@@ -303,7 +303,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 
   it('keeps delivering to the pinned sink after the page swaps window.webkit', () => {
-    // The tap, in its iOS shape. `window.webkit` is an ordinary page-visible object, so a script
+    // The page-script tap, in its iOS shape. `window.webkit` is an ordinary page-visible object, so a script
     // that runs after the SDK can replace the whole tree and receive 100% of subsequent capture — logs,
     // request URLs, bodies — with the SDK still apparently working. Pinning the bound method on first
     // resolve is what makes the swap unobservable.
@@ -375,7 +375,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 
   it('stamps the capture nonce over the WebKit sink too', () => {
-    // is enforced at the single stamping choke point, so it must hold for every transport. A sink
+    // Nonce stamping is enforced at the single choke point, so it must hold for every transport. A sink
     // that bypassed it would have 100% of its capture dropped by native as forged.
     const posted: string[] = [];
     createHostBridge({ global: withWebkit((r) => posted.push(r)), nonce: 'n-ios' }).post(

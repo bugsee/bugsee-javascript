@@ -26,7 +26,7 @@ describe('sha256Hex', () => {
   });
 
   it('encodes a string as UTF-8 before hashing (multi-byte input)', async () => {
-    // "é" is U+00E9: UTF-8 bytes A9. A Latin-1 encoding would hash the single byte instead.
+    // "é" is U+00E9: UTF-8 bytes C3 A9. A Latin-1 encoding would hash the single byte E9 instead.
     const utf8 = '4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c';
     expect(await sha256Hex('\u00e9')).toBe(utf8);
     expect(await sha256Hex(new Uint8Array([0xc3, 0xa9]))).toBe(utf8);

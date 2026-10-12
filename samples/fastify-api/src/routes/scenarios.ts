@@ -30,7 +30,7 @@ export function buildScenariosPlugin() {
       return c;
     };
 
-    // ---------------------------------------------------------------- · Launch & lifecycle
+    // ---------------------------------------------------------------- Launch & lifecycle
     fastify.get('/s1/status', async (_req, reply) => {
       await reply.send({ isLaunched: client().isLaunched() });
     });
@@ -51,7 +51,7 @@ export function buildScenariosPlugin() {
       await reply.send({ sameInstance: before === after });
     });
 
-    // ---------------------------------------------------------------- · Identity & attributes
+    // ---------------------------------------------------------------- Identity & attributes
     fastify.post('/s2/identity-attributes', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const c = client();
@@ -94,7 +94,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- · Manual telemetry
+    // ---------------------------------------------------------------- Manual telemetry
     fastify.post('/s3/telemetry', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const c = client();
@@ -117,7 +117,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- · Exceptions
+    // ---------------------------------------------------------------- Exceptions
     fastify.post('/s4/error-instance', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       void client().logException(new Error(`s4-error-instance-${marker}`));
@@ -182,7 +182,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- · Crashes
+    // ---------------------------------------------------------------- Crashes
     fastify.get('/s5/route-throw', async (req: FastifyRequest) => {
       const marker = markerOf(req);
       throw new Error(`s5-route-throw-${marker}`);
@@ -240,7 +240,7 @@ export function buildScenariosPlugin() {
       await reply.status(202).send({ accepted: true, marker });
     });
 
-    // ---------------------------------------------------------------- · Console capture
+    // ---------------------------------------------------------------- Console capture
     fastify.post('/s6/console', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       // eslint-disable-next-line no-console
@@ -263,7 +263,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- · Network capture
+    // ---------------------------------------------------------------- Network capture
     fastify.get('/s7/fetch-get', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const r = await fetch(thirdPartyUrl('/ok'));
@@ -333,7 +333,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- · Filters & redaction
+    // ---------------------------------------------------------------- Filters & redaction
     const SECRET_LOG_MARKER = 'SECRET_LOG_VALUE';
     const VETO_MARKER = 'VETO_ME';
     let filtersInstalled = false;
@@ -425,7 +425,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker, filterInvoked: installed });
     });
 
-    // ---------------------------------------------------------------- · Performance / APM
+    // ---------------------------------------------------------------- Performance / APM
     fastify.post('/s9/manual-span', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const perf = client().ext('performance');
@@ -453,7 +453,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- · Distributed tracing
+    // ---------------------------------------------------------------- Distributed tracing
     fastify.get('/s10/outbound-trace', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const r = await fetch(thirdPartyUrl('/alert'), {
@@ -465,7 +465,7 @@ export function buildScenariosPlugin() {
       await reply.send({ marker, traceparentReceivedByThirdParty: body.traceparentSeen });
     });
 
-    // ---------------------------------------------------------------- · Persistence & recovery
+    // ---------------------------------------------------------------- Persistence & recovery
     fastify.get('/s12/info', async (_req, reply) => {
       await reply.send({
         capturedDataStore: 'disk',

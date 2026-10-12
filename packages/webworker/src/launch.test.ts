@@ -280,7 +280,7 @@ describe('launch — capture recovery (persist the rolling buffer)', () => {
       'SpiderMonkey (Firefox worker)',
       'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
     ],
-  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+  ])('crash.json frames are parsed from a %s stack, not left empty', async (_engine, stack) => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport }));
     const error = new Error('non-v8-stack');
@@ -413,7 +413,7 @@ describe('launch — capture recovery (persist the rolling buffer)', () => {
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // marker swept
   });
 
-  // (recovery double-upload). The worker gets the SAME reconciliation as the browser tier (one
+  // Recovery double-upload: the worker gets the SAME reconciliation as the browser tier (one
   // implementation, in `browser-utils`'s `Coexistence`): a sibling killed between the durable stage and the
   // upload settling leaves BOTH a staged bundle and its incident's marker, and that must be ONE upload.
   it('uploads an incident exactly ONCE when a dead sibling left both its staged bundle and its marker', async () => {
@@ -620,7 +620,7 @@ describe('launch — capture recovery (persist the rolling buffer)', () => {
   // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
   // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
   // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
-  // could have worked. Before the test failed on the mutation only incidentally, through the
+  // could have worked. Before that change, the test failed on the mutation only incidentally, through the
   // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
   // that side effect and left the test unable to fail.
   //

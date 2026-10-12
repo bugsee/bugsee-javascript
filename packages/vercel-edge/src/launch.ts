@@ -52,7 +52,7 @@ import {
   type RunScopedStore,
 } from './request-context-store';
 
-// The edge composition root (E4) — the fetch/memory analog of node's launch,
+// The edge composition root — the fetch/memory analog of node's launch,
 // stripped for a V8 isolate: NO node:*/DOM, NO durable bundle queue / crash-recovery / IndexedDB (the isolate
 // is ephemeral → memory-only), NO window/process detection. It assembles the runtime-agnostic kernel
 // (createClient) with the WinterCG fetch transport + an in-memory capture store + the edge environment + the
@@ -90,8 +90,7 @@ export interface BugseeEdgeLaunchOptions {
    *
    * **Supply this on Cloudflare Workers.** `globalThis.AsyncLocalStorage` does NOT exist on `workerd` under
    * any compatibility flag — it is reachable only as an export of `node:async_hooks` — so the probe always
-   * misses there and per-request context silently degrades (verified on real workerd;
-   * ). This tier cannot import `node:async_hooks` itself without breaking bundles for
+   * misses there and per-request context silently degrades (verified on real workerd). This tier cannot import `node:async_hooks` itself without breaking bundles for
    * deployments that lack `nodejs_compat`, so the store is injected instead:
    *
    * ```ts
@@ -103,7 +102,7 @@ export interface BugseeEdgeLaunchOptions {
   /**
    * Keep each TENANT's capture in its own partition, so an incident uploads only the faulting tenant's
    * data. Set by `@bugsee/cloudflare`, where many Durable Objects for different customers share one
-   * isolate and therefore one capture ring — the leak proven on real workerd
+   * isolate and therefore one capture ring — the leak proven on real workerd.
    *
    * Default false on Vercel Edge and plain fetch handlers (single-tenant: partitioning there would be overhead
    * with nothing to separate). `@bugsee/cloudflare` defaults it to TRUE.
@@ -232,7 +231,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     // A repeat launch that ASKED for tenant partitioning gets the first client's store, which may not
     // partition — e.g. `launchEdge(token)` ran first (it is re-exported by @bugsee/cloudflare) and a
     // Durable Object's lazy launcher then reuses it. The generic message above does not name that
-    // consequence, and silence here is how the cross-tenant leak comes back (review pass 2).
+    // consequence, and silence here is how the cross-tenant leak comes back.
     if (resolveFailOnBoolean(options.partitionCaptureByTenant, false)) {
       // Guarded: this runs inside launch() against a client we did not create — it may lack the service,
       // be mid-teardown, or be a foreign object someone else placed on the carrier. A throw here would

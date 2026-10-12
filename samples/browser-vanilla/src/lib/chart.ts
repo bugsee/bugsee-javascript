@@ -1,6 +1,6 @@
 // A hand-rolled <canvas> price-history sparkline. Deliberately plain 2D canvas drawing (no chart
 // library) — it is the canvas-replay target (@bugsee/replay-canvas records this element's pixels
-// at a fixed fps or 'all', and / blockAllCanvas / .bugsee-show are exercised against it too).
+// at a fixed fps or 'all', and blockAllCanvas / .bugsee-show are exercised against it too).
 
 export function drawSparkline(canvas: HTMLCanvasElement, values: number[], color = '#7ee2b8'): void {
   const ctx = canvas.getContext('2d');

@@ -1,5 +1,5 @@
 // @bugsee/service — per-Client service registry. Firebase @firebase/component
-// pattern, renamed (Component -> Service, item 1 /) and reduced to single-instance: LAZY (default) +
+// pattern, renamed (Component -> Service) and reduced to single-instance: LAZY (default) +
 // EXPLICIT instantiation modes, pending-Deferred late registration, clearInstance, and onInit.
 // No global registry, no EAGER mode.
 

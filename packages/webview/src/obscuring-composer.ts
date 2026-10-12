@@ -7,7 +7,7 @@ import {
 } from './obscuring-source';
 import type { SecureArea } from './protocol';
 
-// Sub-frame secure-rect COMPOSITION (— the open frame-attribution item).
+// Sub-frame secure-rect COMPOSITION.
 // A WebView can host (cross-origin) sub-frames, each injected with its own SDK. The native mask is composed over
 // the WHOLE page, so the TOP frame must report the UNION of every frame's secure rects (in top-document
 // coordinates) — otherwise sub-frame fields go unmasked. Ported from the legacy `VIEWS_BUBBLE` mechanism:

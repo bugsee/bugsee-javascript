@@ -187,7 +187,7 @@ async function main() {
     notesAfterNew === notesBeforeNew + 1,
   );
 
-  // Hoisted to constants because (below) asserts that these exact TYPED-IN input values never
+  // Hoisted to constants because the replay check (below) asserts that these exact TYPED-IN input values never
   // appear in the uploaded replay stream — if the literal here and the needle there ever drifted
   // apart, that masking assertion would silently become a search for a string nobody typed.
   const TYPED_TITLE = 'Verify run note';
@@ -265,7 +265,7 @@ async function main() {
   // `replay.bin` in EVERY bundle whether or not it wants to. "N/A" would mean "the sample uploads a session
   // recording of a real user's page on every report and asserts nothing about it".
   //
-  // WHY IT RUNS HERE and not with the other wire rows: replay is per-CLIENT, and / relaunch the
+  // WHY IT RUNS HERE and not with the other wire rows: replay is per-CLIENT, and the launch and performance checks relaunch the
   // client several times. A replay stream read after those relaunches contains only post-relaunch
   // events, which would make the masking leg below vacuous — the typed values could not appear even
   // if masking were completely broken. Running before the first relaunch keeps the app-smoke block's
@@ -331,10 +331,11 @@ async function main() {
       replayDigest.found[TYPED_BODY] === false &&
       replayDigest.found['note-title'] === true,
   );
-  // Drain 's own report before the block starts counting issue calls between checkpoints —
+  // Drain the replay check's own report before the next block starts counting issue calls between checkpoints —
   // without this its straggler would be inside s2-attr-before-after's `min: 2` slice.
   await waitForQuiet();
 
+  // Launch & lifecycle
   await click(page, 's1-flush', { wait: 1000 });
   record('s1-flush', 'flush(5000) resolves', /flush -> true/.test(await statusText(page, 's1-flush')));
 
@@ -360,6 +361,7 @@ async function main() {
     /isLaunched\(\) after stop -> false/.test(stopStatus ?? ''),
   );
 
+  // Identity & attributes
   await click(page, 's2-set-user');
   record('s2-set-user', 'setUserIdentifier', (await statusText(page, 's2-set-user'))?.includes('scenario-panel-user') ?? false);
   await click(page, 's2-attributes');
@@ -438,6 +440,7 @@ async function main() {
   await click(page, 's3-breadcrumb');
   record('s3-breadcrumb', 'addBreadcrumb() every field (client present when called)', /client present: true/.test(await statusText(page, 's3-breadcrumb')));
 
+  // Exceptions
   await click(page, 's4-error', { wait: 400 });
   calls = await waitForCalls(isAcceptedIssueCall);
   record('s4-error', 'logException(new Error) -> issue call ACCEPTED by staging', calls.some(isAcceptedIssueCall));
@@ -492,6 +495,7 @@ async function main() {
   calls = await waitForCalls(isAcceptedIssueCall);
   record('s5-rejection', 'unhandled rejection -> issue call ACCEPTED by staging', calls.some(isAcceptedIssueCall));
 
+  // Console capture
   const consoleMsgs = [];
   page.on('console', (m) => consoleMsgs.push(m.text()));
   await click(page, 's6-console');
@@ -499,6 +503,7 @@ async function main() {
   await click(page, 's6-circular');
   record('s6-circular', 'console.log(circular) does not throw', /threw: false/.test(await statusText(page, 's6-circular')));
 
+  // Network capture
   await click(page, 's7-get');
   record('s7-get', 'fetch GET reads the real response', (await statusText(page, 's7-get'))?.includes('200') ?? false);
   await click(page, 's7-post-json');
@@ -538,6 +543,7 @@ async function main() {
     /"type":"welcome"/.test(wsStatus ?? '') && /connected to presence channel/.test(wsStatus ?? ''),
   );
 
+  // Filters & redaction
   await click(page, 's8-install');
   await click(page, 's8-network', { wait: 400 });
   const filterLog1 = await page.textContent('[data-testid="s8-filter-log"]');
@@ -582,9 +588,9 @@ async function main() {
   //      `s7-post-json` (src/scenarios.ts) POSTs to that very URL EARLIER in this same sweep. Measured:
   //      the entry it read was s7's — `{type:'before', headerKeys:['Content-Type','traceparent',
   //      'tracestate'], body:'{"hello":"world","n":42}'}` — which never carried `x-secret-token` or an
-  // SSN at all. 's real entry sat further down the array, unread. Proven non-falsifiable by an
+  // SSN at all. S8's real entry sat further down the array, unread. Proven non-falsifiable by an
   //      isolated probe run with `s8-install` NEVER clicked (no filter installed): every other -wire
-  // check in this block went red and THIS one stayed green, while 's real entry still carried
+  // check in this block went red and THIS one stayed green, while S8's real entry still carried
   //      `x-secret-token`.
   //  (2) UNFALSIFIABLE ASSERTION even on the right entry. `!body.includes('123-45-6789')` cannot fail:
   //      `ssn` is in packages/protocol/src/sensitive.ts's SENSITIVE_KEY_SUBSTRINGS (:62) and
@@ -694,16 +700,16 @@ async function main() {
   // interceptor is additive (the app's console still prints), and it stays green with console capture off
   // entirely. S6 is a CAPTURE scenario, so its claim needs a wire-level check of its own.
   //
-  // The evidence was already sitting in the same `mutateBundle` the / wire rows read (runs
-  // earlier in this sweep and no relaunch resets the capture store between and s8-report-mutate).
+  // The evidence was already sitting in the same `mutateBundle` the S7/S8 wire rows read (S6 runs
+  // earlier in this sweep and no relaunch resets the capture store between S6 and s8-report-mutate).
   // MEASURED off a real uploaded logs.json before being asserted:
-  // {level:3, source:'console', message:': console.log {"a":1}'}, {3,': console.info'},
-  // {2,': console.warn'}, {1,': console.error'}, {4,': console.debug'} — and NOTHING at all
+  //   {level:3, source:'console', message:'S6: console.log {"a":1}'}, {3,'S6: console.info'},
+  //   {2,'S6: console.warn'}, {1,'S6: console.error'}, {4,'S6: console.debug'} — and NOTHING at all
   //   for console.trace. `level` is the numeric wire value (packages/protocol/src/levels.ts:7-13 —
   //   1=Error 2=Warning 3=Info 4=Debug 5=Verbose), so asserting it also pins DEFAULT_LEVELS' mapping
   //   (packages/capture/src/console-interceptor.ts:24-30), which a message-only check could not tell
   //   apart from a regression that filed every console call as `info`. `source: 'console'` separates
-  // these from the `client.log()` entries.
+  //   these from the `client.log()` entries.
   const consoleEntries = (mutateBundle?.bundle?.logEntries ?? []).filter((e) => e.source === 'console');
   const consoleEntry = (prefix) =>
     consoleEntries.find((e) => typeof e.message === 'string' && e.message.startsWith(prefix));
@@ -854,6 +860,7 @@ async function main() {
   );
   await click(page, 's8-uninstall');
 
+  // Performance
   await click(page, 's9-manual-transaction');
   record('s9-manual-transaction', 'manual transaction + 6 child spans (every SpanStatus), no throw', (await statusText(page, 's9-manual-transaction'))?.includes('6 child spans') ?? false);
   await click(page, 's9-set-route-name');

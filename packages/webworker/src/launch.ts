@@ -458,7 +458,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
   // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
-  // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
+  // coexistence lock + IndexedDB handles: the same contract as the browser tier.
   // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
   // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first

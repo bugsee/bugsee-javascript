@@ -65,7 +65,7 @@ describe('the sensitive-input floor (fuzz)', () => {
    * THE hard floor: whatever the options say, and whatever the markup says, a sensitive input can never
    * match the un-mask selector.
    *
-   * This is. rrweb resolves an input's value as
+   * This matters because rrweb resolves an input's value as
    * `unmaskInputSelector.matches(el) ? raw : maskInputValue(…)` — the un-mask check comes FIRST and
    * short-circuits, so `maskInputOptions:{password:true}` is never consulted for an un-masked element.
    * Feeding the caller's text un-mask selector into the input path therefore voided "passwords are always
@@ -193,7 +193,7 @@ describe('selector safety (fuzz)', () => {
    * Every selector this resolver emits must PARSE.
    *
    * Selectors are comma-joined into one string, and rrweb's `catch {}` answers "not blocked" when
-   * `matches()` throws — so a single unparseable fragment silently disables blocking page-wide. That is
+   * `matches()` throws — so a single unparseable fragment silently disables blocking page-wide. That is the fail-open this test guards against.
    */
   it('always emits parseable selectors', () => {
     fc.assert(

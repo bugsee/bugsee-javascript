@@ -84,7 +84,7 @@ function parseBundle(seq: number, body: Uint8Array): ParsedBundleSummary | undef
   try {
     const files = unzipSync(body) as Record<string, Uint8Array>;
     const summary: ParsedBundleSummary = { files: Object.keys(files) };
-    // (session replay). `replay.bin` is the gzipped rrweb event stream
+    // Session replay: `replay.bin` is the gzipped rrweb event stream
     // (packages/replay/src/encoder.ts). Recorded here so verify.mjs can assert on the RECORDING — that it
     // exists, that it decodes to real rrweb events, and what text those events do and do not contain —
     // instead of stopping at "the relaunch didn't throw", which is all five S11 checks asserted and
@@ -220,7 +220,7 @@ export interface ReplayInspection {
    *  3 = IncrementalSnapshot). A recording with no FullSnapshot cannot be replayed at all. */
   events: number;
   eventTypes: number[];
-  /** For each needle: whether it appears anywhere in the decoded rrweb JSON. This is what turns from
+  /** For each needle: whether it appears anywhere in the decoded rrweb JSON. This is what turns session-replay checks from
    *  "the option was accepted" into "the recording actually redacted the secret" — and, via the un-masked
    *  needles, into a discriminating check rather than a vacuous one (see verify.mjs's s11-replay-masking-wire). */
   hits: Record<string, boolean>;
