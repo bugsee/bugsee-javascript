@@ -46,6 +46,33 @@ describe('createPerformanceUploader', () => {
     expect(store.size()).toBe(1);
   });
 
+  it('an inactive client (stopped / killed) drops the batch, stops the interval and the realtime wrap', async () => {
+    const store = createTransactionStore();
+    const send = vi.fn(async () => {});
+    const { scheduler, cleared } = fakeScheduler();
+    let active = true;
+    const uploader = createPerformanceUploader({
+      store,
+      send,
+      scheduler,
+      realtime: true,
+      isActive: () => active,
+    });
+    uploader.start();
+    store.add(wire('a'));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    active = false;
+    store.add(wire('b')); // the realtime wrap flushes, finds the client inactive, and tears itself down
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(cleared).toHaveLength(1);
+    store.add(wire('c')); // the wrap is gone: nothing sends, nothing flushes
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(store.size()).toBe(1);
+  });
+
   it('batched mode (the default) leaves the store untouched between ticks', async () => {
     const store = createTransactionStore();
     const send = vi.fn(async () => {});

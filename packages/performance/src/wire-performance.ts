@@ -139,6 +139,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     scheduler: options.scheduler,
     flushIntervalMs: options.flushIntervalMs,
     ...(options.realtime === true ? { realtime: true } : {}),
+    isActive: () => options.client.isLaunched(),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   uploader.start();

@@ -19,6 +19,12 @@ export interface PerformanceUploaderDeps {
   flushIntervalMs?: number;
   /** `performanceUploadMode: 'realtime'`: send each transaction as soon as it is stored, not on the tick. */
   realtime?: boolean;
+  /**
+   * Whether the owning client still accepts data. When it does not (stopped, or killed by the collector
+   * rejecting the token), buffered transactions are dropped instead of POSTed and the uploader stops itself:
+   * a rejected token must not keep an interval, or a realtime `add` wrap, sending requests for ever.
+   */
+  isActive?: () => boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -38,6 +44,10 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
 
   const flush = async (): Promise<void> => {
     const transactions = deps.store.drain();
+    if (deps.isActive?.() === false) {
+      stop(); // the batch is dropped, not sent
+      return;
+    }
     if (transactions.length === 0) return;
     try {
       await deps.send(transactions);
@@ -61,6 +71,14 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
     };
   };
 
+  const stop = (): void => {
+    restoreAdd?.();
+    restoreAdd = undefined;
+    if (handle === null) return;
+    deps.scheduler.clearInterval(handle);
+    handle = null;
+  };
+
   return {
     flush,
     start() {
@@ -70,12 +88,6 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
         void flush();
       }, flushIntervalMs);
     },
-    stop() {
-      restoreAdd?.();
-      restoreAdd = undefined;
-      if (handle === null) return;
-      deps.scheduler.clearInterval(handle);
-      handle = null;
-    },
+    stop,
   };
 }

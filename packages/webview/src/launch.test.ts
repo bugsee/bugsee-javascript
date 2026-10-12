@@ -2302,6 +2302,30 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     ).not.toBe('[]');
   });
 
+  it('a page-supplied fresh carrier (or global) cannot mint a second live client', () => {
+    const fake = fakeGlobal();
+    const first = track('tok', baseOptions({ global: fake.global, carrier: {} }));
+    expect(first).toBeDefined();
+    const viaCarrier = launch(
+      'tok',
+      baseOptions({ global: fake.global, carrier: {} }),
+    ) as unknown as Record<string | symbol, unknown>;
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(1);
+    expect(Object.getOwnPropertySymbols(viaCarrier)).toEqual([]);
+    expect(typeof viaCarrier.stop).toBe('function');
+    const sameCarrier = {};
+    const firstOnShared = track(
+      'tok2',
+      baseOptions({ global: fakeGlobal().global, carrier: sameCarrier }),
+    );
+    expect(firstOnShared).toBeDefined();
+    const viaGlobal = launch(
+      'tok2',
+      baseOptions({ global: fakeGlobal().global, carrier: sameCarrier }),
+    ) as unknown as Record<string | symbol, unknown>;
+    expect(Object.getOwnPropertySymbols(viaGlobal)).toEqual([]);
+  });
+
   it('a page-forced RELAUNCH cannot un-latch the control channel', async () => {
     // SEV2: `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
     // whose singleton guard reads a mutable carrier field. So the page could clear the carrier, relaunch,

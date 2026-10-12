@@ -378,7 +378,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // back comes from module scope — RESTRICTED, because `launch` is a page global and a repeat call is
   // therefore a page-reachable request for the live client. See `restrictedClientFor`.
   // `launchedClients` is module-private, so it stays set when page script clears the page-writable `carrier.client`.
-  const launchedClient = launchedClients.get(carrierKey(carrier));
+  // Looked up by the carrier AND by the control global: `carrier` is a page-suppliable option (a fresh `{}` would
+  // otherwise look like a first launch), but the page cannot make the native bridge global a different object.
+  const launchedClient =
+    launchedClients.get(carrierKey(carrier)) ?? launchedClients.get(global as object);
   if (getCarrierClient<unknown>(carrier) !== undefined || launchedClient !== undefined) {
     options.onError?.(
       new Error(
@@ -607,6 +610,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       publicClient = client;
     }
     launchedClients.set(carrierKey(carrier), publicClient);
+    launchedClients.set(global as object, publicClient);
     setCarrierClient(carrierFacadeFor(publicClient), carrier);
     return publicClient;
   }
@@ -871,8 +875,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
         setCarrierStatus(BugseeStatus.Stopped, carrier);
       }
       clearCarrierClient(facade, carrier);
-      if (launchedClients.get(carrierKey(carrier)) === publicClient) {
-        launchedClients.delete(carrierKey(carrier));
+      for (const key of [carrierKey(carrier), global as object]) {
+        if (launchedClients.get(key) === publicClient) {
+          launchedClients.delete(key);
+        }
       }
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
@@ -886,6 +892,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     },
   };
   launchedClients.set(carrierKey(carrier), publicClient);
+  launchedClients.set(global as object, publicClient);
   setCarrierClient(facade, carrier);
   setCarrierStatus(BugseeStatus.Launched, carrier); // what a repeat launch from another module copy reports
   return publicClient;
