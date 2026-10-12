@@ -673,7 +673,7 @@ describe('umbrella relaunch / getStatus (browser)', () => {
   it('relaunch stops the old client and returns a fresh one with the extensions re-wired', async () => {
     const first = await track(launch('tok', base()));
     expect(getStatus()).toBe(BugseeStatus.Launched);
-    const second = await track(relaunch());
+    const second = await track(relaunch(base()));
     expect(second).not.toBe(first);
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
     expect(second.getStatus()).toBe(BugseeStatus.Launched);

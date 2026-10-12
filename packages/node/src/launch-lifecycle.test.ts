@@ -265,6 +265,48 @@ describe('a clean stop marks its on-disk subtree recoverable, an unclean one doe
     expect(stopped(dir)).toBe(false);
   });
 
+  it('L5: stop() then client.launch() before the drain settles never marks the LIVE subtree', async () => {
+    const dir = dirFor();
+    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
+    const stopping = client.stop();
+    client.launch(); // relaunched before the drain settles: the instance is live again
+    await stopping;
+    expect(client.isLaunched()).toBe(true);
+    expect(stopped(dir)).toBe(false); // a next launch would claim + delete a live writer's subtree
+    live.push(client);
+  });
+
+  it('L5: a client.launch() after a SETTLED stop removes the stale marker', async () => {
+    const dir = dirFor();
+    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
+    await client.stop();
+    expect(stopped(dir)).toBe(true);
+    client.launch();
+    expect(stopped(dir)).toBe(false);
+    live.push(client);
+  });
+
+  it('L5: a failure removing the stale marker on relaunch goes to onError and the launch still proceeds', () => {
+    const dir = dirFor();
+    const onError = vi.fn();
+    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED, onError }));
+    mkdirSync(join(subtree(dir), '.stopped')); // a directory cannot be removed as a file
+    client.launch();
+    expect(onError).toHaveBeenCalled();
+    expect(client.isLaunched()).toBe(true);
+    live.push(client);
+  });
+
+  it('L5: a second stop() after a client.launch() marks the subtree again once it drains', async () => {
+    const dir = dirFor();
+    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
+    await client.stop();
+    client.launch();
+    expect(stopped(dir)).toBe(false);
+    expect(await client.stop()).toBe(true); // a repeat stop takes the already-torn-down path
+    expect(stopped(dir)).toBe(true);
+  });
+
   it('routes a failure writing the marker to onError and still resolves the stop', async () => {
     const dir = dirFor();
     const onError = vi.fn();
@@ -326,15 +368,26 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and options', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options', async () => {
     const first = launch('tok-1', opts({ captureLogs: false }));
-    const second = await relaunch();
+    const second = await relaunch(opts());
     live.push(second);
     expect(second).not.toBe(first);
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
     expect(second.getStatus()).toBe(BugseeStatus.Launched);
     expect(getStatus()).toBe(BugseeStatus.Launched);
-    expect(second.getHostLaunchOptions()).toHaveProperty([BugseeOption.CaptureLogs], false);
+    // The previous host options are NOT carried over (L18: the slot retains only seams, never the options).
+    expect(second.getHostLaunchOptions()).not.toHaveProperty([BugseeOption.CaptureLogs]);
+  });
+
+  it('L18: the process carrier retains no transport, onError or host options after a launch', () => {
+    launch('tok-1', opts({ captureLogs: false, onError: () => {}, endpoint: 'https://x.test' }));
+    const retained = getCarrier().lastLaunch?.options as Record<string, unknown>;
+    expect(Object.keys(retained)).not.toContain('transport');
+    expect(Object.keys(retained)).not.toContain('onError');
+    expect(Object.keys(retained)).not.toContain('captureLogs');
+    expect(Object.keys(retained)).not.toContain('process');
+    expect(getCarrier().lastLaunch?.appToken).toBe('tok-1');
   });
 
   it('uses NEW options when given (they replace the previous host options)', async () => {
@@ -350,7 +403,7 @@ describe('relaunch', () => {
     launch('tok', opts({ process: proc.proc }));
     const baseline = proc.total();
     for (let i = 0; i < 3; i++) {
-      live.push(await relaunch());
+      live.push(await relaunch(opts({ process: proc.proc })));
       expect(proc.total()).toBe(baseline);
     }
   });

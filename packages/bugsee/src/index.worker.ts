@@ -21,6 +21,7 @@ export {
 } from '@bugsee/core';
 export * from '@bugsee/webworker';
 
+import { relaunchWith } from '@bugsee/core';
 import type { PerformanceFacade } from '@bugsee/performance';
 import {
   type BugseeWorkerLaunchOptions,
@@ -36,3 +37,12 @@ export type Bugsee = WorkerBugsee & PerformanceFacade;
 export function launch(appToken: string, options?: BugseeWorkerLaunchOptions): Bugsee {
   return withPerformanceFacade(launchWorker(appToken, options));
 }
+
+// Lifecycle parity with the node/browser entries: the status enum, the process-level getStatus(), and
+// relaunch() on top of core's relaunchWith, so it re-runs THIS entry's launch (extensions re-wired).
+export { BugseeStatus, getStatus } from './status';
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. */
+export const relaunch = (options?: BugseeWorkerLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

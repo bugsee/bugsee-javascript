@@ -1,8 +1,13 @@
 import type { HttpTransport } from '@bugsee/core';
+import { BugseeStatus } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { launch as launchEdgeLight } from './index.edge-light';
-import { launch as launchWorker } from './index.worker';
-import { launch as launchWorkerd } from './index.workerd';
+import * as edgeLightEntry from './index.edge-light';
+import * as workerEntry from './index.worker';
+import * as workerdEntry from './index.workerd';
+
+const launchEdgeLight = edgeLightEntry.launch;
+const launchWorker = workerEntry.launch;
+const launchWorkerd = workerdEntry.launch;
 
 // The umbrella's worker / edge entries are thin re-exports of the incident-driven platform SDKs, which wire
 // no performance extension. They must still expose the top-level `startTransaction` / `startSpan` /
@@ -43,5 +48,40 @@ describe.each([
     expect(txn.isSampled()).toBe(false);
     expect(client.startSpan('db.query', 'select').getOperation()).toBe('db.query');
     expect(client.getActiveSpan()).toBeUndefined();
+  });
+});
+
+// getStatus / relaunch on the worker and edge entries (review L9): relaunch re-runs THIS entry's launch,
+// stopping the old client first, and the status follows the process state.
+describe.each([
+  [
+    'worker',
+    workerEntry,
+    (carrier: object) => ({ carrier, transport, captureNetwork: false, globalScope: scope }),
+  ],
+  [
+    'edge-light',
+    edgeLightEntry,
+    (carrier: object) => ({ carrier, transport, captureNetwork: false }),
+  ],
+  ['workerd', workerdEntry, (carrier: object) => ({ carrier, transport, captureNetwork: false })],
+] as const)('%s entry lifecycle', (_name, entry, makeOptions) => {
+  it('getStatus follows the process state and relaunch returns a fresh client of this entry', async () => {
+    const carrier = {};
+    const options = makeOptions(carrier);
+    expect(entry.getStatus(carrier)).toBe(BugseeStatus.Stopped);
+    const first = track(entry.launch('tok', options as never) as unknown as Launched);
+    expect(entry.getStatus(carrier)).toBe(BugseeStatus.Launched);
+    const second = track((await entry.relaunch(options as never)) as unknown as Launched);
+    expect(second).not.toBe(first);
+    expect((first as unknown as { getStatus(): BugseeStatus }).getStatus()).toBe(
+      BugseeStatus.Stopped,
+    );
+    expect(entry.getStatus(carrier)).toBe(BugseeStatus.Launched);
+    expect(second.startTransaction('x', 'y').isSampled()).toBe(false); // the entry's own facade is wired
+  });
+
+  it('relaunch before any launch rejects (nothing to reuse)', async () => {
+    await expect(entry.relaunch(makeOptions({}) as never)).rejects.toThrow(/before launch/);
   });
 });

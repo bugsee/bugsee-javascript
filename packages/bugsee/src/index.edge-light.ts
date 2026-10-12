@@ -20,6 +20,7 @@ export {
 } from '@bugsee/core';
 export * from '@bugsee/vercel-edge';
 
+import { relaunchWith } from '@bugsee/core';
 import type { PerformanceFacade } from '@bugsee/performance';
 import {
   type BugseeEdgeLaunchOptions,
@@ -34,3 +35,12 @@ export type Bugsee = EdgeBugsee & PerformanceFacade;
 export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bugsee {
   return withPerformanceFacade(launchEdge(appToken, options));
 }
+
+// Lifecycle parity with the node/browser entries: the status enum, the process-level getStatus(), and
+// relaunch() on top of core's relaunchWith, so it re-runs THIS entry's launch (extensions re-wired).
+export { BugseeStatus, getStatus } from './status';
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. */
+export const relaunch = (options?: BugseeEdgeLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

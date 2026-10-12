@@ -429,6 +429,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     captureStore,
     triggerPipeline,
