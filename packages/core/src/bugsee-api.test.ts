@@ -474,7 +474,9 @@ describe('createBugseeApi — notify', () => {
   it('retries on 408, 429 and every 5xx without a status map', async () => {
     for (const status of [408, 429, 500, 503]) {
       const { transport } = recorder(() => ({ status, headers: {}, body: enc({}) }));
-      expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+      expect(await api(transport).notify([item])).toEqual(
+        status === 429 ? { outcome: 'retry', rateLimited: true } : { outcome: 'retry' },
+      );
     }
   });
 
@@ -494,7 +496,11 @@ describe('createBugseeApi — notify', () => {
       headers: {},
       body: enc({ ok: false, error: 'QuotaExceeded', retryAfter: 45 }),
     }));
-    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry', retryAfterMs: 45_000 });
+    expect(await api(transport).notify([item])).toEqual({
+      outcome: 'retry',
+      retryAfterMs: 45_000,
+      rateLimited: true,
+    });
   });
 
   it('falls back to a numeric Retry-After header, and ignores nonsense', async () => {
@@ -506,10 +512,14 @@ describe('createBugseeApi — notify', () => {
     expect(await api(header.transport).notify([item])).toEqual({
       outcome: 'retry',
       retryAfterMs: 7000,
+      rateLimited: true,
     });
     for (const bad of [{ retryAfter: -1 }, { retryAfter: 'soon' }, { retryAfter: Number.NaN }]) {
       const { transport } = recorder(() => ({ status: 429, headers: {}, body: enc(bad) }));
-      expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+      expect(await api(transport).notify([item])).toEqual({
+        outcome: 'retry',
+        rateLimited: true,
+      });
     }
     for (const header of ['1e3', '1.5', '-5', '']) {
       const odd = recorder(() => ({
@@ -517,19 +527,25 @@ describe('createBugseeApi — notify', () => {
         headers: { 'retry-after': header },
         body: enc({}),
       }));
-      expect(await api(odd.transport).notify([item])).toEqual({ outcome: 'retry' });
+      expect(await api(odd.transport).notify([item])).toEqual({
+        outcome: 'retry',
+        rateLimited: true,
+      });
     }
     const date = recorder(() => ({
       status: 429,
       headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' },
       body: enc({}),
     }));
-    expect(await api(date.transport).notify([item])).toEqual({ outcome: 'retry' });
+    expect(await api(date.transport).notify([item])).toEqual({
+      outcome: 'retry',
+      rateLimited: true,
+    });
   });
 
   it('a 429 whose body is not JSON still retries (no wait hint)', async () => {
     const { transport } = recorder(() => ({ status: 429, headers: {}, body: strToU8('<html>') }));
-    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry', rateLimited: true });
   });
 
   it('treats a 403 KillSdk from the relay as a kill, but not an anonymous 403', async () => {

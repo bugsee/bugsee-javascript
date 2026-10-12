@@ -104,7 +104,8 @@ class HttpErrorDetectionProvider extends DetectionProviderBase {
     if (status < MIN_SERVER_ERROR || status > MAX_SERVER_ERROR) {
       return;
     }
-    const method = event.method;
+    // Upper-cased: `fetch('/x', { method: 'get' })` and `GET` are the same request, so they are one issue.
+    const method = event.method ? event.method.toUpperCase() : event.method;
     const url = reportableUrl(event.url);
     const label = `${method || 'HTTP'} ${url} ${status}`;
     if (this.#reported.has(label) || this.#reported.size >= this.#maxEndpoints) {

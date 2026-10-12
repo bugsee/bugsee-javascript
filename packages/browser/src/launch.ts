@@ -21,6 +21,7 @@ import {
 import {
   asInternalClient,
   BlackoutToken,
+  BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -40,6 +41,7 @@ import {
   createSystemClock,
   createUploadPipeline,
   defineService,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   getCarrierClient,
   getCarrierPendingLaunch,
   getCarrierStatus,
@@ -78,7 +80,6 @@ import { createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
   createReportDialogLauncher,
-  parseSeverityName,
   type ReportDialogOptions,
   type SeverityName,
 } from './report-dialog';
@@ -118,39 +119,72 @@ const BROWSER_OPTION_DEFINITIONS = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   // Input capture is browser/DOM-only (Node has no user input), so its gate lives here, not in COMMON.
-  { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
+  {
+    friendly: 'captureInteractions',
+    key: BugseeOption.CaptureInteractions,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   // View hierarchy is browser/DOM-only too.
-  { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
+  {
+    friendly: 'captureViewHierarchy',
+    key: BugseeOption.CaptureViewHierarchy,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   // A page that must load already blacked out (see BugseeLaunchOptions.startInBlackout).
-  { friendly: 'startInBlackout', key: BugseeOption.CaptureStartInBlackout, default: false },
+  {
+    friendly: 'startInBlackout',
+    key: BugseeOption.CaptureStartInBlackout,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
     friendly: 'reportSummaryRequired',
     key: BugseeOption.ReportingUiSummaryRequired,
     default: false,
+    ...BOOLEAN_OPTION,
   },
   {
     friendly: 'reportDescriptionRequired',
     key: BugseeOption.ReportingUiDescriptionRequired,
     default: false,
+    ...BOOLEAN_OPTION,
   },
-  { friendly: 'reportEmailRequired', key: BugseeOption.ReportingUiEmailRequired, default: false },
-  { friendly: 'reportLabelsEnabled', key: BugseeOption.ReportingUiLabelsEnabled, default: false },
-  { friendly: 'reportLabelsRequired', key: BugseeOption.ReportingUiLabelsRequired, default: false },
+  {
+    friendly: 'reportEmailRequired',
+    key: BugseeOption.ReportingUiEmailRequired,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'reportLabelsEnabled',
+    key: BugseeOption.ReportingUiLabelsEnabled,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'reportLabelsRequired',
+    key: BugseeOption.ReportingUiLabelsRequired,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
   {
     friendly: 'reportPrioritySelectorEnabled',
     key: BugseeOption.ReportingUiPrioritySelectorEnabled,
     default: false,
-  },
-  {
-    friendly: 'reportDefaultBugPriority',
-    key: BugseeOption.ReportingDefaultBugPriority,
-    default: 'high',
+    ...BOOLEAN_OPTION,
   },
   // iOS persists the user identifier across launches; the browser does too (localStorage, per app token).
   // Browser-only: server tiers keep it in memory. Opt out when the identifier is PII not to be stored.
-  { friendly: 'persistUserIdentifier', key: BugseeOption.PersistUserIdentifier, default: false },
+  {
+    friendly: 'persistUserIdentifier',
+    key: BugseeOption.PersistUserIdentifier,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
 ];
 
 /** Session-replay options (a structural subset of `@bugsee/replay`'s options — no runtime dep here; replay
@@ -902,17 +936,13 @@ async function buildLaunch(
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
   const reportUi = resolved.options;
-  // The default bug priority comes from an unvalidated launch option: a typo ('urgent') or a number must
-  // not leave a report with no severity at all, so it is normalised once, here, with a warning.
-  const configuredPriority = reportUi.get(BugseeOption.ReportingDefaultBugPriority, 'high');
-  const defaultSeverity = parseSeverityName(configuredPriority) ?? 'high';
-  if (parseSeverityName(configuredPriority) === undefined) {
-    options.onError?.(
-      new Error(
-        `reportDefaultBugPriority must be one of low | medium | high | critical | blocker (got ${String(configuredPriority)}); using high`,
-      ),
-    );
-  }
+  // `reportDefaultBugPriority` is a COMMON option: the resolver has already validated it (an invalid value
+  // was reported there, naming every severity) and core applies it to every derived bug severity - an
+  // `upload()` included. The dialog only needs it to pre-select a severity.
+  const defaultSeverity = reportUi.get<SeverityName>(
+    BugseeOption.ReportingDefaultBugPriority,
+    'high',
+  );
   // The public setters: update the Environment (authoritative, in memory), then persist best-effort. The
   // report dialog goes through these too, so what the reporter types survives a reload.
   const clearUserIdentifier = (): void => {
@@ -955,9 +985,6 @@ async function buildLaunch(
     setUserIdentifier,
     clearUserIdentifier,
     showReportDialog,
-    // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
-    upload: (uploadOptions) =>
-      client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
     launch(): void {
       // A relaunch of this client while a stop is still draining makes the instance live again: its
       // lock and connections must outlive that stop (L7).

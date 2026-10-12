@@ -175,7 +175,9 @@ function classifyNotify(response: HttpResponse, items: readonly NotifyItem[]): N
   const { status } = response;
   if (status === 429) {
     const wait = retryAfterMs(response);
-    return wait === undefined ? { outcome: 'retry' } : { outcome: 'retry', retryAfterMs: wait };
+    return wait === undefined
+      ? { outcome: 'retry', rateLimited: true }
+      : { outcome: 'retry', retryAfterMs: wait, rateLimited: true };
   }
   if (status === 408) {
     return { outcome: 'retry' };

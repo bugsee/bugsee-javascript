@@ -1,3 +1,4 @@
+import { utf8ByteLength } from '@bugsee/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNotifyRelay, type NotifyRelayOptions } from './notify-relay';
 import type { NotifyItem, NotifyResult } from './transport';
@@ -885,6 +886,23 @@ describe('queue caps: total bytes and age (P6)', () => {
     expect(sends.flat().map((i) => i.title)).toEqual(['n2', 'n3', 'n4', 'n5', 'n6']);
   });
 
+  it('the 1 MB bound is inclusive: exactly 1 MB stays, one byte more drops the oldest (m24)', () => {
+    const exact = (title: string, id: string, body: string) =>
+      utf8ByteLength(JSON.stringify({ id, timestamp: 1_700_000_000_000, title, body }));
+    const target = 256 * 1024; // the per-item maximum, so four of them are exactly 1 MiB
+    const padFor = (title: string, id: string) => 'x'.repeat(target - exact(title, id, ''));
+    const { relay, onError } = make({ flushDelayMs: 100_000 });
+    for (let i = 0; i < 4; i++) {
+      relay.enqueue({ title: `n${i}`, body: padFor(`n${i}`, `id${i + 1}`) });
+    }
+    expect(relay.pending()).toBe(4); // 4 x 262144 == 1048576: not over the bound
+    expect(onError).not.toHaveBeenCalled();
+    relay.enqueue({ title: 'n4', body: 'y' }); // one more small item tips it over
+    expect(relay.pending()).toBe(4);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('1 MB');
+  });
+
   it('keeps a lone notification even when it alone is the largest allowed', () => {
     const { relay, onError } = make({ flushDelayMs: 100_000 });
     relay.enqueue({ title: 't', body: 'x'.repeat(250 * 1024) });
@@ -1018,6 +1036,124 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(600_000);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('a retryAfter of 0 (or a hair above) is floored to the backoff step: never a hammer loop (R2P-2)', async () => {
+    for (const hint of [0, 0.1]) {
+      sends = [];
+      const { relay, send } = make({}, async () => ({ outcome: 'retry', retryAfterMs: hint }));
+      relay.enqueue({ title: 'a' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(send).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(send).toHaveBeenCalledTimes(1); // the 2 s floor holds
+      await vi.advanceTimersByTimeAsync(1);
+      expect(send).toHaveBeenCalledTimes(2);
+      // exponential backoff continues under a constant 0 hint: 4 s, 8 s ...
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(send).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(send).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(send).toHaveBeenCalledTimes(4);
+      relay.suspend();
+    }
+  });
+
+  it('a collector hint above the backoff still wins; the backoff keeps growing underneath (R2P-2)', async () => {
+    const results: NotifyResult[] = [
+      { outcome: 'retry', retryAfterMs: 30_000 },
+      { outcome: 'retry' },
+      SENT,
+    ];
+    const { relay, send } = make({}, async () => results.shift() as NotifyResult);
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3999); // the second plain retry is on the 4 s step, not 2 s
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it('halves the batch on repeated 429s (the collector may be refusing its size) and recovers (R2P-2)', async () => {
+    const batchSizes: number[] = [];
+    let limited = 4;
+    const { relay } = make({ flushDelayMs: 50 }, async (items) => {
+      batchSizes.push(items.length);
+      if (items.length > 10 && limited > 0) {
+        limited -= 1;
+        return { outcome: 'retry', retryAfterMs: 1000, rateLimited: true };
+      }
+      return SENT;
+    });
+    for (let i = 0; i < 50; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(50);
+    for (let i = 0; i < 40; i++) {
+      await vi.advanceTimersByTimeAsync(5000);
+    }
+    // 50 (429), 50 (429 -> repeated: halve), 25 (429 -> halve), 12 (429 -> halve) ... then success
+    expect(batchSizes.slice(0, 3)).toEqual([50, 50, 25]);
+    expect(Math.min(...batchSizes)).toBeLessThanOrEqual(12);
+    expect(relay.pending()).toBe(0);
+  });
+
+  it('successes double the batch ceiling back up after it was halved (R2P-2)', async () => {
+    const batchSizes: number[] = [];
+    let calls = 0;
+    const { relay } = make({ flushDelayMs: 50 }, async (items) => {
+      batchSizes.push(items.length);
+      calls += 1;
+      return calls <= 3 ? { outcome: 'retry', rateLimited: true } : SENT;
+    });
+    for (let i = 0; i < 100; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(batchSizes).toEqual([50, 50, 25, 12, 24, 48, 16]);
+  });
+
+  it('a success resets the repeated-429 count (R2P-2)', async () => {
+    const batchSizes: number[] = [];
+    const results: NotifyResult[] = [
+      { outcome: 'retry', rateLimited: true },
+      SENT,
+      { outcome: 'retry', rateLimited: true },
+    ];
+    const { relay } = make({ flushDelayMs: 50 }, async (items) => {
+      batchSizes.push(items.length);
+      return results.shift() ?? SENT;
+    });
+    for (let i = 0; i < 100; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(batchSizes).toEqual([50, 50, 50, 50]);
+  });
+
+  it('a non-429 retry in between resets the repeated-429 count (no halving) (R2P-2)', async () => {
+    const batchSizes: number[] = [];
+    const results: NotifyResult[] = [
+      { outcome: 'retry', rateLimited: true },
+      { outcome: 'retry' },
+      { outcome: 'retry', rateLimited: true },
+      SENT,
+    ];
+    const { relay } = make({ flushDelayMs: 50 }, async (items) => {
+      batchSizes.push(items.length);
+      return results.shift() ?? SENT;
+    });
+    for (let i = 0; i < 50; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(batchSizes.slice(0, 4)).toEqual([50, 50, 50, 50]);
   });
 
   it('a kill verdict drops the queue, stops sending and tells the owner once', async () => {

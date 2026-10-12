@@ -172,6 +172,7 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
       [BugseeOption.CaptureNetworkDefaultSanitizer]: true,
       [BugseeOption.ReportingDefaultCrashPriority]: 'blocker',
       [BugseeOption.ReportingDefaultErrorPriority]: 'high',
+      [BugseeOption.ReportingDefaultBugPriority]: 'high',
       [BugseeOption.NotifyFlushDelay]: 0,
     });
   });
@@ -208,8 +209,6 @@ describe('resolveLaunchOptions: undefined, validation and normalization (review 
   it.each([
     ['captureNetworkDefaultSanitizer', BugseeOption.CaptureNetworkDefaultSanitizer, true],
     ['detectHttpErrors', BugseeOption.DetectHttpErrors, false],
-    ['captureNetwork', BugseeOption.CaptureNetwork, true],
-    ['captureBreadcrumbs', BugseeOption.CaptureBreadcrumbs, true],
     ['detectCrashes', BugseeOption.DetectCrash, true],
   ])('a non-boolean %s reports to onError and falls back to the default', (friendly, key, def) => {
     for (const bad of ['no', 0, null, {}]) {
@@ -279,5 +278,136 @@ describe('resolveLaunchOptions: undefined, validation and normalization (review 
         throw new Error('boom');
       }).canonical[BugseeOption.DetectHttpErrors],
     ).toBe(false);
+  });
+});
+
+// R2P-4 / R2P-5. Every boolean launch option, every kind of value. The rule (product decision, round 2):
+//   - an option that CAPTURES data and is ON by default is FAIL-CLOSED: anything that is not boolean `true`
+//     or `false` turns it OFF and tells `onError` (`0`, `null`, `''` and `'false'` all mean "no" to a human);
+//   - an option that PROTECTS (the default sanitizer) keeps its protective default on an invalid value;
+//   - a non-privacy option that is ON by default (crash detection) keeps its default on an invalid value;
+//   - an option that is OFF by default turns on ONLY for boolean `true`.
+// Each invalid value is reported, never silently coerced.
+describe('every boolean launch option: undefined / null / 0 / "" / "false" / "true" / 1 / true / false', () => {
+  const failClosed = [
+    'captureLogs',
+    'captureNetwork',
+    'captureNetworkBodies',
+    'captureSystemTraces',
+    'captureSystemEvents',
+    'captureBreadcrumbs',
+  ] as const;
+  const keepDefaultOn = ['detectCrashes', 'captureNetworkDefaultSanitizer'] as const;
+  const defaultOff = ['captureNetworkBodyWithoutType', 'detectHttpErrors'] as const;
+  const invalids: unknown[] = [null, 0, '', 'false', 'true', 1];
+
+  const run = (name: string, value: unknown) => {
+    const errors: Error[] = [];
+    const resolved = resolveLaunchOptions({ [name]: value }, COMMON_OPTION_DEFINITIONS, (e) =>
+      errors.push(e),
+    );
+    const def = COMMON_OPTION_DEFINITIONS.find((d) => d.friendly === name) as OptionDefinition;
+    return { value: resolved.canonical[def.key], host: resolved.host[def.key], errors, def };
+  };
+
+  it('lists every boolean COMMON option (a new one must be classified here)', () => {
+    const booleans = COMMON_OPTION_DEFINITIONS.filter((d) => typeof d.default === 'boolean')
+      .map((d) => d.friendly)
+      .sort();
+    expect(booleans).toEqual([...failClosed, ...keepDefaultOn, ...defaultOff].sort());
+  });
+
+  for (const name of failClosed) {
+    it(`${name} (default ON, data capture): invalid => OFF + onError; true/false honoured`, () => {
+      expect(run(name, undefined)).toMatchObject({ value: true, errors: [] });
+      for (const invalid of invalids) {
+        const r = run(name, invalid);
+        expect(r.value, `${name}=${String(invalid)}`).toBe(false);
+        expect(r.host, `${name}=${String(invalid)} host`).toBe(false);
+        expect(r.errors, `${name}=${String(invalid)}`).toHaveLength(1);
+        expect(r.errors[0]?.message).toContain(name);
+        expect(r.errors[0]?.message).toContain('using false');
+      }
+      expect(run(name, true)).toMatchObject({ value: true, errors: [] });
+      expect(run(name, false)).toMatchObject({ value: false, errors: [] });
+    });
+  }
+
+  for (const name of keepDefaultOn) {
+    it(`${name} (default ON, protective/non-capture): invalid => stays ON + onError`, () => {
+      for (const invalid of invalids) {
+        const r = run(name, invalid);
+        expect(r.value, `${name}=${String(invalid)}`).toBe(true);
+        expect(r.errors, `${name}=${String(invalid)}`).toHaveLength(1);
+      }
+      expect(run(name, false)).toMatchObject({ value: false, errors: [] });
+      expect(run(name, true)).toMatchObject({ value: true, errors: [] });
+    });
+  }
+
+  for (const name of defaultOff) {
+    it(`${name} (default OFF): only boolean true turns it on; invalid => OFF + onError`, () => {
+      expect(run(name, undefined)).toMatchObject({ value: false, errors: [] });
+      for (const invalid of invalids) {
+        const r = run(name, invalid);
+        expect(r.value, `${name}=${String(invalid)}`).toBe(false);
+        expect(r.errors, `${name}=${String(invalid)}`).toHaveLength(1);
+      }
+      expect(run(name, true)).toMatchObject({ value: true, errors: [] });
+    });
+  }
+
+  it('a throwing onError does not break the fail-closed result', () => {
+    const r = resolveLaunchOptions({ captureNetworkBodies: 0 }, COMMON_OPTION_DEFINITIONS, () => {
+      throw new Error('sink');
+    });
+    expect(r.canonical[BugseeOption.CaptureNetworkBodies]).toBe(false);
+    expect(r.isEnabled(BugseeOption.CaptureNetworkBodies)).toBe(false);
+  });
+});
+
+describe('notifyFlushDelay validation (R2P-5)', () => {
+  const run = (value: unknown) => {
+    const errors: Error[] = [];
+    const r = resolveLaunchOptions({ notifyFlushDelay: value }, COMMON_OPTION_DEFINITIONS, (e) =>
+      errors.push(e),
+    );
+    return { value: r.canonical[BugseeOption.NotifyFlushDelay], errors };
+  };
+
+  it('accepts a finite number >= 0', () => {
+    for (const ok of [0, 1, 250, 1.5]) {
+      expect(run(ok)).toEqual({ value: ok, errors: [] });
+    }
+  });
+
+  it('reports a non-number, NaN, Infinity or negative and uses 0', () => {
+    for (const bad of ['100', null, Number.NaN, Number.POSITIVE_INFINITY, -1, {}, true]) {
+      const r = run(bad);
+      expect(r.value, String(bad)).toBe(0);
+      expect(r.errors, String(bad)).toHaveLength(1);
+      expect(r.errors[0]?.message).toContain('notifyFlushDelay');
+    }
+  });
+});
+
+describe('reportDefaultBugPriority is a COMMON option (R2D-3)', () => {
+  it('maps to the canonical identifier, default high, validated like the other priorities', () => {
+    const def = COMMON_OPTION_DEFINITIONS.find((d) => d.friendly === 'reportDefaultBugPriority');
+    expect(def?.key).toBe(BugseeOption.ReportingDefaultBugPriority);
+    expect(def?.default).toBe('high');
+    const errors: Error[] = [];
+    const r = resolveLaunchOptions(
+      { reportDefaultBugPriority: 'urgent' },
+      COMMON_OPTION_DEFINITIONS,
+      (e) => errors.push(e),
+    );
+    expect(r.canonical[BugseeOption.ReportingDefaultBugPriority]).toBe('high');
+    expect(errors[0]?.message).toContain('reportDefaultBugPriority');
+    expect(errors[0]?.message).toContain('verylow');
+    expect(
+      resolveLaunchOptions({ reportDefaultBugPriority: ' Critical ' }, COMMON_OPTION_DEFINITIONS)
+        .canonical[BugseeOption.ReportingDefaultBugPriority],
+    ).toBe('critical');
   });
 });

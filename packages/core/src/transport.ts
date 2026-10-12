@@ -87,7 +87,13 @@ export type NotifyResult =
   /** The collector disabled this app's SDK (`403 KillSdk`): stop sending, drop the queue. */
   | { outcome: 'kill' }
   /** `retryAfterMs`: the collector's own wait (a 429 `retryAfter`), used instead of the backoff. */
-  | { outcome: 'retry'; retryIds?: readonly string[]; retryAfterMs?: number };
+  | {
+      outcome: 'retry';
+      retryIds?: readonly string[];
+      retryAfterMs?: number;
+      /** The collector answered 429: it may be refusing the batch's SIZE, so the relay shrinks batches. */
+      rateLimited?: true;
+    };
 
 /** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
 export interface BugseeApi {

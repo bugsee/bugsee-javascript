@@ -3,6 +3,7 @@ import {
   addReportAttachment,
   decodeRequestFromMarker,
   encodeRequestForMarker,
+  limitAttachmentsForMarker,
   MAX_USER_ATTACHMENT_BYTES,
   MAX_USER_ATTACHMENTS,
   normalizeReportAttachments,
@@ -337,5 +338,101 @@ describe('normalizeReportAttachments + marker round trip (P1)', () => {
     const back = decodeRequestFromMarker(request, onError);
     expect(back.report.userAttachments?.map((a) => a.name)).toEqual(['ok']);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a throwing sink never loses the attachments or the report (R2P-6)', () => {
+  const boom = (): never => {
+    throw new Error('the app\u2019s onError is broken');
+  };
+
+  it('resolveUserAttachments keeps the good ones whatever is wrong with the rest', () => {
+    const out = resolveUserAttachments(
+      [
+        { name: 'ok', data: 'fine' },
+        { name: '', data: 'x' },
+        'junk',
+        { name: 'big', data: new Uint8Array(MAX_USER_ATTACHMENT_BYTES + 1) },
+        { name: 'empty', data: '' },
+        { name: 'm', data: 'x', mimeType: 7, fileName: 8 },
+        { name: 'over', data: 'cap' },
+        { name: 'over2', data: 'cap' },
+      ] as never,
+      boom,
+      fixedName,
+    );
+    expect(out.map((a) => a.name)).toEqual(['ok', 'm', 'over']);
+  });
+
+  it('a hostile getter plus a throwing sink still yields the others', () => {
+    const hostile = {
+      get name(): string {
+        throw new Error('getter');
+      },
+    };
+    const out = resolveUserAttachments(
+      [hostile, { name: 'ok', data: 'x' }] as never,
+      boom,
+      fixedName,
+    );
+    expect(out.map((a) => a.name)).toEqual(['ok']);
+  });
+
+  it('a non-array value with a throwing sink returns no attachments instead of throwing', () => {
+    expect(resolveUserAttachments('nope' as never, boom, fixedName)).toEqual([]);
+  });
+});
+
+describe('marker hardening (R2P-9)', () => {
+  const requestWith = (attachments: unknown) => {
+    const request = createReportingRequest({ source: { type: 'code_upload' } });
+    request.report.userAttachments = attachments as never;
+    return request;
+  };
+
+  it('decode drops an attachment whose dataBase64 is not a string, and reports it', () => {
+    for (const bad of [42, null, {}, true, ['AAAA']]) {
+      const onError = vi.fn();
+      const back = decodeRequestFromMarker(
+        requestWith([
+          { name: 'bad', data: '', dataBase64: bad },
+          { name: 'ok', data: 'fine' },
+        ]),
+        onError,
+      );
+      expect(
+        back.report.userAttachments?.map((a) => a.name),
+        String(bad),
+      ).toEqual(['ok']);
+      expect(onError, String(bad)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('limitAttachmentsForMarker applies the count and size limits to a COPY (frozen reports)', () => {
+    const request = requestWith([
+      { name: 'a', data: 'x' },
+      { name: 'huge', data: new Uint8Array(MAX_USER_ATTACHMENT_BYTES + 1) },
+      { name: 'b', data: 'y' },
+      { name: 'c', data: 'z' },
+      { name: 'd', data: 'w' },
+    ]);
+    Object.freeze(request.report);
+    const limited = limitAttachmentsForMarker(request);
+    expect(limited.report.userAttachments?.map((a) => a.name)).toEqual(['a', 'b', 'c']);
+    expect(request.report.userAttachments).toHaveLength(5); // the original is untouched
+    expect(limited).not.toBe(request);
+  });
+
+  it('limitAttachmentsForMarker returns the request itself when there are none, and drops a hostile list', () => {
+    const none = createReportingRequest({ source: { type: 'code_upload' } });
+    expect(limitAttachmentsForMarker(none)).toBe(none);
+    const hostile = createReportingRequest({ source: { type: 'code_upload' } });
+    Object.defineProperty(hostile.report, 'userAttachments', {
+      enumerable: true,
+      get() {
+        throw new Error('getter');
+      },
+    });
+    expect(limitAttachmentsForMarker(hostile).report.userAttachments ?? []).toEqual([]);
   });
 });

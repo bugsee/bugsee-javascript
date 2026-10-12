@@ -300,6 +300,16 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(client.getService(BundleStoreToken)).toBeDefined(); // ...but the durable bundle store still wired
   });
 
+  it('reportDefaultBugPriority applies to client.upload() in a worker too (R2D-3)', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, reportDefaultBugPriority: 'critical' }));
+    await client.upload({ summary: 'bug' });
+    expect((issueJson(transport) as unknown as { severity: number }).severity).toBe(4);
+    await client.upload({ summary: 'explicit', severity: 'medium' });
+    const calls = transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'));
+    expect(JSON.parse((calls[1]?.[1] as HttpRequestOptions).body as string).severity).toBe(2);
+  });
+
   it('a memory-only (web-worker) launch records NO markers and reports no internal error', async () => {
     // The marker hook is handed to the core client only when there IS a marker store. Handing it over
     // unconditionally gives core `{ store: undefined }`, which it treats as present and then fails on at

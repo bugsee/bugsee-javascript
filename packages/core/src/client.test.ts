@@ -602,7 +602,51 @@ describe('createClient — crash.json (SC3)', () => {
       (f: { data?: { member?: string } }) => f.data?.member,
     );
     expect(members).toContain('applicationCode');
-    expect(members).not.toContain('logException');
+    // R2P-1: the PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
+    expect(members[0]).toBe('applicationCode');
+    expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
+  });
+
+  it('skipFrames on a non-Error counts from the APPLICATION frame, not the SDK wrapper (R2P-1)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    async function applicationCode(): Promise<void> {
+      await client.logException('str', { skipFrames: 1 });
+    }
+    await applicationCode();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    const frames = crash.exception.frames as { hidden?: boolean; data?: { member?: string } }[];
+    expect(frames[0]?.data?.member).toBe('applicationCode');
+    expect(frames[0]?.hidden).toBe(true);
+    expect(frames[1]?.hidden).not.toBe(true);
+  });
+
+  it('the fallback (no Error.captureStackTrace) also starts at the application frame (R2P-1)', async () => {
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+      async function applicationCode(): Promise<void> {
+        await client.logException('str');
+      }
+      await applicationCode();
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.frames[0].data.member).toBe('applicationCode');
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('a caller cannot inject the frame boundary through the options (R2P-1)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    async function applicationCode(): Promise<void> {
+      await client.logException('str', { boundary: () => undefined } as never);
+    }
+    await applicationCode();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    expect(crash.exception.frames[0].data.member).toBe('applicationCode');
   });
 
   it('uses the injected stackParser (browser passes its multi-engine parser)', async () => {
@@ -2298,6 +2342,65 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  it('a THROWING user onError never loses a report that carries a bad attachment (R2P-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn(() => {
+      throw new Error('the app\u2019s onError is broken');
+    });
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    const result = await client.upload({
+      attachments: [
+        { name: 'ok', data: 'fine' },
+        { name: '', data: 'x' },
+        'junk',
+        { name: 'x', data: 'y', fileName: 42 },
+      ],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const names = manifest.files
+      .filter((f: { type: string }) => f.type === 'attachment')
+      .map((f: { name: string }) => f.name);
+    expect(names).toEqual(['ok', 'x']);
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('a throwing onError and a FROZEN report (limits cannot be applied at submit) still deliver (R2P-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn(() => {
+      throw new Error('the app\u2019s onError is broken');
+    });
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report.userAttachments);
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+
+    const result = await client.upload({
+      attachments: [
+        { name: 'ok', data: 'fine' },
+        { name: '', data: 'x' },
+      ],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    expect(
+      manifest.files
+        .filter((f: { type: string }) => f.type === 'attachment')
+        .map((f: { name: string }) => f.name),
+    ).toEqual(['ok']);
+  });
+
   it('delivers the report for a plain-JS attachment with a non-string fileName (P2)', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn();
@@ -2361,6 +2464,130 @@ describe('createClient — upload (manual report)', () => {
     expect(result.ok).toBe(true);
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('what ReportHandler.after adds reaches the recovery marker: a recovered report equals the live one (R2P-7)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const wires: string[] = []; // what a real store would have serialised AT each put
+    put.mockImplementation((marker) => {
+      wires.push(JSON.stringify(marker));
+    });
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited-by-after';
+        request.report.labels.push('late-label');
+        addReportAttachment(request.report, { name: 'late.bin', data: new Uint8Array([9, 8, 7]) });
+        // Over the limit: the marker must stay bounded however late the attachment arrives.
+        addReportAttachment(request.report, {
+          name: 'huge',
+          data: new Uint8Array(3 * 1024 * 1024 + 1),
+        });
+      },
+    });
+
+    client.setAttribute('k', 1);
+    client.setUserIdentifier('u@e.com');
+    await client.upload({ summary: 'original' });
+
+    const live = (enqueue.mock.calls[0]?.[0] as Bundle).request;
+    expect(live.summary).toBe('edited-by-after');
+    const markers = wires.map((w) => JSON.parse(w) as ReportMarker);
+    expect(markers).toHaveLength(2); // the submit-time marker, then the one carrying what `after` did
+    const last = markers[1] as ReportMarker;
+    expect(wires[1]?.length).toBeLessThan(2000); // 3 MB never reached the marker
+    const recovered = decodeRequestFromMarker(last.request, vi.fn());
+    expect(recovered.report.summary).toBe(live.summary);
+    expect(recovered.report.labels).toEqual(live.labels);
+    expect(recovered.report.userAttachments?.map((a) => a.name)).toEqual(['late.bin']);
+    expect(last.attributes).toEqual(markers[0]?.attributes);
+    expect(last.attributes).toEqual({ k: 1 });
+    expect(last.userIdentifier).toBe('u@e.com');
+    expect(markers[0]?.request.report.summary).toBe('original'); // what was persisted FIRST
+  });
+
+  it('does not rewrite the marker when there is no `after` handler, or the write throws (R2P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.upload({ summary: 'plain' });
+    expect(put).toHaveBeenCalledTimes(1);
+
+    client.setReportHandler({ after: () => {} });
+    put.mockImplementationOnce(() => {}); // the submit-time write succeeds ...
+    put.mockImplementationOnce(() => {
+      throw new Error('disk full'); // ... the rewrite fails: reported, never fatal
+    });
+    const result = await client.upload({ summary: 'second' });
+    expect(result.ok).toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk full' }));
+  });
+
+  it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({ after: () => {} });
+    put.mockResolvedValueOnce(undefined);
+    put.mockRejectedValueOnce(new Error('idb quota'));
+    const result = await client.upload({ summary: 'x' });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(result.ok).toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'idb quota' }));
+  });
+
+  it('a FROZEN report still gets its attachments limited before the marker encodes them (R2P-9)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+
+    await client.upload({
+      attachments: [
+        { name: 'a', data: new Uint8Array([1, 2, 3]) },
+        { name: 'huge', data: new Uint8Array(3 * 1024 * 1024 + 1) },
+        { name: 'b', data: 'two' },
+        { name: 'c', data: 'three' },
+        { name: 'd', data: 'four' },
+      ],
+    });
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const wire = JSON.stringify(marker);
+    expect(wire.length).toBeLessThan(2000); // 4 MB of base64 never reached the marker
+    const back = decodeRequestFromMarker(JSON.parse(wire).request, vi.fn());
+    expect(back.report.userAttachments?.map((a) => a.name)).toEqual(['a', 'b', 'c']);
   });
 
   it('lets ReportHandler.before add attachments with addReportAttachment', async () => {
@@ -2767,6 +2994,46 @@ describe('createClient — mobile-parity options (T6)', () => {
 
     it('does not touch a bug-type report (that default is reportDefaultBugPriority)', async () => {
       const { client, report } = configured({ [CRASH]: 'low', [ERROR]: 'low' });
+      await client.upload({});
+      expect(severities(report)).toEqual(['high']);
+    });
+
+    // R2D-3: Android applies ReportingDefaultBugPriority to EVERY bug report, not only the browser dialog's.
+    const BUG = 'com.bugsee.option.reporting.defaults.bug-priority';
+
+    it('applies reportDefaultBugPriority to client.upload() and to a detected bug-type report', async () => {
+      const { client, report, sink } = configured({ [BUG]: 'critical' });
+      await client.upload({});
+      sink(createReportingRequest({ source: { type: 'shake' } }));
+      expect(severities(report)).toEqual(['critical', 'critical']);
+    });
+
+    it('does not apply the bug priority to crash / error reports', async () => {
+      const { client, report, sink } = configured({ [BUG]: 'low' });
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['blocker', 'high']);
+    });
+
+    it('an explicit upload severity beats the bug priority; the handler still rewrites it', async () => {
+      const { client, report } = configured({ [BUG]: 'low' });
+      await client.upload({ severity: 'blocker' });
+      client.setReportHandler({
+        before: (request) => {
+          request.report.severity = 'medium';
+          return request;
+        },
+      });
+      await client.upload({});
+      expect(severities(report)).toEqual(['blocker', 'medium']);
+    });
+
+    it('an invalid bug priority reports once (naming verylow) and uses high', async () => {
+      const onError = vi.fn();
+      const { client, report } = configured({ [BUG]: 'urgent' }, onError);
+      expect(onError.mock.calls.map((c) => String((c[0] as Error).message))).toEqual([
+        'reportDefaultBugPriority must be one of verylow | low | medium | high | critical | blocker (got urgent); using high',
+      ]);
       await client.upload({});
       expect(severities(report)).toEqual(['high']);
     });

@@ -2,7 +2,7 @@ import { fromBase64, toBase64, utf8ByteLength } from '@bugsee/util';
 import type { Report, ReportAttachmentInput, ReportingRequest } from './reporting';
 
 // Application-supplied report attachments (Android `Report.addAttachment`, iOS `BugseeAttachment`).
-// Limits: at most 3 attachments of 3 MB each (iOS `BugseeAttachment`; Android has no equivalent cap). An attachment that breaks a rule is
+// Limits: at most 3 attachments of 3 MB each (iOS `BugseeAttachment`; Android caps at 1000 attachments). An attachment that breaks a rule is
 // DROPPED and reported through `onError` — a report is never lost, and the app never sees a throw, because
 // the attachment usually rides a crash report that is the only record of the incident.
 
@@ -71,9 +71,18 @@ function label(input: unknown): string {
  */
 export function resolveUserAttachments(
   inputs: readonly ReportAttachmentInput[] | undefined,
-  onError: (error: unknown) => void,
+  rawOnError: (error: unknown) => void,
   generateName: () => string = randomBundleName,
 ): ResolvedUserAttachment[] {
+  // The sink is the application's callback: a throw from it must never cost the report these attachments
+  // ride on (R2P-6), whether we are reporting a malformed one or the catch below is.
+  const onError = (error: unknown): void => {
+    try {
+      rawOnError(error);
+    } catch {
+      // swallowed on purpose: the report matters more than the app's diagnostics
+    }
+  };
   if (inputs === undefined) {
     return [];
   }
@@ -192,12 +201,50 @@ export function normalizeReportAttachments(
   );
 }
 
+/**
+ * A COPY of `request` whose attachments have the limits applied, for a request that could not be normalised in
+ * place (a handler froze the report). The marker must never encode attachments the limits would drop - 3 x 3 MB
+ * is the bound, not "whatever the app attached" (R2P-9). Silent: assembly reports the drops. The request itself
+ * is returned when it carries none.
+ */
+export function limitAttachmentsForMarker(request: ReportingRequest): ReportingRequest {
+  let attachments: readonly ReportAttachmentInput[] | undefined;
+  let readable = true;
+  try {
+    attachments = request.report.userAttachments;
+  } catch {
+    readable = false; // a hostile getter: the marker carries no attachments rather than a guess
+  }
+  if (readable && attachments === undefined) {
+    return request;
+  }
+  const report = {} as Record<string, unknown>;
+  for (const key of Object.keys(request.report)) {
+    if (key !== 'userAttachments') {
+      report[key] = (request.report as unknown as Record<string, unknown>)[key];
+    }
+  }
+  report.userAttachments = readable
+    ? resolveUserAttachments(attachments, () => undefined).map(
+        ({ name, data, mimeType, fileName }) => ({ name, data, mimeType, fileName }),
+      )
+    : [];
+  return { ...request, report: report as unknown as Report };
+}
+
 // A marker is JSON on disk and in IndexedDB; `JSON.stringify(Uint8Array)` is `{"0":1,"1":2,...}` (~14 bytes
 // per byte, and not recoverable as bytes). Binary attachment data is therefore stored as base64 under
 // `dataBase64` (with `data: ''`), and decoded again when the incident is rebuilt.
 type MarkerAttachment = ReportAttachmentInput & { dataBase64?: string };
 
-/** A copy of `request` that survives `JSON.stringify`; `request` itself is returned when it has no attachments. */
+/**
+ * A copy of `request` that survives `JSON.stringify`; `request` itself is returned when it has no attachments.
+ *
+ * Cost: base64 + JSON of the maximum (3 x 3 MB) is measured at ~279 ms of SYNCHRONOUS work on the thread that
+ * reports. It is deliberately not chunked: the marker must be handed to the store in the same turn as the
+ * incident (a deferred write can lose it to the very crash it records), and an attachment that large is the
+ * application's own choice. Typical attachments (a few KB of state) cost microseconds.
+ */
 export function encodeRequestForMarker(request: ReportingRequest): ReportingRequest {
   const attachments = request.report.userAttachments;
   if (attachments === undefined) {
@@ -223,6 +270,13 @@ export function decodeRequestFromMarker(
   for (const { dataBase64, ...rest } of attachments) {
     if (dataBase64 === undefined) {
       decoded.push(rest);
+      continue;
+    }
+    if (typeof dataBase64 !== 'string') {
+      // A damaged marker: decoding a number/object would manufacture garbage bytes, not an attachment.
+      onError(
+        new Error(`Recovered attachment ${safeLabel(rest)} dropped: its payload is not a string`),
+      );
       continue;
     }
     try {

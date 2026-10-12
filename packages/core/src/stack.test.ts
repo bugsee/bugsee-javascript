@@ -229,6 +229,22 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
     }
   });
 
+  it('fallback drops `sdkFrames` frames when the boundary is not the frame the Error is built in (R2P-1)', () => {
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const parse = (): StackFrame[] => [
+        { file: 'sdk', function: 'internal' },
+        { file: 'sdk', function: 'wrapper' },
+        { file: 'app', function: 'applicationCode' },
+      ];
+      const frames = callSiteFrames(new Error(), function wrapper() {}, parse, 2);
+      expect(frames.map((f) => f.function)).toEqual(['applicationCode']);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
   it('returns no frames when the engine produces no stack at all', () => {
     // Very old engines (and some embedded ones) leave `error.stack` undefined. `?? ''` keeps that a
     // frameless report rather than a thrown SDK — the same outcome as before this existed.

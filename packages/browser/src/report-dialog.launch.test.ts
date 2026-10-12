@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto';
 import {
+  asInternalClient,
   createMemoryCaptureStore,
   type HttpRequestOptions,
   type HttpResponse,
@@ -245,6 +246,23 @@ describe('reportDefaultBugPriority', () => {
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining('reportDefaultBugPriority') }),
     );
+  });
+
+  it('says so naming every severity (verylow included) and reports ONCE (R2P-5)', async () => {
+    const onError = vi.fn();
+    await start({ reportDefaultBugPriority: 'urgent' as unknown as 'high', onError });
+    const messages = onError.mock.calls
+      .map((c) => String((c[0] as Error).message))
+      .filter((m) => m.includes('reportDefaultBugPriority'));
+    expect(messages).toEqual([
+      'reportDefaultBugPriority must be one of verylow | low | medium | high | critical | blocker (got urgent); using high',
+    ]);
+  });
+
+  it('survives asInternalClient(): the priority lives in core, not in a wrapper (R2P-9)', async () => {
+    const { client, http } = await start({ reportDefaultBugPriority: 'critical' });
+    await asInternalClient(client).upload({ summary: 'via the internal view' });
+    expect(sentRequest(http).severity).toBe(4);
   });
 
   it('calls upload() with no arguments as a default-priority bug report', async () => {
