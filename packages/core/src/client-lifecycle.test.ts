@@ -312,6 +312,46 @@ describe('ReportHandler.after (Android onAfterReportCreated)', () => {
     expect(after).not.toHaveBeenCalled();
   });
 
+  it('runs the handler that was installed when the report was SUBMITTED, even if it is replaced before assembly', async () => {
+    const submitted = vi.fn();
+    const replacement = vi.fn();
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const uploadPipeline: UploadPipeline = {
+      enqueue: async () => {
+        await gate;
+        return { ok: true };
+      },
+      flush: async () => true,
+      drop: vi.fn(),
+    };
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setReportHandler({ after: submitted });
+    const results = [client.upload({ summary: 'a' }), client.upload({ summary: 'b' })];
+    client.setReportHandler({ after: replacement });
+    await settle();
+    open();
+    await Promise.all(results);
+    expect(submitted).toHaveBeenCalledTimes(2);
+    expect(replacement).not.toHaveBeenCalled();
+  });
+
+  it('stop() still emits Stopped and resolves false when the upload pipeline flush rejects', async () => {
+    const uploadPipeline: UploadPipeline = {
+      enqueue: async () => ({ ok: true }),
+      flush: async () => {
+        throw new Error('flush');
+      },
+      drop: vi.fn(),
+    };
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const types: string[] = [];
+    client.setLifecycleEventsListener((type) => types.push(type));
+    client.launch();
+    await expect(client.stop()).resolves.toBe(false);
+    expect(types.at(-1)).toBe(LifecycleEvents.Stopped);
+  });
+
   it('is not run for a report the queue refuses (overflow)', async () => {
     const after = vi.fn();
     let open: () => void = () => {};

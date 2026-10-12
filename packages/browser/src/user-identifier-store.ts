@@ -60,6 +60,13 @@ export function createUserIdentifierStore(
         resolve()?.setItem(key, id);
       } catch (error) {
         report(error);
+        // The new value did not land: leaving the previous one would restore the PREVIOUS user's identifier on
+        // the next load, so drop it (best effort).
+        try {
+          resolve()?.removeItem(key);
+        } catch {
+          // storage is unusable; nothing more can be done
+        }
       }
     },
     clear() {

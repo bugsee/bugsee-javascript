@@ -39,6 +39,26 @@ describe('createUserIdentifierStore', () => {
     expect(store.read()).toBe('a@b.c');
   });
 
+  it('a failed write removes the previous value so a stale identity cannot come back on the next load', () => {
+    const storage = memoryStorage();
+    const onError = vi.fn();
+    const store = createUserIdentifierStore('tok-a', { storage, onError });
+    store.write('alice@');
+    storage.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    store.write('bob@');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(store.read()).toBeNull();
+  });
+
+  it('a failed write whose cleanup also fails reports once and never throws', () => {
+    const onError = vi.fn();
+    const store = createUserIdentifierStore('tok-a', { storage: throwingStorage, onError });
+    expect(() => store.write('bob@')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('isolates app tokens from each other', () => {
     const storage = memoryStorage();
     createUserIdentifierStore('tok-a', { storage }).write('one');

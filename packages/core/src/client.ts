@@ -186,15 +186,17 @@ export interface LogExceptionOptions {
   labels?: string[];
   /**
    * Exception domain (Android `ExceptionOptions.Domain`, iOS `exceptionDomain`): a short category such as
-   * `checkout` that organises issues. Sent as `crash.json` `exception.domain`. A non-string or empty
-   * value is ignored and reported through `onError`.
+   * `checkout` that categorises the error. Sent as `crash.json` `exception.domain`; JavaScript reports are not
+   * grouped by it yet. A non-string or empty value is ignored and reported through `onError`.
    */
   domain?: string;
   /**
    * Number of top stack frames to leave out of issue grouping (Android `ExceptionOptions.SkipFrames`, iOS
-   * `mergingRules[skipFrames]`). Use it when a wrapper or adapter logs on the app's behalf, so every error
-   * it reports does not group at the wrapper. The frames stay visible in the trace. Must be a non-negative
-   * integer; anything else is ignored and reported through `onError`.
+   * `mergingRules[skipFrames]`). Hides the top N frames of the reported value's OWN stack. Use it when the
+   * Error is created, or a non-Error is logged, inside a helper, so errors do not group at that helper. A
+   * caught Error's stack does not contain your `logException` call, so skipping frames there hides where it
+   * was thrown. The frames stay visible in the trace. Must be a non-negative integer; anything else is
+   * ignored and reported through `onError`.
    */
   skipFrames?: number;
 }
@@ -793,6 +795,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // `clearAllAttributes()` shipped an empty `manifest.attrs`, and the recovery marker — which has always
   // snapshotted at submit — described the same incident differently from its own live upload.
   const reportIdentity = new WeakMap<ReportingRequest, ReportIdentity>();
+  // The handler's `after` as it stood at submit: the handler that ran `before` is the one that runs `after`,
+  // even if the app replaces it while the report waits for assembly.
+  const reportAfter = new WeakMap<ReportingRequest, NonNullable<ReportHandler['after']>>();
   const liveIdentity = (): ReportIdentity => ({
     attributes: environment.getAllAttributes(),
     userIdentifier: environment.getUserIdentifier(),
@@ -1038,7 +1043,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // assembly has not started. The handler may still mutate the request (labels, attributes,
       // attachments) and the bundle below carries the result. Reaching here is what "created" means, so a
       // veto, a missing pipeline, a queue overflow and a failed capture drain never call it.
-      const afterHandler = filters.report?.after;
+      const afterHandler = reportAfter.get(request) ?? filters.report?.after;
       const beforeAfter =
         afterHandler !== undefined ? reportChangeSignature(request.report) : undefined;
       neverThrow(() => afterHandler?.(request), onErrorSafe);
@@ -1174,14 +1179,17 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // Start draining in-flight reports (each resolves post-upload) then any directly-enqueued uploads. The
   // returned promise is the REAL drain: it settles when the work does, however long that takes.
   const startDrain = (timeout?: number): Promise<boolean> =>
-    Promise.allSettled([...pendingReports]).then(async () => {
-      // Notifications go out alongside the report uploads; either one still pending makes this false.
-      const [uploaded, notified] = await Promise.all([
-        uploadPipeline?.flush(timeout) ?? true,
-        notifyRelay?.flush() ?? true,
-      ]);
-      return uploaded && notified;
-    });
+    Promise.allSettled([...pendingReports])
+      .then(async () => {
+        // Notifications go out alongside the report uploads; either one still pending makes this false.
+        const [uploaded, notified] = await Promise.all([
+          uploadPipeline?.flush(timeout) ?? true,
+          notifyRelay?.flush() ?? true,
+        ]);
+        return uploaded && notified;
+        // An injected pipeline whose flush rejects must not leave stop() rejecting without ever emitting Stopped.
+      })
+      .catch(() => false);
   // Give up on `drained` after `timeout` (resolving false) so a hung assemble/upload can't block shutdown;
   // the drain itself keeps running. Resolves true if drained in time.
   const boundDrain = (drained: Promise<boolean>, timeout?: number): Promise<boolean> =>
@@ -1271,6 +1279,10 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     // same incident can never disagree.
     const identity = liveIdentity();
     reportIdentity.set(handled, identity);
+    const submittedAfter = filters.report?.after;
+    if (submittedAfter !== undefined) {
+      reportAfter.set(handled, submittedAfter);
+    }
     // Did this incident's marker reach DURABLE storage? `true` when there was nothing async to wait for
     // (a synchronous store that did not throw). It decides nothing about retirement — it decides whether
     // keeping the marker actually preserves the incident, or only looks like it does.
