@@ -1,46 +1,72 @@
 # @bugsee/hapi
 
-Hapi adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `@hapi/hapi` is a **peer** (structural types only — the adapter
-never imports hapi). Works on node/bun/deno-hosted Hapi (wherever the launched `@bugsee/node` client
-provides the context store).
+hapi adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for @hapi/hapi servers on Node.js, Bun and Deno.
+
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
+
+Install this package directly in hapi apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+
+## Install
+
+```sh
+npm install @bugsee/bugsee @bugsee/hapi
+# or
+pnpm add @bugsee/bugsee @bugsee/hapi
+# or
+yarn add @bugsee/bugsee @bugsee/hapi
+```
+
+Requires Node.js 18 or newer. No peer dependency is declared: the adapter only uses the shape of your `@hapi/hapi` server.
+
+## Usage
+
+Call `launch()` as early as possible, at the top of your server entry. On a server it returns the client directly. Then pass your app to `setupHapi`.
 
 ```ts
-import { launch } from '@bugsee/bugsee'; // or @bugsee/node
-import { setupHapi } from '@bugsee/hapi';
-import Hapi from '@hapi/hapi';
+// server.ts
+import { launch } from "@bugsee/bugsee";
+import { setupHapi } from "@bugsee/hapi";
+import Hapi from "@hapi/hapi";
 
-launch(appToken);
+launch("YOUR_APP_TOKEN");
 
 const server = Hapi.server({ port: 3000 });
-setupHapi(server, { user: (req) => req.headers['x-user'] }); // before server.start()
+setupHapi(server); // before server.start()
 // ... your routes ...
 await server.start();
 ```
 
 ## What it does
 
-`setupHapi(server)` registers two request-lifecycle extensions over the foundation (Hapi extensions are
-additive — registering ours never replaces yours):
+`setupHapi` registers two request extensions. They are additive and never replace yours:
 
-- **`onRequest`** (before routing) — opens a per-request context (via the store's `enterWith`, since the
-  extension returns before the route handler), continues an inbound W3C `traceparent`, and starts an
-  `http.server` APM transaction (when `@bugsee/performance` is wired). The transaction is kept per-request.
-- **`onPreResponse`** (both success and error) — if the response is a **Boom** error, reports it (mechanism
-  `http-error`). Hapi marks 5xx as `isServer`, so by default we report **server** errors and skip **client**
-  (4xx) Boom; override with `shouldReport: (err) => boolean`. Then finishes the transaction
-  (route-parametrized name + status) and returns `h.continue`, so it never alters the response.
-- A **client disconnect** (which skips `onPreResponse`) finishes the transaction as `CANCELLED` (via the
-  request's `disconnect` event), so it is still delivered rather than dropped.
+- `onRequest` opens a per-request context, continues an inbound W3C `traceparent` and starts an `http.server` transaction.
+- `onPreResponse` reports a Boom error and finishes the transaction. By default server errors (5xx) are reported and client errors (4xx) are skipped. The response itself is not altered.
 
-Correlation, not isolation: the SDK records everything globally and tags each entry with its request's
-`contextId`; the report carries that id as the join key.
+A client disconnect finishes the transaction as cancelled.
 
-## Behavior guarantees
+## Options
 
-- **Opt-in** — with no SDK launched, the extensions are transparent no-ops.
-- **Never breaks the app** — every extension is guarded and always returns `h.continue`; it only observes.
-- **Privacy-safe** — no user identity is read unless you provide a `user` getter.
+`launch(appToken, options)` accepts the SDK launch options. The most relevant ones on a server:
 
-**Status:** implemented + tested (incl. a real-Hapi e2e via `server.inject`: 5xx reporting, 404 skip,
-response preservation, concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+- `instrumentIncomingRequests`: auto-instrument incoming HTTP requests (default `true`).
+- `captureLocalVariables`: attach local variables to the crash frames of reported errors (default `false`).
+- `captureSourceContext`: attach source lines around crash frames (default `false`).
+- `detectHangs`: report event-loop hangs (default `true`).
+- `profiling`: rolling CPU profiling (default `false`).
+
+Adapter options, passed as the second argument of `setupHapi`:
+
+- `user`: `(req) => string | undefined`, the end-user identity for reports. Off by default.
+- `shouldReport`: `(err) => boolean`, override which errors are reported.
+
+This package also re-exports everything from `@bugsee/bugsee/node`.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/hapi
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.

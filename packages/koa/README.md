@@ -1,50 +1,67 @@
 # @bugsee/koa
 
-Koa middleware adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `koa` is a **peer** (structural types only — the adapter never
-imports koa). Works on node/bun/deno-hosted Koa (wherever the launched `@bugsee/node` client provides the
-context store).
+Koa adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Koa apps on Node.js, Bun and Deno.
+
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
+
+Install this package directly in Koa apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+
+## Install
+
+```sh
+npm install @bugsee/bugsee @bugsee/koa
+# or
+pnpm add @bugsee/bugsee @bugsee/koa
+# or
+yarn add @bugsee/bugsee @bugsee/koa
+```
+
+Requires Node.js 18 or newer. No peer dependency is declared: the adapter only uses the shape of your `koa` app.
+
+## Usage
+
+Call `launch()` as early as possible, at the top of your server entry. On a server it returns the client directly. Then pass your app to `setupKoa`.
 
 ```ts
-import { launch } from '@bugsee/bugsee'; // or @bugsee/node
-import { setupKoa } from '@bugsee/koa';
-import Koa from 'koa';
+// server.ts
+import { launch } from "@bugsee/bugsee";
+import { setupKoa } from "@bugsee/koa";
+import Koa from "koa";
 
-launch(appToken);
+launch("YOUR_APP_TOKEN");
 
 const app = new Koa();
-setupKoa(app, { user: (ctx) => ctx.headers['x-user'] }); // install FIRST, before your routes
-// ... your middleware / routes ...
+setupKoa(app); // register first so it wraps the whole middleware chain
+// ... your middleware and routes ...
 app.listen(3000);
 ```
 
 ## What it does
 
-`setupKoa(app)` installs one middleware (install it first so it wraps the whole chain):
+`setupKoa` installs one middleware. Register it before your other middleware. It opens a per-request context, continues an inbound W3C `traceparent`, starts an `http.server` transaction, and reports a downstream error before re-throwing it untouched, so Koa's own `onerror` still formats the response. By default a plain throw or a 5xx is reported and a 4xx (for example `ctx.throw(404)`) is skipped. With `@koa/router` the transaction is named after the matched route.
 
-- opens a per-request context (`store.run` wraps `next()`), continues an inbound W3C `traceparent`, and
-  starts an `http.server` APM transaction (when `@bugsee/performance` is wired);
-- Koa's compose propagates a downstream throw up through `await next()`, so the middleware **catches** the
-  error, reports it (mechanism `http-error`), then **re-throws** it untouched — Koa's own `onerror` still
-  formats the response;
-- finishes the transaction with the route-parametrized name + status.
+## Options
 
-Correlation, not isolation: the SDK records everything globally and tags each entry with its request's
-`contextId`; the report carries that id as the join key.
+`launch(appToken, options)` accepts the SDK launch options. The most relevant ones on a server:
 
-## Which errors are reported
+- `instrumentIncomingRequests`: auto-instrument incoming HTTP requests (default `true`).
+- `captureLocalVariables`: attach local variables to the crash frames of reported errors (default `false`).
+- `captureSourceContext`: attach source lines around crash frames (default `false`).
+- `detectHangs`: report event-loop hangs (default `true`).
+- `profiling`: rolling CPU profiling (default `false`).
 
-By default, only **genuine errors** — a plain throw (no status, → 500) or a 5xx is reported; a 4xx
-(`ctx.throw(404)`, etc.) is expected control flow and is skipped. Override with
-`shouldReport: (err) => boolean`. The matched route comes from `ctx._matchedRoute` (set by `@koa/router`);
-without a router it falls back to `ctx.path`.
+Adapter options, passed as the second argument of `setupKoa`:
 
-## Behavior guarantees
+- `user`: `(ctx) => string | undefined`, the end-user identity for reports. Off by default.
+- `shouldReport`: `(err) => boolean`, override which errors are reported.
 
-- **Opt-in** — with no SDK launched, the middleware is a transparent pass-through.
-- **Never breaks the app** — the only thing it re-throws is the original downstream error; it never alters
-  Koa's response.
-- **Privacy-safe** — no user identity is read unless you provide a `user` getter.
+This package also re-exports everything from `@bugsee/bugsee/node`.
 
-**Status:** implemented + tested (incl. a real-Koa e2e: error reporting, 4xx skip, response preservation,
-concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/koa
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
