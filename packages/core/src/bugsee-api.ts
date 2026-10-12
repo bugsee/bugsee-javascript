@@ -224,7 +224,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
     // and a JS SDK application is type `javascript` — sending `web` had every session rejected with
     // ApplicationTypeMismatchError. `javascript` also stays off the dashboard cookie-auth path, which
     // only `web`/`unknown`/absent take (`populate.middleware.js`); that risk was the reason `web` was
-    // chosen, and it does not apply.
+    // chosen, and it does not apply. Resolves design open question #1 (§wire C3).
     'x-client-type': 'javascript',
     ...(options.sendUserAgent === false ? {} : { 'user-agent': `BugseeJS/${sdkVersion}` }),
     'x-bugsee-internal': '1',

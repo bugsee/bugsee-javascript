@@ -75,7 +75,7 @@ const defaultOff: Array<[string, string]> = [
   ['reportPrioritySelectorEnabled', BugseeOption.ReportingUiPrioritySelectorEnabled],
 ];
 
-describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () => {
+describe('browser boolean launch options: invalid values', () => {
   it.each(failClosed)('%s (default ON): invalid => OFF + onError', async (friendly, key) => {
     const { client: base } = await start({});
     expect(base.getLaunchOptions()[key]).toBe(true);

@@ -70,8 +70,7 @@ export interface CrashJson extends CrashProvenance {
 }
 
 /** The NATIVE crash.json — a Crashpad/native segfault (Electron/Node native addon). The worker keys off
- *  `minidumpFile` (present) and stackwalks the attached `.dmp`; the exception + signal are derived there.
- * */
+ * `minidumpFile` (present) and stackwalks the attached `.dmp`; the exception + signal are derived there. */
 export interface NativeCrashJson extends CrashProvenance {
   exception_type: 'native';
   ndkCrash: true;

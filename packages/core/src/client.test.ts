@@ -181,7 +181,7 @@ describe('createClient — request context', () => {
     expect((enqueue.mock.calls[0]?.[0] as Bundle).request.context_id).toBeUndefined();
   });
 
-  it('a throwing contextProvider degrades to no context — never breaks reporting (R-5)', async () => {
+  it('a throwing contextProvider degrades to no context — never breaks reporting', async () => {
     // The provider is integrator-replaceable; a custom binding whose getCurrent() throws must read
     // as "no active context" at submit, not propagate out of logException into the application.
     const { uploadPipeline, enqueue } = fakeUpload();
@@ -409,9 +409,10 @@ describe('createClient — capture entry points', () => {
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  // The wire level is NUMERIC (mobile parity: 1=Error … 5=Verbose). `client.log()` — the manual API
-  // users are told to call — once shipped the string name. These two tests asserted `level: 'info'` and
-  // `level: 'error'`, so they pinned the defect in place; the e2e upload contract is what finally named it.
+  // The wire level is NUMERIC (mobile parity: 1=Error … 5=Verbose). Wave 5.1 fixed the
+  // console-CAPTURE path and left `client.log()` — the manual API users are told to call — shipping the
+  // string name. These two tests asserted `level: 'info'` and `level: 'error'`, so they pinned the defect
+  // in place; the e2e upload contract added in Wave 3b.2 is what finally named it.
   it('log pushes a log entry whose level is the NUMERIC wire value', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
@@ -563,7 +564,7 @@ describe('createClient — file encoders', () => {
   });
 });
 
-describe('createClient — crash.json (SC3)', () => {
+describe('createClient — crash.json', () => {
   const crashOf = (bundle: Bundle) =>
     JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
 
@@ -611,7 +612,7 @@ describe('createClient — crash.json (SC3)', () => {
     expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
   });
 
-  it('skipFrames on a non-Error counts from the APPLICATION frame, not the SDK wrapper (R2P-1)', async () => {
+  it('skipFrames on a non-Error counts from the APPLICATION frame, not the SDK wrapper', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     async function applicationCode(): Promise<void> {
@@ -625,7 +626,7 @@ describe('createClient — crash.json (SC3)', () => {
     expect(frames[1]?.hidden).not.toBe(true);
   });
 
-  it('the fallback (no Error.captureStackTrace) also starts at the application frame (R2P-1)', async () => {
+  it('the fallback (no Error.captureStackTrace) also starts at the application frame', async () => {
     const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
     (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
     try {
@@ -642,7 +643,7 @@ describe('createClient — crash.json (SC3)', () => {
     }
   });
 
-  it('the wrapper callSite wins over a caller-supplied one (R2P-1, R3P-5)', async () => {
+  it('the wrapper callSite wins over a caller-supplied one', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     async function applicationCode(): Promise<void> {
@@ -713,7 +714,7 @@ describe('createClient — crash.json (SC3)', () => {
       expect(f.map((x) => x.hidden)).toEqual([true, true, undefined]);
     });
 
-    it('clamps skipFrames to frames.length - 1 so a location always remains; 0 hides none (P5)', async () => {
+    it('clamps skipFrames to frames.length - 1 so a location always remains; 0 hides none', async () => {
       const all = await run({ skipFrames: 99 });
       const hidden = all.crash.exception.frames.map((x: { hidden?: boolean }) => x.hidden);
       expect(hidden).toEqual([true, true, undefined]); // 3 frames: the last one stays visible
@@ -733,7 +734,7 @@ describe('createClient — crash.json (SC3)', () => {
       expect(none.onError).not.toHaveBeenCalled();
     });
 
-    it('caps domain at 150 characters and says so once (P9)', async () => {
+    it('caps domain at 150 characters and says so once', async () => {
       const { crash, onError } = await run({ domain: 'd'.repeat(151) });
       expect(crash.exception.domain).toBe('d'.repeat(150));
       expect(onError).toHaveBeenCalledTimes(1);
@@ -1548,7 +1549,7 @@ const throwingDetectionProvider = (name: string, err: unknown): DetectionProvide
   stop: vi.fn(),
 });
 
-describe('createClient — launch never throws (§15.1)', () => {
+describe('createClient — launch never throws', () => {
   it('swallows a throwing capture provider start and routes it to onError', () => {
     const onError = vi.fn();
     const client = createClient({ onError });
@@ -1614,7 +1615,7 @@ describe('createClient — logException', () => {
     expect(request.report.description).toMatch(/Error: boom/);
   });
 
-  it('links the error `cause` chain into the description (LinkedErrors — e.g. a React component stack)', async () => {
+  it('links the error `cause` chain into the description (e.g. a React component stack)', async () => {
     const { client, report } = withTrigger();
     const componentStack = new Error('React component stack:\n    in Widget\n    in App');
     const err = new Error('render failed');
@@ -2203,7 +2204,7 @@ describe('createClient — capture-store tick timer', () => {
   });
 });
 
-// an incident drains only the faulting TENANT.
+// S3: an incident drains only the faulting TENANT.
 //
 // The client-level statement of the leak proven on real workerd, where tenant C's bundle carried tenant
 // A's and B's secrets. Store, aggregator and exporter are all REAL
@@ -2348,7 +2349,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
-  it('a THROWING user onError never loses a report that carries a bad attachment (R2P-6)', async () => {
+  it('a THROWING user onError never loses a report that carries a bad attachment', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn(() => {
       throw new Error('the app\u2019s onError is broken');
@@ -2375,7 +2376,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalled();
   });
 
-  it('a throwing onError and a FROZEN report (limits cannot be applied at submit) still deliver (R2P-6)', async () => {
+  it('a throwing onError and a FROZEN report (limits cannot be applied at submit) still deliver', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn(() => {
       throw new Error('the app\u2019s onError is broken');
@@ -2407,7 +2408,7 @@ describe('createClient — upload (manual report)', () => {
     ).toEqual(['ok']);
   });
 
-  it('delivers the report for a plain-JS attachment with a non-string fileName (P2)', async () => {
+  it('delivers the report for a plain-JS attachment with a non-string fileName', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
@@ -2425,7 +2426,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
-  it('persists attachments in the recovery marker already limited and JSON-safe (P1)', async () => {
+  it('persists attachments in the recovery marker already limited and JSON-safe', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const onError = vi.fn();
@@ -2456,7 +2457,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledTimes(2); // the oversize one and the bad fileName, once each
   });
 
-  it('still delivers a report whose handler froze it (attachment normalisation cannot assign) (P2)', async () => {
+  it('still delivers a report whose handler froze it (attachment normalisation cannot assign)', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
@@ -2472,7 +2473,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
-  it('what ReportHandler.after adds reaches the recovery marker: a recovered report equals the live one (R2P-7)', async () => {
+  it('what ReportHandler.after adds reaches the recovery marker: a recovered report equals the live one', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const { store, put } = fakeMarkers();
     const wires: string[] = []; // what a real store would have serialised AT each put
@@ -2518,7 +2519,7 @@ describe('createClient — upload (manual report)', () => {
     expect(markers[0]?.request.report.summary).toBe('original'); // what was persisted FIRST
   });
 
-  it('does not rewrite the marker when there is no `after` handler, or the write throws (R2P-7)', async () => {
+  it('does not rewrite the marker when there is no `after` handler, or the write throws', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const onError = vi.fn();
@@ -2546,7 +2547,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk full' }));
   });
 
-  it('an `after` handler that changes nothing leaves the marker written once (R3P-7)', async () => {
+  it('an `after` handler that changes nothing leaves the marker written once', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -2567,7 +2568,7 @@ describe('createClient — upload (manual report)', () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
-  it('a binary attachment that changes size rewrites the marker (R3P-7)', async () => {
+  it('a binary attachment that changes size rewrites the marker', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -2588,7 +2589,7 @@ describe('createClient — upload (manual report)', () => {
     expect(put).toHaveBeenCalledTimes(2);
   });
 
-  it('an unreadable report (signature throws) is treated as changed and rewritten (R3P-7)', async () => {
+  it('an unreadable report (signature throws) is treated as changed and rewritten', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -2822,7 +2823,7 @@ describe('createClient — upload (manual report)', () => {
     expect(put).toHaveBeenCalledTimes(2);
   });
 
-  it('a scrubbing `after` leaves the marker holding the SCRUBBED crash (R4H-1)', async () => {
+  it('a scrubbing `after` leaves the marker holding the SCRUBBED crash', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -2858,7 +2859,7 @@ describe('createClient — upload (manual report)', () => {
     expect(JSON.stringify(last.request.report.crash)).not.toContain('hunter2');
   });
 
-  it('a hostile report (throwing Proxy) never loses the report at the marker limit step (R3P-8)', async () => {
+  it('a hostile report (throwing Proxy) never loses the report at the marker limit step', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const { store } = fakeMarkers();
     const onError = vi.fn();
@@ -2891,7 +2892,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'hostile ownKeys' }));
   });
 
-  it('a limit step that throws persists NO user attachments in the marker (fail closed, R4H-6)', async () => {
+  it('a limit step that throws persists NO user attachments in the marker (fail closed)', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -2923,7 +2924,7 @@ describe('createClient — upload (manual report)', () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
-  it('a report that cannot even be copied persists no marker, and is still uploaded (R4H-6)', async () => {
+  it('a report that cannot even be copied persists no marker, and is still uploaded', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const onError = vi.fn();
     const { store, put } = fakeMarkers();
@@ -2952,7 +2953,7 @@ describe('createClient — upload (manual report)', () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
-  it('a report that cannot be copied (no marker persisted) still raises the unrecoverable warning when the upload fails (R5H-3)', async () => {
+  it('a report that cannot be copied (no marker persisted) still raises the unrecoverable warning when the upload fails', async () => {
     const { store, put, remove } = fakeMarkers();
     const onError = vi.fn();
     const client = createClient({
@@ -2987,7 +2988,7 @@ describe('createClient — upload (manual report)', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {
+  it('a rejected asynchronous marker rewrite is reported, not unhandled', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const onError = vi.fn();
@@ -3011,7 +3012,7 @@ describe('createClient — upload (manual report)', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'idb quota' }));
   });
 
-  it('a FROZEN report still gets its attachments limited before the marker encodes them (R2P-9)', async () => {
+  it('a FROZEN report still gets its attachments limited before the marker encodes them', async () => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -3323,7 +3324,7 @@ describe('createClient — blackout', () => {
   });
 });
 
-describe('createClient — mobile-parity options (T6)', () => {
+describe('createClient — mobile-parity options', () => {
   const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
   const drain = async (store: CaptureStore, type: FileType) =>
     (await createCaptureExporter(store).drain()).get(type);
@@ -3519,7 +3520,7 @@ describe('createClient — mobile-parity options (T6)', () => {
   });
 });
 
-describe('createClient — wire-level options are not reachable from the public surface (review O12)', () => {
+describe('createClient — wire-level options are not reachable from the public surface', () => {
   const setup = () => {
     // `upload` goes through the upload pipeline, `logException` through the trigger pipeline.
     const { uploadPipeline, enqueue } = fakeUpload();
@@ -3537,7 +3538,7 @@ describe('createClient — wire-level options are not reachable from the public 
   // What plain JavaScript can do: the type system hides these options, the runtime must too.
   const forge = (value: unknown) => value as never;
 
-  it('upload() ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
+  it('upload ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
     const { client, sentSource } = setup();
     await client.upload(forge({ trigger: 'code_dialog', summary: 's' }));
     expect(sentSource().type).toBe('code_upload');
@@ -3557,13 +3558,13 @@ describe('createClient — wire-level options are not reachable from the public 
     expect(request.labels).toEqual(['a']);
   });
 
-  it('logException() ignores a forged `mechanism`', async () => {
+  it('logException ignores a forged `mechanism`', async () => {
     const { logClient, reportedSource } = setup();
     await logClient.logException(new Error('x'), forge({ mechanism: 'uncaught' }));
     expect(reportedSource()).toEqual({ type: 'error', mechanism: 'programmatic' });
   });
 
-  it('prepareUpload().send() ignores a forged `trigger`', async () => {
+  it('prepareUpload.send ignores a forged `trigger`', async () => {
     const { client, sentSource } = setup();
     await client.prepareUpload()?.send(forge({ trigger: 'code_dialog' }));
     expect(sentSource().type).toBe('code_upload');

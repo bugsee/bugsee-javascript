@@ -175,7 +175,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
       // blockSelector (fail-closed).
       recordCrossOriginIframes: false,
       emit: (event) => {
-        // Blackout suspends VISUAL capture only (startBlackout); a stale session is dead.
+        // Blackout suspends VISUAL capture only (/ startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
           this.capture('replay', event.timestamp, event);
         }

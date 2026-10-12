@@ -11,7 +11,7 @@ export interface TracestateEntry {
   value: string;
 }
 
-// Cap at 32 entries AND 512 bytes; drop the oldest
+// W3C (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
 // on overflow. Both caps are pinned so every Bugsee SDK truncates to identical bytes.
 //
 // The byte cap is measured in UTF-8 BYTES, which is what "512 bytes" means on the wire and what a peer

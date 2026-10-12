@@ -3,10 +3,9 @@
 // endpoint verbatim, via the browser's own `fetch`, while recording a parsed summary of each call
 // locally. That local record is what lets `scripts/verify.mjs` assert on things the MCP surface does
 // not expose — the exact UPLOADED bundle contents (redaction, masking file presence, dropped over-cap
-// bodies) — the "wire" verification depth from, instead of only
+// bodies) — the "wire" verification depth, instead of only
 // asserting that the Scenario panel's OWN filter callback ran (which proves the callback fired, not
-// that the SDK actually applied its return value to what got uploaded — see / scenarios.md
-// item 2/3).
+// that the SDK actually applied its return value to what got uploaded).
 //
 // It rewrites nothing ON THE WIRE: every call is forwarded byte-for-byte to the real endpoint this
 // sample already launches against (`ENDPOINT`, staging), with the same method/headers/body and the same
@@ -50,7 +49,7 @@ export interface ParsedBundleSummary {
     category?: string;
     level?: string;
   }>;
-  // `mechanism`/`method`/`type` were DECLARED in (the parse below has always passed the wire
+  // `mechanism`/`method`/`type` are declared here (the parse below has always passed the wire
   // entries through verbatim, so these fields were already crossing the CDP boundary — they were simply
   // not in the type, and so not reachable from a check without an unsound cast). They are needed because
   // `url` + `custom` alone cannot tell one capture SOURCE from another: the substrate gained a
@@ -108,8 +107,8 @@ function parseBundle(body: Uint8Array, recordSeq: number): ParsedBundleSummary |
     // `replay.bin` is NOT an opaque blob: `encodeReplay` (`packages/replay/src/encoder.ts:14-16`) is
     // literally `gzipSync(strToU8(JSON.stringify(payloads)))`, so `gunzipSync` + `strFromU8` — both
     // already exported by `@bugsee/util`, which this file already imports — recover the rrweb event
-    // stream verbatim. Earlier rounds recorded "no rrweb decoder exists in this sample's tooling" as the
-    // reason 's masking CONTENT could not be verified; that was false, and it left the wave without
+    // stream verbatim. An earlier review recorded "no rrweb decoder exists in this sample's tooling" as the
+    // reason S11's masking CONTENT could not be verified; that was false, and it left S11 without
     // its positive control for masking. Stored gzipped, inflated on demand — see `replayBlobs`.
     const replayFile = files['replay.bin'];
     if (replayFile !== undefined) {
@@ -157,7 +156,7 @@ function parseBundle(body: Uint8Array, recordSeq: number): ParsedBundleSummary |
 // The transport this tee REPLACES (`packages/browser-utils/src/fetch-transport.ts:9`) supplies
 // `DEFAULT_TIMEOUT_MS = 30_000` itself, and core never passes `timeoutMs` at any call site
 // (bundle-uploader.ts / bugsee-api.ts rely on the transport's own default). Bounding only calls that
-// happen to pass one explicitly — as an earlier revision of this file did, copied from the unfixed
+// happen to pass one explicitly — as an earlier revision of this file did, copied from the
 // `samples/fastify-api` template — therefore left EVERY SDK call in this sample unbounded: a half-open
 // socket would wedge `flush()`/`stop()` forever. That is precisely the "interceptors must not alter app
 // behaviour" hazard this sample exists to verify, turned on our own tee.
@@ -237,7 +236,7 @@ export function createTeeTransport(): HttpTransport {
  * was stored or refused. A caller that reads a bundle and concludes "the uploaded bundle carries X" is
  * therefore only entitled to that claim once it has ALSO checked `status`: a 403 on the presigned PUT
  * would otherwise leave every wire assertion in the sweep green while nothing reached the backend.
- * A check found exactly that hole — `status` was recorded here and read by ZERO checks — and closed it
+ * That hole — `status` was recorded here and read by ZERO checks — was closed
  * in `verify.mjs` (`uploadStored()`, applied inside `waitForBundle`, plus the `wire-upload-status`
  * check that reports any non-2xx PUT for the whole run).
  *

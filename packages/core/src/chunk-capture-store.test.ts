@@ -79,7 +79,7 @@ describe('createChunkCaptureStore — backend protocol', () => {
 // the browser had nothing at all. The store forwards the backend's flush so a platform can commit at the
 // last moment it is alive, and omits it entirely when the backend has no such notion (a memory backend
 // has nothing pending, and advertising a flush that does nothing would read as a guarantee).
-describe('flush (Wave 6.2)', () => {
+describe('flush', () => {
   it('delegates to the backend’s flush', async () => {
     const flush = vi.fn(() => Promise.resolve());
     const backend = Object.assign(createMemoryChunkBackend(), { flush });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// WebView bridge protocol CONFORMANCE harness.
+// WebView bridge protocol CONFORMANCE harness (slice 7).
 //
 // THIS HARNESS IS THE REFERENCE SPEC handed to the native (Android) team: it boots the REAL @bugsee/webview SDK
 // against a MOCK NATIVE RECEIVER + a real DOM (jsdom), drives a full session (handshake -> capture -> obscuring
@@ -116,7 +116,7 @@ const track = (b: ReturnType<typeof boot>): ReturnType<typeof boot> => {
   return b;
 };
 
-describe('slice 7 — WebView bridge protocol conformance (the native-team reference spec)', () => {
+describe('WebView bridge protocol conformance (the native-team reference spec)', () => {
   it('opens with a schema-valid hello declaring sdk + caps (incl. obscuring) + a session', () => {
     const { rx } = track(boot());
     const hello = rx.messages()[0];
@@ -245,7 +245,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(JSON.stringify(rx.messages())).not.toContain('login-pw');
   });
 
-  it('streams an incident as a crash entry (always) + a report trigger when gated on (D5)', async () => {
+  it('streams an incident as a crash entry (always) + a report trigger when gated on', async () => {
     const { client, rx } = track(boot({ reportTrigger: true }));
     await client.logException(new Error('conformance-boom'));
     const crash = rx.entries('crash').find((e) => JSON.stringify(e.p).includes('conformance-boom'));
@@ -256,7 +256,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('streams a schema-valid secure message + answers the native snapshot pull (D10 obscuring)', () => {
+  it('streams a schema-valid secure message + answers the native snapshot pull (obscuring)', () => {
     const { rx } = track(boot());
     const input = document.createElement('input');
     input.type = 'password';
@@ -278,7 +278,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('composes a SUB-frame bubble into the top frame secure message (D9 sub-frame composition)', () => {
+  it('composes a SUB-frame bubble into the top frame secure message (sub-frame composition)', () => {
     const { rx } = track(boot());
     // A real sub-frame in the page; the top SDK is the receiving (top) frame.
     const iframe = document.createElement('iframe');
@@ -318,7 +318,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  // The control-channel token.
+  // WAVE 0.3 — the control-channel token (D-A1/D-A2).
   //
   // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret from a CSPRNG,
   // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{transport,controlNonce,captureNonce})`),
@@ -363,8 +363,8 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     // `if (tok === secret && !authenticated)` — a one-word change — would lock native permanently out of
     // its own channel while the suite stayed green. Native sends many control messages over a session.
     //
-    // This test had once gone vacuous. It read `hello.tok` and passed it back — but
-    // under `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
+    // caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
+    // under D-A10 `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
     // harness default and got BOTH messages rejected. It then asserted zero reports and passed because
     // nothing was applied at all, which is the opposite of what it is named for.
     const { client, rx } = track(boot());
@@ -390,7 +390,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     // the guarantee was only "never REPEATED after hello"; under native already holds the secret, so
     // it need never be sent — a strictly stronger property, and this asserts that one.
     //
-    // An earlier version asserted `includes(token)` where `token` was `undefined`, i.e.
+    // caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
     // searching every message for the literal substring "undefined". It could not fail.
     const { rx } = track(boot());
     console.log('post-hello-traffic');
@@ -421,8 +421,8 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('the schema REJECTS a malformed `tok` in BOTH directions (Wave 0.3)', () => {
-    // The schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
+  it('the schema REJECTS a malformed `tok` in BOTH directions', () => {
+    // the schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
     // `"type":"string","minLength":1` would have gone unnoticed. An empty token matters concretely: the
     // JS side treats a present-but-wrong token as an ATTACK and rejects the message, so a receiver
     // echoing `""` would break the handshake it was meant to authenticate.
@@ -436,7 +436,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(validateMessage({ b: 1, k: 'control', tok: 42 })).toBe(false);
   });
 
-  it('R4V-10: blackout messages are schema-valid, stamped, ordered after hello, and the a:false state is restated at launch', () => {
+  it('blackout messages are schema-valid, stamped, ordered after hello, and the a:false state is restated at launch', () => {
     const { client, rx } = track(boot());
     client.startBlackout();
     client.endBlackout();

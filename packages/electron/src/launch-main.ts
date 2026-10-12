@@ -136,6 +136,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // The main-side submit path for renderer incidents. Registering this is what makes the feature
   // LIVE: stopped renderers uploading, so without a join here every renderer incident is silently
   // destroyed while the app is told it was delivered — strictly worse than the defect
+  // (SEV1-1).
   const incidents = new RendererIncidentProvider({
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });

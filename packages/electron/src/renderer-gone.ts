@@ -1,6 +1,6 @@
 import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 
-// renderer killed before it could report anything
+// R4 — renderer killed before it could report anything
 //
 // A renderer that dies from an OOM, a GPU fault or a native crash never runs the JS that would forward its
 // incident. Main therefore watches `render-process-gone` and synthesises the incident itself, attributed

@@ -381,7 +381,7 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * Suppress ALL visual / interaction capture (session replay, input presses, `ui.*` interaction
    * breadcrumbs, the report-time view hierarchy) until {@link endBlackout}. Logs, network, traces and
    * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry: see
-   * for the exact list). Idempotent and NOT counted: one `endBlackout()` ends any
+   * for the exact list). Idempotent and NOT counted: one `endBlackout` ends any
    * number of calls, as on mobile.
    *
    * A NO-OP while the client is not launched (before it is launched, after `stop()`, or once the SDK has been
@@ -659,7 +659,7 @@ export interface CreateClientOptions {
    */
   restartable?: boolean;
   /**
-   * Internal error sink. Receives provider-start failures (so launch() never throws) and
+   * Internal error sink. Receives provider-start failures (so launch never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
   onError?: (error: unknown) => void;
@@ -686,7 +686,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // a throwing sink must not defeat the guard either
     }
   };
-  // The internal service container (the "BugseeInternal" — the per-process DI registry).
+  // The internal service container (the "BugseeInternal" — the per-process DI registry). Phase 1
   // stands it up; later phases migrate the hand-wired seams into it as registered services.
   const services = options.services ?? createServiceContainer();
   // Redaction filters: the first real service. The facade's set* mutate this store; the
@@ -863,7 +863,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   services.addService(defineService(SchedulerToken, () => scheduler));
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
-  // True once stop() has run (until a re-launch): manual captures that upload become no-ops.
+  // True once stop has run (until a re-launch): manual captures that upload become no-ops.
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
   // True from stop() until its upload drain settles (BugseeStatus.Stopping).
@@ -907,7 +907,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           clock,
           flushDelayMs: notifyFlushDelayMs,
           onError: onErrorSafe,
-          // A batch still in a request when relaunch() took the queue, failing later.
+          // A batch still in a request when relaunch took the queue, failing later.
           onHandBack: (items) => handBackNotify(items),
           // The relay's own `403 KillSdk` verdict switches the SDK off exactly like a report's.
           onKill: () =>
@@ -935,14 +935,14 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
   // relaunch() hands what the old client could not deliver (an offline notify() queue) to the client it builds
-  // The decision is taken when stop() is CALLED (`getCarrierRelaunching` is true only for the stop that
+  // The decision is taken when stop is CALLED (`getCarrierRelaunching` is true only for the stop that
   // relaunch() itself issues), never when the drain finishes: a slow old stop can settle after the new client
   // is up. Where the items go, in order: the client that has already adopted (it registered as the carrier's
   // adopter), else the carrier backlog its launch() will drain. A plain stop() keeps nothing on the carrier,
   // which sits on `globalThis` and would otherwise hold user-identifying notifications for a process that never
   // relaunches.
   const notifyOwner = {};
-  /** The carrier's failed-relaunch counter when the handing-over stop() was issued. */
+  /** The carrier's failed-relaunch counter when the handing-over stop was issued. */
   let handoverEpoch = 0;
   const handBackNotify = (items: NotifyItem[]): void => {
     if (processCarrier === undefined || items.length === 0) {
@@ -1201,7 +1201,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     timeout === undefined ? drained : Promise.race([drained, sleep(timeout).then(() => false)]);
   const drainPending = (timeout?: number): Promise<boolean> =>
     boundDrain(startDrain(timeout), timeout);
-  // The REAL drain of the latest stop(), kept after it settles: a repeat stop() while it is still
+  // The REAL drain of the latest stop, kept after it settles: a repeat stop while it is still
   // running, or after a bounded stop() gave up on it, must answer for THAT drain. Answering "drained" at once
   // let a platform mark the instance's data recoverable (node `.stopped`) or release its lock (browser,
   // worker) while the first stop's upload was still going. Cleared by launch().
@@ -1431,7 +1431,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     return result;
   };
 
-  // The provider/extension-facing surface passed to providers at start().
+  // The provider/extension-facing surface passed to providers at start.
   const context: Client = {
     operations,
     captureAggregator,
@@ -1576,7 +1576,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       error: unknown,
       exceptionOptions?: InternalLogExceptionOptions,
     ): Promise<UploadResult> {
-      // After stop() or in the kill-state, logException is a silent no-op.
+      // After stop or in the kill-state, logException is a silent no-op.
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
@@ -1825,7 +1825,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       stopDrain = undefined; // this launch starts a fresh life: a repeat stop() answers for ITS drain
       notifyRelay?.resume(); // a stop() suspended it; what was kept goes out now
       adoptNotifyBacklog();
-      // launch() must never throw: a throwing provider.start is isolated per coordinator
+      // launch must never throw: a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
         captureCoordinator.start(launchOptions, isEnabled);
@@ -1881,7 +1881,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       haltCapture(); // also valid mid-launch: a stop from the Launching listener has nothing started yet
       stopping = true;
       lifecycle.emit(LifecycleEvents.Stopping);
-      // The shared drain is UNBOUNDED: it is the one real drain every stop() answers for, so a first
+      // The shared drain is UNBOUNDED: it is the one real drain every stop answers for, so a first
       // caller's deadline must not cap it (a repeat stop() could then never report true). Each caller applies
       // its own timeout only when racing it.
       const realDrain = startDrain();

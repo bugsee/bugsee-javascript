@@ -2,7 +2,7 @@
 // via Playwright: exercises the Kanban app itself, then every control in the Scenario panel, and prints
 // a pass/fail table for what could be checked from the browser (LOCAL: no throw / WIRE: the right
 // request left the process). Backend (MCP) verification is a SEPARATE step the build agent runs by hand
-// against the printed evidence — see scenarios.md.
+// against the printed evidence.
 //
 // This script runs a STOCK Chromium against the real staging collector, with no workarounds of any
 // kind. It used to need four: an `x-client-type` rewrite, an `{ok, result}` envelope unwrap, an
@@ -179,8 +179,8 @@ async function main() {
   // ---------------------------------------------------------------------------------- Scenario panel
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
 
-  // relaunch demos FIRST (each rebuilds the client) — minimal (demonstrates default sdkVersion
-  // 0.0.0 being rejected server-side, see /F-3 note), then full (restores a working
+  // S1: relaunch demos FIRST (each rebuilds the client) — minimal (demonstrates default sdkVersion
+  // 0.0.0 being rejected server-side), then full (restores a working
   // client with sdkVersion override for everything below).
   sinceCheckpoint();
   await click(page, 's1-relaunch-minimal', { wait: 0 });
@@ -342,7 +342,7 @@ async function main() {
   await click(page, 's11-replay-off', { wait: 800 }); // restore FULL_LAUNCH_OPTIONS (with sdkVersion override) for the rest of the sweep
   record('s11-replay-restore', 'relaunch back to FULL_LAUNCH_OPTIONS baseline', true);
 
-  // The global (unguarded) throw. EXPECTED (intent): propagates to the app-level
+  // The global (unguarded) throw. EXPECTED (by design): propagates to the app-level
   // BugseeErrorBoundary wrapping <RouterProvider> in main.tsx. OBSERVED: react-router
   // v6 data routers install their OWN per-route RenderErrorBoundary, which intercepts a route-element
   // render throw BEFORE it ever reaches an outer boundary — so BugseeErrorBoundary never runs, nothing
@@ -361,7 +361,7 @@ async function main() {
   // settles) — MCP is the authority on whether THIS click produced a report, checked separately.
   record(
     'react-error-boundary-global-GAP',
-    'F-5: data-router route throw bypasses BugseeErrorBoundary (react-router intercepts first)',
+    'data-router route throw bypasses BugseeErrorBoundary (react-router intercepts first)',
     globalFallback === 0 && reactRouterOwnFallback === 1,
     `bugsee's fallback shown=${globalFallback === 1}, react-router's own fallback shown=${reactRouterOwnFallback === 1}, issue calls in window=${globalReportCalls.length} (diagnostic only)`,
   );
@@ -395,7 +395,7 @@ async function main() {
     console.log(`${status}  ${r.id.padEnd(width)} ${r.description}${r.detail ? ` — ${r.detail}` : ''}`);
   }
   const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only — see scenarios.md for backend/MCP verification)`);
+  console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only — backend/MCP verification is a separate step)`);
   if (pageErrors.length > 0) {
     console.log(`\nUncaught page errors observed (expected for S5): ${pageErrors.length}`);
   }

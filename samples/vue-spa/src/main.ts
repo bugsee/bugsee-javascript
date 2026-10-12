@@ -25,7 +25,7 @@ const app = createApp(App);
 // VueAppLike's `(err, instance: unknown, info) => void` under strictFunctionTypes (contravariant
 // parameter check — `unknown` is not assignable to `ComponentPublicInstance | null`). Calling
 // installBugseeErrorHandler(app) with a genuine Vue app, exactly as the package doc comment shows,
-// does not typecheck without this cast — see
+// does not typecheck without this cast.
 installBugseeErrorHandler(app as unknown as VueAppLike);
 
 // Component attribution (data-bugsee-component on every mounted/updated component's root element) +

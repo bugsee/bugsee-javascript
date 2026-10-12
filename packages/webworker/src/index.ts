@@ -2,7 +2,7 @@
 // network (fetch/ws). Detection: global `error`/`unhandledrejection` on the worker `self`. No DOM, no ALS /
 // per-request context, memory-only (IndexedDB persistence is a follow-up).
 
-// API parity with the umbrella entries: the same VALUE surface, thin re-exports.
+// API parity with the umbrella entries (review): the same VALUE surface, thin re-exports.
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 export {
   addReportAttachment,

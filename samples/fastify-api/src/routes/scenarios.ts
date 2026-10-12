@@ -1,6 +1,6 @@
-// Every /scenarios/* route from (the shared catalog) + (the
-// framework-backend extras) + fastify-specific hook/plugin surfaces. Each route is deliberately small
-// and does ONE thing so scripts/verify.ts and scenarios.md can point at it 1:1. Routes read a `marker`
+// Every /scenarios/* route covers one scenario of the shared catalog, the framework-backend extras, and
+// the fastify-specific hook/plugin surfaces. Each route is deliberately small
+// and does ONE thing so scripts/verify.ts can point at it 1:1. Routes read a `marker`
 // (query or body) that verify.ts sets to a per-run-unique string, embedded in every message/summary
 // this scenario produces — that's how verify.ts (and get_issue afterwards) correlates a scenario run to
 // the Bugsee issue(s) it created.
@@ -470,11 +470,11 @@ export function buildScenariosPlugin() {
       await reply.send({
         capturedDataStore: 'disk',
         dataDir: process.env.BUGSEE_DATA_DIR ?? '(default os.tmpdir()/bugsee)',
-        note: 'see scenarios.md S12 for the manual SIGKILL-recovery reproduction (needs a process restart).',
+        note: 'the manual SIGKILL-recovery reproduction needs a process restart.',
       });
     });
 
-    // ---------------------------------------------------------------- concurrency
+    // ---------------------------------------------------------------- concurrency (S2)
     fastify.get('/concurrency/hit', async (req: FastifyRequest) => {
       const marker = markerOf(req);
       const query = req.query as Record<string, unknown>;
@@ -549,9 +549,8 @@ export function buildScenariosPlugin() {
       await reply.send(getCapturedCalls());
     });
 
-    // ------------------------------------------------- (continued) · clearUserIdentifier
-    // PLACED AT THE VERY END OF THIS FILE ON PURPOSE, far from the block it belongs to. See
-    // scenarios.md's fingerprinting note: Bugsee fingerprints an issue on `file:line`, so every
+    // ------------------------------------------------- S2 (continued) · clearUserIdentifier
+    // PLACED AT THE VERY END OF THIS FILE ON PURPOSE, far from the S2 block it belongs to. Bugsee fingerprints an issue on `file:line`, so every
     // throw/`logException` call site above mints its issue at the line it currently occupies, and
     // inserting a route anywhere earlier shifts those lines and re-mints the whole `SFASTIFY` set.
     // The last fingerprint-sensitive line in this file is the `throw err` in `/status/5xx-thrown`;
@@ -559,9 +558,9 @@ export function buildScenariosPlugin() {
     // appending here shifts nothing and mints nothing. Anyone moving this route back up beside its
     // siblings pays for it with a fresh set of issue keys.
     //
-    // PLAN asks for `setUserIdentifier`/`getUserIdentifier`/`clearUserIdentifier`. The first two
+    // The S2 scenario calls for `setUserIdentifier`/`getUserIdentifier`/`clearUserIdentifier`. The first two
     // are covered by `/s2/identity-attributes` and by the launch-time call in `src/bugsee.ts`; the
-    // third was neither exercised nor recorded N/A until this fix round.
+    // third is exercised by `/s2/user-identifier`.
     //
     // The identity is PROCESS-GLOBAL, so the route restores what it found before replying — leaving it
     // cleared would strip the user off every report the rest of the sweep produces. Every statement

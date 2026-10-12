@@ -1,6 +1,6 @@
 import { Component, Input, OnInit } from '@angular/core';
 
-// "beyond the catalog" fixture: an error thrown IN A COMPONENT (`ngOnInit`, so it fires during
+// Fixture: an error thrown IN A COMPONENT (`ngOnInit`, so it fires during
 // Angular's own change-detection/lifecycle-hook cycle, inside the zone) — as opposed to a service method
 // or an RxJS pipeline (see `throwing.service.ts`). Mounted conditionally (`@if (armed)`) from the
 // Scenario panel so arming it is a deliberate user action.

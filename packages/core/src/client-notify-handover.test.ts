@@ -56,7 +56,7 @@ const build = (
 };
 const titles = (batches: NotifyItem[][]): string[] => batches.flat().map((item) => item.title);
 
-describe('R3L-5 — a batch in flight when relaunch() took the queue and then fails', () => {
+describe('a batch in flight when relaunch() took the queue and then fails', () => {
   it('reaches the NEW client (the adopter), not the dead relay', async () => {
     const host = {};
     let failOld: () => void = () => {};
@@ -161,7 +161,7 @@ describe('R3L-5 — a batch in flight when relaunch() took the queue and then fa
   });
 });
 
-describe('R3L-5 — relaunch failure', () => {
+describe('relaunch failure', () => {
   it('clears the carrier backlog when the new launch throws, so nothing waits for a later unrelated launch', async () => {
     const host = {};
     const old = build(host, async () => ({ outcome: 'retry' }));
@@ -185,7 +185,7 @@ describe('R3L-5 — relaunch failure', () => {
   });
 });
 
-describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dropped, not parked', () => {
+describe('a hand-back that belongs to a FAILED relaunch attempt is dropped, not parked', () => {
   it('in flight -> relaunch fails -> the request fails: the backlog stays empty and onError says what was dropped', async () => {
     const host = {};
     let failOld: () => void = () => {};
@@ -223,7 +223,7 @@ describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dro
     );
   });
 
-  it('a queued item stashed by the late old stop after the attempt failed is dropped too (R5L-3)', async () => {
+  it('a queued item stashed by the late old stop after the attempt failed is dropped too', async () => {
     const host = {};
     const errors: unknown[] = [];
     const hungUpload: UploadPipeline = {

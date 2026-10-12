@@ -28,7 +28,7 @@ describe('solid error handler is a contained host boundary', () => {
 });
 
 // WAVE 2.2 — the enforcement half. The test above covers `solidErrorHandler`, the seam the review named.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

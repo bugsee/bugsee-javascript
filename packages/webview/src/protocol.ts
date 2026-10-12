@@ -1,6 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 
-// The JSON intrinsics, captured at MODULE LOAD.
+// The JSON intrinsics, captured at MODULE LOAD (SEV1).
 //
 // `JSON.parse` and `JSON.stringify` are page-writable globals. Reading them at call time let a script do:
 //
@@ -367,7 +367,7 @@ export function parseControl(raw: string): ControlMessage | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  // Cut the prototype chain BEFORE any field is read. Every subsequent read —
+  // Cut the prototype chain BEFORE any field is read (SEV1). Every subsequent read —
   // `k`, `b`, `tok`, `command`, `config`, `session` — is a plain property lookup, so without this a single
   // line of page script forges an authenticated message by riding native's own:
   //

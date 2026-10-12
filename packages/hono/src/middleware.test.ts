@@ -7,7 +7,7 @@ import { bugseeHono, defaultShouldReport, type HonoContextLike, requestName } fr
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement.
+// member this doesn't implement — §'s "structural point (S2)".
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -168,7 +168,7 @@ describe('bugseeHono', () => {
     expect(txn.setAttribute).toHaveBeenCalledWith('http.status_code', 200);
   });
 
-  // A manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // F-4 (D2): a manual rename (client.ext('performance').setRouteName/setActiveTransactionName)
   // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
   // with the automatic route-derived name. This exercises the check against a Transaction double whose
   // getAttributes() actually reports the stamp, not one that omits the method entirely.

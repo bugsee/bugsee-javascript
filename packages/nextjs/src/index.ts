@@ -2,8 +2,9 @@
 //
 // Next invokes `instrumentation.ts` exports on both the node AND edge runtimes, so anything exported
 // here must be portable (no static node/edge-specific import). Node-only composition lives behind the
-// `./server` subpath (reached via `await import` from the `register()` dispatcher). See
+// `./server` subpath (reached via `await import` from the `register()` dispatcher).
 //
+// It exposes the portable surface: the register dispatcher, the onRequestError bridge and the getBugseeTraceData trace channel.
 export {
   createOnRequestError,
   type NextOnRequestError,

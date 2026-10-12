@@ -21,7 +21,7 @@ export const DEBUG_ID_NAMESPACE = 'b095ee5e-5300-4da9-8a05-04deb06a9001';
  */
 export const BUILD_ID_NAMESPACE = uuidV5(DEBUG_ID_NAMESPACE, 'bugsee.js-build');
 
-/** RFC 4122 §4.3 name-based UUID, SHA-1 (version 5). */
+/** RFC 4122 name-based UUID, SHA-1 (version 5). */
 export function uuidV5(namespace: string, name: string): string {
   const ns = Buffer.from(namespace.replace(/-/g, ''), 'hex');
   const hash = createHash('sha1').update(ns).update(name, 'utf8').digest();

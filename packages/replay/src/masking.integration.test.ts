@@ -11,7 +11,7 @@ import { type ReplayClientLike, type ReplayFileEncoders, registerReplay } from '
 // Every masking test in this package used to assert the RESOLVER'S RETURN VALUE ("maskInputOptions equals
 // {password:true}") and the recorder tests drove a FAKE `record`. That is why three fail-open defects
 // survived a suite at 100% coverage: rrweb never consults `maskInputOptions` on the unmask path, so a
-// property of the config object says nothing about what is serialized (#2/#3,
+// property of the config object says nothing about what is serialized (/#2/#3,
 // and its "Masking fail-closed audit" table, whose right-hand column is ✗ on every row).
 //
 // These tests read the bytes rrweb actually emits. A guarantee that cannot be observed here is not a
@@ -44,7 +44,7 @@ async function drive(
   // ANTI-VACUITY GUARD, applied to every test that uses this harness.
   //
   // Almost every assertion in this file is `expect(json).not.toContain(secret)`, and an EMPTY payload
-  // satisfies that perfectly. The risk was shown to be live rather than theoretical: gutting the
+  // satisfies that perfectly. proved the risk was live rather than theoretical: gutting the
   // capture (`blockSelector: '*'`) left three of the tests added in 3eb7fa2 still passing against a
   // payload containing nothing at all. They were covered only by positive assertions living in other
   // tests, which is coverage by luck — the canary and the test that needs it must not be separable.
@@ -503,7 +503,7 @@ describe('masking cannot be downgraded by prototype pollution or a non-boolean',
   });
 });
 
-// THE MUTUAL-MOCKING BLIND SPOT.
+// THE MUTUAL-MOCKING BLIND SPOT (adjudication row).
 //
 // Mutating `register.ts` to call `resolveReplayMaskingOptions({})` — i.e. DISCARDING every masking option
 // the caller passed — was undetectable across @bugsee/browser's 208 tests, @bugsee/replay-canvas's 12, AND

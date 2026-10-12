@@ -2,7 +2,7 @@
 // An async component (`async setup()`), meant to be used inside a <Suspense> boundary. Computes a fake
 // nutrition estimate from the recipe's ingredient count after a real await — exercising Vue's async
 // component / Suspense error surface when `shouldThrow` is set (see src/components/ErrorLab.vue, the
-// "async-component/Suspense error" scenario.
+// "async-component/Suspense error" scenario).
 const props = defineProps<{ ingredientCount: number; shouldThrow?: boolean }>();
 
 await new Promise((resolve) => setTimeout(resolve, 120));

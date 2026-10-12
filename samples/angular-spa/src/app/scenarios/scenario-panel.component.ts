@@ -87,10 +87,10 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
 
   async relaunchMinimal(): Promise<void> {
     await relaunch(MINIMAL_LAUNCH_OPTIONS);
-    // NOT a truly-minimal launch — see "Relaunch minimal" / bugsee.ts's
+    // NOT a truly-minimal launch — see bugsee.ts's
     // MINIMAL_LAUNCH_OPTIONS doc comment: relaunch() always injects endpoint/appId/appVersion/appBuild/
     // onError ahead of these (empty) options, deliberately, because a truly-default endpoint would be
-    // PRODUCTION (PLAN forbids that). The caller-supplied options object is `{}`; the resolved
+    // PRODUCTION. The caller-supplied options object is `{}`; the resolved
     // launch options are not.
     this.setStatus('s1-min', 'relaunched with caller options = {} (endpoint/appId/etc still pinned to staging by relaunch())');
   }
@@ -169,7 +169,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   async logWithOptions(): Promise<void> {
-    // EVERY value here is deliberately NON-DEFAULT, which the fixture was not.
+    // EVERY value here is deliberately NON-DEFAULT, which the earlier fixture was not.
     //
     // It used to pass `mechanism: 'programmatic'` + `severity: 'high'`, and those are exactly what the
     // SDK produces when the options object is absent: `client.ts:661` defaults `mechanism` to
@@ -297,7 +297,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * `navigator.sendBeacon` — a capture source the substrate gained after, and one no other
+   * `navigator.sendBeacon` — a capture source that no other
    * control here reaches: the beacon path is neither `fetch` nor `XHR`, it is a fire-and-forget queue
    * the browser drains after the page may already be gone, which is exactly why analytics/unload code
    * uses it and exactly why an uninstrumented one is a hole in the network record.
@@ -464,8 +464,8 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     await relaunch(FULL_LAUNCH_OPTIONS);
   }
 
-  /** `propagateTrace`/`tracePropagationTargets: ['/api/']` (FULL_LAUNCH_OPTIONS) — this was previously
-   *  N/A ("no two-hop join was attempted"), but the OUTBOUND leg alone is verifiable in-sample: the local
+  // ------------------------------------------------------------------------------------------ S10
+  /** `propagateTrace`/`tracePropagationTargets: ['/api/']` (FULL_LAUNCH_OPTIONS) — a two-hop join is not attempted here, but the OUTBOUND leg alone is verifiable in-sample: the local
    *  API's `/api/scenario/echo-headers` route (`server/api-server.mjs`) echoes back every header it
    *  received, so a `traceparent` header actually leaving the process is checkable without a second hop. */
   async echoOutboundTraceHeaders(): Promise<void> {
@@ -553,7 +553,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
    * effect on the uploaded bundle is observable at all: every other configuration produces a
    * `replay.bin`, and so does launching with no `replay` key whatsoever.
    *
-   * Until this method relaunched with plain `FULL_LAUNCH_OPTIONS` and its status line said
+   * Earlier, this method relaunched with plain `FULL_LAUNCH_OPTIONS` and its status line said
    * "replay off" — true only while replay was opt-IN. Under the default it turned nothing off.
    */
   async replayOptOut(): Promise<void> {
@@ -590,7 +590,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
 
   callOriginalErrorUnwrap(): void {
     // Simulates Angular's ≤18 ErrorHandler wrapper (`{ ngOriginalError }`) — BugseeErrorHandler must
-    // UNWRAP to the real error before reporting it ("the originalError unwrap path").
+    // UNWRAP to the real error before reporting it.
     const real = new Error('Angular: real error inside an ngOriginalError wrapper');
     const wrapped = { ngOriginalError: real, message: 'a generic Angular wrapper message' };
     const handler = new BugseeErrorHandler();

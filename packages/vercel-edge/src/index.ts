@@ -1,9 +1,9 @@
 // @bugsee/vercel-edge — Vercel Edge (and the shared edge composition): WinterCG fetch transport, memory-only
-// storage, incident-driven upload via ctx.waitUntil, globalThis.AsyncLocalStorage probe. See
+// storage, incident-driven upload via ctx.waitUntil, globalThis.AsyncLocalStorage probe.
 // Edge capture is INCIDENT-DRIVEN — a no-incident invocation
 // uploads nothing (the in-memory buffer is discarded when the isolate ends).
 
-// API parity with the umbrella entries: a directly imported edge package exposes the same VALUE
+// API parity with the umbrella entries (review): a directly imported edge package exposes the same VALUE
 // surface (status enum + getStatus, lifecycle constants, the report-attachment helper, the default network
 // sanitizer). Thin re-exports of the same functions. `relaunchWith` is re-exported so `@bugsee/cloudflare`
 // (which depends on this package only) can build ITS `relaunch` on its own launch.

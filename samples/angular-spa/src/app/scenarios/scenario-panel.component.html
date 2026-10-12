@@ -1,7 +1,6 @@
 <h2>Scenario panel</h2>
 <p class="desc">
-  One control per scenario in docs/samples/PLAN.md §4. Every control here calls the real SDK API —
-  see scenarios.md for what should appear in Bugsee for each.
+  One control per scenario. Every control here calls the real SDK API.
 </p>
 
 <!-- ---------------------------------------------------------------- S1 launch & lifecycle -->
@@ -253,8 +252,8 @@
     <button class="secondary" data-testid="s11-replay-baseline" (click)="replayRestoreBaseline()">Restore baseline (no replay key)</button>
   </div>
   <div class="field-row">
-    <!-- The opt-out class for an INPUT VALUE is `.bugsee-unmask`, NOT `.bugsee-show`. This markup said
-         `.bugsee-show` until a later fix, which is the media/canvas un-BLOCK mark and does nothing for an
+    <!-- The opt-out class for an INPUT VALUE is `.bugsee-unmask`, NOT `.bugsee-show`. An earlier version of
+         this markup used `.bugsee-show`, which is the media/canvas un-BLOCK mark and does nothing for an
          input's value — `packages/replay/src/masking.ts:544-548` builds `unmaskInputSelector` from
          `.bugsee-unmask` (+ a sensitive-input guard) and feeds `.bugsee-show` to `unblockSelector`.
          The wrong class was a SAMPLE defect, and it was verified by markup inspection alone; the

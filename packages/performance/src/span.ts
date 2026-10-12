@@ -97,7 +97,7 @@ export interface TransactionOptions {
   /**
    * The parent span id for the root span — set ONLY when continuing an inbound distributed trace (the
    * upstream caller's span). Makes this transaction's root a true child of the upstream span (Bugsee OTLP
-   * Omitted → a fresh root with no parent (the default standalone transaction).
+   * ). Omitted → a fresh root with no parent (the default standalone transaction).
    */
   parentSpanId?: string;
   /** Whether the trace is sampled (kept). Default true. */

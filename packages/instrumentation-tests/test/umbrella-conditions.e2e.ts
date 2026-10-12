@@ -82,7 +82,7 @@ async function entryResolvedUnder(conditions: string[]): Promise<string> {
   return (entries[0] as string).replace(/^.*bugsee\/src\//, '');
 }
 
-describe('the umbrella resolves the right entry per runtime (Wave 4.1)', () => {
+describe('the umbrella resolves the right entry per runtime', () => {
   // Every runtime here sets SEVERAL conditions; the expected entry is the one whose condition is listed
   // FIRST in the exports map. That ordering IS the contract.
   const CASES: Array<{ runtime: string; conditions: string[]; entry: string }> = [

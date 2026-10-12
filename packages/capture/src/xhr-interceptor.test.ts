@@ -389,7 +389,7 @@ describe('createXhrInterceptor — request decorators (the transformer seam)', (
     expect(events[0]?.[1].custom?.headers).toEqual({ authorization: 's', traceparent: '00-POST' }); // captured matches
   });
 
-  it("a THROWING decorator never fails the app's send(): the request goes out untouched", () => {
+  it("a THROWING decorator never fails the app's send: the request goes out untouched", () => {
     const { Xhr, ic, events } = setupD();
     ic.addRequestDecorator(() => {
       throw new Error('decorator bug');

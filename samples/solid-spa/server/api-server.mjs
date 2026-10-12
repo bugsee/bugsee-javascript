@@ -112,7 +112,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { received: body });
       }
       if (which === 'veto-body-target' && req.method === 'POST') {
-        // F-1 demo target: a FIXED response, deliberately NOT echoing
+        // Demo target for the request-body veto hole: a FIXED response, deliberately NOT echoing
         // the request body — so a network filter that vetoes on a REQUEST-BODY marker (only present on
         // the `before` NetworkStage) cannot "accidentally" also veto the response's `complete`
         // stage-entry by the same body-content check. Proves the veto is per-entry, not per-request.

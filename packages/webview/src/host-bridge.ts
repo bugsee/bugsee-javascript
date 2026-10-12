@@ -84,7 +84,7 @@ export function createHostBridge(opts?: {
   const transport = opts?.transport;
   const buffer: string[] = [];
 
-  // PINNED on first resolve.
+  // PINNED on first resolve (Wave 0.3 / D-A4).
   //
   // This used to re-read `global.BugseeBridge` on every post, so any script loading after the SDK could
   // assign its own `{post}` and receive the whole capture stream — logs, request URLs, bodies — while the
@@ -211,7 +211,7 @@ export function createHostBridge(opts?: {
   };
 
   return {
-    // A PURE read: this used to call `resolve()`, so merely asking "is the bridge there?"
+    // A PURE read: this used to call `resolve`, so merely asking "is the bridge there?"
     // pinned the sink as a side effect. A getter that mutates is a trap for any future caller, and it made
     // the pin happen at an arbitrary read rather than at the first message.
     get available(): boolean {

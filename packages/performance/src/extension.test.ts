@@ -66,7 +66,7 @@ function fakeClient(filters?: FilterStore) {
 }
 
 describe('createPerformanceExtension', () => {
-  it('is named "performance", owns a store, and has a callable no-op stop()', () => {
+  it('is named "performance", owns a store, and has a callable no-op stop', () => {
     const extension = createPerformanceExtension();
     expect(extension.name).toBe('performance');
     expect(extension.store.size()).toBe(0);
@@ -157,7 +157,7 @@ describe('createPerformanceExtension', () => {
     expect(extension.store.drain()[0]).toMatchObject({ name: 'b' });
   });
 
-  it('threads an injected activeSpanStore into the registered controller (D2 part 2)', () => {
+  it('threads an injected activeSpanStore into the registered controller', () => {
     const activeSpanStore = createSingleSlotActiveSpanStore();
     const extension = createPerformanceExtension({ activeSpanStore });
     const { client, ext } = fakeClient();
@@ -272,7 +272,7 @@ describe('createPerformanceExtension — the span filter reaches CONSUMED spans'
 
 // `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
-describe('createPerformanceExtension — sanitizeSpans is fail-on (R3V-3)', () => {
+describe('createPerformanceExtension — sanitizeSpans is fail-on', () => {
   const SQL = "SELECT * FROM users WHERE email = 'a@b.com'";
   const run = (sanitizeSpans: unknown, onError = vi.fn()) => {
     const { client } = fakeClient(createFilterStore(() => {}));

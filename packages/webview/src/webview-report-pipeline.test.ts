@@ -55,7 +55,7 @@ describe('createWebViewReportPipeline', () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it('does NOT emit a report trigger when the gate is OFF (D5 default)', async () => {
+  it('does NOT emit a report trigger when the gate is OFF (default)', async () => {
     const { bridge, msgs } = recordingBridge();
     const pipe = createWebViewReportPipeline(opts(bridge, false));
     await pipe.report(aRequest('boom'));
@@ -86,7 +86,7 @@ describe('createWebViewReportPipeline', () => {
     expect(msgs().filter((x) => x.k === 'report')).toHaveLength(1); // only the second triggered a bug
   });
 
-  it('stamps `red` on BOTH the crash entry and the report trigger from redacted() (D3)', async () => {
+  it('stamps `red` on BOTH the crash entry and the report trigger from redacted', async () => {
     const { bridge, msgs } = recordingBridge();
     const pipe = createWebViewReportPipeline({ ...opts(bridge, true), redacted: () => true });
     await pipe.report(aRequest('boom'));
@@ -95,7 +95,7 @@ describe('createWebViewReportPipeline', () => {
     expect(m.find((x): x is ReportMessage => x.k === 'report')?.red).toBe(true);
   });
 
-  it('defaults `red` to false when no redacted() is injected (native redacts the report)', async () => {
+  it('defaults `red` to false when no redacted is injected (native redacts the report)', async () => {
     const { bridge, msgs } = recordingBridge();
     const pipe = createWebViewReportPipeline(opts(bridge, true));
     await pipe.report(aRequest('boom'));

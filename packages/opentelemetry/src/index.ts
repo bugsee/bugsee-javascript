@@ -1,8 +1,8 @@
 // @bugsee/opentelemetry
-// OpenTelemetry interop (pluggable extension). Two-way bridge.
-// The runtime-portable Produce-direction
+// OpenTelemetry interop. Two-way bridge — see
+// BUILT: Phase A — the runtime-portable Produce-direction
 // mapping (Bugsee transactions → OTLP/HTTP-JSON), with hand-rolled OTLP types (no @opentelemetry/*
-// dependency). The OTLP/HTTP-JSON trace exporter (a `send`-shaped function, uploader-
+// dependency). BUILT: Phase B — the OTLP/HTTP-JSON trace exporter (a `send`-shaped function, uploader-
 // compatible). The SpanProcessor consume bridge (C) is BUILT — `createBugseeSpanProcessor` below.
 // PLANNED: the interception-transformer
 // propagation (T/D).

@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from '@bugsee/util';
 
-// Bundle ZIP assembly for the trigger path. Given the root-level files the
+// Bundle ZIP assembly (trigger path, layout). Given the root-level files the
 // pipeline has already serialized (request.json, manifest.json, apptoken, and the typed buffer
 // files), produce the `*.bundle.zip` byte payload for the signed-URL PUT.
 

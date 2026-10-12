@@ -2,14 +2,14 @@
 // transport, drives every HTTP-triggerable scenario with a unique marker, gives the fire-and-forget
 // uploads time to leave the process, then prints a LOCAL / WIRE pass-fail table and writes
 // data/verify-run.json (scenario -> marker -> timestamp) for cross-referencing against the backend by
-// hand (see scripts/README in scenarios.md and).
+// hand.
 //
 // The BACKEND column reports what the COLLECTOR answered for the request carrying each marker. It used
-// to be the constant string "BLOCKED " — true when staging rejected every session
+// to be the constant string "BLOCKED" — true when staging rejected every session
 // for a `javascript` application, and quietly false ever since that was fixed, which is the worst thing
 // a verification column can be. It is derived from the wire log now, so it can go back to saying
 // blocked if delivery ever breaks again. It is still not the whole story: only MCP can confirm what the
-// backend PARSED, which is the by-hand step scenarios.md records.
+// backend PARSED, which is a by-hand step.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   await delay(1000);
   proc.kill('SIGKILL');
 
-  // WIRE-level check (depth 2): did a request carrying this marker leave the process at all? We
+  // WIRE-level check: did a request carrying this marker leave the process at all? We
   // check both the SDK's own outbound control-plane traffic (wireLog, via BUGSEE_WIRE_LOG) and the
   // app's own loopback fetches (echoed back in the scenario's own JSON response body).
   const wireLines = existsSync(wireLog)

@@ -19,8 +19,7 @@ export function createOptionsContainer(values: Record<string, unknown> = {}): Op
   };
 }
 
-// Friendly-name → canonical-identifier option scheme (Android com.bugsee.option.* parity).
-// Users pass idiomatic friendly names at launch; each maps to a canonical dotted identifier
+// Friendly-name → canonical-identifier option scheme (Android com.bugsee.option.* parity). Users pass idiomatic friendly names at launch; each maps to a canonical dotted identifier
 // (the cross-SDK + wire identity). resolveLaunchOptions turns the friendly bag into the canonical
 // form once: the OptionsContainer providers read (keyed by identifier), the gate the coordinators
 // query, and the canonical record platforms serialize into environment.sdk.options (via optionsToWire).
@@ -257,7 +256,7 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true, ...boolean },
   { friendly: 'maxRecordingTime', key: BugseeOption.Duration, default: 60 },
   // Mobile-parity options (Android OptionsDescriptors). `captureBreadcrumbs` deliberately defaults to TRUE
-  // here although mobile defaults it to false (a deliberate difference).
+  // here although mobile defaults it to false (see the mobile API alignment notes).
   {
     friendly: 'captureLogsLevel',
     key: BugseeOption.CaptureLogsLevel,

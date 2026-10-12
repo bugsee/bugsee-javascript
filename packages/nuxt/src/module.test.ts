@@ -177,7 +177,7 @@ describe('the module default export', () => {
 //
 // So every zero-config Cloudflare deploy got `@bugsee/bugsee/node` — fs storage, the worker-thread ANR
 // watchdog and `process.uptime()` — bundled into workerd.
-describe('the Nitro plugin follows the RESOLVED preset (Wave 4.4)', () => {
+describe('the Nitro plugin follows the RESOLVED preset', () => {
   const fakeNitro = (preset: string | undefined, plugins: string[] = []) => ({
     options: { preset, plugins },
   });

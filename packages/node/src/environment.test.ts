@@ -24,7 +24,7 @@ const fakeProbe: SystemProbe = {
 };
 
 describe('buildNodeEnvironment — platform', () => {
-  it('maps the probe into the node platform section (§8.6)', () => {
+  it('maps the probe into the node platform section', () => {
     const env = buildNodeEnvironment({ sdkVersion: '1.0.0' }, fakeProbe);
     // platform is the OS, NOT the runtime: `type`/`version` are what the backend indexes as the
     // platform key and `os_version`. They used to carry 'node'/'24.0.0', which made os_version read

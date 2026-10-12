@@ -1,4 +1,4 @@
-// Reproduction script for (blocker): staging (apidev.bugsee.com) rejects EVERY
+// Reproduction script for the blocking staging session rejection: staging (apidev.bugsee.com) rejects EVERY
 // session-creation call for this app token, so no report from this sample can ever reach the backend.
 //
 // Usage: node --env-file=.env scripts/repro-session-rejected.mjs [sdkVersion]
@@ -47,8 +47,8 @@ const client = launch(env.BUGSEE_APP_TOKEN, {
   ...(sdkVersion !== undefined ? { sdkVersion } : {}),
 });
 client.launch();
-const result = await client.logException(new Error('F-1 repro'));
+const result = await client.logException(new Error('session-rejected repro'));
 console.log('\nFinal client-visible result:', result);
-console.log('result.error?.message:', result.error?.message, '(note: the real backend error above is swallowed — see F-3)');
+console.log('result.error?.message:', result.error?.message, '(note: the real backend error above is swallowed)');
 await client.stop(3000);
 process.exit(0);

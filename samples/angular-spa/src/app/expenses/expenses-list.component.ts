@@ -16,10 +16,10 @@ export class ExpensesListComponent implements OnInit, AfterViewInit {
   readonly #route = inject(ActivatedRoute);
   readonly expenses = signal<Expense[]>([]);
   readonly loading = signal(true);
-  // Set when `managerGuard` redirected a non-manager away from /approvals (guard-redirect fixture).
+  // Set when `managerGuard` redirected a non-manager away from /approvals.
   readonly denied = signal<string | null>(this.#route.snapshot.queryParamMap.get('denied'));
 
-  // "beyond the catalog": createBugseeRenderTracker brackets ngOnInit → ngAfterViewInit with a
+  // createBugseeRenderTracker brackets ngOnInit → ngAfterViewInit with a
   // `ui.render` 'mount' span on the active transaction — the Angular counterpart to React's <Profiler>.
   readonly #render = createBugseeRenderTracker('ExpensesList');
 

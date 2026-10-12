@@ -107,8 +107,7 @@ export const sdkErrors: Array<{ at: number; error: unknown }> = [];
 // and this sample exercises the genuine browser->collector hop.
 const ENDPOINT = import.meta.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
 
-// See (blocker): every packed package is version 0.0.0 (pre-publish; see the
-// cross-cutting), and the staging backend's `isSupportedSdkVersion` floor for
+// Every packed package is version 0.0.0 (pre-publish), and the staging backend's `isSupportedSdkVersion` floor for
 // the `javascript` umbrella's `browser` runtime is `0.1.0` (appserver config/default.js
 // `cfg.core.sdk.javascript.browser.version.minimum`) — so `env.sdk.version: '0.0.0'` is rejected
 // outright with `UnsupportedSdkError` and no session is ever created. `sdkVersion` is a documented

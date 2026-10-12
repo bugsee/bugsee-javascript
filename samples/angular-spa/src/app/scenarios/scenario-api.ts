@@ -1,7 +1,7 @@
 // network-capture fixtures — deliberately RAW `fetch`/`XMLHttpRequest`, not Angular's HttpClient
 // (the app's real CRUD flows already exercise HttpClient/XHR — see core/expense.service.ts and
 // app.config.ts's `provideHttpClient()` comment). Mirrors samples/react-spa/src/api/client.ts's
-// scenarioApi 1:1 so the two samples' scenarios.md read the same way.
+// scenarioApi 1:1.
 const BASE = '/api';
 // The API server's OWN origin (`server/api-server.mjs`, PORT default 5336). Everything else in this
 // file goes through the relative `/api` path, which `proxy.conf.json` proxies to that same server —

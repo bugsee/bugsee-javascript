@@ -127,7 +127,7 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     expect(byFriendly.get('maxRecordingTime')?.key).toBe(BugseeOption.Duration);
   });
 
-  it('maps the mobile-parity options (T6) to their canonical identifiers and defaults', () => {
+  it('maps the mobile-parity options to their canonical identifiers and defaults', () => {
     const expected: Array<[string, string, unknown]> = [
       ['captureLogsLevel', BugseeOption.CaptureLogsLevel, 'verbose'],
       ['captureBreadcrumbs', BugseeOption.CaptureBreadcrumbs, true],
@@ -142,7 +142,7 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     }
   });
 
-  it('maps notifyFlushDelay (T7) to the config.notify-flush-delay identifier, default 0 ms', () => {
+  it('maps notifyFlushDelay to the config.notify-flush-delay identifier, default 0 ms', () => {
     expect(byFriendly.get('notifyFlushDelay')?.key).toBe(BugseeOption.NotifyFlushDelay);
     expect(byFriendly.get('notifyFlushDelay')?.default).toBe(0);
   });
@@ -183,7 +183,7 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
   });
 });
 
-describe('resolveLaunchOptions: undefined, validation and normalization (review O1/O7/O9)', () => {
+describe('resolveLaunchOptions: undefined, validation and normalization', () => {
   const resolve = (values: Record<string, unknown>) => {
     const errors: Error[] = [];
     const r = resolveLaunchOptions(values, COMMON_OPTION_DEFINITIONS, (e) => errors.push(e));
@@ -371,7 +371,7 @@ describe('every boolean launch option: undefined / null / 0 / "" / "false" / "tr
   });
 });
 
-describe('notifyFlushDelay validation (R2P-5)', () => {
+describe('notifyFlushDelay validation', () => {
   const run = (value: unknown) => {
     const errors: Error[] = [];
     const r = resolveLaunchOptions({ notifyFlushDelay: value }, COMMON_OPTION_DEFINITIONS, (e) =>
@@ -396,7 +396,7 @@ describe('notifyFlushDelay validation (R2P-5)', () => {
   });
 });
 
-describe('reportDefaultBugPriority is a COMMON option (R2D-3)', () => {
+describe('reportDefaultBugPriority is a COMMON option', () => {
   it('maps to the canonical identifier, default high, validated like the other priorities', () => {
     const def = COMMON_OPTION_DEFINITIONS.find((d) => d.friendly === 'reportDefaultBugPriority');
     expect(def?.key).toBe(BugseeOption.ReportingDefaultBugPriority);
@@ -418,7 +418,7 @@ describe('reportDefaultBugPriority is a COMMON option (R2D-3)', () => {
 });
 
 // The three normalisers, over every kind of value.
-describe('round-3 option normalisers', () => {
+describe('option normalisers', () => {
   const run = (def: OptionDefinition, value: unknown) => {
     const errors: Error[] = [];
     const r = resolveLaunchOptions({ opt: value }, [def], (e) => errors.push(e));

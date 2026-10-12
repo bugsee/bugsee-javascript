@@ -1,7 +1,7 @@
 // The real Metrics Ingest API: schema-validated event ingestion, listing, per-metric aggregation and
 // an admin sub-plugin — nested TWO levels deep (`/api/v1/metrics` -> `/admin`), which is what proves
 // `http.route`/the `http.server` transaction name reflects the FULL merged Fastify pattern rather than
-// just the innermost route's own local string (the route-naming contract).
+// just the innermost route's own local string.
 //
 // Ingesting a metric whose value crosses ALERT_THRESHOLD makes a REAL outbound call to the third-party
 // alert webhook (src/third-party.ts) — this is what exercises network capture and

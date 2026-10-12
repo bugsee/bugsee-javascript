@@ -1,6 +1,6 @@
 import { createTraceparentDecorator, type RequestDecorator } from '@bugsee/capture';
 
-// Native trace-context propagation. Builds the
+// Native trace-context propagation (X3). Builds the
 // outgoing-request decorator that injects `traceparent` + the `bugsee=` tracestate from the ACTIVE per-request
 // context — NOT the performance extension's `getActiveSpan`. That remains the right call after
 // (which made the controller's slot request-scoped on Node): this decorator lives in the BASE

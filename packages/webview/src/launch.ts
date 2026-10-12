@@ -68,7 +68,7 @@ import { blackoutMessage, byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
-// @bugsee/webview launch() — the WebView composition root. A WebView is a
+// @bugsee/webview launch — the WebView composition root. A WebView is a
 // browser environment whose OUTPUT SINK is the native host, not the network: this reuses @bugsee/browser-family
 // capture (console→log + network in slice 1; full parity in slice 2) over a HostBridgeCaptureStore that STREAMS
 // each entry across the WebView boundary — NO transport / upload pipeline / bundle store / IndexedDB (native is
@@ -310,6 +310,7 @@ const BRIDGE_SLOTS = new WeakMap<object, BridgeSlot>();
 
 /**
  * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
+ * (Wave 0.3 / D-A3).
  *
  * `Object.freeze(obj)` — what this used to do — protects the object and leaves the binding
  * `{writable: true, configurable: true}`, so a page script could swap the whole thing: `snapshot()` then
@@ -614,7 +615,7 @@ export function launchWithSeams(
   //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
   //    would be rejected as a mismatch.
   //  - capture: each frame keeps its own `seq` from 0, so entries from different frames collide in
-  // ordering. And exists to keep Bugsee OUT of third-party content (66) — running
+  // ordering. And D9 exists to keep Bugsee OUT of third-party content (66) — running
   //    a full capture stack inside every ad/OAuth/payment iframe is the opposite of that.
   //  - `client.launch()`: `isLaunched()` stays false, which is truthful. This frame captures nothing.
   //
@@ -859,7 +860,7 @@ export function launchWithSeams(
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // is recorded nowhere by native and decides nothing.
   //
-  // The token rides this message ONLY when a native sink is already attached. When
+  // The token rides this message ONLY when a native sink is already attached (SEV1). When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
   // later — and a page script can be that sink, which is precisely the tap this whole wave exists to stop.
   // Handing it the token would be worse than sending none: it could then authenticate, arm the one-way
@@ -906,7 +907,7 @@ export function launchWithSeams(
       judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
-      // Ownership-checked: a late or duplicate stop() from a stale handle must not clear the slot, or
+      // Ownership-checked: a late or duplicate stop from a stale handle must not clear the slot, or
       // the module's `launchedClients` entry, of a NEWER launch that has since taken them.
       if (getCarrierClient<unknown>(carrier) === facade) {
         setCarrierStatus(BugseeStatus.Stopped, carrier);

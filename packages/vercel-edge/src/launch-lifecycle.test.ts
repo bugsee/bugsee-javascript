@@ -93,7 +93,7 @@ describe('vercel-edge carrier slot', () => {
   });
 });
 
-describe('vercel-edge launch options introspection (L9)', () => {
+describe('vercel-edge launch options introspection', () => {
   it('getLaunchOptions is host over defaults by canonical key; getHostLaunchOptions only what the host set', () => {
     const client = track(opts({ captureLogs: false, maxRecordingTime: 30 }));
     const effective = client.getLaunchOptions();
@@ -107,7 +107,7 @@ describe('vercel-edge launch options introspection (L9)', () => {
   });
 });
 
-describe('R2L-3 — launch() on a stopped edge client is refused', () => {
+describe('launch() on a stopped edge client is refused', () => {
   it('reports through onError, starts nothing, leaves the carrier slot free for a NEW client', async () => {
     const carrier = {};
     const onError = vi.fn();
@@ -124,7 +124,7 @@ describe('R2L-3 — launch() on a stopped edge client is refused', () => {
   });
 });
 
-describe('R2L-4 — the edge isolate observes its own lifecycle', () => {
+describe('the edge isolate observes its own lifecycle', () => {
   it('the lifecycleEventsListener option sees Launching and Launched', () => {
     const seen: string[] = [];
     track(opts({ lifecycleEventsListener: (type) => seen.push(type) }));

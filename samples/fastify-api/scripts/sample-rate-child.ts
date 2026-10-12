@@ -1,6 +1,6 @@
 // A disposable child process proving `performanceSampleRate: 0` genuinely suppresses EVERY performance
-// transaction on the wire — 's "performanceSampleRate at 0 AND 1" contract.
-// The primary server (src/bugsee.ts) only ever exercises rate 1 (to keep every scenario's evidence
+// transaction on the wire — the S9 "performanceSampleRate at 0 AND 1" contract.
+// The primary server (src/bugsee.ts) only ever exercises rate 1 (to keep every S9 scenario's evidence
 // flowing); this script is the rate-0 half, run in its own process so it never affects the primary
 // server's own sampling.
 //

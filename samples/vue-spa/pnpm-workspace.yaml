@@ -58,8 +58,8 @@ overrides:
 
 minimumReleaseAgeExclude:
   - vite@8.2.2
-  # Every @bugsee/* package is packed at version 0.0.0 (a pre-publish
-  # versioning gap) and is not on the npm registry at all (installed from a local tarball via the
+  # Every @bugsee/* package is packed at version 0.0.0 (pre-publish versioning
+  # gap) and is not on the npm registry at all (installed from a local tarball via the
   # `overrides` above). pnpm 11's minimumReleaseAge supply-chain check tries to look each one up on
   # the public registry regardless of the `file:` resolution and fails closed on the 404. Excluding
   # them by exact name@version is the same workaround the root pnpm-workspace.yaml uses for

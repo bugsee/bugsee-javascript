@@ -1,6 +1,6 @@
 import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/solid ROUTER NAMING integration (the two-phase naming seam). On a
+// The @bugsee/solid ROUTER NAMING integration (+ the F5/D5 two-phase naming seam). On a
 // navigation, @solidjs/router's matched routes carry the parameterized pattern (`/users/:id`); the deepest
 // match's `route.pattern` is the full pattern. Refine the active navigation transaction (opened raw-URL by
 // the navigation source) via the shared `setRouteName` seam. A STRUCTURAL PEER over the match shape (no

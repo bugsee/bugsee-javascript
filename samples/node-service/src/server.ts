@@ -1,7 +1,7 @@
 // The "Link shortener" service — plain node:http, no framework, so @bugsee/node is the subject under
 // test. Real endpoints (create/resolve/stats/dashboard) live alongside a "scenario panel" of HTTP
-// routes (convention: a server sample exposes the panel as routes, not a UI) that exercise every
-// catalog scenario in See scenarios.md for the full id -> route mapping.
+// routes (a server sample exposes the panel as routes, not a UI) that exercise every
+// catalog scenario.
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -158,7 +158,7 @@ function scenarioS3(marker: string, res: import('node:http').ServerResponse): vo
 // Scenario panel — exceptions
 // ---------------------------------------------------------------------------------------------------
 
-// The upload always fails on this staging app-type (see — the javascript app-type gate),
+// The upload always fails on this staging app-type (staging's javascript app-type gate),
 // so every logException() runs its FULL internal retry+backoff cycle (tens of seconds) before its
 // promise settles. Scenario endpoints therefore fire-and-forget by default (report accepted=true
 // immediately — matches real "don't block the request on telemetry" usage); pass `?sync=1` to await

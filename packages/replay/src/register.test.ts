@@ -88,7 +88,7 @@ describe('registerReplay', () => {
     expect(String(errors[0])).toContain('blockSelector');
   });
 
-  it('threads onError into the recorder: canvas given up after repeated blackout restarts is reported (R2V-7)', () => {
+  it('threads onError into the recorder: canvas given up after repeated blackout restarts is reported', () => {
     const blackout = createBlackoutState();
     const errors: unknown[] = [];
     const client = fakeClient();

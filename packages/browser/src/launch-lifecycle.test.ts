@@ -331,7 +331,7 @@ describe('launch -> stop -> launch cycles leave nothing behind', () => {
   });
 });
 
-describe('stop() releases the instance lock and IndexedDB only when it is SAFE to (L7, L14)', () => {
+describe('stop() releases the instance lock and IndexedDB only when it is safe to do so', () => {
   const never = (): HttpTransport => () => new Promise(() => {});
   // The collector's KILL_SDK verdict (99099) arrives as a v2 envelope; every call answers with it.
   const killTransport = (): HttpTransport => async () => ({
@@ -342,7 +342,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     ),
   });
 
-  it('L7: a drain that timed out keeps the lock and the IDB connections (the upload may still run)', async () => {
+  it('a drain that timed out keeps the lock and the IDB connections (the upload may still run)', async () => {
     const locks = realLocks();
     const real = countingIdb(new IDBFactory());
     const client = await launch(
@@ -356,7 +356,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     expect(getStatus()).toBe(BugseeStatus.Stopped);
   });
 
-  it('L7: a clean drain with the recovery settled still releases the lock and the connections', async () => {
+  it('a clean drain with the recovery settled still releases the lock and the connections', async () => {
     const locks = realLocks();
     const real = countingIdb(new IDBFactory());
     const client = await launch(
@@ -368,7 +368,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     await vi.waitFor(() => expect(real.open()).toBe(0));
   });
 
-  it('R2L-3: a client.launch() while the stop is draining is refused, and the stop still releases the lock', async () => {
+  it('a client.launch() while the stop is draining is refused, and the stop still releases the lock', async () => {
     const locks = realLocks();
     const onError = vi.fn();
     const client = await launch(
@@ -385,7 +385,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     await vi.waitFor(() => expect(locks.held.size).toBe(0)); // nothing is writing: safe to release
   });
 
-  it('R2L-3: after stop(), a refused client.launch() leaves the process free for a NEW client (no two-client state)', async () => {
+  it('after stop(), a refused client.launch() leaves the process free for a NEW client (no two-client state)', async () => {
     const first = await launch('tok', opts({ onError: () => {} }));
     await first.stop();
     first.launch();
@@ -396,7 +396,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     expect(getStatus()).toBe(BugseeStatus.Launched);
   });
 
-  it('R2L-1: a hung stop(timeout) then a repeat stop(timeout) keeps the lock: the upload may still run', async () => {
+  it('a hung stop(timeout) then a repeat stop(timeout) keeps the lock: the upload may still run', async () => {
     const locks = realLocks();
     const client = await launch(
       'tok',
@@ -413,7 +413,7 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     expect(locks.held.size).toBe(1);
   });
 
-  it('L14: stop() on a KILLED client still releases the lock and the connections', async () => {
+  it('stop() on a KILLED client still releases the lock and the connections', async () => {
     const locks = realLocks();
     const real = countingIdb(new IDBFactory());
     const onError = vi.fn();
@@ -482,7 +482,7 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options', async () => {
     const first = await launch('tok-1', opts({ captureLogs: false }));
     const second = await relaunch();
     live.push(second);
@@ -506,7 +506,7 @@ describe('relaunch', () => {
     expect(transport).toHaveBeenCalled();
   });
 
-  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch (L1)', async () => {
+  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch', async () => {
     const seen: string[] = [];
     await launch('tok', opts({ lifecycleEventsListener: (type) => seen.push(type) }));
     expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
@@ -531,7 +531,7 @@ describe('relaunch', () => {
     expect(second.isBlackout()).toBe(false);
   });
 
-  describe('the carrier-shared input source follows the CURRENT client blackout (R2V-3)', () => {
+  describe('the carrier-shared input source follows the CURRENT client blackout', () => {
     // A document fake with emit(); wheel frames are driven by hand through requestAnimationFrame.
     function wheelRig() {
       const listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -600,7 +600,7 @@ describe('relaunch', () => {
     });
   });
 
-  it('a relaunch with startInBlackout over a CARRIED blackout does not announce a second BlackoutStarted (R2V-11)', async () => {
+  it('a relaunch with startInBlackout over a CARRIED blackout does not announce a second BlackoutStarted', async () => {
     const seen: string[] = [];
     const listener = (type: string) => seen.push(type);
     const first = await launch('tok', opts({ lifecycleEventsListener: listener }));
@@ -631,7 +631,7 @@ describe('relaunch', () => {
     }
   });
 
-  it('a relaunch during an in-flight launch waits for it, stops that client and builds one with the NEW options (L13)', async () => {
+  it('a relaunch during an in-flight launch waits for it, stops that client and builds one with the NEW options', async () => {
     const inFlight = launch('tok', opts());
     const relaunched = relaunch(opts({ maxRecordingTime: 15 }));
     const first = await inFlight;
@@ -643,7 +643,7 @@ describe('relaunch', () => {
     expect(second.getLaunchOptions()[BugseeOption.Duration]).toBe(15);
   });
 
-  it('records the build as in flight while it runs, clears it when it settles, and ignores a repeat launch (L13)', async () => {
+  it('records the build as in flight while it runs, clears it when it settles, and ignores a repeat launch', async () => {
     const building = launch('tok', opts());
     expect(getCarrier().pendingLaunch).toBeDefined();
     live.push(await building);
@@ -654,7 +654,7 @@ describe('relaunch', () => {
   });
 });
 
-describe('R3L-7 — the deferred BlackoutStarted of startInBlackout', () => {
+describe('the deferred BlackoutStarted of startInBlackout', () => {
   // The client is not handed back until launch() returns, so a Launching listener reaches it the way a service
   // manifest does: the container is the client itself at runtime.
   const withClientRef = () => {

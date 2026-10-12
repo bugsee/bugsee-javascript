@@ -339,7 +339,7 @@ describe('OTLP span emission (fuzz)', () => {
     );
   });
 
-  /** Profile v1: the sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
+  /** the sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
   it('mirrors the sampling decision into the trace flags of every span', () => {
     fc.assert(
       fc.property(transactionWire(), (txn) => {

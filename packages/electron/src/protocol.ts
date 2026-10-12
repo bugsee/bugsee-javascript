@@ -163,7 +163,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 /**
  * Decode a renderer incident, or `undefined` if it is not a well-formed `report`.
  *
- * Renderer input is UNTRUSTED — the same channel and the same sender as the entry path hardened in
+ * Renderer input is UNTRUSTED — the same channel and the same sender as the entry path hardened in Wave 0.2
  * Both halves of the payload must be plain objects; anything else is
  * dropped rather than submitted, since a malformed incident has no correct interpretation.
  */

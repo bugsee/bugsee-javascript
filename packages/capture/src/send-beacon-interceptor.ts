@@ -13,7 +13,7 @@ import { readSyncRequestBody } from './network-body';
 // EventSource siblings. Wrapping is a swap of `navigator.sendBeacon`; the original is put back on
 // deactivate. Installed only while ACTIVE (subscriber-presence / start, via InterceptorBase).
 //
-// Stages (wire contract for request/response transports): `before` → `complete`. sendBeacon
+// Stages (for request/response transports): `before` → `complete`. sendBeacon
 // returns a boolean SYNCHRONOUSLY — the user agent queued the payload, or refused it — and has no
 // response at all: no status, no status text, no response headers, and no way to learn the outcome of
 // the transmission. So `complete` deliberately carries NO `status`: a refusal is not an HTTP failure
@@ -28,7 +28,7 @@ import { readSyncRequestBody } from './network-body';
 // events like any other source. Payloads that are not synchronously readable (Blob / FormData / binary)
 // are reported with the existing `cant_read_data` reason rather than blocked on or guessed at.
 //
-// `size` is intentionally not set — no interceptor in this SDK sets it. The viewer derives it from the body when present.
+// `size` is intentionally not set — no interceptor in this SDK sets it, and the viewer derives it from the body when present.
 
 /** `navigator.sendBeacon` — a DOM global this package carries no lib types for, so reach it via casts. */
 type SendBeaconFn = (url: unknown, data?: unknown) => boolean;

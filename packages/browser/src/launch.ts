@@ -97,7 +97,7 @@ import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
-// @bugsee/browser launch() — the browser composition root, the fetch/DOM analog of node's
+// @bugsee/browser launch — the browser composition root, the fetch/DOM analog of node's
 // launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
 // and the shared capture layer, then starts it:
 //   fetch transport → BugseeApi + BundleUploader → UploadPipeline ─┐
@@ -150,7 +150,7 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     ...FAIL_ON_BOOLEAN_OPTION,
   },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
-  // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported; it must never throw.
+  // scalar (`0`, `null`, `''`, `'false'`,...) is OFF and reported; it must never throw.
   // Masking is fail-closed regardless.
   {
     friendly: 'replay',
@@ -706,8 +706,8 @@ async function buildLaunch(
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
-    // stop() tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
-    // stopped client must not be restarted in place: a new one comes from `launch(appToken)`/`relaunch()`.
+    // stop tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
+    // stopped client must not be restarted in place: a new one comes from `launch(appToken)`/`relaunch`.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -1017,8 +1017,8 @@ async function buildLaunch(
   );
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
-  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop() call. Every
-  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
+  // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
   // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   let released = false;

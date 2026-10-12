@@ -8,7 +8,7 @@ import {
   type SecureDocument,
 } from './obscuring-source';
 
-// the obscuring path must fail CLOSED (+ "Obscuring fail-open
+// Wave 1.4 — the obscuring path must fail CLOSED (+ "Obscuring fail-open
 // analysis").
 //
 // `__bugsee_bridge.snapshot()` is the SYNCHRONOUS pull native performs at frame-capture time to learn which

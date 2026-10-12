@@ -125,7 +125,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(onSpanProcessor.mock.calls[0]?.[0]).toBe(attachBugseeOtelProvider.mock.calls[0]?.[0]);
   });
 
-  it('spans ended on the processor registered at FIRST launch reach the NEW client (R3P-2)', async () => {
+  it('spans ended on the processor registered at FIRST launch reach the NEW client', async () => {
     const carrier = {};
     const mk = () => {
       let tick: (() => void) | undefined;
@@ -212,7 +212,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     status: { code: 1 },
   } as unknown as Parameters<BugseeSpanProcessor['onEnd']>[0];
 
-  it('forceFlush and shutdown on the registered processor reach the NEW client after a relaunch (R4H-3)', async () => {
+  it('forceFlush and shutdown on the registered processor reach the NEW client after a relaunch', async () => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier)));
     const registered = attachBugseeOtelProvider.mock
@@ -233,7 +233,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(oldShutdown).not.toHaveBeenCalled();
   });
 
-  it('stop() with no relaunch drops the stopped client from the delegate; late spans are dropped (R4H-9)', async () => {
+  it('stop() with no relaunch drops the stopped client from the delegate; late spans are dropped', async () => {
     const carrier = {};
     const client = registerServer('tok', opts(carrier));
     const registered = attachBugseeOtelProvider.mock
@@ -254,7 +254,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     await expect(registered.shutdown()).resolves.toBeUndefined();
   });
 
-  it('a late shutdown of the OLD client does not drop the relaunched client (R4H-9)', async () => {
+  it('a late shutdown of the OLD client does not drop the relaunched client', async () => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier)));
     const oldTarget = targetOf(carrier) as BugseeSpanProcessor;
@@ -265,7 +265,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(targetOf(carrier)).toBe(newTarget);
   });
 
-  it('a relaunch after stop() binds the new client again (R4H-9)', async () => {
+  it('a relaunch after stop() binds the new client again', async () => {
     const carrier = {};
     const first = registerServer('tok', opts(carrier));
     await first.stop();

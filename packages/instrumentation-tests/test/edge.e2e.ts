@@ -22,14 +22,15 @@ const KB = 1024;
 const GZIP_BUDGET = 150 * KB;
 const WORKERS_FREE_LIMIT = 3 * KB * KB;
 
-describe('X2 — edge bundle-size guard', () => {
+describe('edge bundle-size guard', () => {
   // The node:* builtins each package is ALLOWED to import statically.
   //
   // @bugsee/vercel-edge: none. It must run on any WinterCG isolate.
   //
   // @bugsee/cloudflare: exactly `node:async_hooks`, and nothing else. globalThis.AsyncLocalStorage does not
   // exist on workerd under ANY compatibility flag, so this is the only route to per-request context there —
-  // which is why `nodejs_compat` is a documented REQUIREMENT of the package. The allowlist is deliberately EXACT rather than relaxed
+  // which is why `nodejs_compat` is a documented REQUIREMENT of the package (Wave 0.1 S0,
+  // ). The allowlist is deliberately EXACT rather than relaxed
   // to "any node import": a second builtin creeping in would still fail here.
   const ALLOWED_NODE_IMPORTS: Record<string, string[]> = {
     '@bugsee/vercel-edge': [],
@@ -54,7 +55,7 @@ describe('X2 — edge bundle-size guard', () => {
   }
 });
 
-describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () => {
+describe('real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () => {
   let collector: MockCollector;
   let bundleCode: string;
 

@@ -575,7 +575,7 @@ describe('createDurableUploadPipeline', () => {
 // Android's report queue has no count/size/TTL cap, but its sibling queues do and that is the idiom to
 // follow: NotificationRelayStorage.java:47-49 (1 MB / 500 entries / 72 h), PerformanceUploadStorage.java:35
 // (5 MB).
-describe('retention (Wave 6.4)', () => {
+describe('retention', () => {
   const permanent = (status: number): UploadResult => ({
     ok: false,
     permanent: true,

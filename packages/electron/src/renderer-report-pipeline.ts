@@ -1,7 +1,7 @@
 import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from '@bugsee/core';
 import { encodeReport } from './protocol';
 
-// The renderer report path. A
+// The renderer report path (slice R2). A
 // `triggerPipeline` for the core Client: the Client routes EVERY report — detected uncaught error /
 // unhandledrejection, and explicit `logException` — here instead of assembling a bundle and uploading it.
 //

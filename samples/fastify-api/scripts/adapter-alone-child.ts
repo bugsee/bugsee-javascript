@@ -1,6 +1,6 @@
 // A disposable child process proving `@bugsee/fastify`'s `setupFastify` works COMPLETELY ON ITS OWN,
-// with `instrumentIncomingRequests: false` (the node:http auto-instrument patch never installed) —
-// 's "adapter alone, exactly one context + one transaction" contract.
+// with `instrumentIncomingRequests: false` (the node:http auto-instrument patch never installed). It
+// checks the "adapter alone, exactly one context + one transaction" contract.
 //
 // Run as a SEPARATE PROCESS (not a route inside the long-running server) because
 // `instrumentIncomingRequests` patches `http.Server.prototype.emit` PROCESS-WIDE: if this ran inside
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   const app = Fastify();
   setupFastify(app, { getClient: () => client });
 
-  // "Exactly ONE context" (PLAN 's first-owner-wins contract, the adapter-alone half): record
+  // "Exactly ONE context" (the first-owner-wins contract, adapter-alone half): record
   // every DISTINCT RequestContext.contextId observed inside the route handler's async chain. With the
   // node:http patch OFF, setupFastify's own onRequest hook is the ONLY thing opening a context — a
   // regression that opened a second context per request (e.g. a double-instrumentation bug) would show
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   await client.flush(3000);
   // client.flush() drains the CAPTURE/report pipeline; the performance extension's transaction batch
   // has its own independent timer (performanceFlushIntervalMs), so poll for evidence instead of a fixed
-  // sleep — a fixed window fails in both directions (§"Timing" instruction).
+  // sleep — a fixed window fails in both directions.
   // Poll until the first sighting, THEN wait out one more flush interval and re-read (see below).
   const collectHttpTxns = (): Array<{ name: string; op?: string }> =>
     getCapturedTransactions()

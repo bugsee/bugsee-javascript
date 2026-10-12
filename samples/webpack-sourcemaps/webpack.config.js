@@ -1,5 +1,5 @@
 // Webpack 5 config for the "Markdown Notes" sample — the copy-paste reference for wiring
-// @bugsee/webpack-plugin into a real webpack build. and this
+// @bugsee/webpack-plugin into a real webpack build. See this
 // sample's README.md ("The source-map half") for what each option below is exercising.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -45,7 +45,7 @@ export default (_env, argv) => {
   const isProd = argv.mode === 'production';
   const appBuild = isProd ? nextBuildCounter() : 'dev';
 
-  // ---- @bugsee/webpack-plugin's OWN options (plugin options "in full" — PLAN) ----
+  // ---- @bugsee/webpack-plugin's OWN options (plugin options "in full") ----
   const pluginToken = process.env.BUGSEE_APP_TOKEN ?? fileEnv.BUGSEE_APP_TOKEN ?? '';
   const pluginEndpoint =
     process.env.BUGSEE_ENDPOINT ?? fileEnv.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
@@ -53,7 +53,7 @@ export default (_env, argv) => {
   const forceDisabled = process.env.BUGSEE_DISABLED === 'true';
   const keepMaps = process.env.BUGSEE_KEEP_MAPS === 'true';
   // Default TRUE: this sample's recommended posture is "a telemetry side effect that silently
-  // ships an unsymbolicated build is worse than a failed build" (PLAN). Explicit
+  // ships an unsymbolicated build is worse than a failed build". Explicit
   // `BUGSEE_FAIL_ON_ERROR=false` (build:bad-token-soft) demonstrates the library default instead.
   const failOnError = process.env.BUGSEE_FAIL_ON_ERROR !== 'false';
 
@@ -64,7 +64,7 @@ export default (_env, argv) => {
   return {
     mode: isProd ? 'production' : 'development',
     entry: './src/main.ts',
-    // (b) PLAN: production builds ship `hidden-source-map` — a real .map is written
+    // (b) Production builds ship `hidden-source-map` — a real .map is written
     // next to each chunk (bugsee-cli finds it via the `<bundle>.map` sibling convention), but the
     // shipped bundle carries NO `//# sourceMappingURL=` comment, so a user's browser devtools/
     // network tab never exposes the map. Dev keeps fast, high-fidelity maps.
@@ -87,9 +87,8 @@ export default (_env, argv) => {
           test: /\.css$/,
           use: [
             isProd ? MiniCssExtractPlugin.loader : 'style-loader',
-            // CSS source maps stay ON in production (css-loader's default). They used to break the upload —
-            // bugsee-cli < 0.7.8 walked every `*.map` and aborted the whole batch on the
-            // id-less CSS map — so this sample switched them off. bugsee-cli 0.7.8 skips `.css.map` files.
+            // CSS source maps stay ON in production (css-loader's default). Older bugsee-cli releases (before 0.7.8)
+            // walked every `*.map` and aborted the whole batch on the id-less CSS map. bugsee-cli 0.7.8 skips `.css.map` files.
             { loader: 'css-loader', options: { sourceMap: true } },
           ],
         },

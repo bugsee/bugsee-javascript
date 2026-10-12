@@ -14,7 +14,7 @@ import { type ExpressRequest, type ExpressResponse, errorHandler, requestHandler
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement.
+// member this doesn't implement — §'s "structural point (S2)".
 type SpiedTransaction = Transaction & {
   setName: ReturnType<typeof vi.fn>;
   setAttribute: ReturnType<typeof vi.fn>;
@@ -284,7 +284,7 @@ describe('requestHandler', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
   });
 
-  // A manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // F-4 (D2): a manual rename (client.ext('performance').setRouteName/setActiveTransactionName)
   // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
   // with the automatic route-derived name. This exercises the check against a Transaction double whose
   // getAttributes() actually reports the stamp, not one that omits the method entirely.
@@ -516,7 +516,7 @@ describe('defaults + edge branches (coverage)', () => {
   });
 });
 
-describe('control-flow safety (review)', () => {
+describe('control-flow safety', () => {
   it('calls next exactly once on the pass-through path even when downstream throws (no client)', () => {
     // The pass-through next() must be OUTSIDE the adapter try/catch — else a sync downstream throw is
     // caught and next is double-called exactly where Bugsee is not even active.

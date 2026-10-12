@@ -54,7 +54,7 @@ export interface BugseeCarrier {
   status?: BugseeStatus;
   /**
    * On the DEFAULT (`globalThis`) slot only: the custom carrier host the last launch used, so a plain
-   * `relaunch()` (which is not told the host) finds the client and the remembered launch there.
+   * `relaunch` (which is not told the host) finds the client and the remembered launch there.
    */
   lastHost?: object;
   /** What the last launch that built a client leaves for `relaunch()`: the token + only the integration seams (never secrets or the full options). */
@@ -80,12 +80,12 @@ export interface BugseeCarrier {
   /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
   relaunching?: boolean;
   /**
-   * Bumped each time a `relaunch()` attempt FAILS. A client that handed its notifications over records the
+   * Bumped each time a `relaunch` attempt FAILS. A client that handed its notifications over records the
    * value when its stop() was issued; a hand-back that arrives after the value moved belongs to an attempt nobody
    * will complete, so it is dropped instead of parked on `globalThis` (user-identifying titles/e-mail).
    */
   relaunchEpoch?: number;
-  /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds. */
+  /** Notifications the old client could not deliver, waiting for the client `relaunch` builds. */
   notifyBacklog?: NotifyItem[];
   /**
    * The launched client that takes over notifications another client hands back: a late hand-back
@@ -95,7 +95,7 @@ export interface BugseeCarrier {
   notifyAdopter?: { owner: object; adopt(items: NotifyItem[]): void };
   /**
    * The launch function an EDGE entry (`@bugsee/{sveltekit,astro,nuxt}/edge`) was installed with, so its
-   * `relaunch()` re-runs the same seam by default. Typed `unknown` here (core does not know the
+   * `relaunch` re-runs the same seam by default. Typed `unknown` here (core does not know the
    * edge launch signature); owned by `@bugsee/vercel-edge`'s `rememberEdgeLaunch`.
    */
   edgeLaunch?: unknown;
@@ -309,7 +309,7 @@ export function setCarrierLastLaunch(
     }
   }
   getCarrier(globalObj).lastLaunch = { appToken, options: retained };
-  // Remember the custom host on the default slot, so a plain relaunch() can find it.
+  // Remember the custom host on the default slot, so a plain relaunch can find it.
   const host = retained.carrier;
   getCarrier().lastHost =
     typeof host === 'object' && host !== null && host !== globalThis ? host : undefined;

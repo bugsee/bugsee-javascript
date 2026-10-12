@@ -20,9 +20,9 @@ function parseAttrValue(type: AttrType, raw: string): AttributeValue {
 
 /**
  * Settings page — a genuine app feature (display name, a personal-access-token field) that happens to
- * be the natural home for (identity + attributes): setting a display name IS `setUserIdentifier`,
- * and a theme preference IS an attribute. The access-token field is also a masking target for
- * replay (`maskAllInputs`) — see scenarios.md.
+ * be the natural home for S2 (identity + attributes): setting a display name IS `setUserIdentifier`,
+ * and a theme preference IS an attribute. The access-token field is also a masking target for S11
+ * replay (`maskAllInputs`).
  */
 export default function SettingsPage(): JSX.Element {
   const client = () => getClient();
@@ -148,7 +148,7 @@ export default function SettingsPage(): JSX.Element {
             data-testid="attrs-before-after-event"
             onClick={() => {
               void (async () => {
-                // PLAN: "attributes set before AND after the triggering event" — previously
+                // Attributes set before AND after the triggering event. Previously
                 // unexercised. Sets one BEFORE the logException, and a DIFFERENT one AFTER, proving
                 // both orderings work against the live client (not just "before").
                 client()?.setAttribute('demoPhase', 'set-before-event');

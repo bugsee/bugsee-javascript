@@ -904,7 +904,7 @@ describe('launch', () => {
         });
       });
 
-      it('the blackout is already in force when the FIRST provider starts (R2V-12 / m18)', async () => {
+      it('the blackout is already in force when the FIRST provider starts', async () => {
         const carrier = {};
         const atStart: boolean[] = [];
         contributeServiceManifest((registrar) => {
@@ -927,7 +927,7 @@ describe('launch', () => {
         expect(atStart).toEqual([true]);
       });
 
-      it('BlackoutStarted comes AFTER Launching, exactly once, never before it (R2V-11)', async () => {
+      it('BlackoutStarted comes AFTER Launching, exactly once, never before it', async () => {
         const seen: string[] = [];
         await launchTracked(
           'tok',
@@ -1480,7 +1480,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await vi.waitFor(async () =>
       expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
     );
-    // ...and the LIVE sibling's marker + capture are completely untouched (the fix).
+    // And the LIVE sibling's marker + capture are completely untouched (the SEV1 fix).
     expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
     expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
     expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
@@ -1661,7 +1661,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop() answers for the REAL drain, which is the retry backoff described above: the shared
+    // A repeat stop answers for the REAL drain, which is the retry backoff described above: the shared
     // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -2148,7 +2148,7 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
-  // the canvas warning called the app's sink unguarded, so a sink that rethrows made launch() reject.
+  // the canvas warning called the app's sink unguarded, so a sink that rethrows made launch reject.
   it('a rethrowing onError cannot break launch over an invalid replay.canvas (the add-on stays OFF)', async () => {
     const onError = vi.fn(() => {
       throw new Error('the host sink rethrows');
@@ -2182,7 +2182,7 @@ describe('launch — session replay (lazy)', () => {
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });
 
-  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load (R4V-10)', async () => {
+  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load', async () => {
     registerReplay.mockImplementationOnce(() => {
       throw new Error('replay boom');
     });
@@ -2342,7 +2342,7 @@ describe('launch — session replay (lazy)', () => {
   });
 });
 
-// an injectable trigger pipeline.
+// R1: an injectable trigger pipeline.
 //
 // Symmetric with the `captureStore` seam that already exists. @bugsee/electron needs it because a renderer
 // must FORWARD its incidents to the main process rather than assembling a bundle from its streaming store —
@@ -2388,7 +2388,7 @@ describe('launchCore — triggerPipeline seam', () => {
 // because the failure this fixes was precisely that the SDK listened to `pagehide` and then did nothing
 // with it. Each test observes a real consequence — a store flushed, a listener removed — not the mere
 // presence of a listener.
-describe('flush on page hide (Wave 6.2)', () => {
+describe('flush on page hide', () => {
   /** A capture store that records whether its pending durable writes were committed. */
   const flushableStore = () => {
     const store = memStore();
@@ -2467,7 +2467,7 @@ describe('flush on page hide (Wave 6.2)', () => {
 });
 
 // RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
-describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+describe('launch — RelaunchedAfterCrash needs evidence', () => {
   const run = async (seed: (idb: IDBFactory, locks: LockManagerLike) => Promise<void>) => {
     const idb = new IDBFactory();
     const locks = fakeWebLocks();

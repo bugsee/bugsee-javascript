@@ -252,7 +252,7 @@ describe('client.showReportDialog() — REAL Chromium end to end', () => {
     }
   });
 
-  it('can be restyled by the embedder: page ::part(), page custom property, and the css option', async () => {
+  it('can be restyled by the embedder: page::part(), page custom property, and the css option', async () => {
     const collector = await startMockCollector();
     const server = await startPageServer(script);
     try {

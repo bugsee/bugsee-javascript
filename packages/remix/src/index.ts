@@ -4,7 +4,8 @@
 // node/edge-specific import). The node server composition lives behind `@bugsee/remix/server`; the client
 // entry behind `@bugsee/remix/client`.
 //
-// (trace-meta string builder here; the node stream transformer is in ./server).
+// The handleError bridge, the ./server node composition, the /client entry and the trace-meta
+// string builder live here; the node stream transformer is in ./server.
 export {
   type CreateHandleErrorOptions,
   createHandleError,

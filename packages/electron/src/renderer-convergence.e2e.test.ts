@@ -38,7 +38,7 @@ function loopbackIpc() {
   };
 }
 
-describe('R0 — renderer incident convergence', () => {
+describe('renderer incident convergence', () => {
   let ipc: ReturnType<typeof loopbackIpc>;
   let mainStore: ReturnType<typeof createMemoryCaptureStore>;
   let joined: DecodedReport[];

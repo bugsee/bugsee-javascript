@@ -66,7 +66,7 @@ export type InputTool = (typeof InputTool)[keyof typeof InputTool];
  * `tool`/`view`/`view_id`/`view_tag`, grouped into gestures by `id`, staged by `type`), so a web
  * interaction and a mobile touch render through ONE path.
  *
- * VERSION 3 (`input.md`): `button` is the button that CHANGED, in the shared cross-platform numbering
+ * VERSION 3: `button` is the button that CHANGED, in the shared cross-platform numbering
  * (0 primary, 1 secondary, 2 middle, 3 back, 4 forward — the browser tier maps the DOM's own numbering
  * onto it, never passes it through); `buttonMask` is the buttons HELD, tool = mouse only (the DOM's
  * `buttons` bitmask already matches this layout); `metaState` is now also written on mouse press/release
@@ -184,7 +184,7 @@ export interface InputEvent {
  * One entry on the `video.aux` capture stream (`video.aux.json`) — the geometry of the recording at a
  * moment in time: the FRAME every `input` coordinate belongs to, and (on the web) which part of it the
  * person could see. Version 2 of the stream, which is one shape for every platform — the full contract
- * is `sdk/reporting/bundle/video-aux.md` in bugsee/specs.
+ * is the video-aux document.
  *
  * WHY IT EXISTS: `input`'s `x`/`y` mean nothing without the frame they were measured in, and that frame
  * moves during a recording (a window resize, a page zoom, a rotation). A consumer with no frame falls

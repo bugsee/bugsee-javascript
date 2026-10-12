@@ -1,6 +1,6 @@
 // REQUIRES the `nodejs_compat` compatibility flag. `globalThis.AsyncLocalStorage` does NOT exist on workerd
 // under any flag — ALS is reachable ONLY through `node:async_hooks` (verified on real workerd 1.20260722.1
-// across the flag x compatibility-date matrix. Importing it here is what
+// across the flag x compatibility-date matrix; docs/review/cloudflare.md SEV1 #3). Importing it here is what
 // makes per-request context work with ZERO user code; the
 // same choice @sentry/cloudflare makes, for the same reason. A project without the flag now fails at BUILD
 // with a resolver error instead of building fine and silently losing context isolation.

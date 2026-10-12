@@ -273,7 +273,7 @@ describe('bugsee node umbrella launch', () => {
     ).toBeUndefined();
   });
 
-  it('produce-tee on Node sets the §5 scope name com.bugsee.nodejs/performance', async () => {
+  it('produce-tee on Node sets the scope name com.bugsee.nodejs/performance', async () => {
     const { scheduler, fire } = fakeScheduler();
     const otlpBodies: string[] = [];
     const transport = vi.fn<HttpTransport>(async (url: string, opts: HttpRequestOptions = {}) => {
@@ -375,7 +375,7 @@ describe('bugsee node umbrella launch', () => {
     expect([present, sameType]).toEqual([true, true]);
   });
 
-  it('the wired active slot is request-scoped: concurrent requests stay isolated (D2 part 2)', async () => {
+  it('the wired active slot is request-scoped: concurrent requests stay isolated', async () => {
     // Full stack through every threading link: node launchCore internals → wireUmbrella →
     // wirePerformance → extension → controller → the request-context store. If ANY link dropped
     // the store, the controller would fall back to the process-wide single slot and request A's

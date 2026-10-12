@@ -126,7 +126,7 @@ describe('createDenoServeInterceptor', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+  it('writes NO return headers by default (traceResponse off — )', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, calls } = fakeDenoHost();
     const ic = createDenoServeInterceptor({ target: host, getClient: () => client });

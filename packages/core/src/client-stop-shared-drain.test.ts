@@ -46,7 +46,7 @@ const honouring = () => {
   return { client, release: (ok = true) => release(ok), timeouts };
 };
 
-describe('R3L-2 — the shared stop drain is not bounded by the first caller', () => {
+describe('the shared stop drain is not bounded by the first caller', () => {
   it('stop(20) times out, the upload then finishes, and a repeat stop() answers TRUE', async () => {
     const { client, release, timeouts } = honouring();
     client.launch();

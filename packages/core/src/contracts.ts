@@ -229,7 +229,8 @@ export type ControllingOption = keyof BugseeOptionTypes | (string & Record<never
  *   (stop→start) across launches without re-init.
  * - stop(): unsubscribe / release hooks (the subscription, not a detached aggregator, is the gate).
  *
- * NB: this follows Android (works on CaptureDataEntry objects), rather than per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
+ * NB: this follows Android (works on CaptureDataEntry objects), not the design doc sketch's
+ * per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
  * serialization lives on the entry itself (serialize/deserialize).
  */
 export interface CaptureProvider {
@@ -263,7 +264,8 @@ export interface Extension {
 
 /**
  * The provider/extension-facing kernel surface (registration seams). This is intentionally a
- * MINIMAL subset of the full Client. The contracts above pass it to start()/setup().
+ * MINIMAL subset of the full Client and is grown to the complete public API when the Client
+ * implementation lands (task 8). The contracts above pass it to start()/setup().
  */
 export interface Client {
   /** Operation bridge for adapters/build injection. */

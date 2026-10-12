@@ -50,7 +50,7 @@ describe('registerServerEdge', () => {
     expect(launchEdge).not.toHaveBeenCalled();
   });
 
-  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+  it('remembers the install-time launch on its carrier for a plain relaunch', () => {
     const launch = vi.fn(() => ({}) as never);
     const carrier = {};
     registerServerEdge('tok', { launch, carrier });
@@ -130,7 +130,7 @@ describe('createEdgeMiddleware', () => {
     expect(next).toHaveBeenCalledTimes(1); // the route still ran
   });
 
-  it('redacts secrets in the request URL before they reach http.url (Wave 1.1)', async () => {
+  it('redacts secrets in the request URL before they reach http.url', async () => {
     // Astro hands us the FULL request URL, query included — unlike vercel-edge, which reduces it to a
     // pathname. So this is the one edge adapter where a `?token=` reaches the attribute intact.
     await createEdgeMiddleware({ getClient: () => ({ id: 'c' }) as never })(

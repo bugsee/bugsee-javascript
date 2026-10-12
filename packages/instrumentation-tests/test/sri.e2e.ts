@@ -1,4 +1,4 @@
-// The Subresource Integrity, end to end.
+// The Subresource Integrity SEV1, end to end.
 //
 // Reproduced 2026-09-18 on webpack 5.111 + html-webpack-plugin + webpack-subresource-integrity in
 // Chromium: after `bugsee-cli sourcemaps inject` ran over the emitted build, the entry script was

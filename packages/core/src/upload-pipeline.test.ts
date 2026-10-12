@@ -207,7 +207,7 @@ describe('createUploadPipeline — 403 renew', () => {
     expect(result.error).toBe(boom);
   });
 
-  it('renews only once: a second 403 after renewing gives up with renew_failed (§14.8)', async () => {
+  it('renews only once: a second 403 after renewing gives up with renew_failed', async () => {
     const api = fakeApi();
     const outcomes: PipelineOutcome[] = [];
     const put = vi.fn(async () => ({ ok: false, status: 403, retryable: false }) as PutResult);
@@ -791,7 +791,7 @@ describe('createUploadPipeline + createBugseeApi — the control plane end to en
   //   • A bare 4xx on the control plane is the answer an intermediary gives: a captive portal, a
   //     corporate MITM proxy, a WAF, a stale CDN route, a service worker. None of them read the payload.
   //   • Widening a deletion path on a status is what produced a NEW data-loss path in each of three
-  // consecutive review passes here (`status >= 500` deleted every 401/408/425/429).
+  // consecutive review rounds here (`status >= 500` deleted every 401/408/425/429).
   //
   // The cost of NOT classifying was "retried forever". That cost is now paid for separately, by BOUNDS
   // rather than by verdicts: node sweeps dead subtrees at 7 days, the durable queue's own retention caps

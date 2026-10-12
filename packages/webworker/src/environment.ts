@@ -8,7 +8,7 @@ import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 // stubbed in tests); realWorkerProbe is the default. platform.type is the worker variant ('web-worker' /
 // 'service-worker') and rides in `runtime`; `platform` carries the OS, identified in-worker from the same
 // navigator the browser tier reads (see @bugsee/browser's user-agent.ts). It used to carry the worker tag
-// and the raw userAgent — the same conflation fixed for the page tier in
+// and the raw userAgent — the same conflation fixed for the page tier.
 
 /** The worker platform identity. */
 export type WorkerPlatformType = 'web-worker' | 'service-worker';

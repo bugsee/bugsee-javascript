@@ -1102,7 +1102,7 @@ describe('recoverInstances', () => {
   });
 });
 
-describe('recoverInstances — evidence that the previous run did not stop cleanly (R2D-2)', () => {
+describe('recoverInstances — evidence that the previous run did not stop cleanly', () => {
   const run = async (dir: string, extra: Partial<Parameters<typeof recoverInstances>[0]> = {}) => {
     const onCrashEvidence = vi.fn();
     await recoverInstances({

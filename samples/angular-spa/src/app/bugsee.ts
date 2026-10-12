@@ -42,8 +42,7 @@ const carrier: object = globalThis;
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The 0.x SDK_VERSION baked into @bugsee/browser is a pre-publish placeholder; staging's session
-  // endpoint has rejected unversioned SDKs before (see /F-3 —
-  // confirmed cross-cutting in). Overriding here matches every other sample's
+  // endpoint has rejected unversioned SDKs before. Overriding here matches every other sample's
   // convention so this sample's own data lands regardless of that in-flight versioning question.
   sdkVersion: '1.0.0',
   appId: 'com.bugsee.sample.angular-spa',
@@ -83,10 +82,10 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   tracePropagationTargets: ['/api/'],
 
   onError: reportInternalError,
-  // Wire-depth verification (PLAN, item 2 of the fix pass): forwards every SDK call to real
+  // Wire-depth verification: forwards every SDK call to real
   // staging verbatim while recording a parsed copy locally, so scripts/verify.mjs can assert on the
   // ACTUAL uploaded bundle contents (redaction, masking-file presence, dropped over-cap bodies) instead of
-  // only on the Scenario panel's own filter-callback log — see src/app/bugsee-transport.ts and
+  // only on the Scenario panel's own filter-callback log — see src/app/bugsee-transport.ts.
   transport: createTeeTransport(),
 };
 
@@ -113,8 +112,7 @@ if (typeof window !== 'undefined') {
  * here, deliberately: a genuinely-default `endpoint` resolves to Bugsee PRODUCTION, and this sample's
  * data must land on staging only. So "relaunch minimal" demonstrates every
  * OTHER option left at its default (capture toggles, `maxRecordingTime`, `persist`/`recover`, performance
- * sampling, etc.) — not `endpoint`, which can never be defaulted here. See the earlier,
- * incorrect claim that this was a fully-default launch.
+ * sampling, etc.) — not `endpoint`, which can never be defaulted here.
  */
 export const MINIMAL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {};
 

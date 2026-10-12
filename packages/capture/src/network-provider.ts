@@ -202,8 +202,8 @@ class NetworkCaptureProvider extends CaptureProviderBase {
     // auto-scrubbed unless `fn` does it itself (see `sanitize()` above and `sanitizeUrl`/`sanitizeBody`/
     // `sanitizeHeaders` in @bugsee/protocol for what the default sanitizer does, so a filter author knows
     // what they've taken over). This is intentional, not a bug — Android is this SDK's binding API/
-    // architecture parity target (CLAUDE.md) — but it is easy to miss, so it is called out here at the
-    // one place that implements it, not just in documentation.
+    // architecture parity target — but it is easy to miss, so it is called out here at the
+    // one place that implements it, not just in a design doc.
     //
     // The body policy (master toggle, size limit, allow-without-type) is read once per launch and
     // applied to every event before the filter/sanitizer XOR.

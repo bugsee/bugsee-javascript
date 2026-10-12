@@ -2,7 +2,7 @@ import { getClient, sdkErrors, relaunchBugsee, loadSettings } from '../bugsee-cl
 import { triggerWorkerThrow, workerLog } from '../lib/worker-client';
 import { triggerServiceWorkerThrow, triggerBackgroundSync } from '../lib/sw-register';
 
-// The Scenario panel: one control per scenario plus the browser-specific extras from
+// The Scenario panel: one control per scenario (S1–S13) plus the browser-specific extras.
 // Each control is a plain button so it can be driven by hand OR by
 // Playwright (scripts/verify.ts) via a stable `data-scenario="Sx"` attribute + a `#scenario-log`
 // transcript any script can read back.
@@ -44,7 +44,7 @@ const SCENARIOS: ScenarioDef[] = [
       const token = import.meta.env.BUGSEE_APP_TOKEN;
       const client = launch(token, {
         endpoint: `${window.location.origin}/bugsee-proxy`,
-        sdkVersion: '1.0.0',
+        sdkVersion: '1.0.0', // the packed SDK version (0.0.0) is below the backend floor
       });
       const sameInstance = client === getClient();
       const warned = sdkErrors.length > before;
@@ -486,7 +486,7 @@ const SCENARIOS: ScenarioDef[] = [
   {
     id: 'S14-sw-sync',
     title: 'S14 Service Worker: background sync registration',
-    detail: 'registration.sync.register — real API availability depends on the browser (see FINDINGS.md).',
+    detail: 'registration.sync.register — real API availability depends on the browser.',
     run: async () => `background sync registration: ${await triggerBackgroundSync()}`,
   },
   {
@@ -504,10 +504,9 @@ export function renderScenarios(container: HTMLElement): void {
   container.innerHTML = `
     <section class="block">
       <h1>Scenario panel</h1>
-      <p class="muted">One control per catalog scenario (docs/samples/PLAN.md §4/§5.1). Every button
+      <p class="muted">One control per catalog scenario. Every button
       calls the real SDK API; results are LOCAL-level checks (did the call throw / what did it return).
-      Backend-level (§6) verification is done separately via the Bugsee staging MCP tools and recorded
-      in <code>scenarios.md</code>.</p>
+      Backend-level verification is done separately via the Bugsee staging MCP tools.</p>
       <table class="scenario-table">
         <thead><tr><th>Scenario</th><th>What it does</th><th></th><th>Result</th></tr></thead>
         <tbody id="scenario-rows"></tbody>

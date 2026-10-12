@@ -57,21 +57,18 @@ const carrier: object = globalThis;
  *
  * "Full" means: every non-injectable field of `BugseeLaunchOptions`
  * (`packages/browser/src/launch.ts`) and of the umbrella's `UmbrellaExtensionOptions`
- * (`packages/bugsee/src/wire.ts`), with SEVEN documented exclusions in three groups (corrected in fix
- * — this block said "THREE" and named `otelHeaders`, a field that does not exist):
+ * (`packages/bugsee/src/wire.ts`), with SEVEN documented exclusions in three groups:
  *
  * - `sdkVersion` (`launch.ts:132-133`) — deliberately left at its real default. It is stamped into the
  *   environment envelope AND the `user-agent: BugseeJS/<v>` header (`packages/core/src/bugsee-api.ts:72`),
  *   so overriding it would make every issue this sample files on staging report a version the SDK is
  *   not — poisoning the very evidence trail the sample exists to produce. Exercised by omission.
- * - `replay` — **CORRECTED (substrate-flip re-verification).** This entry used to read " is N/A for
- *   this sample by design", and that is now simply false in two ways. Session replay is ON BY DEFAULT
+ * - `replay` — session replay is ON BY DEFAULT
  *   (`packages/browser/src/launch.ts`: `options.replay !== false && domDocument !== undefined`), so
  *   this sample RECORDS a session and ships `replay.bin` in every bundle it uploads whether or not it
- *   asks to. "Excluded because it is out of scope" therefore described neither the option nor the
- *   sample's behaviour: it described a state of the world that ended when the default flipped.
+ *   asks to. Excluding it as out of scope would describe neither the option nor the sample's behaviour.
  *
- *   `replay` is STILL left unset here, but for the opposite reason, and it is no longer unverified.
+ *   `replay` is left unset here on purpose, and it is verified.
  *   Setting `replay: true` would be behaviour-identical to the default and would make the sweep's
  *   `s11-replay-file` row ("the bundle carries replay.bin WITHOUT the sample asking for it") assert
  *   nothing — a regression that flipped the default back to opt-out would stay green because we had
@@ -83,9 +80,9 @@ const carrier: object = globalThis;
  *   their fail-closed DEFAULTS are what `s11-replay-masking` verifies; `browser-vanilla` and
  *   `react-spa` remain the samples that drive the sub-options themselves.
  * - ALL FIVE public OTel options — `otelExportUrl` (`wire.ts:109`), `otelExportHeaders` (`:111`),
- * `otelExportResource` (`:113`), `otelConsume` (`:119`), `onOtelSpanProcessor` (`:121`) — is N/A
- *   here (no local collector, and no user TracerProvider to consume spans from; see `scenarios.md`
- * ). NB `tracePropagationOrigin` (`wire.ts:102`) is NOT an exclusion — it IS set, just below.
+ *   `otelExportResource` (`:113`), `otelConsume` (`:119`), `onOtelSpanProcessor` (`:121`) — S13 is N/A
+ *   here (no local collector, and no user TracerProvider to consume spans from; see scenario S13).
+ *   NB `tracePropagationOrigin` (`wire.ts:102`) is NOT an exclusion — it IS set, just below.
  *
  * The injectable test seams (`window`/`document`/`clock`/`scheduler`/`captureStore`/`triggerPipeline`/
  * `systemProbe`/`systemMetricsSampler`/`bundleStore`/`locks`/`indexedDB`) are deliberately NOT set — the
@@ -134,10 +131,10 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   ...(typeof location !== 'undefined' ? { tracePropagationOrigin: location.origin } : {}),
 
   onError: reportInternalError,
-  // Wire-depth verification (PLAN): forwards every SDK call to real staging verbatim while
+  // Wire-depth verification: forwards every SDK call to real staging verbatim while
   // recording a parsed copy locally, so scripts/verify.mjs can assert on the ACTUAL bundle contents
   // (redaction, labels, dedupe) instead of only on the scenario panel's own filter-callback log — see
-  // src/bugsee-transport.ts and Dev/test builds only (IS_PRODUCTION guard above) — a
+  // src/bugsee-transport.ts. Dev/test builds only (IS_PRODUCTION guard above) — a
   // `pnpm build` production bundle gets the SDK's own default transport, untouched.
   ...(IS_PRODUCTION ? {} : { transport: createTeeTransport() }),
 };
@@ -162,7 +159,7 @@ if (typeof window !== 'undefined' && !IS_PRODUCTION) {
  * the CALLER-supplied options for the "relaunch minimal" control — deliberately empty, so anything
  * the sample does not itself have to pin stays at its SDK default.
  *
- * Corrected in fix: this used to read "nothing but the token", which is not what runs.
+ * Note that the launch is not token-only:
  * `relaunch()` below always spreads `endpoint`, `appId`, `appVersion`, `appBuild` and `onError` BEFORE
  * the caller's options, and `doLaunch` adds `carrier` — so this control launches with SIX options set,
  * not zero. Pinning `endpoint` is not optional: a bare `launch(token, {})` would post to the PRODUCTION

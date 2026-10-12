@@ -2,9 +2,9 @@
 // via Playwright: exercises the Habit tracker app itself, then every control in the Scenario panel, and
 // prints a pass/fail table for what could be checked from the browser (LOCAL: no throw / WIRE: the right
 // request left the process). Backend (MCP) verification is a SEPARATE step the build agent runs by hand
-// against the printed evidence — see scenarios.md. Structurally mirrors samples/react-spa/scripts/verify.mjs
-// (the wave-1 reference) including its evidence-based waits (see the comments on waitForBundles/waitForQuiet
-// below — found a fixed-window wait fails in BOTH directions).
+// against the printed evidence. Structurally mirrors samples/react-spa/scripts/verify.mjs
+// including its evidence-based waits (see the comments on waitForBundles/waitForQuiet below; a
+// fixed-window wait fails in BOTH directions).
 import { chromium } from 'playwright';
 
 const BASE = 'http://localhost:5304';
@@ -22,12 +22,10 @@ async function click(page, testid, { wait = 300 } = {}) {
 async function main() {
   // `browser`/`pageErrors` are declared OUTSIDE the try so the finally block can always close the
   // browser, and the report can always print, even if a scenario throws partway through — a run that
-  // aborts early must still tell you what it got through, and must always exit the process. (Found the
-  // hard way: an earlier version of this script left the browser subprocess connection open on an
-  // uncaught throw, which kept the node process alive indefinitely with the report never printed — no
+  // aborts early must still tell you what it got through, and must always exit the process. (A browser subprocess connection left open on an
+  // uncaught throw keeps the node process alive indefinitely with the report never printed — no
   // exit, no evidence, just a silent hang. Not a bug in the app or the SDK, purely this script's own
-  // control flow — see scenarios.md's note on the <svelte:boundary> reset requirement that originally
-  // triggered it.)
+  // control flow.)
   let browser;
   const pageErrors = [];
   try {
@@ -52,7 +50,7 @@ async function main() {
     bugseeCalls.push({ url: res.url(), status: res.status(), ok, t: Date.now() });
   });
 
-  // Wire-level tap for the continuous performance upload (PLAN) — instead of stopping at "not
+  // Wire-level tap for the continuous performance upload — instead of stopping at "not
   // visible via MCP" for render spans / route naming, listen for the actual POST /v2/performance/
   // transactions batches (@bugsee/performance sends `{ transactions: TransactionWire[] }`) the whole run.
   const perfTransactions = [];
@@ -76,10 +74,9 @@ async function main() {
    *  arrived, not merely that a request left the process (a collector-side 401/500 no longer passes). */
   const isIssueCall = (c) => c.url.includes('issues') && c.ok;
 
-  // (There used to be a `waitForCalls(match)` here — "wait for an issue call in the window after my
-  // click". It is gone: a window cannot tell THIS control's report from a slow PREVIOUS one, and several
-  // checks built on it turned out to be satisfiable by an earlier control's traffic. Report-level checks
-  // now match the uploaded bundle's own content — see `waitForBundles`/`bySummary` below.)
+  // Report-level checks match the uploaded bundle's own content (see `waitForBundles`/`bySummary`
+  // below): a time window cannot tell this control's report from a slow previous one, and an earlier
+  // control's traffic could satisfy a window-based check.
 
   /**
    * Wait until bugsee traffic SETTLES — the right wait for an upper-bound assertion (see file banner).
@@ -87,8 +84,8 @@ async function main() {
    * Returns `{ calls, reason, waitedMs }`, not a bare slice. The `reason` is load-bearing: a wait that
    * exits by TIMEOUT has NOT observed quiet, it has merely run out of budget with traffic still in
    * flight, and any caller whose claim depends on "nothing is in flight any more" is then asserting
-   * something it did not measure. That was not hypothetical — see the storm-settle note near the
-   * check for the five-run measurement that exposed it. Callers that make an upper-bound or
+   * something it did not measure. That is not hypothetical: see the note on the S4 storm check for
+   * the five-run measurement that exposed it. Callers that make an upper-bound or
    * drain-completed claim MUST check `reason === 'quiet'`; `waitedMs` is reported so the run says how
    * long the settle actually took instead of leaving it invisible.
    */
@@ -123,7 +120,7 @@ async function main() {
    * show up, or `timeout` elapses (absence is itself a valid, asserted-on result — e.g. proving a
    * vetoed report never produces a bundle at all). Needed because the in-app filter-log checks only
    * prove the filter CALLBACK ran, not that the SDK actually applied its return value to what got
-   * uploaded — PLAN
+   * uploaded.
    *
    * `min` is what makes an UPPER-bound assertion honest. Returning as soon as the expected count is
    * reached means "exactly N" can only ever observe N — a regression to N+1 stays invisible unless the
@@ -131,8 +128,8 @@ async function main() {
    * `min: N + 1`, which keeps polling for the full window and can actually see the extra one.
    *
    * `delivered` is what makes an EXISTENCE assertion honest, and it is the general form of what
-   * `bundle-upload-status-wire` (bottom of this file) used to do for four hand-named bundles.
-   * `getCapturedBundles()` admits a record the moment its body PARSED, whatever the collector answered — so every
+   * `bundle-upload-status-wire` (bottom of this file) does for four hand-named bundles.
+   * `getCapturedBundles()` admits a record the moment its body PARSED, whatever S3 answered — so every
    * `... reaches the wire` row above was really asserting `the SDK BUILT and SENT this bundle`, not that
    * it LANDED. An expired presigned URL (403) or a 5xx would leave ~30 of them green with nothing
    * reaching the backend. Defaulting to `delivered: true` means each of those rows now requires a 2xx
@@ -181,7 +178,7 @@ async function main() {
   //                            positive control = `s8-report-mutate-wire`, the same handler admitting.
   //   * `s9-sample-rate-0`   — `scenario.manual` absent from the perf tap; positive control =
   //                            `s9-sample-rate-1`, the identical call at rate 1.
-  // The THIRD is not an absence assertion and an earlier version of this block wrongly filed it as one:
+  // The THIRD is not an absence assertion:
   //   * `s4-storm`           — a two-sided BOUND (`> 0 && < 200`) on admitted calls. Its UPPER half is
   //                            an absence claim with the inverted failure mode above; its LOWER half
   //                            (`stormCalls.length > 0`) is a PRESENCE claim over a window matched only
@@ -195,8 +192,7 @@ async function main() {
   //                            a second earlier and can still be in flight when the storm window opens,
   //                            so the honest statement is "at most a handful of stragglers from the
   //                            immediately preceding controls", not "the only traffic that can drift in is
-  //                            the storm's own" (which an earlier version of this comment claimed, and the
-  //                            code does not support). Harmless at the measured ~97 against a `> 0 &&
+  //                            the storm's own". Harmless at the measured ~97 against a `> 0 &&
   //                            < 200` bound — a straggler cannot move 97 across either edge — and
   //                            `s4-storm-settle` separately asserts the window closed on genuine quiet
   //                            rather than on its deadline.
@@ -236,9 +232,9 @@ async function main() {
 
   // NOTE: this router is HASH-based, so a `page.goto` to a hash-only-different URL is a SAME-DOCUMENT
   // navigation — Playwright's `waitUntil: 'networkidle'` resolves on that immediately (there is no
-  // document load to wait for), well before the page's own client-side `onMount` fetch resolves. An
-  // earlier version of this script relied on networkidle here and got a false FAIL (0 cells/rows) purely
-  // from the race, not from an app bug — `waitForSelector` on the actual expected content is the fix.
+  // document load to wait for), well before the page's own client-side `onMount` fetch resolves, so
+  // relying on networkidle here can give a false FAIL (0 cells/rows) purely from that race, not from
+  // an app bug. `waitForSelector` on the actual expected content is the reliable wait.
   await page.goto(`${BASE}/#/calendar`, { waitUntil: 'networkidle' });
   await page.waitForSelector('[data-testid="calendar-heatmap"] .cell', { timeout: 5000 });
   const calendarCells = await page.locator('[data-testid="calendar-heatmap"] .cell').count();
@@ -275,7 +271,7 @@ async function main() {
   const attrsDump = await page.locator('[data-testid="attrs-dump"]').textContent();
   record('s2-attributes', 'setAttribute — string/number/boolean/string[]', Boolean(attrsDump?.includes('gamma')), attrsDump ?? '');
 
-  // `getAttribute` (singular) — declared in the catalog but never called before this fix.
+  // `getAttribute` (singular) — the catalog's singular getter, called directly here.
   await click(page, 'get-attribute');
   const singleAttrText = await page.locator('[data-testid="single-attr-dump"]').textContent();
   record('s2-get-attribute', "getAttribute('tags') returns the value just set", Boolean(singleAttrText?.includes('gamma')), singleAttrText ?? '');
@@ -515,11 +511,11 @@ async function main() {
     s7Text ?? '',
   );
 
-  // ---- Wire-depth evidence for `log()` / `console.*` / XHR + WebSocket (PLAN).
+  // ---- Wire-depth evidence for S3 `log()` / S6 `console.*` / S7 XHR + WebSocket.
   // None of those has a wire signal of its own — nothing leaves the process when they happen; they sit
   // in the local capture ring until the next REPORT's bundle carries them. The checks above are
   // therefore LOCAL by construction (`newPageErrors() === 0`, or the DOM status the app itself wrote),
-  // and scenarios.md used to mark several of them W anyway, which nothing supported. Fire one report
+  // and marking several of them as wire-verified would have been unsupported. Fire one report
   // whose bundle is the ring as it stands right now, unzip it, and assert the actual entries.
   await click(page, 'capture-wire-probe', { wait: 0 });
   const CAPTURE_PROBE_SUMMARY = 'WIRE: capture probe (log/console/xhr/ws ring contents)';
@@ -529,7 +525,7 @@ async function main() {
   const probeRequest = probeBundle?.bundle?.request ?? {};
   const probeFiles = probeBundle?.bundle?.files ?? [];
 
-  // ---- Fields the tee ALREADY parses that no check was reading (the sweep).
+  // ---- Fields the tee ALREADY parses that no check was reading.
   //
   // `src/bugsee-transport.ts` parses five things out of every uploaded bundle — `files`, `request`,
   // `logMessages`, `breadcrumbs`, `network` — and three of them were only partly read: `files` by
@@ -658,11 +654,11 @@ async function main() {
   );
   // `console.trace` is deliberately absent from the expected set — the SDK does not capture it at all
   // (packages/capture/src/console-interceptor.ts:24-30 `DEFAULT_LEVELS` maps log/info/debug/warn/error
-  // and nothing else). Recorded as; asserting 6 here would just fail on a known gap,
+  // and nothing else). It is a known gap: asserting 6 here would just fail on it,
   // and asserting "some console line arrived" would hide it.
   record(
     's6-console-wire',
-    'console.log/info/warn/error/debug -> each reaches the wire in the UPLOADED bundle\'s logs.json, with its object argument stringified (console.trace is NOT captured — FINDINGS.md F-3)',
+    'console.log/info/warn/error/debug -> each reaches the wire in the UPLOADED bundle\'s logs.json, with its object argument stringified (console.trace is NOT captured)',
     ['log', 'info', 'warn', 'error', 'debug'].every((m) => probeLogs.includes(`S6: console.${m} {"control":"s6-${m}"}`)) &&
       !probeLogs.some((m) => m.startsWith('S6: console.trace')),
     `trace captured: ${probeLogs.some((m) => m.startsWith('S6: console.trace'))}`,
@@ -696,7 +692,7 @@ async function main() {
       wsEntries.some((n) => n.type === 'message' && n.direction === 'in'),
     `${wsEntries.length} ws entries: ${JSON.stringify(wsEntries.map((n) => `${n.type}/${n.direction ?? '-'}`))}`,
   );
-  // SSE, mirroring the WebSocket check above. scenarios.md marks the SSE row L (the app's own "event #5"
+  // SSE, mirroring the WebSocket check above. the SSE control is verified locally (the app's own "event #5"
   // status line) and nothing over-claimed — but the probe bundle DOES carry `mechanism: "sse"` entries,
   // so a total loss of EventSource capture was invisible at this depth. It no longer is.
   //
@@ -754,7 +750,7 @@ async function main() {
   // above reads the status line the APP wrote from its own response: real evidence that the call happened
   // and that the interceptor did not alter what the app saw, but evidence about the APP, not about
   // capture — a filter/interceptor that recorded nothing at all would leave every one of them green.
-  // scenarios.md marked them W anyway. The probe bundle carries the ring's fetch entries, so assert them.
+  // The probe bundle carries the ring's fetch entries, so assert them.
   //
   // Shapes come from packages/capture/src/fetch-interceptor.ts: a `before` entry (request headers/body),
   // a `complete` entry carrying `status`, and — once the bounded read of the CLONED response resolves —
@@ -889,7 +885,7 @@ async function main() {
     `${filterCalls.length} issue calls; log: ${filterLogText}`,
   );
 
-  // ---- Bundle-level (WIRE) assertions — PLAN The in-app filter-log check above only proves the
+  // ---- Bundle-level (WIRE) assertions. The in-app filter-log check above only proves the
   // Scenario panel's OWN filter callback ran and logged what it saw; it says nothing about whether the
   // SDK actually applied the filter's RETURN VALUE to what got uploaded (a mutation that discarded every
   // filter's return value would leave the check above green). These inspect the tee's parsed copy of the
@@ -913,7 +909,7 @@ async function main() {
   // `ssn` is regex-replaced), so it survives as a stable discriminator.
   //
   // `type === 'before'` is REQUIRED here for exactly the reason `fetchBody` above takes the stage as a
-  // required argument — this check was the one place that fix did not sweep into. Measured on a
+  // required argument. This check was the one place that rule was missing. Measured on a
   // real mutate bundle, `/api/scenario/echo` produces BOTH of these and the url+body predicate alone
   // matched both:
   // [before] headers:["Content-Type","traceparent","tracestate"] body:'{"ssn":"[REDACTED]","note":": …"}'
@@ -1075,7 +1071,7 @@ async function main() {
   record('s11-replay-masking', 'relaunch with explicit masking options', newPageErrors() === 0);
 
   // Relaunch under the SELECTOR-driven config (`maskTextSelector`/`blockSelector`/`ignoreSelector` —
-  // three PLAN options that nothing in this sample exercised, and that were not recorded N/A
+  // three S11 options that nothing in this sample exercised, and that were not recorded N/A
   // either). This is the session the drawer below is recorded under, and the one the wire checks read.
   await click(page, 's11-replay-selectors', { wait: 800 });
   record('s11-replay-selectors', 'relaunch with maskTextSelector/blockSelector/ignoreSelector', newPageErrors() === 0);
@@ -1108,12 +1104,12 @@ async function main() {
   await page.waitForTimeout(500); // give the active replay ring a moment to record this screen
   await page.goto(`${BASE}/#/scenarios`, { waitUntil: 'networkidle' });
 
-  // ---- at WIRE depth (PLAN: masking "verified by inspecting the replay for the secret").
+  // ---- S11 at WIRE depth (masking "verified by inspecting the replay for the secret").
   //
-  // Every check above — and every check that existed before this round — asserts `no new page
+  // Every S11 check above asserts `no new page
   // error` plus `isLaunched`/drawer-visible. Replay recording could be entirely DEAD and all of them stay
-  // green. scenarios.md justified that with "not visible via get_issue", which is true of the BACKEND
-  // level and NOT of the wire level this sample's own tee already reaches: the tee unzips every uploaded
+  // green. Not being visible via the backend API is true at that level, but NOT at the wire level this
+  // sample's own tee already reaches: the tee unzips every uploaded
   // bundle, `replay.bin` is right there in `files`, and it gunzips to the real rrweb event stream.
   //
   // So: fire one report while the drawer recording is still in the ring, then decode that bundle's
@@ -1171,9 +1167,9 @@ async function main() {
   //                               default ON, every text absence below would be true for free and the
   //                               two text selectors would be untestable.
   //    "source":5               — rrweb IncrementalSource.Input: input events were being recorded.
-  //    the `.bugsee-unmask` field's input event, IN EITHER FORM — a 24-star run (what F-4 measures
-  //                               today) OR its raw value (what the fork would produce once F-4 is
-  //                               fixed). See the F-4 note below for why the disjunction, not a pin.
+  //    the `.bugsee-unmask` field's input event, IN EITHER FORM — a 24-star run (what the current build
+  //                               records) OR its raw value (what the fork would produce once the defect
+  //                               is fixed). See the note below for why the disjunction, not a pin.
   //
   //  ABSENT (the privacy claim, each attributable to one specific mechanism):
   //    the two SECRET values     — neither the password nor the ignoreSelector field's text reached the
@@ -1198,24 +1194,24 @@ async function main() {
   // `ignoreSelector` halves are not (their targets are ordinary elements, and `maskAllText: false` means
   // an identical un-marked sibling IS recorded).
   //
-  // and why this check does NOT pin it. `.bugsee-unmask` is honoured only on the
+  // This is a known SDK defect, and this check does NOT pin it. `.bugsee-unmask` is honoured only on the
   // FULL-SNAPSHOT path — rrweb's live input observer is never handed `unmaskInputSelector` and masks
   // purely off `maskInputOptions` — so a value TYPED during recording is masked regardless of the mark,
   // and ` -UNMASKED-INPUT-VALUE` does not appear in the decoded stream today.
   //
-  // An earlier version of this check asserted that absence, plus the 24-star run, as facts. That pinned
+  // Asserting that absence, plus the 24-star run, as facts, would pin
   // the DEFECT: the day the fork honours the mark on the incremental path, a check literally titled
   // "replay masking VERIFIED IN THE RECORDING" would go red and read as "masking broke" — the opposite of
-  // what happened. `angular-spa`, which reproduced F-4 independently and decisively (one `source:5` event,
+  // what happened. `angular-spa`, which reproduced the same defect independently and decisively (one `source:5` event,
   // `{"source":5,"text":"*****************"}` for a 17-character value, while the full-snapshot path read
   // the same field back verbatim in the same sweep), deliberately declined to add such a check for exactly
-  // that reason. This one now takes the same position by DISJUNCTION rather than by omission: the field's
+  // that reason. This check takes the same position by DISJUNCTION rather than by omission: the field's
   // input event must be present in ONE of the two forms, which keeps it as the positive control that makes
-  // the two absences below attributable, while committing to neither outcome of F-4. F-4 stays a written
+  // the two absences below attributable, while committing to neither outcome. The defect stays a written
   // finding; it is not a fixture.
   record(
     's11-replay-masking-wire',
-    'replay masking VERIFIED IN THE RECORDING — the decoded rrweb stream contains neither SECRET field value, the maskTextSelector target\'s text nor the blockSelector target\'s text, and carries NO input event at all for the password / ignoreSelector fields, while an un-marked text node, live input events, and the neighbouring .bugsee-unmask field\'s input event (masked OR raw — F-4 is not pinned here) ARE present',
+    'replay masking VERIFIED IN THE RECORDING — the decoded rrweb stream contains neither SECRET field value, the maskTextSelector target\'s text nor the blockSelector target\'s text, and carries NO input event at all for the password / ignoreSelector fields, while an un-marked text node, live input events, and the neighbouring .bugsee-unmask field\'s input event (masked OR raw; not pinned here) ARE present',
     hits[S11_MASKED_VALUE] === false &&
       hits[S11_IGNORED_VALUE] === false &&
       hits['S11-MASK-SELECTOR-TARGET-TEXT'] === false &&
@@ -1297,8 +1293,8 @@ async function main() {
   // Svelte-specific
   await click(page, 'arm-boundary', { wait: 500 });
   const guardedFallback = await page.locator('[data-testid="guarded-widget-fallback"]').count();
-  // This click ALSO fires a report (the boundary's `onerror` → `reportSvelteErrorDirect`), which used to
-  // be an unowned side effect that drifted into the next two checks' windows. Assert it here, by its own
+  // This click ALSO fires a report (the boundary's `onerror` → `reportSvelteErrorDirect`), which would otherwise
+  // be an unowned side effect that drifts into the next two checks' windows. Assert it here, by its own
   // summary, so the local path is evidence rather than noise.
   const localBoundaryBundle = await waitForBundle(
     bySummary('S-svelte: ThrowingWidget local-boundary render throw (caught by <svelte:boundary>)'),
@@ -1333,8 +1329,8 @@ async function main() {
   record(
     'svelte-render-span',
     'startSvelteRenderSpan(...)() direct call — stop() ran with the transaction THIS control started still active (recordRenderSpan is a documented no-op without one)',
-    // Not a decorative literal: the panel used to set "recorded a ui.render mount span"
-    // unconditionally, so this assertion read the sample's own prose — probed in isolation it produced
+    // Not a decorative literal: the panel must not set "recorded a ui.render mount span"
+    // unconditionally, or this assertion would read the sample's own prose. Probed in isolation, that produced
     // ZERO /v2/performance/transactions POSTs in 12s while still reading green. The panel now reports
     // what it OBSERVED, and `svelte-render-span-wire` below asserts the span itself, by name, on the wire.
     //
@@ -1363,13 +1359,13 @@ async function main() {
   const annotateCount = annotateMatch ? Number(annotateMatch[1]) : 0;
   record('svelte-component-annotate', 'svelte-plugin-component-annotate stamps data-bugsee-component in the DOM (reactive, measured on THIS page)', annotateCount > 0, `${annotateCount} elements`);
 
-  // Global (app-level) boundary — no nested boundary competing, unlike react-spa's F-5 (react-router's
+  // Global (app-level) boundary — no nested boundary competing, unlike react-spa (react-router's
   // per-route boundary intercepts first there). Expect App.svelte's own boundary to catch this.
   // ThrowingWidget throws a message parameterized by `scenario` ('local' vs 'global') so an individual
   // EVENT is self-describing, but this does NOT split the two paths into separate ISSUES — checked via
   // MCP: they still fingerprint to the same one, because Bugsee's error grouping keys off the thrown
   // Error's own stack trace (always the same $effect line in ThrowingWidget.svelte, regardless of which
-  // boundary catches it), not the message text. See scenarios.md's Svelte-specific section.
+  // boundary catches it), not the message text.
   sinceCheckpoint();
   await click(page, 'arm-global', { wait: 900 });
   const globalFallback = await page.locator('[data-testid="error-fallback"]').count();
@@ -1391,7 +1387,7 @@ async function main() {
   // stops reactively re-rendering its children entirely (including the outer {#if route.id === ...}
   // outlet swap) until `reset()` runs; simply navigating to another route and back does NOT un-stick it
   // (found the hard way: the first version of this script hung forever on the next click, because the
-  // fallback stayed on screen through two more `page.goto` calls). See scenarios.md for detail.
+  // fallback stayed on screen through two more `page.goto` calls).
   await click(page, 'error-fallback-reset', { wait: 500 });
   const stillFallback = await page.locator('[data-testid="error-fallback"]').count();
   record('svelte-boundary-reset', "<svelte:boundary>'s reset() un-sticks it (navigation alone does not)", stillFallback === 0);
@@ -1410,9 +1406,8 @@ async function main() {
   // storm — deliberately last (before the final flush/ probe): 200 logException calls in ~1s
   // must rate-limit rather than drop the app, and stay responsive.
   //
-  // BUDGET, DERIVED FROM THE WORK REQUESTED — not a round constant. This block used to settle the storm
-  // with two stacked fixed waits (3s-quiet within 60s, then 4s-quiet within 45s) whose comment declared
-  // the straggler hazard closed. It was not: five consecutive sweeps on a freshly started server scored
+  // BUDGET, DERIVED FROM THE WORK REQUESTED — not an arbitrary constant. Two stacked fixed waits
+  // (3s-quiet within 60s, then 4s-quiet within 45s) were not enough: five consecutive sweeps on a freshly started server scored
   // 84/86, 86/86, 84/86, 86/86, 86/86 — `s1-flush` and `s12-persist-recover` failing TOGETHER in exactly
   // the runs where the storm admitted the FEWEST uploads (37 and 39 admitted -> fail; 68/72/72 -> pass).
   // Fewer admitted is SLOWER to drain, not faster: a smaller admitted count here means staging was
@@ -1423,8 +1418,7 @@ async function main() {
   // So the budget is computed from what the storm ASKS the SDK to do, the way samples/fastify-api's
   // .dedupe budget is derived from its route's requested work rather than left on a flat default:
   //   * `STORM_ATTEMPTS`      — the literal loop count in ScenarioPage.svelte's `s4Storm`.
-  //   * `STORM_ADMIT_CEILING` — the most the capture rate limiter can let through (~100 reports / 60s).
-  // The admitted count is what actually has to
+  //   * `STORM_ADMIT_CEILING` — the most the capture rate limiter can let through (~100 reports / 60s). The admitted count is what actually has to
   //                             DRAIN, and it can never exceed this.
   //   * `PER_REPORT_BUDGET_MS`— per-admitted-report drain cost. Each admitted report is two serial
   // round trips to real staging (POST /v2/issues, then the signed PUT),
@@ -1436,13 +1430,13 @@ async function main() {
   //                             checked against the SAME constant) rather than silently lost.
   // The two waits also collapse into ONE (quiet at STORM_SETTLE_QUIET_MS): the second wait's only job
   // was to re-arm a longer lull, which a single longer `quietMs` does directly and without a second
-  // deadline to run out of. That also FIXED the admitted count this check reports. The old first wait
+  // deadline to run out of. That also corrects the admitted count this check reports. A first wait
   // exited on a 3s lull, and a 3s lull is a FALSE quiet here — the drain has gaps that long in it — so
   // `stormCalls` only ever saw the calls that had landed before the first gap. That is where the
-  // previously documented "not stable run to run" spread came from (61/68/75, and the
-  // re-review's 37/39/68/72/72): it was this script's window closing early, not the SDK's throughput
+  // previously documented "not stable run to run" spread came from (61/68/75, and
+  // a later run's 37/39/68/72/72): it was this script's window closing early, not the SDK's throughput
   // moving. With one 4s-quiet wait the same build measures 97 admitted on every one of eleven runs —
-  // right up against STORM_ADMIT_CEILING, which is what 's ~100/60s rate limiter predicts.
+  // right up against STORM_ADMIT_CEILING, which is what the ~100/60s rate limiter predicts.
   const STORM_ATTEMPTS = 200;
   const STORM_ADMIT_CEILING = 100;
   const PER_REPORT_BUDGET_MS = 1750;
@@ -1493,15 +1487,14 @@ async function main() {
     `${flushStatus ?? ''} [precondition: storm quiet-wait exited by ${stormQuiet.reason} after ${stormQuiet.waitedMs}ms]`,
   );
 
-  // Wire-level proof for performance instrumentation (PLAN) instead of stopping at "not visible via
+  // Wire-level proof for performance instrumentation instead of stopping at "not visible via
   // MCP": @bugsee/performance POSTs batches to /v2/performance/transactions on a 3s interval
   // (FULL_LAUNCH_OPTIONS.performanceFlushIntervalMs); `perfTransactions` has been tapping that the whole
   // run (see the listener installed near the top of this script).
   const allRenderSpans = perfTransactions.flatMap((t) => t.spans ?? []).filter((s) => s.operation === 'ui.render');
   const MANUAL_RENDER_SPAN_NAME = 'ManualScenarioSpan';
-  // Split, because the previous single check filtered on `operation === 'ui.render'` alone and was
-  // credited in scenarios.md with proving BOTH the preprocessor's auto-injected `onMount` calls and the
-  // direct manual call — while the auto-injected spans alone satisfied it. The manual span carries its
+  // Split, because a single check on `operation === 'ui.render'` alone was satisfied by the
+  // auto-injected `onMount` spans, so it could not prove the direct manual call too. The manual span carries its
   // own name (`startSvelteRenderSpan('ManualScenarioSpan')` → `description`), which is trivially
   // assertable, so assert it.
   const autoRenderSpans = allRenderSpans.filter((s) => s.description !== MANUAL_RENDER_SPAN_NAME);
@@ -1532,8 +1525,8 @@ async function main() {
   await page.click('[data-testid="s12-crash-and-reload"]');
   // 8s, not 3s: a 3s wait here originally made this control look like it produced NOTHING — the
   // recovery-then-upload cycle genuinely takes several seconds (assemble -> enqueue -> two separate
-  // recovery paths each re-upload, see), and closing the browser before it finishes silently
-  // discards the evidence rather than failing loudly. See what a long-enough wait reveals.
+  // recovery paths each re-upload), and closing the browser before it finishes silently
+  // discards the evidence rather than failing loudly.
   await page.waitForTimeout(8000);
   if (process.env.DEBUG_S12) {
     const s12CallsRaw = bugseeCalls.slice(checkpoint);
@@ -1542,8 +1535,8 @@ async function main() {
   }
   // Scoped to the ACTUAL incident's UPLOADED BUNDLE CONTENT (via the tee, src/bugsee-transport.ts),
   // not a raw /v2/issues call count in a time window — a raw count is vulnerable to unrelated traffic
-  // landing in the same window (measured: leftover -storm uploads bled into a naive count here in one
-  // run, inflating the known 2-call F-1 duplicate to 21, before the storm-settle fix above). `window.
+  // landing in the same window (measured: leftover S4-storm uploads bled into a naive count here in one
+  // run, inflating the known 2-call duplicate to 21). `window.
   // __bugseeTee` is fresh page state (wiped by the reload), so any matching bundle it now records can
   // only be from the recovery re-upload(s) triggered by the NEW launch, never the original (interrupted)
   // attempt.
@@ -1552,7 +1545,7 @@ async function main() {
   // unable to observe a regression to 3 or 4 at all (a third bundle arriving even 200ms later was never
   // read), while the comment claimed exactly that guard. Polling to the deadline is what makes the
   // stated bound real; the timeout is the cost of an upper-bound assertion.
-  // `delivered: 'any'`: the F-1 bound counts how many bundles the RECOVERY produced for one incident.
+  // `delivered: 'any'`: the duplicate bound counts how many bundles the RECOVERY produced for one incident.
   // A duplicate leg whose PUT failed is still a duplicate leg, so status must not filter it out here
   // (see `waitForBundles`); their landing is asserted by `bundle-upload-status-wire` instead.
   const s12Bundles = await waitForBundles(
@@ -1563,7 +1556,7 @@ async function main() {
   // check can observe. Two regimes:
   //
   //   * Storm reached quiet (`stormQuiet.reason === 'quiet'`) — the recovery had the wire to itself for
-  //     the whole poll window, so BOTH legs of the F-1 duplicate are observable and the bound is EXACT
+  //     the whole poll window, so BOTH legs of the duplicate are observable and the bound is EXACT
   //     (2). `>= 1` here would silently keep passing if a regression made this WORSE (3, 4, ...).
   //   * Storm did NOT reach quiet — the recovery re-upload competed with a still-draining storm backlog
   //     for the same rate-limit and transport budget, and a leg landing after the 12s poll window is
@@ -1571,12 +1564,12 @@ async function main() {
   //     this script did not measure, so the claim degrades to what it CAN still see: recovery happened
   //     at all, and it was not worse than the documented duplicate.
   //
-  // F-1's SUBSTANCE is unaffected — the duplicate is DETERMINISTIC, not probabilistic: it reproduces on
-  // every isolated click (see 's single-click probe, which has no storm in front of it),
+  // The duplicate itself is DETERMINISTIC, not probabilistic: it reproduces on
+  // every isolated click (including a single click with no storm in front of it),
   // and samples/solid-spa measured the same seam at SSOLID-80 = 10 -> 12 -> 14 over three consecutive
   // sweeps (exactly +2 each, against a +1 dedupe control). What is conditional is only this sweep's
-  // ability to WITNESS both legs at the tail of a 200-exception storm. If/when F-1 is fixed upstream the
-  // clear-channel bound must drop to `=== 1` (and move to Resolved) together.
+  // ability to WITNESS both legs at the tail of a 200-exception storm. If/when the duplicate is fixed upstream, the
+  // clear-channel bound must drop to `=== 1` together.
   //
   // The contended bound is NOT a way of always passing. Measured by deliberately shrinking the settle
   // budget above to ~its old size: the contended run delivered ZERO observable bundles and this check
@@ -1588,7 +1581,7 @@ async function main() {
     : s12Bundles.length >= 1 && s12Bundles.length <= 2;
   record(
     's12-persist-recover',
-    'logException then immediate hard-reload — recovers on next launch as the KNOWN duplicate pair (FINDINGS.md F-1, not yet fixed upstream): EXACTLY 2 uploaded bundles when the storm settled first, 1-2 when it did not (a leg arriving after the poll window is unobservable, not absent)',
+    'logException then immediate hard-reload — recovers on next launch as the known duplicate pair (not yet fixed upstream): EXACTLY 2 uploaded bundles when the storm settled first, 1-2 when it did not (a leg arriving after the poll window is unobservable, not absent)',
     s12Ok,
     `${s12Bundles.length} uploaded bundle(s) carrying the S12 report on recovery; channel ${s12ChannelClear ? 'CLEAR (bound: exactly 2)' : 'CONTENDED, storm never quiet (bound: 1-2)'}`,
   );
@@ -1629,11 +1622,10 @@ async function main() {
   // transport: evidence the SDK BUILT the bundle right, not that it landed. An expired presigned URL
   // (403) or a 5xx would leave ~30 of them green with nothing reaching the backend.
   //
-  // The FIRST fix for that was this check, scoped to four hand-named bundles. That was too narrow: it
-  // repaired the four rows that happened to be listed and left every other `... reaches the wire` row
-  // asserting what was SENT rather than what ACCEPTED. The fix now lives at the source instead —
-  // `waitForBundles` admits only 2xx-delivered bundles by default (see its doc comment), which repairs
-  // every existence row at once, including the ones added after this block was written.
+  // This check was originally scoped to four hand-named bundles, which left every other `... reaches the wire`
+  // row asserting what was SENT rather than what S3 ACCEPTED. The general fix lives at the source instead —
+  // `waitForBundles` admits only 2xx-delivered bundles by default (see its doc comment), which covers
+  // every existence row at once, including ones added later.
   //
   // What remains here is the RESIDUAL: the three callers that deliberately opt out of that filter with
   // `delivered: 'any'`, because their claim is about how many bundles the SDK BUILT (a veto absence, the
@@ -1676,7 +1668,7 @@ async function main() {
       console.log(`${status}  ${r.id.padEnd(width)} ${r.description}${r.detail ? ` — ${r.detail}` : ''}`);
     }
     const failed = results.filter((r) => !r.ok);
-    console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only — see scenarios.md for backend/MCP verification)`);
+    console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only; backend/MCP verification is a separate step)`);
     if (failed.length > 0) process.exitCode = 1;
   }
   if (pageErrors.length > 0) {

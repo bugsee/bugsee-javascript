@@ -51,7 +51,7 @@ export interface PerformanceApi {
    * The active span: the most recently STARTED transaction visible to this execution, cleared when it
    * finishes. No span stack — proper async-context nesting is a later slice.
    *
-   * CONCURRENCY: WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
+   * CONCURRENCY (D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
    * a process-wide single slot (a second `startTransaction` overwrites the first) — correct for a
    * browser's single in-flight navigation/interaction. The Node launch instead supplies per-async-context
    * tracking keyed off the `AsyncLocalStorage`-backed `RequestContext` (the JS equivalent of Android's

@@ -29,7 +29,7 @@ describe('createCaptureAggregator', () => {
     expect(added).toEqual([{ type: 'network', timestamp: 1, serialized: e.serialize() }]);
   });
 
-  it("routes the entry's OWN serialize() output", () => {
+  it("routes the entry's OWN serialize output", () => {
     const { store, added } = fakeStore();
     const custom: CaptureDataEntry = {
       type: 'log',
@@ -225,7 +225,7 @@ describe('createCaptureAggregator (exporter round-trip)', () => {
   });
 });
 
-// the tenant OWNER travels out-of-band.
+// S1: the tenant OWNER travels out-of-band.
 //
 // Durable Objects for different tenants share one isolate, one client and one capture ring, so an incident
 // in one DO uploads every other DO's data (proven on real workerd).

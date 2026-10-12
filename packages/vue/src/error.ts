@@ -6,7 +6,7 @@ import {
 } from '@bugsee/web-adapter';
 import { vueComponentName } from './component-name';
 
-// The @bugsee/vue ERROR SEAM (the thin pattern for Vue 3). Hooks Vue's
+// The @bugsee/vue ERROR SEAM (fan-out — the F6-thin pattern for Vue 3). Hooks Vue's
 // global `app.config.errorHandler(err, instance, info)` and reports the error to the launched Bugsee client.
 // Vue's error context is THIN compared to React's component stack — a short `info` string (where it threw:
 // a lifecycle hook / render / setup) + the failing component's name — so we attach them as searchable LABELS

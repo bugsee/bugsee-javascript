@@ -60,7 +60,7 @@ describe('sha256Hex', () => {
     expect(digest).toHaveBeenCalledWith('SHA-256', bytes);
   });
 
-  // No fallback: @bugsee/util is tier-0 and reachable from every browser/edge bundle, so it must not name
+  // No fallback: @bugsee/util is reachable from every browser/edge bundle, so it must not name
   // `node:crypto` in any form. A runtime without WebCrypto (Node 18 unflagged) gets its digest injected by
   // the platform (@bugsee/node → core's upload-pipeline `sha256` seam); here it is a defined rejection.
   it('rejects with a clear error when there is no global crypto (no node:crypto fallback)', async () => {

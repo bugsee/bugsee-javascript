@@ -44,7 +44,7 @@ describe('launch (Cloudflare)', () => {
   });
 });
 
-// AsyncLocalStorage is wired AUTOMATICALLY.
+// S0: AsyncLocalStorage is wired AUTOMATICALLY.
 //
 // `globalThis.AsyncLocalStorage` does not exist on workerd under any compatibility flag — ALS is reachable
 // only via `node:async_hooks` (verified on real workerd). Without this,
@@ -167,7 +167,7 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('a rethrowing onError cannot break the real launch of an invalid partition value (R5V-4)', async () => {
+  it('a rethrowing onError cannot break the real launch of an invalid partition value', async () => {
     vi.restoreAllMocks();
     const onError = vi.fn(() => {
       throw new Error('the host sink rethrows');
@@ -180,7 +180,7 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
     await client?.stop?.();
   });
 
-  it('an explicit undefined does not override the Cloudflare default (R4V-1)', () => {
+  it('an explicit undefined does not override the Cloudflare default', () => {
     const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
     launch('tok', { partitionCaptureByTenant: undefined });
     expect(spy).toHaveBeenCalledWith(

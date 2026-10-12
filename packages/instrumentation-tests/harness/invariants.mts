@@ -1,10 +1,41 @@
 /**
- * Recovery + live-path invariants sweep.
+ * Recovery + LIVE-PATH invariants sweep — an oracle with no policy in it.
  *
- * The harness drives the real SDK (upload pipeline, recovery and the live report path) against a fake collector.
- * The collector declares the intent of every answer it gives and then behaves accordingly for the rest of the
- * case; the invariants below read that recorded intent instead of re-classifying HTTP statuses, so a mis-transcribed
- * retry table cannot hide behind a matching oracle.
+ * ══ Why this file keeps being rewritten ═══════════════════════════════════════════════════════════
+ *
+ * Each earlier version encoded the policy it was meant to audit, and each certified a round that
+ * shipped a data-loss defect:
+ *
+ * • 's oracle keyed an incident on `reportId ?? 'anon:'+summary`, so a legacy blob and its
+ * own marker's rebuild were TWO incidents — it swept the double-report and discarded it;
+ * • 's oracle computed `settledOk = ok || permanent` — it ASKED THE SDK whether a deletion
+ * was legitimate, so (a 429 classified `permanent`, freeing the blob, the marker, the capture
+ *     chunks and the whole subtree) was unrepresentable in it;
+ * • drove the REAL upload stack over a fake collector, which was right, but judged each
+ *     answer against a HAND-TRANSCRIPTION of the same Java table `isRetryableHttpStatus` transcribes.
+ * proved that independence was of PROVENANCE, not outcome, and proved three further blind
+ *     spots by re-injecting a known defect: `231 cases swept, 0 invariant violations`.
+ *
+ * ══ — what changed ════════════════════════════════════════════════════════════════════════
+ *
+ *   1. THE ORACLE NO LONGER CLASSIFIES A STATUS AT ALL. The fake collector declares its own INTENT for
+ *      every answer it gives (`Answer` / `ANSWERS`), records that intent as it answers (`Answered`),
+ *      and then BEHAVES accordingly for the rest of the case: an intent it called `transient` really
+ *      does clear, one it called `refuse` really is forever. Every invariant reads the recorded intent.
+ *      A shared mis-transcription of the Java is therefore no longer invisible: it shows up as the
+ *      collector offering to take bytes the SDK has already thrown away (P4), or as the SDK asking
+ *      again for bytes the collector has finally refused (P6). `harnessVerdict` survives only as the
+ *      collector's own lookup into its own table, and still imports no SDK predicate.
+ *   2. CROSS-LAUNCH. One collector now lives across FOUR launches with per-launch answer boundaries, so
+ * "the same bundle is uploaded again on every launch, forever" — the class the harness
+ * exists to guard, and the one proved invisible — is finally expressible (P6, and P3 is
+ *      now cumulative rather than per-launch).
+ *   3. CAPTURE GENERATIONS ARE OBSERVED. `capture-recovery.ts`'s `removeGeneration` destroys a
+ *      session's RECORDING; no earlier version ever looked at one. They are now first-class staged
+ *      artifacts, so P1/P2 see them.
+ *   4. THE LIVE REPORT PATH IS EXERCISED. Sets L and M boot a real `createClient` with the wiring
+ *      `node/src/launch.ts` gives it and call `logException` BEFORE any recovery runs. Every earlier
+ * version only seeded pre-staged artifacts, which is exactly how survived five rounds.
  *
  * ══ The invariants ════════════════════════════════════════════════════════════════════════════════
  *
@@ -30,15 +61,15 @@
  *   B  node + INJECTED bundleStore, real launch wiring, 1–2 dead subtrees
  *   C  concurrent node recoverers over one dataDir
  *   D  a throwing BundleStore
- *   E  a subtree whose `owner.json` read throws
- *   F  QUEUE_OVERFLOW_CODE against a real capacity-refusing pipeline
+ * E a subtree whose `owner.json` READ THROWS (P4) ←
+ * F QUEUE_OVERFLOW_CODE: a real capacity-refusing pipeline (P5) ←
  *   G  per-blob outcomes inside ONE case (blob 1 delivers, blob 2 does not)
  *   H  the browser/worker path: fake IndexedDB, Web Locks, `recoverSiblingBundleQueue`,
- *      `whenReady`, concurrent `Promise.all` siblings
- *   I  cross-launch: one collector, four launches, per-launch answer boundaries
- *   L  the live report path: a real Client + `logException`, then recovery (P1)
- *   M  the control plane: a failing /v2/sessions or /v2/issues, including the collector's
- *      own error-code namespace inside an HTTP 200 envelope (P6)
+ * `whenReady`, concurrent `Promise.all` siblings ← blind spot
+ * I CROSS-LAUNCH: one collector, four launches, per-launch answer boundaries (P6) ←
+ * L the LIVE report path: a real Client + `logException`, then recovery (P1/P2) ←
+ *   M  the CONTROL PLANE: a failing /v2/sessions or /v2/issues, incl. the collector's
+ * own error-code namespace inside an HTTP 200 envelope (P6/P7) ←,
  */
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -75,8 +106,10 @@ type Verdict = 'accept' | 'refuse' | 'transient';
  * The collector's DECLARED INTENT for one answer — the harness's ground truth, and the
  * replacement for the hand-transcribed status table.
  *
- * A longhand re-typing of the same Java table would share its mis-readings with the SDK, so it could
- * not audit the SDK's classification.
+ * 's finding was that the old `harnessVerdict` was independent of the SDK only by PROVENANCE:
+ * it was a longhand re-typing of the same Java table `isRetryableHttpStatus` transcribes, so a shared
+ * mis-reading of the Java was undetectable by construction. A second transcription cannot audit a
+ * first one.
  *
  * So the oracle no longer classifies a status at all. Each answer the fake collector may give carries
  * the collector's OWN INTENT, and the collector then BEHAVES that way over the whole sweep:
@@ -111,8 +144,9 @@ const ANSWERS: readonly Answer[] = [
   },
   { status: 401, intent: 'transient', why: 'credentials expired — a fresh session mints new ones' },
   // NOT a refusal of the BYTES: a signed PUT 403 is the URL's signature having expired or been
-  // scoped wrong, and the SDK can mint a fresh URL for the same object. Treating it as a refusal would
-  // let "delete on the first 403" pass every case.
+  // scoped wrong, and the SDK can mint a fresh URL for the same object. flagged the old
+  // table's `refuse` here as its fifth blind spot — it made "delete on the first 403" sweep clean
+  // across all 33 403 cases.
   {
     status: 403,
     intent: 'transient',
@@ -439,9 +473,12 @@ function judge(o: Observation): void {
 /**
  * NO RE-OFFER AFTER A FINAL ANSWER, and P3/P4 across a SEQUENCE of launches.
  *
- * A per-launch sweep that counts deliveries only for a 2xx cannot express "at most once" for the
- * non-2xx answers, nor "uploaded again on every launch". The checks below therefore span all launches.
+ * 's first two blind spots, closed together. The old sweep judged one launch at a time and
+ * counted a delivery only for a 2xx, so:
  *
+ *   • "at most once" was inert in ten of the eleven status columns (no 2xx, no delivery to count), and
+ * • "uploaded AGAIN on every launch" — the class the whole harness exists to guard — was
+ *     not expressible at all. Re-injecting it gave 0 violations across 231 cases.
  *
  * The collector here lives for the WHOLE case and behaves as its declared intent says (see `Answer`),
  * so the oracle needs no status table:
@@ -582,8 +619,8 @@ const frame = (b: BlobSpec, sub: string) =>
 /**
  * `${sub}~g${generation}` → the incident whose recording that capture generation IS.
  *
- * Earlier versions of this harness never looked at capture generations, so
- * `capture-recovery.ts`'s `removeGeneration` — the call that destroys a session's RECORDING, the
+ * 's third blind spot: no version of this harness ever looked at capture generations, so
+ * `capture-recovery.ts:224`'s `removeGeneration` — the call that destroys a session's RECORDING, the
  * thing the product exists to show — was invisible to P1 and P2. A blob and a marker are two ways to
  * re-send an incident; the generation is the incident's only copy of what happened.
  */
@@ -1081,7 +1118,7 @@ for (const [s1, s2] of [
 
 // ══ H. the BROWSER / WORKER path ═══════════════════════════════════════════════════════════════════
 //
-// Earlier harness versions never touched it at all. This drives the real `createCoexistence` over
+// 's harness never touched it at all. This drives the real `createCoexistence` over
 // fake-indexeddb with a fake LockManager: dead-sibling discovery, `recoverSiblingBundleQueue`, the
 // marker-aware reconciliation, `whenReady` hydration, and TWO dead siblings recovered concurrently
 // through the same `Promise.all` the coordinator uses.
@@ -1309,10 +1346,10 @@ for (const answer of ANSWERS)
 
 // ══ L. THE LIVE REPORT PATH — a real Client, a real logException, then real recovery ═══════════════
 //
-// Earlier harness versions seeded
+// 's FOURTH blind spot, and the one that mattered most: every version of this harness seeded
 // PRE-STAGED artifacts and ran recovery. Nothing ever went through `client.ts`'s `submitReport` — the
 // path a crash actually takes on a running application — which is exactly how (the marker retired
-// on a RETRYABLE failure) went undetected.
+// on a RETRYABLE failure) survived five review rounds.
 //
 // So this set boots a real `createClient` with the wiring `node/src/launch.ts` gives it (a file-backed
 // capture store on a real capture generation, a real on-disk report-marker store, a real durable bundle
@@ -1351,7 +1388,7 @@ for (const answer of ANSWERS)
     const rawMarkers = nu.createNodeReportMarkerStore(join(root, 'incidents'));
     // The marker ids the client MINTED. `submitReport` writes the marker before assembly and retires it
     // on settle, so by the time `logException` resolves there may be nothing left to observe — the
-    // whole point of. Recorded on the way in, never inferred on the way out.
+    // whole point of this check. Recorded on the way in, never inferred on the way out.
     const mintedMarkerIds: string[] = [];
     const markerStore = {
       list: () => rawMarkers.list(),

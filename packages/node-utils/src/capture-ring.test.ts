@@ -203,7 +203,7 @@ describe('CaptureRing', () => {
 // Reached only via `captureWriter: 'worker'` (the default 'inline' path is unaffected), where the trigger
 // is any single entry over ~699,050 characters at the default 4 MiB ring — a large console.log payload or
 // an un-truncated network body, with no per-entry size cap anywhere in between.
-describe('an empty ring cannot drop what it does not have (Wave 6.7)', () => {
+describe('an empty ring cannot drop what it does not have', () => {
   const CAP = 65536;
 
   /**

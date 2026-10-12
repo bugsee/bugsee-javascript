@@ -114,7 +114,7 @@ describe('recoverReports', () => {
     expect(await backend.listGenerations()).not.toContain(100); // recovered gen removed
   });
 
-  it('rebuilds a binary user attachment from its base64 marker form (P1)', async () => {
+  it('rebuilds a binary user attachment from its base64 marker form', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
     const request = createReportingRequest({
@@ -145,7 +145,7 @@ describe('recoverReports', () => {
     expect(Array.from(files[entry.filename] as Uint8Array)).toEqual([9, 0, 255]);
   });
 
-  it('routes recovery-assembly problems to onError when the context has no sink (P8)', async () => {
+  it('routes recovery-assembly problems to onError when the context has no sink', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
     const request = createReportingRequest({ source: { type: 'crash' }, id: 'inc1' });

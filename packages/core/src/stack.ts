@@ -1,4 +1,4 @@
-// V8 stack-trace parsing and frame-path scrubbing. Pure string work, so it lives
+// V8 stack-trace parsing (step 5: frame-path scrubbing). Pure string work, so it lives
 // in core and is shared by every V8 runtime (node/bun/deno + chromium browsers); the browser tier
 // adds SpiderMonkey/JavaScriptCore parsers and a runtime-dispatching parseStack on top. The other
 // steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
@@ -38,7 +38,7 @@ export interface StackFrame {
   context?: FrameContext;
 }
 
-// Strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
+// step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
 // customer's filesystem out of the report.
 //
 // A Node crash frame used to carry the FULL absolute path — the OS username, the home-directory layout,

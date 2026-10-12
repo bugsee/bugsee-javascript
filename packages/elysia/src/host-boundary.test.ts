@@ -25,7 +25,7 @@ const hostileApp = (): never =>
     },
   });
 
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   it('setupElysia does not throw out of server bootstrap on a hostile app', () => {
     expect(() => mod_hooks.setupElysia(hostileApp(), {})).not.toThrow();
   });

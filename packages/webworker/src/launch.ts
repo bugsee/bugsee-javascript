@@ -68,7 +68,7 @@ import {
   type WorkerProbe,
 } from './environment';
 
-// @bugsee/webworker launch() — the worker composition root: a DOM-LESS browser-family SDK
+// @bugsee/webworker launch — the worker composition root: a DOM-LESS browser-family SDK
 // for Web Workers + Service Workers. It assembles the runtime-agnostic kernel (createClient) with the browser
 // fetch transport + an in-memory capture store + the worker environment, then wires the capture/detection a
 // worker actually supports: console→log + network (fetch/ws; xhr active in a dedicated worker / self-skips in a
@@ -458,9 +458,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
   // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
-  // coexistence lock + IndexedDB handles: the same contract as the browser tier.
-  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop() call. Every
-  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
+  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
+  // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
   // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   const stopCore = client.stop;

@@ -1,7 +1,7 @@
 import type { Interceptor } from './contracts';
 import { MultiKeyEmitterBase } from './emitter';
 
-// Base for interceptors. An interceptor owns a runtime hook and is itself a
+// Base for interceptors (sources). An interceptor owns a runtime hook and is itself a
 // listenable emitter — components subscribe to its processing STAGES directly (no hub mediator). It is
 // a process-global singleton; its global patch is installed only while ACTIVE and removed when idle.
 //

@@ -50,7 +50,7 @@ export interface BatchedFsChunkStorageOptions {
    * The retry-without-duplication design keeps the still-unwritten tail buffered so a later retry cannot
    * duplicate an already-written prefix — correct, but it had no ceiling, so a persistently failing disk
    * (ENOSPC / EROFS / EIO / a vanished dataDir) turned every captured entry into permanent memory growth.
-   * 120` binds this path to "fixed ring, drop-oldest
+   * `:120` (D2) binds this path to "fixed ring, drop-oldest
    * under overload (no elastic growth)"; this is what makes the shipped default honour it.
    */
   maxBufferedBytes?: number;

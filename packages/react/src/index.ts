@@ -1,5 +1,5 @@
 // @bugsee/react — React adapter. Error seam (BugseeErrorBoundary + HOC) + the reporting core.
-// React is a structural peer — imported only in the boundary.
+// (D8). React is a structural peer — imported only in the boundary.
 
 // Single-install re-export: surface the full public SDK (launch, Bugsee, options + manual-API types)
 // through this adapter, so users install only `@bugsee/react` and import everything from one place.

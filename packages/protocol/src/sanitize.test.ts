@@ -45,7 +45,7 @@ describe('sanitizeHeaders', () => {
     });
   });
 
-  it('does not mutate the input', () => {
+  it('does not mutate the header input', () => {
     const input = { Authorization: 'Bearer x' };
     sanitizeHeaders(input);
     expect(input).toEqual({ Authorization: 'Bearer x' });
@@ -60,7 +60,7 @@ describe('sanitizeHeaders', () => {
     expect(out.Accept).toBe('*/*');
   });
 
-  it('threads the creditCards option into the shape pass', () => {
+  it('threads the creditCards option into the header shape pass', () => {
     // CC shape is off by default; only redacts a non-sensitive header value when the option is on.
     expect(sanitizeHeaders({ 'X-Card': '5555555555554444' })).toEqual({
       'X-Card': '5555555555554444',
@@ -180,7 +180,7 @@ describe('sanitizeParams', () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  it('threads the creditCards option into the shape pass', () => {
+  it('threads the creditCards option into the params shape pass', () => {
     expect(sanitizeParams({ note: '5555555555554444' }, { creditCards: true })).toEqual({
       note: R,
     });
@@ -227,7 +227,7 @@ describe('sanitizeJson', () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  it('does not mutate the input', () => {
+  it('does not mutate the JSON input', () => {
     const input = { token: 'x', nested: { secret: 's' } };
     sanitizeJson(input);
     expect(input).toEqual({ token: 'x', nested: { secret: 's' } });
@@ -235,14 +235,14 @@ describe('sanitizeJson', () => {
 
   it('replaces the ENTIRE value under a sensitive key with the marker, whatever its type', () => {
     // I briefly changed this to walk the subtree and redact each leaf, so a report could show which fields
-    // existed. That was wrong on three independent counts, all found in:
+    // existed. That was wrong on three independent counts, all found in review:
     //
     //  1. It opened a redaction BYPASS. Walking recurses; a deep body throws RangeError; `sanitizeBody`'s
     //     catch falls to the textual passes; and `JSON_PAIR` cannot match `"password":{` because its value
     //     alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 deep after.
     //  2. KEY NAMES became a leak channel. `{"tokens":{"eyJhbGciOiJIUzI1NiJ9.abc":true}}` emits the token,
     //     because the token IS the key. Maps keyed by a secret or an identifier are ordinary.
-    //  3. It broke Android parity, which CLAUDE.md makes binding. `NetworkDataSanitizer` does
+    // 3. It broke Android parity, which makes binding. `NetworkDataSanitizer` does
     // `obj.put(key, REDACTED_VALUE)` unconditionally, and requires the sanitizer's
     //     output be byte-identical to mobile.
     //
@@ -822,7 +822,7 @@ describe('gateNetworkBody', () => {
   });
 });
 
-// `sanitizeBody` applied the key denylist to JSON media types
+// Wave 1.2. `sanitizeBody` applied the key denylist to JSON media types
 // ONLY, so the canonical HTML login POST — `new URLSearchParams({username, password})` — was stored in the
 // clear. Worse, @bugsee/capture STAMPS the `application/x-www-form-urlencoded` Content-Type when the caller
 // set none, which is exactly what lets the body past the capture gate. Android has always redacted these
@@ -830,7 +830,7 @@ describe('gateNetworkBody', () => {
 const URL_R = '%3Credacted%3E';
 
 describe('sanitizeBody — form-urlencoded key redaction', () => {
-  it('redacts the credentials in a form login POST (review probe R1a, verbatim)', () => {
+  it('redacts the credentials in a form login POST (verbatim)', () => {
     expect(
       sanitizeBody(
         'username=bob&password=hunter2&api_key=K123',
@@ -839,7 +839,7 @@ describe('sanitizeBody — form-urlencoded key redaction', () => {
     ).toBe(`username=bob&password=${URL_R}&api_key=${URL_R}`);
   });
 
-  it('redacts a urlencoded-shaped text/plain body (review probe R1c, verbatim)', () => {
+  it('redacts a urlencoded-shaped text/plain body (verbatim)', () => {
     expect(sanitizeBody('password=hunter2&ssn=123-45-6789', 'text/plain')).toBe(
       `password=${URL_R}&ssn=${URL_R}`,
     );
@@ -954,7 +954,7 @@ describe('sanitizeBody — the form pass never eats a body that is not a form', 
   });
 });
 
-// Findings against the first attempt at this guard. Each case was measured leaking or being
+// findings against the first attempt at this guard. Each case was measured leaking or being
 // destroyed before the per-segment rewrite.
 describe('sanitizeBody — the form guard decides PER SEGMENT', () => {
   const leaky: Array<[string, string]> = [

@@ -136,7 +136,7 @@ describe('collectInteractions', () => {
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.interaction_duration_ms', 120);
   });
 
-  it('stamps `ui.component` from the resolved component name (D2), and omits it when absent', () => {
+  it('stamps `ui.component` from the resolved component name, and omits it when absent', () => {
     const source = intSource();
     const { api, started } = fakeApi();
     const t = fakeTimer();
@@ -174,7 +174,7 @@ describe('collectInteractions', () => {
    */
   it('tolerates network activity, a hide, and teardown before the first interaction', () => {
     const source = intSource();
-    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` cannot see a keepAlive that
+    // The emitter SWALLOWS a listener throw, so `not.toThrow` around `emit` cannot see a keepAlive that
     // blew up on the undefined transaction. The error sink can.
     const listenerErrors: unknown[] = [];
     const network = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>((e) =>

@@ -88,7 +88,7 @@ describe('convenience per-bundler factories', () => {
 // Containing the failure stops it breaking the build, which turns it into the OTHER failure this
 // remediation is about: a feature that silently does nothing. The wrapper owns the one thing the engine
 // cannot see — the bundler's own configuration — so this is where it has to be fixed.
-describe('the Vite plugin ensures source maps exist (Wave 7.6)', () => {
+describe('the Vite plugin ensures source maps exist', () => {
   const viteConfigHook = (options?: BugseePluginOptions) => {
     const plugin = makePlugin(options);
     const hook = (plugin.vite as { config?: unknown } | undefined)?.config;

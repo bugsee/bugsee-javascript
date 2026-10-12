@@ -232,7 +232,7 @@ export function wireUmbrella<C extends BugseeClient>(
     baseUrl: internals.baseUrl,
     getEnvironment: internals.getEnvironment,
   });
-  // Profile v1: the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
+  // the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
   // follows telemetry.sdk.language: `webjs` on the browser, `nodejs` on the node-family runtimes
   // (node/bun/deno all run the node umbrella entry, pageload:false). The provider here is `performance`.
   const scopeName = `com.bugsee.${platform.pageload ? 'webjs' : 'nodejs'}/performance`;
@@ -315,7 +315,7 @@ export function wireUmbrella<C extends BugseeClient>(
       name: 'app.start',
       operation: 'app.start',
       status: 'OK',
-      sampled: true, // the startup transaction is always recorded + uploaded (Profile v1 sampled flag)
+      sampled: true, // the startup transaction is always recorded + uploaded (sampled flag)
       startTimestampMs: platform.startupAtMs,
       endTimestampMs,
       durationNanos: Math.max(0, Math.round((endTimestampMs - platform.startupAtMs) * 1_000_000)),
@@ -369,7 +369,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // drain runs BEFORE the core drain so a transaction batch and the reports leave in one flush.
   const stopClient = client.stop;
   const flushClient = client.flush;
-  // No guard around it: `uploader.flush()` already catches a failed batch into `onError` and drops it, so
+  // No guard around it: `uploader.flush` already catches a failed batch into `onError` and drops it, so
   // a broken APM upload cannot turn a caller's flush()/stop() into a rejection and cost them the crash
   // report they were flushing. Wrapping it again here would be untestable through this seam.
   const flushExtensions = (): Promise<void> => wired.flush();

@@ -136,7 +136,7 @@ import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
-// @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
+// @bugsee/node launch — the Node composition root. It assembles the runtime-agnostic
 // kernel (createClient) with Node's platform pieces and the shared capture layer, then starts it:
 //   transport (node:http) → BugseeApi + BundleUploader → UploadPipeline ─┐
 //   node EnvironmentEnvelope ───────────────────────────────────────────┤→ createClient
@@ -238,7 +238,7 @@ export interface BugseeLaunchOptions {
   captureNetworkBodyWithoutType?: boolean;
   /**
    * Inject W3C `traceparent` + the `bugsee=` tracestate on outgoing requests for cross-project distributed
-   * tracing (Bugsee OTLP Profile v1). Default `true` (the feature is on), but a backend has no
+   * tracing. Default `true` (the feature is on), but a backend has no
    * same-origin concept, so nothing is injected without `tracePropagationTargets` — never leak the trace to
    * third-party APIs the backend calls. `false` disables it entirely.
    */
@@ -246,8 +246,8 @@ export interface BugseeLaunchOptions {
   /** Targets (substring or RegExp) allowed to receive the trace headers — your own downstream services. */
   tracePropagationTargets?: ReadonlyArray<string | RegExp>;
   /**
-   * BE→FE return headers on instrumented incoming responses, so a browser
-   * frontend can adopt the backend's span as a child. Both default OFF — there is no consumer until
+   * BE→FE return headers on instrumented incoming responses (return path), so a browser
+   * frontend can adopt the backend's span as a child. Both default OFF (T9) — there is no consumer until
    * the frontend adapters read them. `traceresponse` = the W3C trace-context-L2 draft header;
    * `serverTiming` = a `Server-Timing` entry exposing the trace context to browser RUM (PerformanceObserver).
    */
@@ -317,7 +317,7 @@ export interface BugseeLaunchOptions {
    * Where the rolling capture buffer lives: `'disk'` (the default on node/bun/deno — durable capture out of
    * the box, so a crash/OOM that beats bundle assembly still delivers the recording on the next launch) or
    * `'memory'` (the legacy in-RAM path, no disk/recovery). On disk with no `dataDir`, data lives under
-   * `os.tmpdir()/bugsee`.
+   * `os.tmpdir/bugsee`. (D3).
    */
   capturedDataStore?: CapturedDataStore;
   /** Persist on-disk data (capture chunks + durable bundles) to this directory. Default `os.tmpdir()/bugsee`. */
@@ -332,7 +332,7 @@ export interface BugseeLaunchOptions {
    * Capture write path: `'inline'` (default) — the batched main-thread writer; or
    * `'worker'` — an off-thread worker_threads writer over a shared zero-copy SAB ring, so the host thread
    * never blocks on a write() even under a pathologically slow disk (drop-oldest sheds load). Only applies to
-   * the disk path.
+   * the disk path. (Phase 2).
    */
   captureWriter?: 'inline' | 'worker';
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
@@ -553,7 +553,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   );
 
   // The internal service container (the client's "BugseeInternal"). Node registers its platform
-  // services into it here (the register() step); launch resolves them to assemble the
+  // services into it here (the register step); launch resolves them to assemble the
   // pipeline, then hands the SAME container to createClient. Increment 1: the HTTP transport.
   const services = createServiceContainer();
   services.addService(
@@ -769,7 +769,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
-    // stop() tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
+    // stop tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
     // carrier slot), so a stopped client must not be restarted in place: see `markStopped` below.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined
@@ -1179,8 +1179,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // handlers, the server instrumentation and the carrier slot all still torn down, and the subtree
   // marked recoverable under a live writer. A new client is built by `launch(appToken)` / `relaunch()`.
   //
-  // WHO writes it: the marker follows the ONE shared real drain, not any single stop() call. Every
-  // stop() — including one that timed out and returned false — leaves a background observer on that drain,
+  // WHO writes it: the marker follows the ONE shared real drain, not any single stop call. Every
+  // stop — including one that timed out and returned false — leaves a background observer on that drain,
   // and the caller of a stop() that sees the drain finish marks too; whichever gets there first writes, once.
   let marked = false;
   const markStopped = (): void => {
@@ -1297,7 +1297,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     },
   };
   setCarrierClient(publicClient, carrier);
-  // Live in the subtree only now that nothing after this can throw; `stop()` releases it.
+  // Live in the subtree only now that nothing after this can throw; `stop` releases it.
   if (instanceLayout !== undefined) {
     claimInstanceRoot(instanceLayout);
   }

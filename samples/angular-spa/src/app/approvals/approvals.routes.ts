@@ -1,8 +1,8 @@
 import { Routes } from '@angular/router';
 import { managerGuard } from './manager.guard';
 
-// The lazy-loaded APPROVALS feature ("beyond the catalog": "Angular Router with lazy-loaded
-// feature modules and route guards") — this whole file, and everything it imports, is only fetched
+// The lazy-loaded APPROVALS feature (Angular Router with lazy-loaded
+// feature modules and route guards) — this whole file, and everything it imports, is only fetched
 // when the user actually navigates to /approvals (see app.routes.ts's `loadChildren`).
 export const APPROVALS_ROUTES: Routes = [
   {

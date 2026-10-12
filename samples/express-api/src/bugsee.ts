@@ -15,7 +15,7 @@ let primaryClient: Bugsee | undefined;
 
 /**
  * Launches the primary Bugsee client for the Task API process. Exercises every relevant
- * BugseeLaunchOptions field (+ the shared catalog).
+ * BugseeLaunchOptions field (the framework-backend extras + the shared catalog S1).
  */
 export function launchPrimary(): Bugsee {
   if (primaryClient !== undefined) return primaryClient;
@@ -28,7 +28,7 @@ export function launchPrimary(): Bugsee {
 
   const client = launch(appToken, {
     endpoint,
-    // F-1 WORKAROUND: the real package version is '0.0.0' (every workspace package
+    // WORKAROUND: the real package version is '0.0.0' (every workspace package
     // is unversioned pre-publish), and staging REJECTS that as
     // "no longer supported". Any other version passes the version gate; the x-client-type rewrite in
     // bugsee-transport.ts handles the SECOND blocker that surfaces once this one is out of the way.
@@ -47,7 +47,7 @@ export function launchPrimary(): Bugsee {
 
     // Crash detection: kept survivable so the long-running verify server doesn't die mid-sweep.
     // exitOnUncaught:true is instead exercised in a disposable CHILD PROCESS — see
-    // scripts/verify.ts (crashChildProcess) and scenarios.md.
+    // scripts/verify.ts (crashChildProcess) and the S5 scenario.
     detectCrashes: true,
     exitOnUncaught: false,
     unhandledRejections: 'warn',

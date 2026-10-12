@@ -1,7 +1,8 @@
 <script lang="ts">
-  // The SDK Scenario panel: one control per catalog scenario, plus every
-  // @bugsee/svelte / @bugsee/svelte-plugin-component-annotate API the catalog does not list. Mirrors samples/react-spa's ScenarioPage.tsx structure/ids so the two samples are
-  // directly comparable in scripts/verify.mjs and scenarios.md.
+  // The SDK Scenario panel — one control per catalog scenario, plus every
+  // @bugsee/svelte / @bugsee/svelte-plugin-component-annotate API beyond the
+  // catalog. Mirrors samples/react-spa's ScenarioPage.tsx structure/ids so the two samples are
+  // directly comparable in scripts/verify.mjs.
   import {
     attemptDuplicateLaunch,
     FULL_LAUNCH_OPTIONS,
@@ -266,8 +267,8 @@
   // `log()`, `console.*`, XHR and WebSocket capture have NO per-call wire signal of their own: nothing
   // leaves the process when they happen. They accumulate in the local capture ring and only reach the
   // wire inside the next REPORT's uploaded bundle (`logs.json` / `network.json`). Without this control
-  // the only obtainable assertion for them was "the click didn't throw", which is why scenarios.md used
-  // to mark them W on the strength of a local check. This fires one report with a distinctive summary
+  // the only obtainable assertion for them was "the click didn't throw", so they were once credited
+  // with wire depth on the strength of a local check. This fires one report with a distinctive summary
   // so verify.mjs can unzip exactly that bundle and assert the ring's real contents.
   const CAPTURE_PROBE_SUMMARY = 'WIRE: capture probe (log/console/xhr/ws ring contents)';
   function captureWireProbe(): void {
@@ -401,8 +402,7 @@
   // ---------------------------------------------------------------------------------------------- S10
   // Outbound trace-propagation check: `propagateTrace`/`tracePropagationTargets: ['/api/']` are set in
   // FULL_LAUNCH_OPTIONS, so a fetch to a same-origin `/api/` URL should carry a `traceparent`/`tracestate`
-  // header. The local API's `/api/scenario/echo-headers` (built for exactly this, but never called before
-  // this fix) echoes back whatever headers it received, letting the app confirm what actually left the
+  // header. The local API's `/api/scenario/echo-headers` (built for exactly this) echoes back whatever headers it received, letting the app confirm what actually left the
   // process without needing a second sample as a two-hop counterpart (only the trace_id JOIN needs that).
   let s10Status = $state('');
   async function s10TracePropagation(): Promise<void> {
@@ -470,8 +470,8 @@
     });
     setStatus('s11-replay-masking', 'relaunched with explicit masking options');
   }
-  // The selector-driven masking config (the catalog names `maskTextSelector` / `blockSelector` /
-  // `ignoreSelector`; nothing in this sample exercised any of the three before this round). This is the
+  // The selector-driven masking config (S11 names `maskTextSelector` / `blockSelector` /
+  // `ignoreSelector`; this sample exercises all three). This is the
   // session verify.mjs records the Settings drawer under, then unzips at WIRE depth.
   //
   // `maskAllText: false` is deliberate and load-bearing. With it ON, every text node is masked anyway, so
@@ -588,7 +588,7 @@
   // The GLOBAL (unguarded) throw: this component is rendered with NO nested `<svelte:boundary>` of its
   // own, so a render throw propagates to the nearest ANCESTOR boundary — App.svelte's outer one wrapping
   // the whole route outlet — exercising `handleAppError` (handleErrorWithBugsee) at the app level. Unlike
-  // react-spa's F-5 (react-router's own per-route boundary intercepts first, so its app-level
+  // react-spa (react-router's own per-route boundary intercepts first, so its app-level
   // BugseeErrorBoundary is never reached), Svelte has no framework-injected competing boundary here, so
   // this is expected to reach App.svelte's boundary and show its `error-fallback` — a genuine (not a
   // documented gap) exercise of the seam.
@@ -601,11 +601,11 @@
 
   // `startSvelteRenderSpan(name)()` records a `ui.render` child span on the ACTIVE transaction, and is a
   // documented NO-OP when none is active (packages/web-adapter/src/render-span.ts:38 returns early on
-  // `getActiveSpan() === undefined`). Clicking this control in isolation therefore used to produce
+  // `getActiveSpan() === undefined`). Clicking this control in isolation therefore produced
   // nothing at all on the wire while the status line still announced "recorded a ui.render mount span" —
   // a literal the panel set unconditionally, so any check reading it asserted the sample's own prose,
-  // not the SDK. Two fixes: start a transaction so the span has somewhere real to land (exactly the
-  // situation the preprocessor's auto-injected `onMount` call is in during a navigation), and report
+  // not the SDK. It now starts a transaction so the span has somewhere real to land (exactly the
+  // situation the preprocessor's auto-injected `onMount` call is in during a navigation), and reports
   // what was actually OBSERVED (whether a transaction was live when `stop()` ran), never a fixed string.
   // verify.mjs then asserts the span itself on the wire (`svelte-render-span-wire`), by its own name.
   const MANUAL_RENDER_SPAN_NAME = 'ManualScenarioSpan';
@@ -667,8 +667,7 @@
 
 <h2>Scenario panel</h2>
 <p class="status-line">
-  Every control below maps to a scenario id in <code>docs/samples/PLAN.md</code> §4/§5.4 — see
-  <code>scenarios.md</code> for the full table. isLaunched(): <span data-testid="is-launched">{isLaunched}</span>
+  Every control below maps to a scenario id in the scenario catalog. isLaunched(): <span data-testid="is-launched">{isLaunched}</span>
 </p>
 
 {#if internalErrors.length > 0}

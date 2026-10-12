@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { decodeReport } from './protocol';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 
-// The renderer must FORWARD incidents to
-// main, never upload them itself.
+// R2. The renderer must FORWARD incidents to
+// main, never upload them itself — see docs/review/electron.md SEV1 #2.
 const request = (over: Partial<ReportingRequest> = {}): ReportingRequest =>
   ({
     source: { type: 'crash', mechanism: 'uncaught' },

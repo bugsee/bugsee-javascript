@@ -1,7 +1,6 @@
 // @bugsee/browser-utils
 // Browser runtime primitives shared by the browser / web-worker / service-worker tiers:
 // the fetch HttpTransport + IndexedDB-backed durable stores (DOM instrumentation — pending).
-// and.
 export {
   type Coexistence,
   type CoexistenceOptions,

@@ -63,7 +63,7 @@ export interface UploadSourcemapsOptions {
    *
    * Data, not policy: collection is the context-gathering layer's job (`resolve.ts`), this layer only
    * drives `bugsee-cli`. Carried here because this is where it will be handed to the CLI once the
-   * upload wire protocol has a field to put it in —
+   * upload wire protocol has a field to put it in.
    */
   vcs?: VcsMetadata;
 }

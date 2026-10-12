@@ -36,8 +36,8 @@ export interface ServerRequestInfo {
 }
 
 /**
- * The BE→FE return headers, each independently toggleable. BOTH default OFF
- * there is no consumer until the frontend adapters read them, at which point they flip on. Built
+ * The BE→FE return headers (return path), each independently toggleable. BOTH default OFF
+ * (T9) — there is no consumer until the frontend adapters read them, at which point they flip on. Built
  * by {@link buildTraceResponseHeaders} and applied to the response by the CALLER (the node:http patch / the
  * native serve wrap), which owns the response object — the core has no response handle.
  */

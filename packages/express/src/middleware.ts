@@ -9,7 +9,8 @@ import {
   type ServerInstrumentOptions,
 } from '@bugsee/node';
 
-// The Express adapter. Two opt-in middlewares over the shared server-instrumentation core (@bugsee/node):
+// The Express adapter (design: S6 +
+// ). Two opt-in middlewares over the shared server-instrumentation core (@bugsee/node):
 //   requestHandler() — opens a per-request context + http.server transaction via `runServerRequest`
 //     (run-scoped), continues an inbound W3C trace, refines the route once routing has run, and finishes
 //     on response. When the node:http auto-instrument also owns the request, this REFINES that span

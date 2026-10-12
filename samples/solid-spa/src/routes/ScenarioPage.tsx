@@ -79,7 +79,7 @@ export default function ScenarioPage(): JSX.Element {
         `network: ${event.url} — droppedSecretHeader=${hadSecretHeader} redactedSsn=${hadSsn}`,
         ...prev.slice(0, 39),
       ]);
-      // Finding C (re-graded to a DOCS gap, not a defect): the default PII sanitizer never
+      // Sanitizer bypass (a docs gap, not a defect): the default PII sanitizer never
       // runs once ANY network filter is installed (packages/capture/src/network-provider.ts:151-160 — a
       // user filter REPLACES it, not composes with it; the comment at :137-139 in the same function names
       // this the deliberate "Android XOR rule"). This filter's own logic never touches the URL, so a
@@ -96,7 +96,7 @@ export default function ScenarioPage(): JSX.Element {
         setFilterLog((prev) => [`network: VETOED ${event.url}`, ...prev.slice(0, 39)]);
         return null;
       }
-      // F-1 (re-graded major): demonstrates the per-ENTRY (not per-REQUEST) veto hole.
+      // Veto hole (major): demonstrates the per-ENTRY (not per-REQUEST) veto hole.
       // This rule vetoes on a REQUEST-BODY marker that is only populated on the `before` NetworkStage
       // (packages/capture/src/fetch-interceptor.ts:360-370). The SAME logical request also produces a
       // `complete` stage-entry carrying the RESPONSE headers/body (packages/capture/src/fetch-
@@ -159,8 +159,7 @@ export default function ScenarioPage(): JSX.Element {
     <div>
       <h2>Scenario panel</h2>
       <p class="desc">
-        One control per scenario in docs/samples/PLAN.md §4. Every control here calls the real SDK API
-        — see scenarios.md for what should appear in Bugsee for each.
+        One control per scenario. Every control here calls the real SDK API.
       </p>
 
       {/* ---------------------------------------------------------------- S1 launch & lifecycle */}
@@ -270,7 +269,7 @@ export default function ScenarioPage(): JSX.Element {
         </div>
         <Show when={internalErrors().length > 0}>
           {/* Given a `data-testid` so `pnpm verify` can READ this list, not only display it. A run in
-              round 5 saw two checks go silent — no /v2/issues call and no performance transaction for
+              a verification run saw two checks go silent — no /v2/issues call and no performance transaction for
               20s — with no way to tell an SDK kill-state (which routes a diagnostic through `onError`)
               apart from an ordinary upload stall, because the sweep never looked here. It does now, in
               the failure details of the two checks concerned. */}
@@ -708,10 +707,10 @@ export default function ScenarioPage(): JSX.Element {
         <p class="desc">
           Network-filter verification is LOCAL only — the backend surface (`get_issue`) does not expose
           network entries. Log/breadcrumb/report-handler filters ARE verifiable on the backend (they
-          land in `# Logs` / labels). Two KNOWN SDK DEFECTS are deliberately reproduced here (not fixed
-          — see FINDINGS.md): F-1 the network filter's veto is per-NetworkStage-entry, not per-request
-          (a request-body veto rule leaks the response's `complete` stage-entry); and Finding C,
-          installing ANY network filter silently disables the built-in PII sanitizer for every request.
+          land in `# Logs` / labels). Two KNOWN SDK DEFECTS are deliberately reproduced here (not fixed):
+          the network filter's veto is per-NetworkStage-entry, not per-request (a request-body veto rule
+          leaks the response's `complete` stage-entry); and installing ANY network filter silently
+          disables the built-in PII sanitizer for every request.
         </p>
         <div class="control-row">
           <button data-testid="s8-install" onClick={installFilters} disabled={filtersInstalled()}>
@@ -734,14 +733,14 @@ export default function ScenarioPage(): JSX.Element {
             data-testid="s8-veto-request-body"
             onClick={() => void scenarioApi.postVetoRequestBody()}
           >
-            POST vetoed by a request-body marker (F-1: veto hole demo)
+            POST vetoed by a request-body marker (veto hole demo)
           </button>
           <button
             class="secondary"
             data-testid="s8-sensitive-url"
             onClick={() => void scenarioApi.getWithSensitiveUrlToken()}
           >
-            GET with a sensitive `token=` query param (Finding C: sanitizer-disabled demo)
+            GET with a sensitive `token=` query param (sanitizer-disabled demo)
           </button>
           <button
             class="secondary"
@@ -769,7 +768,7 @@ export default function ScenarioPage(): JSX.Element {
               from `applyReportBefore(request) === null` BEFORE `submitReport` is reached, so a genuinely
               vetoed report cannot upload. The MUTATE button is guarded for the same reason: clicked
               without filters it uploads WITHOUT the `redacted-before` label, silently weakening the
-              backend evidence scenarios.md's S8 mutate row cites. */}
+              backend evidence the S8 mutate row cites. */}
           <button
             class="secondary"
             data-testid="s8-report-mutate"
@@ -841,7 +840,7 @@ export default function ScenarioPage(): JSX.Element {
               // this is a deterministic, wire-verifiable check: start it, rename it, finish it — see
               // scripts/verify.mjs's `waitForPerfTransactions` for the uploaded-name assertion. This is
               // the DIRECT-call primitive, with no @solidjs/router timing race — contrast with the LIVE
-              // router wiring (RootLayout.tsx's RouteNameSync), which IS racy — see A.
+              // router wiring (RootLayout.tsx's RouteNameSync), which IS racy.
               const perf = client()?.ext('performance');
               if (!perf) return setStatus('s9-route', 'performance ext not registered', false);
               const tx = perf.startTransaction({ name: 'scenario.route_name_demo', operation: 'custom' });
@@ -855,7 +854,7 @@ export default function ScenarioPage(): JSX.Element {
           <StatusLine status={statuses()['s9-route']} />
         </div>
         <div class="control-row">
-          <span class="label">performanceSampleRate: 0 (previously never exercised — PLAN §4 S9)</span>
+          <span class="label">performanceSampleRate: 0 (previously never exercised)</span>
           <button
             data-testid="s9-sample-rate-zero"
             onClick={async () => {
@@ -1000,7 +999,7 @@ export default function ScenarioPage(): JSX.Element {
               `packages/replay/src/masking.ts` feeds `.bugsee-unmask` to rrweb's `unmaskTextSelector` +
               `unmaskInputSelector` and `.bugsee-show` to `unblockSelector` — the latter un-BLOCKS media
               (img/video/audio/canvas), and does nothing at all for a text input. This sample shipped
-              `.bugsee-show` on the input below and claimed it opted out; it never did. Two peer samples
+              `.bugsee-show` on the input below and claimed it opted out; it never did. Two other samples
               had the identical defect. */}
           <label for="s11-masked">
             masking demo — both inputs are masked by default (maskAllInputs); the second one carries the
@@ -1024,8 +1023,8 @@ export default function ScenarioPage(): JSX.Element {
           Logs an exception, then force-reloads the page 250ms later — before the upload can settle, but
           AFTER the durable bundle queue has taken its copy. `persist`/`recover` (both on in
           FULL_LAUNCH_OPTIONS) re-upload it on the next launch. Verified over MCP by polling for the
-          issue AFTER the reload. See FINDINGS.md finding B: past ~40ms this reliably delivers the SAME
-          incident TWICE.
+          issue AFTER the reload. Past ~40ms this reliably delivers the SAME incident TWICE (a known SDK
+          defect).
         </p>
         <div class="control-row">
           <button
@@ -1037,7 +1036,7 @@ export default function ScenarioPage(): JSX.Element {
               // 'enqueue']), so a reload timed at the ORIGINAL 5ms lands before the durable queue owns
               // anything: only the report marker survives, only core's recoverReports leg runs, and the
               // result is always exactly ONE upload. 5ms was the one timing that could never expose
-              // B — and no real user reloads 5ms after a crash. Measured on this
+              // the double-upload defect — and no real user reloads 5ms after a crash. Measured on this
               // sample: 5ms -> 1 upload (2/2 runs); 40ms -> 2 (2/2); 250ms -> 2 (3/3).
               void client()?.logException(new Error('S12: persist+recover across a hard reload'));
               setTimeout(() => window.location.reload(), 250);
@@ -1127,7 +1126,7 @@ export default function ScenarioPage(): JSX.Element {
               // scripts/verify.mjs's `waitForPerfTransactions`. This is the DIRECT-call primitive, with
               // no @solidjs/router timing race — contrast with the LIVE reactive wiring
               // (RootLayout.tsx's RouteNameSync), which IS racy and does NOT reliably land — see
-              // A / the `solid-route-name-wire` check.
+              // the `solid-route-name-wire` check.
               const perf = client()?.ext('performance');
               if (!perf) return setStatus('s-pattern', 'performance ext not registered', false);
               const tx = perf.startTransaction({ name: 'scenario.route_name_matches_demo', operation: 'custom' });

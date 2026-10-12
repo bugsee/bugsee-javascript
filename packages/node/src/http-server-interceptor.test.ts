@@ -7,7 +7,7 @@ import { createNodeRequestContextStore, type RequestContextStore } from './reque
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement.
+// member this doesn't implement — §'s "structural point (S2)".
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -209,7 +209,7 @@ describe('createHttpServerInterceptor', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — T9)', () => {
+  it('writes NO return headers by default (traceResponse off — )', () => {
     const { client } = launchedClient();
     const target = makeTarget();
     const ic = createHttpServerInterceptor({ target: asTarget(target), getClient: () => client });

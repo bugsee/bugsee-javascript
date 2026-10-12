@@ -5,7 +5,7 @@ import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { defineConfig, loadEnv } from 'vite';
 
 // A build counter so every production build we upload source maps for is identifiable in the
-// dashboard (README §Run it / scenarios.md 's appVersion/appBuild requirement). Persisted to a
+// dashboard (scenario S1's appVersion/appBuild requirement). Persisted to a
 // dotfile so `pnpm build` run twice in a row produces two distinct appBuild values.
 const buildCounterFile = fileURLToPath(new URL('./.build-counter', import.meta.url));
 function nextBuildCounter(): string {

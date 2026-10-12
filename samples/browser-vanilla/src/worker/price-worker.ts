@@ -6,7 +6,7 @@
 import { launch } from '@bugsee/webworker';
 
 const token = import.meta.env.BUGSEE_APP_TOKEN;
-// See server/bugsee-proxy.ts + (blocker): apidev.bugsee.com's CORS config rejects
+// apidev.bugsee.com's CORS config rejects
 // every third-party origin, so every session in this sample — including the worker's own — goes
 // through the same-origin reverse proxy instead of the raw BUGSEE_ENDPOINT.
 const endpoint = `${self.location.origin}/bugsee-proxy`;
@@ -15,7 +15,7 @@ const client =
   token !== undefined && token.length > 0
     ? launch(token, {
         endpoint,
-        // See: the packed SDK version (0.0.0) is below the backend's accepted floor.
+        // The packed SDK version (0.0.0) is below the backend's accepted floor.
         sdkVersion: '1.0.0',
         appVersion: '1.0.0',
         appBuild: '7',

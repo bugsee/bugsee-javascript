@@ -1,6 +1,6 @@
 // @bugsee/browser
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
-// and the launch() composition root.
+// and the launch composition root.
 
 // The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review: the
 // directly imported platform package exposes the same value surface as the umbrella entries).

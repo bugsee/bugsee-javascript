@@ -38,7 +38,7 @@ for (const t of targets) {
   }
 }
 
-describe('concurrent requests keep their identities apart (Wave 3b.4)', () => {
+describe('concurrent requests keep their identities apart', () => {
   let collector: MockCollector;
 
   beforeAll(async () => {

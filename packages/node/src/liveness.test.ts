@@ -115,7 +115,7 @@ describe('isSiblingDead', () => {
   // A WORKER-thread owner is different and still reclaimable: a live pid says nothing about whether THAT
   // THREAD is alive, and its heartbeat now runs on a worker of its own that dies with it (verified against
   // real worker_threads), so a stale heartbeat there really does mean the owner is gone.
-  describe('a stale heartbeat with an ALIVE pid (Wave 6.6)', () => {
+  describe('a stale heartbeat with an ALIVE pid', () => {
     const stale = now - DEFAULT_PATIENT_MS - 1;
 
     it('KEEPS a main-thread instance — a frozen process is not a dead one', () => {

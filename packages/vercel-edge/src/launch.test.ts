@@ -98,7 +98,7 @@ const issueJson = (transport: ReturnType<typeof uploadTransport>) => {
   };
 };
 
-describe('launchEdge: detectHttpErrors (review O6)', () => {
+describe('launchEdge: detectHttpErrors', () => {
   // One stub installed BEFORE launch: the interceptor wraps whatever `fetch` is at activation, so the
   // status is switched through a variable, never by re-stubbing (that would replace the wrapper).
   let status = 503;
@@ -338,7 +338,7 @@ describe('launchEdge', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// supplying AsyncLocalStorage explicitly.
+// Wave 0.1a: supplying AsyncLocalStorage explicitly.
 //
 // The adversarial review proved on real workerd 1.20260722.1 that `globalThis.AsyncLocalStorage` does NOT
 // exist on Cloudflare under ANY compatibility flag — it is reachable only as an export of
@@ -379,7 +379,7 @@ describe('launchEdge — asyncLocalStorage injection', () => {
   });
 });
 
-// the partitioned store must actually be WIRED IN.
+// S4.5: the partitioned store must actually be WIRED IN.
 //
 // Earlier changes built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
 // selected the partitioned store, so the whole chain was inert. This is the switch.
@@ -427,7 +427,7 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     await client.stop?.();
   });
 
-  // The warning must survive a host sink that throws, and describe ANY value without throwing
+  // the warning must survive a host sink that throws, and describe ANY value without throwing
   // (JSON.stringify throws on a BigInt and prints `undefined` for a Symbol or a function).
   it.each([
     [10n, '10n'],
@@ -508,7 +508,7 @@ describe('launchEdge — partitionCaptureByTenant', () => {
   });
 });
 
-// Fixes from an adversarial review.
+// Fixes for the adversarial review of this session's changes.
 describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
   it('divides the byte budget across partitions instead of replicating it', async () => {
     // giving each partition the full maxDataSize put 9 x 10 MB against a 128 MB isolate
@@ -580,7 +580,7 @@ describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
 
 describe('launchEdge — reused non-partitioned client diagnostic', () => {
   it('names the isolation loss when a partitioning launch reuses a non-partitioned client', () => {
-    // `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
+    // Review pass 2: `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
     // then a Durable Object's lazy launcher reuses that carrier client — which does not partition. The
     // only signal was the generic "called more than once", which does not mention the leak.
     const carrier = {};
@@ -632,7 +632,7 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
 });
 
 describe('launchEdge — the partition bound and the budget divisor cannot disagree', () => {
-  // The store coerced maxPartitions but launchEdge's divisor used the RAW
+  // Review pass 2-fixes: the store coerced maxPartitions but launchEdge's divisor used the RAW
   // value, so `0` restored a full budget per partition (the 90 MB blow-up) and `NaN` produced a NaN budget
   // that disabled the byte cap outright. Both now route through the one exported coercion.
   const budgetsFor = async (maxTenantPartitions: unknown): Promise<number[]> => {
@@ -729,7 +729,7 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
     return transport;
   };
 
-  it('reportDefaultBugPriority applies to client.upload() at the edge too (R2D-3)', async () => {
+  it('reportDefaultBugPriority applies to client.upload() at the edge too', async () => {
     const transport = uploadTransport();
     const client = launchTracked(
       'tok',

@@ -15,7 +15,7 @@ export const routes: Routes = [
     loadComponent: () => import('./expenses/expense-detail.component').then((m) => m.ExpenseDetailComponent),
   },
   // A lazy-loaded FEATURE (its own route table + guard), loaded only when the user navigates here —
-  // "beyond the catalog": Angular Router with lazy-loaded feature modules and route guards.
+  // Angular Router with lazy-loaded feature modules and route guards.
   {
     path: 'approvals',
     loadChildren: () => import('./approvals/approvals.routes').then((m) => m.APPROVALS_ROUTES),

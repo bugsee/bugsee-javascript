@@ -77,7 +77,7 @@ describe('withBugseeFetch', () => {
     expect('http.method' in (malformed ?? {})).toBe(false);
   });
 
-  it('redacts secrets on the malformed-URL fallback, where the query is NOT dropped (Wave 1.1)', async () => {
+  it('redacts secrets on the malformed-URL fallback, where the query is NOT dropped', async () => {
     // The happy path reduces the URL to `new URL(...).pathname`, which discards the query and any
     // userinfo. The fallback keeps the value raw — so it is the one branch here that can carry a secret.
     const { client, store } = fakeClient();

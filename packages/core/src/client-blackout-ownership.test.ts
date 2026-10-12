@@ -36,7 +36,7 @@ describe('carrier blackout owner', () => {
   });
 });
 
-describe('R3L-4 — a stale handle cannot change the process blackout', () => {
+describe('a stale handle cannot change the process blackout', () => {
   it('A dark + stop, B launches dark, A.endBlackout(): B stays dark, the flag stays, the next launch is dark', async () => {
     const host = {};
     const errorsA: unknown[] = [];
@@ -71,7 +71,7 @@ describe('R3L-4 — a stale handle cannot change the process blackout', () => {
     expect(a.isBlackout()).toBe(true); // a stale handle answers with the process flag, not its own state
   });
 
-  it('R4L-5: a stale handle reflects the carrier flag both ways', async () => {
+  it('a stale handle reflects the carrier flag both ways', async () => {
     const host = {};
     const a = build(host);
     a.launch();
@@ -119,7 +119,7 @@ describe('R3L-4 — a stale handle cannot change the process blackout', () => {
     expect(getCarrierBlackout(host)).toBe(true);
   });
 
-  it('the last client to stop can still lift the carried flag quietly when nothing replaced it (R2L-7)', async () => {
+  it('the last client to stop can still lift the carried flag quietly when nothing replaced it', async () => {
     const host = {};
     const errors = vi.fn();
     const a = build(host, errors);

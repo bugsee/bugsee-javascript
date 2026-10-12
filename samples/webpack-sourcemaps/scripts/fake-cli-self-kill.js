@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A stand-in "bugsee-cli" that simulates the process being killed by a SIGNAL (an OOM kill, or a
-// cancelled CI job's SIGTERM landing on the child) — and
+// cancelled CI job's SIGTERM landing on the child), see
 // packages/bundler-plugin-core/src/run-cli.ts's SIGNAL_EXIT_CODE.
 //
 // Pointed at via BUGSEE_CLI_PATH (the same escape hatch a locked-down/offline CI would use to supply

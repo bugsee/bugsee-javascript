@@ -75,7 +75,7 @@ describe('writeInstanceOwner', () => {
     });
   });
 
-  it('removes a stale .stopped marker: a (re)launch into the same subtree is live, not recoverable (R3L-3)', () => {
+  it('removes a stale.stopped marker: a (re)launch into the same subtree is live, not recoverable', () => {
     const dataDir = mkDir();
     const layout = createInstanceLayout(dataDir, { pid: 7, threadId: 1, nonce: () => 'z9' });
     writeInstanceOwner(layout, 1, '1');
@@ -93,7 +93,7 @@ describe('writeInstanceOwner', () => {
   });
 });
 
-describe('live subtree root count (R5L-2)', () => {
+describe('live subtree root count', () => {
   it('writing the owner does not register; claim/release count on the DEFAULT carrier (shared by module copies)', () => {
     const layout = createInstanceLayout(mkDir(), { pid: 1, threadId: 1, nonce: () => 'n' });
     writeInstanceOwner(layout, 1, '1');

@@ -7,8 +7,8 @@ import { setRouteNameFromSolidMatches } from '@bugsee/solid';
 /**
  * @bugsee/solid router integration under test, wired globally: `useCurrentMatches` + a reactive
  * `createEffect` refine the active navigation transaction to the matched route PATTERN
- * (`/issues/:id`), never the concrete URL (`/issues/issue-1`) —
- * / the two-phase naming seam. Solid Router has no afterEach hook (it's reactive, not
+ * (`/issues/:id`), never the concrete URL (`/issues/issue-1`), via the two-phase naming seam.
+ * Solid Router has no afterEach hook (it's reactive, not
  * event-based), so this effect IS the wiring — one call site for the whole app.
  */
 function RouteNameSync() {

@@ -92,7 +92,7 @@ const INVOCATIONS: Array<[string, (getClient: () => Bugsee) => void]> = [
   ],
 ];
 
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   it.each(INVOCATIONS)('%s contains a throwing CLIENT', (_name, invoke) => {
     const onError = vi.fn();
     expect(() => invoke(() => hostileClient())).not.toThrow();

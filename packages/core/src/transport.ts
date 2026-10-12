@@ -150,7 +150,7 @@ export interface Bundle {
 export type OutcomeCategory = 'session' | 'issue' | 'upload' | 'performance';
 
 /**
- * Why a capture/bundle was dropped. The known reasons are `queue_overflow`, `rate_limit` and
+ * Why a capture/bundle was dropped. The design names `queue_overflow`, `rate_limit` and
  * `duplicate`; the pipeline records additional reasons, so this is left open.
  */
 export type DropReason = string;

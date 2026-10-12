@@ -1,4 +1,5 @@
 // @bugsee/node-utils — http/https/fs/ALS helpers shared by @bugsee/node, bun and electron-main
+// Built test-first.
 
 export {
   type BatchedFsChunkStorageOptions,

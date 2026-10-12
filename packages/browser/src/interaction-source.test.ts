@@ -174,7 +174,7 @@ describe('createBrowserInteractionSource', () => {
     expect(seen[0]).toEqual({ interactionType: 'click', duration: 60, interactionId: 60 }); // emitted, no target
   });
 
-  it('resolves the nearest annotated component name (data-bugsee-component, D2)', () => {
+  it('resolves the nearest annotated component name (data-bugsee-component)', () => {
     const { Ctor, instances } = fakeObserver();
     const { seen } = wire({ PerformanceObserver: Ctor });
     instances[0]?.push([

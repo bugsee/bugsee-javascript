@@ -44,8 +44,8 @@ type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
 
 interface LogEntry {
   message: string;
-  /** NUMERIC on the wire (mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
-   * until, because `logLevelToWire` had no callers — this assertion encoded that defect. */
+  /** NUMERIC on the wire (mobile parity): 1=Error. 5=Verbose. It shipped as the string name
+   *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
   level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
   context_id?: string;
@@ -266,7 +266,7 @@ describe.each(
     it('the AppHang bundle carries a CPU profile whose samples include the blocking frame', () => {
       // THE proof of our native-free "where is the main thread stuck" mechanism: V8 keeps sampling during
       // the stall, so the spinning function (`e2eHangSpin`) appears in the profile attached to the hang
-      // report. This is what justifies NOT adopting a native stack-capture addon (see node-diagnostics.md).
+      // report. This is what justifies NOT adopting a native stack-capture addon.
       //
       // Examined across EVERY hang bundle, not the first one delivered, and that distinction is the whole
       // fix. The watchdog reports once per hang EPISODE and re-arms when the episode ends, so a

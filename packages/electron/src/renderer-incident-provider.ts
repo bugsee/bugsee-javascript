@@ -7,7 +7,8 @@ import {
 } from '@bugsee/core';
 import type { DecodedReport } from './protocol';
 
-// The main-side submit seam for renderer incidents.
+// The main-side submit seam for renderer incidents (R3/R4,
+// ).
 //
 // A DetectionProvider, which is the design's chosen option: it is the ONE public path that submits a
 // ReportingRequest without re-filing it. The alternative — `client.logException` — would turn a renderer

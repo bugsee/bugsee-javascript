@@ -217,7 +217,7 @@ describe('createFileCaptureStore — maxDataSize byte bound', () => {
 });
 
 describe('createFileCaptureStore — snapshot isolation', () => {
-  it('freezes the snapshot: capture after snapshot() does not change it', async () => {
+  it('freezes the snapshot(): capture after snapshot does not change it', async () => {
     const store = mk(createInMemoryChunkStorage());
     store.add(rec('log', 10_000));
     const snap = store.snapshot();

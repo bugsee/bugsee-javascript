@@ -5,7 +5,7 @@ import {
   reportError,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/angular ERROR SEAM (frontend-adapters fan-out — the thin pattern for Angular). Angular
+// The @bugsee/angular ERROR SEAM (fan-out — the F6-thin pattern for Angular). Angular
 // reports uncaught errors through its injectable `ErrorHandler` (`handleError(error)`); the app replaces it
 // via `{ provide: ErrorHandler, useClass: BugseeErrorHandler }`. We report the error to the launched Bugsee
 // client, UNWRAPPING Angular's error wrapper (`error.ngOriginalError`) to the real thrown error, and DELEGATE

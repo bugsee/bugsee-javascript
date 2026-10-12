@@ -121,7 +121,7 @@ export interface ConsoleInterceptorOptions {
   /** Parses `Error.stack` into frames for the `console.trace()` call-stack appended to the message
    *  (see {@link appendCallStack}). Default: core's {@link parseV8Stack} (V8 `at fn (loc)` dialect
    *  only). A platform whose runtimes also include Firefox/Safari should inject a dispatching parser
-   *  (e.g. the browser tier's `parseStack`) so the stack is not silently dropped on those engines. */
+   * (e.g. the browser tier's `parseStack`) so the stack is not silently dropped on those engines. */
   stackParser?: (stack: string) => StackFrame[];
 }
 

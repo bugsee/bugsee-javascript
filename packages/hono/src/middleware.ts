@@ -9,7 +9,7 @@ import { randomId } from '@bugsee/util';
 //     re-entrancy),
 //   - after next() resolves, REPORTS a handled error via `c.error` — Hono's compose catches a thrown
 //     handler error and routes it to `app.onError`, so the error is observed via `c.error` (not a try/catch
-//     around next()). NOTE: Hono only routes `instanceof Error` throws to `c.error`; a non-Error throw is
+// around next). NOTE: Hono only routes `instanceof Error` throws to `c.error`; a non-Error throw is
 //     invisible here (Hono drops it the same way) — we stay transparent rather than wrap next().
 //   - finishes the transaction (route-parametrized name + status; `c.res.status` is final by here).
 // Fully defensive: never throws into the request; works across node/bun/deno wherever the launched client

@@ -29,7 +29,7 @@ afterEach(async () => {
   await Promise.all(live.splice(0).map((c) => c.stop(0)));
 });
 
-describe('vercel-edge relaunchEdge / rememberEdgeLaunch (R4H-4)', () => {
+describe('vercel-edge relaunchEdge / rememberEdgeLaunch', () => {
   const recordingLaunch = () =>
     vi.fn((token: string, options: BugseeEdgeLaunchOptions) => {
       const client = launchEdge(token, options);

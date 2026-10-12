@@ -16,7 +16,7 @@ import type {
 import * as nodeEntry from './index.node';
 
 describe('@bugsee/bugsee node entry — re-exports needed by every backend adapter', () => {
-  it('re-exports RequestContextStoreToken (F-5): app code can reach the per-request store without @bugsee/node', () => {
+  it('re-exports RequestContextStoreToken: app code can reach the per-request store without @bugsee/node', () => {
     expect(nodeEntry.RequestContextStoreToken).toBeDefined();
   });
 
@@ -26,12 +26,12 @@ describe('@bugsee/bugsee node entry — re-exports needed by every backend adapt
     ).not.toContain('SECRET');
   });
 
-  it('re-exports the RequestContextStore type (F-5) so app code can type a resolved store', () => {
+  it('re-exports the RequestContextStore type so app code can type a resolved store', () => {
     const store = {} as RequestContextStore;
     expect(store).toBeDefined();
   });
 
-  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast (F-6)', () => {
+  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast', () => {
     const transport = (async () => ({
       status: 200,
       headers: {},

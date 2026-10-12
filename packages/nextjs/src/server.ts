@@ -2,7 +2,7 @@
 //
 // This module is the target of `await import('@bugsee/nextjs/server')` from the
 // `NEXT_RUNTIME === 'nodejs'` branch of `register()` in `instrumentation.ts` (see
-// No Node code reachable from the edge/client
+// hard-constraint 1: no Node code reachable from the edge/client
 // graph). It composes the batteries-included node umbrella (`bugsee/node` = @bugsee/node launch +
 // on-by-default performance/APM + the OpenTelemetry consume bridge) so the Next.js server gets full
 // capture + reports + zero-config APM out of the box.
@@ -58,7 +58,7 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
 /**
  * The ONE span processor a Next process ever hands to OpenTelemetry. The OTel provider slot is first-wins,
  * so a processor registered at first launch can never be swapped; it therefore delegates to whichever
- * client's processor is CURRENT, and `relaunch()` only swaps the target. Stored on the carrier so
+ * client's processor is CURRENT, and `relaunch` only swaps the target. Stored on the carrier so
  * a duplicated module instance (HMR, bundler split) shares it.
  */
 interface SpanProcessorDelegate {
@@ -122,7 +122,7 @@ export function registerServer(appToken: string, options: NextjsServerOptions = 
   });
 }
 
-// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries (review): the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

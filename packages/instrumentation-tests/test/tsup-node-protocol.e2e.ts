@@ -1,4 +1,4 @@
-// Regression guard for the `removeNodeProtocol` build defect.
+// Regression guard for the `removeNodeProtocol` build defect (F-2).
 //
 // tsup defaults `removeNodeProtocol` to `true` (node_modules/tsup/dist/index.js: the flag gates
 // `nodeProtocolPlugin()`, default `true`), which silently rewrites every statically-resolvable
@@ -157,7 +157,7 @@ const targets: readonly NodeProtocolTarget[] = [
   },
   {
     // src/meta-tag-transformer.ts imports node:stream, exported ONLY from src/server.ts (the node-only
-    // entry (the per-runtime split). NOT reachable from
+    // entry — 's per-runtime entry split). NOT reachable from
     // index.ts (portable) or client.ts (browser-only) — verified: neither built index/client file
     // mentions `stream` in any form.
     label: '@bugsee/remix',
@@ -184,7 +184,7 @@ function importSpecifiers(code: string): string[] {
   return specifiers;
 }
 
-describe('tsup build config — node: protocol survives into dist (F-2 regression guard)', () => {
+describe('tsup build config — node: protocol survives into dist (regression guard)', () => {
   let outDir: string | undefined;
 
   afterEach(() => {
@@ -252,7 +252,7 @@ describe('tsup build config — node: protocol survives into dist (F-2 regressio
     });
   }
 
-  // The inverse guard. `@bugsee/util` is tier-0 and ships inside every browser, worker and edge bundle, where
+  // The inverse guard. `@bugsee/util` ships inside every browser, worker and edge bundle, where
   // ANY `node:` specifier — even an unreachable, ignore-commented dynamic import — breaks an esbuild build.
   // Its sha256 used to carry one; the digest is now WebCrypto-only and node injects its own.
   it('@bugsee/util: emitted index dist carries no node: specifier in any form', () => {

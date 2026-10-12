@@ -100,7 +100,7 @@ describe('reportReactError', () => {
 });
 
 describe('linkComponentStack', () => {
-  it('attaches the component stack as the error cause (described via .stack)', () => {
+  it('attaches the component stack as the error cause (described via.stack)', () => {
     const err = new Error('boom');
     linkComponentStack(err, COMPONENT_STACK);
     expect(err.cause).toBeInstanceOf(Error);

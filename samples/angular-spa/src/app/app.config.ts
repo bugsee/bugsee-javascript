@@ -10,9 +10,8 @@ export const appConfig: ApplicationConfig = {
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),
     // Deliberately NOT `withFetch()` — the default HttpClient backend is `HttpXhrBackend`, riding on
-    // native `XMLHttpRequest`. This is a DIFFERENT capture code path from `fetch()` ("beyond the
-    // catalog"): every expense/approval CRUD call in this app goes through HttpClient/XHR, while the
-    // Scenario panel's controls separately exercise raw `fetch` too.
+    // native `XMLHttpRequest`. This is a DIFFERENT capture code path from `fetch()`: every expense/approval CRUD call in this app goes through HttpClient/XHR, while the
+    // Scenario panel's S7 controls separately exercise raw `fetch` too.
     provideHttpClient(),
     // @bugsee/angular's documented primary wiring: replaces Angular's ErrorHandler, reporting every
     // uncaught error (component render, lifecycle hook, event handler, RxJS pipeline) to Bugsee and

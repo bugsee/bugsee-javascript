@@ -157,7 +157,7 @@ describe('createCaptureExporter — factory', () => {
   });
 });
 
-// the exporter scopes the snapshot to one tenant.
+// S3: the exporter scopes the snapshot to one tenant.
 //
 // The partitioned store can already isolate; this is what ASKS it to. Without the owner reaching
 // snapshot(), every incident still drains every tenant — the leak, unchanged.

@@ -14,7 +14,7 @@ export {
   serviceToken,
 } from '@bugsee/service';
 export type { AttributeValue } from '@bugsee/types';
-// Diagnostics helpers for packages that read a host option themselves and must warn about
+// Diagnostics helpers for packages that read a host option themselves (framework adapters) and must warn about
 // an invalid value without ever breaking launch; they live in @bugsee/util.
 export { describeValue, reportGuarded } from '@bugsee/util';
 export {

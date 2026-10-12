@@ -124,12 +124,12 @@ export interface RequestJson {
   environment: EnvironmentEnvelope;
   /**
    * The id of the request/execution context this report fired in (framework adapters; design:
-   * Matches the `context_id` stamped on the capture entries recorded within that
+   * ). Matches the `context_id` stamped on the capture entries recorded within that
    * context, so a viewer can focus the recording on this one request. Omitted when no context was active.
    */
   context_id?: string;
   /**
-   * The W3C trace this report fired in. `trace_id`
+   * The W3C trace this report fired in (/ T8). `trace_id`
    * is the cross-project JOIN KEY — a frontend report and the backend report it triggered share it, so the
    * collector stitches them into one distributed transaction. Matches the `trace_id`/`span_id` stamped on the
    * capture entries recorded in the context. Omitted when no trace was active.

@@ -50,7 +50,7 @@ describe('@bugsee/replay-canvas ⇄ @bugsee/replay integration', () => {
     expect(recordArgs?.maskAllText).toBe(true);
   });
 
-  it("threads full-fidelity ('all') canvas capture through registerReplay to rrweb record()", () => {
+  it("threads full-fidelity ('all') canvas capture through registerReplay to rrweb record", () => {
     let recordArgs: RecordOpts | undefined;
     const record: ReplayRecordFn = vi.fn((o) => {
       recordArgs = o;

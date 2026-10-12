@@ -8,7 +8,7 @@ import type { RequestContext } from './request-context';
 
 export interface CaptureAggregatorOptions {
   /**
-   * Reads the active request context ("correlation, not isolation"). When
+   * Reads the active request context. When
    * a context is active, each entry's wire payload is stamped with its correlation ids so the recording
    * can later be focused on one request. Absent (default) → no stamping; behavior is byte-identical.
    */

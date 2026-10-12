@@ -1,8 +1,8 @@
 // @bugsee/node — Node platform: http(s) transport, node:fs storage, uncaught/
 // unhandledRejection detection, console/network capture. Built test-first per
 
-// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review: the
-// directly imported platform package exposes the same value surface as the umbrella entries).
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter`.
+// A directly imported platform package exposes the same value surface as the umbrella entries.
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes) — used internally by the
 // `transport` launch option (launch.ts) but never re-exported, forcing a consumer wiring a custom

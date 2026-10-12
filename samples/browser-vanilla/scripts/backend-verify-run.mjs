@@ -1,4 +1,4 @@
-// Ad-hoc helper used while producing the backend (MCP) evidence cited in scenarios.: a
+// Ad-hoc helper used while producing the backend (MCP) evidence: a
 // single isolated scenario-panel run against a running `pnpm dev` server (start one separately first).
 // Not part of `pnpm verify` (that script only checks LOCAL-level results — see its own header comment
 // for why). Kept as a runnable record of the exact steps, not a generated artifact.

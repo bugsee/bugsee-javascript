@@ -2,7 +2,7 @@ import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import { createRendererGoneHandler } from './renderer-gone';
 
-// A renderer killed by an OOM or a native
+// R4. A renderer killed by an OOM or a native
 // crash never runs the JS that would forward its incident, so main synthesises it — claiming the minidump so
 // the LIVE incident carries it, and falling back to what is available when no dump arrives.
 const marker = {

@@ -3,7 +3,7 @@
 // Reached from `instrumentation-client.ts` (Next 15.3), which Next bundles into the CLIENT graph. This
 // module is browser-only (it composes the batteries-included browser umbrella: DOM/console/network
 // capture + web-vitals) and so lives behind the `./client` subpath — never the portable `.` entry or the
-// node `./server` entry.
+// node `./server` entry (hard-constraint 1).
 //
 // It captures the SESSION (video/console/network/vitals) that the server-side onRequestError bridge
 // stitches to a failing request — together they deliver the cross-runtime "full session that led to this
@@ -80,7 +80,7 @@ export function createOnRouterTransitionStart(
 /** The ready-made hook bound to the per-tab carrier client. `export const onRouterTransitionStart = ...`. */
 export const onRouterTransitionStart: NextRouterTransitionStart = createOnRouterTransitionStart();
 
-// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries (review): the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

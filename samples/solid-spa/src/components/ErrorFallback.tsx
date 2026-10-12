@@ -1,7 +1,8 @@
 import type { JSX } from 'solid-js';
 
 /**
- * The app-level `<ErrorBoundary>` fallback (wired in main.tsx, wrapping `<AppRouter/>`). Deliberately a PLAIN `<a>`, not `@solidjs/router`'s `<A>`: the
+ * The app-level `<ErrorBoundary>` fallback (wired in main.tsx, wrapping `<AppRouter/>`).
+ * Deliberately a PLAIN `<a>`, not `@solidjs/router`'s `<A>`: the
  * ErrorBoundary sits ABOVE `<Router>` (it wraps AppRouter, which is what creates the Router context),
  * so when this fallback renders it replaces the Router along with everything under it — there is no
  * Route context left for `<A>` to resolve against, and it throws "'<A> ... primitives can be only

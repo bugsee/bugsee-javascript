@@ -74,7 +74,7 @@ describe('registerServerEdge', () => {
     expect(launchEdge).not.toHaveBeenCalled();
   });
 
-  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+  it('remembers the install-time launch on its carrier for a plain relaunch', () => {
     const launch = vi.fn(() => ({}) as never);
     const carrier = {};
     registerServerEdge('tok', { launch, carrier });

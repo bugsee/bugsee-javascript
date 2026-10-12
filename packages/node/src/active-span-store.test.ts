@@ -82,7 +82,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a finished scoped transaction does NOT reveal ambient — the slot stays private to the request', () => {
-    // after this request's own transaction finished and cleared, a read here must NOT
+    // F1: after this request's own transaction finished and cleared, a read here must NOT
     // fall back to ambient — otherwise a post-finish setRouteName() would rename a FOREIGN live
     // transaction. The fallback is only for contexts that never held a transaction (the still-open
     // outer-scope case); once a context owned one, its slot is private: its own live stash or nothing.
@@ -126,7 +126,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a finished scoped transaction is never read — and never reveals ambient either', () => {
-    // Readability and narrowing: a transaction finished outside its originating
+    // SEV2-#2 readability + F1 narrowing: a transaction finished outside its originating
     // context (e.g. a response `close` firing after the ALS context exited) leaves a stale stash
     // the store cannot reach to delete — but no read may resurface it, and the owning context's
     // slot stays private afterward (no fallback to ambient, where a rename would mistarget).

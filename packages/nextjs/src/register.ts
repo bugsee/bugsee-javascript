@@ -1,8 +1,7 @@
 // @bugsee/nextjs — the `register()` dispatcher for `instrumentation.ts`.
 //
 // Next calls `register()` once per runtime. We branch on `NEXT_RUNTIME` and `await import` only the
-// matching runtime's composition, so no runtime's code is pulled into another's bundle graph (
-// hard-constraint 1). The dynamic imports use the package's OWN SUBPATH SPECIFIERS
+// matching runtime's composition, so no runtime's code is pulled into another's bundle graph. The dynamic imports use the package's OWN SUBPATH SPECIFIERS
 // (`@bugsee/nextjs/server` / `@bugsee/nextjs/edge`), NOT relative paths (`./server`): a bare specifier
 // stays EXTERNAL to the bundler in BOTH formats, so it emits a real lazy `import()` — whereas a relative
 // dynamic import is inlined (with its top-level `require('@bugsee/bugsee/node')` hoisted) into the CJS build,

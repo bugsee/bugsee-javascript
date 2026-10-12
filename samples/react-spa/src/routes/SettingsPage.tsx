@@ -21,7 +21,7 @@ function parseAttrValue(type: AttrType, raw: string): AttributeValue {
  * Settings page — a genuine app feature (display name, theme preference, a personal-access-token
  * field) that happens to be the natural home for (identity + attributes): setting a display name
  * IS `setUserIdentifier`, and a theme preference IS an attribute. The access-token field is also the
- * masking target for replay (`maskAllInputs`) — see scenarios.md.
+ * masking target for S11 replay (`maskAllInputs`).
  */
 export default function SettingsPage(): JSX.Element {
   const client = getClient();

@@ -392,7 +392,7 @@ describe('validation', () => {
     expect(field('summary').getAttribute('aria-invalid')).toBeNull();
   });
 
-  it("does not insist the email is an address — it is the app's user identifier (mobile parity)", async () => {
+  it("does not insist the email is an address— it is the app's user identifier (mobile parity)", async () => {
     const { show, upload } = harness();
     void show();
     type('email', 'user-42');
@@ -1113,7 +1113,7 @@ describe('lifecycle events', () => {
     expect(emit).toHaveBeenCalledTimes(2);
   });
 
-  it('announces AfterReportShown only once the dialog is really gone from the page (L17)', async () => {
+  it('announces AfterReportShown only once the dialog is really gone from the page', async () => {
     const hostAtAfter: Array<HTMLElement | null> = [];
     const emit = vi.fn((type: string) => {
       if (type === LifecycleEvents.AfterReportShown) hostAtAfter.push(host());
@@ -1125,7 +1125,7 @@ describe('lifecycle events', () => {
     expect(hostAtAfter).toEqual([null]);
   });
 
-  it('reports sent:false when the send came back refused, or threw (L17)', async () => {
+  it('reports sent:false when the send came back refused, or threw', async () => {
     for (const failure of [
       async () => ({ ok: false }) as UploadResult,
       async () => {

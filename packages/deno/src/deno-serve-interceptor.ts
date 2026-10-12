@@ -10,7 +10,7 @@ import {
 // `Deno.serve(options, handler)`, and `Deno.serve({ handler, ... })` — via the shared `wrapFetchHandler`,
 // so idiomatic Deno.serve apps (which bypass node:http) get a per-request context + http.server
 // transaction. Self-skips when `Deno` is absent (e.g. unit tests on Node). A throw escaping the handler is
-// captured + re-thrown (Deno turns it into a 500), verified on Deno 2.8.
+// captured + re-thrown (Deno turns it into a 500), verified by the spike on Deno 2.8.
 
 type DenoHandler = FetchHandler<[info?: unknown]>;
 interface DenoServeOptions {

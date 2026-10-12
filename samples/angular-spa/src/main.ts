@@ -12,7 +12,7 @@ launchApp();
 // window.__bugsee to probe SDK state directly (e.g. the active performance transaction) instead of
 // scraping the DOM. A GETTER, not a captured reference: 's relaunch controls swap the module-level
 // client for a brand-new instance (bugsee.ts's `relaunch()`) — capturing `client` here once would go
-// stale across a relaunch the exact same way the sample's own F-0 bug did, so this
+// stale across a relaunch, so this
 // always resolves fresh via `getClient()`.
 Object.defineProperty(window, '__bugsee', { get: () => getClient(), configurable: true });
 

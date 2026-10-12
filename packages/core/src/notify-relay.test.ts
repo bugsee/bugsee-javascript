@@ -842,7 +842,7 @@ describe('timers', () => {
   });
 });
 
-describe('suspend / resume: a stopped SDK sends nothing (P4)', () => {
+describe('suspend / resume: a stopped SDK sends nothing', () => {
   it('flush after suspend sends nothing, keeps the queue and reports it undelivered', async () => {
     const { relay, send } = make({ flushDelayMs: 5000 });
     relay.enqueue({ title: 'a' });
@@ -928,8 +928,8 @@ describe('suspend / resume: a stopped SDK sends nothing (P4)', () => {
   });
 });
 
-describe('queue caps: total bytes and age (P6)', () => {
-  it('drops the oldest once the queued bytes pass 1 MB', async () => {
+describe('queue caps: total bytes and age', () => {
+  it('drops the oldest once the queued bytes MB', async () => {
     const { relay, onError } = make({ flushDelayMs: 100_000 });
     const big = 'x'.repeat(200 * 1024);
     for (let i = 0; i < 7; i++) {
@@ -944,7 +944,7 @@ describe('queue caps: total bytes and age (P6)', () => {
     expect(sends.flat().map((i) => i.title)).toEqual(['n2', 'n3', 'n4', 'n5', 'n6']);
   });
 
-  it('the 1 MB bound is inclusive: exactly 1 MB stays, one byte more drops the oldest (m24)', () => {
+  it('the 1 MB bound is inclusive: exactly 1 MB stays, one byte more drops the oldest', () => {
     const exact = (title: string, id: string, body: string) =>
       utf8ByteLength(JSON.stringify({ id, timestamp: 1_700_000_000_000, title, body }));
     const target = 256 * 1024; // the per-item maximum, so four of them are exactly 1 MiB
@@ -1014,7 +1014,7 @@ describe('queue caps: total bytes and age (P6)', () => {
   });
 });
 
-describe('urgent sends are tracked without an ever-growing chain (P7)', () => {
+describe('urgent sends are tracked without an ever-growing chain', () => {
   it('flush waits for every urgent send in flight, in any completion order', async () => {
     const releases: Array<() => void> = [];
     const { relay } = make(
@@ -1069,7 +1069,7 @@ describe('urgent sends are tracked without an ever-growing chain (P7)', () => {
   });
 });
 
-describe('collector verdicts: retry-after and kill (P9)', () => {
+describe('collector verdicts: retry-after and kill', () => {
   it('waits the collector-given retryAfter instead of the backoff', async () => {
     let calls = 0;
     const { relay, send } = make({}, async () => {
@@ -1096,7 +1096,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
-  it('a retryAfter of 0 (or a hair above) is floored to the backoff step: never a hammer loop (R2P-2)', async () => {
+  it('a retryAfter of 0 (or a hair above) is floored to the backoff step: never a hammer loop', async () => {
     for (const hint of [0, 0.1]) {
       sends = [];
       const { relay, send } = make({}, async () => ({ outcome: 'retry', retryAfterMs: hint }));
@@ -1118,7 +1118,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     }
   });
 
-  it('a collector hint above the backoff still wins; the backoff keeps growing underneath (R2P-2)', async () => {
+  it('a collector hint above the backoff still wins; the backoff keeps growing underneath', async () => {
     const results: NotifyResult[] = [
       { outcome: 'retry', retryAfterMs: 30_000 },
       { outcome: 'retry' },
@@ -1135,7 +1135,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
-  it('halves the batch on repeated 429s (the collector may be refusing its size) and recovers (R2P-2)', async () => {
+  it('halves the batch on repeated 429s (the collector may be refusing its size) and recovers', async () => {
     const batchSizes: number[] = [];
     let limited = 4;
     const { relay } = make({ flushDelayMs: 50 }, async (items) => {
@@ -1159,7 +1159,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(relay.pending()).toBe(0);
   });
 
-  it('successes double the batch ceiling back up after it was halved (R2P-2)', async () => {
+  it('successes double the batch ceiling back up after it was halved', async () => {
     const batchSizes: number[] = [];
     let calls = 0;
     const { relay } = make({ flushDelayMs: 50 }, async (items) => {
@@ -1175,7 +1175,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(batchSizes).toEqual([50, 50, 25, 12, 24, 48, 16]);
   });
 
-  it('a success resets the repeated-429 count (R2P-2)', async () => {
+  it('a success resets the repeated-429 count', async () => {
     const batchSizes: number[] = [];
     const results: NotifyResult[] = [
       { outcome: 'retry', rateLimited: true },
@@ -1194,7 +1194,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(batchSizes).toEqual([50, 50, 50, 50]);
   });
 
-  it('a non-429 retry in between resets the repeated-429 count (no halving) (R2P-2)', async () => {
+  it('a non-429 retry in between resets the repeated-429 count (no halving)', async () => {
     const batchSizes: number[] = [];
     const results: NotifyResult[] = [
       { outcome: 'retry', rateLimited: true },
@@ -1262,7 +1262,7 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
   });
 });
 
-describe('take / adopt — the relaunch() hand-over (R2L-6)', () => {
+describe('take / adopt — the relaunch() hand-over', () => {
   it('take() removes the queued notifications and cancels the scheduled send', async () => {
     const { relay, send } = make({ flushDelayMs: 1000 });
     relay.enqueue({ title: 'a' });
@@ -1299,7 +1299,7 @@ describe('take / adopt — the relaunch() hand-over (R2L-6)', () => {
   });
 });
 
-describe('take() hands back what a request still in flight later fails to deliver (R3L-5)', () => {
+describe('take() hands back what a request still in flight later fails to deliver', () => {
   const inFlight = () => {
     let settle: (result: NotifyResult) => void = () => {};
     const send: Send = () =>

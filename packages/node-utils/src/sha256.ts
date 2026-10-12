@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 // The node-family upload-checksum digest.
 //
-// `@bugsee/util`'s `sha256Hex` is WebCrypto-only, because util is tier-0 and ships inside every browser and
+// `@bugsee/util`'s `sha256Hex` is WebCrypto-only, because util ships inside every browser and
 // edge bundle, where any `node:crypto` specifier breaks the build. The one supported runtime without global
 // `crypto.subtle` is unflagged Node 18 (and Electron mains built on it), so the node platform supplies this
 // digest to core's upload-pipeline `sha256` seam — the same shape as `httpRequest` for its transport seam.

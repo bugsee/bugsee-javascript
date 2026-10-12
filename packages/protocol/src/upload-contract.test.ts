@@ -7,8 +7,9 @@
 // authoritative. These tests pin every enum in the schema to its TS union, so adding a FileType or a
 // RuntimeType without updating the schema fails here rather than in production.
 //
-// Introduced with: the adversarial review found the e2e mock
-// collector "validates nothing — it is a byte sink, not a contract", which is how wire defects such as the never-called logLevelToWire survived e2e.
+// Introduced with Wave V0: the adversarial review found the e2e mock
+// collector "validates nothing — it is a byte sink, not a contract" (SEV1
+// #7), which is how wire defects such as the never-called logLevelToWire survived e2e.
 import { describe, expect, it } from 'vitest';
 import schema from '../upload-contract.schema.json' with { type: 'json' };
 import { DEFAULT_FILENAMES } from './constants';

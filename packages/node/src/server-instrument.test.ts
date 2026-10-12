@@ -25,7 +25,7 @@ const stashed = (ctx: unknown): unknown =>
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement.
+// member this doesn't implement — §'s "structural point (S2)".
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -138,7 +138,7 @@ describe('openServerRequest', () => {
   });
 
   it('redacts secrets in the request URL before they reach `http.url`', () => {
-    // `info.url` is the raw request target, and its own doc comment claimed "the redaction
+    // Wave 1.1. `info.url` is the raw request target, and its own doc comment claimed "the redaction
     // pipeline scrubs query secrets" — it did not. This is
     // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
     // place that has to be right.
@@ -272,7 +272,7 @@ describe('openServerRequest', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /o/:id');
   });
 
-  // `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
+  // D2 / R3 S1: `getAttributes` is a REQUIRED, non-throwing member of the real `Span` — no
   // production `Transaction` can throw from it, so `finishWith` reads it directly (no bespoke inner
   // try/catch around just that call), and the outer try/catch is NOT proven through it (a throwing
   // `getAttributes` is not a reachable production trigger). The outer try/catch around the whole
@@ -302,7 +302,7 @@ describe('openServerRequest', () => {
   // structural doubles above — so the fix is proven against the actual setRouteName/getAttributes/setName
   // implementation this file's own NAME_SOURCE_ATTRIBUTE-based check depends on, not merely against a
   // hand-rolled mock's assumption about that contract.
-  it("F-4 integration (real performance controller): setRouteName's rename survives finish()", async () => {
+  it("integration (real performance controller): setRouteName's rename survives finish", async () => {
     const { createPerformanceController, createTransactionStore } = await import(
       '@bugsee/performance'
     );
@@ -321,7 +321,7 @@ describe('openServerRequest', () => {
     expect(buffered?.name).toBe('/o/custom-name'); // the manual rename won, not the route-derived name
   });
 
-  it('F-4 integration (real performance controller): with NO manual rename, the route name is used', async () => {
+  it('integration (real performance controller): with NO manual rename, the route name is used', async () => {
     const { createPerformanceController, createTransactionStore } = await import(
       '@bugsee/performance'
     );
@@ -336,7 +336,7 @@ describe('openServerRequest', () => {
     expect(buffered?.name).toBe('GET /o/:id');
   });
 
-  it('finish(status, outcome) honors an EXPLICIT outcome over the status-derived one (D10)', () => {
+  it('finish(status, outcome) honors an EXPLICIT outcome over the status-derived one', () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     // recorded status 200 (sub-500) but the framework decided ERROR (e.g. Nest 5xx HttpException)
@@ -358,7 +358,7 @@ describe('openServerRequest', () => {
     expect(txn.finish).toHaveBeenCalledWith('CANCELLED');
   });
 
-  it('finish(status, "CANCELLED") records the real status but finishes CANCELLED (distinct from cancel())', () => {
+  it('finish(status, "CANCELLED") records the real status but finishes CANCELLED (distinct from cancel)', () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     openServerRequest(info(), { getClient: () => client }).finish(499, 'CANCELLED');
@@ -862,7 +862,7 @@ describe('getActiveServerSpan', () => {
   });
 });
 
-describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return headers)', () => {
+describe('responseHeaders — BE→FE return path (return headers)', () => {
   // The span exposes the configured return headers; the CALLER (http patch / native wrap) writes them to
   // its response object. Default OFF until the frontend consumes them.
   const ownerSpan = (traceResponse?: ServerInstrumentOptions['traceResponse'], txnOver = {}) => {
@@ -871,7 +871,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     return startServerSpan(info({ url: '/o/7' }), { getClient: () => client, traceResponse });
   };
 
-  it('emits NOTHING when traceResponse is absent (default off, T9)', () => {
+  it('emits NOTHING when traceResponse is absent (default off)', () => {
     expect(ownerSpan().responseHeaders()).toEqual({});
   });
 
@@ -879,7 +879,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     expect(ownerSpan({ serverTiming: false, traceresponse: false }).responseHeaders()).toEqual({});
   });
 
-  it('traceresponse:true → the W3C trace-context-L2 header (00-traceId-beSpanId-flags), sampled → 01', () => {
+  it('traceresponse:true → the W3C trace-context- header (00-traceId-beSpanId-flags), sampled → 01', () => {
     expect(ownerSpan({ traceresponse: true }).responseHeaders()).toEqual({
       traceresponse: '00-trace-1-span-1-01',
     });
@@ -1000,7 +1000,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
   });
 });
 
-describe('a throwing RequestContextStore never breaks the request path (F5)', () => {
+describe('a throwing RequestContextStore never breaks the request path', () => {
   // The store is integrator-replaceable (the `requestContextStore` launch option); a custom binding
   // whose getCurrent() throws must degrade every server-instrument read to "no active context",
   // never propagate into the request lifecycle.
@@ -1191,7 +1191,7 @@ describe('a throwing RequestContextStore never breaks the request path (F5)', ()
   });
 });
 
-describe('concurrent runServerRequest isolation (R-2, the D2 production site)', () => {
+describe('concurrent runServerRequest isolation (the production site)', () => {
   it('two concurrent requests through the real path each read their own transaction', async () => {
     // Every other isolation proof hand-opens its own context, but the hazard is runServerRequest →
     // makeSpan → perf.startTransaction per incoming request. Two concurrent requests through the
@@ -1241,7 +1241,7 @@ describe('concurrent runServerRequest isolation (R-2, the D2 production site)', 
   });
 });
 
-describe('integrator-hostile RequestContextStore members (round 6)', () => {
+describe('integrator-hostile RequestContextStore members', () => {
   // getCurrent is not the only member an integrator's custom store can break. A store whose
   // MUTATORS throw must degrade the same way — skip the write, keep the request path intact —
   // never propagate into the request lifecycle.

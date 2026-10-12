@@ -35,8 +35,9 @@ let carrier: object = globalThis;
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The default SDK_VERSION baked into @bugsee/browser (packages/browser/src/launch.ts:79) is the
-  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish). Staging's session endpoint actively REJECTS that version
-  // (UnsupportedSdkError, code 99098) rather than merely recording it — see Override
+  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish).
+  // Staging's session endpoint actively REJECTS that version
+  // (UnsupportedSdkError, code 99098) rather than merely recording it. Override
   // it here so this sample's data can land at all; a real published SDK would carry a real version.
   sdkVersion: '1.0.0',
   appId: 'com.bugsee.sample.react-spa',

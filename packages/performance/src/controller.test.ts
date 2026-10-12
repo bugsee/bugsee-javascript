@@ -44,7 +44,7 @@ describe('createPerformanceController', () => {
     expect(txn.getTraceId()).toBe(inbound);
   });
 
-  it('continuation makes the root a CHILD of the inbound span and ADOPTS the upstream sampling (§12)', () => {
+  it('continuation makes the root a CHILD of the inbound span and ADOPTS the upstream sampling', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({
       clock: fixedClock,
@@ -168,7 +168,7 @@ describe('createPerformanceController', () => {
     expect(store.size()).toBe(1);
   });
 
-  it('setActiveTransactionName refines the active transaction name + stamps the provenance (D5)', () => {
+  it('setActiveTransactionName refines the active transaction name + stamps the provenance', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({ clock: fixedClock, store });
     const txn = api.startTransaction({ name: '/users/42', operation: 'navigation' }); // raw URL
@@ -219,7 +219,7 @@ describe('createPerformanceController', () => {
   });
 });
 
-describe('createPerformanceController — the injectable active-span store (D2 part 2)', () => {
+describe('createPerformanceController — the injectable active-span store', () => {
   it('startTransaction writes the new transaction into the injected store', () => {
     const store = createTransactionStore();
     const activeSpanStore = createSingleSlotActiveSpanStore();

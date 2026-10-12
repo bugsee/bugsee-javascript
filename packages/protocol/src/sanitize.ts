@@ -4,7 +4,7 @@ import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import type { NetworkEvent, NoBodyReason } from './wire';
 
-// Object/header/param sanitization: apply the key denylists and the
+// Object/header/param sanitization: apply the key denylists (§sensitive) and the
 // shape pass (§shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
 // (e.g. from JSON.parse'd untrusted data) is stored as own data and cannot corrupt a prototype.
 
@@ -74,7 +74,7 @@ export function sanitizeParams(
  *     its value alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 after.
  *  2. KEY NAMES became a leak channel. `{"tokens":{"eyJ…":true}}` emitted the token, because the token IS
  *     the key. Maps keyed by a secret or an identifier (session→token, user→credential) are ordinary.
- *  3. It broke Android parity, which CLAUDE.md makes binding: `NetworkDataSanitizer` does
+ * 3. It broke Android parity, which makes binding: `NetworkDataSanitizer` does
  * `obj.put(key, REDACTED_VALUE)` unconditionally, and requires byte-identical output.
  *
  * The diagnostic cost is accepted and real: inside a subtree the app labelled `password`/`token`/`secret`,

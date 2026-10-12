@@ -235,7 +235,7 @@ describe('instrumentEdgeClass', () => {
 // of the instance, shadowing the prototype method out of existence as far as RPC is concerned. Verified on
 // real workerd in @bugsee/instrumentation-tests (`durable-object-rpc.e2e.ts`), with an uninstrumented
 // method on the same instance as the control; these are the fast structural equivalents.
-describe('instrumented methods stay on the prototype (Wave: cloudflare SEV1 #1)', () => {
+describe('instrumented methods stay on the prototype', () => {
   class Counter {
     constructor(
       public ctx: unknown,

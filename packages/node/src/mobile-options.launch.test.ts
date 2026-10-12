@@ -179,7 +179,7 @@ describe('captureBreadcrumbs / captureLogsLevel', () => {
   });
 });
 
-describe('captureLogs gates automatic capture, not explicit client.log() (specs#49)', () => {
+describe('captureLogs gates automatic capture, not explicit client.log()', () => {
   const logTextOf = (files: Files): string =>
     Object.entries(files)
       .filter(([name]) => name.startsWith('log'))

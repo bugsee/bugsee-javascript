@@ -21,7 +21,7 @@ describe('wire constants', () => {
     expect(BUNDLE_FILE_SUFFIX).toBe('.bundle.zip');
   });
 
-  it('breadcrumbs default filename has NO .json extension (mobile contract)', () => {
+  it('breadcrumbs default filename has NO.json extension (mobile contract)', () => {
     expect(DEFAULT_FILENAMES.breadcrumbs).toBe('breadcrumbs');
   });
 
@@ -55,7 +55,7 @@ describe('wire constants', () => {
   });
 
   // The geometry sidecar that gives `input`'s coordinates a frame to be drawn against
-  // (specs sdk/reporting/bundle/video-aux.md). Mobile-canonical name: the viewer's manifest
+  // (specs). Mobile-canonical name: the viewer's manifest
   // reader switches on the TYPE `video.aux`, so the type string is the contract.
   it('video.aux default filename is the geometry sidecar', () => {
     expect(DEFAULT_FILENAMES['video.aux']).toBe('video.aux.json');

@@ -1,6 +1,5 @@
 // Minimal request validation — no schema library needed for two small resources. Every validation
-// failure is a genuine 4xx returned directly (never thrown), so it never reaches Bugsee's errorHandler
-// — see scenarios.md S-4xx.
+// failure is a genuine 4xx returned directly (never thrown), so it never reaches Bugsee's errorHandler.
 export class ValidationError extends Error {
   constructor(message: string) {
     super(message);

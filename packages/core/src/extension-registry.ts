@@ -1,6 +1,6 @@
 import type { NameExtensionMapping } from '@bugsee/types';
 
-// Extension API registry. An extension's setup() exposes its typed API via
+// Extension API registry. An extension's setup exposes its typed API via
 // client.registerExt(name, api); consumers retrieve it with client.ext(name). Typed through the
 // NameExtensionMapping declaration-merge target, so client.ext('performance') is fully typed only
 // where the owning package's types are reachable. The Extension lifecycle (setup/stop) is
