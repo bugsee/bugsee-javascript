@@ -196,7 +196,7 @@ describe('fastify adapter: shouldReport against REAL Fastify Ajv schema validati
 
       expect(await client.flush(5000)).toBe(true);
       const parsed = bundles.map(parseBundle);
-      // ONLY the genuine throw produced an incident — the schema-validation 400 did not (F-1/F-3).
+      // ONLY the genuine throw produced an incident — the schema-validation 400 did not.
       expect(parsed).toHaveLength(1);
       expect(parsed[0]?.request.source.mechanism).toBe('http-error');
     } finally {

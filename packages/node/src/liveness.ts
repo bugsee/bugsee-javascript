@@ -5,7 +5,7 @@ import { readFileBytes } from '@bugsee/node-utils';
 import { strFromU8 } from '@bugsee/util';
 import type { InstanceOwner } from './instance-layout';
 
-// Liveness detection for multi-instance recovery Java's
+// Liveness detection for multi-instance recovery. Java's
 // OS FileLock (auto-released on process death) has no portable JS equivalent, so a peer decides whether a
 // sibling subtree is dead from TWO portable signals: (1) the owning OS process still exists
 // (`process.kill(pid, 0)`), and (2) the subtree's `.live` heartbeat is fresh. A whole-process death is

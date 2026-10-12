@@ -174,7 +174,7 @@ describe('collectInteractions', () => {
    */
   it('tolerates network activity, a hide, and teardown before the first interaction', () => {
     const source = intSource();
-    // The emitter SWALLOWS a listener throw, so `not.toThrow` around `emit` cannot see a keepAlive that
+    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` cannot see a keepAlive that
     // blew up on the undefined transaction. The error sink can.
     const listenerErrors: unknown[] = [];
     const network = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>((e) =>

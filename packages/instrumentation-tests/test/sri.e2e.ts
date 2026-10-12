@@ -1,11 +1,11 @@
-// The Subresource Integrity SEV1, end to end.
+// The Subresource Integrity defect, end to end.
 //
 // Reproduced 2026-09-18 on webpack 5.111 + html-webpack-plugin + webpack-subresource-integrity in
 // Chromium: after `bugsee-cli sourcemaps inject` ran over the emitted build, the entry script was
 // BLOCKED — "Failed to find a valid digest in the 'integrity' attribute" — and the page ran nothing.
 // Stamping happened after the SRI plugin had hashed the files.
 //
-// The fix stamps INSIDE the compilation, between the source-map emit and the SRI hashing
+// The fix stamps INSIDE the compilation, between the source-map emit and the SRI hashing,
 // so the hashes describe the stamped bytes (packages/bundler-plugin-core/src/stamp-assets.ts).
 // This proves it the only way that counts: a REAL build with the REAL plugins and the REAL bugsee-cli,
 // loaded in a REAL browser. A lazy chunk is included because its hash is not in the HTML at all —

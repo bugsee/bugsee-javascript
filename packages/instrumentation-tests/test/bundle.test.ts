@@ -6,9 +6,9 @@
 // exactly the theater we are removing.
 //
 // The two integrity cases are modelled on REAL confirmed defects:
-//   - core Pass D: a recovered crash bundle declared `profile.json` while the zip held only the
+//   - core bundle recovery: a recovered crash bundle declared `profile.json` while the zip held only the
 // directory-shaped entry `profile.json/`.
-//   - capture/node: URL query-string credentials reached the wire unredacted
+//   - capture/node: URL query-string credentials reached the wire unredacted.
 import { gzipSync, strToU8, zipSync } from '@bugsee/util';
 import { describe, expect, it } from 'vitest';
 import {

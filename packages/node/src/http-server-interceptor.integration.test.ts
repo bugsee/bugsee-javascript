@@ -29,7 +29,7 @@ const fakeTxn = (): Transaction =>
     getOperation: () => 'http.server',
     getDescription: () => undefined,
     getName: () => 'name',
-    // Required so server-instrument's F-4 manual-rename check (transaction.getAttributes()) runs for
+    // Required so server-instrument's manual-rename check (transaction.getAttributes()) runs for
     // real instead of degrading via a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
     getAttributes: vi.fn(() => ({})),
     finish: vi.fn(),
@@ -208,7 +208,7 @@ describe('http-server-interceptor (real node:http)', () => {
     expect(finishedWith(txns[0], 'OK')).toBe(false);
   });
 
-  it('writes the BE→FE return headers onto a REAL response when traceResponse is opted in (X4)', async () => {
+  it('writes the BE→FE return headers onto a REAL response when traceResponse is opted in', async () => {
     // Swap the default interceptor for one with traceResponse on (afterEach uninstalls whatever `interceptor` is).
     interceptor.uninstall();
     interceptor = createHttpServerInterceptor({

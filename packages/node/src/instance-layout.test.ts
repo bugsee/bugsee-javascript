@@ -75,7 +75,7 @@ describe('writeInstanceOwner', () => {
     });
   });
 
-  it('removes a stale.stopped marker: a (re)launch into the same subtree is live, not recoverable', () => {
+  it('removes a stale .stopped marker: a (re)launch into the same subtree is live, not recoverable', () => {
     const dataDir = mkDir();
     const layout = createInstanceLayout(dataDir, { pid: 7, threadId: 1, nonce: () => 'z9' });
     writeInstanceOwner(layout, 1, '1');

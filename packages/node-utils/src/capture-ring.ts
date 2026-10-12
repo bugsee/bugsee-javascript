@@ -1,4 +1,4 @@
-// CaptureRing — the shared, fixed, reused SAB byte-ring at the heart of the Phase-2 off-thread write path
+// CaptureRing — the shared, fixed, reused SAB byte-ring at the heart of the off-thread write path.
 // A single PRODUCER (the main thread) encodes
 // capture frames IN PLACE into the ring (zero-copy, zero-alloc — `encodeInto` writes straight into the SAB)
 // and a single CONSUMER (the I/O worker) reads them in place and `writevSync`s them to disk. Nothing is ever

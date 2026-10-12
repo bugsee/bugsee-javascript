@@ -313,7 +313,7 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
 }
 
 /**
- * Off-thread capture-writer battery (server write-path Phase 2 — the INSURANCE path). Boot with
+ * Off-thread capture-writer battery (the off-thread writer — the INSURANCE path). Boot with
  * `captureWriter: 'worker'` so the rolling capture is drained to disk by a REAL worker_threads worker over
  * the shared zero-copy SAB ring — exercising, on each runtime, the worker_threads spawn + the `Atomics`
  * flush-and-ack handshake + the SharedArrayBuffer ring + the worker-owns-the-fds design. A burst of logs
@@ -361,7 +361,7 @@ const INBOUND_TRACE = '0af7651916cd43dd8448eb211c80319c'; // 16-byte W3C trace i
 const INBOUND_SPAN = 'b7ad6b7169203331'; // 8-byte upstream span id
 
 /**
- * Cross-project distributed-tracing round-trip (cross-project-tracing.md X1–X5). One auto-instrumented
+ * Cross-project distributed-tracing round-trip. One auto-instrumented
  * node:http backend, hit with an inbound `traceparent`+`tracestate` (the originator/frontend side). The
  * backend (a) CONTINUES that trace as a child, (b) makes an allowlisted OUTGOING call from the handler that
  * the propagation decorator stamps with the continued `traceparent` + `bugsee=` tracestate, and (c) reports
@@ -393,7 +393,7 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
       // injects `traceparent` (continuing the inbound trace) + `bugsee=` onto it → the collector records them.
       const echo = await fetch(`${collectorUrl}/echo?probe=propagation`);
       await echo.text();
-      // A report from the handler → request.json carries trace_id = the inbound trace (+ continuation).
+      // A report from the handler → request.json carries trace_id = the inbound trace (and continuation).
       await client.logException(new Error('e2e propagation handler failure'));
       res.statusCode = 200;
       res.end('ok');
@@ -418,8 +418,8 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
 }
 
 /**
- * Privacy battery. A direct re-run of the probe that FOUND the leaks
- * Drive real traffic whose
+ * Privacy battery. A direct re-run of the probe that FOUND the leaks:
+ * drive real traffic whose
  * every secret-bearing position is filled with a distinctive marker, then let the e2e scan the uploaded
  * bytes for those markers. The original probe recovered QUERY_APIKEY, QUERY_PLAIN and URL_USERINFO from the
  * SDK's own dataDir while headers and JSON bodies were correctly redacted — so the markers are placed to

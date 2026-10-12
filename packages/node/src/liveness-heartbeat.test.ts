@@ -36,7 +36,7 @@ describe('startLivenessHeartbeat', () => {
   // These three cover the FALLBACK carrier — the scheduler interval used where a runtime has no
   // worker_threads. Since the default carrier is a worker thread, so they opt in explicitly rather
   // than silently testing a path production no longer takes.
-  it('creates the.live file immediately and schedules the interval (default 10s)', () => {
+  it('creates the .live file immediately and schedules the interval (default 10s)', () => {
     const liveFile = join(mkDir(), '.live');
     const { scheduler, calls } = fakeScheduler();
 
@@ -66,7 +66,7 @@ describe('startLivenessHeartbeat', () => {
     expect(touch).toHaveBeenCalledWith(liveFile);
   });
 
-  it('re-writes (advances the mtime of) an existing.live file with the default touch', () => {
+  it('re-writes (advances the mtime of) an existing .live file with the default touch', () => {
     const liveFile = join(mkDir(), '.live');
     const { scheduler, calls } = fakeScheduler();
     startLivenessHeartbeat({ liveFile, scheduler, spawnHeartbeatWorker: () => undefined });

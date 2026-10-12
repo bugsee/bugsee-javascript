@@ -1,6 +1,6 @@
 import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 
-// R4 — renderer killed before it could report anything
+// Renderer killed before it could report anything
 //
 // A renderer that dies from an OOM, a GPU fault or a native crash never runs the JS that would forward its
 // incident. Main therefore watches `render-process-gone` and synthesises the incident itself, attributed
@@ -61,7 +61,7 @@ export interface RendererGoneHandlerOptions {
     harvest(marker: CrashpadSessionMarker): Promise<HarvestedDump[]> | HarvestedDump[];
     claim(marker: CrashpadSessionMarker, name: string): void;
   };
-  /** Submit the synthesised incident (the join, with the dump attached when one was claimed). */
+  /** Submit the synthesised incident (with the dump attached when one was claimed). */
   submit: (incident: {
     reason: string;
     exitCode?: number;

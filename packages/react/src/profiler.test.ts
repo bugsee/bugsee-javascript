@@ -86,7 +86,7 @@ describe('recordReactRenderSpan', () => {
     }
   });
 
-  it('falls back to a Date.now-reconstructed origin when there is no `performance` global AT ALL', () => {
+  it('falls back to a Date.now()-reconstructed origin when there is no `performance` global AT ALL', () => {
     // Distinct from the case above: there the global exists and lacks the field; here the whole object is
     // missing, which is the non-browser host this React-free escape hatch is meant to be callable from.
     // Must not throw OUTSIDE `recordRenderSpan`'s own guard — that would escape into React's commit phase.

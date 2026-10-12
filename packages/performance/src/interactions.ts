@@ -27,7 +27,7 @@ import { onHidden } from './web-vitals/observe';
 //
 // SCOPE: this records the interaction TRANSACTION + its triggered work (the http.client async tail) and
 // stamps the Event-Timing latency as an attribute. Per-interaction CLS/INP web-vital ATTRIBUTION is
-// intentionally DEFERRED to a later change (per-navigation/interaction vitals are not in).
+// intentionally DEFERRED to a later change (per-navigation/interaction vitals are not included yet).
 
 /** The minimal interaction detail the wiring reads — structurally matches the browser `InteractionDetail`. */
 export interface InteractionDetailLike {

@@ -2,7 +2,7 @@ import { BugseeError, type HttpTransport } from '@bugsee/core';
 import type { TransactionWire } from '@bugsee/performance';
 import { toOtlpExportRequest } from './to-otlp';
 
-// (Produce): the lightweight OTLP/HTTP-JSON trace exporter. Maps a batch of Bugsee transactions
+// Produce: the lightweight OTLP/HTTP-JSON trace exporter. Maps a batch of Bugsee transactions
 // (via the Phase-A mapping) to an OTLP ExportTraceServiceRequest and POSTs it as application/json to the
 // user's collector/endpoint. It returns a `send`-shaped function — drop-in for the performance uploader's
 // injected `send` — so the uploader's drain/flush/drop-on-failure machinery delivers to OTLP backends.

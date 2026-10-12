@@ -101,7 +101,7 @@ describe('installBugseeNitro', () => {
     expect(result).toBe(client);
   });
 
-  it('reports a server error (5xx / non-) via the Nitro error hook, with route attribution', () => {
+  it('reports a server error (5xx / non-H3) via the Nitro error hook, with route attribution', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
@@ -116,7 +116,7 @@ describe('installBugseeNitro', () => {
     );
   });
 
-  it('does NOT report an expected client error (statusCode < 500, e.g. 404/422)', () => {
+  it('does NOT report an expected H3 client error (statusCode < 500, e.g. 404/422)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
@@ -128,7 +128,7 @@ describe('installBugseeNitro', () => {
     expect(client.event).not.toHaveBeenCalled();
   });
 
-  it('DOES report a 5xx error (statusCode >= 500 is a real crash)', () => {
+  it('DOES report a 5xx H3 error (statusCode >= 500 is a real crash)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });

@@ -25,7 +25,7 @@ const stashed = (ctx: unknown): unknown =>
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — §'s "structural point (S2)".
+// member this doesn't implement.
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -41,7 +41,7 @@ const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
     getStatus: () => 'OK',
     getOperation: () => 'http.server',
     getDescription: () => undefined,
-    // Required so finishWith's F-4 manual-rename check (transaction.getAttributes()) runs for real
+    // Required so finishWith's manual-rename check (transaction.getAttributes()) runs for real
     // instead of falling through a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
     getAttributes: vi.fn(() => ({})),
     getName: () => 'name',
@@ -138,7 +138,7 @@ describe('openServerRequest', () => {
   });
 
   it('redacts secrets in the request URL before they reach `http.url`', () => {
-    // Wave 1.1. `info.url` is the raw request target, and its own doc comment claimed "the redaction
+    // `info.url` is the raw request target, and its own doc comment claimed "the redaction
     // pipeline scrubs query secrets" — it did not. This is
     // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
     // place that has to be right.
@@ -242,7 +242,7 @@ describe('openServerRequest', () => {
     expect(txn2.finish).toHaveBeenCalledWith('ERROR');
   });
 
-  // F-4: `setRouteName()`/`setActiveTransactionName()` (the performance controller) rename the ACTIVE
+  // `setRouteName()`/`setActiveTransactionName()` (the performance controller) rename the ACTIVE
   // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source'). finishWith() used to
   // unconditionally call `transaction.setName(spanName(info, route))` on finish, clobbering that manual
   // rename with the route-derived name every time. The fix: skip the automatic setName call once the
@@ -272,7 +272,7 @@ describe('openServerRequest', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /o/:id');
   });
 
-  // D2 / R3 S1: `getAttributes` is a REQUIRED, non-throwing member of the real `Span` — no
+  // `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
   // production `Transaction` can throw from it, so `finishWith` reads it directly (no bespoke inner
   // try/catch around just that call), and the outer try/catch is NOT proven through it (a throwing
   // `getAttributes` is not a reachable production trigger). The outer try/catch around the whole
@@ -298,11 +298,11 @@ describe('openServerRequest', () => {
     expect(txn.finish).not.toHaveBeenCalled(); // never reached — the throw short-circuits the block
   });
 
-  // F-4 integration: the REAL @bugsee/performance controller + real Transaction — not the fakeTxn/fakePerf
+  // Integration: the REAL @bugsee/performance controller + real Transaction — not the fakeTxn/fakePerf
   // structural doubles above — so the fix is proven against the actual setRouteName/getAttributes/setName
   // implementation this file's own NAME_SOURCE_ATTRIBUTE-based check depends on, not merely against a
   // hand-rolled mock's assumption about that contract.
-  it("integration (real performance controller): setRouteName's rename survives finish", async () => {
+  it("integration (real performance controller): setRouteName's rename survives finish()", async () => {
     const { createPerformanceController, createTransactionStore } = await import(
       '@bugsee/performance'
     );
@@ -358,7 +358,7 @@ describe('openServerRequest', () => {
     expect(txn.finish).toHaveBeenCalledWith('CANCELLED');
   });
 
-  it('finish(status, "CANCELLED") records the real status but finishes CANCELLED (distinct from cancel)', () => {
+  it('finish(status, "CANCELLED") records the real status but finishes CANCELLED (distinct from cancel())', () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     openServerRequest(info(), { getClient: () => client }).finish(499, 'CANCELLED');
@@ -862,7 +862,7 @@ describe('getActiveServerSpan', () => {
   });
 });
 
-describe('responseHeaders — BE→FE return path (return headers)', () => {
+describe('responseHeaders — BE→FE return path', () => {
   // The span exposes the configured return headers; the CALLER (http patch / native wrap) writes them to
   // its response object. Default OFF until the frontend consumes them.
   const ownerSpan = (traceResponse?: ServerInstrumentOptions['traceResponse'], txnOver = {}) => {
@@ -879,7 +879,7 @@ describe('responseHeaders — BE→FE return path (return headers)', () => {
     expect(ownerSpan({ serverTiming: false, traceresponse: false }).responseHeaders()).toEqual({});
   });
 
-  it('traceresponse:true → the W3C trace-context- header (00-traceId-beSpanId-flags), sampled → 01', () => {
+  it('traceresponse:true → the W3C trace-context Level 2 header (00-traceId-beSpanId-flags), sampled → 01', () => {
     expect(ownerSpan({ traceresponse: true }).responseHeaders()).toEqual({
       traceresponse: '00-trace-1-span-1-01',
     });

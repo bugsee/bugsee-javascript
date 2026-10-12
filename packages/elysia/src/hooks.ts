@@ -22,7 +22,7 @@ import { randomId } from '@bugsee/util';
 //                  not error-shape-based, so it does not flow through the span's shouldReport). `set.status`
 //                  is unreliable here, so the txn status is derived from the code.
 //   mapResponse  — fires LAST for BOTH success and error — finishes the transaction with the EXPLICIT
-// outcome (decoupled from the recorded status) + the route-parametrized name.
+//                  outcome (decoupled from the recorded status) + the route-parametrized name.
 // Fully defensive: a failure in any hook never breaks the request.
 
 /** Minimal structural Elysia request (a Fetch Request). */
@@ -134,7 +134,7 @@ interface RequestState {
  * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect is an instance of "features that silently do nothing"; reporting it keeps the
+ * this crash for a defect that silently disables a feature; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {

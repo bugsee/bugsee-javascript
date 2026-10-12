@@ -70,7 +70,7 @@ export interface TransactionWire {
    * It was omitted here, so the OTLP converter fabricated one as `traceId.slice(0, 16)`. That broke a
    * distributed trace at every service boundary: the downstream root's `parentSpanId` is the id the
    * upstream PROPAGATED (the real one), while the upstream emitted its root under the derived one — so the
-   * downstream pointed at a span nobody emitted. It also gave every service in a trace the same root id
+   * downstream pointed at a span nobody emitted. It also gave every service in a trace the same root id.
    */
   spanId: string;
   name: string;
@@ -96,8 +96,8 @@ export interface TransactionOptions {
   description?: string;
   /**
    * The parent span id for the root span — set ONLY when continuing an inbound distributed trace (the
-   * upstream caller's span). Makes this transaction's root a true child of the upstream span (Bugsee OTLP
-   * ). Omitted → a fresh root with no parent (the default standalone transaction).
+   * upstream caller's span). Makes this transaction's root a true child of the upstream span.
+   * Omitted → a fresh root with no parent (the default standalone transaction).
    */
   parentSpanId?: string;
   /** Whether the trace is sampled (kept). Default true. */

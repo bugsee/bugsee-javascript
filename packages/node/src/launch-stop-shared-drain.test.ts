@@ -14,8 +14,8 @@ import {
 } from './launch';
 import { isCleanlyStopped } from './liveness';
 
-// node half: (the shared stop drain marks the subtree from whichever stop observes it
-// settle, exactly once) and (a relaunch into a pinned subtree is live, not recoverable).
+// Node: the shared stop drain marks the subtree from whichever stop observes it
+// settle, exactly once; and a relaunch into a pinned subtree is live, not recoverable.
 vi.mock('@bugsee/node-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node-utils')>();
   return { ...actual, writeFileSecure: vi.fn(actual.writeFileSecure) };
@@ -105,7 +105,7 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('the.stopped marker follows the shared drain, whichever stop observes it settle', () => {
+describe('the .stopped marker follows the shared drain, whichever stop observes it settle', () => {
   it('stop() then stop(20): the 20 ms call times out, the first still marks when the drain finishes', async () => {
     const dir = dirFor();
     const { transport, release } = gated();
@@ -150,7 +150,7 @@ describe('the.stopped marker follows the shared drain, whichever stop observes i
     expect(markerWrites()).toBe(1);
   });
 
-  it('a stop() during the launch recovery: the marker waits for the recovery, then appears with no further stop', async () => {
+  it('a stop during the launch recovery: the marker waits for the recovery, then appears with no further stop()', async () => {
     let finish: () => void = () => {};
     vi.mocked(runLaunchRecovery).mockImplementationOnce(
       () => new Promise<void>((resolve) => (finish = resolve)),
@@ -271,7 +271,7 @@ describe('relaunch() does not keep instanceIdentity; a launch always clears a st
     expect(subtrees.some((name) => name !== `${process.pid}-0-fixed`)).toBe(true);
   });
 
-  it('relaunch() into an explicitly pinned subtree removes the stale.stopped, so a sibling cannot claim it', async () => {
+  it('relaunch() into an explicitly pinned subtree removes the stale .stopped, so a sibling cannot claim it', async () => {
     const dir = dirFor();
     const first = launch('tok', opts({ dataDir: dir, transport: async () => ok() }));
     await first.stop();

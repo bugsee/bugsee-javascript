@@ -5,9 +5,9 @@
 //  • Merely REGISTERING an `unhandledRejection` listener disables Node's default disposition, which since
 //    Node 15 is to throw and exit 1. A passive listener therefore turns a crashing service into one that
 //    keeps running and reports exit 0 — supervisors, CI and health checks all read success
-// (reproduced on Node v24).
+//    (reproduced on Node v24).
 //  • Registering an `uncaughtException` listener suppresses Node's default handler, which prints the error
-//    and stack to stderr. Nothing re-printed it, so operators lost the first artifact they reach for
+//    and stack to stderr. Nothing re-printed it, so operators lost the first artifact they reach for.
 //
 // A supervisor cannot tell "the SDK is installed" from "the app is healthy", so the SDK has to reproduce
 // what would have happened without it.
@@ -130,7 +130,7 @@ export function printFatal(label: string, value: unknown, write: (text: string) 
  *  - Several Bugsee handlers → all but the last see a non-empty list and stand down. Exactly one re-raise.
  *  - The host has its own handler → a listener always remains, so Bugsee never re-raises. The host
  *    suppressed the default itself and owns the shutdown; killing its process because Bugsee is installed
- * would be the defect in another costume.
+ *    would be the defect in another costume.
  *
  * Supersedes the earlier `listenerCount(signal) === 1` gate, which read "sole handler" from a RAW count and
  * therefore stopped re-raising — hanging the process — as soon as Bugsee installed a second listener.

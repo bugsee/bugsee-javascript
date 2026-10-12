@@ -176,7 +176,7 @@ describe('installBugseeNitroEdge', () => {
     expect(resolveWaitUntil).toHaveBeenCalledWith(undefined);
   });
 
-  it('does NOT report an expected client error (statusCode < 500)', () => {
+  it('does NOT report an expected H3 client error (statusCode < 500)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     captureWaitUntil();
@@ -188,7 +188,7 @@ describe('installBugseeNitroEdge', () => {
     expect(client.logException).not.toHaveBeenCalled();
   });
 
-  it('DOES report a 5xx error (statusCode >= 500 is a real crash)', async () => {
+  it('DOES report a 5xx H3 error (statusCode >= 500 is a real crash)', async () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     const wu = captureWaitUntil();

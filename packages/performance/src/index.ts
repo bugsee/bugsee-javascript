@@ -1,6 +1,6 @@
 // @bugsee/performance
-// APM extension: ext/registerExt. BUILT: the Span/Transaction model +
-// wire, the transaction buffer, the controller (startTransaction/getActiveSpan), the extension shell, the
+// APM extension: ext()/registerExt. BUILT: the Span/Transaction model + the
+// transaction wire, the transaction buffer, the controller (startTransaction/getActiveSpan), the extension shell, the
 // performance.* options, and the full Core Web Vitals capture (LCP/CLS/INP/FCP/TTFB) collected into a
 // pageload transaction. PLANNED: the bundle performance.json emission + the continuous
 // /v2/performance/transactions upload + the umbrella auto-register. Tree-shakes to nothing when unused;

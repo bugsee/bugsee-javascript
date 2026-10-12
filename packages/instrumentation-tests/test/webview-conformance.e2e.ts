@@ -318,7 +318,7 @@ describe('WebView bridge protocol conformance (the native-team reference spec)',
     rx.assertAllConform();
   });
 
-  // WAVE 0.3 — the control-channel token (D-A1/D-A2).
+  // The control-channel token.
   //
   // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret from a CSPRNG,
   // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{transport,controlNonce,captureNonce})`),
@@ -329,7 +329,7 @@ describe('WebView bridge protocol conformance (the native-team reference spec)',
   // script's — which is why the channel had to start OPEN and wait to latch, and why any script could stop
   // capture inside that window. A receiver that mints its own secret has no such window.
 
-  it('requires the NATIVE-minted control secret, from the very first message (D-A10)', async () => {
+  it('requires the NATIVE-minted control secret, from the very first message', async () => {
     // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret, interpolate it into
     // the bundle it injects (`BugseeWebView.launch(token, {transport, controlNonce, captureNonce})`), and put the
     // control one on EVERY control message as `tok`.
@@ -358,13 +358,13 @@ describe('WebView bridge protocol conformance (the native-team reference spec)',
     );
   });
 
-  it('keeps accepting native control AFTER the first authenticated message (D-A10)', async () => {
-    // The canary found missing: every tokened test sent exactly ONE message, so
+  it('keeps accepting native control AFTER the first authenticated message', async () => {
+    // The canary that was found missing: every tokened test sent exactly ONE message, so
     // `if (tok === secret && !authenticated)` — a one-word change — would lock native permanently out of
     // its own channel while the suite stayed green. Native sends many control messages over a session.
     //
-    // caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
-    // under D-A10 `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
+    // A review caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
+    // under the current design `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
     // harness default and got BOTH messages rejected. It then asserted zero reports and passed because
     // nothing was applied at all, which is the opposite of what it is named for.
     const { client, rx } = track(boot());
@@ -384,13 +384,13 @@ describe('WebView bridge protocol conformance (the native-team reference spec)',
     expect(rx.byKind('report'), 'the control channel stopped working entirely').toHaveLength(1);
   });
 
-  it('never puts the CONTROL secret on the wire at all (D-A10)', () => {
+  it('never puts the CONTROL secret on the wire at all', () => {
     // The constraint the whole scheme rests on. `BugseeBridge` is a page global, so any script loading
-    // after the SDK can wrap it and read every subsequent message. Under the token rode `hello` and
-    // the guarantee was only "never REPEATED after hello"; under native already holds the secret, so
+    // after the SDK can wrap it and read every subsequent message. Under the original design the token rode `hello` and
+    // the guarantee was only "never REPEATED after hello"; under the current design native already holds the secret, so
     // it need never be sent — a strictly stronger property, and this asserts that one.
     //
-    // caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
+    // A review caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
     // searching every message for the literal substring "undefined". It could not fail.
     const { rx } = track(boot());
     console.log('post-hello-traffic');
@@ -422,7 +422,7 @@ describe('WebView bridge protocol conformance (the native-team reference spec)',
   });
 
   it('the schema REJECTS a malformed `tok` in BOTH directions', () => {
-    // the schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
+    // The schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
     // `"type":"string","minLength":1` would have gone unnoticed. An empty token matters concretely: the
     // JS side treats a present-but-wrong token as an ATTACK and rejects the message, so a receiver
     // echoing `""` would break the handshake it was meant to authenticate.

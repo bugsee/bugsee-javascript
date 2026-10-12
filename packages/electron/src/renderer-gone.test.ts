@@ -2,7 +2,7 @@ import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import { createRendererGoneHandler } from './renderer-gone';
 
-// R4. A renderer killed by an OOM or a native
+// A renderer killed by an OOM or a native
 // crash never runs the JS that would forward its incident, so main synthesises it — claiming the minidump so
 // the LIVE incident carries it, and falling back to what is available when no dump arrives.
 const marker = {
@@ -86,7 +86,7 @@ describe('createRendererGoneHandler — claiming the minidump', () => {
 
   it('does NOT claim a PRE-EXISTING dump — it belongs to another crash', async () => {
     // The harvest seam returns ALL completed dumps with no per-process/per-run filtering, and claim DELETES.
-    // Taking a pre-existing one destroys another crash's evidence and misattributes it here
+    // Taking a pre-existing one destroys another crash's evidence and misattributes it here.
     // A stale dump left by an earlier fallback is the realistic case.
     const h = harness({}, [[dump('someone-elses.dmp')]]);
     await h.handler.handle(1, { reason: 'crashed' });

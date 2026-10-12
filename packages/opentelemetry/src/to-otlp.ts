@@ -12,7 +12,7 @@ import {
 } from './otlp-wire';
 
 // The Produce-direction mapping: Bugsee performance transactions → the OTLP/HTTP-JSON trace wire.
-// Pure + runtime-portable (no @opentelemetry/* deps). Phase A of docs/design/opentelemetry-integration.md.
+// Pure + runtime-portable (no @opentelemetry/* deps).
 //
 // The wire deliberately omits the root span's id (the root is the transaction; only children carry
 // spanId/parentSpanId). OTLP needs every span to have an id and children to link to the root, so we
@@ -131,14 +131,14 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   // downstream `parentSpanId` actually meet. Falls back to the derived form only for a legacy wire.
   const rootSpanId = txn.spanId ?? deriveRootSpanId(txn.traceId);
   const childIds = new Set(txn.spans.map((s) => s.spanId));
-  // the OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
+  // The OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
   // Every span shares that one decision (the Bugsee transaction wire carries a single root-level
   // `sampled`, not a per-span one).
   const flags = txn.sampled ? OTLP_SPAN_FLAG_SAMPLED : 0;
 
   const rootAttributes: Record<string, unknown> = {
     ...txn.attributes,
-    // root requirements: the transaction name, the sampling decision, the lossless
+    // Root requirements: the transaction name, the sampling decision, the lossless
     // original status, plus the operation + app info + snapshot flag.
     'bugsee.transaction.name': txn.name,
     'bugsee.sampled': txn.sampled,
@@ -206,7 +206,7 @@ export function toOtlpExportRequest(
   return {
     resourceSpans: [
       {
-        // the two profile-fixed resource constants are always present (after the caller's
+        // The two profile-fixed resource constants are always present (after the caller's
         // resource, so they can't be overridden away); service.* + telemetry.sdk.language come from `resource`.
         resource: {
           attributes: toKeyValues({

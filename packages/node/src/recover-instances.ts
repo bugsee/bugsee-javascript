@@ -57,7 +57,7 @@ export interface RecoverInstancesOptions {
   context: () => Omit<BundleAssemblyContext, 'attributes' | 'userIdentifier'>;
   /**
    * The Crashpad-dir seam (Electron). When set, each dead sibling's crashpad-session marker is read and
-   * its pending native `.dmp`s are harvested + synthesized into session-stitched crash bundles
+   * its pending native `.dmp`s are harvested + synthesized into session-stitched crash bundles.
    * Absent → native recovery is skipped.
    */
   nativeCrashSource?: NativeCrashSource;
@@ -289,7 +289,7 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
     return;
   }
 
-  // (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): a
+  // Recovery double-upload (confirmed on 4 samples — events_count +2 per incident, never +1): a
   // bundle can reach `pending/` and STILL leave its incident's report marker behind — the process can die
   // after the durable put but before the upload settles, and client.ts's submitReport clears the marker
   // only once that upload settles. Replaying `pending/` AND rebuilding the same incident from its marker +
@@ -330,7 +330,7 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       }
     }
 
-    // PASS 2 — the marker legs, each withholding every id took ownership of.
+    // PASS 2 — the marker legs, each withholding every id pass 1 took ownership of.
     for (const { sub, markers } of claimed) {
       try {
         await finishSubtree(

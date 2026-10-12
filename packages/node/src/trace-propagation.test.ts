@@ -44,7 +44,7 @@ describe('buildTracePropagationDecorator', () => {
     expect(d?.(req('https://api.stripe.com/charge'))).toBeUndefined();
   });
 
-  // an empty entry used to match every URL (the trace + session ids went to every third party).
+  // An empty entry used to match every URL (the trace + session ids went to every third party).
   it('an empty-string target propagates to nobody; an invalid list is reported through onError', () => {
     const errors: unknown[] = [];
     const d = buildTracePropagationDecorator(

@@ -142,7 +142,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('reads `Server-Timing` when traceparent is the SOLE entry (the real X4 backend format)', () => {
+  it('reads `Server-Timing` when traceparent is the SOLE entry (the real backend format)', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });

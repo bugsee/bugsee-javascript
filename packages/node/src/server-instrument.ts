@@ -37,7 +37,7 @@ export interface ServerRequestInfo {
 
 /**
  * The BE→FE return headers (return path), each independently toggleable. BOTH default OFF
- * (T9) — there is no consumer until the frontend adapters read them, at which point they flip on. Built
+ * — there is no consumer until the frontend adapters read them, at which point they flip on. Built
  * by {@link buildTraceResponseHeaders} and applied to the response by the CALLER (the node:http patch / the
  * native serve wrap), which owns the response object — the core has no response handle.
  */
@@ -382,8 +382,7 @@ export function runServerRequest<T>(
   // handler, so if the SDK throws before invoking it, the customer's handler never runs and the SDK's own
   // error becomes the request's outcome: a 500 on a request that would have succeeded, with the app's error
   // middleware handed a Bugsee-internal Error as if it were their bug
-  // (—
-  // both reproduced against real servers). Any SDK-side failure degrades to running the request
+  // (both reproduced against real servers). Any SDK-side failure degrades to running the request
   // UNINSTRUMENTED, which loses telemetry and nothing else.
   //
   // `dispatched` is what keeps that from swallowing the application's OWN error: once dispatch has been
@@ -515,7 +514,7 @@ function makeSpan(
       if (transaction === undefined || transaction.isFinished()) {
         return;
       }
-      // F-4: `client.ext('performance').setRouteName()` / `setActiveTransactionName()` rename the
+      // `client.ext('performance').setRouteName()` / `setActiveTransactionName()` rename the
       // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source') — the caller's
       // explicit rename. Without this check, the automatic route-derived name below ran unconditionally
       // on every finish and silently overwrote it. Skip the automatic name ONLY when a manual rename

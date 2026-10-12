@@ -19,7 +19,7 @@ import {
 //                    core handles it). The span is held per-request in a WeakMap.
 //   onError        — report an unhandled route error against the request's span, gated by `shouldReport`
 //                    (default: skip 4xx, incl. Fastify's own FST_ERR_VALIDATION schema-validation errors —
-//                    F-1/F-3, same status-based default every other backend adapter uses).
+//                    the same status-based default every other backend adapter uses).
 //   onResponse     — finish the transaction (route-parametrized name + status).
 //   onRequestAbort — cancel the transaction (a client abort fires this, not onResponse).
 // Fully defensive: a hook failure never breaks the request, and done() is always called. The client is the
@@ -102,7 +102,7 @@ const toOptions = (options: FastifyAdapterOptions): ServerInstrumentOptions => (
  * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect is an instance of "features that silently do nothing"; reporting it keeps the
+ * this crash for a defect that silently disables a feature; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupFastify(app: FastifyInstance, options: FastifyAdapterOptions = {}): void {
@@ -143,7 +143,7 @@ function setupFastifyUnsafe(app: FastifyInstance, options: FastifyAdapterOptions
   ): void => {
     try {
       const client = getClient();
-      // F-1/F-3: gate the report on shouldReport (default: skip 4xx, incl. Fastify's own
+      // Gate the report on shouldReport (default: skip 4xx, incl. Fastify's own
       // FST_ERR_VALIDATION schema-validation errors, which carry statusCode: 400) — a client mistake is
       // not an application defect, and the app can override the decision entirely via `shouldReport`.
       if (client !== undefined && shouldReport(error)) {

@@ -1,5 +1,5 @@
 // @bugsee/integration-shims — no-op stand-ins for DOM-only integrations on DOM-less runtimes
-// (line 372). Some capture integrations exist only with a DOM: viewHierarchyProvider
+// Some capture integrations exist only with a DOM: viewHierarchyProvider
 // (DOM snapshot), breadcrumbsProvider (clicks/keys/history), xhrInterceptor. On Cloudflare / Vercel
 // Edge / workers / Node / bun / deno those can't run, so the non-browser platform packages re-export
 // these typed no-ops: user code that references e.g. `viewHierarchyProvider` still type-checks, and

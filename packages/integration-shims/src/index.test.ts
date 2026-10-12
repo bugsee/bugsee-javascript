@@ -159,7 +159,7 @@ describe('named convenience shims', () => {
   });
 });
 
-// Integration (standards, cross-package boundary): the `controllingOption` promise — "it only warns when
+// Integration (cross-package boundary): the `controllingOption` promise — "it only warns when
 // the user enabled the feature" — is NOT enforced by the shim itself. The CAPTURE COORDINATOR reads
 // `provider.controllingOption` and skips the provider entirely when the launch gate says the option is off
 // (packages/core/src/capture-coordinator.ts:41). Calling `provider.start()` directly, as the unit tests

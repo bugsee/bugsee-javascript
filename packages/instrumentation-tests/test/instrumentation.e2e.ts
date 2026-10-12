@@ -45,7 +45,7 @@ type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
 interface LogEntry {
   message: string;
   /** NUMERIC on the wire (mobile parity): 1=Error. 5=Verbose. It shipped as the string name
-   *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
+   *  until it was fixed, because `logLevelToWire` had no callers — this assertion encoded that defect. */
   level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
   context_id?: string;
@@ -110,8 +110,8 @@ describe.each(
 
     // Every uploaded bundle must be internally consistent: manifest ↔ zip agreement, no declared-but-
     // missing file, no directory-shaped stand-in, no undeclared payload, no empty declared file. Added
-    // in — the review found a recovered crash bundle that declared `profile.json` while the zip
-    // held only `profile.json/`, and no harness assertion could see it
+    // after the review found a recovered crash bundle that declared `profile.json` while the zip
+    // held only `profile.json/`, and no harness assertion could see it.
     it('every uploaded bundle is internally consistent (manifest ↔ zip)', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertBundleIntegrity(bundle);
@@ -415,7 +415,7 @@ describe.each(
         seedPendingBundles,
         `seed left no persisted bundle (${seed.stderr})`,
       ).toBeGreaterThanOrEqual(1);
-      // The recover process never logs this incident itself — so if the collector got nothing in,
+      // The recover process never logs this incident itself — so if the collector got nothing in the first phase,
       // any 'e2e multi-instance incident' it later holds can ONLY have come from cross-process recovery.
       expect(uploadsAfterSeed).toBe(0);
     });
@@ -557,20 +557,20 @@ describe.each(
       expect((report as ParsedBundle).request.trace_id).toBe('0af7651916cd43dd8448eb211c80319c');
 
       // (2) The handler's OUTGOING /echo call carried the SAME trace id — the propagation decorator injected
-      // it from the active per-request context (X3), with the backend's OWN span (a child of the inbound span).
+      // it from the active per-request context, with the backend's OWN span (a child of the inbound span).
       const echo = collector.echoHeaders.find((h) => typeof h.traceparent === 'string');
       expect(echo, 'no traceparent injected on the handler’s outgoing call').toBeDefined();
       const traceparent = echo?.traceparent as string;
       expect(traceparent).toContain('0af7651916cd43dd8448eb211c80319c'); // same trace, end to end
       expect(traceparent).not.toContain('b7ad6b7169203331'); // NOT the inbound span — the backend's own span
-      // (3) …and the bugsee= vendor tracestate (X1) rode along with the session-correlation id.
+      // (3) …and the bugsee= vendor tracestate rode along with the session-correlation id.
       expect(typeof echo?.tracestate).toBe('string');
       expect(echo?.tracestate as string).toContain('bugsee=');
     });
   });
 
   describe('privacy: URL and body secrets never reach the uploaded bundle', () => {
-    // The regression gate for. The original finding was proven by reading the SDK's own
+    // The regression gate for the privacy fixes. The original finding was proven by reading the SDK's own
     // dataDir off disk and grepping for markers; this does the same against the delivered bundle, so a
     // future change that unwires any sanitizer fails here even if every unit test still passes.
     let collector: MockCollector;
@@ -610,9 +610,9 @@ describe.each(
     it('leaks no URL query secret, no URL userinfo credential, and no form-body password', () => {
       const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
       assertNoSecrets(probe, [
-        'QUERYAPIKEYSECRET', // ?api_key= — leaked to disk before
-        'URLUSERINFOSECRET', // user:pass@ — leaked to disk before (node-only)
-        'FORMPASSWORDSECRET', // urlencoded body — leaked before
+        'QUERYAPIKEYSECRET', // ?api_key=   — leaked to disk before the fix
+        'URLUSERINFOSECRET', // user:pass@  — leaked to disk before the fix (node-only)
+        'FORMPASSWORDSECRET', // urlencoded body — leaked before the fix
         'AKIAIOSFODNN7EXAMPLE', // shape-matched: no key name to match, only the pattern pass catches it
         'HEADERAUTHSECRET', // control: already redacted
         'JSONBODYSECRET', // control: already redacted

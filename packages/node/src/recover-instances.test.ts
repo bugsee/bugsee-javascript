@@ -242,7 +242,7 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
   });
 
-  // (recovery double-upload): the process can die AFTER the crash bundle reaches the durable
+  // Recovery double-upload: the process can die AFTER the crash bundle reaches the durable
   // `pending/` queue but BEFORE the upload settles — client.ts's submitReport clears the report marker
   // only once that upload settles, so a dead sibling can leave BOTH a pending bundle AND its incident's
   // still-present marker for the SAME crash. Both used to be recovered independently (events_count +2
@@ -317,7 +317,7 @@ describe('recoverInstances', () => {
     expect(createNodeBundleStore(join(dir, '9-9-dead', 'pending')).list()).toEqual(['b1']);
   });
 
-  // an injected `bundleStore` is the integrator's own, stable across launches and outside the
+  // An injected `bundleStore` is the integrator's own, stable across launches and outside the
   // per-instance layout — so it can hold a dead sibling's staged bundle while that sibling's marker is
   // still here. The scan hands each sibling's marker store to `reconcileOwnQueue` and withholds whatever
   // it settled with, so the marker leg does not rebuild the same incident a second time.

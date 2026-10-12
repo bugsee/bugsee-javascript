@@ -6,17 +6,17 @@
  * Each earlier version encoded the policy it was meant to audit, and each certified a round that
  * shipped a data-loss defect:
  *
- * • 's oracle keyed an incident on `reportId ?? 'anon:'+summary`, so a legacy blob and its
- * own marker's rebuild were TWO incidents — it swept the double-report and discarded it;
- * • 's oracle computed `settledOk = ok || permanent` — it ASKED THE SDK whether a deletion
- * was legitimate, so (a 429 classified `permanent`, freeing the blob, the marker, the capture
+ *   • the first oracle keyed an incident on `reportId ?? 'anon:'+summary`, so a legacy blob and its
+ *     own marker's rebuild were TWO incidents — it swept the double-report and discarded it;
+ *   • the second oracle computed `settledOk = ok || permanent` — it ASKED THE SDK whether a deletion
+ *     was legitimate, so a 429 classified `permanent` (freeing the blob, the marker, the capture
  *     chunks and the whole subtree) was unrepresentable in it;
- * • drove the REAL upload stack over a fake collector, which was right, but judged each
+ *   • a later version drove the REAL upload stack over a fake collector, which was right, but judged each
  *     answer against a HAND-TRANSCRIPTION of the same Java table `isRetryableHttpStatus` transcribes.
- * proved that independence was of PROVENANCE, not outcome, and proved three further blind
+ *     That proved the independence was of PROVENANCE, not outcome, and exposed three further blind
  *     spots by re-injecting a known defect: `231 cases swept, 0 invariant violations`.
  *
- * ══ — what changed ════════════════════════════════════════════════════════════════════════
+ * ══ What the current version changes ═════════════════════════════════════════════════════════════════════
  *
  *   1. THE ORACLE NO LONGER CLASSIFIES A STATUS AT ALL. The fake collector declares its own INTENT for
  *      every answer it gives (`Answer` / `ANSWERS`), records that intent as it answers (`Answered`),
@@ -27,15 +27,16 @@
  *      again for bytes the collector has finally refused (P6). `harnessVerdict` survives only as the
  *      collector's own lookup into its own table, and still imports no SDK predicate.
  *   2. CROSS-LAUNCH. One collector now lives across FOUR launches with per-launch answer boundaries, so
- * "the same bundle is uploaded again on every launch, forever" — the class the harness
- * exists to guard, and the one proved invisible — is finally expressible (P6, and P3 is
+ *      "the same bundle is uploaded again on every launch, forever" — the class the harness
+ *      exists to guard, and the one the older versions could not see — is finally expressible (P6, and P3 is
  *      now cumulative rather than per-launch).
  *   3. CAPTURE GENERATIONS ARE OBSERVED. `capture-recovery.ts`'s `removeGeneration` destroys a
  *      session's RECORDING; no earlier version ever looked at one. They are now first-class staged
  *      artifacts, so P1/P2 see them.
  *   4. THE LIVE REPORT PATH IS EXERCISED. Sets L and M boot a real `createClient` with the wiring
  *      `node/src/launch.ts` gives it and call `logException` BEFORE any recovery runs. Every earlier
- * version only seeded pre-staged artifacts, which is exactly how survived five rounds.
+ *      version only seeded pre-staged artifacts, which is exactly how a defect on the live report path
+ *      survived five review rounds.
  *
  * ══ The invariants ════════════════════════════════════════════════════════════════════════════════
  *
@@ -61,15 +62,15 @@
  *   B  node + INJECTED bundleStore, real launch wiring, 1–2 dead subtrees
  *   C  concurrent node recoverers over one dataDir
  *   D  a throwing BundleStore
- * E a subtree whose `owner.json` READ THROWS (P4) ←
- * F QUEUE_OVERFLOW_CODE: a real capacity-refusing pipeline (P5) ←
+ *   E  a subtree whose `owner.json` READ THROWS  (P4)
+ *   F  QUEUE_OVERFLOW_CODE: a real capacity-refusing pipeline (P5)
  *   G  per-blob outcomes inside ONE case (blob 1 delivers, blob 2 does not)
  *   H  the browser/worker path: fake IndexedDB, Web Locks, `recoverSiblingBundleQueue`,
- * `whenReady`, concurrent `Promise.all` siblings ← blind spot
- * I CROSS-LAUNCH: one collector, four launches, per-launch answer boundaries (P6) ←
- * L the LIVE report path: a real Client + `logException`, then recovery (P1/P2) ←
+ *      `whenReady`, concurrent `Promise.all` siblings
+ *   I  CROSS-LAUNCH: one collector, four launches, per-launch answer boundaries (P6)
+ *   L  the LIVE report path: a real Client + `logException`, then recovery (P1/P2)
  *   M  the CONTROL PLANE: a failing /v2/sessions or /v2/issues, incl. the collector's
- * own error-code namespace inside an HTTP 200 envelope (P6/P7) ←,
+ *      own error-code namespace inside an HTTP 200 envelope (P6/P7)
  */
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -78,7 +79,7 @@ import { fileURLToPath } from 'node:url';
 
 // Resolved from THIS file, never hardcoded. An absolute path pinned to one checkout would run only on
 // its author's machine, and — worse — would silently resolve to the MAIN tree when the harness is run
-// from a git worktree, which is the isolation this repo prescribes for agents that inject mutations
+// from a git worktree, which is the isolation this repo prescribes for agents that inject mutations.
 // It would then certify code that is not the code under test.
 const R = fileURLToPath(new URL('../..', import.meta.url));
 const { recoverInstances } = await import(`${R}/node/src/recover-instances`);
@@ -106,7 +107,7 @@ type Verdict = 'accept' | 'refuse' | 'transient';
  * The collector's DECLARED INTENT for one answer — the harness's ground truth, and the
  * replacement for the hand-transcribed status table.
  *
- * 's finding was that the old `harnessVerdict` was independent of the SDK only by PROVENANCE:
+ * An earlier finding was that the old `harnessVerdict` was independent of the SDK only by PROVENANCE:
  * it was a longhand re-typing of the same Java table `isRetryableHttpStatus` transcribes, so a shared
  * mis-reading of the Java was undetectable by construction. A second transcription cannot audit a
  * first one.
@@ -144,7 +145,7 @@ const ANSWERS: readonly Answer[] = [
   },
   { status: 401, intent: 'transient', why: 'credentials expired — a fresh session mints new ones' },
   // NOT a refusal of the BYTES: a signed PUT 403 is the URL's signature having expired or been
-  // scoped wrong, and the SDK can mint a fresh URL for the same object. flagged the old
+  // scoped wrong, and the SDK can mint a fresh URL for the same object. An earlier review flagged the old
   // table's `refuse` here as its fifth blind spot — it made "delete on the first 403" sweep clean
   // across all 33 403 cases.
   {
@@ -368,7 +369,7 @@ const bundleLogMessages = (body: Uint8Array | undefined): string[] | undefined =
 };
 
 /**
- * every ACCEPTED delivery of a live incident carries the capture that preceded it.
+ * P8 — every ACCEPTED delivery of a live incident carries the capture that preceded it.
  *
  * Applied to the LIVE sets only (L and M), and deliberately: those are the ones where a real client
  * produced a real bundle, so the content is the SDK's work. The pre-staged sets carry frames this
@@ -424,7 +425,7 @@ function judge(o: Observation): void {
     }
   }
 
-  // every staged incident is delivered, refused, or still on disk.
+  // P1 — every staged incident is delivered, refused, or still on disk.
   for (const incident of new Set(o.staged.map((s) => s.incident))) {
     const stillOnDisk = o.staged.some((s) => s.incident === incident && o.left.has(s.slot));
     if (!settledIncidents.has(incident) && !stillOnDisk) {
@@ -432,7 +433,7 @@ function judge(o: Observation): void {
     }
   }
 
-  // nothing is deleted that was not first delivered or refused BY ITS OWN BYTES.
+  // P2 — nothing is deleted that was not first delivered or refused BY ITS OWN BYTES.
   //
   // "its own bytes" is the load-bearing half: a marker may only be retired once the blob carrying
   // THAT incident settled, and a blob only once the collector answered for THAT blob's summary.
@@ -448,7 +449,7 @@ function judge(o: Observation): void {
     }
   }
 
-  // at most one DELIVERY per incident.
+  // P3 — at most one DELIVERY per incident.
   for (const [incident, n] of delivered) {
     if (n <= 1) continue;
     if (o.expectedDuplicates?.has(incident) === true) {
@@ -471,13 +472,13 @@ function judge(o: Observation): void {
 }
 
 /**
- * NO RE-OFFER AFTER A FINAL ANSWER, and P3/P4 across a SEQUENCE of launches.
+ * P6 — NO RE-OFFER AFTER A FINAL ANSWER, and P3/P4 across a SEQUENCE of launches.
  *
- * 's first two blind spots, closed together. The old sweep judged one launch at a time and
+ * The first two blind spots found earlier, closed together. The old sweep judged one launch at a time and
  * counted a delivery only for a 2xx, so:
  *
  *   • "at most once" was inert in ten of the eleven status columns (no 2xx, no delivery to count), and
- * • "uploaded AGAIN on every launch" — the class the whole harness exists to guard — was
+ *   • "uploaded AGAIN on every launch" — the class the whole harness exists to guard — was
  *     not expressible at all. Re-injecting it gave 0 violations across 231 cases.
  *
  * The collector here lives for the WHOLE case and behaves as its declared intent says (see `Answer`),
@@ -510,7 +511,7 @@ function judgeCrossLaunch(o: {
     ...(o.expectedDuplicates !== undefined ? { expectedDuplicates: o.expectedDuplicates } : {}),
   });
 
-  // a final answer is final.
+  // P6 — a final answer is final.
   const finalAnswerAt = new Map<string, number>();
   const problems: string[] = [];
   o.perLaunch.forEach((puts, index) => {
@@ -548,7 +549,7 @@ function judgeCrossLaunch(o: {
   // recording whose marker survives yields a report that is DELIVERED AND EMPTY, which satisfies every
   // structural invariant here. That is what the payload checks below exist for.
 
-  // what the collector said it would take, it must have taken.
+  // P4 — what the collector said it would take, it must have taken.
   if (o.mustDeliver) {
     const ok = new Set(
       flat.filter((put) => put.verdict === 'accept').map((put) => o.incidentOf(put.summary)),
@@ -619,7 +620,7 @@ const frame = (b: BlobSpec, sub: string) =>
 /**
  * `${sub}~g${generation}` → the incident whose recording that capture generation IS.
  *
- * 's third blind spot: no version of this harness ever looked at capture generations, so
+ * The third blind spot found earlier: no version of this harness ever looked at capture generations, so
  * `capture-recovery.ts:224`'s `removeGeneration` — the call that destroys a session's RECORDING, the
  * thing the product exists to show — was invisible to P1 and P2. A blob and a marker are two ways to
  * re-send an incident; the generation is the incident's only copy of what happened.
@@ -680,7 +681,7 @@ const readNodeState = (dataDir: string, subs: string[]): Set<string> => {
     for (const m of nu.createNodeReportMarkerStore(join(dataDir, sub, 'incidents')).list()) {
       left.add(`${sub}!${m.request.id}`);
     }
-    // The RECORDING. Observed since — see `generationIncident`.
+    // The RECORDING. Observed by the current version — see `generationIncident`.
     for (const g of nodeGenerations(dataDir, sub)) {
       left.add(g);
     }
@@ -936,7 +937,7 @@ for (const status of [200, 429, 400]) {
 // `recoverInstances`'s loop. A directory where the file should be is an EISDIR that reproduces an
 // EACCES (root-written subtree, dropped-privilege peer) without needing privileges to set up.
 //
-// Judged by: the collector accepts EVERYTHING, and the harness runs THREE launches. A blob that is
+// Judged by P4: the collector accepts EVERYTHING, and the harness runs THREE launches. A blob that is
 // still on disk after three accepting launches has not been "kept safe", it has been abandoned.
 
 for (const shape of ['injected-store', 'per-instance-store', 'scan-always-rejects'] as const) {
@@ -1000,7 +1001,7 @@ for (const shape of ['injected-store', 'per-instance-store', 'scan-always-reject
 // ══ F. QUEUE_OVERFLOW_CODE against a real capacity-refusing pipeline ════════════════════════
 //
 // `bufferSize:1, maxWaiting:0` makes the REAL pipeline answer `queue_overflow` to anything arriving
-// while an upload is in flight — the condition the durable pump exists to recover from. Judged by:
+// while an upload is in flight — the condition the durable pump exists to recover from. Judged by P5:
 // the collector accepts everything and capacity always comes back, so ONE launch must drain the queue.
 
 for (const selective of [false, true]) {
@@ -1118,7 +1119,7 @@ for (const [s1, s2] of [
 
 // ══ H. the BROWSER / WORKER path ═══════════════════════════════════════════════════════════════════
 //
-// 's harness never touched it at all. This drives the real `createCoexistence` over
+// An earlier harness never touched it at all. This drives the real `createCoexistence` over
 // fake-indexeddb with a fake LockManager: dead-sibling discovery, `recoverSiblingBundleQueue`, the
 // marker-aware reconciliation, `whenReady` hydration, and TWO dead siblings recovered concurrently
 // through the same `Promise.all` the coordinator uses.
@@ -1346,10 +1347,10 @@ for (const answer of ANSWERS)
 
 // ══ L. THE LIVE REPORT PATH — a real Client, a real logException, then real recovery ═══════════════
 //
-// 's FOURTH blind spot, and the one that mattered most: every version of this harness seeded
+// The FOURTH blind spot found earlier, and the one that mattered most: every version of this harness seeded
 // PRE-STAGED artifacts and ran recovery. Nothing ever went through `client.ts`'s `submitReport` — the
-// path a crash actually takes on a running application — which is exactly how (the marker retired
-// on a RETRYABLE failure) survived five review rounds.
+// path a crash actually takes on a running application — which is exactly how a defect where the marker was retired
+// on a RETRYABLE failure survived five review rounds.
 //
 // So this set boots a real `createClient` with the wiring `node/src/launch.ts` gives it (a file-backed
 // capture store on a real capture generation, a real on-disk report-marker store, a real durable bundle
@@ -1483,11 +1484,11 @@ for (const answer of ANSWERS)
 // Everything above answers the control plane 200 and only varies the signed PUT, so two whole classes
 // were unrepresentable:
 //
-// • a TRANSIENT control-plane failure that the SDK treats as terminal (a 401/403 out of
+//   • a TRANSIENT control-plane failure that the SDK treats as terminal (a 401/403 out of
 //     `ensureSession` enters the kill state — capture and detection stopped, `launch()` a permanent
 //     no-op — while `transport.ts` asserts eighty lines away that 401 is retryable);
 //   • the collector's OWN error codes, which arrive inside an HTTP **200** envelope and share a numeric
-// field with HTTP statuses, so Android's permanent codes are retried forever and an envelope
+//     field with HTTP statuses, so Android's permanent codes are retried forever and an envelope
 //     code that happens to read 401/403 is misread as an auth status.
 //
 // The collector's intent is declared per case, exactly as everywhere else, and it BEHAVES that way: a
@@ -1585,7 +1586,7 @@ const bareStatusCase = (on: 'session' | 'issue', status: number): ControlCase =>
 });
 
 const CONTROL_CASES: ControlCase[] = [
-  // ──: an HTTP auth status on the control plane. Android treats 401 as session expiry and
+  // ── An HTTP auth status on the control plane. Android treats 401 as session expiry and
   //    retries once (`BugseeCommunicationManager.java:614-635`); the token blacklist fires ONLY on
   //    the server error code KILL_SDK (`:776-781`), never on an HTTP status.
   {
@@ -1602,7 +1603,7 @@ const CONTROL_CASES: ControlCase[] = [
     intent: 'transient',
     staysAlive: true,
   },
-  // ──: the collector's OWN codes, inside an HTTP 200 envelope.
+  // ── The collector's OWN codes, inside an HTTP 200 envelope.
   //    TRANSIENT (Android's `default:` arm, and 99013 explicitly).
   {
     label: 'session code 99013 ServerTooBusy',
@@ -1748,7 +1749,7 @@ for (const control of CONTROL_CASES) {
   }
 
   const label = `M ${control.label} (${control.intent})`;
-  // liveness, asserted in BOTH directions. It used to check only the `staysAlive` side, so a case
+  // P7 — liveness, asserted in BOTH directions. It used to check only the `staysAlive` side, so a case
   // declaring `staysAlive: false` silently opted out of the check entirely — and three cases declared it
   // wrongly, left over from when an invalid app token killed the client. A `permanent` verdict drops one
   // payload; only KILL_SDK may silence the SDK, and it MUST.
@@ -1786,7 +1787,7 @@ for (const control of CONTROL_CASES) {
 // bound closes, using the SAME `DEFAULT_DURABLE_RETENTION.maxAgeMs` the same bytes already meet on the
 // same tier when the instance recovers its OWN queue.
 //
-// WHY THIS SET IS NOT JUDGED BY `judge`. Retention is the one licensed exception to ("nothing is
+// WHY THIS SET IS NOT JUDGED BY `judge`. Retention is the one licensed exception to P2 ("nothing is
 // deleted that was not first delivered or refused"): giving up on a blob is, by definition, deleting one
 // the collector never answered about. Routing it through `judge` would either report a violation the
 // design intends or force P2 to be weakened for everyone, and a weakened P2 is how real losses hide. So

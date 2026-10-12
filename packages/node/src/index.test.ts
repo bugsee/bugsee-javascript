@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// F-6: HttpTransport (+ its request/response option shapes) was usable internally (`launch.ts`'s
+// HttpTransport (+ its request/response option shapes) was usable internally (`launch.ts`'s
 // `transport?: HttpTransport` option) but never re-exported, forcing a consumer wiring a custom
 // transport into an unsafe `as never` cast to satisfy the type checker (see samples/fastify-api and
 // samples/express-api's `transport: createTeeTransport() as never`). Type-only: erased at runtime, so

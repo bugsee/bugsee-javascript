@@ -28,7 +28,7 @@ const ZERO_SPAN_ID = '0'.repeat(16);
 /** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`.
  *  Validated like @bugsee/capture's `parseTraceparent` (lowercase-normalized, reject the `ff` forbidden
  *  version + the all-zero trace/span ids) so a third-party backend's value is handled correctly, not just
- * the (lowercase, conformant) Bugsee backend. Reimplemented inline — performance has no capture dep.
+ *  the (lowercase, conformant) Bugsee backend. Reimplemented inline — performance has no capture dep.
  *  Deliberately does NOT require the `flags` segment (we only need the span id) — slightly MORE lenient
  *  than `parseTraceparent`, which rejects a missing/non-hex flags field; that tolerance is desirable when
  *  reading a return header we did not author. */

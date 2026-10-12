@@ -56,7 +56,7 @@ function realisticProc() {
 }
 
 describe('signal disposition survives a SECOND Bugsee listener', () => {
-  // THE INTERACTION DEFECT. The flush-on-signal hook added in Wave 6.1 is a second Bugsee listener on
+  // THE INTERACTION DEFECT. The flush-on-signal hook added for signal flushing is a second Bugsee listener on
   // SIGTERM. Under the old `listenerCount(signal) === 1` gate that made the count 2, which reads as "the
   // app has its own handler" — so this source stood down, the flush hook (which only re-raises when it is
   // last) also stood down, and NOBODY restored the default. A SIGTERM would have left the process running

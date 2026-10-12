@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runServerRequest } from './server-instrument';
 
-// the request path must be inert. `dispatch` is where express/koa call `next()` and where
+// The request path must be inert. `dispatch` is where express/koa call `next()` and where
 // hono continues the chain, so an SDK throw before it means the ROUTE HANDLER NEVER RUNS — a customer-visible
 // 500 on a request that would have succeeded, with the app's own error middleware handed a Bugsee-internal
 // Error as if it were their bug. Reproduced against real express, koa and hono servers.

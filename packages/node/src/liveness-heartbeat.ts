@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import type { Scheduler } from '@bugsee/core';
 import { writeFileSecure } from '@bugsee/node-utils';
 
-// The liveness heartbeat While an instance is alive it
+// The liveness heartbeat. While an instance is alive it
 // re-writes its `.live` file on an interval, advancing the mtime a peer reads to decide the subtree is still
 // in use. Fully defensive: a touch failure goes to onError, never throwing into the app.
 //

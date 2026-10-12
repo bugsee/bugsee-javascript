@@ -210,7 +210,7 @@ describe('collectNavigations', () => {
    */
   it('tolerates network activity, a hide, and teardown before the first navigation', () => {
     const source = navSource();
-    // The emitter SWALLOWS a listener throw, so `not.toThrow` around `emit` proves nothing on its own —
+    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` proves nothing on its own —
     // a keepAlive that blew up on the undefined transaction would look identical. The error sink makes it
     // observable.
     const listenerErrors: unknown[] = [];

@@ -4,8 +4,8 @@ import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import type { NetworkEvent, NoBodyReason } from './wire';
 
-// Object/header/param sanitization: apply the key denylists (§sensitive) and the
-// shape pass (§shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
+// Object/header/param sanitization: apply the key denylists (see ./sensitive) and the
+// shape pass (see ./shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
 // (e.g. from JSON.parse'd untrusted data) is stored as own data and cannot corrupt a prototype.
 
 /**
@@ -67,15 +67,15 @@ export function sanitizeParams(
  *
  * A sensitive key's value is replaced WHOLE, whatever its type — the subtree is never walked. I briefly
  * changed this to walk and redact each leaf so a report could show which fields existed;
- * found that wrong on three independent counts:
+ * review found that wrong on three independent counts:
  *
  *  1. It opened a redaction BYPASS. Walking recurses, so a deep body threw RangeError out of here,
  *     `sanitizeBody`'s catch fell to the textual passes, and `JSON_PAIR` cannot match `"password":{` —
  *     its value alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 after.
  *  2. KEY NAMES became a leak channel. `{"tokens":{"eyJ…":true}}` emitted the token, because the token IS
  *     the key. Maps keyed by a secret or an identifier (session→token, user→credential) are ordinary.
- * 3. It broke Android parity, which makes binding: `NetworkDataSanitizer` does
- * `obj.put(key, REDACTED_VALUE)` unconditionally, and requires byte-identical output.
+ *  3. It broke Android parity, which is a binding requirement: `NetworkDataSanitizer` does
+ *     `obj.put(key, REDACTED_VALUE)` unconditionally, and the design requires byte-identical output.
  *
  * The diagnostic cost is accepted and real: inside a subtree the app labelled `password`/`token`/`secret`,
  * a report cannot show which fields existed. Recovering that safely needs a shape SUMMARY (key count and
@@ -384,7 +384,7 @@ function redactMultipart(body: string, contentType: string | undefined): string 
  * a body that claimed a JSON type but does not parse — gets the two textual shapes we can structurally
  * read: form-urlencoded `key=value&…` and colon-delimited `key: value`, then the shape pass.
  *
- * The non-JSON key redaction is Android parity (`NetworkDataSanitizer.sanitizeBody`) and closes
+ * The non-JSON key redaction is Android parity (`NetworkDataSanitizer.sanitizeBody`) and closes a leak:
  * `new URLSearchParams({username, password})` is the canonical HTML login
  * body, and it was stored verbatim because the denylist ran for JSON media types only. Never throws.
  */

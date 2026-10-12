@@ -72,7 +72,7 @@ export interface PerformanceExtension {
   /** Register the ext('performance') API on the (full) client. */
   setup(client: BugseeClient): void;
   /**
-   * Record an EXTERNALLY-finished transaction (one that did not go through `startTransaction().finish()`
+   * Record an EXTERNALLY-finished transaction (one that did not go through `startTransaction().finish()`,
    * e.g. the Node `app.start` startup transaction or a consumed OTel span assembled into a
    * transaction). Dual-writes to BOTH sinks — the continuous-upload store AND the incident-bundle capture
    * ring — mirroring what the controller's onFinish does for head-sampled transactions, so these reach

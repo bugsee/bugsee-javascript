@@ -136,7 +136,7 @@ import { createNodeSystemEventsSource } from './system-events';
 import { createNodeSystemMetricsSampler } from './system-metrics';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
-// @bugsee/node launch — the Node composition root. It assembles the runtime-agnostic
+// @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
 // kernel (createClient) with Node's platform pieces and the shared capture layer, then starts it:
 //   transport (node:http) → BugseeApi + BundleUploader → UploadPipeline ─┐
 //   node EnvironmentEnvelope ───────────────────────────────────────────┤→ createClient
@@ -247,7 +247,7 @@ export interface BugseeLaunchOptions {
   tracePropagationTargets?: ReadonlyArray<string | RegExp>;
   /**
    * BE→FE return headers on instrumented incoming responses (return path), so a browser
-   * frontend can adopt the backend's span as a child. Both default OFF (T9) — there is no consumer until
+   * frontend can adopt the backend's span as a child. Both default OFF — there is no consumer until
    * the frontend adapters read them. `traceresponse` = the W3C trace-context-L2 draft header;
    * `serverTiming` = a `Server-Timing` entry exposing the trace context to browser RUM (PerformanceObserver).
    */
@@ -317,7 +317,7 @@ export interface BugseeLaunchOptions {
    * Where the rolling capture buffer lives: `'disk'` (the default on node/bun/deno — durable capture out of
    * the box, so a crash/OOM that beats bundle assembly still delivers the recording on the next launch) or
    * `'memory'` (the legacy in-RAM path, no disk/recovery). On disk with no `dataDir`, data lives under
-   * `os.tmpdir/bugsee`. (D3).
+   * `os.tmpdir()/bugsee`.
    */
   capturedDataStore?: CapturedDataStore;
   /** Persist on-disk data (capture chunks + durable bundles) to this directory. Default `os.tmpdir()/bugsee`. */
@@ -332,7 +332,7 @@ export interface BugseeLaunchOptions {
    * Capture write path: `'inline'` (default) — the batched main-thread writer; or
    * `'worker'` — an off-thread worker_threads writer over a shared zero-copy SAB ring, so the host thread
    * never blocks on a write() even under a pathologically slow disk (drop-oldest sheds load). Only applies to
-   * the disk path. (Phase 2).
+   * the disk path.
    */
   captureWriter?: 'inline' | 'worker';
   /** Budget (ms) to flush the crash report before exiting. Default 3000. */
@@ -396,7 +396,8 @@ export interface BugseeLaunchOptions {
 
   /**
    * Extra report-time snapshot sources (pulled at report assembly, merged into the bundle) — the seam a
-   * platform extension uses to contribute an async-produced artifact (e.g. the Electron pixel-capture video). Concatenated AFTER the internal profiling snapshot, so a caller's sources never drop it.
+   * platform extension uses to contribute an async-produced artifact (e.g. the Electron pixel-capture video).
+   * Concatenated AFTER the internal profiling snapshot, so a caller's sources never drop it.
    */
   reportSnapshots?: readonly ReportSnapshotSource[];
   /**
@@ -553,7 +554,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   );
 
   // The internal service container (the client's "BugseeInternal"). Node registers its platform
-  // services into it here (the register step); launch resolves them to assemble the
+  // services into it here (the register() step); launch resolves them to assemble the
   // pipeline, then hands the SAME container to createClient. Increment 1: the HTTP transport.
   const services = createServiceContainer();
   services.addService(
@@ -617,7 +618,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     options.bundleStore ??
     (instanceLayout !== undefined ? createNodeBundleStore(instanceLayout.pendingDir) : undefined);
   if (bundleStore !== undefined) {
-    services.addService(defineService(BundleStoreToken, () => bundleStore)); // container service (DI Phase 3)
+    services.addService(defineService(BundleStoreToken, () => bundleStore)); // container service
   }
   const durable =
     (options.recover ?? true) && bundleStore !== undefined
@@ -632,7 +633,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // Node environment envelope, rebuilt at each report so it reflects current state. The canonical
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
-  services.addService(defineService(SystemProbeToken, () => probe)); // container service (DI Phase 3)
+  services.addService(defineService(SystemProbeToken, () => probe)); // container service
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
@@ -661,11 +662,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // recovery read-back, and — for the off-thread writer — the worker's path derivation.
   const captureGeneration = clock.wallNow();
   // The chunk-storage medium exists only when a dataDir is used without an explicit captureStore; it is
-  // a container service (DI Phase 3) and the input to the file-backed store. Two write paths:
-  // 'inline' (default, server write-path): the BATCHED main-thread writer — per-entry appends are
+  // a container service and the input to the file-backed store. Two write paths:
+  //   'inline' (default, server write-path): the BATCHED main-thread writer — per-entry appends are
   //     buffered + `writev`-coalesced off the open-fd-per-chunk (a blocking write's multi-second freeze
-  // becomes a ~10 ms tail).
-  //   'worker' (Phase 2, opt-in insurance): the off-thread RING writer — the host thread encodes each frame
+  //     becomes a ~10 ms tail).
+  //   'worker' (opt-in insurance): the off-thread RING writer — the host thread encodes each frame
   //     IN PLACE into a shared SAB ring (zero-copy) + a worker_threads worker drains it to disk, so the host
   //     NEVER blocks on a write() even under a pathologically slow disk; drop-oldest sheds load.
   const chunkStorage =
@@ -769,7 +770,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
-    // stop tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
+    // stop() tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
     // carrier slot), so a stopped client must not be restarted in place: see `markStopped` below.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined
@@ -1021,7 +1022,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   };
   /** True when Bugsee is the ONLY handler for `event`, i.e. Node's default disposition would have applied.
    *  If the host installed its own handler it intends to survive (or to print/exit its own way), and acting
-   * here would change the outcome purely because the SDK is installed. */
+   *  here would change the outcome purely because the SDK is installed. */
   const bugseeIsSoleHandler = (event: string): boolean => foreignListenerCount(proc, event) === 0;
 
   const onUncaughtException = markOwnHandler((error: unknown): void => {
@@ -1128,8 +1129,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     }
   }
 
-  // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out —
-  // Now default-on. When on, install the node:http emit patch + any injected native serve
+  // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out). When on, install the node:http emit patch + any injected native serve
   // wraps (bun/deno). getClient is lazy (the carrier client, resolved per request, so install order vs
   // setCarrierClient does not matter). One patch per process — launch is a per-process singleton, so this
   // install runs once; uninstalled on stop(). The framework adapters coexist via first-owner-wins
@@ -1172,15 +1172,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // The marker is written only when it can still be TRUE: the drain completed, the launch-time recovery has
   // settled (it may still be staging bundles into the subtree), and no OTHER live launch uses the same subtree root
   // (tracked process-wide by `instance-layout`; a plain relaunch has a FRESH root, so the old one is still
-  // marked —; a relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
+  // marked, whereas a relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
   // marker at that launch, and an old drain finishing late must not put it back). A stopped client never
   // comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
   // refused): restarting only core would bring capture back with the heartbeat, the exit/signal
   // handlers, the server instrumentation and the carrier slot all still torn down, and the subtree
   // marked recoverable under a live writer. A new client is built by `launch(appToken)` / `relaunch()`.
   //
-  // WHO writes it: the marker follows the ONE shared real drain, not any single stop call. Every
-  // stop — including one that timed out and returned false — leaves a background observer on that drain,
+  // WHO writes it: the marker follows the ONE shared real drain, not any single stop() call. Every
+  // stop() — including one that timed out and returned false — leaves a background observer on that drain,
   // and the caller of a stop() that sees the drain finish marks too; whichever gets there first writes, once.
   let marked = false;
   const markStopped = (): void => {
@@ -1297,7 +1297,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     },
   };
   setCarrierClient(publicClient, carrier);
-  // Live in the subtree only now that nothing after this can throw; `stop` releases it.
+  // Live in the subtree only now that nothing after this can throw; `stop()` releases it.
   if (instanceLayout !== undefined) {
     claimInstanceRoot(instanceLayout);
   }

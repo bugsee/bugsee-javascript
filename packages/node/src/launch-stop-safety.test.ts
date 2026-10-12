@@ -24,8 +24,8 @@ import {
   relaunch,
 } from './launch';
 
-// (node): a stopped client stays stopped, a repeat stop is the same drain
-// and RelaunchedAfterCrash only on honest evidence.
+// Node: a stopped client stays stopped, a repeat stop() is the same drain,
+// and RelaunchedAfterCrash is reported only on honest evidence.
 
 const probe: SystemProbe = {
   platformType: () => 'node',
@@ -184,7 +184,7 @@ describe('a killed client: stop() marks the subtree, a later launch() changes no
   });
 });
 
-describe('a repeat stop() is the same drain: no.stopped marker while the upload still runs', () => {
+describe('a repeat stop() is the same drain: no .stopped marker while the upload still runs', () => {
   it('a hung upload: stop(timeout) is false, a REPEAT stop(timeout) is false too, and nothing is marked', async () => {
     const dir = dirFor();
     const transport: HttpTransport = () => new Promise(() => {});

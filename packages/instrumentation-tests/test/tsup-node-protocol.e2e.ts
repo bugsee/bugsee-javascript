@@ -1,4 +1,4 @@
-// Regression guard for the `removeNodeProtocol` build defect (F-2).
+// Regression guard for the `removeNodeProtocol` build defect.
 //
 // tsup defaults `removeNodeProtocol` to `true` (node_modules/tsup/dist/index.js: the flag gates
 // `nodeProtocolPlugin()`, default `true`), which silently rewrites every statically-resolvable
@@ -22,10 +22,10 @@
 //
 // The population was derived by scanning every `packages/*/src` tree (excluding `.test.`/`.fuzz.`/
 // `.e2e.` files) for THREE forms of `node:`-prefixed reference: static `from '...'`, `require('...')`,
-// AND dynamic `import('...')` — the last of which found this guard originally missed entirely,
+// AND dynamic `import('...')` — the last of which this guard originally missed entirely,
 // because its stated derivation method (grepping only for the static `from`/`require` forms) is
 // structurally blind to a specifier that only ever appears as a dynamic-import argument (the case
-// found was `@bugsee/util`'s old sha256 fallback, `await import(/* ...ignore comments... */ 'node:crypto')`,
+// actually found was `@bugsee/util`'s old sha256 fallback, `await import(/* ...ignore comments... */ 'node:crypto')`,
 // since deleted — util is now asserted to carry NO `node:` specifier at all, see the last test). The scan
 // reads WHOLE FILE CONTENTS (not line-by-line — a dynamic import's magic comments and specifier commonly
 // span multiple lines), so a single-line `grep` cannot reproduce it; the script is
@@ -157,7 +157,7 @@ const targets: readonly NodeProtocolTarget[] = [
   },
   {
     // src/meta-tag-transformer.ts imports node:stream, exported ONLY from src/server.ts (the node-only
-    // entry — 's per-runtime entry split). NOT reachable from
+    // entry, per the per-runtime entry split). NOT reachable from
     // index.ts (portable) or client.ts (browser-only) — verified: neither built index/client file
     // mentions `stream` in any form.
     label: '@bugsee/remix',

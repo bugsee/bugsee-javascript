@@ -23,7 +23,7 @@ export const BUNDLE_FILE_SUFFIX = '.bundle.zip';
 
 /**
  * Wire file types the JS SDK emits. `video` is the mobile-canonical video file — now also emitted
- * by the Electron opt-in pixel-capture source (D8).
+ * by the Electron opt-in pixel-capture source.
  *
  * ARCHITECTURE (binding): the `*.user` streams — `events.user`, `traces.user` — carry ONLY data the
  * APPLICATION supplied through `client.event()` / `client.trace()`. SDK-captured data must never be
@@ -56,7 +56,7 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   video: 'video.webm', // encoded pixel-capture video — Electron opt-in
   // The geometry of the recording over time: the frame each `input` coordinate was measured in, and
   // (web) what part of it the person could see. Version 2 of the stream is one shape for every
-  // platform — specs. Named `video.aux` because mobile emits it
+  // platform. Named `video.aux` because mobile emits it
   // from the video exporter, but a web recording writes it with no pixel video at all: the frame is
   // the layout viewport, and without it a consumer falls back to `environment.hardware.screen` —
   // the whole monitor, captured once at launch — and puts clicks off the frame.
@@ -75,14 +75,14 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   log: 'logs.json',
   'log.internal': 'internal.logs.json',
   network: 'network.json',
-  breadcrumbs: 'breadcrumbs', // NO.json extension — mobile contract
+  breadcrumbs: 'breadcrumbs', // NO .json extension — mobile contract
   performance: 'performance.json',
   profile: 'profile.json', // V8 CPU profile (.cpuprofile object) — node diagnostics
   crash: 'crash.json',
 };
 
 /**
- * `video.aux.json`'s document version (specs).
+ * `video.aux.json`'s document version.
  *
  * Version 2 is the unified shape: `frameW`/`frameH` in the coordinates' OWN units — CSS px in the
  * layout viewport on the web — plus the visible region and the device-pixel ratio. Version 1 was

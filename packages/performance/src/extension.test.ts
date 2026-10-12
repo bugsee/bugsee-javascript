@@ -66,7 +66,7 @@ function fakeClient(filters?: FilterStore) {
 }
 
 describe('createPerformanceExtension', () => {
-  it('is named "performance", owns a store, and has a callable no-op stop', () => {
+  it('is named "performance", owns a store, and has a callable no-op stop()', () => {
     const extension = createPerformanceExtension();
     expect(extension.name).toBe('performance');
     expect(extension.store.size()).toBe(0);

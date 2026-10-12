@@ -38,8 +38,8 @@ export interface StartTransactionOptions {
 }
 
 /** Provenance of a transaction's current NAME (the two-phase naming seam). `url` =
- * the raw browser path (on navigation start); `route` = a resolved/parameterized route
- * (`/users/:id`: a framework adapter refined it once routing ran); `custom` = an app-supplied
+ *  the raw browser path (on navigation start); `route` = a resolved/parameterized route
+ *  (`/users/:id`: a framework adapter refined it once routing ran); `custom` = an app-supplied
  *  name. Stamped on the transaction as `bugsee.name_source`. */
 export type TransactionNameSource = 'url' | 'route' | 'custom';
 
@@ -51,7 +51,7 @@ export interface PerformanceApi {
    * The active span: the most recently STARTED transaction visible to this execution, cleared when it
    * finishes. No span stack — proper async-context nesting is a later slice.
    *
-   * CONCURRENCY (D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
+   * CONCURRENCY: WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
    * a process-wide single slot (a second `startTransaction` overwrites the first) — correct for a
    * browser's single in-flight navigation/interaction. The Node launch instead supplies per-async-context
    * tracking keyed off the `AsyncLocalStorage`-backed `RequestContext` (the JS equivalent of Android's
@@ -79,7 +79,7 @@ export interface PerformanceApi {
    */
   setActiveTransactionName(name: string, opts?: { source?: TransactionNameSource }): void;
   /** Sugar for {@link setActiveTransactionName}(name, { source: 'route' }) — the manual route-naming
-   * escape hatch; what a router adapter calls on navigation resolve. See the {@link getActiveSpan}
+   *  escape hatch; what a router adapter calls on navigation resolve. See the {@link getActiveSpan}
    *  CONCURRENCY note before calling this from concurrent Node server-request code. */
   setRouteName(name: string): void;
 }

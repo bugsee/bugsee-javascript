@@ -7,7 +7,7 @@ import type { SystemProbe } from './environment';
 // instrumentation ON. Now every one goes through the shared normaliser:
 //   captureLocalVariables / captureSourceContext (collect MORE data): only `true` or an options object turns
 //     them on; anything else is OFF + onError;
-// instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError;
+//   instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError;
 //   `false` opts out, `true`/absent installs.
 
 const mocks = vi.hoisted(() => ({

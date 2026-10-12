@@ -13,7 +13,7 @@ export type { Bugsee } from '@bugsee/bugsee/node';
 // default sanitizer rather than layering on it).
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/bugsee/node';
 
-// (node half): the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
+// The node half: the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
 // on the node-only entry, alongside launch.
 export { getBugseeMetaTagTransformer } from './meta-tag-transformer';
 

@@ -60,7 +60,7 @@ export const LINEAR_TOLERANCE = 4;
  *
  * On 2026-09-23 it took 32.9 s on the CI runner and failed. That is NOT the runner's speed — idle, it
  * is at least as fast as a developer machine (this guard ran in 618 ms there on 2026-09-22, and
- * records the old "runner is 7–18× slower" note as obsolete). Nor is it a
+ * the development notes record the old "runner is 7–18× slower" note as obsolete). Nor is it a
  * race: the work is CPU-bound with nothing to lose a race against. It is CONTENTION — the runner is
  * one machine shared by several repositories' jobs — and contention has no fixed ceiling, so the only
  * honest budget is a generous multiple of the real cost: 180 s is ~45× it, and still stops a

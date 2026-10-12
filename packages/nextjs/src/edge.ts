@@ -1,6 +1,7 @@
 // @bugsee/nextjs — edge (Vercel Edge / edge-light runtime) composition.
 //
-// Reached from `register()`'s `NEXT_RUNTIME === 'edge'` branch via `await import('./edge')`. No edge code may sit in the portable `.` graph or the node `./server` graph. It composes
+// Reached from `register()`'s `NEXT_RUNTIME === 'edge'` branch via `await import('./edge')`. No edge code may sit in the portable `.` graph or the node `./server` graph.
+// It composes
 // the web-APIs-only, bundle-lean `@bugsee/vercel-edge` family (WinterCG fetch transport, memory storage,
 // `globalThis.AsyncLocalStorage` probe, incident-driven upload via `waitUntil`).
 //
@@ -22,7 +23,7 @@ export function registerEdge(appToken: string, options: NextjsEdgeOptions = {}):
   return launchEdge(appToken, options);
 }
 
-// API parity with the umbrella entries (review): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

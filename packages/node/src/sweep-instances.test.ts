@@ -125,7 +125,7 @@ describe('sweepAgedInstances', () => {
     expect(existsSync(sub)).toBe(true);
   });
 
-  it('a fresh.live heartbeat keeps a subtree even when owner.startedAt is old (heartbeat wins)', () => {
+  it('a fresh .live heartbeat keeps a subtree even when owner.startedAt is old (heartbeat wins)', () => {
     root = mkRoot();
     // .live mtime is real-now; with `now` ≈ real-now the heartbeat is fresh → kept despite the old startedAt.
     const sub = seed(root, '555-0-beating', { owner: { pid: 555, startedAt: 1 }, live: true });
@@ -138,7 +138,7 @@ describe('sweepAgedInstances', () => {
     expect(existsSync(sub)).toBe(true);
   });
 
-  it('reclaims a dead subtree whose.live heartbeat is STALE (a stale heartbeat does not protect it)', () => {
+  it('reclaims a dead subtree whose .live heartbeat is STALE (a stale heartbeat does not protect it)', () => {
     root = mkRoot();
     // .live is present but its mtime is pinned well past the TTL; owner.startedAt is fresh (NOW). If the sweep
     // used startedAt it would KEEP the subtree — so this pins that .live (the heartbeat) is the activity signal

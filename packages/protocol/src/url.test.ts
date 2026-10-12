@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
 
 // Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
-// browsers strip it — `http://user:password@host/`. Both were recovered from a real on-disk capture in
-// and.
+// browsers strip it — `http://user:password@host/`. Both were recovered from a real on-disk capture.
 
 describe('sanitizeUrl — query strings', () => {
   it('redacts a sensitive query value and leaves the rest byte-for-byte', () => {

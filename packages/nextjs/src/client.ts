@@ -80,7 +80,7 @@ export function createOnRouterTransitionStart(
 /** The ready-made hook bound to the per-tab carrier client. `export const onRouterTransitionStart = ...`. */
 export const onRouterTransitionStart: NextRouterTransitionStart = createOnRouterTransitionStart();
 
-// API parity with the umbrella entries (review): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

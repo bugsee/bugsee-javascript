@@ -1,4 +1,4 @@
-// WebView injectable-bundle guard (slice 6, D7/).
+// WebView injectable-bundle guard (slice 6).
 //
 // Native ships @bugsee/webview as a SELF-CONTAINED IIFE single-string resource and injects it at document-start;
 // the bundle defines the `BugseeWebView` global (the native bootstrap calls `BugseeWebView.launch`). This guard
@@ -6,7 +6,7 @@
 // external, minified, globalName) — an INDEPENDENT re-bundle (matching the edge X2 precedent), not the package's
 // `tsup` output — and asserts the artifact is:
 //   - self-contained AND node-free: the output imports NOTHING — every workspace dep is inlined into the
-// single string and no node builtin is reachable (@bugsee/util is WebCrypto-only), so a WebView
+//     single string and no node builtin is reachable (@bugsee/util is WebCrypto-only), so a WebView
 //     needs no loader and no builtins,
 //   - within a size budget (a regression catch — the bundle ships fixed in the native binary, so size matters),
 //   - LOADABLE: it evaluates in a fresh isolate and exposes `BugseeWebView.launch`.

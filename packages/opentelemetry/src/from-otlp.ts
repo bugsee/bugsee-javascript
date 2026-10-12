@@ -6,7 +6,7 @@ import { OtlpStatusCode } from './otlp-wire';
 // to this — HrTime→ms, spanContext→ids — in the Phase-C SpanProcessor bridge, keeping this file OTel-dep
 // free). Native-transactions consume (the chosen shape): consumed spans land as Bugsee spans/transactions
 // via the existing pipeline. Lossy on OTel-only data (events/links/resource/scope); `kind` is preserved
-// as an `otel.span.kind` attribute. (Phase C).
+// as an `otel.span.kind` attribute.
 
 /** A normalized finished OTel span — the input to the consume mapping (built by the SpanProcessor bridge). */
 export interface ConsumedSpan {

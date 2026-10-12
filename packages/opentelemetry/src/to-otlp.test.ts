@@ -360,7 +360,7 @@ describe('toOtlpExportRequest', () => {
     expect(rs?.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'web' } },
       { key: 'host', value: { intValue: '2' } },
-      // fixed constants, always present (after the caller's resource).
+      // The fixed constants, always present (after the caller's resource).
       { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
       { key: 'bugsee.profile.version', value: { stringValue: '1' } },
     ]);

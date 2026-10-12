@@ -1,6 +1,6 @@
 import * as umbrella from '@bugsee/bugsee/node';
 import { describe, expect, it } from 'vitest';
-// F-5/F-6, type-only: erased at runtime, so these are `tsc --noEmit` checks — the casts fail to compile
+// Type-only: erased at runtime, so these are `tsc --noEmit` checks — the casts fail to compile
 // if the re-export chain (@bugsee/node → @bugsee/bugsee's node entry → @bugsee/fastify) drops the type.
 import type { HttpRequestOptions, HttpResponse, HttpTransport, RequestContextStore } from './index';
 // Namespace imports so a missing re-export surfaces as `undefined` (a clean assertion failure) rather

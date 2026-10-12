@@ -242,8 +242,8 @@ describe('sanitizeJson', () => {
     //     alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 deep after.
     //  2. KEY NAMES became a leak channel. `{"tokens":{"eyJhbGciOiJIUzI1NiJ9.abc":true}}` emits the token,
     //     because the token IS the key. Maps keyed by a secret or an identifier are ordinary.
-    // 3. It broke Android parity, which makes binding. `NetworkDataSanitizer` does
-    // `obj.put(key, REDACTED_VALUE)` unconditionally, and requires the sanitizer's
+    //  3. It broke Android parity, which is a binding requirement. `NetworkDataSanitizer` does
+    //     `obj.put(key, REDACTED_VALUE)` unconditionally, and the contract requires the sanitizer's
     //     output be byte-identical to mobile.
     //
     // Plus `{"token":{}}` came back as `{"token":{}}` — the marker vanished entirely.
@@ -822,7 +822,7 @@ describe('gateNetworkBody', () => {
   });
 });
 
-// Wave 1.2. `sanitizeBody` applied the key denylist to JSON media types
+// `sanitizeBody` applied the key denylist to JSON media types
 // ONLY, so the canonical HTML login POST — `new URLSearchParams({username, password})` — was stored in the
 // clear. Worse, @bugsee/capture STAMPS the `application/x-www-form-urlencoded` Content-Type when the caller
 // set none, which is exactly what lets the body past the capture gate. Android has always redacted these
@@ -954,7 +954,7 @@ describe('sanitizeBody — the form pass never eats a body that is not a form', 
   });
 });
 
-// findings against the first attempt at this guard. Each case was measured leaking or being
+// Findings against the first attempt at this guard. Each case was measured leaking or being
 // destroyed before the per-segment rewrite.
 describe('sanitizeBody — the form guard decides PER SEGMENT', () => {
   const leaky: Array<[string, string]> = [

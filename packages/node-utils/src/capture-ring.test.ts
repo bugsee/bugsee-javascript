@@ -145,9 +145,9 @@ describe('CaptureRing', () => {
     // pad+frame bytes into fewer free bytes, overrunning (corrupting) the oldest occupied frame instead of
     // dropping it. Construct the exact window need <= free < pad + need.
     const { producer, consumer } = newRing(100);
-    push(producer, 1, 'f'.repeat(12)); // (frame 20)
+    push(producer, 1, 'f'.repeat(12)); // F0 (frame 20)
     consumer.peek();
-    consumer.consume(); // consume → head at 20
+    consumer.consume(); // consume F0 → head at 20
     push(producer, 2, 'v'.repeat(60)); // V, the victim (frame 68) → occupies [20, 88), unconsumed
     push(producer, 3, 'c'.repeat(22)); // C needs 30; 12 to the end → pad 12; free 32 ≥ 30 but < 42 → MUST drop V
     expect(drainAll(consumer)).toEqual([{ pathId: 3, text: 'c'.repeat(22) }]); // V cleanly dropped, C intact

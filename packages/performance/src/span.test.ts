@@ -294,7 +294,7 @@ describe('serializeTransaction (wire)', () => {
     const wire = serializeTransaction(txn);
     expect(wire).toEqual({
       traceId: 'trace-1',
-      spanId: 'span-0', // the root's own id — required on the wire since
+      spanId: 'span-0', // the root's own id — required on the wire
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',

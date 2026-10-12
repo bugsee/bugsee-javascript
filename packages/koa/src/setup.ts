@@ -16,7 +16,7 @@ export interface KoaApp {
  * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect is an instance of "features that silently do nothing"; reporting it keeps the
+ * this crash for a defect that silently disables a feature; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupKoa(app: KoaApp, options: KoaAdapterOptions = {}): void {

@@ -1,4 +1,4 @@
-// the acceptance test for renderer incident convergence
+// The acceptance test for renderer incident convergence.
 //
 // THE defect: a renderer incident assembles a bundle from the STREAMING
 // capture store — whose stream() yields nothing — and uploads it from the renderer under the renderer
@@ -49,7 +49,7 @@ describe('renderer incident convergence', () => {
     joined = [];
   });
 
-  /** Stand-in for what wires: main's join seam, recording every incident forwarded from a renderer. */
+  /** Stand-in for main's join seam, recording every incident forwarded from a renderer. */
   const startMain = (): void => {
     createElectronMainReceiver({
       ipcMain: ipc.ipcMain as never,
@@ -71,7 +71,7 @@ describe('renderer incident convergence', () => {
       serialized: '{"message":"renderer-breadcrumb"}',
     });
 
-    // will route this through the renderer's report pipeline. Until then nothing forwards it.
+    // The renderer's report pipeline is meant to route this. Until then nothing forwards it.
     const incident = {
       source: { type: 'crash', mechanism: 'uncaught' },
       report: { summary: 'renderer boom' },
@@ -102,7 +102,7 @@ describe('renderer incident convergence', () => {
   });
 
   it('preserves the incident mechanism rather than refiling it as a handled error', () => {
-    // submitting via logException would refile a renderer CRASH as a handled, programmatic error
+    // Submitting via logException would refile a renderer CRASH as a handled, programmatic error
     // carrying a main-side stack — destroying the attribution this whole design exists to fix.
     startMain();
     postIncident(ipc.post, {
@@ -113,7 +113,7 @@ describe('renderer incident convergence', () => {
   });
 
   it('drops a malformed incident rather than submitting it', () => {
-    // Renderer input is untrusted (established this for the entry path; the report path is the
+    // Renderer input is untrusted (the entry path already treats it so; the report path is the
     // same channel from the same untrusted sender).
     startMain();
     ipc.post(JSON.stringify({ k: 'report' })); // no payload

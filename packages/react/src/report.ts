@@ -21,7 +21,8 @@ export interface ReportReactErrorOptions extends Omit<ReportErrorOptions, 'label
 }
 
 /**
- * Link a React component stack to an error via `error.cause` (the LinkedErrors convention) so it travels with the report (surfaced by the core's `describeError`). DELIBERATELY mutates
+ * Link a React component stack to an error via `error.cause` (the LinkedErrors convention) so it travels with the report (surfaced by the core's `describeError`).
+ * DELIBERATELY mutates
  * the caught error's `.cause` — non-destructively: any EXISTING cause is preserved by chaining it behind the
  * component-stack frame, so no information is lost (this is opt-in instrumentation the app added around its
  * own tree, and the original error object is what reaches `logException`, preserving instance-dedup). A
@@ -49,7 +50,7 @@ export function linkComponentStack(error: unknown, componentStack: string | unde
  * Report a React error (from the ErrorBoundary or a direct app call) to the launched Bugsee client, with the
  * component stack linked. The ORIGINAL error object is passed to `logException` (preserving the core's
  * instance-dedup). A no-op when no SDK is launched. (A React-19 `onUncaughtError`/`onCaughtError` global
- * handler that also routes here is a possible later addition — see; not built yet.)
+ * handler that also routes here is a possible later addition — not built yet.)
  */
 /**
  * Report an error that REACT ROUTER surfaced, from the app's own route error element.

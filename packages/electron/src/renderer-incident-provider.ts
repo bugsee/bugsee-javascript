@@ -7,17 +7,16 @@ import {
 } from '@bugsee/core';
 import type { DecodedReport } from './protocol';
 
-// The main-side submit seam for renderer incidents (R3/R4,
-// ).
+// The main-side submit seam for renderer incidents.
 //
 // A DetectionProvider, which is the design's chosen option: it is the ONE public path that submits a
 // ReportingRequest without re-filing it. The alternative — `client.logException` — would turn a renderer
 // CRASH into a handled, programmatic error carrying a MAIN-side stack, destroying the attribution this whole
 // feature exists to preserve.
 //
-// It detects nothing itself; it is a conduit. Registering it is what makes and live: without it the
+// It detects nothing itself; it is a conduit. Registering it is what makes forwarded and synthesised incidents live: without it the
 // receiver's `onReport` has nowhere to go, the renderer no longer uploads, and incidents are silently
-// destroyed while the app is told they were delivered — strictly worse than the defect being fixed
+// destroyed while the app is told they were delivered — strictly worse than the defect being fixed.
 
 /** How many renderer incidents to accept per window per minute; beyond that they are dropped. */
 const DEFAULT_RATE_LIMIT = 10;

@@ -259,7 +259,7 @@ describe('launch', () => {
     expect((lastCall?.[1] as HttpRequestOptions).headers?.['x-bugsee-internal']).toBe('1');
   });
 
-  it('registers the systemProbe and captureStore as resolvable container services (DI Phase 3)', () => {
+  it('registers the systemProbe and captureStore as resolvable container services', () => {
     const store = memStore();
     const client = launchTracked('tok', baseOptions({ systemProbe: probe, captureStore: store }));
     expect(client.getService(SystemProbeToken)).toBe(probe);
@@ -648,7 +648,7 @@ describe('launch', () => {
   });
 
   it('re-prints an uncaught exception to stderr, which installing a listener suppressed', async () => {
-    // Operators lose the stack from their log pipeline otherwise — the first artifact they reach for
+    // Operators lose the stack from their log pipeline otherwise — the first artifact they reach for.
     const fp = fakeProcess();
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
     fp.fire('uncaughtException', new Error('boom'));
@@ -667,7 +667,7 @@ describe('launch', () => {
     await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
-  it('removes the rejection policy listener on stop — a stopped SDK owns nothing', async () => {
+  it('removes the rejection policy listener on stop() — a stopped SDK owns nothing', async () => {
     // stop() removed the uncaughtException listener and forgot the rejection listener added alongside it.
     // Measured: after stop(), `warn` + a rejection kept the process alive where the control exits 1, and
     // launch→stop→launch accumulated listeners (3), producing two prints and two exits per rejection.
@@ -856,7 +856,7 @@ describe('launch', () => {
     expect(reg.size).toBe(8);
   });
 
-  it('is a per-process singleton: a second launch warns, is ignored, and returns the first client', async () => {
+  it('is a per-process singleton: a second launch() warns, is ignored, and returns the first client', async () => {
     const carrier = {};
     const onError = vi.fn();
     const first = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
@@ -921,7 +921,7 @@ describe('launch', () => {
     expect(readdirSync(join(dir, '1-0-x', 'capture'))).toContain('0000000001000');
   });
 
-  it('uses the BATCHED capture writer: buffered entries are flushed to disk on stop', async () => {
+  it('uses the BATCHED capture writer: buffered entries are flushed to disk on stop()', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-batched-'));
     const client = launchTracked(
       'tok',
@@ -939,7 +939,7 @@ describe('launch', () => {
     expect(data).toContain('batched-capture-marker-xyz'); // durable on disk after the dispose flush
   });
 
-  it('captureWriter: "worker" wires the OFF-THREAD ring writer; entries are drained to disk by stop', async () => {
+  it('captureWriter: "worker" wires the OFF-THREAD ring writer; entries are drained to disk by stop()', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-worker-ring-'));
     const client = launchTracked(
       'tok',
@@ -995,7 +995,7 @@ describe('launch', () => {
     }
   });
 
-  it('removes the exit-flush handler on stop (no leak across a relaunch)', async () => {
+  it('removes the exit-flush handler on stop() (no leak across a relaunch)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-off-'));
     const proc = fakeProcess();
     try {
@@ -1105,7 +1105,7 @@ describe('launch', () => {
       });
     });
 
-    it('removes the signal listeners on stop', () => {
+    it('removes the signal listeners on stop()', () => {
       withDataDir((dir, proc) => {
         const client = launchTracked(
           'tok',
@@ -1493,7 +1493,7 @@ describe('launch — capture recovery', () => {
     );
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop answers for the REAL drain, which is the retry backoff just described: the
+    // A repeat stop() answers for the REAL drain, which is the retry backoff just described: the
     // shared afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -1721,7 +1721,7 @@ describe('launch — capture recovery', () => {
     expect(started).toBe(false); // the controllingOption gate skips a disabled provider
   });
 
-  it('reportDefaultBugPriority applies to client.upload on node too', async () => {
+  it('reportDefaultBugPriority applies to client.upload() on node too', async () => {
     const transport = uploadTransport();
     const client = launchTracked(
       'tok',
@@ -2154,7 +2154,7 @@ describe('launchCore', () => {
     expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning still fires
   });
 
-  it('launch returns exactly launchCore.client (public surface unchanged)', () => {
+  it('launch() returns exactly launchCore().client (public surface unchanged)', () => {
     const carrier = {};
     const client = launch('tok', baseOptions({ carrier, captureStore: memStore() }));
     clients.push(client);
@@ -2321,7 +2321,7 @@ describe('launch — trace propagation', () => {
 });
 
 describe('launch — capturedDataStore (disk by default)', () => {
-  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir/bugsee/<appTokenHash>', () => {
+  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee/<appTokenHash>', () => {
     const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers
     // A DEDICATED app token, because the cleanup below removes the whole per-token root. Forty other
     // tests in this file launch under 'tok' and, with disk the default, write their own instance subtrees
@@ -2620,7 +2620,7 @@ describe('launch — incoming-server instrumentation wiring', () => {
     expect(httpIc.uninstall).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards traceResponse → the launch-built node:http interceptor writes the return headers (X4)', async () => {
+  it('forwards traceResponse → the launch-built node:http interceptor writes the return headers', async () => {
     // No serverInterceptor injection → launch builds the REAL createHttpServerInterceptor with traceResponse.
     const client = launch(
       'tok',

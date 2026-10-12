@@ -47,7 +47,7 @@ export interface CollectNavigationsDeps {
 const NETWORK_STAGES = ['before', 'complete', 'error', 'abort'] as const;
 
 export function collectNavigations(deps: CollectNavigationsDeps): () => void {
-  // The single active navigation transaction (correlation-by-tagging — one current activity on the browser,
+  // The single active navigation transaction (correlation-by-tagging — one current activity on the browser).
   // `undefined` after teardown, so the (un-removable) onHidden callback below safely no-ops then.
   let current: IdleTransactionHandle | undefined;
   const offs: Array<() => void> = [];

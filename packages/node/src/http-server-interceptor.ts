@@ -8,14 +8,13 @@ import {
   type TraceResponseConfig,
 } from './server-instrument';
 
-// Incoming-server auto-instrumentation for node:http (design:
-// decisions D2/D11/D12). Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
+// Incoming-server auto-instrumentation for node:http. Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
 // inherits emit via the tls/net chain, NOT via http.Server.prototype, so each is patched separately) to
 // bracket the `'request'` event: it opens the per-request context + an http.server transaction via the
 // shared `runServerRequest` core (run-scoped), wires finish on the response, and passes the dispatch
 // straight through. It is the OPT-IN, INSTALL-DRIVEN companion to the outbound node:http capture source —
 // a server patch has no "subscriber", so it is NOT an InterceptorBase and is driven by explicit
-// install()/uninstall() (launch/stop, slice 3). Restores the prototype by DELETE (the original `emit` is
+// install()/uninstall() (launch/stop). Restores the prototype by DELETE (the original `emit` is
 // inherited from EventEmitter.prototype, so reassigning would leave a residual own-property that alters the
 // prototype shape — "interceptors must not alter app behavior"). Self-isolates the SDK's own inbound
 // traffic (x-bugsee-internal). Captures NO handled errors (a framework swallows them before node:http) and

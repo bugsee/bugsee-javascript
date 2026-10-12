@@ -2,7 +2,7 @@
 //
 // THE acceptance test for the most severe finding of the 53-package adversarial review: Durable Objects for
 // different tenants share one isolate, one client and one capture ring, so an incident in one uploaded every
-// other tenant's data (reproduced there on real workerd).
+// other tenant's data (reproduced on real workerd).
 //
 // Everything else in the repo tests this against a driven context or a WinterCG VM. Neither can model DO
 // placement — @edge-runtime/vm has no Durable Objects at all — so this is the only test where three real
@@ -18,7 +18,7 @@ import { bundleWorkerEntry } from './edge-bundle';
 const SECRET_A = 'SECRET-OF-TENANT-A';
 const SECRET_B = 'SECRET-OF-TENANT-B';
 const INCIDENT_C = 'INCIDENT-IN-C';
-// Tenant C's own LOG, deliberately distinct from its error string; when C's secret
+// Tenant C's own LOG, deliberately distinct from its error string: when C's secret
 // and its thrown message were the same token, the suite passed with the owner-scoped drain killed and the
 // bundle stripped of logs.json entirely — the error text in request.json/crash.json satisfied the
 // assertion. A separate token means the suite can only pass if C's CAPTURE actually survived, so the test
