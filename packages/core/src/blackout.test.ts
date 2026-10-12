@@ -113,3 +113,90 @@ describe('createBlackoutState', () => {
     expect(second).toHaveBeenCalledWith(true);
   });
 });
+
+describe('createBlackoutState — re-entrant toggles (L3)', () => {
+  it('a subscriber that starts a blackout from the end notification never leaves a later subscriber on the stale state', () => {
+    const state = createBlackoutState();
+    const first: boolean[] = [];
+    const second: boolean[] = [];
+    let restart = true;
+    state.onChange((active) => {
+      first.push(active);
+      if (!active && restart) {
+        restart = false;
+        state.start(); // e.g. a lifecycle listener on BlackoutEnded
+      }
+    });
+    state.onChange((active) => second.push(active));
+    state.start();
+    first.length = 0;
+    second.length = 0;
+    state.end();
+    expect(state.isActive()).toBe(true);
+    // The second subscriber was already on `true` and the net change is nil: it is told nothing, and in
+    // particular never the stale "false" of the outer round.
+    expect(second).toEqual([]);
+    // The first subscriber saw every transition in order.
+    expect(first).toEqual([false, true]);
+  });
+
+  it('a subscriber that ends a blackout from the start notification ends in the inactive state everywhere', () => {
+    const state = createBlackoutState();
+    const second: boolean[] = [];
+    state.onChange((active) => {
+      if (active) state.end();
+    });
+    state.onChange((active) => second.push(active));
+    state.start();
+    expect(state.isActive()).toBe(false);
+    expect(second).not.toContain(true);
+  });
+
+  it('every subscriber is told the same final state exactly once per net change', () => {
+    const state = createBlackoutState();
+    const seen: boolean[] = [];
+    let once = true;
+    state.onChange(() => {
+      if (once) {
+        once = false;
+        state.end();
+        state.start();
+      }
+    });
+    state.onChange((active) => seen.push(active));
+    state.start();
+    expect(state.isActive()).toBe(true);
+    expect(seen).toEqual([true]);
+  });
+
+  it('a listener that keeps toggling forever is cut off and reported, never hangs', () => {
+    const onError = vi.fn();
+    const state = createBlackoutState(onError);
+    state.onChange(() => (state.isActive() ? state.end() : state.start()));
+    state.start();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/toggl/i) }),
+    );
+  });
+
+  it('a listener unsubscribed mid-dispatch is not called afterwards', () => {
+    const state = createBlackoutState();
+    const second = vi.fn();
+    let offSecond: () => void = () => {};
+    state.onChange(() => offSecond());
+    offSecond = state.onChange(second);
+    state.start();
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it('can start in the active state without notifying anyone (carried across a relaunch)', () => {
+    const state = createBlackoutState(undefined, true);
+    expect(state.isActive()).toBe(true);
+    const listener = vi.fn();
+    state.onChange(listener);
+    state.start();
+    expect(listener).not.toHaveBeenCalled();
+    state.end();
+    expect(listener).toHaveBeenCalledWith(false);
+  });
+});

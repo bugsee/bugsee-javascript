@@ -10,6 +10,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -368,7 +369,7 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
     const first = launch('tok-1', opts({ captureLogs: false }));
     const second = await relaunch(opts());
     live.push(second);
@@ -376,18 +377,53 @@ describe('relaunch', () => {
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
     expect(second.getStatus()).toBe(BugseeStatus.Launched);
     expect(getStatus()).toBe(BugseeStatus.Launched);
-    // The previous host options are NOT carried over (L18: the slot retains only seams, never the options).
+    // Like Android and iOS: no options means defaults, so the earlier `captureLogs: false` is gone...
     expect(second.getHostLaunchOptions()).not.toHaveProperty([BugseeOption.CaptureLogs]);
+    // ...and the integration seams are kept (see the transport test below).
   });
 
-  it('L18: the process carrier retains no transport, onError or host options after a launch', () => {
-    launch('tok-1', opts({ captureLogs: false, onError: () => {}, endpoint: 'https://x.test' }));
+  it('keeps the injected transport across a no-options relaunch (the seam, not a Bugsee option)', async () => {
+    const transport = okTransport();
+    launch('tok-1', opts({ transport }));
+    const second = await relaunch();
+    live.push(second);
+    vi.mocked(transport).mockClear();
+    second.log('x');
+    await second.upload({ summary: 's' });
+    expect(transport).toHaveBeenCalled();
+  });
+
+  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch (L1)', async () => {
+    const seen: string[] = [];
+    launch('tok', opts({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    seen.length = 0;
+    const second = await relaunch();
+    live.push(second);
+    expect(seen).toEqual([
+      LifecycleEvents.Stopping,
+      LifecycleEvents.Stopped,
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
+  });
+
+  it('L18: the process carrier retains the integration seams but no host Bugsee option', () => {
+    launch('tok-1', opts({ captureLogs: false, endpoint: 'https://x.test' }));
     const retained = getCarrier().lastLaunch?.options as Record<string, unknown>;
-    expect(Object.keys(retained)).not.toContain('transport');
-    expect(Object.keys(retained)).not.toContain('onError');
     expect(Object.keys(retained)).not.toContain('captureLogs');
-    expect(Object.keys(retained)).not.toContain('process');
+    expect(Object.keys(retained)).not.toContain('endpoint');
     expect(getCarrier().lastLaunch?.appToken).toBe('tok-1');
+  });
+
+  it('a blackout in force is still in force on the relaunched client (V2)', async () => {
+    const first = launch('tok', opts());
+    first.startBlackout();
+    const second = await relaunch();
+    live.push(second);
+    expect(second.isBlackout()).toBe(true);
+    second.endBlackout();
+    expect(second.isBlackout()).toBe(false);
   });
 
   it('uses NEW options when given (they replace the previous host options)', async () => {

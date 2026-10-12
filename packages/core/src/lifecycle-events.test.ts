@@ -97,3 +97,75 @@ describe('createLifecycleEmitter', () => {
     expect(() => emitter.emit(LifecycleEvents.Launched)).not.toThrow();
   });
 });
+
+describe('createLifecycleEmitter — re-entrancy (L2)', () => {
+  it('an event emitted from inside a listener is delivered after that listener returns, in order', () => {
+    const emitter = createLifecycleEmitter(() => {});
+    const log: string[] = [];
+    emitter.set((type) => {
+      log.push(`start:${type}`);
+      if (type === LifecycleEvents.Launching) {
+        emitter.emit(LifecycleEvents.Launched);
+        log.push('after-nested-emit');
+      }
+      log.push(`end:${type}`);
+    });
+    emitter.emit(LifecycleEvents.Launching);
+    expect(log).toEqual([
+      `start:${LifecycleEvents.Launching}`,
+      'after-nested-emit',
+      `end:${LifecycleEvents.Launching}`,
+      `start:${LifecycleEvents.Launched}`,
+      `end:${LifecycleEvents.Launched}`,
+    ]);
+  });
+
+  it('keeps delivering queued events after a listener throws', () => {
+    const onError = vi.fn();
+    const emitter = createLifecycleEmitter(onError);
+    const seen: string[] = [];
+    emitter.set((type) => {
+      seen.push(type);
+      if (type === LifecycleEvents.Launching) {
+        emitter.emit(LifecycleEvents.Launched);
+        throw new Error('first');
+      }
+    });
+    emitter.emit(LifecycleEvents.Launching);
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a listener cleared mid-queue stops receiving the queued events', () => {
+    const emitter = createLifecycleEmitter(() => {});
+    const seen: string[] = [];
+    emitter.set((type) => {
+      seen.push(type);
+      emitter.emit(LifecycleEvents.Launched);
+      emitter.set(null);
+    });
+    emitter.emit(LifecycleEvents.Launching);
+    expect(seen).toEqual([LifecycleEvents.Launching]);
+  });
+});
+
+describe('createLifecycleEmitter — shared slot (L1)', () => {
+  it('reads and writes the listener through the supplied slot, so two emitters share one listener', () => {
+    let held: ((t: string) => void) | null = null;
+    const slot = {
+      get: () => held,
+      set: (next: ((t: string) => void) | null) => {
+        held = next;
+      },
+    };
+    const first = createLifecycleEmitter(() => {}, slot);
+    const second = createLifecycleEmitter(() => {}, slot);
+    const listener = vi.fn();
+    first.set(listener);
+    second.emit(LifecycleEvents.Launched);
+    expect(listener).toHaveBeenCalledWith(LifecycleEvents.Launched, undefined);
+    second.set(null);
+    first.emit(LifecycleEvents.Launched);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});

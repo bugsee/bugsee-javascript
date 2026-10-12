@@ -5,7 +5,10 @@ import {
   clearCarrierClient,
   contributeServiceManifest,
   getCarrier,
+  getCarrierBlackout,
   getCarrierClient,
+  getCarrierLifecycleSlot,
+  getCarrierPendingLaunch,
   getCarrierStatus,
   getFilters,
   getInternal,
@@ -13,9 +16,12 @@ import {
   getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
+  setCarrierBlackout,
   setCarrierClient,
   setCarrierLastLaunch,
+  setCarrierPendingLaunch,
   setCarrierStatus,
+  setProcessLifecycleEventsListener,
 } from './carrier';
 import type { Interceptor } from './contracts';
 import { BugseeStatus } from './launch-status';
@@ -219,7 +225,7 @@ describe('setCarrierLastLaunch', () => {
 
   // L18: the slot lives on globalThis, readable by any script in the process. It keeps only what
   // relaunch() needs to find its way back, never the host's options wholesale.
-  it('keeps ONLY the integration seams relaunch needs, never secrets, transport, onError or data options', () => {
+  it('keeps the integration seams relaunch needs, never a host Bugsee option, header or identifier', () => {
     const g = {};
     const clock = { now: () => 1 };
     const scheduler = { setInterval: () => 'h' };
@@ -239,7 +245,13 @@ describe('setCarrierLastLaunch', () => {
       g,
     );
     const retained = getCarrier(g).lastLaunch?.options as Record<string, unknown>;
-    expect(Object.keys(retained).sort()).toEqual(['carrier', 'clock', 'scheduler']);
+    expect(Object.keys(retained).sort()).toEqual([
+      'carrier',
+      'clock',
+      'onError',
+      'scheduler',
+      'transport',
+    ]);
     expect(retained.carrier).toBe(g);
     expect(retained.clock).toBe(clock);
     expect(retained.scheduler).toBe(scheduler);
@@ -322,5 +334,46 @@ describe('service manifests', () => {
     contributeServiceManifest(noop, a);
     expect(getServiceManifests(a)).toEqual([noop]);
     expect(getServiceManifests(b)).toEqual([]);
+  });
+});
+
+describe('process-level lifecycle listener (L1)', () => {
+  it('is held on the carrier slot, shared by every reader of the same host, and cleared with null', () => {
+    const g = {};
+    const listener = vi.fn();
+    setProcessLifecycleEventsListener(listener, g);
+    expect(getCarrierLifecycleSlot(g).get()).toBe(listener);
+    getCarrierLifecycleSlot(g).set(null);
+    expect(getCarrierLifecycleSlot(g).get()).toBeNull();
+    expect(getCarrierLifecycleSlot({}).get()).toBeNull(); // another host is untouched
+  });
+
+  it('defaults to nothing', () => {
+    expect(getCarrierLifecycleSlot({}).get()).toBeNull();
+  });
+});
+
+describe('process-level blackout flag (V2)', () => {
+  it('defaults to false and is per host', () => {
+    const g = {};
+    expect(getCarrierBlackout(g)).toBe(false);
+    setCarrierBlackout(true, g);
+    expect(getCarrierBlackout(g)).toBe(true);
+    expect(getCarrierBlackout({})).toBe(false);
+    setCarrierBlackout(false, g);
+    expect(getCarrierBlackout(g)).toBe(false);
+  });
+});
+
+describe('in-flight launch (L13)', () => {
+  it('is recorded and cleared per host', () => {
+    const g = {};
+    expect(getCarrierPendingLaunch(g)).toBeUndefined();
+    const pending = Promise.resolve();
+    setCarrierPendingLaunch(pending, g);
+    expect(getCarrierPendingLaunch(g)).toBe(pending);
+    expect(getCarrierPendingLaunch({})).toBeUndefined();
+    setCarrierPendingLaunch(undefined, g);
+    expect(getCarrierPendingLaunch(g)).toBeUndefined();
   });
 });

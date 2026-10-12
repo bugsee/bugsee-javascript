@@ -2586,6 +2586,7 @@ describe('createClient — blackout', () => {
 
   it('startBlackout()/endBlackout() toggle isBlackout()', () => {
     const client = createClient();
+    client.launch();
     client.startBlackout();
     expect(client.isBlackout()).toBe(true);
     client.endBlackout();
@@ -2594,6 +2595,7 @@ describe('createClient — blackout', () => {
 
   it('is idempotent and not counted (one end clears any number of starts)', () => {
     const client = createClient();
+    client.launch();
     client.startBlackout();
     client.startBlackout();
     client.endBlackout();
@@ -2602,6 +2604,7 @@ describe('createClient — blackout', () => {
 
   it('publishes the state through the container so providers can subscribe (internal onBlackoutChange)', () => {
     const client = createClient();
+    client.launch();
     const seen: boolean[] = [];
     client.getService(BlackoutToken).onChange((active) => seen.push(active));
     client.startBlackout();
@@ -2613,6 +2616,7 @@ describe('createClient — blackout', () => {
   it('routes a throwing subscriber to onError without breaking the toggle', () => {
     const onError = vi.fn();
     const client = createClient({ onError });
+    client.launch();
     const boom = new Error('boom');
     client.getService(BlackoutToken).onChange(() => {
       throw boom;
@@ -2625,6 +2629,7 @@ describe('createClient — blackout', () => {
   it('does not suppress non-visual capture (logs/events/traces continue)', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store });
+    client.launch();
     client.startBlackout();
     client.log('still logged');
     client.event('still-evented');

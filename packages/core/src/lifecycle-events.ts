@@ -29,31 +29,69 @@ export type LifecycleEventType = (typeof LifecycleEvents)[keyof typeof Lifecycle
 /** The application's observer. `data` is event-specific (report events carry `{ reportId }`). */
 export type LifecycleEventsListener = (eventType: string, data?: unknown) => void;
 
+/**
+ * Where the listener lives. By default each emitter owns a private slot; the platform composition roots
+ * pass the PROCESS carrier's slot, so one listener serves every client the process ever builds (Android
+ * keeps a single static listener) and survives `relaunch()`.
+ */
+export interface LifecycleListenerSlot {
+  get(): LifecycleEventsListener | null;
+  set(listener: LifecycleEventsListener | null): void;
+}
+
 export interface LifecycleEmitter {
   /** Install the listener (replacing any previous one); `null` clears it. */
   set(listener: LifecycleEventsListener | null): void;
-  /** Deliver an event. Never throws. */
+  /**
+   * Deliver an event. Never throws. Re-entrant: an event emitted from INSIDE a listener (because the
+   * listener called `launch()`, `stop()`, `startBlackout()`...) is queued and delivered, in order, once
+   * the current listener has returned — a listener is never re-entered by the events its own actions cause.
+   */
   emit(eventType: LifecycleEventType, data?: unknown): void;
 }
 
-export function createLifecycleEmitter(onError: (error: unknown) => void): LifecycleEmitter {
-  let listener: LifecycleEventsListener | null = null;
+export function createLifecycleEmitter(
+  onError: (error: unknown) => void,
+  slot?: LifecycleListenerSlot,
+): LifecycleEmitter {
+  let own: LifecycleEventsListener | null = null;
+  const listenerSlot: LifecycleListenerSlot = slot ?? {
+    get: () => own,
+    set: (next) => {
+      own = next;
+    },
+  };
+  const queue: Array<[LifecycleEventType, unknown]> = [];
+  let delivering = false;
   return {
     set(next: LifecycleEventsListener | null): void {
-      listener = next;
+      listenerSlot.set(next);
     },
     emit(eventType: LifecycleEventType, data?: unknown): void {
-      if (listener === null) {
+      queue.push([eventType, data]);
+      if (delivering) {
         return;
       }
+      delivering = true;
       try {
-        listener(eventType, data);
-      } catch (error) {
-        try {
-          onError(error);
-        } catch {
-          // a throwing sink must not defeat the guard either
+        for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+          // Read per event: a listener cleared or replaced mid-queue governs what follows.
+          const listener = listenerSlot.get();
+          if (listener === null) {
+            continue;
+          }
+          try {
+            listener(next[0], next[1]);
+          } catch (error) {
+            try {
+              onError(error);
+            } catch {
+              // a throwing sink must not defeat the guard either
+            }
+          }
         }
+      } finally {
+        delivering = false;
       }
     },
   };

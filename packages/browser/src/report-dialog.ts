@@ -226,9 +226,6 @@ function showDialog(
       return;
     }
     closed = true;
-    if (announced) {
-      deps.emitLifecycleEvent?.(LifecycleEvents.AfterReportShown, { sent: result !== null });
-    }
     if (result === null) {
       prepared.discard();
     }
@@ -238,6 +235,15 @@ function showDialog(
       previousFocus?.focus?.();
     } catch {
       // a focus target that went away is not worth failing the close for
+    }
+    // Announced once the dialog is really gone, so a listener that inspects the page sees it closed; and
+    // `sent` is true only when the report was accepted (a refused or failed send is not "sent").
+    if (announced) {
+      try {
+        deps.emitLifecycleEvent?.(LifecycleEvents.AfterReportShown, { sent: result?.ok === true });
+      } catch {
+        // the hook is the platform's and never expected to throw; if it does, the dialog still settles
+      }
     }
     finish(result);
   };
