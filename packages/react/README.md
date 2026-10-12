@@ -1,51 +1,112 @@
 # @bugsee/react
 
-The React adapter for the Bugsee SDK (tier 4) — a structural peer: `react` is a peer dependency, imported
-only by the error boundary. Plugs React's error + routing into the `@bugsee/browser` foundation.
+React adapter for the Bugsee SDK: an error boundary, React 19 root error handlers, a render profiler and react-router route naming for apps running in the browser.
 
-## Error seam
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Wrap a subtree so a render error is reported (with the React component stack, linked via `error.cause`) and
-a fallback is shown:
+Install this package directly in React (and Preact) apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`.
+
+## Install
+
+```sh
+npm install @bugsee/bugsee @bugsee/react
+# or
+pnpm add @bugsee/bugsee @bugsee/react
+# or
+yarn add @bugsee/bugsee @bugsee/react
+```
+
+Peer dependency: `react` >= 18.
+
+## Usage
+
+Launch Bugsee as early as possible, at the top of your entry module. In the browser `launch()` returns a Promise of the client. Await it only if you need the client right away.
 
 ```tsx
-import { BugseeErrorBoundary, withBugseeErrorBoundary } from '@bugsee/react';
+// main.tsx
+import { launch } from "@bugsee/bugsee";
+
+launch("YOUR_APP_TOKEN");
+```
+
+Wrap your app in the error boundary. A render error is reported with the React component stack and the fallback is shown.
+
+```tsx
+// App.tsx
+import { BugseeErrorBoundary } from "@bugsee/react";
 
 <BugseeErrorBoundary fallback={<Crashed />}>
   <App />
 </BugseeErrorBoundary>;
+```
 
-// or as a HOC
+A higher-order component is available as well:
+
+```tsx
+import { withBugseeErrorBoundary } from "@bugsee/react";
+
 export default withBugseeErrorBoundary(App, { fallback: <Crashed /> });
 ```
 
-`reportReactError(error, { componentStack })` is the underlying call if you wire your own boundary or a
-React-19 global handler. Reports go to the launched Bugsee client (the process carrier by default).
+For React 19 root-level error callbacks, pass the handlers to `createRoot` or `hydrateRoot`:
 
-## Router naming (react-router v6/v7)
+```tsx
+import { createRoot } from "react-dom/client";
+import { createBugseeErrorHandlers } from "@bugsee/react";
 
-Refine the active navigation transaction to the parameterized route (`/users/:id`) once routing resolves —
-the second phase of two-phase naming. Pass react-router's `matchRoutes()` output on each navigation:
-
-```ts
-import { matchRoutes } from 'react-router-dom';
-import { instrumentRouterMatches } from '@bugsee/react';
-
-instrumentRouterMatches(matchRoutes(routes, location));
-// or set a name directly: setRouteName('/users/:id')
+createRoot(document.getElementById("root")!, createBugseeErrorHandlers()).render(<App />);
 ```
 
-`routePatternFromMatches(matches)` builds the pattern; `setRouteName(name)` is the generic primitive.
+### Route naming (react-router)
 
-## Preact
+Name the active navigation after the matched route pattern (`/users/:id`) instead of the concrete URL. With a data router, wire it once:
 
-Preact (≥10) is supported through this adapter via `preact/compat` (the standard React-compat aliasing) — no
-separate package. Under compat, `preact/compat`'s `Component` provides React-compatible error boundaries
-(`getDerivedStateFromError` / `componentDidCatch`), so `BugseeErrorBoundary` / `withBugseeErrorBoundary` catch
-descendant render errors unchanged, and the router helpers are structural (they consume a `matchRoutes()`-shaped
-value from react-router or preact-iso). Alias `react`/`react-dom` → `preact/compat` in your bundler (as a Preact
-app already does) and use `@bugsee/react` as-is. Caveat: Preact's `componentDidCatch` does not populate
-`errorInfo.componentStack`, so under Preact the report carries the error but no React component-stack tree (the
-boundary handles this gracefully — it simply omits it).
+```tsx
+import { createBrowserRouter } from "react-router-dom";
+import { instrumentReactRouter } from "@bugsee/react";
 
-Built test-first per `docs/implementation-standards.md`; see `docs/design/frontend-adapters.md` §6 (D8).
+const router = createBrowserRouter(routes);
+instrumentReactRouter(router);
+```
+
+With a declarative router, call `instrumentRouterMatches(matchRoutes(routes, location))` on each navigation.
+
+### Component names in minified builds (optional)
+
+Install the Babel plugin so clicks and errors are attributed to the component that rendered them, even after minification:
+
+```sh
+npm install --save-dev @bugsee/babel-plugin-component-annotate
+```
+
+```js
+// babel.config.js
+module.exports = {
+  plugins: [["@bugsee/babel-plugin-component-annotate"]],
+};
+```
+
+### Preact
+
+Preact (10+) works through this package via `preact/compat`. Alias `react` and `react-dom` to `preact/compat` in your bundler, as a Preact app already does, and use `@bugsee/react` as is. Under Preact the report carries the error but no React component stack.
+
+## Options
+
+`launch(appToken, options)` accepts the SDK launch options. The most relevant ones in the browser:
+
+- `captureLogs`: capture console output (default `true`).
+- `captureNetwork`: capture network requests (default `true`).
+- `maxRecordingTime`: seconds of recording to keep (default `60`).
+- `replay`: session replay settings, or `false` to turn replay off.
+- `captureInteractions`: capture user interactions.
+
+This package also re-exports everything from `@bugsee/bugsee`.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/react
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
