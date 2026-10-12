@@ -28,6 +28,7 @@ import {
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createClient,
   createServiceContainer,
   type FilterStore,
@@ -35,6 +36,7 @@ import {
   getCarrierClient,
   getOrCreateInterceptor,
   getServiceManifests,
+  type LifecycleEventsListener,
   type LogEventFilter,
   type NetworkEventFilter,
   neverThrow,
@@ -241,6 +243,14 @@ export interface BugseeWebViewLaunchOptions {
    * mismatched `red` provenance flag is never a privacy hazard — see redaction-provenance.ts.)
    */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the WebView carrier. Also set with
+   * `client.setLifecycleEventsListener(...)`. `RelaunchedAfterCrash` is never emitted here: the WebView keeps
+   * nothing durable (native owns the stream), so there is no previous run to find evidence of.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 }
 
 /** What `__bugsee_bridge` forwards to for the CURRENT session (swapped on launch/stop). */
@@ -457,6 +467,15 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   });
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
+    // the same one every client of this WebView sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() clears the carrier slot and makes the control binding inert, so a stopped client must not be
+    // restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },
@@ -730,13 +749,20 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // binding is non-configurable and cannot be removed (D-A3), so a later launch() re-points the session
   // behind it rather than starting from a fresh binding.
   const stopCore = client.stop;
+  // The carrier holds this facade, not the client: keep the reference so `stop()` can release the slot only
+  // while it is still ours.
+  const facade = carrierFacadeFor(client);
   publicClient = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
-      setCarrierClient(undefined, carrier);
-      launchedClient = undefined;
+      // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
+      // the module's `launchedClient`, of a NEWER launch that has since taken them.
+      clearCarrierClient(facade, carrier);
+      if (launchedClient === publicClient) {
+        launchedClient = undefined;
+      }
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
       // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
@@ -749,7 +775,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     },
   };
   launchedClient = publicClient;
-  setCarrierClient(carrierFacadeFor(publicClient), carrier);
+  setCarrierClient(facade, carrier);
   return publicClient;
 }
 

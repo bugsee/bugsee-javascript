@@ -239,7 +239,7 @@ export {
   type RateLimiter,
   type RateLimiterOptions,
 } from './rate-limiter';
-export { relaunchWith } from './relaunch';
+export { RELAUNCH_KEPT_OPTIONS, relaunchWith } from './relaunch';
 export {
   type ReportMarker,
   type ReportMarkerStore,

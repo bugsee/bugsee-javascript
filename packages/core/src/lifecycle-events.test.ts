@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { getCarrierLifecycleSlot } from './carrier';
 import { createLifecycleEmitter, LifecycleEvents } from './lifecycle-events';
 
 describe('LifecycleEvents', () => {
@@ -167,5 +168,86 @@ describe('createLifecycleEmitter — shared slot (L1)', () => {
     second.set(null);
     first.emit(LifecycleEvents.Launched);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createLifecycleEmitter — delivery state lives with the shared slot (R2L-5)', () => {
+  it('an event emitted by ANOTHER emitter from inside the listener is queued, not nested', () => {
+    const g = {};
+    const a = createLifecycleEmitter(() => {}, getCarrierLifecycleSlot(g));
+    const b = createLifecycleEmitter(() => {}, getCarrierLifecycleSlot(g));
+    const trace: string[] = [];
+    let depth = 0;
+    a.set((type) => {
+      depth += 1;
+      trace.push(`${type}@${depth}`);
+      if (type === LifecycleEvents.Stopped) {
+        // client A's Stopped listener relaunches: client B's Launching/Launched must wait for this return
+        b.emit(LifecycleEvents.Launching);
+        b.emit(LifecycleEvents.Launched);
+        trace.push('listener-returns');
+      }
+      depth -= 1;
+    });
+    a.emit(LifecycleEvents.Stopped);
+    expect(trace).toEqual([
+      `${LifecycleEvents.Stopped}@1`,
+      'listener-returns',
+      `${LifecycleEvents.Launching}@1`,
+      `${LifecycleEvents.Launched}@1`,
+    ]);
+  });
+});
+
+describe('createLifecycleEmitter — runaway listeners (R2L-15)', () => {
+  it('stops delivering and reports when listeners keep causing each other forever', () => {
+    const onError = vi.fn();
+    const emitter = createLifecycleEmitter(onError);
+    let delivered = 0;
+    emitter.set((type) => {
+      delivered += 1;
+      // the Launched listener "stops", the Stopping listener "launches": a synchronous cycle
+      if (type === LifecycleEvents.Launched) emitter.emit(LifecycleEvents.Stopping);
+      if (type === LifecycleEvents.Stopping) emitter.emit(LifecycleEvents.Launched);
+    });
+    emitter.emit(LifecycleEvents.Launched);
+    expect(delivered).toBeGreaterThan(10);
+    expect(delivered).toBeLessThanOrEqual(200);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String((onError.mock.calls[0]?.[0] as Error).message)).toMatch(/lifecycle/i);
+  });
+
+  it('recovers after the cut: the next emit() delivers normally', () => {
+    const emitter = createLifecycleEmitter(() => {});
+    let loop = true;
+    const seen: string[] = [];
+    emitter.set((type) => {
+      seen.push(type);
+      if (loop) {
+        // two per delivery, so the cut always leaves stale events behind in the queue
+        emitter.emit(LifecycleEvents.Launched);
+        emitter.emit(LifecycleEvents.Launched);
+      }
+    });
+    emitter.emit(LifecycleEvents.Launched);
+    loop = false;
+    seen.length = 0;
+    emitter.emit(LifecycleEvents.Stopped);
+    expect(seen).toEqual([LifecycleEvents.Stopped]);
+  });
+
+  it('a normal burst (many queued events, no cycle) is not cut', () => {
+    const onError = vi.fn();
+    const emitter = createLifecycleEmitter(onError);
+    let delivered = 0;
+    emitter.set((type) => {
+      delivered += 1;
+      if (type === LifecycleEvents.Launching) {
+        for (let i = 0; i < 30; i += 1) emitter.emit(LifecycleEvents.BeforeReportAssembled);
+      }
+    });
+    emitter.emit(LifecycleEvents.Launching);
+    expect(delivered).toBe(31);
+    expect(onError).not.toHaveBeenCalled();
   });
 });

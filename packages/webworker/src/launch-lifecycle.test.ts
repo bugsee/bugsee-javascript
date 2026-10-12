@@ -2,13 +2,16 @@ import 'fake-indexeddb/auto';
 import type { LockManagerLike } from '@bugsee/browser-utils';
 import {
   BugseeStatus,
+  createMemoryCaptureStore,
   getCarrier,
   getProcessStatus,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   relaunchWith,
   runLaunchRecovery,
+  setProcessLifecycleEventsListener,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
@@ -193,12 +196,87 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     clear.mockRestore();
   });
 
-  it('a client.launch() while the stop drains keeps the lock', async () => {
-    const { locks, options } = persisted();
+  it('R2L-3: a client.launch() while the stop drains is refused, and the stop still releases the lock', async () => {
+    const onError = vi.fn();
+    const { locks, options } = persisted({ onError });
     const client = track(options);
     const stopping = client.stop();
-    client.launch();
+    client.launch(); // core would restart without the carrier slot and the lock handling
     await stopping;
+    expect(client.isLaunched()).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+    await vi.waitFor(() => expect(locks.held.size).toBe(0));
+  });
+
+  it('R2L-1: a hung stop(timeout) then a repeat stop(timeout) keeps the lock (the upload may still run)', async () => {
+    const { locks, options } = persisted({ transport: () => new Promise(() => {}) });
+    const client = track(options);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    void client.logException(new Error('in flight'));
+    expect(await client.stop(30)).toBe(false);
+    expect(await client.stop(30)).toBe(false);
     expect(locks.held.size).toBe(1);
+  });
+
+  it('R2L-10: stop() flushes the capture store BEFORE it closes IndexedDB (a launched client only)', async () => {
+    const order: string[] = [];
+    const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
+      flush: async () => void order.push('flush'),
+    });
+    const { locks, options } = persisted({ captureStore });
+    const client = track(options);
+    const held = locks.held;
+    const stopping = client.stop();
+    await stopping;
+    await vi.waitFor(() => expect(held.size).toBe(0));
+    expect(order).toEqual(['flush']);
+  });
+
+  it('R2L-10: a flush that throws goes to onError and the stop still completes', async () => {
+    const onError = vi.fn();
+    const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
+      flush: async () => {
+        throw new Error('flush failed');
+      },
+    });
+    const { options } = persisted({ captureStore, onError });
+    const client = track(options);
+    await expect(client.stop()).resolves.toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'flush failed' }));
+  });
+});
+
+describe('R2L-4 — the worker observes its own lifecycle', () => {
+  it('the lifecycleEventsListener option sees Launching and Launched', () => {
+    const seen: string[] = [];
+    track(opts({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+  });
+
+  it('without a carrier option the process carrier is globalThis: a listener set BEFORE launch sees it, and survives a relaunch', async () => {
+    const seen: string[] = [];
+    setProcessLifecycleEventsListener((type) => seen.push(type));
+    track({ transport: okTransport(), detectCrashes: false });
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    seen.length = 0;
+    const second = await relaunchWith(launch, { transport: okTransport(), detectCrashes: false });
+    live.push(second);
+    expect(seen).toEqual([
+      LifecycleEvents.Stopping,
+      LifecycleEvents.Stopped,
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
+  });
+
+  it('a blackout carries across a relaunch instead of ending at the new client', async () => {
+    const carrier = {};
+    const first = track(opts({ carrier }));
+    first.startBlackout();
+    const second = await relaunchWith(launch, opts({ carrier }), carrier);
+    live.push(second);
+    expect(second.isBlackout()).toBe(true);
   });
 });

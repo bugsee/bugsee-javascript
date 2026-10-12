@@ -343,9 +343,8 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       expect(readJson<{ events: unknown[] }>(lit, 'input.json').events.length).toBeGreaterThan(0);
       const litCrumbs = readJson<Array<{ category: string }>>(lit, 'breadcrumbs');
       expect(litCrumbs.filter((c) => c.category === 'ui.focus')).toHaveLength(2); // #btn, #field after the release
-      // The replay brackets. A dark launch emits at most the end of its blackout and NEVER leaves the stream
-      // saying a blackout is still active after endBlackout(). TIGHTEN to `[[], [true, false]]` once the orphan
-      // `[false]` (an end with no start) is gone: review round 2, R2V-12.
+      // The replay brackets: none (the recorder never ran while dark) or a matched start/end pair, NEVER an
+      // orphan end `[false]` and never a stream left saying a blackout is still active (review round 2, R2V-12).
       const markers = (
         replayOf(lit).events as Array<{
           type: number;
@@ -354,8 +353,7 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       )
         .filter((e) => e.type === 5 && e.data?.tag === 'bugsee.blackout')
         .map((e) => e.data?.payload?.active);
-      expect(markers.length).toBeLessThanOrEqual(2);
-      expect(markers.at(-1) ?? false).toBe(false);
+      expect([[], [true, false]]).toContainEqual(markers);
       assertNoContractViolations(collector);
       await page.context().close();
     } finally {

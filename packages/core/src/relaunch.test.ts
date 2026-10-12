@@ -19,7 +19,7 @@ describe('relaunchWith', () => {
     const order: string[] = [];
     const previous = { stop: vi.fn(async () => void order.push('stop')) };
     setCarrierClient(previous, g);
-    setCarrierLastLaunch('tok', { endpoint: 'x', clock: 'c' }, g);
+    setCarrierLastLaunch('tok', { captureLogs: false, clock: 'c' }, g);
     const next = { stop: vi.fn() };
     const launch = vi.fn(async () => {
       order.push('launch');
@@ -36,9 +36,9 @@ describe('relaunchWith', () => {
     setCarrierLastLaunch('tok', { clock: 'old' }, g);
     const next = { stop: vi.fn() };
     const launch = vi.fn(() => next);
-    expect(await relaunchWith(launch, { endpoint: 'new' }, g)).toBe(next);
+    expect(await relaunchWith(launch, { captureLogs: false }, g)).toBe(next);
     // explicit options replace the Bugsee options; the kept seam (clock) is still carried
-    expect(launch).toHaveBeenCalledWith('tok', { clock: 'old', endpoint: 'new' });
+    expect(launch).toHaveBeenCalledWith('tok', { clock: 'old', captureLogs: false });
     expect(getCarrier(g).lastLaunch?.options).toEqual({ clock: 'old' }); // recording is the launcher's job
   });
 
@@ -71,7 +71,6 @@ describe('relaunchWith — options reset to defaults, integration seams kept (L1
       'tok',
       {
         ...seams,
-        endpoint: 'https://x',
         captureLogs: false,
         captureLogsLevel: 'error',
         maxRecordingTime: 5,
@@ -122,13 +121,7 @@ describe('relaunchWith — options reset to defaults, integration seams kept (L1
         'onError',
       ]),
     );
-    for (const option of [
-      'endpoint',
-      'captureLogs',
-      'captureNetwork',
-      'replay',
-      'maxRecordingTime',
-    ]) {
+    for (const option of ['captureLogs', 'captureNetwork', 'replay', 'maxRecordingTime']) {
       expect(RELAUNCH_KEPT_OPTIONS).not.toContain(option);
     }
   });
@@ -169,7 +162,7 @@ describe('relaunchWith — a launch that is still in flight (L13)', () => {
     const pending = new Promise<void>((resolve) => {
       finish = () => {
         setCarrierClient(inFlight, g);
-        setCarrierLastLaunch('tok', { endpoint: 'old' }, g);
+        setCarrierLastLaunch('tok', { captureLogs: false }, g);
         resolve();
       };
     });
@@ -179,13 +172,13 @@ describe('relaunchWith — a launch that is still in flight (L13)', () => {
       order.push('launch');
       return fresh;
     });
-    const relaunching = relaunchWith(launch, { endpoint: 'new' }, g);
+    const relaunching = relaunchWith(launch, { captureNetwork: false }, g);
     await Promise.resolve();
     expect(launch).not.toHaveBeenCalled();
     finish();
     await expect(relaunching).resolves.toBe(fresh);
     expect(order).toEqual(['stop-in-flight', 'launch']);
-    expect(launch).toHaveBeenCalledWith('tok', { endpoint: 'new' });
+    expect(launch).toHaveBeenCalledWith('tok', { captureNetwork: false });
   });
 
   it('a failed in-flight launch does not block the relaunch', async () => {
@@ -197,18 +190,104 @@ describe('relaunchWith — a launch that is still in flight (L13)', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
-  it('a launch that never finishes is waited for only up to the timeout', async () => {
+  it('waits for a slow in-flight launch WITHOUT the stop bound (R2L-8): no "before launch", no second build', async () => {
     const g = {};
-    setCarrierLastLaunch('tok', {}, g);
-    setCarrierPendingLaunch(new Promise(() => {}), g);
-    const launch = vi.fn(() => ({ stop: vi.fn() }));
-    await relaunchWith(launch, undefined, g, { stopTimeoutMs: 20 });
-    expect(launch).toHaveBeenCalledTimes(1);
+    const order: string[] = [];
+    const slow = { stop: vi.fn(async () => void order.push('stop-slow')) };
+    setCarrierPendingLaunch(
+      new Promise<void>((resolve) => {
+        (globalThis as unknown as { setTimeout(cb: () => void, ms: number): void }).setTimeout(
+          () => {
+            setCarrierClient(slow, g);
+            setCarrierLastLaunch('tok', {}, g);
+            resolve();
+          },
+          60,
+        );
+      }),
+      g,
+    );
+    const fresh = { stop: vi.fn() };
+    const launch = vi.fn(() => {
+      order.push('launch');
+      return fresh;
+    });
+    // the bound (10 ms) is far shorter than the launch (60 ms)
+    await expect(relaunchWith(launch, undefined, g, { stopTimeoutMs: 10 })).resolves.toBe(fresh);
+    expect(order).toEqual(['stop-slow', 'launch']);
   });
 
   it('rejects "before launch" only if no launch exists even after waiting', async () => {
     const g = {};
     setCarrierPendingLaunch(Promise.resolve(), g);
     await expect(relaunchWith(vi.fn(), undefined, g)).rejects.toThrow(/before launch/);
+  });
+});
+
+describe('relaunchWith — kept deployment identity and the remembered carrier host (R2P-3, R2L-12)', () => {
+  it('keeps the endpoint, app identity, persistence and runtime scope handles across a relaunch', async () => {
+    const g = {};
+    const kept = {
+      endpoint: 'https://eu.example/',
+      appId: 'app',
+      appVersion: '1.2.3',
+      appBuild: '45',
+      platformType: 'electron',
+      persist: false,
+      recover: false,
+      asyncLocalStorage: { name: 'als' },
+      partitionCaptureByTenant: true,
+      globalScope: { name: 'scope' },
+      globalTarget: { name: 'target' },
+      logger: { name: 'logger' },
+    };
+    setCarrierLastLaunch('tok', { ...kept, captureLogs: false }, g);
+    const launch = vi.fn(() => ({ stop: vi.fn() }));
+    await relaunchWith(launch, undefined, g);
+    expect(launch).toHaveBeenCalledWith('tok', kept);
+  });
+
+  it('a plain relaunch() after launch(t, { carrier: X }) finds X without being told', async () => {
+    const x = {};
+    setCarrierLastLaunch('tok', { carrier: x, clock: 'c' }, x);
+    const previous = { stop: vi.fn(async () => {}) };
+    setCarrierClient(previous, x);
+    const launch = vi.fn(() => ({ stop: vi.fn() }));
+    await relaunchWith(launch, undefined);
+    expect(previous.stop).toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledWith('tok', { carrier: x, clock: 'c' });
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('a later launch on the DEFAULT carrier stops pointing at the old custom one', async () => {
+    const x = {};
+    setCarrierLastLaunch('x-tok', { carrier: x }, x);
+    setCarrierLastLaunch('g-tok', {});
+    const launch = vi.fn(() => ({ stop: vi.fn() }));
+    await relaunchWith(launch, undefined);
+    expect(launch).toHaveBeenCalledWith('g-tok', {});
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('an explicit carrier argument wins over the remembered host', async () => {
+    const x = {};
+    const y = {};
+    setCarrierLastLaunch('x-tok', { carrier: x }, x);
+    setCarrierLastLaunch('y-tok', { carrier: y }, y);
+    const launch = vi.fn(() => ({ stop: vi.fn() }));
+    await relaunchWith(launch, undefined, x);
+    expect(launch).toHaveBeenCalledWith('x-tok', { carrier: x });
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+});
+
+describe('relaunchWith — a stop() that rejects', () => {
+  it('does not stop the relaunch', async () => {
+    const g = {};
+    setCarrierClient({ stop: vi.fn(async () => Promise.reject(new Error('stop failed'))) }, g);
+    setCarrierLastLaunch('tok', {}, g);
+    const launch = vi.fn(() => ({ stop: vi.fn() }));
+    await relaunchWith(launch, undefined, g);
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 });

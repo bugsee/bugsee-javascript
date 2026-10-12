@@ -5,6 +5,12 @@
 
 const PREFIX = 'com.bugsee.lifecycle.';
 
+// `RelaunchedAfterCrash` is emitted ONLY where a launch finds evidence that the previous run did not end
+// cleanly, and never invented: `@bugsee/node` (a dead sibling instance that was not cleanly stopped and left an
+// unsettled incident marker, an undelivered bundle or a harvested native dump), `@bugsee/browser` and
+// `@bugsee/webworker` (a dead sibling instance that left an unsettled incident marker; a tab closed normally
+// after a failed upload leaves one too, so it can over-report but never fabricate). It is NOT emitted on the
+// edge runtimes, WebView or anywhere else that keeps nothing durable across runs.
 export const LifecycleEvents = {
   Launching: `${PREFIX}Launching`,
   Launched: `${PREFIX}Launched`,
@@ -37,7 +43,24 @@ export type LifecycleEventsListener = (eventType: string, data?: unknown) => voi
 export interface LifecycleListenerSlot {
   get(): LifecycleEventsListener | null;
   set(listener: LifecycleEventsListener | null): void;
+  /**
+   * The delivery queue + re-entrancy flag, kept NEXT TO the listener they serve. The listener is shared
+   * by every client of the process, so a listener that calls `launch()` from client A's Stopped must see
+   * client B's Launching queued behind it, not nested inside it. Absent: the emitter keeps its own.
+   */
+  delivery?: LifecycleDeliveryState;
 }
+
+/** The pending events and the "a listener is running" flag of one listener slot. */
+export interface LifecycleDeliveryState {
+  queue: Array<[LifecycleEventType, unknown]>;
+  delivering: boolean;
+}
+
+// One listener stack can only cause this many deliveries before the chain is cut: a pair of listeners that
+// keep stopping/launching each other would otherwise spin the host forever (an application bug must not
+// hang it). A real burst is a handful of events; this leaves two orders of magnitude of headroom.
+const MAX_DELIVERIES_PER_DRAIN = 100;
 
 export interface LifecycleEmitter {
   /** Install the listener (replacing any previous one); `null` clears it. */
@@ -61,20 +84,35 @@ export function createLifecycleEmitter(
       own = next;
     },
   };
-  const queue: Array<[LifecycleEventType, unknown]> = [];
-  let delivering = false;
+  const state: LifecycleDeliveryState = listenerSlot.delivery ?? { queue: [], delivering: false };
   return {
     set(next: LifecycleEventsListener | null): void {
       listenerSlot.set(next);
     },
     emit(eventType: LifecycleEventType, data?: unknown): void {
-      queue.push([eventType, data]);
-      if (delivering) {
+      state.queue.push([eventType, data]);
+      if (state.delivering) {
         return;
       }
-      delivering = true;
+      state.delivering = true;
+      let delivered = 0;
       try {
-        for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        for (let next = state.queue.shift(); next !== undefined; next = state.queue.shift()) {
+          delivered += 1;
+          if (delivered > MAX_DELIVERIES_PER_DRAIN) {
+            // Fail closed: stop delivering, drop what is queued, say so once.
+            state.queue.length = 0;
+            try {
+              onError(
+                new Error(
+                  'lifecycle: listeners keep triggering each other; event delivery stopped',
+                ),
+              );
+            } catch {
+              // a throwing sink must not defeat the guard either
+            }
+            return;
+          }
           // Read per event: a listener cleared or replaced mid-queue governs what follows.
           const listener = listenerSlot.get();
           if (listener === null) {
@@ -91,7 +129,7 @@ export function createLifecycleEmitter(
           }
         }
       } finally {
-        delivering = false;
+        state.delivering = false;
       }
     },
   };

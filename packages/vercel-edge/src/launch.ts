@@ -29,6 +29,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type LifecycleEventsListener,
   type RequestContext,
   resolveLaunchOptions,
   resolveMaxPartitions,
@@ -190,6 +191,14 @@ export interface BugseeEdgeLaunchOptions {
   globalTarget?: EdgeGlobalEvents;
   /** Carrier host for the per-isolate singleton; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the isolate carrier, so a later client sees it too. Also set with
+   * `client.setLifecycleEventsListener(...)`. `RelaunchedAfterCrash` is never emitted here: an edge isolate
+   * keeps nothing durable, so there is no previous run to find evidence of.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 }
 
 /** The launched edge client — the public edge SDK surface. */
@@ -322,6 +331,15 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   services.addService(defineService(EdgeContextStoreToken, () => contextStore));
 
   const client = createClient({
+    // Isolate-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
+    // the same one every client of the isolate sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() releases the carrier slot, so a stopped client must not be restarted in place (R2L-3): a new one
+    // comes from `launch(appToken)`.
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },

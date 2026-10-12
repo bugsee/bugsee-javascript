@@ -1,8 +1,13 @@
 import type { Interceptor } from './contracts';
 import { type FilterStore, FiltersToken } from './filters';
 import { BugseeStatus } from './launch-status';
-import type { LifecycleEventsListener, LifecycleListenerSlot } from './lifecycle-events';
+import type {
+  LifecycleDeliveryState,
+  LifecycleEventsListener,
+  LifecycleListenerSlot,
+} from './lifecycle-events';
 import type { ServiceRegistrar, ServiceResolver } from './services';
+import type { NotifyItem } from './transport';
 
 /**
  * A package's SERVICE MANIFEST: registers its contract-first services into the internal container,
@@ -39,6 +44,11 @@ export interface BugseeCarrier {
   client?: unknown;
   /** The process lifecycle state; absent means {@link BugseeStatus.Stopped}. */
   status?: BugseeStatus;
+  /**
+   * On the DEFAULT (`globalThis`) slot only: the custom carrier host the last launch used, so a plain
+   * `relaunch()` (which is not told the host) finds the client and the remembered launch there (R2L-12).
+   */
+  lastHost?: object;
   /** What the last launch that built a client leaves for `relaunch()`: the token + only the integration seams (never secrets or the full options). */
   lastLaunch?: { appToken: string; options: unknown };
   /**
@@ -47,11 +57,17 @@ export interface BugseeCarrier {
    * survives `relaunch()` (a new client has a new emitter, but reads the same slot).
    */
   lifecycleListener?: LifecycleEventsListener | null;
+  /** The delivery queue of that listener (R2L-5): shared by every emitter of the process, like the slot. */
+  lifecycleDelivery?: LifecycleDeliveryState;
   /**
    * Whether a blackout is in force. Process-level, like mobile: a relaunch builds a new client, and
    * silently ending the blackout there would resume capture of a screen the app asked to hide.
    */
   blackout?: boolean;
+  /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
+  relaunching?: boolean;
+  /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds (R2L-6). */
+  notifyBacklog?: NotifyItem[];
   /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
   pendingLaunch?: Promise<unknown>;
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
@@ -166,13 +182,26 @@ export function getProcessStatus(globalObj: object = globalThis): BugseeStatus {
 }
 
 /**
- * The launch options a carrier slot retains for `relaunch()`: INTEGRATION SEAMS (transport, carrier host,
- * time source, stores, runtime handles, the error sink) that say WHERE and HOW the SDK lives in this process,
- * as opposed to Bugsee options. Everything else (host Bugsee options, identifiers, tokens other than the app
- * token) is deliberately NOT kept, so a relaunch without options starts from the defaults like Android and
- * iOS. The slot sits on `globalThis` next to the client itself, which already exposes more than these seams.
+ * The launch options a carrier slot retains for `relaunch()`. Two kinds, both of which say WHERE and HOW the
+ * SDK lives in this process rather than WHAT it should capture:
+ *
+ *  - INTEGRATION SEAMS (transport, carrier host, time source, stores, runtime handles, the error sink);
+ *  - DEPLOYMENT IDENTITY (endpoint, app id/version/build, platform type, persistence and recovery, the
+ *    tenant partitioning, the runtime scope handles). A relaunch that forgot these would upload to the
+ *    DEFAULT production endpoint (a data-residency breach) and under the wrong app version.
+ *
+ * Everything else (host Bugsee options, identifiers, tokens other than the app token) is deliberately NOT
+ * kept, so a relaunch without options starts from the defaults like Android and iOS. The slot sits on
+ * `globalThis` next to the client itself, which already exposes more than these. Note that it therefore pins
+ * the kept objects (transport, stores, `window`/`document`, `indexedDB`...) for the life of the process, after
+ * the client that used them is gone: accepted, and the reason secrets and the full options are never kept.
+ *
+ * This list is the SINGLE source of truth: a table test in `@bugsee/bugsee` requires every launch option of
+ * every platform to be classified as kept (here) or reset (listed in that test), so a new option cannot be
+ * forgotten.
  */
 export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
+  // integration seams
   'transport',
   'carrier',
   'clock',
@@ -197,6 +226,36 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'indexedDB',
   'deviceIdEnv',
   'onError',
+  'asyncLocalStorage',
+  'globalScope',
+  'globalTarget',
+  'global',
+  'logger',
+  'instanceIdentity',
+  'captureWriter',
+  'serverInterceptor',
+  'serverInstrumentations',
+  'appRoot',
+  'appStartTimeMs',
+  // redaction hooks: forgetting one is a FAIL-OPEN privacy regression (the defaults keep the built-in
+  // sanitizer, but whatever the application added on top would silently stop applying)
+  'breadcrumbFilter',
+  'logFilter',
+  'networkFilter',
+  'reportHandler',
+  // deployment identity
+  'endpoint',
+  'appId',
+  'appVersion',
+  'appBuild',
+  'platformType',
+  'sdkVersion',
+  'runtimeVersion',
+  'deviceId',
+  'persist',
+  'recover',
+  'partitionCaptureByTenant',
+  'maxTenantPartitions',
 ];
 
 /** Remember the token and the integration seams of a launch that built a client, for `relaunch()`. */
@@ -215,6 +274,10 @@ export function setCarrierLastLaunch(
     }
   }
   getCarrier(globalObj).lastLaunch = { appToken, options: retained };
+  // Remember the custom host on the default slot, so a plain relaunch() can find it (R2L-12).
+  const host = retained.carrier;
+  getCarrier().lastHost =
+    typeof host === 'object' && host !== null && host !== globalThis ? host : undefined;
 }
 
 /**
@@ -236,7 +299,9 @@ export function getFilters(globalObj: object = globalThis): FilterStore | undefi
 /** The carrier's lifecycle-listener slot, in the shape the lifecycle emitter reads and writes. */
 export function getCarrierLifecycleSlot(globalObj: object = globalThis): LifecycleListenerSlot {
   const carrier = getCarrier(globalObj);
+  carrier.lifecycleDelivery ??= { queue: [], delivering: false };
   return {
+    delivery: carrier.lifecycleDelivery,
     get: () => carrier.lifecycleListener ?? null,
     set: (listener) => {
       carrier.lifecycleListener = listener;
@@ -278,4 +343,14 @@ export function setCarrierPendingLaunch(
   globalObj: object = globalThis,
 ): void {
   getCarrier(globalObj).pendingLaunch = pending;
+}
+
+/** Whether `relaunch()` is in progress on this carrier (the old client hands its notify backlog over). */
+export function getCarrierRelaunching(globalObj: object = globalThis): boolean {
+  return getCarrier(globalObj).relaunching === true;
+}
+
+/** Mark `relaunch()` in progress (or finished). */
+export function setCarrierRelaunching(active: boolean, globalObj: object = globalThis): void {
+  getCarrier(globalObj).relaunching = active;
 }

@@ -70,6 +70,14 @@ export interface RecoverInstancesOptions {
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
   /**
+   * Called ONCE, when recovery finds evidence that a previous run did not stop cleanly (R2D-2): a DEAD
+   * sibling that was NOT cleanly stopped (no `.stopped` marker) and still held an unsettled incident — a
+   * pending report marker or an undelivered bundle — or a native crash dump the harvest actually found. A
+   * sibling that merely died (a process that exited without calling `stop()`) with nothing in flight is NOT
+   * evidence, and neither is a cleanly stopped one. A throw is routed to `onError`.
+   */
+  onCrashEvidence?: () => void;
+  /**
    * Reconcile a bundle queue that lives OUTSIDE the per-instance layout — an injected `bundleStore`,
    * which is a store the integrator keeps stable across launches — against ONE dead sibling's pending
    * markers. Called with that sibling's marker store after its own `pending/` has been drained and
@@ -127,6 +135,7 @@ async function finishSubtree(
   skipReportIds: ReadonlySet<string>,
   options: RecoverInstancesOptions,
   onError: (error: unknown) => void,
+  signalCrashEvidence: () => void,
 ): Promise<void> {
   const bundleStore = createNodeBundleStore(join(sub, 'pending'));
 
@@ -160,6 +169,9 @@ async function finishSubtree(
         uploadPipeline: options.uploadPipeline,
         onError,
       });
+      if (result.harvested > 0) {
+        signalCrashEvidence(); // a native dump exists: the previous run really did crash
+      }
       if (result.complete) {
         crashpad.remove();
       } else {
@@ -200,6 +212,18 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
   }
   const now = options.now ?? Date.now;
   const patientMs = options.patientMs ?? DEFAULT_PATIENT_MS;
+  let crashSignalled = false;
+  const signalCrashEvidence = (): void => {
+    if (crashSignalled) {
+      return;
+    }
+    crashSignalled = true;
+    try {
+      options.onCrashEvidence?.();
+    } catch (error) {
+      onError(error);
+    }
+  };
   /** The dead siblings this launch owns for the duration of the scan. */
   const claimed: Array<{ sub: string; markers: ReportMarkerStore }> = [];
   for (const id of entries) {
@@ -247,7 +271,15 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
       ) {
         continue;
       }
-      claimed.push({ sub, markers: createNodeReportMarkerStore(join(sub, 'incidents'), onError) });
+      const markers = createNodeReportMarkerStore(join(sub, 'incidents'), onError);
+      claimed.push({ sub, markers });
+      // Taken BEFORE delivery, which retires what it delivers.
+      if (
+        !isCleanlyStopped(sub) &&
+        (markers.list().length > 0 || createNodeBundleStore(join(sub, 'pending')).list().length > 0)
+      ) {
+        signalCrashEvidence();
+      }
     } catch (error) {
       onError(error); // a failed subtree is left in place to retry on a later launch
     }
@@ -301,7 +333,14 @@ export async function recoverInstances(options: RecoverInstancesOptions): Promis
     // PASS 2 — the marker legs, each withholding every id pass 1 took ownership of.
     for (const { sub, markers } of claimed) {
       try {
-        await finishSubtree(sub, markers, replay.skipReportIds, options, onError);
+        await finishSubtree(
+          sub,
+          markers,
+          replay.skipReportIds,
+          options,
+          onError,
+          signalCrashEvidence,
+        );
       } catch (error) {
         onError(error);
       }
