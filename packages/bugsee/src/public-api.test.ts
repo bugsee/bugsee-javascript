@@ -6,6 +6,8 @@ import type {
   AttributeValue,
   Breadcrumb,
   BreadcrumbInput,
+  LifecycleEventsListener,
+  LifecycleEventType,
   LogExceptionOptions,
   ReportDialogOptions,
   ReportDialogStrings,
@@ -32,5 +34,15 @@ describe('@bugsee/bugsee public API surface', () => {
     const dialog = {} as ReportDialogOptions;
     const strings = {} as ReportDialogStrings;
     expect([upload, dialog, strings]).toHaveLength(3);
+  });
+
+  it('re-exports the lifecycle event constants and listener types', () => {
+    const listener: LifecycleEventsListener = () => {};
+    const type: LifecycleEventType = publicApi.LifecycleEvents.Launched;
+    expect(type).toBe('com.bugsee.lifecycle.Launched');
+    expect(publicApi.LifecycleEvents.AfterReportUploaded).toBe(
+      'com.bugsee.lifecycle.AfterReportUploaded',
+    );
+    expect(typeof listener).toBe('function');
   });
 });

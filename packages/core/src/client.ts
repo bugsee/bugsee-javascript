@@ -57,6 +57,12 @@ import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 export type { Breadcrumb, BreadcrumbInput } from './events';
 
 import { createExtensionRegistry } from './extension-registry';
+import {
+  createLifecycleEmitter,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from './lifecycle-events';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
@@ -212,8 +218,24 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * intact, so `db.statement` reaches the SDK as raw SQL with literals unless something scrubs it.
    */
   setSpanFilter(filter: SpanFilter | null): void;
-  /** `before` mutates/vetoes (return null) the report before assembly. `after` is accepted but deferred. */
+  /**
+   * `before` mutates/vetoes (return null) the report before assembly. `after` runs once the report has
+   * been handed off and the pipeline has settled (delivered, refused or queued for retry), with the
+   * request that was sent; a throwing handler is routed to `onError` and never breaks reporting.
+   */
   setReportHandler(handler: ReportHandler | null): void;
+
+  /**
+   * Observe SDK lifecycle milestones (Android `setLifecycleEventsListener`). One listener at a time;
+   * `null` clears it. See {@link LifecycleEvents} for the event names. A throwing listener is routed to
+   * `onError` and never affects the SDK.
+   */
+  setLifecycleEventsListener(listener: LifecycleEventsListener | null): void;
+  /**
+   * Emit a lifecycle event from a platform tier that owns the milestone (the browser report dialog
+   * emits BeforeReportShown / AfterReportShown through this). Never throws.
+   */
+  emitLifecycleEvent(eventType: LifecycleEventType, data?: unknown): void;
 
   // Manual capture entry points (Android parity, §7.1). Each pushes a CaptureDataEntry.
   addBreadcrumb(breadcrumb: BreadcrumbInput): void;
@@ -379,6 +401,10 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // capture pipeline reads the same instance via the container (getFilters). Registered eagerly so a
   // pipeline resolve always finds it once a client exists.
   const filters = createFilterStore(onError);
+  const lifecycle = createLifecycleEmitter(onError);
+  // Requests whose bundle was assembled: only these have an upload to report on (a vetoed report, a
+  // failed assembly or an injected trigger pipeline that never assembles must not emit upload events).
+  const assembledReports = new WeakSet<ReportingRequest>();
   services.addService(defineService(FiltersToken, () => filters));
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
@@ -495,6 +521,21 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return capturedByType;
     };
     const assemble = async (request: ReportingRequest): Promise<Bundle> => {
+      lifecycle.emit(LifecycleEvents.BeforeReportAssembled, { reportId: request.id });
+      let bundle: Bundle;
+      try {
+        bundle = await assembleReport(request);
+      } catch (error) {
+        lifecycle.emit(LifecycleEvents.ReportAssemblyFailed, { reportId: request.id, error });
+        throw error;
+      }
+      assembledReports.add(request);
+      lifecycle.emit(LifecycleEvents.AfterReportAssembled, { reportId: request.id });
+      // The assembled bundle goes straight to the upload pipeline from here.
+      lifecycle.emit(LifecycleEvents.BeforeReportUploaded, { reportId: request.id });
+      return bundle;
+    };
+    const assembleReport = async (request: ReportingRequest): Promise<Bundle> => {
       // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
       // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
       // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
@@ -680,6 +721,31 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       }
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+    // Once the pipeline settles: tell the lifecycle listener how the upload went, then run the report
+    // handler's `after`. Both are guarded — observing a report must never be able to break it.
+    const onSettled = (settled: UploadResult | undefined): void => {
+      try {
+        if (settled !== undefined && assembledReports.has(handled)) {
+          const data = { reportId: handled.id, result: settled };
+          if (settled.ok) {
+            lifecycle.emit(LifecycleEvents.AfterReportUploaded, data);
+          } else if (settled.permanent !== true && settled.retained === true) {
+            // Not refused, and durably staged: the next launch will retry it.
+            lifecycle.emit(LifecycleEvents.ReportUploadFailedWithFutureRetry, data);
+          } else {
+            lifecycle.emit(LifecycleEvents.ReportUploadFailed, data);
+          }
+        }
+      } catch (error) {
+        onErrorSafe(error);
+      }
+      try {
+        filters.report?.after?.(handled);
+      } catch (error) {
+        onErrorSafe(error);
+      }
+    };
+    result.then(onSettled, () => onSettled(undefined));
     if (reportMarkers !== undefined) {
       // WHEN MAY THIS MARKER BE RETIRED?
       //
@@ -792,6 +858,8 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     setReportHandler(handler: ReportHandler | null): void {
       filters.report = handler;
     },
+    setLifecycleEventsListener: lifecycle.set,
+    emitLifecycleEvent: lifecycle.emit,
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
       if (killed) {
@@ -956,6 +1024,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       if (killed || launched) {
         return;
       }
+      lifecycle.emit(LifecycleEvents.Launching);
       launched = true;
       stopped = false;
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
@@ -985,16 +1054,21 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           onError(error);
         }
       }, tickIntervalMs);
+      lifecycle.emit(LifecycleEvents.Launched);
     },
 
     stop(timeout?: number): Promise<boolean> {
       if (!launched) {
         return Promise.resolve(true);
       }
+      lifecycle.emit(LifecycleEvents.Stopping);
       launched = false;
       stopped = true;
       haltCapture(); // launch() always sets tickTimer first, so it is set here (stop runs only if launched)
-      return drainPending(timeout);
+      return drainPending(timeout).then((drained) => {
+        lifecycle.emit(LifecycleEvents.Stopped);
+        return drained;
+      });
     },
 
     flush(timeout?: number): Promise<boolean> {

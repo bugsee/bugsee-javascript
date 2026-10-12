@@ -12,6 +12,12 @@ export type {
   LogExceptionOptions,
   UploadOptions,
 } from '@bugsee/core';
+// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
 // The SpanProcessor type users receive via `onOtelSpanProcessor` to register on their TracerProvider.
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 // The performance extension's public surface. Re-exported for a reason beyond convenience:

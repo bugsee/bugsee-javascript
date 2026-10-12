@@ -159,6 +159,13 @@ export {
   runLaunchRecovery,
 } from './launch-recovery';
 export {
+  createLifecycleEmitter,
+  type LifecycleEmitter,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from './lifecycle-events';
+export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,
 } from './memory-capture-store';

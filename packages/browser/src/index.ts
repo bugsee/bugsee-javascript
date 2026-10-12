@@ -2,6 +2,12 @@
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
 
+// Lifecycle events: the event-name constants + listener type for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,

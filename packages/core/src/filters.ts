@@ -49,7 +49,11 @@ export type SpanFilter = (span: FilterableSpan) => FilterableSpan | null;
 /** Report handler (design §7.1): `before` mutates/returns a new request, or null to veto the report. */
 export interface ReportHandler {
   before?: (request: ReportingRequest) => ReportingRequest | null;
-  /** Accepted for forward-compat; not yet invoked (deferred to a later slice). */
+  /**
+   * Runs once the report has been handed off and the pipeline has settled (Android
+   * `ReportHandler.onAfterReportCreated`), with the request that was sent. Not run for a vetoed report.
+   * A throwing handler goes to `onError` and never breaks reporting.
+   */
   after?: (request: ReportingRequest) => void;
 }
 

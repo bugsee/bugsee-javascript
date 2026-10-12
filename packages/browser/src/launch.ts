@@ -746,6 +746,7 @@ export async function launchCore(
     setUserIdentifier: (email) => client.setUserIdentifier(email),
     clearUserIdentifier: () => client.clearUserIdentifier(),
     sdkVersion: SDK_VERSION,
+    emitLifecycleEvent: (eventType, data) => client.emitLifecycleEvent(eventType, data),
     ui: {
       summaryRequired: reportUi.get(BugseeOption.ReportingUiSummaryRequired, false),
       descriptionRequired: reportUi.get(BugseeOption.ReportingUiDescriptionRequired, false),
