@@ -1,7 +1,6 @@
 # @bugsee/nestjs
 
-NestJS adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `@nestjs/common`, `@nestjs/core` and `rxjs` are **peer**
+NestJS adapter — a backend binding over Bugsee's per-request context foundation. `@nestjs/common`, `@nestjs/core` and `rxjs` are **peer**
 dependencies. Works on both the **express-** and **fastify-**based Nest platforms.
 
 ```ts
@@ -42,8 +41,7 @@ request while the full picture stays available.
 
 ## Choosing the error-capture seam
 
-NestJS gives two places to catch errors, with different coverage (empirically mapped — see the design
-doc). Pick via `errorCapture`:
+NestJS gives two places to catch errors, with different coverage (empirically mapped). Pick via `errorCapture`:
 
 | `errorCapture` | Catches | Notes |
 | --- | --- | --- |
@@ -85,4 +83,4 @@ flow) is skipped. Override with `shouldReport: (err) => boolean`.
 
 **Status:** implemented + tested (incl. real-Nest e2e on both the express and fastify platforms: the
 seam-coverage matrix, the 4xx-skip policy, cross-seam dedup, response preservation, and concurrency
-isolation). Built test-first per `docs/implementation-standards.md`.
+isolation).

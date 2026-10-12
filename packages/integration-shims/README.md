@@ -1,8 +1,8 @@
 # @bugsee/integration-shims
 
-No-op stand-ins for DOM-only integrations on DOM-less runtimes (design §5, §6 line 372).
+No-op stand-ins for DOM-only integrations on DOM-less runtimes.
 
-**Status:** implemented (slice #13).
+**Status:** implemented.
 
 Some capture integrations exist only with a DOM — `viewHierarchyProvider` (DOM
 snapshot), `breadcrumbsProvider` (clicks/keys/history), `xhrInterceptor`. On
@@ -32,9 +32,7 @@ the warning fires lazily on activation, at most once per integration per process
 
 ## Not a shim: `replay`
 
-Per design §372, **replay is intentionally excluded** here. Replay is
+**Replay is intentionally excluded** here. Replay is
 option-driven, not a user-constructed integration — the `replay` option is simply
 ignored with a warn on non-browser runtimes, handled where options are resolved,
 not via a no-op export.
-
-Implementation follows `docs/implementation-standards.md`.

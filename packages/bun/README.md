@@ -1,6 +1,6 @@
 # @bugsee/bun
 
-Bun platform (tier 2, design §5). Bun runs on a node-compatible API surface, so this package re-exports
+Bun platform. Bun runs on a node-compatible API surface, so this package re-exports
 the entire `@bugsee/node` composition and overrides only the Bun-specific bits:
 
 - **Runtime identity** — `launch()`/`launchCore()` default the system probe to `bunSystemProbe`, so the
@@ -16,4 +16,4 @@ import { launch } from '@bugsee/bun';
 const bugsee = launch(appToken, { appVersion: '1.0.0' });
 ```
 
-**Status:** implemented. Built test-first per `docs/implementation-standards.md`.
+**Status:** implemented.

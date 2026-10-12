@@ -1,7 +1,6 @@
 # @bugsee/elysia
 
-Elysia adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `elysia` is a **peer** (structural types only — the adapter never
+Elysia adapter — a backend binding over Bugsee's per-request context foundation. `elysia` is a **peer** (structural types only — the adapter never
 imports `elysia`). Works on node/bun/deno-hosted Elysia (wherever the launched `@bugsee/node` client
 provides the context store).
 
@@ -46,4 +45,4 @@ Correlation, not isolation: the SDK records everything globally and tags each en
 - **Opt-in** — with no SDK launched, the hooks are transparent no-ops, and never break the request.
 
 **Status:** implemented + tested (incl. a real-Elysia e2e via `app.handle`: error reporting, 404 skip,
-response preservation, concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+response preservation, concurrency isolation).

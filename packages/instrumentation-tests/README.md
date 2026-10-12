@@ -15,8 +15,8 @@ pnpm --filter @bugsee/instrumentation-tests test:e2e
 The `*.e2e.ts` suites are **not** part of `pnpm test` (the root globs `*.test.ts`) and have no coverage
 gate — they spawn real processes. Since 2026-07-27 they **do run in CI**, in their own `e2e` job with
 `bun` and `deno` installed (`.github/workflows/ci.yml`). Before that they were outside the gate
-entirely, which the adversarial review root-caused as the reason most of its ~90 SEV1 findings survived
-~100% unit coverage (`docs/review/e2e-harnesses.md`).
+entirely, which the adversarial review identified as the reason most of its ~90 findings survived
+~100% unit coverage.
 
 The one exception is `test/bundle.test.ts` — the unit tests for the shared assertion library below. Those
 are `*.test.ts` on purpose and run via the `test:unit` script (`vitest.unit.config.ts`), which CI executes in
@@ -56,7 +56,7 @@ request. It runs in the runner process; the app reaches it over loopback HTTP, s
 
 ## The shared bundle-assertion library (`test/bundle.ts`)
 
-Wave V0 of `docs/review/REMEDIATION-PLAN.md`. The review's central finding about this harness layer was
+The adversarial review's central finding about this harness layer was
 that it asserted a bundle **arrived** rather than what was **in** it. These helpers exist to close
 specific, confirmed defect classes, and each has a **negative** unit test proving it fails on the real
 defect — an assertion library that cannot fail is the exact theater being removed.
@@ -68,7 +68,7 @@ defect — an assertion library that cannot fail is the exact theater being remo
 | `assertBundleIntegrity(bundle)` | manifest ↔ zip agreement. Catches the confirmed core Pass D defect: a recovered crash bundle declared `profile.json` while the zip held only the directory-shaped entry `profile.json/` |
 | `assertNoSecrets(bundle, secrets)` | scans **every** entry, binary included, for values that must never ship. Catches the confirmed URL-query-string / body credential leaks. Exempts only the assembler's STRUCTURAL `apptoken` (an undeclared root entry) — an attachment merely named `apptoken` is still scanned |
 
-New suites and the sample apps of Wave V should use these rather than hand-rolling per-file parsing.
+New suites and the sample apps should use these rather than hand-rolling per-file parsing.
 
 ## Maintenance
 

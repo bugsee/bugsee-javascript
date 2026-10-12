@@ -1,7 +1,6 @@
 # @bugsee/hapi
 
-Hapi adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `@hapi/hapi` is a **peer** (structural types only — the adapter
+Hapi adapter — a backend binding over Bugsee's per-request context foundation. `@hapi/hapi` is a **peer** (structural types only — the adapter
 never imports hapi). Works on node/bun/deno-hosted Hapi (wherever the launched `@bugsee/node` client
 provides the context store).
 
@@ -43,4 +42,4 @@ Correlation, not isolation: the SDK records everything globally and tags each en
 - **Privacy-safe** — no user identity is read unless you provide a `user` getter.
 
 **Status:** implemented + tested (incl. a real-Hapi e2e via `server.inject`: 5xx reporting, 404 skip,
-response preservation, concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+response preservation, concurrency isolation).

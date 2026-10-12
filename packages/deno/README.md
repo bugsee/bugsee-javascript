@@ -1,6 +1,6 @@
 # @bugsee/deno
 
-Deno platform (tier 2, design §5). Deno 2 runs on a node-compatible API surface, so this package re-exports
+Deno platform. Deno 2 runs on a node-compatible API surface, so this package re-exports
 the entire `@bugsee/node` composition and overrides only the Deno-specific bits:
 
 - **Runtime identity** — `launch()`/`launchCore()` default the system probe to `denoSystemProbe`, so the
@@ -32,4 +32,4 @@ watchdog (`worker_threads`) self-disable until Deno's node-compat gains them. **
 profiling + ANR on Deno 2.8+.** (Note: `Deno.version.deno` is the real version; `process.version` is the
 node-compat version — the probe reads the former.)
 
-**Status:** implemented. Built test-first per `docs/implementation-standards.md`.
+**Status:** implemented.

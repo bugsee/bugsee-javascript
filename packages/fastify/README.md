@@ -1,7 +1,6 @@
 # @bugsee/fastify
 
-Fastify adapter — the second framework binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `fastify` is a **peer** dependency.
+Fastify adapter — the second framework binding over Bugsee's per-request context foundation. `fastify` is a **peer** dependency.
 
 ```ts
 import { launch } from '@bugsee/bugsee'; // or @bugsee/node
@@ -47,4 +46,4 @@ request while the full picture stays available.
 - **Isolated under concurrency** — verified by a real-Fastify e2e: 3 interleaved concurrent requests,
   each report carries its own user + `contextId`, no cross-request bleed.
 
-**Status:** implemented + tested. Built test-first per `docs/implementation-standards.md`.
+**Status:** implemented + tested.

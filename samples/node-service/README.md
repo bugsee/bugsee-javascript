@@ -22,7 +22,7 @@ build step, no `tsx`/`ts-node`). On Node 18–23 the sample would need `tsx`; th
 `engines.node >=18` for the *SDK*, but this particular sample's dev ergonomics assume 24+.
 
 - `pnpm dev` / `pnpm start` — run the service (port `5305` by default; override with `PORT=`)
-- `pnpm verify` — the scripted scenario sweep (§below)
+- `pnpm verify` — the scripted scenario sweep
 - `pnpm scenario:crash <profile> <uncaught|rejection> <marker>` — S5 crash harness (own process)
 - `pnpm scenario:kill-recover` — SIGKILL + disk-capture recovery (S12)
 - `pnpm scenario:multi-instance` — 3 worker_threads + a second process sharing one `dataDir` (S12)
@@ -42,7 +42,7 @@ build step, no `tsx`/`ts-node`). On Node 18–23 the sample would need `tsx`; th
 (`ApplicationTypeMismatchError` / `UnsupportedSdkError`), so no data from this sample reached the
 dashboard at all. The re-verified sweep now reports `collector: 73/73 session+issue calls accepted`
 and issues arrive on `SNODE`. Every scenario below was still driven and verified at the
-LOCAL and WIRE depths (§4 of `docs/samples/PLAN.md`) — HTTP responses, the SDK's own request/response
+LOCAL and WIRE depths — HTTP responses, the SDK's own request/response
 traffic (via an injectable `transport` wire-tap), and the assembled bundle **files themselves**
 (`data/**/pending/*.bundle` are real zip archives containing `crash.json`, `profile.json`,
 `performance.json`, etc. — inspect them with `unzip -l`/`unzip -p`).
@@ -66,7 +66,7 @@ links every 5s and emits a `client.trace()` + breadcrumb per sweep.
 
 ## The scenario panel
 
-Every scenario in `docs/samples/PLAN.md` §4/§5.13 is a route, not a UI (server-sample convention):
+Every scenario is a route, not a UI (server-sample convention):
 `/scenario/<id>[/<sub>]?marker=<id>`, plus the demanding ones get dedicated routes/scripts:
 
 - `/burn?ms=` — CPU-bound spin (CPU profiling, `profile.json`)
@@ -75,7 +75,7 @@ Every scenario in `docs/samples/PLAN.md` §4/§5.13 is a route, not a UI (server
 - `/echo/*` — loopback targets for S7 (no internet access needed)
 
 Full id → route → expected-result mapping, plus verified/unverified status and evidence, is in
-[`scenarios.md`](./scenarios.md).
+
 
 ## Config-file-driven launch options
 
@@ -104,24 +104,17 @@ Both the umbrella (`@bugsee/bugsee/node`) and the direct (`@bugsee/node`) entrie
 
 ## Scenario coverage summary
 
-See `scenarios.md` for the full table. Headline:
+Headline:
 
 - **24/24** HTTP-triggerable scenarios pass at LOCAL depth (`pnpm verify`).
 - CPU profiling, ANR/hang escalation (fair→medium→severe), disk-capture SIGKILL recovery,
   multi-instance coexistence + dead-sibling recovery, per-request-context isolation under 50-way
   concurrency, and W3C trace propagation (outbound `traceparent` + inbound `traceresponse`/
   `Server-Timing`) are all verified directly against the **assembled bundle files** and the SDK's own
-  wire traffic — see `scenarios.md` for the evidence.
+  wire traffic.
 - OTel **produce** (`otelExportUrl`) verified end-to-end against a real local OTLP/HTTP-JSON collector
   — valid `resourceSpans`/`scopeSpans` received. OTel **consume** (`onOtelSpanProcessor`) verified by
   feeding a structurally-valid external `ReadableSpanLike` root+child pair into the wired processor.
-- Backend (MCP) confirmation was blocked for the **entire sample** by `FINDINGS.md` F-1 (staging
-  `javascript` app-type session rejection). That block is gone; delivery is confirmed. Individual
-  scenarios still carry their "blocked by F-1" marker because they have not been re-walked one by one
-  at backend depth — the marker now means "not yet re-verified", not "cannot be verified".
-
-## Findings
-
-[`FINDINGS.md`](./FINDINGS.md) — 4 open findings (1 blocker, 2 major, 1 minor), all in `@bugsee/core`
-or the staging backend, with reproduction scripts. `samples/FINDINGS.md` carries the cross-cutting
-summary of F-1.
+- Backend (MCP) confirmation was once blocked for the **entire sample** by a staging session rejection,
+  since fixed; delivery is confirmed. Individual scenarios have not all been re-checked one by one at backend
+  depth, so some are marked as not yet re-verified.

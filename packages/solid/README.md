@@ -1,6 +1,6 @@
 # @bugsee/solid
 
-The Solid adapter for the Bugsee SDK (tier 4) — a structural peer: no `solid-js` / `@solidjs/router` import.
+The Solid adapter for the Bugsee SDK — a structural peer: no `solid-js` / `@solidjs/router` import.
 Plugs Solid's error + routing into the `@bugsee/browser` foundation. v1: error + routing only.
 
 ## Error reporting
@@ -40,5 +40,3 @@ createEffect(() => setRouteNameFromSolidMatches(matches()));
 ```
 
 `routePatternFromSolidMatches(matches)` builds the pattern; `setRouteName(name)` is the generic primitive.
-
-Built test-first per `docs/implementation-standards.md`; see `docs/design/frontend-adapters.md` §7.

@@ -1,7 +1,6 @@
 # @bugsee/webworker
 
-The Bugsee SDK for **Web Workers** (dedicated / shared) — a DOM-less, browser-family build. See
-`docs/design/sdk-design.md` §3.2/§3.3.
+The Bugsee SDK for **Web Workers** (dedicated / shared) — a DOM-less, browser-family build.
 
 ```ts
 import { launch } from '@bugsee/webworker';
@@ -51,4 +50,4 @@ store + marker recovery) — only relevant for the rarer cross-activation case; 
 reports with that activation's capture.
 
 A long-lived **dedicated/shared Web Worker** needs neither (it lives for the page's lifetime) and runs
-memory-only by default. Tier 2.
+memory-only by default.

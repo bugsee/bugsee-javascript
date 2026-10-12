@@ -14,7 +14,7 @@ pnpm dev                  # http://127.0.0.1:5304
 ```
 
 Open `http://127.0.0.1:5304/` for a small dashboard: a "try the real API" panel and a button per
-scenario in `scenarios.md`, each printing its JSON response.
+scenario, each printing its JSON response.
 
 Other commands:
 
@@ -37,7 +37,7 @@ pnpm typecheck
 | Endpoint | `https://apidev.bugsee.com` (staging — never production) |
 
 Getting real data to arrive once required three wire-level workarounds for SDK defects this sample
-found (`FINDINGS.md` F-1/F-2/F-3) — a hardcoded `x-client-type: web`, the unparsed `{ok, result}`
+found — a hardcoded `x-client-type: web`, the unparsed `{ok, result}`
 response envelope, and an `x-amz-checksum-sha256` header the presigned S3 url was never signed for.
 **All three are fixed in `@bugsee/core` and the patching is gone.** `src/bugsee-transport.ts` remains,
 but only as a "tee": it forwards every SDK call to the real endpoint untouched and records a parsed
@@ -62,7 +62,7 @@ part of the "real" API).
 | `GET` | `/projects/:id/tasks/:taskId` | fetch one task |
 | `PATCH` | `/projects/:id/tasks/:taskId` | update a task's `title`/`done` |
 | `DELETE` | `/projects/:id/tasks/:taskId` | delete a task |
-| `GET` | `/scenarios/*` | the scenario panel — see `scenarios.md` |
+| `GET` | `/scenarios/*` | the scenario panel |
 
 Data is a small file-backed JSON store (`data/db.json`, gitignored) — no database, but genuinely
 persists across restarts. Task creation makes a REAL outbound HTTP call to a second, deliberately
@@ -74,35 +74,3 @@ A second, independent Bugsee client (`src/secondary.ts`, its own `carrier`) powe
 a small sub-app that uses the `requestHandler`/`errorHandler` middleware halves BY HAND (instead of
 `setupExpress`) with `instrumentIncomingRequests: false`, to prove the adapter works completely on its
 own.
-
-## Scenario coverage
-
-See `scenarios.md` for the full table (every scenario id → route → expected Bugsee content → verified/
-unverified with evidence). Summary:
-
-- **Covered & backend-verified** (confirmed via `list_issues`/`get_issue` against `SEXPRESS`): launch
-  lifecycle, identity/attributes (before AND after an event), manual exceptions incl. dedupe, all four
-  crash surfaces (route/middleware/async throw, out-of-request `setTimeout` throw, unhandled rejection),
-  `exitOnUncaught` true/false, `unhandledRejections: 'warn'`, redaction (log + report-veto + report-mutate),
-  the 4xx-not-reported/5xx-reported contract, the adapter-alone (`instrumentIncomingRequests:false`)
-  path, and per-request concurrency isolation (verified at small scale; see below for full-scale caveat).
-- **Covered & wire-verified only** (MCP doesn't expose the data — see PLAN §6.6 and FINDINGS.md F-6):
-  console capture, network capture (all of S7), performance/APM (all of S9 — MCP has no performance
-  issue type at all), route naming (and its regression, FINDINGS.md F-4).
-- **Covered, local-only or partially verified**: the S4 storm (200) and the full 50-request concurrency
-  sweep run and behave correctly locally, but the shared staging collector's real-world throughput meant
-  only a fraction were individually confirmed delivered within a practical test window — see
-  FINDINGS.md's "Bulk delivery throughput" note. The underlying mechanism is fully verified at smaller
-  scale.
-- **N/A** (with reasons in `scenarios.md`): S11 (session replay — browser-only), S13 (OpenTelemetry —
-  not wired in this sample, see `browser-vanilla`/`node-service`), two-hop distributed tracing and
-  multi-instance disk coexistence (need a second live Bugsee-instrumented service — `node-service` is
-  the designated partner for both, per the plan), XHR/WebSocket/SSE (browser-only globals, absent on
-  Node).
-
-## Findings
-
-`FINDINGS.md` — everything found while building this sample, including three backend-blocking SDK
-defects (F-1/F-2/F-3) that prevent ANY report from reaching Bugsee staging on the packed tarball this
-sample installs, a route-naming regression for nested Express routers (F-4), a missing `shouldReport`
-option relative to sibling adapters (F-5), and two MCP/backend-surface gaps (F-6, F-7).

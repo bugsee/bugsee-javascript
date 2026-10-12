@@ -1,7 +1,7 @@
 # @bugsee/express
 
 Express middleware adapter — the first framework binding over Bugsee's per-request context foundation
-(design: `docs/design/framework-adapters.md`). `express` is a **peer** dependency.
+. `express` is a **peer** dependency.
 
 ```ts
 import { launch } from '@bugsee/bugsee'; // or @bugsee/node
@@ -65,5 +65,4 @@ request while the full picture stays available.
   untouched, and `next`/`next(err)` is called exactly once on every path.
 - **Privacy-safe** — no user identity is read unless you provide a `user` getter.
 
-**Status:** implemented + tested (incl. a real-server concurrency-isolation e2e). Built test-first per
-`docs/implementation-standards.md`.
+**Status:** implemented + tested (incl. a real-server concurrency-isolation e2e).

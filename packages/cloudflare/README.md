@@ -2,7 +2,7 @@
 
 The Bugsee SDK for **Cloudflare Workers** (`workerd`) — the `@bugsee/vercel-edge` edge composition with the
 platform identity set to `workers`. Edge is a V8-isolate, Web-APIs-only runtime (`fetch`/`Request`/`Response`/
-`crypto.subtle`; no `node:*`). See `docs/design/edge-runtime.md`.
+`crypto.subtle`; no `node:*`).
 
 ## `withBugsee` — instrument the whole Worker
 
@@ -97,8 +97,7 @@ launch(env.BUGSEE_APP_TOKEN); // AsyncLocalStorage is wired for you
 
 Per-request context isolation needs a run()-scoped async store. On Cloudflare, `globalThis.AsyncLocalStorage`
 **does not exist under any compatibility flag** — it is reachable only as an export of `node:async_hooks`.
-(Verified on real `workerd` 1.20260722.1 across the flag × compatibility-date matrix; see
-`docs/review/cloudflare.md` SEV1 #3. Earlier revisions of this README told you to add the flag and expect the
+(Verified on real `workerd` 1.20260722.1 across the flag × compatibility-date matrix.) Earlier revisions of this README told you to add the flag and expect the
 global to appear — that was wrong, and the SDK silently ran without context isolation as a result.)
 
 The SDK therefore imports `node:async_hooks` itself, which is why the flag is required rather than merely
@@ -122,4 +121,4 @@ launch(env.BUGSEE_APP_TOKEN, { maxTenantPartitions: 3 }); // 10 MB / 4 ≈ 2.5 M
 ```
 
 Advanced: `launch(token, { asyncLocalStorage })` accepts an explicit store, for tests or a runtime that
-provides its own. Callers' options win over the default. Tier 2.
+provides its own. Callers' options win over the default.

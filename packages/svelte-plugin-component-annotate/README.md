@@ -32,4 +32,4 @@ annotated; component instances (`<Child/>`) get no DOM attribute, and an element
 alone. Version-agnostic: it handles both the legacy AST (Svelte ≤4 and Svelte 5's default) and the modern AST
 (Svelte ≥6 / `modern: true`). A parse failure is a no-op here (Svelte's own compiler reports the real syntax
 error). Insertions are inline on the tag line, so source line numbers are preserved. `svelte` is a peer
-dependency. See `docs/design/frontend-adapters.md` §7 (the depth pass).
+dependency.

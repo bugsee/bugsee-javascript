@@ -1,6 +1,6 @@
 # @bugsee/react
 
-The React adapter for the Bugsee SDK (tier 4) — a structural peer: `react` is a peer dependency, imported
+The React adapter for the Bugsee SDK — a structural peer: `react` is a peer dependency, imported
 only by the error boundary. Plugs React's error + routing into the `@bugsee/browser` foundation.
 
 ## Error seam
@@ -47,5 +47,3 @@ value from react-router or preact-iso). Alias `react`/`react-dom` → `preact/co
 app already does) and use `@bugsee/react` as-is. Caveat: Preact's `componentDidCatch` does not populate
 `errorInfo.componentStack`, so under Preact the report carries the error but no React component-stack tree (the
 boundary handles this gracefully — it simply omits it).
-
-Built test-first per `docs/implementation-standards.md`; see `docs/design/frontend-adapters.md` §6 (D8).

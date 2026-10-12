@@ -1,8 +1,7 @@
 # @bugsee/vercel-edge
 
 The Bugsee SDK for **Vercel Edge** (and the shared composition that `@bugsee/cloudflare` builds on) — a
-V8-isolate, Web-APIs-only runtime (`fetch`/`Request`/`Response`/`crypto.subtle`; no `node:*`). See
-`docs/design/edge-runtime.md`.
+V8-isolate, Web-APIs-only runtime (`fetch`/`Request`/`Response`/`crypto.subtle`; no `node:*`).
 
 ```ts
 import { launch, withBugseeFetch } from '@bugsee/vercel-edge';
@@ -32,4 +31,4 @@ that fire after the response).
 **Per-request context.** Each request runs in its own `run()`-scoped `AsyncLocalStorage` context (Vercel Edge
 has it built-in; on Cloudflare add the `nodejs_compat` / `nodejs_als` compatibility flag) so captures correlate
 to the request; it degrades to a single-slot store + a one-time warning when unavailable, and never throws at
-import. Tier 2. Implementation follows `docs/implementation-standards.md`.
+import.

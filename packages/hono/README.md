@@ -1,7 +1,6 @@
 # @bugsee/hono
 
-Hono middleware adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `hono` is a **peer** (structural types only — the adapter never
+Hono middleware adapter — a backend binding over Bugsee's per-request context foundation. `hono` is a **peer** (structural types only — the adapter never
 imports `hono`). Works on node/bun/deno-hosted Hono (wherever the launched `@bugsee/node` client provides
 the context store; edge/Workers follow the edge platform packages).
 
@@ -45,4 +44,4 @@ method) is deliberate control flow and is skipped. Override with `shouldReport: 
 - **Privacy-safe** — no user identity is read unless you provide a `user` getter.
 
 **Status:** implemented + tested (incl. a real-Hono e2e via `app.request`: error reporting, HTTPException
-skip, response preservation, concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+skip, response preservation, concurrency isolation).

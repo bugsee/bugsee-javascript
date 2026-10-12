@@ -1,7 +1,6 @@
 # @bugsee/koa
 
-Koa middleware adapter — a backend binding over Bugsee's per-request context foundation (design:
-`docs/design/framework-adapters.md`). `koa` is a **peer** (structural types only — the adapter never
+Koa middleware adapter — a backend binding over Bugsee's per-request context foundation. `koa` is a **peer** (structural types only — the adapter never
 imports koa). Works on node/bun/deno-hosted Koa (wherever the launched `@bugsee/node` client provides the
 context store).
 
@@ -47,4 +46,4 @@ without a router it falls back to `ctx.path`.
 - **Privacy-safe** — no user identity is read unless you provide a `user` getter.
 
 **Status:** implemented + tested (incl. a real-Koa e2e: error reporting, 4xx skip, response preservation,
-concurrency isolation). Built test-first per `docs/implementation-standards.md`.
+concurrency isolation).
