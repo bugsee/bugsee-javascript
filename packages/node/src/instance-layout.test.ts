@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { threadId } from 'node:worker_threads';
+import { writeFileSecure } from '@bugsee/node-utils';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createInstanceLayout, type InstanceOwner, writeInstanceOwner } from './instance-layout';
 
@@ -64,5 +65,22 @@ describe('writeInstanceOwner', () => {
       startedAt: 1_700_000_000_000,
       version: '2.0.0',
     });
+  });
+
+  it('removes a stale .stopped marker: a (re)launch into the same subtree is live, not recoverable (R3L-3)', () => {
+    const dataDir = mkDir();
+    const layout = createInstanceLayout(dataDir, { pid: 7, threadId: 1, nonce: () => 'z9' });
+    writeInstanceOwner(layout, 1, '1');
+    writeFileSecure(layout.stoppedFile, '');
+    expect(existsSync(layout.stoppedFile)).toBe(true);
+    writeInstanceOwner(layout, 2, '1');
+    expect(existsSync(layout.stoppedFile)).toBe(false);
+    expect(existsSync(layout.ownerFile)).toBe(true);
+  });
+
+  it('is fine without a marker (nothing to remove)', () => {
+    const layout = createInstanceLayout(mkDir(), { pid: 7, threadId: 1, nonce: () => 'q' });
+    expect(() => writeInstanceOwner(layout, 1, '1')).not.toThrow();
+    expect(existsSync(layout.stoppedFile)).toBe(false);
   });
 });

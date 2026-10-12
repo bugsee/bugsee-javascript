@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import type { LockManagerLike } from '@bugsee/browser-utils';
 import {
   BugseeStatus,
+  contributeServiceManifest,
   createMemoryCaptureStore,
   getCarrier,
   type HttpRequestOptions,
@@ -650,5 +651,74 @@ describe('relaunch', () => {
     const repeat = launch('tok', opts());
     expect(getCarrier().pendingLaunch).toBeUndefined(); // the singleton exists: nothing is being built
     await repeat;
+  });
+});
+
+describe('R3L-7 — the deferred BlackoutStarted of startInBlackout', () => {
+  // The client is not handed back until launch() returns, so a Launching listener reaches it the way a service
+  // manifest does: the container is the client itself at runtime.
+  const withClientRef = () => {
+    const carrier = {};
+    const ref: { client?: Bugsee } = {};
+    contributeServiceManifest((registrar) => {
+      ref.client = registrar as unknown as Bugsee;
+    }, carrier);
+    return { carrier, ref };
+  };
+
+  it('a Launching listener that ends the blackout still hears Started before Ended', async () => {
+    const { carrier, ref } = withClientRef();
+    const seen: string[] = [];
+    await track(
+      'tok',
+      opts({
+        carrier,
+        startInBlackout: true,
+        lifecycleEventsListener: (type) => {
+          seen.push(type);
+          if (type === LifecycleEvents.Launching) {
+            ref.client?.endBlackout();
+          }
+        },
+      }),
+    );
+    expect(seen).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.BlackoutStarted,
+      LifecycleEvents.BlackoutEnded,
+      LifecycleEvents.Launched,
+    ]);
+  });
+
+  it('a client stopped by a Launching listener does not announce BlackoutStarted', async () => {
+    const { carrier, ref } = withClientRef();
+    const seen: string[] = [];
+    await track(
+      'tok',
+      opts({
+        carrier,
+        startInBlackout: true,
+        lifecycleEventsListener: (type) => {
+          seen.push(type);
+          if (type === LifecycleEvents.Launching) {
+            void ref.client?.stop();
+          }
+        },
+      }),
+    );
+    expect(seen).not.toContain(LifecycleEvents.BlackoutStarted);
+  });
+
+  it('is announced once, after Launched, when nothing interferes', async () => {
+    const seen: string[] = [];
+    await track(
+      'tok',
+      opts({ startInBlackout: true, lifecycleEventsListener: (t) => seen.push(t) }),
+    );
+    expect(seen).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+      LifecycleEvents.BlackoutStarted,
+    ]);
   });
 });

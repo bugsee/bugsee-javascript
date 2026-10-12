@@ -1451,7 +1451,7 @@ describe('createClient — lifecycle', () => {
     const drained = await client.stop(50);
     expect(drained).toBe(true);
     expect(provider.stop).toHaveBeenCalledTimes(1);
-    expect(flush).toHaveBeenCalledWith(50);
+    expect(flush).toHaveBeenCalledWith(undefined); // the shared drain is unbounded (R3L-2); 50 only bounds this wait
     expect(client.isLaunched()).toBe(false);
   });
 

@@ -11,6 +11,15 @@ const PREFIX = 'com.bugsee.lifecycle.';
 // `@bugsee/webworker` (a dead sibling instance that left an unsettled incident marker; a tab closed normally
 // after a failed upload leaves one too, so it can over-report but never fabricate). It is NOT emitted on the
 // edge runtimes, WebView or anywhere else that keeps nothing durable across runs.
+//
+// KNOWN LIMITS on node (R3L-8), both consequences of "evidence on disk, nothing invented":
+//  - FALSE NEGATIVE: the commonest crash, an `uncaughtException`, uploads its report BEFORE the process exits and so
+//    leaves no unsettled marker or bundle behind; the next launch then finds a dead sibling with nothing in flight
+//    and stays silent. Only a crash whose report did not finish uploading (a kill, an OOM, an upload cut short) is
+//    reported.
+//  - FALSE POSITIVE: a script that exits normally while a report upload is still in flight (no `stop()`) leaves the
+//    same marker as a crash, so the next launch reports a crash that did not happen.
+// An application that needs certainty keeps its own "clean exit" flag; this event is a hint, not a verdict.
 export const LifecycleEvents = {
   Launching: `${PREFIX}Launching`,
   Launched: `${PREFIX}Launched`,

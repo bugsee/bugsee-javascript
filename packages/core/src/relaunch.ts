@@ -85,6 +85,11 @@ export async function relaunchWith<
       await bounded(running.stop(timeout), timeout);
     }
     return await launch(last.appToken, { ...keptOptions(last.options), ...options } as Options);
+  } catch (error) {
+    // The new client never came up, so nothing will adopt what the old one handed over: do not leave user-identifying
+    // notifications parked on `globalThis` until some later, unrelated launch (R3L-5).
+    getCarrier(globalObj).notifyBacklog = undefined;
+    throw error;
   } finally {
     setCarrierRelaunching(false, globalObj);
   }

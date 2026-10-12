@@ -1494,6 +1494,9 @@ describe('launch — capture recovery', () => {
     );
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
+    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff just described: the
+    // shared afterEach must not wait for it, so this already-stopped client leaves the tracked list.
+    clients.splice(clients.indexOf(client), 1);
   });
 
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
