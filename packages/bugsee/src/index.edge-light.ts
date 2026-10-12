@@ -11,5 +11,11 @@ export type {
   LogExceptionOptions,
   UploadOptions,
 } from '@bugsee/core';
+// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
 export * from '@bugsee/vercel-edge';
 export { launchEdge as launch } from '@bugsee/vercel-edge';

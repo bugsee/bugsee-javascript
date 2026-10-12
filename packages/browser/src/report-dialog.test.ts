@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import type { PreparedUpload, UploadOptions, UploadResult } from '@bugsee/core';
+import {
+  LifecycleEvents,
+  type PreparedUpload,
+  type UploadOptions,
+  type UploadResult,
+} from '@bugsee/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createReportDialogLauncher,
@@ -1077,5 +1082,48 @@ describe('strings overrides', () => {
     });
 
     expect(field('summary').placeholder).toBe('Short summary');
+  });
+});
+
+describe('lifecycle events', () => {
+  it('announces BeforeReportShown when the dialog opens and AfterReportShown once it is gone', async () => {
+    const emit = vi.fn();
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+
+    expect(emit.mock.calls).toEqual([[LifecycleEvents.BeforeReportShown]]);
+    expect(host()).not.toBeNull(); // Before fired as the dialog went up, not after it was dismissed
+
+    send();
+    await pending;
+    expect(emit.mock.calls).toEqual([
+      [LifecycleEvents.BeforeReportShown],
+      [LifecycleEvents.AfterReportShown, { sent: true }],
+    ]);
+  });
+
+  it('announces AfterReportShown with sent:false when the user discards', async () => {
+    const emit = vi.fn();
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+    click('[data-action="cancel"]');
+    await pending;
+
+    expect(emit).toHaveBeenLastCalledWith(LifecycleEvents.AfterReportShown, { sent: false });
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('announces nothing when no dialog is shown (cannot prepare, or SDK not running)', async () => {
+    const emit = vi.fn();
+    await harness({ emitLifecycleEvent: emit, prepare: () => null }).show();
+    await harness({ emitLifecycleEvent: emit, isLaunched: () => false }).show();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('works without a lifecycle hook', async () => {
+    const { show } = harness();
+    const pending = show();
+    send();
+    await expect(pending).resolves.toEqual({ ok: true });
   });
 });

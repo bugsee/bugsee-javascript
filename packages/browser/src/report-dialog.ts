@@ -1,4 +1,9 @@
-import type { PreparedUpload, UploadResult } from '@bugsee/core';
+import {
+  LifecycleEvents,
+  type LifecycleEventType,
+  type PreparedUpload,
+  type UploadResult,
+} from '@bugsee/core';
 import { DEFAULT_REPORT_DIALOG_STRINGS, type ReportDialogStrings } from './report-dialog-strings';
 import { REPORT_DIALOG_CLASS_PREFIX, REPORT_DIALOG_CSS } from './report-dialog-styles';
 
@@ -90,6 +95,11 @@ export interface ReportDialogDeps {
   /** Shown in the footer as `v<sdkVersion>`. */
   sdkVersion: string;
   ui: ReportDialogUiOptions;
+  /**
+   * Lifecycle hook (`client.emitLifecycleEvent`): told BeforeReportShown just before the dialog is put on
+   * the page and AfterReportShown once it is gone, however it closed. Never expected to throw.
+   */
+  emitLifecycleEvent?: (eventType: LifecycleEventType, data?: unknown) => void;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -194,6 +204,7 @@ function showDialog(
   const previousOverflow = doc.documentElement.style.overflow;
   let busy = false;
   let closed = false;
+  let announced = false;
 
   const fieldValue = (name: FieldName): string => refs.fields[name]?.value.trim() ?? '';
   const severityValue = (): PickerSeverity =>
@@ -215,6 +226,9 @@ function showDialog(
       return;
     }
     closed = true;
+    if (announced) {
+      deps.emitLifecycleEvent?.(LifecycleEvents.AfterReportShown, { sent: result !== null });
+    }
     if (result === null) {
       prepared.discard();
     }
@@ -405,6 +419,8 @@ function showDialog(
   }
 
   try {
+    announced = true;
+    deps.emitLifecycleEvent?.(LifecycleEvents.BeforeReportShown);
     doc.documentElement.append(refs.host);
     doc.documentElement.style.overflow = 'hidden';
     const dialog = refs.dialog as HTMLDialogElement;

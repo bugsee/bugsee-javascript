@@ -10,6 +10,12 @@ export type {
   LogExceptionOptions,
   UploadOptions,
 } from '@bugsee/core';
+// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes), so a custom transport (a
 // proxy, a queueing shim, a test double) passed to the `transport` launch option types without an
 // unsafe cast.

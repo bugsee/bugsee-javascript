@@ -11,6 +11,12 @@ export type {
   LogExceptionOptions,
   UploadOptions,
 } from '@bugsee/core';
+// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
 export type { Bugsee } from '@bugsee/deno';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 export { type BugseeDenoLaunchOptions, launch } from './deno';

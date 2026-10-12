@@ -120,6 +120,29 @@ describe('client.showReportDialog (launched browser client)', () => {
     expect(request.type).toBe('bug');
   });
 
+  it('drives the lifecycle listener end to end: dialog shown, report assembled, uploaded, dialog gone', async () => {
+    const { client } = await start();
+    const seen: string[] = [];
+    client.setLifecycleEventsListener((type) =>
+      seen.push(type.replace('com.bugsee.lifecycle.', '')),
+    );
+    const pending = client.showReportDialog();
+    fill('summary', 'x');
+    dialog()?.querySelector<HTMLButtonElement>('[data-action="send"]')?.click();
+    await pending;
+
+    expect(seen).toEqual([
+      'BeforeReportShown',
+      'BeforeReportAssembled',
+      'AfterReportAssembled',
+      'BeforeReportUploaded',
+      'AfterReportUploaded',
+      'AfterReportShown',
+    ]);
+    await client.stop();
+    expect(seen.slice(-2)).toEqual(['Stopping', 'Stopped']);
+  });
+
   it('honours the reporting-UI launch options', async () => {
     const { client, http } = await start({
       reportSummaryRequired: true,
