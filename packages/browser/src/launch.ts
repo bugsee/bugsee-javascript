@@ -83,6 +83,7 @@ import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
+import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
@@ -142,6 +143,9 @@ const BROWSER_OPTION_DEFINITIONS = [
     key: BugseeOption.ReportingDefaultBugPriority,
     default: 'high',
   },
+  // iOS persists the user identifier across launches; the browser does too (localStorage, per app token).
+  // Browser-only: server tiers keep it in memory. Opt out when the identifier is PII not to be stored.
+  { friendly: 'persistUserIdentifier', key: BugseeOption.PersistUserIdentifier, default: true },
 ];
 
 /** Session-replay options (a structural subset of `@bugsee/replay`'s options — no runtime dep here; replay
@@ -234,6 +238,13 @@ export interface BugseeLaunchOptions {
   reportPrioritySelectorEnabled?: boolean;
   /** Severity a dialog report starts with: `low | medium | high | critical | blocker`. Default `high`. */
   reportDefaultBugPriority?: SeverityName;
+  /**
+   * Persist the user identifier (`setUserIdentifier`) in `localStorage` — one entry per app token — and
+   * restore it on the next page load, before any report, as the iOS SDK does across app launches.
+   * `clearUserIdentifier()` removes it. Default true; pass `false` to keep the identifier (often an email,
+   * i.e. PII) in memory only. Storage failures never break the SDK; they go to `onError`.
+   */
+  persistUserIdentifier?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report failed fetch/XHR exchanges (status >= 400, or no response) as `error` reports. Default false. */
@@ -605,6 +616,20 @@ async function buildLaunch(
 
   clientRef = client;
 
+  // Restore the persisted user identifier NOW — synchronously, before any provider starts, any service
+  // manifest runs or the client is handed back — so the first report already carries it and an identifier
+  // the app (or a manifest) sets afterwards simply overwrites it. Skipped entirely when opted out.
+  const identifierStore = resolved.options.get(BugseeOption.PersistUserIdentifier, true)
+    ? createUserIdentifierStore(appToken, {
+        storage: options.deviceIdEnv?.localStorage,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      })
+    : undefined;
+  const restoredIdentifier = identifierStore?.read();
+  if (restoredIdentifier !== null && restoredIdentifier !== undefined) {
+    client.setUserIdentifier(restoredIdentifier);
+  }
+
   // Run every contributed service manifest against the now-populated container.
   for (const manifest of getServiceManifests(carrier)) {
     manifest(client);
@@ -818,14 +843,24 @@ async function buildLaunch(
       ),
     );
   }
+  // The public setters: update the Environment (authoritative, in memory), then persist best-effort. The
+  // report dialog goes through these too, so what the reporter types survives a reload.
+  const setUserIdentifier = (id: string): void => {
+    client.setUserIdentifier(id);
+    identifierStore?.write(id);
+  };
+  const clearUserIdentifier = (): void => {
+    client.clearUserIdentifier();
+    identifierStore?.clear();
+  };
   const showReportDialog = createReportDialogLauncher({
     // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.
     document: domDocument as Document,
     prepare: () => asInternalClient(client).prepareUpload(),
     isLaunched: () => domDocument !== undefined && client.isLaunched(),
     getUserIdentifier: () => client.getUserIdentifier(),
-    setUserIdentifier: (email) => client.setUserIdentifier(email),
-    clearUserIdentifier: () => client.clearUserIdentifier(),
+    setUserIdentifier: (email) => setUserIdentifier(email),
+    clearUserIdentifier: () => clearUserIdentifier(),
     sdkVersion: SDK_VERSION,
     emitLifecycleEvent: (eventType, data) => client.emitLifecycleEvent(eventType, data),
     ui: {
@@ -840,6 +875,8 @@ async function buildLaunch(
   });
   const publicClient: Bugsee = {
     ...client,
+    setUserIdentifier,
+    clearUserIdentifier,
     showReportDialog,
     // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
     upload: (uploadOptions) =>

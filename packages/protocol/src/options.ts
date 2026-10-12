@@ -91,6 +91,12 @@ export const BugseeOption = {
   ReportingUiLabelsRequired: 'com.bugsee.option.reporting.ui.labels-required',
   /** Report dialog: show the severity picker (off by default, as on mobile). */
   ReportingUiPrioritySelectorEnabled: 'com.bugsee.option.reporting.ui.priority-selector-enabled',
+  /**
+   * Persist the user identifier across launches (iOS persists it; the browser tier honours this — it
+   * keeps the identifier in localStorage). Default true. Set false when the identifier is PII you do
+   * not want at rest on the device. Node/server tiers never persist it.
+   */
+  PersistUserIdentifier: 'com.bugsee.option.user.persist-identifier',
   /** Severity a bug report starts with: `low | medium | high | critical | blocker`. Default `high`. */
   ReportingDefaultBugPriority: 'com.bugsee.option.reporting.defaults.bug-priority',
   /** Severity a crash report starts with. Default `blocker`. */
@@ -134,6 +140,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.reporting.ui.labels-enabled': boolean;
   'com.bugsee.option.reporting.ui.labels-required': boolean;
   'com.bugsee.option.reporting.ui.priority-selector-enabled': boolean;
+  'com.bugsee.option.user.persist-identifier': boolean;
   'com.bugsee.option.reporting.defaults.bug-priority': string;
   'com.bugsee.option.reporting.defaults.crash-priority': string;
   'com.bugsee.option.reporting.defaults.error-priority': string;

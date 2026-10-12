@@ -107,6 +107,10 @@ describe('BugseeOption canonical identifiers', () => {
     );
   });
 
+  it('names the user-identifier persistence option', () => {
+    expect(BugseeOption.PersistUserIdentifier).toBe('com.bugsee.option.user.persist-identifier');
+  });
+
   it('are all namespaced under com.bugsee.option. and unique', () => {
     const keys = Object.values(BugseeOption);
     expect(keys.every((k) => k.startsWith('com.bugsee.option.'))).toBe(true);
