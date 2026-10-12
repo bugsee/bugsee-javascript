@@ -282,3 +282,31 @@ describe('R3L-3 — relaunch() does not keep instanceIdentity; a launch always c
     expect(isCleanlyStopped(subtree(dir))).toBe(false);
   });
 });
+
+describe('R5L-2 — a launch that throws after registering its subtree root does not leak the live count', () => {
+  it('a later launch into the same pinned subtree still writes .stopped when it stops', async () => {
+    const dir = dirFor();
+    const hostile = fakeProcess();
+    (hostile as unknown as { on: () => never }).on = () => {
+      throw new Error('host process refuses listeners');
+    };
+    // The owner file is written (and, in the buggy build, the root registered) before the listeners go on.
+    expect(() =>
+      launch(
+        'tok',
+        opts({
+          dataDir: dir,
+          transport: async () => ok(),
+          process: hostile,
+          detectCrashes: true,
+          carrier: {},
+        }),
+      ),
+    ).toThrow('host process refuses listeners');
+    expect(existsSync(join(subtree(dir), 'owner.json'))).toBe(true); // the failed launch got that far
+
+    const next = launch('tok', opts({ dataDir: dir, transport: async () => ok(), carrier: {} }));
+    expect(await next.stop()).toBe(true);
+    expect(existsSync(marker(dir))).toBe(true); // nobody is left in the subtree
+  });
+});

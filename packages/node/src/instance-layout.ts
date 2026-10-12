@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { threadId } from 'node:worker_threads';
+import { getCarrier } from '@bugsee/core';
 import { ensureDir, writeFileSecure } from '@bugsee/node-utils';
 
 // Per-instance on-disk isolation (design: docs/design/multi-instance-disk-coexistence.md, D1). Multiple SDK
@@ -79,23 +80,24 @@ export function createInstanceLayout(
   };
 }
 
-// Process-level count of LIVE launches per subtree root (R4L-1). Two launches share a root only through a pinned
-// `instanceIdentity`; a plain relaunch gets a fresh root, so "a newer client exists" is NOT "this subtree is live".
-const liveRoots = new Map<string, number>();
+// Process-level count of LIVE launches per subtree root (R4L-1), held on the DEFAULT carrier so the ESM and CJS
+// copies of this package agree (R5L-2). Two launches share a root only through a pinned `instanceIdentity`; a
+// plain relaunch gets a fresh root, so "a newer client exists" is NOT "this subtree is live".
+const liveRoots = (): Map<string, number> => (getCarrier().liveInstanceRoots ??= new Map());
 
 /** Release one launch's claim on its subtree root (called once, when that launch begins to stop). */
 export function releaseInstanceRoot(layout: InstanceLayout): void {
-  const count = (liveRoots.get(layout.root) ?? 0) - 1;
+  const count = (liveRoots().get(layout.root) ?? 0) - 1;
   if (count > 0) {
-    liveRoots.set(layout.root, count);
+    liveRoots().set(layout.root, count);
   } else {
-    liveRoots.delete(layout.root);
+    liveRoots().delete(layout.root);
   }
 }
 
 /** True while some launch that has NOT begun to stop is writing into this subtree root. */
 export function isInstanceRootLive(layout: InstanceLayout): boolean {
-  return (liveRoots.get(layout.root) ?? 0) > 0;
+  return (liveRoots().get(layout.root) ?? 0) > 0;
 }
 
 /**
@@ -119,5 +121,13 @@ export function writeInstanceOwner(
     version,
   };
   writeFileSecure(layout.ownerFile, JSON.stringify(owner));
-  liveRoots.set(layout.root, (liveRoots.get(layout.root) ?? 0) + 1); // only after the launch is really live here
+}
+
+/**
+ * Count this launch as LIVE in its subtree root. Called at the very END of a successful launch (R5L-2): a launch
+ * that registered earlier and then threw would leak the count, and a later launch into the same pinned root
+ * would never be able to write `.stopped`. Pair with {@link releaseInstanceRoot}.
+ */
+export function claimInstanceRoot(layout: InstanceLayout): void {
+  liveRoots().set(layout.root, (liveRoots().get(layout.root) ?? 0) + 1);
 }

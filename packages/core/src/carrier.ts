@@ -101,6 +101,11 @@ export interface BugseeCarrier {
   edgeLaunch?: unknown;
   /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
   pendingLaunch?: Promise<unknown>;
+  /**
+   * Node: how many LIVE launches write into each on-disk subtree root (R4L-1/R5L-2), keyed by root path. On the
+   * carrier (not module state) so the ESM and CJS copies of `@bugsee/node` count the same launches.
+   */
+  liveInstanceRoots?: Map<string, number>;
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
   serviceManifests?: ServiceManifest[];
 }
@@ -326,9 +331,52 @@ export function getFilters(globalObj: object = globalThis): FilterStore | undefi
   return getInternal(globalObj)?.getService(FiltersToken);
 }
 
+// Lifecycle state of SEALED carriers (R5L-1). Module-private on purpose: a property on the carrier is page-
+// reachable in a WebView (the carrier is `window.__BUGSEE__`), and a listener there both observes the session
+// and receives events page script could forge. A WebView is one self-contained bundle, so one module copy
+// holds this; node/browser never seal and keep the cross-copy carrier slot.
+const SEALED_LIFECYCLE = new WeakMap<
+  BugseeCarrier,
+  { listener: LifecycleEventsListener | null; delivery: LifecycleDeliveryState }
+>();
+
+/**
+ * Take the lifecycle listener slot and its delivery queue OFF the carrier object into module-private state,
+ * leaving read-only accessors (no setter, non-configurable) in their place so a write from page script
+ * throws (strict) or is ignored (sloppy) and a read sees nothing. Anything already installed is carried over.
+ * Idempotent. The owner keeps using {@link getCarrierLifecycleSlot} / {@link setProcessLifecycleEventsListener}.
+ */
+export function sealCarrierLifecycleSlot(globalObj: object = globalThis): void {
+  const carrier = getCarrier(globalObj);
+  if (SEALED_LIFECYCLE.has(carrier)) {
+    return;
+  }
+  SEALED_LIFECYCLE.set(carrier, {
+    listener: carrier.lifecycleListener ?? null,
+    delivery: carrier.lifecycleDelivery ?? { queue: [], delivering: false },
+  });
+  for (const key of ['lifecycleListener', 'lifecycleDelivery'] as const) {
+    Object.defineProperty(carrier, key, {
+      get: () => undefined,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+}
+
 /** The carrier's lifecycle-listener slot, in the shape the lifecycle emitter reads and writes. */
 export function getCarrierLifecycleSlot(globalObj: object = globalThis): LifecycleListenerSlot {
   const carrier = getCarrier(globalObj);
+  const sealed = SEALED_LIFECYCLE.get(carrier);
+  if (sealed !== undefined) {
+    return {
+      delivery: sealed.delivery,
+      get: () => sealed.listener,
+      set: (listener) => {
+        sealed.listener = listener;
+      },
+    };
+  }
   carrier.lifecycleDelivery ??= { queue: [], delivering: false };
   return {
     delivery: carrier.lifecycleDelivery,

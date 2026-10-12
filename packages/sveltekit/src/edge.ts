@@ -19,10 +19,9 @@ import {
   type BugseeEdgeLaunchOptions,
   type EdgeExecutionContext,
   launchEdge,
-  relaunchEdge,
-  rememberEdgeLaunch,
   runInEdgeContext,
 } from '@bugsee/vercel-edge';
+import { relaunchEdge, rememberEdgeLaunch } from '@bugsee/vercel-edge/relaunch-edge';
 import type { SvelteKitHandle, SvelteKitResolveOptions } from './handle';
 import { injectTraceMeta } from './handle';
 

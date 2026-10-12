@@ -223,7 +223,7 @@ describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dro
     );
   });
 
-  it('a queued item stashed by the late old stop after the attempt failed is dropped too', async () => {
+  it('a queued item stashed by the late old stop after the attempt failed is dropped too (R5L-3)', async () => {
     const host = {};
     const errors: unknown[] = [];
     const hungUpload: UploadPipeline = {
@@ -239,6 +239,10 @@ describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dro
     );
     old.notify('queued offline');
     await vi.advanceTimersByTimeAsync(0);
+    // relaunch() gives up on the old drain after its own 20 ms, but the OLD client's stop bound is 1 s: its
+    // stash therefore happens AFTER the relaunch attempt failed (a stop bound shorter than relaunch's would
+    // stash first, and the stale-epoch branch would never run).
+    setCarrierClient({ stop: () => old.stop(1000) }, host);
     const relaunching = relaunchWith(
       async () => {
         throw new Error('launch failed');
@@ -251,8 +255,13 @@ describe('R4L-2 — a hand-back that belongs to a FAILED relaunch attempt is dro
       () => 'ok',
       (error: Error) => error.message,
     );
-    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(100);
     expect(await settled).toBe('launch failed');
+    expect(errors).toEqual([]); // the old stop has not stashed yet
+    await vi.advanceTimersByTimeAsync(1000); // …now it does
     expect(getCarrier(host).notifyBacklog).toBeUndefined();
+    expect(errors.some((e) => /dropped 1 notification/.test(String((e as Error).message)))).toBe(
+      true,
+    );
   });
 });

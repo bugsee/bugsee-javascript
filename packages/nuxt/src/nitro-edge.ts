@@ -16,10 +16,9 @@ import {
   DEFERRED_FLUSH_TIMEOUT_MS,
   type EdgeExecutionContext,
   launchEdge,
-  relaunchEdge,
-  rememberEdgeLaunch,
   resolveWaitUntil,
 } from '@bugsee/vercel-edge';
+import { relaunchEdge, rememberEdgeLaunch } from '@bugsee/vercel-edge/relaunch-edge';
 
 /** The Nitro edge error-hook context subset we read (structural; no `nitropack` dep). On the Cloudflare
  *  preset, Nitro exposes the platform `ExecutionContext` (with `waitUntil`) at `event.context.cloudflare.context`. */

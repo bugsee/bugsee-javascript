@@ -48,6 +48,7 @@ import {
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
+  sealCarrierLifecycleSlot,
   setCarrierClient,
   setCarrierStatus,
 } from '@bugsee/core';
@@ -365,6 +366,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
+
+  // The lifecycle listener must not live on the page-reachable carrier (R5L-1): move it module-private BEFORE
+  // anything installs one (the `lifecycleEventsListener` option is installed during client creation below).
+  sealCarrierLifecycleSlot(carrier);
 
   const bridgeSlot = bridgeSlotFor(global, options.onError);
 
@@ -902,6 +907,31 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
  * genuinely double-launched gets a working object rather than a TypeError. Each blocked call reports
  * through `onError`, so a real double-launch is diagnosable.
  */
+const PAGE_SAFE_CLIENT_METHODS = [
+  'setUserIdentifier',
+  'getUserIdentifier',
+  'clearUserIdentifier',
+  'setAttribute',
+  'getAttribute',
+  'clearAttribute',
+  'clearAllAttributes',
+  'getAllAttributes',
+  'addBreadcrumb',
+  'log',
+  'event',
+  'trace',
+  'logException',
+  'notify',
+  'upload',
+  'prepareUpload',
+  'startBlackout',
+  'isBlackout',
+  'isLaunched',
+  'getStatus',
+  'getLaunchOptions',
+  'getHostLaunchOptions',
+] as const;
+
 function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void): Bugsee {
   const refuse = (method: string): void => {
     neverThrow(
@@ -942,8 +972,26 @@ function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void)
     // listener observes the session; a page may do neither. `startBlackout` stays (it only fails closed).
     endBlackout: (): void => refuse('endBlackout'),
     setLifecycleEventsListener: (): void => refuse('setLifecycleEventsListener'),
+    // Control the old spread passed through live (R5L-1): provider/filter registration and relaunch control.
+    setSpanFilter: (): void => refuse('setSpanFilter'),
+    addCaptureProvider: (): void => refuse('addCaptureProvider'),
+    addDetectionProvider: (): void => refuse('addDetectionProvider'),
+    ext: (): never => {
+      refuse('ext');
+      throw new Error('Bugsee: ext is not available on a repeat launch()');
+    },
+    launch: (): void => refuse('launch'),
   };
-  return { ...client, ...blocked } as unknown as Bugsee;
+  // The live half is an EXPLICIT ALLOW-LIST of the public methods, each forwarded through a lambda. NO spread of
+  // the client: it carries the `Symbol.for('com.bugsee.internal-client')` brand (unstripped `upload`/`prepareUpload`
+  // that forge `trigger`, and `emitLifecycleEvent` that fakes SDK events) and any method added later would be
+  // live by default.
+  const target = client as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const live: Record<string, (...args: unknown[]) => unknown> = {};
+  for (const name of PAGE_SAFE_CLIENT_METHODS) {
+    live[name] = (...args: unknown[]): unknown => target[name]?.(...args);
+  }
+  return { ...live, ...blocked } as unknown as Bugsee;
 }
 
 /** A repeat launch from a module copy that did not perform it: inert, but never `undefined`. */

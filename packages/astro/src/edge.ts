@@ -15,10 +15,9 @@ import {
   type BugseeEdgeLaunchOptions,
   type EdgeExecutionContext,
   launchEdge,
-  relaunchEdge,
-  rememberEdgeLaunch,
   runInEdgeContext,
 } from '@bugsee/vercel-edge';
+import { relaunchEdge, rememberEdgeLaunch } from '@bugsee/vercel-edge/relaunch-edge';
 import type { AstroMiddleware, AstroMiddlewareContext } from './middleware';
 import { injectTraceIntoResponse } from './middleware';
 
