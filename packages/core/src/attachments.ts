@@ -232,9 +232,21 @@ export function limitAttachmentsForMarker(request: ReportingRequest): ReportingR
   return { ...request, report: report as unknown as Report };
 }
 
+// The crash is the part of a report an `after` handler most plausibly SCRUBS (frame locals, source context),
+// so it must be in the signature (R4H-1). The serialised frames (which also fixes their count) + the exception
+// message is cheap (frames are capped) and catches any in-place edit of them; the rest of the crash is not editable
+// to anything the marker would care about.
+function crashFingerprint(crash: Report['crash']): unknown {
+  if (crash === undefined || !('exception' in crash)) {
+    return crash === undefined ? null : JSON.stringify(crash);
+  }
+  const { frames, reason } = crash.exception;
+  return [JSON.stringify(frames), reason];
+}
+
 /**
  * A cheap signature of what a report-handler can change and the recovery marker carries: summary,
- * description, email, severity, labels, attributes and the attachments' count, names and sizes (not their
+ * description, email, severity, labels, attributes, signatures, a crash fingerprint and the attachments' count, names and sizes (not their
  * bytes: hashing 9 MB per report costs more than the rewrite it would save). `undefined` when the report
  * cannot be read (a hostile getter), which callers treat as "changed" so the marker is rewritten.
  */
@@ -254,7 +266,9 @@ export function reportChangeSignature(report: Report): string | undefined {
       report.email,
       report.labels,
       report.attributes,
+      report.signatures,
       attachments,
+      crashFingerprint(report.crash),
     ]);
   } catch {
     return undefined;

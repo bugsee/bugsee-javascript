@@ -9,13 +9,15 @@
 // (on `event.context.cloudflare.context`) or Vercel Edge's global request-context symbol. This delivers the
 // moat's edge value (server errors reported from Nuxt-on-edge — a differentiator Sentry lacks). Full
 // per-request context/trace correlation on edge needs Nitro fetch-entry wrapping — a documented v2.
-import { asInternalClient, getCarrierClient, relaunchWith } from '@bugsee/core';
+import { asInternalClient, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
   DEFERRED_FLUSH_TIMEOUT_MS,
   type EdgeExecutionContext,
   launchEdge,
+  relaunchEdge,
+  rememberEdgeLaunch,
   resolveWaitUntil,
 } from '@bugsee/vercel-edge';
 
@@ -75,6 +77,7 @@ export function installBugseeNitroEdge(
     ...launchOptions
   } = options;
   const client = launch(appToken, launchOptions);
+  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch() (R4H-4)
   // The hook outlives this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
   // error (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
   const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
@@ -138,12 +141,13 @@ export interface NitroEdgeRelaunchOptions extends BugseeEdgeLaunchOptions {
 
 /**
  * Stop the running client and launch again with the remembered token through the SAME launch seam
- * `installBugseeNitroEdge` takes (default `launchEdge`), so a custom launch is re-run rather than replaced by
- * the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9). The installed Nitro hooks follow
- * the new client (R3P-3). Bugsee options return to their defaults; integration seams are kept. Rejects when
- * nothing was launched.
+ * `installBugseeNitroEdge` was installed with (default `launchEdge`), so a custom launch (e.g. Cloudflare's) is re-run
+ * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9).
+ * That install-time seam is remembered on the carrier and is the DEFAULT here (R4H-4); an explicit `launch`
+ * argument wins and is remembered in turn. The installed Nitro hooks follow
+ * the new client (R3P-3).
+ * Bugsee options return to their defaults; integration seams are kept. Rejects when nothing was launched.
  */
 export function relaunch(options: NitroEdgeRelaunchOptions = {}): Promise<Bugsee> {
-  const { launch = launchEdge, ...launchOptions } = options;
-  return relaunchWith(launch, launchOptions, launchOptions.carrier);
+  return relaunchEdge(options);
 }

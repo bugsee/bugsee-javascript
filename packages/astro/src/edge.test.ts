@@ -4,7 +4,13 @@ const { launchEdge, runInEdgeContext } = vi.hoisted(() => ({
   launchEdge: vi.fn(),
   runInEdgeContext: vi.fn((_client: unknown, _opts: unknown, fn: () => unknown) => fn()),
 }));
-vi.mock('@bugsee/vercel-edge', () => ({ launchEdge, runInEdgeContext }));
+const { rememberEdgeLaunch } = vi.hoisted(() => ({ rememberEdgeLaunch: vi.fn() }));
+vi.mock('@bugsee/vercel-edge', () => ({
+  launchEdge,
+  runInEdgeContext,
+  rememberEdgeLaunch,
+  relaunchEdge: vi.fn(),
+}));
 const { getCarrierClient } = vi.hoisted(() => ({ getCarrierClient: vi.fn() }));
 // Partial mock: keep the real @bugsee/core (so traceMetaTag's ContextProviderToken stays valid), override
 // only getCarrierClient.
@@ -40,6 +46,13 @@ describe('registerServerEdge', () => {
     expect(registerServerEdge('tok', { launch })).toBe(client);
     expect(launch).toHaveBeenCalledWith('tok', {});
     expect(launchEdge).not.toHaveBeenCalled();
+  });
+
+  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+    const launch = vi.fn(() => ({}) as never);
+    const carrier = {};
+    registerServerEdge('tok', { launch, carrier });
+    expect(rememberEdgeLaunch).toHaveBeenCalledWith(launch, carrier);
   });
 });
 

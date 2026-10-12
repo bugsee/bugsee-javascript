@@ -6,7 +6,13 @@ const { launchEdge, runInEdgeContext } = vi.hoisted(() => ({
   // Invoke fn (the wrapped resolve) synchronously + return its result, like the real wrap would.
   runInEdgeContext: vi.fn((_client: unknown, _opts: unknown, fn: () => unknown) => fn()),
 }));
-vi.mock('@bugsee/vercel-edge', () => ({ launchEdge, runInEdgeContext }));
+const { rememberEdgeLaunch } = vi.hoisted(() => ({ rememberEdgeLaunch: vi.fn() }));
+vi.mock('@bugsee/vercel-edge', () => ({
+  launchEdge,
+  runInEdgeContext,
+  rememberEdgeLaunch,
+  relaunchEdge: vi.fn(),
+}));
 const { getCarrierClient } = vi.hoisted(() => ({ getCarrierClient: vi.fn() }));
 // `ContextProviderToken` is a real value import in @bugsee/adapter-kit's trace read, which this suite
 // deliberately runs UNMOCKED (the <meta> injection is an integration seam, not a stub).
@@ -64,6 +70,13 @@ describe('registerServerEdge', () => {
     expect(registerServerEdge('tok', { launch })).toBe(client);
     expect(launch).toHaveBeenCalledWith('tok', {});
     expect(launchEdge).not.toHaveBeenCalled();
+  });
+
+  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+    const launch = vi.fn(() => ({}) as never);
+    const carrier = {};
+    registerServerEdge('tok', { launch, carrier });
+    expect(rememberEdgeLaunch).toHaveBeenCalledWith(launch, carrier);
   });
 });
 

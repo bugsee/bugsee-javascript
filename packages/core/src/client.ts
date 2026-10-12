@@ -1268,7 +1268,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     let markerDurable: boolean | Promise<boolean> = true;
     // Apply the attachment limits NOW, so the marker below persists at most 3 x 3 MB of valid data (not an
     // arbitrary pile of bytes) and assembly never meets a malformed one. Never lets the report be lost.
-    let markerRequest = handled;
+    let markerRequest: ReportingRequest | undefined = handled;
     try {
       normalizeReportAttachments(handled.report, onErrorSafe);
     } catch (error) {
@@ -1281,9 +1281,18 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         markerRequest = limitAttachmentsForMarker(handled);
       } catch (limitError) {
         onErrorSafe(limitError);
+        // Fail CLOSED (R4H-6): the unlimited request must not reach the marker, so it persists no
+        // user attachments at all. Assembly still limits and ships them on the live path.
+        try {
+          markerRequest = { ...handled, report: { ...handled.report, userAttachments: [] } };
+        } catch (copyError) {
+          // Not even a copy can be made: persist no marker rather than an unlimited one.
+          onErrorSafe(copyError);
+          markerRequest = undefined;
+        }
       }
     }
-    if (reportMarkers !== undefined) {
+    if (reportMarkers !== undefined && markerRequest !== undefined) {
       try {
         const written = reportMarkers.store.put({
           generation: reportMarkers.generation,

@@ -62,29 +62,34 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
  */
 interface SpanProcessorDelegate {
   processor: BugseeSpanProcessor;
-  target: BugseeSpanProcessor;
+  /** The CURRENT client's processor; `undefined` once that client has stopped (spans are then dropped). */
+  target: BugseeSpanProcessor | undefined;
   attached: boolean;
 }
 const DELEGATE_KEY = Symbol.for('@bugsee/nextjs.spanProcessorDelegate');
 
 function bindSpanProcessor(carrier: object, target: BugseeSpanProcessor): SpanProcessorDelegate {
   const slot = carrier as { [DELEGATE_KEY]?: SpanProcessorDelegate };
-  const existing = slot[DELEGATE_KEY];
-  if (existing !== undefined) {
-    existing.target = target; // the previous processor is unreferenced from here and is collected
-    return existing;
-  }
-  const delegate: SpanProcessorDelegate = {
+  const delegate: SpanProcessorDelegate = slot[DELEGATE_KEY] ?? {
     target,
     attached: false,
     processor: {
-      onStart: () => delegate.target.onStart(),
-      onEnd: (span) => delegate.target.onEnd(span),
-      forceFlush: () => delegate.target.forceFlush(),
-      shutdown: () => delegate.target.shutdown(),
+      onStart: () => delegate.target?.onStart(),
+      onEnd: (span) => delegate.target?.onEnd(span),
+      forceFlush: () => delegate.target?.forceFlush() ?? Promise.resolve(),
+      shutdown: () => delegate.target?.shutdown() ?? Promise.resolve(),
     },
   };
   slot[DELEGATE_KEY] = delegate;
+  delegate.target = target; // the previous processor is unreferenced from here and is collected
+  // `client.stop()` calls `shutdown()` on THIS object (the umbrella's wire composes it that way), so a
+  // stopped client releases the delegate here (R4H-9): nothing keeps it reachable and late spans are dropped.
+  // Only while it is still the current target, so a late teardown of an OLD client cannot unbind its successor.
+  const shutdown = target.shutdown.bind(target);
+  target.shutdown = () => {
+    if (delegate.target === target) delegate.target = undefined;
+    return shutdown();
+  };
   return delegate;
 }
 /**

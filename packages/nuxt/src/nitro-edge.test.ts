@@ -2,13 +2,16 @@ import { setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the edge SDK: control the launched client + capture the promise handed to waitUntil.
-const { launchEdge, resolveWaitUntil } = vi.hoisted(() => ({
+const { launchEdge, resolveWaitUntil, rememberEdgeLaunch } = vi.hoisted(() => ({
+  rememberEdgeLaunch: vi.fn(),
   launchEdge: vi.fn(),
   resolveWaitUntil: vi.fn(),
 }));
 vi.mock('@bugsee/vercel-edge', () => ({
   launchEdge,
   resolveWaitUntil,
+  rememberEdgeLaunch,
+  relaunchEdge: vi.fn(),
   DEFERRED_FLUSH_TIMEOUT_MS: 10_000, // the real value; this module shares the edge tier's deadline
 }));
 
@@ -90,8 +93,16 @@ describe('installBugseeNitroEdge', () => {
     expect(client.logException).toHaveBeenCalledTimes(1);
   });
 
+  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+    const launch = () => fakeClient() as never;
+    const carrier = {};
+    installBugseeNitroEdge(fakeNitro().nitroApp, { appToken: 'tok', carrier, launch });
+    expect(rememberEdgeLaunch).toHaveBeenCalledWith(launch, carrier);
+  });
+
   afterEach(() => {
     launchEdge.mockReset();
+    rememberEdgeLaunch.mockReset();
     resolveWaitUntil.mockReset();
   });
 

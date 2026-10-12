@@ -190,9 +190,14 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   the plain umbrella `@bugsee/bugsee/node` `relaunch` would not). OTel is NOT re-attached on relaunch: the global
   provider slot is first-wins, so the span processor registered at first launch stays for the life of the process;
   `@bugsee/nextjs/server` makes it a stable, late-bound delegate that a relaunch re-points at the new client
-  (R3P-2), and `setupOtelProvider` is decided by the first launch.
-  Framework `/edge` entries (sveltekit, astro, nuxt) re-export the plain `@bugsee/vercel-edge` `relaunch`
-  (re-runs `launchEdge`); a different launch (Cloudflare's) needs `@bugsee/cloudflare`'s own `relaunch` (R3P-9).
+  (R3P-2), and `setupOtelProvider` is decided by the first launch. A `stop()` with no relaunch drops the delegate's
+  target (a stopped client is not kept reachable and late spans are dropped), and no delegate exists when OTel
+  consume is off (R4H-9).
+  Framework `/edge` entries (sveltekit, astro, nuxt) do NOT re-export the plain `@bugsee/vercel-edge` `relaunch`:
+  each defines its own `relaunch` that remembers the launch seam given to `registerServerEdge` /
+  `installBugseeNitroEdge` on the carrier (`rememberEdgeLaunch` / `relaunchEdge` in `@bugsee/vercel-edge`) and
+  re-runs it by default, so a custom launch (Cloudflare's) survives a plain `relaunch()`; an explicit `launch`
+  argument wins (R3P-9, R4H-4). `@bugsee/cloudflare` has its own `relaunch` over its own launch.
   `@bugsee/webview` and `@bugsee/electron` offer none: the WebView carrier holds only a facade (native owns the
   session) and Electron's launch needs `ipcMain`.
 - **JS-only launch keys** with no mobile counterpart: `startInBlackout` (`capture.start-in-blackout`),

@@ -51,4 +51,39 @@ describe('@bugsee/astro/edge relaunch', () => {
     live.push(second);
     expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
   });
+
+  // R4H-4: the install-time seam is the DEFAULT for a plain `relaunch()` (an explicit argument still wins).
+  it('a plain relaunch() re-runs the custom launch the entry was INSTALLED with (R4H-4)', async () => {
+    const carrier = {};
+    const custom = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {
+      const client = launchEdge(token, options);
+      live.push(client);
+      return client;
+    });
+    live.push(registerServerEdge('tok-3', { ...opts(carrier), launch: custom }));
+    expect(custom).toHaveBeenCalledTimes(1);
+    const second = await relaunch(opts(carrier));
+    live.push(second);
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(custom.mock.calls[1]?.[0]).toBe('tok-3');
+    expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
+  });
+
+  it('an explicit launch beats the install-time one (R4H-4)', async () => {
+    const carrier = {};
+    const installed = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {
+      const client = launchEdge(token, options);
+      live.push(client);
+      return client;
+    });
+    const explicit = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {
+      const client = launchEdge(token, options);
+      live.push(client);
+      return client;
+    });
+    live.push(registerServerEdge('tok-4', { ...opts(carrier), launch: installed }));
+    live.push(await relaunch({ ...opts(carrier), launch: explicit }));
+    expect(explicit).toHaveBeenCalledTimes(1);
+    expect(installed).toHaveBeenCalledTimes(1); // only the install
+  });
 });

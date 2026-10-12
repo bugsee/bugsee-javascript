@@ -2647,6 +2647,80 @@ describe('createClient — upload (manual report)', () => {
         if (r.userAttachments) r.userAttachments[0] = { name: 'a', data: 'longer-data' };
       },
     ],
+    [
+      'severity',
+      (r: Report) => {
+        r.severity = 'low';
+      },
+    ],
+    [
+      'email',
+      (r: Report) => {
+        r.email = 'x@y.z';
+      },
+    ],
+    [
+      'type',
+      (r: Report) => {
+        r.type = 'crash';
+      },
+    ],
+    [
+      'attachment name',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            name: 'renamed',
+          };
+      },
+    ],
+    [
+      'attachment mimeType',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            mimeType: 'text/x',
+          };
+      },
+    ],
+    [
+      'attachment fileName',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            fileName: 'f.txt',
+          };
+      },
+    ],
+    [
+      'signatures',
+      (r: Report) => {
+        r.signatures.push('sig');
+      },
+    ],
+    [
+      'crash frame count',
+      (r: Report) => {
+        const crash = r.crash as { exception: { frames: unknown[] } };
+        crash.exception.frames.pop();
+      },
+    ],
+    [
+      'crash frame locals',
+      (r: Report) => {
+        const crash = r.crash as { exception: { frames: { variables?: unknown }[] } };
+        for (const f of crash.exception.frames) f.variables = { scrubbed: '1' };
+      },
+    ],
+    [
+      'crash exception message',
+      (r: Report) => {
+        (r.crash as { exception: { reason?: string } }).exception.reason = 'scrubbed';
+      },
+    ],
   ])('an `after` handler that changes the %s rewrites the marker (R3P-7)', async (_name, mutate) => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
@@ -2656,7 +2730,23 @@ describe('createClient — upload (manual report)', () => {
       getEnvironment,
       reportMarkers: { store, generation: 1 },
     });
-    client.setReportHandler({ after: (request) => mutate(request.report) });
+    client.setReportHandler({
+      before: (request) => {
+        // Every row starts from a report that carries a crash (the crash rows edit it in place).
+        request.report.crash = {
+          exception_type: 'error',
+          ndkCrash: false,
+          handled: true,
+          exception: {
+            name: 'Error',
+            reason: 'boom',
+            frames: [{ trace: 'at a' }, { trace: 'at b' }],
+          },
+        } as unknown as Report['crash'];
+        return request;
+      },
+      after: (request) => mutate(request.report),
+    });
     await client.upload({
       summary: 's',
       description: 'd',
@@ -2664,6 +2754,42 @@ describe('createClient — upload (manual report)', () => {
       attachments: [{ name: 'a', data: 'xyz' }],
     });
     expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('a scrubbing `after` leaves the marker holding the SCRUBBED crash (R4H-1)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        request.report.crash = {
+          exception_type: 'error',
+          ndkCrash: false,
+          handled: true,
+          exception: {
+            name: 'Error',
+            reason: 'boom',
+            frames: [{ trace: 'at f', variables: { password: 'hunter2' } }],
+          },
+        } as unknown as Report['crash'];
+        return request;
+      },
+      after: (request) => {
+        const crash = request.report.crash as {
+          exception: { frames: { variables?: unknown }[] };
+        };
+        for (const f of crash.exception.frames) delete f.variables;
+      },
+    });
+    await client.upload({ summary: 's' });
+    expect(put).toHaveBeenCalledTimes(2);
+    const last = put.mock.calls[1]?.[0] as ReportMarker;
+    expect(JSON.stringify(last.request.report.crash)).not.toContain('hunter2');
   });
 
   it('a hostile report (throwing Proxy) never loses the report at the marker limit step (R3P-8)', async () => {
@@ -2697,6 +2823,67 @@ describe('createClient — upload (manual report)', () => {
     expect(result.ok).toBe(true);
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'hostile ownKeys' }));
+  });
+
+  it('a limit step that throws persists NO user attachments in the marker (fail closed, R4H-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        // Throws on the FIRST enumeration only (the limit step); encodable afterwards.
+        let calls = 0;
+        const flaky = new Proxy(request.report, {
+          ownKeys: (target) => {
+            calls += 1;
+            if (calls === 1) throw new Error('flaky ownKeys');
+            return Reflect.ownKeys(target);
+          },
+        });
+        return { ...request, report: flaky };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    expect(marker.request.report.userAttachments).toEqual([]);
+    expect(JSON.stringify(marker)).not.toContain('secret-bytes');
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report that cannot even be copied persists no marker, and is still uploaded (R4H-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    expect(put).not.toHaveBeenCalled();
+    // normalise, limit, copy: nothing was ever handed to the encoder (it would add a 4th report)
+    expect(onError).toHaveBeenCalledTimes(3);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {

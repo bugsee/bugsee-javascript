@@ -17,6 +17,27 @@ const { attachBugseeOtelProvider } = vi.hoisted(() => ({
 }));
 vi.mock('./otel-provider', () => ({ attachBugseeOtelProvider }));
 
+// Every processor the umbrella builds, with its ORIGINAL shutdown spied before the adapter wraps it (R4H-9).
+const { created } = vi.hoisted(() => ({
+  created: [] as ReturnType<typeof vi.fn>[],
+}));
+vi.mock('@bugsee/bugsee/node', async (importActual) => {
+  const actual = await importActual<typeof import('@bugsee/bugsee/node')>();
+  return {
+    ...actual,
+    launch: (...[token, options]: Parameters<typeof actual.launch>) =>
+      actual.launch(token, {
+        ...options,
+        onOtelSpanProcessor: (processor) => {
+          const spy = vi.fn(processor.shutdown.bind(processor));
+          processor.shutdown = spy as typeof processor.shutdown;
+          created.push(spy);
+          options?.onOtelSpanProcessor?.(processor);
+        },
+      }),
+  };
+});
+
 import {
   type Bugsee,
   type BugseeSpanProcessor,
@@ -74,6 +95,7 @@ afterEach(async () => {
   await Promise.all(started.splice(0).map((c) => c.stop()));
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
   attachBugseeOtelProvider.mockClear();
+  created.length = 0;
 });
 
 describe('@bugsee/nextjs/server relaunch', () => {
@@ -173,5 +195,93 @@ describe('@bugsee/nextjs/server relaunch', () => {
     await a.fire();
     expect(b.names()).toContain('GET /after-relaunch');
     expect(a.names()).not.toContain('GET /after-relaunch');
+  });
+
+  // --- R4H-3 / R4H-9: delegate lifetime --------------------------------------------------------
+  const DELEGATE = Symbol.for('@bugsee/nextjs.spanProcessorDelegate');
+  const targetOf = (carrier: object) =>
+    (carrier as Record<symbol, { target?: BugseeSpanProcessor } | undefined>)[DELEGATE]?.target;
+  const span = {
+    spanContext: () => ({
+      traceId: '0123456789abcdef0123456789abcdef',
+      spanId: 'aaaaaaaaaaaaaaaa',
+    }),
+    name: 'x',
+    startTime: [1, 0],
+    endTime: [2, 0],
+    status: { code: 1 },
+  } as unknown as Parameters<BugseeSpanProcessor['onEnd']>[0];
+
+  it('forceFlush and shutdown on the registered processor reach the NEW client after a relaunch (R4H-3)', async () => {
+    const carrier = {};
+    started.push(registerServer('tok', opts(carrier)));
+    const registered = attachBugseeOtelProvider.mock
+      .calls[0]?.[0] as unknown as BugseeSpanProcessor;
+    const oldTarget = targetOf(carrier) as BugseeSpanProcessor;
+    started.push(await relaunch(opts(carrier)));
+    const newTarget = targetOf(carrier) as BugseeSpanProcessor;
+    expect(newTarget).not.toBe(oldTarget);
+    const oldFlush = vi.spyOn(oldTarget, 'forceFlush');
+    const oldShutdown = vi.spyOn(oldTarget, 'shutdown');
+    const newFlush = vi.spyOn(newTarget, 'forceFlush');
+    const newShutdown = vi.spyOn(newTarget, 'shutdown');
+    await registered.forceFlush();
+    await registered.shutdown();
+    expect(newFlush).toHaveBeenCalledTimes(1);
+    expect(newShutdown).toHaveBeenCalledTimes(1);
+    expect(oldFlush).not.toHaveBeenCalled();
+    expect(oldShutdown).not.toHaveBeenCalled();
+  });
+
+  it('stop() with no relaunch drops the stopped client from the delegate; late spans are dropped (R4H-9)', async () => {
+    const carrier = {};
+    const client = registerServer('tok', opts(carrier));
+    const registered = attachBugseeOtelProvider.mock
+      .calls[0]?.[0] as unknown as BugseeSpanProcessor;
+    const target = targetOf(carrier) as BugseeSpanProcessor;
+    const onEnd = vi.spyOn(target, 'onEnd');
+    await client.stop();
+    expect(targetOf(carrier)).toBeUndefined(); // nothing retains the stopped client's processor
+    // The client's own teardown of its processor still ran (the wrapper delegates, it does not replace).
+    expect(created).toHaveLength(1);
+    expect(created[0]).toHaveBeenCalledTimes(1);
+    expect(() => {
+      registered.onStart();
+      registered.onEnd(span);
+    }).not.toThrow();
+    expect(onEnd).not.toHaveBeenCalled();
+    await expect(registered.forceFlush()).resolves.toBeUndefined();
+    await expect(registered.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('a late shutdown of the OLD client does not drop the relaunched client (R4H-9)', async () => {
+    const carrier = {};
+    started.push(registerServer('tok', opts(carrier)));
+    const oldTarget = targetOf(carrier) as BugseeSpanProcessor;
+    started.push(await relaunch(opts(carrier)));
+    const newTarget = targetOf(carrier);
+    expect(newTarget).toBeDefined();
+    await oldTarget.shutdown(); // the old client's teardown running late
+    expect(targetOf(carrier)).toBe(newTarget);
+  });
+
+  it('a relaunch after stop() binds the new client again (R4H-9)', async () => {
+    const carrier = {};
+    const first = registerServer('tok', opts(carrier));
+    await first.stop();
+    expect(targetOf(carrier)).toBeUndefined();
+    started.push(await relaunch(opts(carrier)));
+    expect(targetOf(carrier)).toBeDefined();
+  });
+
+  it.each([
+    ['otelConsume: false', { otelConsume: false }],
+    ['performance monitoring off', { performanceMonitoring: false }],
+  ])('creates no delegate and registers nothing when OTel is off (%s) (R4H-9)', (_n, over) => {
+    const carrier = {};
+    started.push(registerServer('tok', opts(carrier, over as Partial<NextjsServerOptions>)));
+    expect(targetOf(carrier)).toBeUndefined();
+    expect((carrier as Record<symbol, unknown>)[DELEGATE]).toBeUndefined();
+    expect(attachBugseeOtelProvider).not.toHaveBeenCalled();
   });
 });

@@ -45,7 +45,7 @@ export {
   launchEdge as launch,
   launchEdge,
 } from './launch';
-export { relaunch } from './relaunch';
+export { type EdgeLaunch, relaunch, relaunchEdge, rememberEdgeLaunch } from './relaunch';
 export {
   createEdgeRequestContextStore,
   type EdgeContextStoreLogger,

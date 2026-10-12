@@ -87,6 +87,12 @@ export interface BugseeCarrier {
    * `owner` is the registering client's own token, so a client never hands items to itself.
    */
   notifyAdopter?: { owner: object; adopt(items: NotifyItem[]): void };
+  /**
+   * The launch function an EDGE entry (`@bugsee/{sveltekit,astro,nuxt}/edge`) was installed with, so its
+   * `relaunch()` re-runs the same seam by default (R4H-4). Typed `unknown` here (core does not know the
+   * edge launch signature); owned by `@bugsee/vercel-edge`'s `rememberEdgeLaunch`.
+   */
+  edgeLaunch?: unknown;
   /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
   pendingLaunch?: Promise<unknown>;
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
