@@ -1,3 +1,4 @@
+import { setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the edge SDK: control the launched client + capture the promise handed to waitUntil.
@@ -50,6 +51,45 @@ function captureWaitUntil() {
 }
 
 describe('installBugseeNitroEdge', () => {
+  it('reports and flushes through the CURRENT carrier client after a relaunch (R3P-3)', async () => {
+    const carrier = {};
+    const first = fakeClient();
+    const second = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    const wu = captureWaitUntil();
+    installBugseeNitroEdge(nitroApp, {
+      appToken: 'tok',
+      carrier,
+      launch: () => {
+        setCarrierClient(first, carrier);
+        return first as never;
+      },
+    });
+    setCarrierClient(second, carrier); // what relaunch() does
+
+    const err = new Error('after relaunch');
+    fireError(err);
+    await wu.drain();
+    expect(second.logException).toHaveBeenCalledWith(err, { mechanism: 'http-error' });
+    expect(second.flush).toHaveBeenCalledTimes(1);
+    expect(first.logException).not.toHaveBeenCalled();
+    expect(first.flush).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the launched client while the carrier slot is empty (R3P-3)', async () => {
+    const client = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    const wu = captureWaitUntil();
+    installBugseeNitroEdge(nitroApp, {
+      appToken: 'tok',
+      carrier: {},
+      launch: () => client as never,
+    });
+    fireError(new Error('x'));
+    await wu.drain();
+    expect(client.logException).toHaveBeenCalledTimes(1);
+  });
+
   afterEach(() => {
     launchEdge.mockReset();
     resolveWaitUntil.mockReset();

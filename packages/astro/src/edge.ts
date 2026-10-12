@@ -8,7 +8,7 @@
 // edge middleware does NOT also run the node middleware's try/catch (avoids a double report).
 //
 // Edge subpath (composes @bugsee/vercel-edge) → never the portable `.`/`./middleware`/`./server` entries.
-import { type AttributeValue, getCarrierClient } from '@bugsee/core';
+import { type AttributeValue, getCarrierClient, relaunchWith } from '@bugsee/core';
 import { sanitizeUrl } from '@bugsee/protocol';
 import {
   type Bugsee,
@@ -90,5 +90,15 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
   type ReportAttachmentInput,
-  relaunch,
 } from '@bugsee/vercel-edge';
+
+/**
+ * Stop the running client and launch again with the remembered token through the SAME launch seam
+ * `registerServerEdge` takes (default `launchEdge`), so a custom launch (e.g. Cloudflare's) is re-run rather
+ * than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9).
+ * Bugsee options return to their defaults; integration seams are kept. Rejects when nothing was launched.
+ */
+export function relaunch(options: AstroEdgeOptions = {}): Promise<Bugsee> {
+  const { launch = launchEdge, ...launchOptions } = options;
+  return relaunchWith(launch, launchOptions, launchOptions.carrier);
+}

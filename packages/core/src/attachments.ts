@@ -232,6 +232,35 @@ export function limitAttachmentsForMarker(request: ReportingRequest): ReportingR
   return { ...request, report: report as unknown as Report };
 }
 
+/**
+ * A cheap signature of what a report-handler can change and the recovery marker carries: summary,
+ * description, email, severity, labels, attributes and the attachments' count, names and sizes (not their
+ * bytes: hashing 9 MB per report costs more than the rewrite it would save). `undefined` when the report
+ * cannot be read (a hostile getter), which callers treat as "changed" so the marker is rewritten.
+ */
+export function reportChangeSignature(report: Report): string | undefined {
+  try {
+    const attachments = (report.userAttachments ?? []).map((a) => [
+      a.name,
+      typeof a.data === 'string' ? a.data.length : a.data.byteLength,
+      a.mimeType,
+      a.fileName,
+    ]);
+    return JSON.stringify([
+      report.type,
+      report.severity,
+      report.summary,
+      report.description,
+      report.email,
+      report.labels,
+      report.attributes,
+      attachments,
+    ]);
+  } catch {
+    return undefined;
+  }
+}
+
 // A marker is JSON on disk and in IndexedDB; `JSON.stringify(Uint8Array)` is `{"0":1,"1":2,...}` (~14 bytes
 // per byte, and not recoverable as bytes). Binary attachment data is therefore stored as base64 under
 // `dataBase64` (with `data: ''`), and decoded again when the incident is rebuilt.

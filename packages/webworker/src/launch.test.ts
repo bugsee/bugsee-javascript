@@ -271,6 +271,30 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('user-agent');
   });
 
+  it.each([
+    [
+      'JavaScriptCore (Safari worker, recorded from jsc)',
+      'applicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11',
+    ],
+    [
+      'SpiderMonkey (Firefox worker)',
+      'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
+    ],
+  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    const error = new Error('non-v8-stack');
+    error.stack = stack;
+    await client.logException(error);
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+      exception: { frames: { data: { member: string } }[] };
+    };
+    expect(crash.exception.frames[0]?.data.member).toBe('applicationCode');
+    expect(crash.exception.frames).toHaveLength(2);
+  });
+
   it('persist ON (service-worker) registers the report-marker store', () => {
     const client = track(
       'tok',

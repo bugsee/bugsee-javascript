@@ -207,8 +207,11 @@ export function callSiteFrames(
     const capture = (Error as { captureStackTrace?: (target: object, fn: unknown) => void })
       .captureStackTrace;
     if (typeof capture === 'function') {
-      capture(error, boundary);
-      return parseStack(error.stack ?? '');
+      // Into a plain holder, never `error`: JavaScriptCore does not re-capture an Error that already has
+      // a stack, so frame 0 stayed an SDK frame there (R3P-1). A fresh object has nothing to keep.
+      const holder: { stack?: string } = {};
+      capture(holder, boundary);
+      return parseStack(holder.stack ?? '');
     }
     return parseStack(error.stack ?? '').slice(sdkFrames);
   } catch {

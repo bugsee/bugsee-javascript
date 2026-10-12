@@ -13,6 +13,7 @@ import {
   type BugseeNodeLaunchOptions,
   launch as nodeLaunch,
 } from '@bugsee/bugsee/node';
+import { getCarrierClient } from '@bugsee/core';
 
 /** The Nitro error-hook context subset we read (structural; no `nitropack` dep). */
 export interface NitroErrorContext {
@@ -65,12 +66,15 @@ export function installBugseeNitro(
 ): Bugsee {
   const { appToken, launch = nodeLaunch, injectTraceMeta = true, ...launchOptions } = options;
   const client = launch(appToken, launchOptions);
+  // The hooks outlive this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
+  // invocation (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
+  const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
 
   nitroApp.hooks.hook('error', (error, context) => {
     if (isExpectedClientError(error)) return;
     const tags = context?.tags;
     reportServerError(error, {
-      getClient: () => client,
+      getClient: current,
       event: {
         name: 'nuxt.request-error',
         params: {
@@ -91,7 +95,7 @@ export function installBugseeNitro(
       // Best-effort: trace injection must NEVER break SSR rendering (interceptors must not alter app
       // behavior). traceMetaTag is already total; this guards the `head.push` against a non-conformant host.
       try {
-        const tag = traceMetaTag({ getClient: () => client });
+        const tag = traceMetaTag({ getClient: current });
         if (tag !== '') html.head.push(tag);
       } catch {
         // swallow — a page renders fine without the trace meta

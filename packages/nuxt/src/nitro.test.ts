@@ -1,3 +1,4 @@
+import { setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Stub the shared kit's traceMetaTag so we control what render:html injects; keep reportServerError REAL
@@ -40,6 +41,45 @@ function fakeClient() {
 }
 
 describe('installBugseeNitro', () => {
+  // R3P-3: `relaunch()` stops the launched client and starts another; the hooks installed ONCE at server start
+  // must follow it, never keep reporting into the stopped one.
+  it('reports and injects trace meta through the CURRENT carrier client after a relaunch (R3P-3)', () => {
+    const carrier = {};
+    const first = fakeClient();
+    const second = fakeClient();
+    const { nitroApp, fireError, fireRender } = fakeNitro();
+    installBugseeNitro(nitroApp, {
+      appToken: 'tok',
+      carrier,
+      launch: () => {
+        setCarrierClient(first, carrier);
+        return first as never;
+      },
+    });
+    setCarrierClient(second, carrier); // what relaunch() does
+
+    fireError(new Error('after relaunch'), { event: { method: 'GET', path: '/x' } });
+    expect(second.logException).toHaveBeenCalledTimes(1);
+    expect(second.event).toHaveBeenCalledTimes(1);
+    expect(first.logException).not.toHaveBeenCalled();
+
+    traceMetaTag.mockImplementation((o) =>
+      (o?.getClient?.() as unknown) === second ? '<meta c2>' : '<meta c1>',
+    );
+    const html = { head: [] as string[] };
+    fireRender(html);
+    expect(html.head).toEqual(['<meta c2>']);
+  });
+
+  it('falls back to the launched client while the carrier slot is empty (R3P-3)', () => {
+    const carrier = {};
+    const client = fakeClient();
+    const { nitroApp, fireError } = fakeNitro();
+    installBugseeNitro(nitroApp, { appToken: 'tok', carrier, launch: () => client as never });
+    fireError(new Error('x'));
+    expect(client.logException).toHaveBeenCalledTimes(1);
+  });
+
   afterEach(() => {
     delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
     traceMetaTag.mockReset();

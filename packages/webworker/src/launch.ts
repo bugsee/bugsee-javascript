@@ -329,6 +329,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     // stop() releases the carrier slot, the liveness lock and the IndexedDB handles, so a stopped client must
     // not be restarted in place (R2L-3): a new one comes from `launch(appToken)`.
     restartable: false,
+    // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox worker stack would
+    // ship `frames: []` in crash.json (R3P-1).
+    stackParser: parseStack,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),

@@ -33,7 +33,12 @@ import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createPartitionedCaptureStore } from './partitioned-capture-store';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
-import { createReportingRequest, type ReportingRequest } from './reporting';
+import {
+  createReportingRequest,
+  type Report,
+  type ReportAttachmentInput,
+  type ReportingRequest,
+} from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
 import {
   type Bundle,
@@ -638,11 +643,13 @@ describe('createClient — crash.json (SC3)', () => {
     }
   });
 
-  it('a caller cannot inject the frame boundary through the options (R2P-1)', async () => {
+  it('the wrapper callSite wins over a caller-supplied one (R2P-1, R3P-5)', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     async function applicationCode(): Promise<void> {
-      await client.logException('str', { boundary: () => undefined } as never);
+      await client.logException('str', {
+        callSite: { boundary: () => undefined, sdkFrames: 0 },
+      } as never);
     }
     await applicationCode();
     const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
@@ -2526,7 +2533,11 @@ describe('createClient — upload (manual report)', () => {
     await client.upload({ summary: 'plain' });
     expect(put).toHaveBeenCalledTimes(1);
 
-    client.setReportHandler({ after: () => {} });
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited';
+      },
+    });
     put.mockImplementationOnce(() => {}); // the submit-time write succeeds ...
     put.mockImplementationOnce(() => {
       throw new Error('disk full'); // ... the rewrite fails: reported, never fatal
@@ -2534,6 +2545,158 @@ describe('createClient — upload (manual report)', () => {
     const result = await client.upload({ summary: 'second' });
     expect(result.ok).toBe(true);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk full' }));
+  });
+
+  it('an `after` handler that changes nothing leaves the marker written once (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    const after = vi.fn();
+    client.setReportHandler({ after });
+    await client.upload({
+      summary: 's',
+      description: 'd',
+      labels: ['l'],
+      attachments: [{ name: 'a', data: 'xyz' }],
+    });
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('a binary attachment that changes size rewrites the marker (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      after: (request) => {
+        if (request.report.userAttachments) {
+          const old = request.report.userAttachments[0] as ReportAttachmentInput;
+          request.report.userAttachments[0] = { ...old, data: new Uint8Array(8) }; // same name/type, only the size differs
+        }
+      },
+    });
+    await client.upload({ summary: 's', attachments: [{ name: 'a', data: new Uint8Array(3) }] });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('an unreadable report (signature throws) is treated as changed and rewritten (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        request.report.attributes.big = BigInt(1) as never; // JSON.stringify throws on a BigInt
+        return request;
+      },
+      after: () => {},
+    });
+    await client.upload({ summary: 's' });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'summary',
+      (r: Report) => {
+        r.summary = 'changed';
+      },
+    ],
+    [
+      'description',
+      (r: Report) => {
+        r.description = 'changed';
+      },
+    ],
+    [
+      'labels',
+      (r: Report) => {
+        r.labels.push('new');
+      },
+    ],
+    [
+      'attributes',
+      (r: Report) => {
+        r.attributes.extra = 1;
+      },
+    ],
+    [
+      'attachment count',
+      (r: Report) => {
+        addReportAttachment(r, { name: 'b', data: 'q' });
+      },
+    ],
+    [
+      'attachment size',
+      (r: Report) => {
+        if (r.userAttachments) r.userAttachments[0] = { name: 'a', data: 'longer-data' };
+      },
+    ],
+  ])('an `after` handler that changes the %s rewrites the marker (R3P-7)', async (_name, mutate) => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({ after: (request) => mutate(request.report) });
+    await client.upload({
+      summary: 's',
+      description: 'd',
+      labels: ['l'],
+      attachments: [{ name: 'a', data: 'xyz' }],
+    });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('a hostile report (throwing Proxy) never loses the report at the marker limit step (R3P-8)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        // Frozen: normalisation cannot assign, so the marker falls back to limiting a COPY, which a
+        // throwing ownKeys then breaks.
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    const result = await client.upload({
+      summary: 'x',
+      attachments: [{ name: 'a', data: 'x' }],
+    });
+    expect(result.ok).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'hostile ownKeys' }));
   });
 
   it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {
@@ -2547,7 +2710,11 @@ describe('createClient — upload (manual report)', () => {
       onError,
       reportMarkers: { store, generation: 1 },
     });
-    client.setReportHandler({ after: () => {} });
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited';
+      },
+    });
     put.mockResolvedValueOnce(undefined);
     put.mockRejectedValueOnce(new Error('idb quota'));
     const result = await client.upload({ summary: 'x' });

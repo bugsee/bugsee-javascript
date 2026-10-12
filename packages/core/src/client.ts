@@ -26,6 +26,7 @@ import {
   encodeRequestForMarker,
   limitAttachmentsForMarker,
   normalizeReportAttachments,
+  reportChangeSignature,
 } from './attachments';
 import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
@@ -483,10 +484,13 @@ function exposePublicSurface(client: InternalBugseeClient): CreatedClient {
     logException: function logException(error, options) {
       // The wrapper is itself an SDK frame: it names itself as the boundary so the application, not
       // `Object.logException`, is frame 0 of a non-Error's synthetic stack (R2P-1).
-      return internal.logException(error, {
+      // NOT a tail call: JavaScriptCore drops the frame of a function that tail-calls, which would make
+      // `sdkFrames: 2` remove the application frame in the fallback path (R3P-1).
+      const result = internal.logException(error, {
         ...withoutWireOptions(options, 'mechanism'),
         callSite: { boundary: logException, sdkFrames: 2 },
       });
+      return result;
     },
     upload: (options) => internal.upload(withoutWireOptions(options, 'trigger')),
     prepareUpload: () => {
@@ -964,6 +968,8 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // attachments) and the bundle below carries the result. Reaching here is what "created" means, so a
       // veto, a missing pipeline, a queue overflow and a failed capture drain never call it.
       const afterHandler = filters.report?.after;
+      const beforeAfter =
+        afterHandler !== undefined ? reportChangeSignature(request.report) : undefined;
       try {
         afterHandler?.(request);
       } catch (error) {
@@ -979,7 +985,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // assembly, so it is REPLACED here (same id) rather than the handler being run earlier, which would
       // change when `after` fires for a refused or failed report. The remaining difference is a crash in the
       // window between submit and this point, which recovers the report as `before` left it.
-      if (afterHandler !== undefined && reportMarkers !== undefined) {
+      // Only when `after` actually changed the report (R3P-7): an unreadable report counts as changed.
+      if (
+        afterHandler !== undefined &&
+        reportMarkers !== undefined &&
+        (beforeAfter === undefined || beforeAfter !== reportChangeSignature(request.report))
+      ) {
         try {
           const rewritten = reportMarkers.store.put({
             generation: reportMarkers.generation,
@@ -1206,7 +1217,13 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       onErrorSafe(error);
       // The limits could not be applied in place (a handler froze the report): the marker still must not
       // persist what they would drop, so it encodes a limited COPY (R2P-9). Assembly applies them again.
-      markerRequest = limitAttachmentsForMarker(handled);
+      // A hostile report (throwing Proxy/getter) can throw here too: the encode below is guarded and the
+      // report must never be lost to its own recovery marker (R3P-8).
+      try {
+        markerRequest = limitAttachmentsForMarker(handled);
+      } catch (limitError) {
+        onErrorSafe(limitError);
+      }
     }
     if (reportMarkers !== undefined) {
       try {

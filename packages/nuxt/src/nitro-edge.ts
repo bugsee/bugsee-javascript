@@ -9,7 +9,7 @@
 // (on `event.context.cloudflare.context`) or Vercel Edge's global request-context symbol. This delivers the
 // moat's edge value (server errors reported from Nuxt-on-edge — a differentiator Sentry lacks). Full
 // per-request context/trace correlation on edge needs Nitro fetch-entry wrapping — a documented v2.
-import { asInternalClient } from '@bugsee/core';
+import { asInternalClient, getCarrierClient, relaunchWith } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
@@ -75,6 +75,9 @@ export function installBugseeNitroEdge(
     ...launchOptions
   } = options;
   const client = launch(appToken, launchOptions);
+  // The hook outlives this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
+  // error (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
+  const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
 
   nitroApp.hooks.hook('error', (error, context) => {
     if (isExpectedClientError(error)) return;
@@ -87,10 +90,11 @@ export function installBugseeNitroEdge(
     waitUntil(
       (async () => {
         try {
-          await asInternalClient(client).logException(error, { mechanism: 'http-error' });
+          const target = current();
+          await asInternalClient(target).logException(error, { mechanism: 'http-error' });
           // A non-finite deadline means NO deadline: `flush` races `sleep(timeout)`, and
           // `setTimeout(fn, Infinity)` coerces to 0 and fires at once, which would abandon immediately.
-          const delivered = await client.flush(
+          const delivered = await target.flush(
             Number.isFinite(flushTimeoutMs) ? flushTimeoutMs : (undefined as unknown as number),
           );
           if (delivered === false) {
@@ -124,5 +128,22 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
   type ReportAttachmentInput,
-  relaunch,
 } from '@bugsee/vercel-edge';
+
+/** Options for the edge {@link relaunch}: the launch options plus the same launch seam as {@link InstallBugseeNitroEdgeOptions}. */
+export interface NitroEdgeRelaunchOptions extends BugseeEdgeLaunchOptions {
+  /** The edge launch to re-run. Default `@bugsee/vercel-edge` `launchEdge`. */
+  launch?: (appToken: string, options: BugseeEdgeLaunchOptions) => Bugsee;
+}
+
+/**
+ * Stop the running client and launch again with the remembered token through the SAME launch seam
+ * `installBugseeNitroEdge` takes (default `launchEdge`), so a custom launch is re-run rather than replaced by
+ * the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9). The installed Nitro hooks follow
+ * the new client (R3P-3). Bugsee options return to their defaults; integration seams are kept. Rejects when
+ * nothing was launched.
+ */
+export function relaunch(options: NitroEdgeRelaunchOptions = {}): Promise<Bugsee> {
+  const { launch = launchEdge, ...launchOptions } = options;
+  return relaunchWith(launch, launchOptions, launchOptions.carrier);
+}

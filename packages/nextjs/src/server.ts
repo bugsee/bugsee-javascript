@@ -55,6 +55,39 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
 }
 
 /**
+ * The ONE span processor a Next process ever hands to OpenTelemetry. The OTel provider slot is first-wins,
+ * so a processor registered at first launch can never be swapped; it therefore delegates to whichever
+ * client's processor is CURRENT, and `relaunch()` only swaps the target (R3P-2). Stored on the carrier so
+ * a duplicated module instance (HMR, bundler split) shares it.
+ */
+interface SpanProcessorDelegate {
+  processor: BugseeSpanProcessor;
+  target: BugseeSpanProcessor;
+  attached: boolean;
+}
+const DELEGATE_KEY = Symbol.for('@bugsee/nextjs.spanProcessorDelegate');
+
+function bindSpanProcessor(carrier: object, target: BugseeSpanProcessor): SpanProcessorDelegate {
+  const slot = carrier as { [DELEGATE_KEY]?: SpanProcessorDelegate };
+  const existing = slot[DELEGATE_KEY];
+  if (existing !== undefined) {
+    existing.target = target; // the previous processor is unreferenced from here and is collected
+    return existing;
+  }
+  const delegate: SpanProcessorDelegate = {
+    target,
+    attached: false,
+    processor: {
+      onStart: () => delegate.target.onStart(),
+      onEnd: (span) => delegate.target.onEnd(span),
+      forceFlush: () => delegate.target.forceFlush(),
+      shutdown: () => delegate.target.shutdown(),
+    },
+  };
+  slot[DELEGATE_KEY] = delegate;
+  return delegate;
+}
+/**
  * Start Bugsee for the Next.js **server** (Node) runtime. Call from `register()` in
  * `instrumentation.ts` under the `NEXT_RUNTIME === 'nodejs'` branch (reached via `await import`) so
  * that no Node-only code is bundled into the edge or client graph. Returns the started client
@@ -68,9 +101,14 @@ export function registerServer(appToken: string, options: NextjsServerOptions = 
     ...launchOptions,
     // Own the span-processor seam: surface it (coexistence) AND zero-config self-register a provider when
     // the OTel slot is free (N1b-2). The attach is fire-and-forget + fully defensive (never throws/rejects).
-    onOtelSpanProcessor: (processor) => {
-      onSpanProcessor?.(processor);
-      void attachBugseeOtelProvider(processor, {
+    onOtelSpanProcessor: (current) => {
+      // Always the SAME processor (late-bound to the current client): see SpanProcessorDelegate.
+      const delegate = bindSpanProcessor(launchOptions.carrier ?? globalThis, current);
+      onSpanProcessor?.(delegate.processor);
+      // Register with OpenTelemetry once per process: the slot is first-wins and a relaunch only re-targets.
+      if (delegate.attached) return;
+      delegate.attached = true;
+      void attachBugseeOtelProvider(delegate.processor, {
         ...(setupOtelProvider !== undefined ? { setupOtelProvider } : {}),
         ...(launchOptions.onError !== undefined ? { onError: launchOptions.onError } : {}),
       });
@@ -92,10 +130,13 @@ export {
 /**
  * Stop the running client and launch again with the same token through `registerServer`, NOT the plain node
  * umbrella launch the `@bugsee/bugsee/node` `relaunch` would run: `registerServer` is what turns `otelConsume`
- * on by default and attaches the OpenTelemetry span-processor seam / zero-config provider, which a relaunch
- * must restore. Bugsee options return to their defaults (then Next's defaults apply on top) and integration
- * seams are kept; `onSpanProcessor` / `setupOtelProvider` are Next options and are NOT remembered, pass them
- * again if you need them. Rejects when nothing was launched yet.
+ * on by default and wires the OpenTelemetry span-processor seam. The OpenTelemetry provider slot is
+ * first-wins, so the processor registered at FIRST launch stays registered for the life of the process: it is
+ * late-bound, and a relaunch only re-points it at the new client (it is NOT registered again, so
+ * `setupOtelProvider` is decided by the first launch). `onSpanProcessor` receives that same stable processor
+ * again. Bugsee options return to their defaults (then Next's defaults apply on top) and integration seams are
+ * kept; `onSpanProcessor` / `setupOtelProvider` are Next options and are NOT remembered, pass them again if
+ * you need them. Rejects when nothing was launched yet.
  */
 export const relaunch = (options?: NextjsServerOptions): Promise<Bugsee> =>
   relaunchWith(registerServer, options, options?.carrier);

@@ -260,16 +260,77 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
   });
 
   it('returns no frames when the engine produces no stack, WITH captureStackTrace present', () => {
-    // Symmetric case: the capture runs but the engine still yields nothing readable.
-    const noStack = new Error();
-    Object.defineProperty(noStack, 'stack', { value: undefined, writable: true });
-    const capture = (Error as { captureStackTrace?: (t: object, f: unknown) => void })
-      .captureStackTrace;
-    if (typeof capture === 'function') {
-      // captureStackTrace would normally REPLACE .stack; pin the non-writable case instead.
-      Object.defineProperty(noStack, 'stack', { value: undefined, writable: false });
+    // Symmetric case: the capture runs but the engine leaves nothing readable on the target.
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = () => undefined;
+    try {
+      expect(callSiteFrames(new Error(), function boundary() {}, parseV8Stack)).toEqual([]);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
     }
-    expect(callSiteFrames(noStack, function boundary() {}, parseV8Stack)).toEqual([]);
+  });
+
+  // Recorded from the macOS `jsc` shell (JavaScriptCore, the engine under Safari and every iOS WebView),
+  // 2026-10-12, paths shortened. JSC has no `at`: `function@location`.
+  const JSC_BOUNDARY_DROPPED =
+    'applicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11';
+  const JSC_FULL_STACK =
+    'internalLog@https://app.example.com/sdk.js:2:41\nlogException@https://app.example.com/sdk.js:4:49\napplicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11';
+  const atParser = (stack: string): StackFrame[] =>
+    stack
+      .split('\n')
+      .map((l) => l.split('@'))
+      .map(([fn, file]) => ({ function: fn, file }) as StackFrame);
+
+  it('captures into a plain holder, never re-capturing the Error: JSC ignores a second capture (R3P-1)', () => {
+    // JavaScriptCore does not re-capture an Error that already has a stack, so frame 0 stayed the SDK
+    // frame. A fresh holder object has no stack to keep.
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    const targets: object[] = [];
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = (t: { stack?: string }) => {
+      targets.push(t);
+      t.stack = JSC_BOUNDARY_DROPPED;
+    };
+    try {
+      const error = new Error();
+      const boundary = function boundary() {};
+      const frames = callSiteFrames(error, boundary, atParser);
+      expect(targets).toHaveLength(1);
+      expect(targets[0]).not.toBe(error);
+      expect(targets[0]).not.toBeInstanceOf(Error);
+      expect(frames[0]?.function).toBe('applicationCode');
+      expect(frames.map((f) => f.function)).toEqual(['applicationCode', 'global code']);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('passes the boundary to captureStackTrace', () => {
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    const seen: unknown[] = [];
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = (_t: object, fn: unknown) => {
+      seen.push(fn);
+    };
+    try {
+      const boundary = function boundary() {};
+      callSiteFrames(new Error(), boundary, atParser);
+      expect(seen).toEqual([boundary]);
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('fallback on a recorded JSC stack drops the SDK frames and leaves the application first (R3P-1)', () => {
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const error = new Error();
+      Object.defineProperty(error, 'stack', { value: JSC_FULL_STACK });
+      const frames = callSiteFrames(error, function logException() {}, atParser, 2);
+      expect(frames[0]?.function).toBe('applicationCode');
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
   });
 
   it('never throws and never leaves the caller without an array', () => {

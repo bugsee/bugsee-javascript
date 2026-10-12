@@ -473,6 +473,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     // stop() clears the carrier slot and makes the control binding inert, so a stopped client must not be
     // restarted in place (R2L-3): a new one comes from `launch(appToken)`.
     restartable: false,
+    // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox stack (every iOS
+    // WebView) would ship `frames: []` in crash.json (R3P-1).
+    stackParser: parseStack,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),

@@ -186,8 +186,13 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   rejects (Android logs a warning and returns). Everything else follows mobile: Bugsee options return to their
   defaults, integration seams and the deployment identity are kept (see `RELAUNCH_KEPT_OPTIONS`, which stay
   referenced from the process carrier after the client is gone).
-  Each package's `relaunch` re-runs THAT package's launch (e.g. `@bugsee/nextjs/server` re-runs `registerServer`
-  so the OTel default-attach is re-applied; the plain umbrella `@bugsee/bugsee/node` `relaunch` would not).
+  Each package's `relaunch` re-runs THAT package's launch (e.g. `@bugsee/nextjs/server` re-runs `registerServer`;
+  the plain umbrella `@bugsee/bugsee/node` `relaunch` would not). OTel is NOT re-attached on relaunch: the global
+  provider slot is first-wins, so the span processor registered at first launch stays for the life of the process;
+  `@bugsee/nextjs/server` makes it a stable, late-bound delegate that a relaunch re-points at the new client
+  (R3P-2), and `setupOtelProvider` is decided by the first launch.
+  Framework `/edge` entries (sveltekit, astro, nuxt) re-export the plain `@bugsee/vercel-edge` `relaunch`
+  (re-runs `launchEdge`); a different launch (Cloudflare's) needs `@bugsee/cloudflare`'s own `relaunch` (R3P-9).
   `@bugsee/webview` and `@bugsee/electron` offer none: the WebView carrier holds only a facade (native owns the
   session) and Electron's launch needs `ipcMain`.
 - **JS-only launch keys** with no mobile counterpart: `startInBlackout` (`capture.start-in-blackout`),

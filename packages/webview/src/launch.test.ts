@@ -724,6 +724,31 @@ describe('launch (webview)', () => {
     expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no native bug opened (gate off)
   });
 
+  it.each([
+    [
+      'JavaScriptCore (iOS WebView, recorded from jsc)',
+      'applicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11',
+    ],
+    [
+      'SpiderMonkey (Firefox)',
+      'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
+    ],
+  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
+    const error = new Error('non-v8-stack');
+    error.stack = stack;
+    await client.logException(error);
+    const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
+    const frames = (
+      report?.p as unknown as {
+        report: { crash: { exception: { frames: { data: { member: string } }[] } } };
+      }
+    ).report.crash.exception.frames;
+    expect(frames[0]?.data.member).toBe('applicationCode');
+    expect(frames).toHaveLength(2);
+  });
+
   it('ALSO emits a report trigger (crash, carrying the incident) for a logException when on', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
