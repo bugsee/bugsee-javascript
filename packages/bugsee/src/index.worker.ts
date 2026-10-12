@@ -13,3 +13,19 @@ export type {
   UploadOptions,
 } from '@bugsee/core';
 export * from '@bugsee/webworker';
+
+import type { PerformanceFacade } from '@bugsee/performance';
+import {
+  type BugseeWorkerLaunchOptions,
+  launch as launchWorker,
+  type Bugsee as WorkerBugsee,
+} from '@bugsee/webworker';
+import { withPerformanceFacade } from './performance-facade';
+
+// Workers collect no performance data, so the top-level performance calls are no-ops here (as on the
+// mobile SDKs with performance off). They exist so one code base can call them on every runtime.
+// Explicit exports win over the `export *` above.
+export type Bugsee = WorkerBugsee & PerformanceFacade;
+export function launch(appToken: string, options?: BugseeWorkerLaunchOptions): Bugsee {
+  return withPerformanceFacade(launchWorker(appToken, options));
+}

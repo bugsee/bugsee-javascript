@@ -1,4 +1,4 @@
-import { getCarrierClient, type RequestContext } from '@bugsee/core';
+import { asInternalClient, getCarrierClient, type RequestContext } from '@bugsee/core';
 import { type Bugsee, type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 import type { PerformanceApi } from '@bugsee/performance';
 import { sanitizeUrl } from '@bugsee/protocol';
@@ -161,6 +161,6 @@ export function reportErrorOnce(
   if (options.route !== undefined) {
     resolveStore(client)?.setAttribute('http.route', options.route);
   }
-  void client.logException(err, { mechanism: 'http-error' });
+  void asInternalClient(client).logException(err, { mechanism: 'http-error' });
   return true;
 }

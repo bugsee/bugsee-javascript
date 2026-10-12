@@ -19,11 +19,14 @@ import {
   defaultTraceId,
   hasDeviceIdAttribute,
   PERFORMANCE_OPTION_DEFINITIONS,
+  type PerformanceFacade,
   PerformanceOption,
+  type PerformanceUploadMode,
   type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { withPerformanceFacade } from './performance-facade';
 
 /**
  * Per-runtime root-transaction policy. The browser collects a pageload transaction (+ web-vitals); Node
@@ -89,6 +92,8 @@ export interface UmbrellaExtensionOptions {
   performanceMonitoring?: boolean;
   /** Head sampling rate for performance transactions, 0..1. Default 1 (keep all). */
   performanceSampleRate?: number;
+  /** Upload cadence: `batched` (every flush interval, the default) or `realtime` (per transaction). */
+  performanceUploadMode?: PerformanceUploadMode;
   /** Batched-upload flush interval in milliseconds. Default 30000. */
   performanceFlushIntervalMs?: number;
   /** The pageload transaction name. Default the current path (`location.pathname`) or `pageload`. */
@@ -170,7 +175,10 @@ export function wireUmbrella<C extends BugseeClient>(
   options: UmbrellaExtensionOptions,
   platform: UmbrellaPlatform,
   browserSources: UmbrellaBrowserSources = {},
-): C {
+): C & PerformanceFacade {
+  // `startTransaction` / `startSpan` / `getActiveSpan` straight on the client (mobile parity). Installed
+  // first so they exist even when performance is switched off, where they are no-ops.
+  const facade = withPerformanceFacade(client);
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
@@ -249,7 +257,7 @@ export function wireUmbrella<C extends BugseeClient>(
   });
 
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
-  if (wired === undefined) return client;
+  if (wired === undefined) return facade;
 
   // Node startup transaction (the pageload analog): record an already-finished `app.start` transaction
   // spanning process-start → launch, so it uploads immediately (no pageload/hidden lifecycle on Node).
@@ -329,5 +337,5 @@ export function wireUmbrella<C extends BugseeClient>(
     wired.stop();
     return stopClient(timeout);
   };
-  return client;
+  return facade;
 }

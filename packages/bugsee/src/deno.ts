@@ -1,6 +1,5 @@
 import { launchCore } from '@bugsee/deno';
-import type { Bugsee } from '@bugsee/node';
-import { type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
+import { type Bugsee, type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
 
 // The `bugsee` umbrella launch() for DENO — selected via the package `exports` "deno" condition, which must
 // be listed BEFORE "node" because Deno sets both under node compatibility.

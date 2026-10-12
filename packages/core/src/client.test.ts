@@ -4,7 +4,13 @@ import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { createClient, type Scheduler, SchedulerToken } from './client';
+import {
+  asInternalClient,
+  type BugseeClient,
+  createClient,
+  type Scheduler,
+  SchedulerToken,
+} from './client';
 import { type Clock, ClockToken } from './clock';
 import {
   type CaptureProvider,
@@ -2132,6 +2138,16 @@ describe('createClient — upload (manual report)', () => {
     const { client, sent } = upload();
 
     await client.upload({ trigger: 'code_dialog', summary: 's' });
+
+    expect(sent().source.type).toBe('code_dialog');
+  });
+
+  it('asInternalClient hands back the SAME client, reaching the wire-level trigger through the public type', async () => {
+    const { client, sent } = upload();
+    const publicClient: BugseeClient = client;
+
+    expect(asInternalClient(publicClient)).toBe(client);
+    await asInternalClient(publicClient).upload({ trigger: 'code_dialog', summary: 's' });
 
     expect(sent().source.type).toBe('code_dialog');
   });

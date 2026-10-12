@@ -7,6 +7,21 @@
 // no pageload or startup transaction to wire.
 
 export * from '@bugsee/cloudflare';
+
+import {
+  type BugseeEdgeLaunchOptions,
+  type Bugsee as CloudflareBugsee,
+  launch as launchCloudflare,
+} from '@bugsee/cloudflare';
+import type { PerformanceFacade } from '@bugsee/performance';
+import { withPerformanceFacade } from './performance-facade';
+
+// The workerd runtime collects no performance data, so the top-level performance calls are no-ops here (as
+// on the mobile SDKs with performance off). Explicit exports win over the `export *` above.
+export type Bugsee = CloudflareBugsee & PerformanceFacade;
+export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bugsee {
+  return withPerformanceFacade(launchCloudflare(appToken, options));
+}
 export type {
   AttributeValue,
   Breadcrumb,

@@ -52,11 +52,16 @@ export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backen
 export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
 export { type ChunkStorage, ChunkStorageToken, createInMemoryChunkStorage } from './chunk-storage';
 export {
+  asInternalClient,
   type Breadcrumb,
   type BreadcrumbInput,
   type BugseeClient,
   type CreateClientOptions,
   createClient,
+  type InternalBugseeClient,
+  type InternalLogExceptionOptions,
+  type InternalPreparedUpload,
+  type InternalUploadOptions,
   type LogExceptionOptions,
   type PreparedUpload,
   type ReportSnapshotSource,

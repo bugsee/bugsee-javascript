@@ -5,7 +5,12 @@
 //
 // RUNTIME-PORTABLE (node + edge): uses only @bugsee/core APIs. Correlation to the session is automatic —
 // `logException` snapshots the active per-request context. Fully defensive: never throws out of the hook.
-import { type BugseeClient, getCarrierClient, type LogExceptionOptions } from '@bugsee/core';
+import {
+  asInternalClient,
+  type BugseeClient,
+  getCarrierClient,
+  type InternalLogExceptionOptions,
+} from '@bugsee/core';
 
 export interface ReportServerErrorOptions {
   /** Resolve the Bugsee client. Default: the process/isolate carrier singleton. */
@@ -13,7 +18,7 @@ export interface ReportServerErrorOptions {
   /** A capture event stamping the framework's route attribution (name + params) onto the recording. */
   event?: { name: string; params?: Record<string, unknown> };
   /** `logException` mechanism. Default `'http-error'`. */
-  mechanism?: NonNullable<LogExceptionOptions['mechanism']>;
+  mechanism?: NonNullable<InternalLogExceptionOptions['mechanism']>;
 }
 
 /**
@@ -35,7 +40,9 @@ export function reportServerError(error: unknown, options: ReportServerErrorOpti
         // Attribution is best-effort; the report below must still happen.
       }
     }
-    void client.logException(error, { mechanism: options.mechanism ?? 'http-error' });
+    void asInternalClient(client).logException(error, {
+      mechanism: options.mechanism ?? 'http-error',
+    });
   } catch {
     // Never replace / disrupt the framework's own error handling.
   }

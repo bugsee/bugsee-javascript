@@ -1,4 +1,4 @@
-import type { PreparedUpload, UploadResult } from '@bugsee/core';
+import type { InternalPreparedUpload, UploadResult } from '@bugsee/core';
 import { DEFAULT_REPORT_DIALOG_STRINGS, type ReportDialogStrings } from './report-dialog-strings';
 import { REPORT_DIALOG_CLASS_PREFIX, REPORT_DIALOG_CSS } from './report-dialog-styles';
 
@@ -81,7 +81,7 @@ export interface ReportDialogUiOptions {
 export interface ReportDialogDeps {
   document: Document;
   /** Freeze the capture and return the report-in-waiting (`client.prepareUpload`); `null` = cannot. */
-  prepare(): PreparedUpload | null;
+  prepare(): InternalPreparedUpload | null;
   /** The dialog does nothing, as on mobile, while the SDK is not running. */
   isLaunched(): boolean;
   getUserIdentifier(): string | null;

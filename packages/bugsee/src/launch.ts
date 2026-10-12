@@ -1,12 +1,17 @@
 import {
-  type Bugsee,
+  type Bugsee as BrowserBugsee,
   type BugseeLaunchOptions,
   createBrowserInteractionSource,
   createBrowserNavigationSource,
   launchCore,
   readMetaTraceContinuation,
 } from '@bugsee/browser';
+import type { PerformanceFacade } from '@bugsee/performance';
+import { withPerformanceFacade } from './performance-facade';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
+
+/** The launched client in the browser: the platform client plus the top-level performance calls. */
+export type Bugsee = BrowserBugsee & PerformanceFacade;
 
 // The `bugsee` umbrella launch() for the BROWSER — the batteries-included entry. It runs the browser
 // composition root (@bugsee/browser's launchCore, which returns the client PLUS its internal wiring) and
@@ -27,7 +32,7 @@ export async function launch(
   // Browser: pageload transaction. The browser-only capture sources are injected here (as factories) so
   // the shared wireUmbrella — and therefore the node umbrella entry — never imports @bugsee/browser.
   return internals === undefined
-    ? client
+    ? withPerformanceFacade(client)
     : wireUmbrella(
         client,
         internals,

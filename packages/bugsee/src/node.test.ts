@@ -1,6 +1,5 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import {
-  type Bugsee,
   type LaunchResult,
   launchCore,
   type NodeRuntime,
@@ -11,6 +10,7 @@ import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeNodeLaunchOptions, launch } from './node';
+import type { Bugsee } from './server-launch';
 
 // --- node fakes (no real process / network / perf_hooks) ----------------------------------------
 
@@ -245,6 +245,36 @@ describe('bugsee node umbrella launch', () => {
     await fire(7777); // flush → the app.start transaction tees to /v1/traces
     const body = JSON.parse(otlpBodies[0] ?? '{}');
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.nodejs/performance');
+  });
+
+  it('exposes startTransaction / startSpan / getActiveSpan straight on the launched client', () => {
+    const client = track(launch('tok', base({ carrier: {}, appStartTimeMs: 1000 })));
+    const txn = client.startTransaction('Checkout', 'ui.load', { cart: 2 });
+    expect(txn.isSampled()).toBe(true);
+    expect(txn.getAttributes()).toMatchObject({ cart: 2 });
+    expect(client.getActiveSpan()).toBe(client.ext('performance').getActiveSpan());
+    expect(client.getActiveSpan()).toBe(txn);
+    const child = client.startSpan('db.query', 'select');
+    expect(child.getTraceId()).toBe(txn.getTraceId());
+    txn.finish();
+  });
+
+  it('the calls are harmless no-ops when performanceMonitoring is off', () => {
+    const client = track(
+      launch('tok', base({ carrier: {}, appStartTimeMs: 1000, performanceMonitoring: false })),
+    );
+    const txn = client.startTransaction('Checkout', 'ui.load');
+    expect(txn.isSampled()).toBe(false);
+    expect(txn.getName()).toBe('Checkout');
+    expect(client.startSpan('db').getOperation()).toBe('db');
+    expect(client.getActiveSpan()).toBeUndefined();
+  });
+
+  it('a repeat launch still returns a client carrying the calls', () => {
+    const carrier = {};
+    track(launch('tok', base({ carrier, appStartTimeMs: 1000 })));
+    const second = launch('tok', base({ carrier, appStartTimeMs: 1000 }));
+    expect(typeof second.startTransaction).toBe('function');
   });
 
   it('does not mint a device id on node launch', () => {

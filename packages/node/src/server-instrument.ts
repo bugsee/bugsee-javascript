@@ -1,5 +1,10 @@
 import { parseTraceparent } from '@bugsee/capture';
-import { type BugseeClient, getCarrierClient, type RequestContext } from '@bugsee/core';
+import {
+  asInternalClient,
+  type BugseeClient,
+  getCarrierClient,
+  type RequestContext,
+} from '@bugsee/core';
 import type { PerformanceApi, Transaction } from '@bugsee/performance';
 import { NAME_SOURCE_ATTRIBUTE, sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
@@ -545,7 +550,7 @@ function makeSpan(
           // The context merge is enrichment, not the report: a custom store whose mutator throws
           // must not convert a reportable error into a silent "not reported".
         }
-        void client.logException(err, { mechanism: 'http-error' });
+        void asInternalClient(client).logException(err, { mechanism: 'http-error' });
         return true;
       } catch {
         return false; // reporting must never replace the app's own error handling

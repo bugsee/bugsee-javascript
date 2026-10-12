@@ -1,10 +1,10 @@
-import type { BrowserProbe, Bugsee, DeviceIdLocalStorage } from '@bugsee/browser';
+import type { BrowserProbe, DeviceIdLocalStorage } from '@bugsee/browser';
 import { launchCore, resetBrowserDeviceIdCache } from '@bugsee/browser';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { serializeTransaction, type Transaction } from '@bugsee/performance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type BugseeLaunchOptionsWithPerformance, launch } from './launch';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from './launch';
 
 // --- fakes ---------------------------------------------------------------------------------------
 
@@ -172,6 +172,32 @@ describe('bugsee umbrella launch', () => {
     const client = await track(await launch('tok', base({ carrier: {} })));
     expect(() => client.ext('performance')).not.toThrow(); // the extension is registered
     expect(client.ext('performance').getActiveSpan()).toBeDefined(); // the pageload transaction is active
+  });
+
+  it('exposes startTransaction / startSpan / getActiveSpan straight on the launched client', async () => {
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    const txn = client.startTransaction('Checkout', 'ui.load', { cart: 2 });
+    expect(txn.getName()).toBe('Checkout');
+    expect(txn.getAttributes()).toMatchObject({ cart: 2 });
+    expect(client.getActiveSpan()).toBe(txn);
+    expect(client.ext('performance').getActiveSpan()).toBe(txn);
+    expect(client.startSpan('db.query', 'select').getTraceId()).toBe(txn.getTraceId());
+  });
+
+  it('the calls are harmless no-ops when performanceMonitoring is false', async () => {
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: false })),
+    );
+    expect(client.startTransaction('Checkout', 'ui.load').isSampled()).toBe(false);
+    expect(client.startSpan('db').getOperation()).toBe('db');
+    expect(client.getActiveSpan()).toBeUndefined();
+  });
+
+  it('a repeat launch still returns a client carrying the calls', async () => {
+    const carrier = {};
+    await track(await launch('tok', base({ carrier })));
+    const second = await launch('tok', base({ carrier }));
+    expect(typeof second.startTransaction).toBe('function');
   });
 
   it('does NOT wire performance when performanceMonitoring is false', async () => {
