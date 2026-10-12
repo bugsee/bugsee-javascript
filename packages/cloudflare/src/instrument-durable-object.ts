@@ -3,7 +3,7 @@ import { instrumentEdgeClass } from './instrument-class';
 import { type BugseeWorkerConfig, createLazyLauncher } from './launch-config';
 import { cloudflareRequestAttributes } from './request-cf';
 
-// Durable Object instrumentation (docs/design/edge-runtime.md C2d — follows @sentry/cloudflare's
+// Durable Object instrumentation (follows @sentry/cloudflare's
 // `instrumentDurableObjectWithSentry`). A DO is a CLASS bound separately (not a module handler), and it receives
 // its `ctx` (a DurableObjectState, which has `waitUntil`) + `env` in the CONSTRUCTOR — so it can't use the
 // handler-object `withBugsee`. This wraps the DO class so its lifecycle methods (`fetch` + `alarm`) each run in
@@ -83,7 +83,7 @@ export function instrumentDurableObject<C extends DurableObjectClass>(
     true, // a DO's ctx.waitUntil is a no-op → await the flush in-request (see edge-context.ts awaitFlush)
     // The TENANT key: a Durable Object id identifies the customer/room/user this instance serves, and many
     // instances share one isolate. Without it their capture shares one ring and an incident in one uploads
-    // every other tenant's data (docs/review/cloudflare.md SEV1 #2).
+    // every other tenant's data.
     durableObjectOwner,
     options.flushTimeoutMs !== undefined ? { flushTimeoutMs: options.flushTimeoutMs } : undefined,
   );

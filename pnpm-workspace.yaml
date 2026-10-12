@@ -16,7 +16,7 @@ allowBuilds:
   # adapter code or tests; skip its native-binary build.
   sharp: false
   # workerd is the REAL Cloudflare Workers runtime, used by the miniflare e2e that proves Durable Object
-  # tenant isolation (Wave 0.1 S5). Its postinstall downloads the platform binary, so the build must run.
+  # tenant isolation. Its postinstall downloads the platform binary, so the build must run.
   workerd: true
 
 minimumReleaseAgeExclude:

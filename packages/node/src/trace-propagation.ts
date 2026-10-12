@@ -1,8 +1,8 @@
 import { createTraceparentDecorator, type RequestDecorator } from '@bugsee/capture';
 
-// Native trace-context propagation (cross-project-tracing.md X3; Bugsee OTLP Profile v1 §12). Builds the
+// Native trace-context propagation. Builds the
 // outgoing-request decorator that injects `traceparent` + the `bugsee=` tracestate from the ACTIVE per-request
-// context — NOT the performance extension's `getActiveSpan`. That remains the right call after D2 part 2
+// context — NOT the performance extension's `getActiveSpan`. That remains the right call even after the request-scoped active-span store
 // (which made the controller's slot request-scoped on Node): this decorator lives in the BASE
 // @bugsee/node launch, so it must work with the opt-in APM extension absent entirely, and the request
 // context is the source that is always present. Propagation works without the OTel extension too.
@@ -22,7 +22,7 @@ export interface TracePropagationOptions {
   /** Targets allowed to receive `traceparent` (substring or RegExp). Node has no same-origin default, so
    *  without this nothing is propagated. */
   tracePropagationTargets?: ReadonlyArray<string | RegExp>;
-  /** Where an invalid `tracePropagationTargets` is reported (R5V-6). */
+  /** Where an invalid `tracePropagationTargets` is reported. */
   onError?: (error: unknown) => void;
 }
 

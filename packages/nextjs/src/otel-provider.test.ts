@@ -56,7 +56,7 @@ describe('attachBugseeOtelProvider', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  // R5V-8: `=== false` meant `'false'`, `0` and `null` kept the zero-config global provider ON. It installs a
+  // `=== false` meant `'false'`, `0` and `null` kept the zero-config global provider ON. It installs a
   // process-wide provider and consumes every span, so an invalid value is OFF and reported.
   it.each([
     ['false', '"false"'],

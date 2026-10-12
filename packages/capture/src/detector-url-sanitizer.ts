@@ -7,7 +7,7 @@
 //    endpoint and an e-mail address in a path can never reach a summary.
 // Android templates only when a network filter is configured; this SDK templates ALWAYS, because the
 // default-sanitized timeline is not what a detector reads (it sees the raw event) and a templated path is
-// also what makes grouping useful. Recorded under "Kept differences" in docs/design/mobile-alignment.md.
+// also what makes grouping useful.
 
 const ALL_DIGITS = /^[0-9]+$/;
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -41,7 +41,7 @@ const SLUG_CODE_PIECE = /^(?:[A-Za-z]{1,2}[0-9]{0,4}|[0-9]{1,2}[A-Za-z]{1,3})$/;
 const MID_DIGIT = /[0-9][A-Za-z]/;
 const VERSION_MARKER = /^[A-Za-z]{1,2}[0-9]{1,2}[A-Za-z]{3,6}[0-9]{0,2}$/;
 const MID_DIGIT_WORD_MAX = 8; // `v1beta1`, `covid19x2`: the longest slug word with a number inside it
-// Word-likeness (R4V-5, R5V-1). No dictionary: a piece "reads as a word" when it can be pronounced, a cheap test on
+// Word-likeness. No dictionary: a piece "reads as a word" when it can be pronounced, a cheap test on
 // its vowel/consonant structure that real words pass and random letters almost never do. A string with no separator
 // and a single case can never be shown to be words (a lower-case cuid2 or base32 id is made of the same letters), so
 // only camelCase/PascalCase identifiers and separator-delimited slugs are ever word-like.
@@ -423,7 +423,7 @@ const PHONE_MAX_LENGTH = 15;
 /** No real identifier is this long; a longer segment is a blob (and was never going to be a readable slug). */
 const MAX_SEGMENT_LENGTH = 256;
 
-/** npm/CDN dist-tags: `react@latest` is a package spec, not an address (R4V-6). */
+/** npm/CDN dist-tags: `react@latest` is a package spec, not an address. */
 const DIST_TAGS = new Set([
   'latest',
   'next',
@@ -436,12 +436,12 @@ const DIST_TAGS = new Set([
   'experimental',
 ]);
 
-// A version (`18.2.0`, `18`) or a retina asset (`2x.png`) after an `@` is a package spec / file name, not a domain (R5V-3).
+// A version (`18.2.0`, `18`) or a retina asset (`2x.png`) after an `@` is a package spec / file name, not a domain.
 const VERSION_HOST = /^[0-9.]+$/;
 const RETINA_HOST = /^[0-9]+x(?:\.[A-Za-z][A-Za-z0-9]{0,4})?$/; // `logo@2x` is the stem of `logo@2x.png`
 
 /**
- * Whether ANY `@` of the segment (not the first character) yields an address (R4V-6, R5V-2): `@alice@example.com`,
+ * Whether ANY `@` of the segment (not the first character) yields an address: `@alice@example.com`,
  * `alice@example.com@latest`, `jane.doe@corp.com@next`. One linear pass: a dotted host after a NON-last `@` is an
  * address whatever follows it (the dot test is a single `lastIndexOf`), and the last `@`, whose host contains no `@`,
  * is judged on its own (a version, a retina asset or a dist-tag is a package spec, not a host).
@@ -464,12 +464,12 @@ function looksLikeEmail(segment: string): boolean {
   if (dot > 0 && dot < host.length - 1) {
     return true;
   }
-  // Or a dot-less host (`user@localhost`): still an address (R3V-4). One character is not a host (`a@b`), and a
+  // Or a dot-less host (`user@localhost`): still an address. One character is not a host (`a@b`), and a
   // dist-tag is a package version, not a host.
   return HOST_LABEL.test(host) && !DIST_TAGS.has(host.toLowerCase());
 }
 
-/** `10.0.0.1:8080`, `[::1]`, `[2001:db8::1]:8443`: an address with an optional port (R5V-10). */
+/** `10.0.0.1:8080`, `[::1]`, `[2001:db8::1]:8443`: an address with an optional port. */
 function looksLikeIpWithPort(segment: string): boolean {
   if (IPV4_PORT.test(segment)) {
     return true;
@@ -481,7 +481,7 @@ function looksLikeIpWithPort(segment: string): boolean {
   return PORT_SUFFIX.test(segment.slice(close + 1)) && looksLikeIp(segment.slice(1, close));
 }
 
-/** A file name with a content hash in the middle (`main.3f9a2c1b.chunk`, `bundle.068e178e`): templates the hash only (R5V-10). */
+/** A file name with a content hash in the middle (`main.3f9a2c1b.chunk`, `bundle.068e178e`): templates the hash only. */
 function templateHashedPieces(stem: string): string {
   if (!stem.includes('.')) {
     return stem;
@@ -562,7 +562,7 @@ function consonantUnits(run: string): number {
 }
 
 /**
- * Whether a lower-case run of letters can be pronounced (R5V-1): at least one vowel in nine letters and at most 80%
+ * Whether a lower-case run of letters can be pronounced: at least one vowel in nine letters and at most 80%
  * vowels, no `q` without a `u`, no letter three times in a row, no consonant run of 3+ and no vowel run of 3+ except
  * the explicit clusters above (`street`, `lengths`, `beautiful`, `queue`). `y` is a vowel for the ratio and ends a run
  * (`layout`, `player`). A known vowel-less abbreviation (`html`) passes. Real words pass; random letters almost never
@@ -765,7 +765,7 @@ function isCamelIdentifier(segment: string, inSlug = false): boolean {
 }
 
 /**
- * A separator-delimited slug (R5V-1) in which words outnumber the numbers: a word is a camelCase
+ * A separator-delimited slug in which words outnumber the numbers: a word is a camelCase
  * identifier or 3-12 letters (one case, or Title) that can be pronounced, with up to four trailing digits (`guide2`);
  * a number is up to four digits or a short code (`2024`, `v2`, `q3`, `h264`, `2fa`). A piece that mixes letters and
  * digits any other way (`k3j4`, `ab3de`) is what a random id is made of.
@@ -801,7 +801,7 @@ function isWordSlug(segment: string): boolean {
 }
 
 /**
- * Whether a segment READS as an identifier made of words rather than a random token (R4V-5, R5V-1). Never true for a
+ * Whether a segment READS as an identifier made of words rather than a random token. Never true for a
  * single-case string without a separator: `clh3am4pu0000qfw9rg5d1zk` is as long and as lower-case as any English
  * run-on, and keeping it verbatim leaks an id (measured: a lower-case coverage rule kept 8-30% of cuid2 / base32 /
  * base36 ids). Privacy over grouping: what cannot be shown to be words is templated.
@@ -896,7 +896,7 @@ export function templatePathSegment(segment: string): string {
     return '{token}';
   }
   // `%40` is how an e-mail address is usually encoded into a path; a phone number's space is `%20`.
-  // Decoded twice: `%2540` is an `@` that was encoded again by a proxy or a framework router (R5V-10).
+  // Decoded twice: `%2540` is an `@` that was encoded again by a proxy or a framework router.
   const decoded = segment.includes('%') ? safeDecode(safeDecode(segment)) : segment;
   if (looksLikeEmail(segment) || looksLikeEmail(decoded)) {
     return '{email}';

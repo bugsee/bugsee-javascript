@@ -111,9 +111,9 @@ import {
 } from './transport';
 import { createTriggerPipeline, type TriggerPipeline } from './trigger-pipeline';
 
-// The Client facade (design §7.1) — the runtime-agnostic composition root that wires the kernel
-// together: registration seams (§16.3), identity/attribute delegation to the single global
-// Environment (§7.2), manual capture entry points, lifecycle (launch/stop/flush), and the
+// The Client facade — the runtime-agnostic composition root that wires the kernel
+// together: registration seams, identity/attribute delegation to the single global
+// Environment, manual capture entry points, lifecycle (launch/stop/flush), and the
 // report/upload path. When given a report assembler's inputs (appToken + environment + upload
 // pipeline), the Client builds the trigger pipeline itself (assembleBundle over the exporter
 // drain); logException instance-dedups + rate-limits, then reports. A dropped result is
@@ -130,7 +130,7 @@ export interface Scheduler {
   clearInterval(handle: unknown): void;
 }
 
-// The scheduler's typed identity in the internal container (DI Phase 3); the client registers the
+// The scheduler's typed identity in the internal container; the client registers the
 // resolved scheduler (injected or the default global timers) so it is resolvable via getService.
 export const SchedulerToken = serviceToken<Scheduler>('scheduler');
 
@@ -213,7 +213,7 @@ export interface InternalLogExceptionOptions extends LogExceptionOptions {
   /**
    * The function whose caller is the application, when it is NOT the method the crash is built in: the
    * public `logException` wrapper supplies itself here so a non-Error throwable's synthetic stack starts
-   * at the app's call site and `skipFrames` counts from there (R2P-1). The wrapper always overwrites it.
+   * at the app's call site and `skipFrames` counts from there. The wrapper always overwrites it.
    * `sdkFrames` is the frames above the application when `Error.captureStackTrace` is unavailable.
    */
   callSite?: { boundary: (...args: never[]) => unknown; sdkFrames: number };
@@ -281,7 +281,7 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   clearAllAttributes(): void;
   getAllAttributes(): Record<string, AttributeValue>;
 
-  // Redaction filters (§4.1#4 / §7.1): each runs per captured event to mutate it or DROP it (return
+  // Redaction filters: each runs per captured event to mutate it or DROP it (return
   // null). A network filter REPLACES the built-in sanitizer. Pass null to clear. Settable any time.
   /**
    * Filter captured network events: mutate one, or return null to drop it.
@@ -335,7 +335,7 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    */
   setLifecycleEventsListener(listener: LifecycleEventsListener | null): void;
 
-  // Manual capture entry points (Android parity, §7.1). Each pushes a CaptureDataEntry.
+  // Manual capture entry points (Android parity). Each pushes a CaptureDataEntry.
   addBreadcrumb(breadcrumb: BreadcrumbInput): void;
   log(message: string, level?: LogLevel | LogLevelName, timestamp?: number): void;
   event(name: string, params?: Record<string, unknown>): void;
@@ -380,8 +380,7 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   /**
    * Suppress ALL visual / interaction capture (session replay, input presses, `ui.*` interaction
    * breadcrumbs, the report-time view hierarchy) until {@link endBlackout}. Logs, network, traces and
-   * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry: see
-   * docs/design/blackout.md for the exact list). Idempotent and NOT counted: one `endBlackout()` ends any
+   * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry). Idempotent and NOT counted: one `endBlackout()` ends any
    * number of calls, as on mobile.
    *
    * A NO-OP while the client is not launched (before it is launched, after `stop()`, or once the SDK has been
@@ -400,7 +399,7 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   /** Whether a blackout is currently in force. */
   isBlackout(): boolean;
 
-  // Lifecycle (§7.1).
+  // Lifecycle.
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
   launch(): void;
   isLaunched(): boolean;
@@ -436,7 +435,7 @@ export interface InternalBugseeClient extends BugseeClient {
    * A blackout raised SILENTLY before `launch()` (`startInBlackout`) owes the application one BlackoutStarted: owe
    * it. It is announced after Launching/Launched when the client is still launched and still dark, and BEFORE
    * the BlackoutEnded of a Launching listener that lifts the blackout at once, so Started always precedes Ended
-   * (R3L-7). Without this call a silent hold never announces itself.
+   * Without this call a silent hold never announces itself.
    */
   deferBlackoutStarted(): void;
 }
@@ -505,9 +504,9 @@ function exposePublicSurface(client: InternalBugseeClient): CreatedClient {
     ...publicMethods,
     logException: function logException(error, options) {
       // The wrapper is itself an SDK frame: it names itself as the boundary so the application, not
-      // `Object.logException`, is frame 0 of a non-Error's synthetic stack (R2P-1).
+      // `Object.logException`, is frame 0 of a non-Error's synthetic stack.
       // NOT a tail call: JavaScriptCore drops the frame of a function that tail-calls, which would make
-      // `sdkFrames: 2` remove the application frame in the fallback path (R3P-1).
+      // `sdkFrames: 2` remove the application frame in the fallback path.
       const result = internal.logException(error, {
         ...withoutWireOptions(options, 'mechanism'),
         callSite: { boundary: logException, sdkFrames: 2 },
@@ -542,7 +541,7 @@ export interface CreateClientOptions {
   /** Time source; injectable for tests. Default createSystemClock(). */
   clock?: Clock;
   /**
-   * Runtime stack parser used to build the structured `crash.json` from a thrown Error's stack (SC3). The
+   * Runtime stack parser used to build the structured `crash.json` from a thrown Error's stack. The
    * browser tier injects its multi-engine (V8 + SpiderMonkey + JavaScriptCore) parser; V8 runtimes
    * (node/bun/deno + Chromium) get the default {@link parseV8Stack}. Absent → crash.json still builds via
    * the V8 default.
@@ -575,7 +574,7 @@ export interface CreateClientOptions {
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
   services?: ServiceContainer;
-  /** Recording window in seconds for the default in-memory store (design maxRecordingTime). Default 60. */
+  /** Recording window in seconds for the default in-memory store (maxRecordingTime). Default 60. */
   maxRecordingTime?: number;
   /** Scheduler for the capture-store tick; injectable for tests/edge. Default global timers. */
   scheduler?: Scheduler;
@@ -593,7 +592,7 @@ export interface CreateClientOptions {
     effective: Readonly<Record<string, unknown>>;
     host: Readonly<Record<string, unknown>>;
   };
-  /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
+  /** Capture-storm rate limit. Default 100 / 60s. */
   captureRateLimit?: RateLimiterOptions;
   /** Upload pipeline (built by the platform from BugseeApi/BundleUploader); enables flush/stop drain. */
   uploadPipeline?: UploadPipeline;
@@ -631,7 +630,7 @@ export interface CreateClientOptions {
    */
   reportSnapshots?: readonly ReportSnapshotSource[];
   /**
-   * The active-request context provider (design: framework-adapters.md). When present, the capture
+   * The active-request context provider. When present, the capture
    * aggregator stamps each entry's payload with the active context's correlation ids (contextId + trace
    * ids), and it is registered as a container service (ContextProviderToken) for process-wide resolution.
    * Absent (default) → no stamping; behavior is byte-identical to today for non-adapter users.
@@ -639,8 +638,8 @@ export interface CreateClientOptions {
   contextProvider?: ContextProvider;
   /**
    * The process carrier host (default none). When given, PROCESS-level state lives on it, so it outlives a
-   * single client and `relaunch()` (which builds a new client) keeps it: the lifecycle listener (L1) and
-   * the blackout state (V2). Without it both stay private to this client.
+   * single client and `relaunch()` (which builds a new client) keeps it: the lifecycle listener and
+   * the blackout state. Without it both stay private to this client.
    */
   carrier?: object;
   /**
@@ -659,7 +658,7 @@ export interface CreateClientOptions {
    */
   restartable?: boolean;
   /**
-   * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
+   * Internal error sink. Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
   onError?: (error: unknown) => void;
@@ -686,10 +685,10 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // a throwing sink must not defeat the guard either
     }
   };
-  // The internal service container (the "BugseeInternal" — the per-process DI registry, §7.4). Phase 1
-  // stands it up; later phases migrate the hand-wired seams into it as registered services.
+  // The internal service container (the "BugseeInternal" — the per-process DI registry). It starts out
+  // empty; the hand-wired seams migrate into it as registered services.
   const services = options.services ?? createServiceContainer();
-  // Redaction filters: the first real service (§4.1#4). The facade's set* mutate this store; the
+  // Redaction filters: the first real service. The facade's set* mutate this store; the
   // capture pipeline reads the same instance via the container (getFilters). Registered eagerly so a
   // pipeline resolve always finds it once a client exists.
   const filters = createFilterStore(onError);
@@ -713,7 +712,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
   const operations = createOperationDispatcher(onError);
-  // One store, two directions (§16): the aggregator writes (serialize + route), the exporter reads
+  // One store, two directions: the aggregator writes (serialize + route), the exporter reads
   // (drain + deserialize) at trigger time. The default in-memory store shares the Client's clock and
   // recording window so entries and the time-based retention agree on "now".
   const captureStore =
@@ -723,20 +722,20 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       maxRecordingTimeMs: (options.maxRecordingTime ?? 60) * 1000,
     });
   // The resolved store (platform override or default) is a container service — resolvable process-wide
-  // via getService(CaptureStoreToken), alongside transport/filters (DI Phase 3).
+  // via getService(CaptureStoreToken), alongside transport/filters (DI).
   services.addService(defineService(CaptureStoreToken, () => captureStore));
   services.addService(defineService(ClockToken, () => clock));
   // The blackout state: visual providers read it (and subscribe to its changes) via the container, so the
   // kernel never has to know which of them are visual. `client.getService(BlackoutToken).onChange` is the
   // internal subscription the lifecycle events (BlackoutStarted/Ended) hang off.
   // The state is process-level when a carrier is given: a relaunch builds a NEW client and must not
-  // silently end a blackout the application asked for (V2). It starts in the carried state, silently.
+  // silently end a blackout the application asked for. It starts in the carried state, silently.
   const blackout: BlackoutState = createBlackoutState(
     onErrorSafe,
     processCarrier !== undefined && getCarrierBlackout(processCarrier),
   );
   services.addService(defineService(BlackoutToken, () => blackout));
-  // Who may change the PROCESS-wide blackout (R3L-4): the newest client created or launched on the carrier. An
+  // Who may change the PROCESS-wide blackout: the newest client created or launched on the carrier. An
   // older handle (stopped, or replaced by a relaunch) would otherwise clear the flag under the live client,
   // so the next relaunch would start un-dark. A client without a carrier is its own owner.
   const blackoutOwner: CarrierBlackoutOwner = {
@@ -763,12 +762,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       setCarrierBlackout(active, processCarrier);
     }
     // A silent change (a launch hold, a handshake release) is bookkeeping the application never asked for, and
-    // a blackout can only be ENDED while the client is not launched (R2L-7): that clears the carried state
+    // a blackout can only be ENDED while the client is not launched: that clears the carried state
     // quietly, since nothing is being captured for the events to describe.
     if (launched && !blackout.isChangeSilent()) {
       if (blackoutStartedOwed) {
         // The owed announcement is ahead of whatever the application did to the blackout since: an Ended
-        // must never be heard for a blackout whose Started was not (R3L-7).
+        // must never be heard for a blackout whose Started was not.
         blackoutStartedOwed = false;
         if (!active) {
           lifecycle.emit(LifecycleEvents.BlackoutStarted);
@@ -777,7 +776,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
     }
   });
-  // The active-request context provider (framework adapters). When injected, the aggregator stamps each
+  // The active-request context provider. When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
   const contextProvider = options.contextProvider;
   if (contextProvider !== undefined) {
@@ -851,7 +850,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     'high',
   );
   // Android applies `ReportingDefaultBugPriority` to every bug report (an upload, a shake, the report
-  // dialog), so it is applied here for every platform, not only the browser dialog (R2D-3).
+  // dialog), so it is applied here for every platform, not only the browser dialog.
   const bugPriority = resolvePriority(
     BugseeOption.ReportingDefaultBugPriority,
     'reportDefaultBugPriority',
@@ -863,7 +862,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   services.addService(defineService(SchedulerToken, () => scheduler));
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   let launched = false;
-  // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
+  // True once stop() has run (until a re-launch): manual captures that upload become no-ops.
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
   // True from stop() until its upload drain settles (BugseeStatus.Stopping).
@@ -871,9 +870,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // True from launch() until providers are started (BugseeStatus.Launching).
   let launching = false;
   // Bumped by every launch(), stop() and kill: a drain that finishes after a newer transition is STALE and
-  // must not emit Stopped, suspend the notify relay or clear `stopping` for the launch that replaced it (L4).
+  // must not emit Stopped, suspend the notify relay or clear `stopping` for the launch that replaced it.
   let generation = 0;
-  // Permanent kill-state (§1435/§1504): set when a report comes back with the collector's KILL_SDK
+  // Permanent kill-state: set when a report comes back with the collector's KILL_SDK
   // verdict (code 99099) — the app token has been switched OFF at the server. All capture goes no-op,
   // capture+detection halt, onError fires ONCE. An INVALID app token is a different thing entirely: it
   // classifies as `permanent` (drop this bundle) and leaves the client recording.
@@ -890,7 +889,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
   const { uploadPipeline, appToken, getEnvironment } = options;
-  // `notify()` (T7). The window is read once: a non-number, negative or non-finite value is treated as the
+  // `notify()`. The window is read once: a non-number, negative or non-finite value is treated as the
   // default 0 rather than reported, because a typo here only changes batching, never what is sent.
   const notifyDelayOption = launchOptions.get<unknown>(BugseeOption.NotifyFlushDelay, 0);
   const notifyFlushDelayMs =
@@ -907,7 +906,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           clock,
           flushDelayMs: notifyFlushDelayMs,
           onError: onErrorSafe,
-          // A batch still in a request when relaunch() took the queue, failing later (R3L-5).
+          // A batch still in a request when relaunch() took the queue, failing later.
           onHandBack: (items) => handBackNotify(items),
           // The relay's own `403 KillSdk` verdict switches the SDK off exactly like a report's.
           onKill: () =>
@@ -930,26 +929,26 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
             };
           },
         });
-  // The platform's assembled upload orchestrator, when present, is also a container service (DI Phase 3).
+  // The platform's assembled upload orchestrator, when present, is also a container service (DI).
   if (uploadPipeline !== undefined) {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
   // relaunch() hands what the old client could not deliver (an offline notify() queue) to the client it builds
-  // (R2L-6). The decision is taken when stop() is CALLED (`getCarrierRelaunching` is true only for the stop that
+  // The decision is taken when stop() is CALLED (`getCarrierRelaunching` is true only for the stop that
   // relaunch() itself issues), never when the drain finishes: a slow old stop can settle after the new client
   // is up. Where the items go, in order: the client that has already adopted (it registered as the carrier's
   // adopter), else the carrier backlog its launch() will drain. A plain stop() keeps nothing on the carrier,
   // which sits on `globalThis` and would otherwise hold user-identifying notifications for a process that never
   // relaunches.
   const notifyOwner = {};
-  /** The carrier's failed-relaunch counter when the handing-over stop() was issued (R4L-2). */
+  /** The carrier's failed-relaunch counter when the handing-over stop() was issued. */
   let handoverEpoch = 0;
   const handBackNotify = (items: NotifyItem[]): void => {
     if (processCarrier === undefined || items.length === 0) {
       return;
     }
     if (getCarrierRelaunchEpoch(processCarrier) !== handoverEpoch) {
-      // The relaunch attempt this hand-over belonged to failed: nobody will adopt these (R4L-2).
+      // The relaunch attempt this hand-over belonged to failed: nobody will adopt these.
       onErrorSafe(
         new Error(
           `notify: dropped ${items.length} notification(s); the relaunch they were handed to failed`,
@@ -990,7 +989,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     //
     // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable Objects)
     // an unscoped drain would put every other tenant's capture into this bundle — the leak proven on real
-    // workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else, where the
+    // workerd. `owner` is undefined everywhere else, where the
     // partitioned store is a no-op and this is byte-identical to an unscoped drain.
     collectCapture = async (owner?: string): Promise<Map<FileType, CaptureDataEntry[]>> => {
       const capturedByType = await captureExporter.drain(
@@ -1035,7 +1034,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     const assembleReport = async (request: ReportingRequest): Promise<Bundle> => {
       // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
       // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
-      // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
+      // proven on real workerd. `owner` is undefined everywhere else,
       // where the partitioned store is a no-op and this is byte-identical to an unscoped drain.
       const reportContext = reportContexts.get(request);
       // A prepared upload carries the capture it froze; anything else drains live. A frozen capture that
@@ -1057,12 +1056,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // come through submitReport, where reading the Environment live is the previous behaviour and a
       // strictly better degrade than shipping no attributes at all.
       const identity = reportIdentity.get(request) ?? liveIdentity();
-      // What `after` just changed is part of the report, so it belongs in the recovery marker too (R2P-7).
+      // What `after` just changed is part of the report, so it belongs in the recovery marker too.
       // The marker is written at SUBMIT, before assembly - the crash-safety point - and `after` runs at
       // assembly, so it is REPLACED here (same id) rather than the handler being run earlier, which would
       // change when `after` fires for a refused or failed report. The remaining difference is a crash in the
       // window between submit and this point, which recovers the report as `before` left it.
-      // Only when `after` actually changed the report (R3P-7): an unreadable report counts as changed.
+      // Only when `after` actually changed the report: an unreadable report counts as changed.
       if (
         afterHandler !== undefined &&
         reportMarkers !== undefined &&
@@ -1201,7 +1200,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     timeout === undefined ? drained : Promise.race([drained, sleep(timeout).then(() => false)]);
   const drainPending = (timeout?: number): Promise<boolean> =>
     boundDrain(startDrain(timeout), timeout);
-  // The REAL drain of the latest stop(), kept after it settles (R2L-1): a repeat stop() while it is still
+  // The REAL drain of the latest stop(), kept after it settles: a repeat stop() while it is still
   // running, or after a bounded stop() gave up on it, must answer for THAT drain. Answering "drained" at once
   // let a platform mark the instance's data recoverable (node `.stopped`) or release its lock (browser,
   // worker) while the first stop's upload was still going. Cleared by launch().
@@ -1228,7 +1227,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     onError(error);
     notifyRelay?.suspend(); // a switched-off SDK sends nothing more, notifications included
     if (launched) {
-      // The same transition a stop() makes, announced the same way (L12): Stopping, then Stopped, with the
+      // The same transition a stop() makes, announced the same way: Stopping, then Stopped, with the
       // state already settled when each is delivered. There is no drain to wait for.
       generation += 1; // a transition like stop(): any drain started before it is stale
       launched = false;
@@ -1300,14 +1299,14 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     } catch (error) {
       onErrorSafe(error);
       // The limits could not be applied in place (a handler froze the report): the marker still must not
-      // persist what they would drop, so it encodes a limited COPY (R2P-9). Assembly applies them again.
+      // persist what they would drop, so it encodes a limited COPY. Assembly applies them again.
       // A hostile report (throwing Proxy/getter) can throw here too: the encode below is guarded and the
-      // report must never be lost to its own recovery marker (R3P-8).
+      // report must never be lost to its own recovery marker.
       try {
         markerRequest = limitAttachmentsForMarker(handled);
       } catch (limitError) {
         onErrorSafe(limitError);
-        // Fail CLOSED (R4H-6): the unlimited request must not reach the marker, so it persists no
+        // Fail CLOSED: the unlimited request must not reach the marker, so it persists no
         // user attachments at all. Assembly still limits and ships them on the live path.
         try {
           markerRequest = { ...handled, report: { ...handled.report, userAttachments: [] } };
@@ -1319,7 +1318,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }
     }
     if (markerRequest === undefined) {
-      markerDurable = false; // no marker is persisted at all: the "unrecoverable" warning must still fire (R5H-3)
+      markerDurable = false; // no marker is persisted at all: the "unrecoverable" warning must still fire
     }
     if (reportMarkers !== undefined && markerRequest !== undefined) {
       try {
@@ -1345,7 +1344,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     }
     if (options.triggerPipeline !== undefined) {
       // An injected pipeline (Electron renderer, WebView) never goes through `assembleReport`, which is where
-      // `after` runs for the built one (R2L-2). The report exists and `before` has had its say: same moment.
+      // `after` runs for the built one. The report exists and `before` has had its say: same moment.
       neverThrow(() => filters.report?.after?.(handled), onErrorSafe);
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
@@ -1431,7 +1430,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     return result;
   };
 
-  // The provider/extension-facing surface (§16.3) passed to providers at start().
+  // The provider/extension-facing surface passed to providers at start().
   const context: Client = {
     operations,
     captureAggregator,
@@ -1440,7 +1439,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   };
 
   // `getLaunchOptions()` / `getHostLaunchOptions()` report the values the client actually applies, not the
-  // raw host input (L11): an unrecognised priority or log level reads as the fallback it was replaced by,
+  // raw host input: an unrecognised priority or log level reads as the fallback it was replaced by,
   // and the notify window as the whole-millisecond figure in force. Only keys the view already carries
   // are rewritten, so the host view still lists only what the host supplied.
   const inEffect = (
@@ -1538,9 +1537,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       if (filtered === null) {
         return; // dropped by the log filter
       }
-      // The wire level is NUMERIC (design §8.9, mobile parity). Encoded AFTER the filter so a user's
+      // The wire level is NUMERIC (mobile parity). Encoded AFTER the filter so a user's
       // `logFilter` still sees the friendly name it was written against — the same ordering the capture
-      // provider uses. Wave 5.1 fixed that provider and left this path, the MANUAL API, shipping the string.
+      // provider uses. This path, the MANUAL API, was left unfixed and kept shipping the string.
       const wire: LogEvent =
         typeof filtered.level === 'string'
           ? { ...filtered, level: logLevelToWire(filtered.level) }
@@ -1576,15 +1575,15 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       error: unknown,
       exceptionOptions?: InternalLogExceptionOptions,
     ): Promise<UploadResult> {
-      // After stop() (§1501) or in the kill-state (§1435), logException is a silent no-op.
+      // After stop or in the kill-state, logException is a silent no-op.
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
-      // Instance dedup: a re-capture of the same thrown object is a no-op (§7.7).
+      // Instance dedup: a re-capture of the same thrown object is a no-op.
       if (checkOrSetAlreadyCaught(error)) {
         return Promise.resolve({ ok: false });
       }
-      // Storm self-protection: drop beyond the rolling capture rate (§7.7).
+      // Storm self-protection: drop beyond the rolling capture rate.
       if (!rateLimiter.tryAcquire()) {
         return Promise.resolve({ ok: false });
       }
@@ -1597,7 +1596,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }
       const message = error instanceof Error ? error.message : String(error);
       const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
-      // Structured crash.json (SC3): built from the Error's stack + per-frame debug-ids. handled: true —
+      // Structured crash.json: built from the Error's stack + per-frame debug-ids. handled: true —
       // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.
       // A thrown non-Error has no stack of its own, and shipping `frames: []` cost grouping, not just a
       // location (see callSiteFrames). The Error is constructed HERE, inside the public boundary, which
@@ -1748,11 +1747,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }
     },
 
-    // Allowed while stopped (R2L-7), unlike start: an app that stopped during a blackout must be able to lift
+    // Allowed while stopped, unlike start: an app that stopped during a blackout must be able to lift
     // it, or the carried process flag would make the NEXT launch start dark with no event to say so.
     endBlackout(): void {
       if (!ownsBlackout()) {
-        // Never lifted from a stale handle (R3L-4): that would clear the process flag under the live client.
+        // Never lifted from a stale handle: that would clear the process flag under the live client.
         onErrorSafe(
           new Error(
             'Bugsee: endBlackout() on a stale client handle ignored; end the blackout through the current client',
@@ -1764,7 +1763,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     },
 
     isBlackout(): boolean {
-      // A stale handle answers with the PROCESS flag (R4L-5): its own state is a stopped client's memory.
+      // A stale handle answers with the PROCESS flag: its own state is a stopped client's memory.
       return !ownsBlackout() && processCarrier !== undefined
         ? getCarrierBlackout(processCarrier)
         : blackout.isActive();
@@ -1803,11 +1802,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }
       if (stopping) {
         // A launch while the previous stop() is still draining ends that stop: from here on the client is
-        // running, so the stale drain must not report Stopped (or suspend anything) when it finishes (L4).
+        // running, so the stale drain must not report Stopped (or suspend anything) when it finishes.
         stopping = false;
         lifecycle.emit(LifecycleEvents.Stopped);
       }
-      // State first, events second (L2): by the time a listener hears Launching the client already reads as
+      // State first, events second: by the time a listener hears Launching the client already reads as
       // launching, so a listener that calls launch() again is a no-op and one that calls stop() aborts this
       // launch cleanly instead of racing it.
       generation += 1;
@@ -1825,7 +1824,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       stopDrain = undefined; // this launch starts a fresh life: a repeat stop() answers for ITS drain
       notifyRelay?.resume(); // a stop() suspended it; what was kept goes out now
       adoptNotifyBacklog();
-      // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
+      // launch() must never throw: a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
         captureCoordinator.start(launchOptions, isEnabled);
@@ -1864,7 +1863,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
 
     stop(timeout?: number): Promise<boolean> {
       if (!launched) {
-        // Already stopped, or stopping: answer for the drain of THAT stop (R2L-1), within this call's own bound.
+        // Already stopped, or stopping: answer for the drain of THAT stop, within this call's own bound.
         // Never started, or killed (no drain was started): there is nothing left to wait for.
         return stopDrain !== undefined ? boundDrain(stopDrain, timeout) : Promise.resolve(true);
       }
@@ -1881,7 +1880,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       haltCapture(); // also valid mid-launch: a stop from the Launching listener has nothing started yet
       stopping = true;
       lifecycle.emit(LifecycleEvents.Stopping);
-      // The shared drain is UNBOUNDED (R3L-2): it is the one real drain every stop() answers for, so a first
+      // The shared drain is UNBOUNDED: it is the one real drain every stop() answers for, so a first
       // caller's deadline must not cap it (a repeat stop() could then never report true). Each caller applies
       // its own timeout only when racing it.
       const realDrain = startDrain();
@@ -1889,7 +1888,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       return boundDrain(realDrain, timeout)
         .finally(() => {
           // Only the LATEST transition owns these: a launch() that superseded this stop has already cleared
-          // `stopping`, and its notify relay must keep running (L4).
+          // `stopping`, and its notify relay must keep running.
           if (mine === generation) {
             stopping = false;
             // A notification still waiting (offline) keeps its place for a re-launch but stops retrying: a

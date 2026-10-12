@@ -2,17 +2,17 @@ import { serviceToken } from '@bugsee/core';
 import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 import { detectBrowser, detectOs, UNKNOWN_OS } from './user-agent';
 
-// Builds the §8.6 environment envelope for the browser from navigator/screen/window/Intl. System reads
+// Builds the environment envelope for the browser from navigator/screen/window/Intl. System reads
 // go through an injectable BrowserProbe so the mapping is testable deterministically (the DOM globals
 // are stubbed in tests); realBrowserProbe is the default. Pure given (input, probe) — persistence
 // (device_id) is the caller's concern. Canonical (dotted) option keys are translated to colon wire form
-// for sdk.options here, because the server treats dots as nested-document paths (§2.4).
+// for sdk.options here, because the server treats dots as nested-document paths.
 //
 // The OS and the browser are identified IN THE BROWSER (see ./user-agent.ts), from
 // `navigator.userAgentData.platform` where the browser declares it and a user-agent parse otherwise.
 // This used to be deferred to the backend — `platform.type: 'web'` with the raw UA string as
 // `platform.version` — which left a browser session as the only kind naming no OS at all, in the very
-// field the backend indexes as `os_version` (samples/FINDINGS.md F-X20). Doing it here also costs the
+// field the backend indexes as `os_version`. Doing it here also costs the
 // server nothing per report. hardware.model / manufacturer stay omitted: no browser exposes them.
 // deviceMemory + hardwareConcurrency are non-standard / not-everywhere, so their readers are optional
 // and the builder omits absent fields.

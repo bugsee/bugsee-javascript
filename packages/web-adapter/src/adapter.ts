@@ -66,11 +66,11 @@ export function getPerformanceApi(
 /**
  * Report an (already framework-preprocessed) error to the launched client. A no-op when no SDK is launched.
  *
- * Wave 2.1: contained. This runs INSIDE the host framework's error seam — the one place whose purpose is to
+ * Contained. This runs INSIDE the host framework's error seam — the one place whose purpose is to
  * make an error survivable — so an SDK-internal failure here did two things at once: it escaped into the
  * framework, and it stopped the customer's own handler from ever running. Measured against real Vue, that
- * turned a fully-recovered mount into a throw out of `app.mount()` and an empty DOM
- * (docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #1). `neverThrow` also attaches a rejection
+ * turned a fully-recovered mount into a throw out of `app.mount()` and an empty DOM.
+ * `neverThrow` also attaches a rejection
  * handler to `logException`'s promise, so the fire-and-forget call cannot surface as an unhandled rejection
  * in the host either.
  */
@@ -85,11 +85,11 @@ export function reportError(error: unknown, options: ReportErrorOptions = {}): v
   }, options.onError);
 }
 
-/** Refine the active navigation transaction's name via the performance naming seam (F5/D5). A no-op when
+/** Refine the active navigation transaction's name via the performance naming seam. A no-op when
  *  the SDK or the performance extension is not available. */
 export function setRouteName(name: string, options: RouteNamingOptions = {}): void {
   // Contained for the same reason `reportError` is: this runs from a host callback (a router subscription,
-  // a navigation hook), and `getClient` is a public option that can throw. Wave 2.1's rule is "every
+  // a navigation hook), and `getClient` is a public option that can throw. The rule is "every
   // host-facing entry point", and this one was missed in the first pass.
   neverThrow(() => {
     const client = resolveClient(options.getClient);

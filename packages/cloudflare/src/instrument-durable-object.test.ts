@@ -238,11 +238,11 @@ describe('instrumentDurableObject', () => {
   });
 });
 
-// S4: each Durable Object instance stamps its OWN id as the tenant owner.
+// Each Durable Object instance stamps its OWN id as the tenant owner.
 //
 // Different DO instances share one isolate, one client and one capture ring. The owner is what lets the
 // partitioned store keep tenant C's incident bundle free of tenant A's and B's secrets — the leak proven
-// on real workerd (docs/review/cloudflare.md SEV1 #2).
+// on real workerd.
 describe('instrumentDurableObject — tenant owner', () => {
   it('runs each instance in a context owned by that instance id', async () => {
     const owners: Array<string | undefined> = [];

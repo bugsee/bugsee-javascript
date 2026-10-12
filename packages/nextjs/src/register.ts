@@ -1,8 +1,8 @@
 // @bugsee/nextjs — the `register()` dispatcher for `instrumentation.ts`.
 //
 // Next calls `register()` once per runtime. We branch on `NEXT_RUNTIME` and `await import` only the
-// matching runtime's composition, so no runtime's code is pulled into another's bundle graph (design §3,
-// hard-constraint 1). The dynamic imports use the package's OWN SUBPATH SPECIFIERS
+// matching runtime's composition, so no runtime's code is pulled into another's bundle graph.
+// The dynamic imports use the package's OWN SUBPATH SPECIFIERS
 // (`@bugsee/nextjs/server` / `@bugsee/nextjs/edge`), NOT relative paths (`./server`): a bare specifier
 // stays EXTERNAL to the bundler in BOTH formats, so it emits a real lazy `import()` — whereas a relative
 // dynamic import is inlined (with its top-level `require('@bugsee/bugsee/node')` hoisted) into the CJS build,
@@ -30,7 +30,7 @@ export async function register(
   appToken: string,
   options: NextjsRegisterOptions = {},
 ): Promise<void> {
-  // The branch is written INLINE against the literal `process.env.NEXT_RUNTIME` on purpose (Wave 3b.5).
+  // The branch is written INLINE against the literal `process.env.NEXT_RUNTIME` on purpose.
   //
   // Next replaces that exact expression with a string constant in EACH compilation, and webpack folds the
   // comparison AT PARSE TIME — which is the only point at which the dead branch's `import()` can be kept

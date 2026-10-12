@@ -11,8 +11,8 @@ import { LifecycleEvents } from './lifecycle-events';
 import { createOptionsContainer } from './options';
 import type { UploadPipeline, UploadResult } from './transport';
 
-// Review round 1, group G1: lifecycle-event delivery (L1, L2), stop generations (L4), the kill state (L12),
-// blackout state (L3, L16, V2), `getLaunchOptions` (L11).
+// Lifecycle-event delivery, stop generations, the kill state,
+// blackout state and `getLaunchOptions`.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
@@ -43,7 +43,7 @@ const countingProvider = (): CaptureProvider & { starts: number; stops: number }
   return provider as CaptureProvider & { starts: number; stops: number };
 };
 
-describe('L1 — the lifecycle listener is process-level', () => {
+describe('the lifecycle listener is process-level', () => {
   it('a listener set through a carrier survives into the NEXT client (relaunch builds a new one)', () => {
     const host = {};
     const first = createClient({ carrier: host, scheduler: noScheduler });
@@ -100,7 +100,7 @@ describe('L1 — the lifecycle listener is process-level', () => {
   });
 });
 
-describe('L2 — events are delivered after the state is consistent, and re-entry is safe', () => {
+describe('events are delivered after the state is consistent, and re-entry is safe', () => {
   it('reports Launching while the Launching event is delivered, Launched on Launched', () => {
     const client = createClient({ scheduler: noScheduler });
     const states: Array<[string, BugseeStatus, boolean]> = [];
@@ -205,7 +205,7 @@ describe('L2 — events are delivered after the state is consistent, and re-entr
   });
 });
 
-describe('L3 — a lifecycle subscriber that toggles blackout cannot leave replay on a stale state', () => {
+describe('a lifecycle subscriber that toggles blackout cannot leave replay on a stale state', () => {
   it('startBlackout() from BlackoutEnded: a later blackout subscriber ends up active', () => {
     const client = createClient({ scheduler: noScheduler });
     client.launch();
@@ -242,7 +242,7 @@ describe('L3 — a lifecycle subscriber that toggles blackout cannot leave repla
   });
 });
 
-describe('L16 — blackout is refused while the client is not launched', () => {
+describe('blackout is refused while the client is not launched', () => {
   it('startBlackout() before launch and after stop does nothing and emits nothing', async () => {
     const client = createClient({ scheduler: noScheduler });
     const events = listen(client);
@@ -263,7 +263,7 @@ describe('L16 — blackout is refused while the client is not launched', () => {
     expect(events).toEqual([]);
   });
 
-  it('endBlackout() after stop() ends the blackout quietly (R2L-7: it must be liftable, but nothing is captured to describe)', async () => {
+  it('endBlackout() after stop() ends the blackout quietly (it must be liftable, but nothing is captured to describe)', async () => {
     const client = createClient({ scheduler: noScheduler });
     client.launch();
     client.startBlackout();
@@ -284,7 +284,7 @@ describe('L16 — blackout is refused while the client is not launched', () => {
   });
 });
 
-describe('V2 — the blackout state is carried across a relaunch', () => {
+describe('the blackout state is carried across a relaunch', () => {
   it('a new client on the same carrier starts blacked out, silently, and can end it', () => {
     const host = {};
     const first = createClient({ carrier: host, scheduler: noScheduler });
@@ -322,7 +322,7 @@ describe('V2 — the blackout state is carried across a relaunch', () => {
   });
 });
 
-describe('L4 — a stale stop() cannot disturb a newer launch', () => {
+describe('a stale stop() cannot disturb a newer launch', () => {
   const draining = (extra: Partial<CreateClientOptions> = {}) => {
     let release: (ok: boolean) => void = () => {};
     const gate = new Promise<boolean>((resolve) => {
@@ -441,7 +441,7 @@ describe('L4 — a stale stop() cannot disturb a newer launch', () => {
   });
 });
 
-describe('L12 — the kill state announces itself with Stopping and Stopped', () => {
+describe('the kill state announces itself with Stopping and Stopped', () => {
   it('emits both, in order, with consistent state, exactly once', async () => {
     const fatal = new BugseeError('off', 0, { fatal: true, serverCode: 99_099 });
     const uploadPipeline: UploadPipeline = {
@@ -476,7 +476,7 @@ describe('L12 — the kill state announces itself with Stopping and Stopped', ()
   });
 });
 
-describe('L11 — getLaunchOptions reports the values in effect', () => {
+describe('getLaunchOptions reports the values in effect', () => {
   const view = (effective: Record<string, unknown>, host: Record<string, unknown> = effective) => ({
     effective,
     host,

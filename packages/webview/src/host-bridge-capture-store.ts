@@ -3,7 +3,7 @@ import type { FileType } from '@bugsee/protocol';
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage } from './protocol';
 
-// The `CaptureStore` swap that makes the WebView SDK a pure streaming source (docs/design/webview-bridge.md §5).
+// The `CaptureStore` swap that makes the WebView SDK a pure streaming source.
 // The capture aggregator calls `add(record)` for every serialized capture entry; instead of buffering into a
 // local rolling ring (browser/node) we serialize it to an `entry` envelope and post it across the WebView
 // boundary IMMEDIATELY — NATIVE is the ring buffer + the bundler. So there is no local export: `snapshot()`
@@ -22,7 +22,7 @@ export interface HostBridgeCaptureStoreOptions {
   seq?: () => number;
   /** Whether capture forwarding is paused (native pause/resume — backgrounded WebView). Default never. */
   paused?: () => boolean;
-  /** D3 redaction provenance: did a JS-side filter run on an entry of this type? Stamped as `red`. Default no. */
+  /** Redaction provenance: did a JS-side filter run on an entry of this type? Stamped as `red`. Default no. */
   redactedFor?: (type: FileType) => boolean;
 }
 
@@ -33,7 +33,7 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
   const { bridge } = opts;
   return createStreamingCaptureStore({
     post: (raw) => bridge.post(raw),
-    // D3 provenance (`redacted`) is carried through by the core store per the injected redactedFor.
+    // Provenance (`redacted`) is carried through by the core store per the injected redactedFor.
     encodeEntry: (e) => encode(entryMessage(e)),
     now: opts.now,
     timeOrigin: opts.timeOrigin,

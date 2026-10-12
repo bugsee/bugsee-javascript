@@ -2,8 +2,8 @@ import { getClient, sdkErrors, relaunchBugsee, loadSettings } from '../bugsee-cl
 import { triggerWorkerThrow, workerLog } from '../lib/worker-client';
 import { triggerServiceWorkerThrow, triggerBackgroundSync } from '../lib/sw-register';
 
-// The Scenario panel: one control per §4 scenario (S1–S13) plus the browser-specific extras from
-// docs/samples/PLAN.md §5.1. Each control is a plain button so it can be driven by hand OR by
+// The Scenario panel: one control per scenario (S1–S13) plus the browser-specific extras.
+// Each control is a plain button so it can be driven by hand OR by
 // Playwright (scripts/verify.ts) via a stable `data-scenario="Sx"` attribute + a `#scenario-log`
 // transcript any script can read back.
 
@@ -27,7 +27,7 @@ function circularObject(): Record<string, unknown> {
 }
 
 const SCENARIOS: ScenarioDef[] = [
-  // S1 — Launch & lifecycle
+  // Launch & lifecycle
   {
     id: 'S1-isLaunched',
     title: 'S1 isLaunched()',
@@ -44,7 +44,7 @@ const SCENARIOS: ScenarioDef[] = [
       const token = import.meta.env.BUGSEE_APP_TOKEN;
       const client = launch(token, {
         endpoint: `${window.location.origin}/bugsee-proxy`,
-        sdkVersion: '1.0.0', // see FINDINGS.md F-3
+        sdkVersion: '1.0.0', // the packed SDK version (0.0.0) is below the backend floor
       });
       const sameInstance = client === getClient();
       const warned = sdkErrors.length > before;
@@ -58,7 +58,7 @@ const SCENARIOS: ScenarioDef[] = [
     run: async () => `flush() -> drained=${String(await getClient()?.flush(5000))}`,
   },
 
-  // S2 — Identity & attributes
+  // Identity & attributes
   {
     id: 'S2-attributes',
     title: 'S2 attribute lifecycle (all AttributeValue types)',
@@ -90,7 +90,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S3 — Manual telemetry
+  // Manual telemetry
   {
     id: 'S3-log-levels',
     title: 'S3 log() at every LogLevel',
@@ -142,7 +142,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S4 — Exceptions
+  // Exceptions
   {
     id: 'S4-error',
     title: 'S4 logException(new Error)',
@@ -216,7 +216,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S5 — Crashes
+  // Crashes
   {
     id: 'S5-uncaught',
     title: 'S5 uncaught exception (window.onerror)',
@@ -238,7 +238,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S6 — Console capture
+  // Console capture
   {
     id: 'S6-console',
     title: 'S6 console.* incl. multi-arg / object / circular',
@@ -255,7 +255,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S7 — Network capture
+  // Network capture
   {
     id: 'S7-fetch-json',
     title: 'S7 fetch GET/POST JSON',
@@ -335,7 +335,7 @@ const SCENARIOS: ScenarioDef[] = [
       }),
   },
 
-  // S8 — Filters & redaction
+  // Filters & redaction
   {
     id: 'S8-network-filter',
     title: 'S8 setNetworkEventFilter redacts a header + a body field',
@@ -395,7 +395,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S9 — Performance / APM
+  // Performance / APM
   {
     id: 'S9-manual-span',
     title: 'S9 manual startTransaction + child spans + every SpanStatus',
@@ -447,7 +447,7 @@ const SCENARIOS: ScenarioDef[] = [
     },
   },
 
-  // S13 — OpenTelemetry
+  // OpenTelemetry
   {
     id: 'S13-otel-note',
     title: 'S13 OTel produce/consume',
@@ -455,7 +455,7 @@ const SCENARIOS: ScenarioDef[] = [
     run: () => 'see scripts/otel-collector.mjs + README §OpenTelemetry for the manual procedure',
   },
 
-  // S14 — Platform specifics / browser extras
+  // Platform specifics / browser extras
   {
     id: 'S14-worker-launch',
     title: 'S14 Web Worker: separate @bugsee/webworker session',
@@ -486,7 +486,7 @@ const SCENARIOS: ScenarioDef[] = [
   {
     id: 'S14-sw-sync',
     title: 'S14 Service Worker: background sync registration',
-    detail: 'registration.sync.register — real API availability depends on the browser (see FINDINGS.md).',
+    detail: 'registration.sync.register — real API availability depends on the browser.',
     run: async () => `background sync registration: ${await triggerBackgroundSync()}`,
   },
   {
@@ -504,10 +504,9 @@ export function renderScenarios(container: HTMLElement): void {
   container.innerHTML = `
     <section class="block">
       <h1>Scenario panel</h1>
-      <p class="muted">One control per catalog scenario (docs/samples/PLAN.md §4/§5.1). Every button
+      <p class="muted">One control per catalog scenario. Every button
       calls the real SDK API; results are LOCAL-level checks (did the call throw / what did it return).
-      Backend-level (§6) verification is done separately via the Bugsee staging MCP tools and recorded
-      in <code>scenarios.md</code>.</p>
+      Backend-level verification is done separately via the Bugsee staging MCP tools.</p>
       <table class="scenario-table">
         <thead><tr><th>Scenario</th><th>What it does</th><th></th><th>Result</th></tr></thead>
         <tbody id="scenario-rows"></tbody>

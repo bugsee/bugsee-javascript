@@ -5,7 +5,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { createSharedProgram, TS_PROGRAM_TEST_TIMEOUT_MS } from './ts-program-cache.test-helper';
 
-// R2P-3: `relaunch()` starts from DEFAULTS for Bugsee behaviour options but must keep the integration seams
+// `relaunch()` starts from DEFAULTS for Bugsee behaviour options but must keep the integration seams
 // AND the deployment identity (endpoint, app version, ...): forgetting one uploads to the default production
 // endpoint or under the wrong app version. `RELAUNCH_KEPT_OPTIONS` (core `carrier.ts`) is the single source of
 // truth for what is kept; THIS table makes a new option impossible to forget: every launch option of every
@@ -25,7 +25,7 @@ const INTERFACES: Array<[string, string, string]> = [
   ['bugsee', 'src/server-launch.ts', 'BugseeServerLaunchOptions'],
   ['electron', 'src/launch-main.ts', 'LaunchMainOptions'],
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions'],
-  // Framework adapters and the remaining runtimes (R3L-6). The ones that only `extends` a platform interface
+  // Framework adapters and the remaining runtimes. The ones that only `extends` a platform interface
   // add no key, but they are listed so the day one adds an option it is classified here. A name that is a
   // function resolves to the type of its `options` (second) parameter; a type alias resolves to its object constituents.
   ['nextjs', 'src/client.ts', 'NextjsClientOptions'],
@@ -119,7 +119,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `injectTraceMeta` (Nuxt) and `flushTimeoutMs` (Nuxt edge) are adapter behaviour options consumed by the
  *    adapter's own installer, never by the platform launch a relaunch re-runs;
  *  - `instanceIdentity` (node) is a per-instance identity: a pinned one must never be shared by two instances,
- *    so a relaunch builds a fresh one (R3L-3);
+ *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list).
  */
@@ -206,7 +206,7 @@ const RESET_OPTIONS: readonly string[] = [
 ];
 
 // Builds a TypeScript program per platform interface: far slower on a shared CI runner than locally.
-describe('relaunch() option classification (R2P-3)', {
+describe('relaunch() option classification', {
   timeout: TS_PROGRAM_TEST_TIMEOUT_MS,
 }, () => {
   const all = new Map<string, string[]>();
@@ -238,7 +238,7 @@ describe('relaunch() option classification (R2P-3)', {
     }
   });
 
-  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches (R3L-6)', () => {
+  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches', () => {
     expect(all.get('onSpanProcessor')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('setupOtelProvider')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('injectTraceMeta')).toContain('nuxt:InstallBugseeNitroOptions');
@@ -251,7 +251,7 @@ describe('relaunch() option classification (R2P-3)', {
     );
   });
 
-  it('does not keep a per-instance identity across a relaunch (R3L-3)', () => {
+  it('does not keep a per-instance identity across a relaunch', () => {
     expect(RELAUNCH_KEPT_OPTIONS).not.toContain('instanceIdentity');
     expect(RESET_OPTIONS).toContain('instanceIdentity');
   });

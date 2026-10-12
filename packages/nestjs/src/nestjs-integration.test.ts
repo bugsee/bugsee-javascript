@@ -55,7 +55,7 @@ const fetchWithDeadline = (
 ): ReturnType<typeof fetch> => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
 
 // End-to-end over a REAL NestJS app (express platform) + the REAL @bugsee/node SDK. This is the
-// empirical proof of the seam design (docs/design/framework-adapters.md): which lifecycle phases each
+// empirical proof of the seam design: which lifecycle phases each
 // seam captures, the 4xx-skip policy, cross-seam dedup, and per-request context isolation under
 // concurrency. Mirrors the express/fastify integration tests.
 

@@ -1,4 +1,4 @@
-// Opt-in pixel video capture (E8 / D8). Two pluggable sources, each a report-time snapshot that yields the
+// Opt-in pixel video capture. Two pluggable sources, each a report-time snapshot that yields the
 // buffered video as ONE `video` bundle entry (the CPU-profile pattern — pulled at report assembly, never
 // streamed). Both take their runtime specifics as injected seams so @bugsee/electron needs no electron/DOM
 // dependency and everything is hermetically testable:
@@ -8,7 +8,7 @@
 //   • createMediaRecorderVideoSource — RENDERER, a `MediaRecorder` over a MediaStream (getDisplayMedia for
 //     full fidelity, or a canvas.captureStream fed by capturePage frames — the "capturePage + MediaRecorder"
 //     combination) → an encoded video blob.
-// The two can run together (the controller composes them, E8d); each emits an independent `video` entry.
+// The two can run together (the controller composes them); each emits an independent `video` entry.
 import { type CaptureDataEntry, CaptureDataEntryBase, type Scheduler } from '@bugsee/core';
 
 /** A single captured frame: the encoded image bytes (e.g. a JPEG/PNG from `capturePage`) + its capture time. */

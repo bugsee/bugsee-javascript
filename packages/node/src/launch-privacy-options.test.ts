@@ -2,12 +2,12 @@ import { createMemoryCaptureStore, type HttpTransport } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 
-// R3V-3. The node options that were read RAW (`!== false`, `=== undefined || === false`): `0`, `null`, `''`,
+// The node options that were read RAW (`!== false`, `=== undefined || === false`): `0`, `null`, `''`,
 // `'false'` turned local-variable capture and source-context capture ON, and `'false'` left incoming-request
 // instrumentation ON. Now every one goes through the shared normaliser:
 //   captureLocalVariables / captureSourceContext (collect MORE data): only `true` or an options object turns
 //     them on; anything else is OFF + onError;
-//   instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError (R4V-2);
+//   instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError;
 //   `false` opts out, `true`/absent installs.
 
 const mocks = vi.hoisted(() => ({
@@ -104,7 +104,7 @@ const reportsFor = (onError: ReturnType<typeof vi.fn>, name: string) =>
 
 const INVALID: unknown[] = [null, 0, '', 'false', 'true', 1, []];
 
-describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError (R3V-3)', () => {
+describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError', () => {
   it.each(
     INVALID,
   )('captureLocalVariables=%j builds no capture and never touches the inspector', (bad) => {
@@ -161,12 +161,10 @@ describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError
   });
 });
 
-describe('instrumentIncomingRequests: only boolean false opts out (R3V-3)', () => {
+describe('instrumentIncomingRequests: only boolean false opts out', () => {
   const installable = () => ({ install: vi.fn(), uninstall: vi.fn() });
 
-  it.each(
-    INVALID,
-  )('instrumentIncomingRequests=%j is OFF (fail closed, R4V-2) and reports', (bad) => {
+  it.each(INVALID)('instrumentIncomingRequests=%j is OFF (fail closed) and reports', (bad) => {
     const server = installable();
     const { onError } = start({ instrumentIncomingRequests: bad, serverInterceptor: server });
     expect(server.install).not.toHaveBeenCalled();

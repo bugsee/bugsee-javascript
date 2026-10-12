@@ -344,7 +344,7 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       const litCrumbs = readJson<Array<{ category: string }>>(lit, 'breadcrumbs');
       expect(litCrumbs.filter((c) => c.category === 'ui.focus')).toHaveLength(2); // #btn, #field after the release
       // The replay brackets: none (the recorder never ran while dark) or a matched start/end pair, NEVER an
-      // orphan end `[false]` and never a stream left saying a blackout is still active (review round 2, R2V-12).
+      // orphan end `[false]` and never a stream left saying a blackout is still active.
       const markers = (
         replayOf(lit).events as Array<{
           type: number;

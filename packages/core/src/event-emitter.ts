@@ -1,6 +1,6 @@
-// Pub/sub primitive (design §16.2), mirroring Android contracts/common/EventEmitter.java.
+// Pub/sub primitive, mirroring Android contracts/common/EventEmitter.java.
 //
-// Sources emit to hubs UNCONDITIONALLY, from inside intercepted user operations (§16.1), so a
+// Sources emit to hubs UNCONDITIONALLY, from inside intercepted user operations, so a
 // throwing subscriber must never break emit for the source or for other subscribers: each listener
 // call is isolated and failures route to the optional `onListenerError` handler (hubs wire it to
 // debug.warn). `onListenerError`, if provided, must not throw.

@@ -7,7 +7,7 @@ import { installBugseeErrorHandler } from './error';
 import * as renderMixin from './render-mixin';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #1 and its SEV3 #7: "no test
+// Host-boundary containment. A review found that "no test
 // in any of the four packages ever injects an SDK client that throws — and the two mutations encoding that
 // gap survived". Measured against real vue@3.5.38, an SDK throw here turned a customer error that the app's
 // own errorHandler fully recovered from into a throw out of `app.mount()` and an empty DOM.
@@ -65,7 +65,7 @@ describe('vue error handler is a contained host boundary', () => {
   });
 
   it('contains a throwing client and a throwing RESOLVER at every other host seam', () => {
-    // Wave 2.2. The tests above cover `installBugseeErrorHandler` — the seam the review named. Nothing
+    // The tests above cover `installBugseeErrorHandler` — the seam the review named. Nothing
     // covered the rest, and `getClient` is APPLICATION-supplied: it needs no SDK bug to throw (an app
     // reading an auth header that is absent is enough) and it runs before any guard on the client.
     const hostileClient = (): Bugsee =>
@@ -140,7 +140,7 @@ describe('vue error handler is a contained host boundary', () => {
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
-    // The COMPLETENESS half, and the thing that makes Wave 2.2 enforcement rather than a snapshot of
+    // The COMPLETENESS half, and the thing that makes enforcement rather than a snapshot of
     // today's diligence: a new export with no containment test fails this assertion by name.
     const owned: Record<string, unknown> = {
       ...componentAnnotate,

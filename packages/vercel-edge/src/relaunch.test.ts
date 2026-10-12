@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeEdgeLaunchOptions, launchEdge } from './launch';
 import { relaunch } from './relaunch';
 
-// `relaunch` is built on core's `relaunchWith` over THIS package's launch (review R2D-4), so an edge function that
+// `relaunch` is built on core's `relaunchWith` over THIS package's launch, so an edge function that
 // imports `@bugsee/vercel-edge` directly can restart without reaching into another entry.
 const okTransport = (): HttpTransport =>
   vi.fn(

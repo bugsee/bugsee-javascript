@@ -146,7 +146,7 @@ describe('fastify adapter — real-server concurrency isolation (e2e)', () => {
   });
 });
 
-describe('fastify adapter — F-1/F-3: shouldReport against REAL Fastify Ajv schema validation (e2e)', () => {
+describe('fastify adapter: shouldReport against REAL Fastify Ajv schema validation (e2e)', () => {
   it('does not report a genuine Fastify schema-validation 400, but does report a thrown 500', async () => {
     const { transport, bundles } = recordingTransport();
     const client = launch('tok', {
@@ -196,7 +196,7 @@ describe('fastify adapter — F-1/F-3: shouldReport against REAL Fastify Ajv sch
 
       expect(await client.flush(5000)).toBe(true);
       const parsed = bundles.map(parseBundle);
-      // ONLY the genuine throw produced an incident — the schema-validation 400 did not (F-1/F-3).
+      // ONLY the genuine throw produced an incident — the schema-validation 400 did not.
       expect(parsed).toHaveLength(1);
       expect(parsed[0]?.request.source.mechanism).toBe('http-error');
     } finally {

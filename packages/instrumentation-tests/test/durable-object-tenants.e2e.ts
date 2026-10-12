@@ -1,9 +1,8 @@
-// Durable Object TENANT ISOLATION on REAL workerd (Wave 0.1 S5,
-// docs/design/cloudflare-tenant-isolation.md).
+// Durable Object TENANT ISOLATION on REAL workerd.
 //
 // THE acceptance test for the most severe finding of the 53-package adversarial review: Durable Objects for
 // different tenants share one isolate, one client and one capture ring, so an incident in one uploaded every
-// other tenant's data (docs/review/cloudflare.md SEV1 #2, reproduced there on real workerd).
+// other tenant's data (reproduced on real workerd).
 //
 // Everything else in the repo tests this against a driven context or a WinterCG VM. Neither can model DO
 // placement — @edge-runtime/vm has no Durable Objects at all — so this is the only test where three real
@@ -19,7 +18,7 @@ import { bundleWorkerEntry } from './edge-bundle';
 const SECRET_A = 'SECRET-OF-TENANT-A';
 const SECRET_B = 'SECRET-OF-TENANT-B';
 const INCIDENT_C = 'INCIDENT-IN-C';
-// Tenant C's own LOG, deliberately distinct from its error string. Review pass 2 SEV2 #2: when C's secret
+// Tenant C's own LOG, deliberately distinct from its error string: when C's secret
 // and its thrown message were the same token, the suite passed with the owner-scoped drain killed and the
 // bundle stripped of logs.json entirely — the error text in request.json/crash.json satisfied the
 // assertion. A separate token means the suite can only pass if C's CAPTURE actually survived, so the test
@@ -39,7 +38,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
       modules: true,
       script,
       // REQUIRED by @bugsee/cloudflare: AsyncLocalStorage is reachable only through node:async_hooks on
-      // workerd (Wave 0.1 S0). Without the flag the Worker would not even start.
+      // workerd. Without the flag the Worker would not even start.
       compatibilityFlags: ['nodejs_compat'],
       compatibilityDate: '2026-07-01',
       durableObjects: { TENANT: 'Tenant' },
@@ -63,7 +62,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
     //
     // The original proxy — `collector.sessions.length === 1` — could not do that job: a session is created
     // per UPLOAD, and capture is incident-driven, so tenants A and B never upload. It stayed green with a
-    // single tenant and no co-location at all (docs/review/session-changes-review.md SEV1 #3).
+    // single tenant and no co-location at all.
     //
     // Instead ask the ONE per-isolate client which tenant partitions it is holding. Three distinct owners in
     // one client's store is exactly "these three DOs shared an isolate".
@@ -87,7 +86,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
   it('the faulting tenant KEPT its own capture (isolation must not become blindness)', () => {
     // Asserts on logs.json specifically, and on a token that appears ONLY in C's log — not in its error.
     // Without this, killing the owner-scoped drain produced a bundle with no logs.json at all and the
-    // suite still passed (review pass 2, SEV2 #2).
+    // suite still passed.
     const bundles = parseBundles(collector);
     const logs = bundles
       .map((b) => b.files['logs.json'])
@@ -111,7 +110,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
     // The collector schema-validates every session/issue/manifest/request.json and RECORDS failures. That
     // recording is inert unless a suite reads it — and until now only the node/bun/deno suite did, so a
     // wire break on the EDGE assembler (a different assembler, and the one this session built) would have
-    // been recorded and silently discarded (docs/review/session-integration-review.md SEV2 #1).
+    // been recorded and silently discarded.
     assertNoContractViolations(collector);
   });
 });

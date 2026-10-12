@@ -259,7 +259,7 @@ async function seedSibling(
   }
 }
 
-describe('launch — capture recovery (#165: persist the rolling buffer)', () => {
+describe('launch — capture recovery (persist the rolling buffer)', () => {
   it('sends no user-agent header: a script-set one forces a CORS preflight the collector does not allow', async () => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport }));
@@ -280,7 +280,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
       'SpiderMonkey (Firefox worker)',
       'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
     ],
-  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+  ])('crash.json frames are parsed from a %s stack, not left empty', async (_engine, stack) => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport }));
     const error = new Error('non-v8-stack');
@@ -325,7 +325,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(client.getService(BundleStoreToken)).toBeDefined(); // ...but the durable bundle store still wired
   });
 
-  it('reportDefaultBugPriority applies to client.upload() in a worker too (R2D-3)', async () => {
+  it('reportDefaultBugPriority applies to client.upload() in a worker too', async () => {
     const transport = uploadTransport();
     const client = track('tok', baseOptions({ transport, reportDefaultBugPriority: 'critical' }));
     await client.upload({ summary: 'bug' });
@@ -413,7 +413,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // marker swept
   });
 
-  // SEV1 (recovery double-upload). The worker gets the SAME reconciliation as the browser tier (one
+  // Recovery double-upload: the worker gets the SAME reconciliation as the browser tier (one
   // implementation, in `browser-utils`'s `Coexistence`): a sibling killed between the durable stage and the
   // upload settling leaves BOTH a staged bundle and its incident's marker, and that must be ONE upload.
   it('uploads an incident exactly ONCE when a dead sibling left both its staged bundle and its marker', async () => {
@@ -448,7 +448,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     );
   });
 
-  // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
+  // An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
   // activations, so it holds the previous one's staged bundle while that incident's marker still sits in the
   // dead activation's IndexedDB namespace. Replaying it blind and then rebuilding from the marker uploaded
   // the incident twice, with differing payloads.
@@ -478,9 +478,9 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
   });
 
-  // R5-4. The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
+  // The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
   // blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
-  // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
+  // `pipeline: durable ?? baseUploadPipeline` survived every suite across several review passes because every
   // platform test used an accepting transport: the second copy the durable queue stages on the way IN is
   // removed the instant the upload succeeds, so the duplicate never outlives the pass. On a 503 it does —
   // and the next activation uploads that incident twice, from two blobs, with differing payloads.
@@ -519,7 +519,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff described above: the shared
+    // A repeat stop answers for the REAL drain, which is the retry backoff described above: the shared
     // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -620,7 +620,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
   // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
   // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
   // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
-  // could have worked. Before round 6 the test failed on the mutation only incidentally, through the
+  // could have worked. Before that change, the test failed on the mutation only incidentally, through the
   // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
   // that side effect and left the test unable to fail.
   //
@@ -662,7 +662,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([]));
   });
 
-  it('recovers a DEAD sibling incident but NEVER touches a LIVE one (SEV1)', async () => {
+  it('recovers a DEAD sibling incident but NEVER touches a LIVE one', async () => {
     const idb = new IDBFactory();
     const locks = fakeWebLocks();
     createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib')); // a still-open tab holds its lock
@@ -1001,7 +1001,7 @@ describe('launch (webworker)', () => {
     expect(client.getService(BundleStoreToken)).toBeDefined(); // IndexedDB durable queue wired
   });
 
-  // R3V-3: `options.persist ?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
+  // `options.persist ?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
   // more data, so only boolean `true` turns it on and any other value is OFF (even on a Service Worker, whose
   // default is on) and is reported.
   it.each([
@@ -1153,7 +1153,7 @@ describe('launch (webworker)', () => {
 // the "feature that silently does nothing" class: nothing errors, nothing warns, the data is just gone.
 //
 // `isServiceWorker()` has existed in @bugsee/util the whole time and had ZERO callers.
-describe('Service Worker detection (Wave 4.2)', () => {
+describe('Service Worker detection', () => {
   const withGlobal = async (present: boolean, run: () => Promise<void>): Promise<void> => {
     const g = globalThis as { ServiceWorkerGlobalScope?: unknown };
     const had = 'ServiceWorkerGlobalScope' in g;
@@ -1586,7 +1586,7 @@ describe('launch — network capture wiring', () => {
     ]);
   });
 
-  it('detectHttpErrors (review O6): reports a 5xx fetch once per endpoint+status, ignores a 4xx, off by default', async () => {
+  it('detectHttpErrors: reports a 5xx fetch once per endpoint+status, ignores a 4xx, off by default', async () => {
     // The interceptor wraps whatever `fetch` is at activation: switch the status through a variable.
     let status = 503;
     vi.stubGlobal(
@@ -1624,8 +1624,8 @@ describe('launch — network capture wiring', () => {
   });
 });
 
-// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
-describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+// RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence', () => {
   const run = async (withMarker: boolean, siblings = 1) => {
     const idb = new IDBFactory();
     await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, withMarker);

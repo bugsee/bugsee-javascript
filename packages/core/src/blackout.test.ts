@@ -114,7 +114,7 @@ describe('createBlackoutState', () => {
   });
 });
 
-describe('createBlackoutState — re-entrant toggles (L3)', () => {
+describe('createBlackoutState — re-entrant toggles', () => {
   it('a subscriber that starts a blackout from the end notification never leaves a later subscriber on the stale state', () => {
     const state = createBlackoutState();
     const first: boolean[] = [];
@@ -282,7 +282,7 @@ describe('createBlackoutState — re-entrant toggles (L3)', () => {
   });
 });
 
-describe('createBlackoutState — silent transitions (R2V-11)', () => {
+describe('createBlackoutState — silent transitions', () => {
   it('a silent start/end is flagged silent while listeners are told', () => {
     const state = createBlackoutState();
     const seen: Array<[boolean, boolean]> = [];

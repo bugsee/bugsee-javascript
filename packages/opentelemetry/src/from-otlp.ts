@@ -1,12 +1,12 @@
 import type { SpanStatus, SpanWire, TransactionWire } from '@bugsee/performance';
 import { OtlpStatusCode } from './otlp-wire';
 
-// The Consume-direction mapping: a finished OTel span → the Bugsee §8.8 model (the inverse of to-otlp).
+// The Consume-direction mapping: a finished OTel span → the Bugsee model (the inverse of to-otlp).
 // Pure + runtime-portable; operates on a NORMALIZED `ConsumedSpan` (the OTel-SDK ReadableSpan is converted
 // to this — HrTime→ms, spanContext→ids — in the Phase-C SpanProcessor bridge, keeping this file OTel-dep
 // free). Native-transactions consume (the chosen shape): consumed spans land as Bugsee spans/transactions
 // via the existing pipeline. Lossy on OTel-only data (events/links/resource/scope); `kind` is preserved
-// as an `otel.span.kind` attribute. See docs/design/opentelemetry-integration.md (Phase C).
+// as an `otel.span.kind` attribute.
 
 /** A normalized finished OTel span — the input to the consume mapping (built by the SpanProcessor bridge). */
 export interface ConsumedSpan {
@@ -40,7 +40,7 @@ export function fromOtlpStatus(status: { code: number; message?: string }): Span
 const durationNanos = (startMs: number, endMs: number): number =>
   Math.max(0, Math.round((endMs - startMs) * 1_000_000));
 
-/** The §8.8 attributes for a consumed span: its attributes plus the preserved OTel kind (or undefined). */
+/** The attributes for a consumed span: its attributes plus the preserved OTel kind (or undefined). */
 function consumedAttributes(span: ConsumedSpan): Record<string, unknown> | undefined {
   const attributes: Record<string, unknown> = {
     ...span.attributes,
@@ -70,12 +70,12 @@ export function consumedRootToTransaction(root: ConsumedSpan, spans: SpanWire[])
   return {
     traceId: root.traceId,
     // The consumed root's OWN span id, preserved. Fabricating one here would break the join in the other
-    // direction: a downstream service continuing this trace references THIS id (Wave 5.3).
+    // direction: a downstream service continuing this trace references THIS id.
     spanId: root.spanId,
     name: root.name,
     operation: root.name, // OTel has no separate transaction name vs operation
     status: fromOtlpStatus(root.status),
-    // A consumed span reached us through the SpanProcessor → it is kept. (Profile v1 §14: a generic OTLP
+    // A consumed span reached us through the SpanProcessor → it is kept. (a generic OTLP
     // root carries no bugsee.sampled; we treat consumed spans as sampled.)
     sampled: true,
     startTimestampMs: root.startTimeMs,

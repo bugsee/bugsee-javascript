@@ -7,7 +7,7 @@ import { createRingBuffer } from './ring-buffer';
 /**
  * Property-based tests for the two structures that bound what the SDK costs its host.
  *
- * Both are self-protection (design §7.7): the ring buffer caps retained capture, and the rate limiter
+ * Both are self-protection: the ring buffer caps retained capture, and the rate limiter
  * caps admissions during an error storm. Their guarantees are the kind that hold "for any sequence of
  * operations", which is exactly what an example test cannot say — so both are checked against a MODEL
  * rather than against remembered outputs.

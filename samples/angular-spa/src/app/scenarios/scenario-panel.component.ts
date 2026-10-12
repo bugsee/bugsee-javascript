@@ -37,7 +37,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   readonly #throwingService = inject(ThrowingService);
   readonly #http = inject(HttpClient);
 
-  // A GETTER, not a cached field: after relaunch() (S1 controls below) the module-level client in
+  // A GETTER, not a cached field: after relaunch() (controls below) the module-level client in
   // bugsee.ts is a NEW instance and the OLD one is stopped. Caching `getClient()` once here (as a
   // plain readonly field) meant every control after the first relaunch called methods on a stale,
   // stopped client — logException()/flush()/etc. silently no-op on a stopped client, so this was a
@@ -49,17 +49,17 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   readonly internalErrors = signal<string[]>([]);
   #unsubscribeInternalErrors?: () => void;
 
-  // ---- S4 exception dedupe fixture ---------------------------------------------------------------
+  // ---- exception dedupe fixture ---------------------------------------------------------------
   readonly sharedError = new Error('shared instance — logException twice must dedupe');
 
   // ---- Angular-specific: throwing widget/service/rxjs/HttpClient demo state ----------------------
   readonly armWidget = signal(false);
 
-  // ---- S8 filters toggle --------------------------------------------------------------------------
+  // ---- filters toggle --------------------------------------------------------------------------
   readonly filtersInstalled = signal(false);
   readonly filterLog = signal<string[]>([]);
 
-  // ---- Settings-style attribute inputs used by nothing here; S2 lives in settings.component.ts ----
+  // ---- Settings-style attribute inputs used by nothing here; identity settings live in settings.component.ts ----
 
   ngOnInit(): void {
     this.#unsubscribeInternalErrors = onInternalError((e) =>
@@ -75,7 +75,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.statuses.update((prev) => ({ ...prev, [id]: { text, ok } }));
   }
 
-  // ------------------------------------------------------------------------------------------ S1
+  // ------------------------------------------------------------------------------------------ Launch & lifecycle
   async flush(): Promise<void> {
     const ok = await this.client?.flush(5000);
     this.setStatus('s1-flush', `flush() -> ${ok}`, ok === true);
@@ -88,10 +88,10 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
 
   async relaunchMinimal(): Promise<void> {
     await relaunch(MINIMAL_LAUNCH_OPTIONS);
-    // NOT a truly-minimal launch — see FINDINGS.md F-... "Relaunch minimal" / bugsee.ts's
+    // NOT a truly-minimal launch — see bugsee.ts's
     // MINIMAL_LAUNCH_OPTIONS doc comment: relaunch() always injects endpoint/appId/appVersion/appBuild/
     // onError ahead of these (empty) options, deliberately, because a truly-default endpoint would be
-    // PRODUCTION (PLAN §3 forbids that). The caller-supplied options object is `{}`; the resolved
+    // PRODUCTION. The caller-supplied options object is `{}`; the resolved
     // launch options are not.
     this.setStatus('s1-min', 'relaunched with caller options = {} (endpoint/appId/etc still pinned to staging by relaunch())');
   }
@@ -110,7 +110,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s1-full', 'relaunched with every option set');
   }
 
-  // ------------------------------------------------------------------------------------------ S3
+  // ------------------------------------------------------------------------------------------ Manual telemetry
   log(level: 'error' | 'warning' | 'info' | 'debug' | 'verbose'): void {
     this.client?.log(`sample log at level=${level}`, level);
     this.setStatus('s3-log', `log("...", "${level}")`);
@@ -142,7 +142,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s3-crumb', 'addBreadcrumb({type, category, message, level, data})');
   }
 
-  // ------------------------------------------------------------------------------------------ S4
+  // ------------------------------------------------------------------------------------------ Exceptions
   async logError(): Promise<void> {
     const r = await this.client?.logException(new Error('S4: logException(new Error(...))'));
     this.setStatus('s4-error', `logException(Error) -> ok=${r?.ok}`, r?.ok === true);
@@ -172,7 +172,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   async logWithOptions(): Promise<void> {
-    // EVERY value here is deliberately NON-DEFAULT, which the round-6 fixture was not.
+    // EVERY value here is deliberately NON-DEFAULT, which the earlier fixture was not.
     //
     // It used to pass `mechanism: 'programmatic'` + `severity: 'high'`, and those are exactly what the
     // SDK produces when the options object is absent: `client.ts:661` defaults `mechanism` to
@@ -207,7 +207,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s4-storm', `fired 200 logException calls in ${(performance.now() - start).toFixed(1)}ms — app still responsive`);
   }
 
-  // ------------------------------------------------------------------------------------------ S5
+  // ------------------------------------------------------------------------------------------ Crashes
   throwUncaught(): void {
     this.setStatus('s5-uncaught', 'thrown via setTimeout — check window.onerror capture');
     setTimeout(() => {
@@ -220,7 +220,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     Promise.reject(new Error('S5: unhandled promise rejection'));
   }
 
-  // ------------------------------------------------------------------------------------------ S6
+  // ------------------------------------------------------------------------------------------ Console capture
   consoleCall(method: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace'): void {
     // eslint-disable-next-line no-console
     console[method](`S6: console.${method} from the scenario panel`, { at: Date.now() });
@@ -235,7 +235,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s6', 'console.log(circular object)');
   }
 
-  // ------------------------------------------------------------------------------------------ S7
+  // ------------------------------------------------------------------------------------------ Network capture
   async s7Get(): Promise<void> {
     const body = await scenarioApi.get();
     this.setStatus('s7', `GET /scenario/get -> ${JSON.stringify(body)}`);
@@ -303,7 +303,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * `navigator.sendBeacon` — a capture source the substrate gained after round 6, and one no other
+   * `navigator.sendBeacon` — a capture source that no other
    * control here reaches: the beacon path is neither `fetch` nor `XHR`, it is a fire-and-forget queue
    * the browser drains after the page may already be gone, which is exactly why analytics/unload code
    * uses it and exactly why an uninstrumented one is a hole in the network record.
@@ -341,7 +341,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     es.onerror = () => es.close();
   }
 
-  // ------------------------------------------------------------------------------------------ S8
+  // ------------------------------------------------------------------------------------------ Filters & redaction
   installFilters(): void {
     const c = getClient();
     if (!c) return;
@@ -437,7 +437,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     });
   }
 
-  // ------------------------------------------------------------------------------------------ S9
+  // ------------------------------------------------------------------------------------------ Performance
   manualTransaction(): void {
     const perf = this.client?.ext('performance');
     if (!perf) return this.setStatus('s9', 'performance ext not registered', false);
@@ -458,7 +458,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   /** `performanceSampleRate: 0` — checkable at LOCAL level without a second relaunch pair beyond the
-   *  ones the panel already has (S1/S11 relaunch six times between them): relaunch with rate 0, start a
+   * ones the panel already has (the launch-lifecycle and replay controls relaunch six times between them): relaunch with rate 0, start a
    *  transaction, and read `isSampled()` straight off it — `createRateSampler` (`@bugsee/performance`)
    *  guarantees `rate <= 0` always decides unsampled, no RNG involved. Restores FULL_LAUNCH_OPTIONS
    *  (rate 1) afterward so nothing downstream in the sweep runs unsampled. */
@@ -473,8 +473,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   // ------------------------------------------------------------------------------------------ S10
-  /** `propagateTrace`/`tracePropagationTargets: ['/api/']` (FULL_LAUNCH_OPTIONS) — this was previously
-   *  N/A ("no two-hop join was attempted"), but the OUTBOUND leg alone is verifiable in-sample: the local
+  /** `propagateTrace`/`tracePropagationTargets: ['/api/']` (FULL_LAUNCH_OPTIONS) — a two-hop join is not attempted here, but the OUTBOUND leg alone is verifiable in-sample: the local
    *  API's `/api/scenario/echo-headers` route (`server/api-server.mjs`) echoes back every header it
    *  received, so a `traceparent` header actually leaving the process is checkable without a second hop. */
   async echoOutboundTraceHeaders(): Promise<void> {
@@ -524,7 +523,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     );
   }
 
-  // ------------------------------------------------------------------------------------------ S11
+  // ------------------------------------------------------------------------------------------ Session replay
   async replayDefaults(): Promise<void> {
     await relaunch({ ...FULL_LAUNCH_OPTIONS, replay: true });
     this.setStatus('s11', 'relaunched with replay: true (fail-closed defaults: maskAllText/maskAllInputs/blockAllMedia)');
@@ -560,10 +559,10 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
    * The genuine replay OPT-OUT. Session replay is ON BY DEFAULT in the browser tier
    * (`packages/browser/src/launch.ts:433` — `options.replay !== false && domDocument !== undefined`), so
    * `replay: false` is the ONLY way to turn it off, and this control is the only one in the panel whose
-   * effect on the uploaded bundle is observable at all: every other S11 configuration produces a
+   * effect on the uploaded bundle is observable at all: every other configuration produces a
    * `replay.bin`, and so does launching with no `replay` key whatsoever.
    *
-   * Until round 7 this method relaunched with plain `FULL_LAUNCH_OPTIONS` and its status line said
+   * Earlier, this method relaunched with plain `FULL_LAUNCH_OPTIONS` and its status line said
    * "replay off" — true only while replay was opt-IN. Under the default it turned nothing off.
    */
   async replayOptOut(): Promise<void> {
@@ -572,14 +571,14 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   /** Restore the app's own baseline: FULL_LAUNCH_OPTIONS, which carries NO `replay` key — and therefore
-   *  records, by default. Runs last in the S11 group so the rest of the sweep sees the app's real
+   * records, by default. Runs last in the group so the rest of the sweep sees the app's real
    *  configuration, and doubles as the positive control for the default itself. */
   async replayRestoreBaseline(): Promise<void> {
     await relaunch(FULL_LAUNCH_OPTIONS);
     this.setStatus('s11', 'relaunched with the FULL_LAUNCH_OPTIONS baseline (no replay key — replay records by DEFAULT)');
   }
 
-  // ------------------------------------------------------------------------------------------ S12
+  // ------------------------------------------------------------------------------------------ Persistence & recovery
   crashAndReload(): void {
     void this.client?.logException(new Error('S12: persist+recover across a hard reload'));
     setTimeout(() => window.location.reload(), 5);
@@ -601,7 +600,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
 
   callOriginalErrorUnwrap(): void {
     // Simulates Angular's ≤18 ErrorHandler wrapper (`{ ngOriginalError }`) — BugseeErrorHandler must
-    // UNWRAP to the real error before reporting it (§5.6 "the originalError unwrap path").
+    // UNWRAP to the real error before reporting it.
     const real = new Error('Angular: real error inside an ngOriginalError wrapper');
     const wrapped = { ngOriginalError: real, message: 'a generic Angular wrapper message' };
     const handler = new BugseeErrorHandler();

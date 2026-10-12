@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from './fflate';
 
-// Integration test across the @bugsee/util -> fflate boundary (standards §3): the round-trips
+// Integration test across the @bugsee/util -> fflate boundary: the round-trips
 // fail if any re-exported binding is wrong or missing.
 describe('fflate re-export', () => {
   it('round-trips gzip', () => {

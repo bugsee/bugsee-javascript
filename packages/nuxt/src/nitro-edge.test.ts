@@ -56,7 +56,7 @@ function captureWaitUntil() {
 }
 
 describe('installBugseeNitroEdge', () => {
-  it('reports and flushes through the CURRENT carrier client after a relaunch (R3P-3)', async () => {
+  it('reports and flushes through the CURRENT carrier client after a relaunch', async () => {
     const carrier = {};
     const first = fakeClient();
     const second = fakeClient();
@@ -81,7 +81,7 @@ describe('installBugseeNitroEdge', () => {
     expect(first.flush).not.toHaveBeenCalled();
   });
 
-  it('falls back to the launched client while the carrier slot is empty (R3P-3)', async () => {
+  it('falls back to the launched client while the carrier slot is empty', async () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     const wu = captureWaitUntil();
@@ -95,7 +95,7 @@ describe('installBugseeNitroEdge', () => {
     expect(client.logException).toHaveBeenCalledTimes(1);
   });
 
-  it('remembers the install-time launch on its carrier for a plain relaunch (R4H-4)', () => {
+  it('remembers the install-time launch on its carrier for a plain relaunch', () => {
     const launch = () => fakeClient() as never;
     const carrier = {};
     installBugseeNitroEdge(fakeNitro().nitroApp, { appToken: 'tok', carrier, launch });

@@ -56,7 +56,7 @@ describe('entryMessage', () => {
     expect('tr' in m).toBe(false); // no trace ⇒ omitted
   });
 
-  it('includes the trace join only when provided', () => {
+  it('includes the trace join only when provided on a log entry', () => {
     const m = entryMessage({
       type: 'log',
       seq: 1,
@@ -97,7 +97,7 @@ describe('reportMessage', () => {
     expect('tr' in m).toBe(false);
   });
 
-  it('includes the trace join only when provided', () => {
+  it('includes the trace join only when provided on a crash report', () => {
     const m = reportMessage({
       type: 'crash',
       seq: 1,
@@ -267,7 +267,7 @@ describe('parseControl', () => {
   });
 });
 
-// WAVE 0.3 review round 1, SEV1 — the control channel is reachable from the page, so `parseControl` must
+// The control channel is reachable from the page, so `parseControl` must
 // survive a hostile realm, not merely malformed input.
 describe('parseControl is hostile-realm safe', () => {
   /** Set a key on Object.prototype for one test and always remove it (a leak breaks every later test). */
@@ -361,7 +361,7 @@ describe('parseControl is hostile-realm safe', () => {
   });
 });
 
-describe('blackoutMessage (R2V-2)', () => {
+describe('blackoutMessage', () => {
   it('builds a versioned blackout message carrying the new state and a timestamp', () => {
     expect(blackoutMessage(true, 1234)).toEqual({
       b: PROTOCOL_VERSION,

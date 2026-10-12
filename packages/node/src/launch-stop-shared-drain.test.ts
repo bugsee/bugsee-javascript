@@ -14,8 +14,8 @@ import {
 } from './launch';
 import { isCleanlyStopped } from './liveness';
 
-// Review round 3 (H1), node half: R3L-1 (the shared stop drain marks the subtree from whichever stop observes it
-// settle, exactly once) and R3L-3 (a relaunch into a pinned subtree is live, not recoverable).
+// Node: the shared stop drain marks the subtree from whichever stop observes it
+// settle, exactly once; and a relaunch into a pinned subtree is live, not recoverable.
 vi.mock('@bugsee/node-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node-utils')>();
   return { ...actual, writeFileSecure: vi.fn(actual.writeFileSecure) };
@@ -105,7 +105,7 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('R3L-1 — the .stopped marker follows the shared drain, whichever stop observes it settle', () => {
+describe('the .stopped marker follows the shared drain, whichever stop observes it settle', () => {
   it('stop() then stop(20): the 20 ms call times out, the first still marks when the drain finishes', async () => {
     const dir = dirFor();
     const { transport, release } = gated();
@@ -220,7 +220,7 @@ describe('R3L-1 — the .stopped marker follows the shared drain, whichever stop
     expect(isCleanlyStopped(subtree(dir))).toBe(false);
   });
 
-  it('R4L-1: two live launches pinned to ONE subtree (separate carriers): stopping one never marks it, stopping the last does', async () => {
+  it('two live launches pinned to ONE subtree (separate carriers): stopping one never marks it, stopping the last does', async () => {
     const dir = dirFor();
     const a = launch('tok', opts({ dataDir: dir, transport: async () => ok(), carrier: {} }));
     const b = launch('tok', opts({ dataDir: dir, transport: async () => ok(), carrier: {} }));
@@ -231,7 +231,7 @@ describe('R3L-1 — the .stopped marker follows the shared drain, whichever stop
     expect(existsSync(marker(dir))).toBe(true); // nobody is left
   });
 
-  it('R4L-1: an UNPINNED relaunch (fresh subtree) still marks the OLD subtree stopped when its late drain finishes', async () => {
+  it('an UNPINNED relaunch (fresh subtree) still marks the OLD subtree stopped when its late drain finishes', async () => {
     const dir = dirFor();
     const { transport, release } = gated();
     const unpinned = { instanceIdentity: undefined } as Partial<BugseeLaunchOptions>;
@@ -260,7 +260,7 @@ describe('R3L-1 — the .stopped marker follows the shared drain, whichever stop
   });
 });
 
-describe('R3L-3 — relaunch() does not keep instanceIdentity; a launch always clears a stale marker', () => {
+describe('relaunch() does not keep instanceIdentity; a launch always clears a stale marker', () => {
   it('a plain relaunch() gets a NEW subtree even though the first launch pinned its identity', async () => {
     const dir = dirFor();
     const first = launch('tok', opts({ dataDir: dir, transport: async () => ok() }));
@@ -283,7 +283,7 @@ describe('R3L-3 — relaunch() does not keep instanceIdentity; a launch always c
   });
 });
 
-describe('R5L-2 — a launch that throws after registering its subtree root does not leak the live count', () => {
+describe('a launch that throws after registering its subtree root does not leak the live count', () => {
   it('a later launch into the same pinned subtree still writes .stopped when it stops', async () => {
     const dir = dirFor();
     const hostile = fakeProcess();

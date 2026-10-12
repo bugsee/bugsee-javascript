@@ -4,7 +4,7 @@ import * as errorMod from './error';
 import { solidErrorHandler } from './error';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — this handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
+// This handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
 // boundary meant to contain the customer's error and takes the fallback UI down with it.
 afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -28,7 +28,7 @@ describe('solid error handler is a contained host boundary', () => {
 });
 
 // WAVE 2.2 — the enforcement half. The test above covers `solidErrorHandler`, the seam the review named.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

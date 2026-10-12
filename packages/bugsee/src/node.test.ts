@@ -99,7 +99,7 @@ const base = (over: Partial<BugseeNodeLaunchOptions> = {}): BugseeNodeLaunchOpti
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'process_memory_rss', value: 42 }],
   captureNetwork: false,
-  capturedDataStore: 'memory', // hermetic: stay off the shared default disk root (disk is the default now, D3)
+  capturedDataStore: 'memory', // hermetic: stay off the shared default disk root (disk is the default now)
   clock: fixedClock,
   ...over,
 });
@@ -183,7 +183,7 @@ describe('bugsee node umbrella launch', () => {
     expect(transactionsOf(perfPosts).some((t) => t.name === 'app.start')).toBe(true);
   });
 
-  // R4V-4: node owns `propagateTrace` (default ON, invalid => OFF); the umbrella must not ALSO judge it with the
+  // node owns `propagateTrace` (default ON, invalid => OFF); the umbrella must not ALSO judge it with the
   // browser's performance definition (it logged "using false" while node kept propagating).
   it.each([
     'false',
@@ -273,7 +273,7 @@ describe('bugsee node umbrella launch', () => {
     ).toBeUndefined();
   });
 
-  it('produce-tee on Node sets the §5 scope name com.bugsee.nodejs/performance', async () => {
+  it('produce-tee on Node sets the scope name com.bugsee.nodejs/performance', async () => {
     const { scheduler, fire } = fakeScheduler();
     const otlpBodies: string[] = [];
     const transport = vi.fn<HttpTransport>(async (url: string, opts: HttpRequestOptions = {}) => {
@@ -354,7 +354,7 @@ describe('bugsee node umbrella launch', () => {
     expect(second).toBe(first);
   });
 
-  it('the node LaunchInternals key the umbrella reads is present, at the right type (R-16)', () => {
+  it('the node LaunchInternals key the umbrella reads is present, at the right type', () => {
     // The umbrella reads `internals.activeSpanStore` optionally (the browser omits it), so a rename
     // or drop on the node side would vanish to the single slot with NO type error (no
     // excess-property checking on variables). This fails compilation — not just a test — the day the
@@ -375,7 +375,7 @@ describe('bugsee node umbrella launch', () => {
     expect([present, sameType]).toEqual([true, true]);
   });
 
-  it('the wired active slot is request-scoped: concurrent requests stay isolated (D2 part 2)', async () => {
+  it('the wired active slot is request-scoped: concurrent requests stay isolated', async () => {
     // Full stack through every threading link: node launchCore internals → wireUmbrella →
     // wirePerformance → extension → controller → the request-context store. If ANY link dropped
     // the store, the controller would fall back to the process-wide single slot and request A's

@@ -1,8 +1,8 @@
-// @bugsee/replay — the wiring entry (RP5b). `registerReplay` composes the built pieces into a launched
+// @bugsee/replay — the wiring entry. `registerReplay` composes the built pieces into a launched
 // client: it creates the rrweb recorder capture-provider (with the fail-closed masking) + installs it
 // (`client.addCaptureProvider`), and registers the `replay.bin` encoder into the client's shared
-// `fileEncoders` map (read at each report's bundle assembly, RP5a). The browser launch lazy-`import()`s this
-// module + calls `registerReplay` when the `replay` option is truthy (RP5c). Returns the recorder so the
+// `fileEncoders` map (read at each report's bundle assembly). The browser launch lazy-`import()`s this
+// module + calls `registerReplay` when the `replay` option is truthy. Returns the recorder so the
 // caller can wire `client.startBlackout` → its blackout controls (or pass `blackout`, and the recorder follows it).
 import type { BlackoutGate, CaptureProvider } from '@bugsee/core';
 import { record as rrwebRecord } from '@bugsee/rrweb';
@@ -32,7 +32,7 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
   record?: ReplayRecordFn;
   /** Opt-in canvas recording (from `@bugsee/replay-canvas`); absent ⇒ DOM-only replay (unchanged). */
   canvas?: CanvasRecordConfig;
-  /** Internal-error sink. Today: an invalid masking selector that was dropped and escalated (Wave 1.4) —
+  /** Internal-error sink. Today: an invalid masking selector that was dropped and escalated —
    *  without it the downgrade is silent, which is precisely how the original fail-open survived. */
   onError?: (error: unknown) => void;
   /** The client's blackout gate (`client.getService(BlackoutToken)`): the recorder pauses/resumes with it. */
@@ -80,7 +80,7 @@ export function registerReplay(
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   client.addCaptureProvider(provider);
-  // Register the encoder into the SHARED map the client reads at assembly time (RP5a) — so the next report's
+  // Register the encoder into the SHARED map the client reads at assembly time — so the next report's
   // `replay` entries serialize to the gzipped `replay.bin`.
   fileEncoders.replay = encodeReplay;
   return provider;

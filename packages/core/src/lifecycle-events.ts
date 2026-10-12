@@ -5,8 +5,7 @@
 //
 // Coverage: upload events and `ReportHandler.after` follow the live trigger -> assemble -> upload path.
 // A report delivered another way (durable recovery on the next launch, native-crash harvest, a queue
-// overflow, a WebView/Electron-renderer hand-off) is not announced; see "Kept differences" in
-// docs/design/mobile-api-alignment.md.
+// overflow, a WebView/Electron-renderer hand-off) is not announced, which differs from mobile on purpose.
 
 import { neverThrow } from './never-throw';
 
@@ -19,7 +18,7 @@ const PREFIX = 'com.bugsee.lifecycle.';
 // after a failed upload leaves one too, so it can over-report but never fabricate). It is NOT emitted on the
 // edge runtimes, WebView or anywhere else that keeps nothing durable across runs.
 //
-// KNOWN LIMITS on node (R3L-8), both consequences of "evidence on disk, nothing invented":
+// KNOWN LIMITS on node, both consequences of "evidence on disk, nothing invented":
 //  - FALSE NEGATIVE: the commonest crash, an `uncaughtException`, uploads its report BEFORE the process exits and so
 //    leaves no unsettled marker or bundle behind; the next launch then finds a dead sibling with nothing in flight
 //    and stays silent. Only a crash whose report did not finish uploading (a kill, an OOM, an upload cut short) is

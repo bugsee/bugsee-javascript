@@ -6,7 +6,7 @@ import {
   serviceToken,
 } from '@bugsee/core';
 
-// The Node request-context binding (design: framework-adapters.md, S4). It realizes the core
+// The Node request-context binding. It realizes the core
 // ContextProvider seam over `AsyncLocalStorage`, so each request's context follows its async call-chain
 // and stays isolated across concurrent requests on the single SDK instance — the property the
 // correlation-by-tagging foundation needs. Node's launch registers ONE store by default; it is a no-op

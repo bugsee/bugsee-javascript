@@ -41,7 +41,7 @@ export default function ScenarioPage(): JSX.Element {
   const [statuses, setStatus] = useStatuses();
   const client = getClient();
 
-  // ---- S4 exception dedupe fixture -----------------------------------------------------------
+  // ---- exception dedupe fixture -----------------------------------------------------------
   const [sharedError] = useState(() => new Error('shared instance — logException twice must dedupe'));
 
   // ---- React-specific: ThrowingWidget demo state ---------------------------------------------
@@ -51,7 +51,7 @@ export default function ScenarioPage(): JSX.Element {
   // ---- React-specific: profiled slow list -----------------------------------------------------
   const [showSlowList, setShowSlowList] = useState(false);
 
-  // ---- S8 filters toggle -----------------------------------------------------------------------
+  // ---- filters toggle -----------------------------------------------------------------------
   const [filtersInstalled, setFiltersInstalled] = useState(false);
   const [filterLog, setFilterLog] = useState<string[]>([]);
 
@@ -131,8 +131,7 @@ export default function ScenarioPage(): JSX.Element {
     <div>
       <h2>Scenario panel</h2>
       <p className="desc">
-        One control per scenario in docs/samples/PLAN.md §4. Every control here calls the real SDK API —
-        see scenarios.md for what should appear in Bugsee for each.
+        One control per scenario. Every control here calls the real SDK API.
       </p>
 
       {/* ---------------------------------------------------------------- S1 launch & lifecycle */}
@@ -611,7 +610,7 @@ export default function ScenarioPage(): JSX.Element {
         <h3>S8 — Filters &amp; redaction</h3>
         <p className="desc">
           Network-filter verification is LOCAL only — the backend surface (`get_issue`) does not expose
-          network entries (see FINDINGS.md / PLAN §6.6). Log/breadcrumb/report-handler filters ARE
+          network entries. Log/breadcrumb/report-handler filters ARE
           verifiable on the backend (they land in `# Logs` / labels).
         </p>
         <div className="control-row">
@@ -738,7 +737,7 @@ export default function ScenarioPage(): JSX.Element {
           `@bugsee/replay` (+ `@bugsee/replay-canvas`) are transitive dependencies of `@bugsee/browser`
           (loaded lazily only when `replay` is set), not a package directly under test in this sample —
           but the catalog scenario still applies. Each control relaunches the SDK with a different replay
-          option set. `get_issue` does not expose replay CONTENTS (see FINDINGS.md's MCP-gap note) — this
+          option set. `get_issue` does not expose replay CONTENTS, so this
           is verified at the local/wire level (no throw, `replay.bin` present in the uploaded bundle).
         </p>
         <div className="control-row">

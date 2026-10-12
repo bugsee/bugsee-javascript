@@ -111,7 +111,7 @@ describe('createBugseeApi — ensureSession', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('sends the standard SDK request headers (§8.2)', async () => {
+  it('sends the standard SDK request headers', async () => {
     const { transport, calls } = recorder(() => sessionOk());
     await api(transport, { sdkVersion: '2.3.4' }).ensureSession(env);
     const h = headersOf(calls[0]?.options);

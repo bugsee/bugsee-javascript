@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
-// L6: stop() must wait for the launch-time recovery (which may still be staging bundles into this
+// stop() must wait for the launch-time recovery (which may still be staging bundles into this
 // instance's subtree) before it marks the subtree recoverable, and must NOT mark while it still runs.
 vi.mock('@bugsee/node-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node-utils')>();
@@ -75,7 +75,7 @@ afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('node stop() and the launch-time recovery (L6)', () => {
+describe('node stop() and the launch-time recovery', () => {
   it('waits for the recovery, then marks the subtree', async () => {
     let finish: () => void = () => {};
     vi.mocked(runLaunchRecovery).mockImplementationOnce(

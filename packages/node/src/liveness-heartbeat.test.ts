@@ -34,7 +34,7 @@ const fakeScheduler = () => {
 
 describe('startLivenessHeartbeat', () => {
   // These three cover the FALLBACK carrier — the scheduler interval used where a runtime has no
-  // worker_threads. Since Wave 6.6 the default carrier is a worker thread, so they opt in explicitly rather
+  // worker_threads. Since the default carrier is a worker thread, so they opt in explicitly rather
   // than silently testing a path production no longer takes.
   it('creates the .live file immediately and schedules the interval (default 10s)', () => {
     const liveFile = join(mkDir(), '.live');
@@ -129,7 +129,7 @@ describe('startLivenessHeartbeat', () => {
 // Verified against real worker_threads before building on it: with the main thread blocked for 2000 ms the
 // `.live` mtime still advanced by 2033 ms; and a heartbeat worker spawned BY a worker thread stops the
 // moment that thread dies, which is what keeps a dead worker_thread instance reclaimable.
-describe('hang-proof heartbeat (Wave 6.6)', () => {
+describe('hang-proof heartbeat', () => {
   const fakeWorker = () => {
     const created: Array<{ data: unknown }> = [];
     const terminated: number[] = [];

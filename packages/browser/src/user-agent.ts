@@ -4,9 +4,7 @@
 // `platform.version`, deferring the parse to the backend. Every other Bugsee SDK reports the OS in
 // that pair — iOS/Android send the OS name, the Rust SDK sends macos/linux/windows, and the backend
 // indexes `platform.version` as `os_version` — so a browser session was the only kind that yielded
-// no operating system at all, and carried a UA string in a version field instead
-// (samples/FINDINGS.md F-X20).
-//
+// no operating system at all, and carried a UA string in a version field instead.
 // Two sources, used for what each is actually good for:
 //
 //   - `navigator.userAgentData.platform` (UA-CH) is DECLARED by the browser rather than scraped out

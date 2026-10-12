@@ -1,7 +1,7 @@
 import { COMPONENT_ATTRIBUTE } from '@bugsee/browser';
 import { vueComponentName } from './component-name';
 
-// @bugsee/vue COMPONENT ATTRIBUTION (frontend-adapters depth pass — the Vue emit side of the shared D2/D3
+// @bugsee/vue COMPONENT ATTRIBUTION (the Vue emit side of the shared
 // component-attribution mechanism). A Vue global mixin stamps every component's root DOM element with
 // `data-bugsee-component="<ComponentName>"`, so the @bugsee/browser runtime can attribute an interaction /
 // error to the COMPONENT that rendered the target (its nearest annotated ancestor) — not just a DOM selector.

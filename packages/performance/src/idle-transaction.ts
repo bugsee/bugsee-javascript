@@ -1,6 +1,6 @@
 import type { SpanStatus, Transaction } from './span';
 
-// The idle-transaction lifecycle (frontend-adapters design D7). Wraps an already-started transaction (a
+// The idle-transaction lifecycle. Wraps an already-started transaction (a
 // navigation / interaction root) and auto-finishes it on inactivity — the mechanism that closes
 // open-ended SPA transactions (Sentry idleTimeout/finalTimeout parity):
 //   - idle timeout  — finish OK after `idleTimeoutMs` with no `keepAlive()` (reset on each keepAlive, e.g.

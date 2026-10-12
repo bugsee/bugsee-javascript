@@ -43,7 +43,7 @@ const dataKey = (gen: number, chunk: number, seq: number): string =>
 // so a generation wider than GEN_PAD (≥1e13 ms / an injected large id) is not truncated.
 const genOfMetaKey = (key: string): number => Number(key.slice(2, key.indexOf('/', 2)));
 // The chunk number embedded in a meta key `m/<gen>/<chunk>`. The KEY survives a corrupt VALUE, so this is
-// how a chunk whose meta failed to parse keeps its identity (Wave 6.5).
+// how a chunk whose meta failed to parse keeps its identity.
 const numberOfMetaKey = (key: string): number | undefined => {
   const n = Number(key.slice(key.indexOf('/', 2) + 1));
   return Number.isInteger(n) ? n : undefined;
@@ -64,7 +64,7 @@ interface StoredData {
 const enc = (value: StoredMeta | StoredData): Uint8Array =>
   new TextEncoder().encode(JSON.stringify(value));
 /**
- * Decode one stored record, or `undefined` if it is unreadable (Wave 6.5).
+ * Decode one stored record, or `undefined` if it is unreadable.
  *
  * A bare `JSON.parse` here made ONE corrupt value reject `listParts()` / `drainAll()` for the whole
  * generation, taking every intact record with it — and permanently: capture-recovery catches per
@@ -109,7 +109,7 @@ export interface IdbChunkBackendOptions {
   /** Failure sink for the async write queue. Default no-op. */
   onError?: (error: unknown) => void;
   /**
-   * Max writes allowed to wait for a stalled store before the OLDEST are given up (Wave 6.3). Default 2048.
+   * Max writes allowed to wait for a stalled store before the OLDEST are given up. Default 2048.
    *
    * A stalled IndexedDB used to accept everything: one write in flight, the rest retained live in the
    * pending chain (measured: 20,000 entries × 10 KB → ~200 MB, with `add()` still returning success). This
@@ -124,7 +124,7 @@ export interface IdbChunkBackendOptions {
    */
   maxPendingBytes?: number;
   /**
-   * Consecutive write failures after which the backend stops ATTEMPTING (Wave 6.3). Default 16.
+   * Consecutive write failures after which the backend stops ATTEMPTING. Default 16.
    *
    * A store rejecting every put otherwise costs one transaction, one rejected promise and one `onError`
    * per captured entry — measured at 5001 for 5001 entries. It re-probes periodically, so a transient
@@ -143,7 +143,7 @@ export function createIdbChunkBackend(
   const generation = options.generation;
   const onError = options.onError ?? ((): void => {});
 
-  // The in-order async write queue (Wave 6.3). An explicit array rather than a promise chain, because a
+  // The in-order async write queue. An explicit array rather than a promise chain, because a
   // chain can only be APPENDED to: with `queue = queue.then(op)` there is no way to count what is waiting,
   // and no way to give up the oldest work when the store stops draining. Both are required here.
   //
@@ -433,7 +433,7 @@ export function createIdbChunkBackend(
       return readMetas(gen);
     },
 
-    // Wave 6.2 — the commit seam the page-hide hook awaits. Chaining on `queue` is the whole
+    // The commit seam the page-hide hook awaits. Chaining on `queue` is the whole
     // implementation: every write is already a link in it, so waiting for the tail waits for all of them.
     // It resolves rather than rejects — each link already routes its own failure to `onError`, and a page
     // that is going away can do nothing with a rejection anyway.

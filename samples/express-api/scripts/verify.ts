@@ -4,8 +4,8 @@
 //
 // This script does NOT talk to the Bugsee staging MCP server (only the agent session has those tools).
 // It writes data/verify-run.json with the run marker + every scenario outcome, which is what the agent
-// cross-references against `list_issues`/`get_issue` afterwards to fill in the BACKEND verification
-// depth recorded in scenarios.md.
+// cross-references against `list_issues`/`get_issue` afterwards to record the BACKEND verification
+// depth for each check.
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
@@ -40,8 +40,8 @@ function expectOk(status: number, expected: number | number[]): boolean {
  * staging, not a mock.
  *
  * A route that asks the SDK to do timed work must be given MORE than the time it asks for — see the
- * `timeoutMs` override at the S1.flush call site. This used to be a flat 10s for every route while
- * S1.flush requested a 15s flush, so the client aborted five seconds before the server could
+ * `timeoutMs` override at the flush call site. This used to be a flat 10s for every route while
+ * the flush route requested a 15s flush, so the client aborted five seconds before the server could
  * legitimately answer, and the resulting failure was indistinguishable from a real flush defect.
  */
 const DEFAULT_HIT_TIMEOUT_MS = 10_000;
@@ -158,39 +158,39 @@ async function main(): Promise<void> {
       await hit('api.not-found', 'GET', `/projects/does-not-exist`, 404, auth);
     }
 
-    // ---- S1 Launch & lifecycle ----
+    // ---- Launch & lifecycle ----
     await hit('S1.status', 'GET', '/scenarios/s1/status');
     await hit('S1.relaunch-noop', 'POST', '/scenarios/s1/relaunch-noop');
 
-    // ---- S2 Identity & attributes ----
+    // ---- Identity & attributes ----
     await hit('S2.identity-attributes', 'POST', '/scenarios/s2/identity-attributes');
     await hit('S2.clear-attributes', 'POST', '/scenarios/s2/clear-attributes');
 
-    // ---- S3 Manual telemetry ----
+    // ---- Manual telemetry ----
     await hit('S3.telemetry', 'POST', '/scenarios/s3/telemetry');
 
-    // ---- S4 Exceptions ----
+    // ---- Exceptions ----
     await hit('S4.error-instance', 'POST', '/scenarios/s4/error-instance');
     await hit('S4.non-error', 'POST', '/scenarios/s4/non-error');
     await hit('S4.cause', 'POST', '/scenarios/s4/cause');
     await hit('S4.options', 'POST', '/scenarios/s4/options');
     await hit('S4.dedupe', 'POST', '/scenarios/s4/dedupe');
-    // S4.storm runs LAST — see below. It fires 200 exceptions at once and the SDK's capture rate
+    // The storm scenario runs LAST — see below. It fires 200 exceptions at once and the SDK's capture rate
     // limiter admits 100 per 60s, by design, so a storm in the MIDDLE of the sweep spends the whole
     // window's budget and starves every scenario that follows it. That is the SDK protecting itself
     // correctly; it was this harness measuring inside a window it had already spent.
 
-    // ---- S5 Crashes (in-request) ----
+    // ---- Crashes (in-request) ----
     await hit('S5.route-throw', 'GET', '/scenarios/s5/route-throw', 500);
     await hit('S5.middleware-throw', 'GET', '/scenarios/s5/middleware-throw', 500);
     await hit('S5.async-throw', 'GET', '/scenarios/s5/async-throw', 500);
     await hit('S5.timeout-throw', 'POST', '/scenarios/s5/timeout-throw', 202);
     await hit('S5.unhandled-rejection', 'POST', '/scenarios/s5/unhandled-rejection', 202);
 
-    // ---- S6 Console capture ----
+    // ---- Console capture ----
     await hit('S6.console', 'POST', '/scenarios/s6/console');
 
-    // ---- S7 Network capture ----
+    // ---- Network capture ----
     await hit('S7.fetch-get', 'GET', '/scenarios/s7/fetch-get');
     await hit('S7.fetch-post-json', 'POST', '/scenarios/s7/fetch-post-json');
     await hit('S7.fetch-post-text', 'POST', '/scenarios/s7/fetch-post-text');
@@ -200,21 +200,21 @@ async function main(): Promise<void> {
     await hit('S7.large-body', 'GET', '/scenarios/s7/large-body');
     await hit('S7.no-content-type', 'GET', '/scenarios/s7/no-content-type');
 
-    // ---- S8 Filters & redaction ----
+    // ---- Filters & redaction ----
     await hit('S8.log-redaction', 'POST', '/scenarios/s8/log-redaction');
     await hit('S8.breadcrumb-drop', 'POST', '/scenarios/s8/breadcrumb-drop');
     await hit('S8.report-mutate', 'POST', '/scenarios/s8/report-mutate');
     await hit('S8.report-veto', 'POST', '/scenarios/s8/report-veto');
     await hit('S8.network-filter', 'POST', '/scenarios/s8/network-filter');
 
-    // ---- S9 Performance / APM ----
+    // ---- Performance / APM ----
     await hit('S9.manual-span', 'POST', '/scenarios/s9/manual-span');
     await hit('S9.route-name', 'POST', '/scenarios/s9/route-name');
 
-    // ---- S10 Distributed tracing ----
+    // ---- Distributed tracing ----
     await hit('S10.outbound-trace', 'GET', '/scenarios/s10/outbound-trace');
 
-    // ---- S12 Persistence info (manual repro documented in scenarios.md) ----
+    // ---- S12 Persistence info (manual repro is described in the route note) ----
     await hit('S12.info', 'GET', '/scenarios/s12/info');
 
     // ---- route naming (nested router regression check) ----
@@ -258,11 +258,11 @@ async function main(): Promise<void> {
       ok: concurrencyOk,
     });
 
-    // ---- S4 storm, last: it deliberately spends the rate-limit window (see above) ----
+    // ---- Storm, last: it deliberately spends the rate-limit window (see above) ----
     await hit('S4.storm', 'POST', '/scenarios/s4/storm');
 
     // ---- flush + let the async pipeline drain ----
-    // The S4 storm alone enqueues 200 real uploads; the durable pipeline caps concurrency at 4
+    // The storm alone enqueues 200 real uploads; the durable pipeline caps concurrency at 4
     // in-flight operations (packages/core/src/upload-pipeline.ts bufferSize), so draining the whole
     // sweep's backlog against the REAL staging endpoint takes real wall-clock time. Poll the local
     // bundle-count instead of a fixed sleep: wait until it stops growing (drained) or a hard cap.
@@ -365,7 +365,7 @@ async function main(): Promise<void> {
       .find((t) => t.name.includes(':taskId') || t.name === 'POST /' || t.name === 'GET /:taskId');
     console.log(
       routeNamingTxn !== undefined
-        ? `[observed] a nested-router transaction name on the wire: "${routeNamingTxn.name}" — see FINDINGS.md`
+        ? `[observed] a nested-router transaction name on the wire: "${routeNamingTxn.name}"`
         : '[note] no nested-router transaction observed this run',
     );
   } finally {
@@ -426,8 +426,7 @@ async function main(): Promise<void> {
   // Written HERE, last, and not at the point the wire snapshot is taken. `wireCheck` appends to the
   // same `results` array the local checks use, and both the wire checks and the crash-child checks run
   // after that snapshot — so writing the artifact there recorded the local checks only. The agent
-  // cross-references this file against `list_issues`/`get_issue` to fill in the BACKEND depth in
-  // scenarios.md, which means a check missing from it is a check that silently never gets verified.
+  // cross-references this file against `list_issues`/`get_issue` to fill in the BACKEND depth, which means a check missing from it is a check that silently never gets verified.
   writeFileSync(
     join(ROOT, 'data', 'verify-run.json'),
     JSON.stringify(

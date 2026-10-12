@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setCarrierClient, setCarrierLastLaunch } from './carrier';
 import { relaunchWith } from './relaunch';
 
-// The deadline timer of a bounded relaunch must NEVER keep a process alive (round 2, mutation survivor m21):
+// The deadline timer of a bounded relaunch must NEVER keep a process alive:
 // a Node/Bun/Deno process whose last client stopped would otherwise sit out the full 5 s default waiting for
 // a deadline nobody needs. Two properties, both observed through the real `relaunchWith`:
 //   1. the timer handle is `unref()`ed when the runtime offers it (and a runtime whose handle has no `unref`,
@@ -45,7 +45,7 @@ function launchedCarrier(stop: () => Promise<boolean>) {
   return carrier;
 }
 
-describe('relaunchWith — the deadline timer never keeps the process alive (m21)', () => {
+describe('relaunchWith — the deadline timer never keeps the process alive', () => {
   it('unref()s the timer that bounds a stop which never settles, and the deadline still wins', async () => {
     const { handles } = installFakeTimers((fire) => {
       const handle: FakeHandle = { unref: vi.fn(), fire };

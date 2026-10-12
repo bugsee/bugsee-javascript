@@ -92,7 +92,7 @@ const opts = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => (
 
 const live: Bugsee[] = [];
 afterEach(async () => {
-  await Promise.all(live.splice(0).map((c) => c.stop(100))); // bounded: a repeat stop() now answers for a hung drain (R2L-1)
+  await Promise.all(live.splice(0).map((c) => c.stop(100))); // bounded: a repeat stop() now answers for a hung drain
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -266,7 +266,7 @@ describe('a clean stop marks its on-disk subtree recoverable, an unclean one doe
     expect(stopped(dir)).toBe(false);
   });
 
-  it('R2L-3: stop() then client.launch() before the drain settles is refused, and the stop still marks its subtree', async () => {
+  it('stop() then client.launch() before the drain settles is refused, and the stop still marks its subtree', async () => {
     const dir = dirFor();
     const onError = vi.fn();
     const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED, onError }));
@@ -280,7 +280,7 @@ describe('a clean stop marks its on-disk subtree recoverable, an unclean one doe
     expect(stopped(dir)).toBe(true); // nothing is writing into the subtree any more, so it IS recoverable
   });
 
-  it('R2L-3: a client.launch() after a SETTLED stop is refused and leaves the marker', async () => {
+  it('a client.launch() after a SETTLED stop is refused and leaves the marker', async () => {
     const dir = dirFor();
     const client = launch(
       'tok',
@@ -293,7 +293,7 @@ describe('a clean stop marks its on-disk subtree recoverable, an unclean one doe
     expect(client.isLaunched()).toBe(false);
   });
 
-  it('R2L-1: a second stop() after a refused client.launch() is the same, already settled, drain', async () => {
+  it('a second stop() after a refused client.launch() is the same, already settled, drain', async () => {
     const dir = dirFor();
     const client = launch(
       'tok',
@@ -366,7 +366,7 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options', async () => {
     const first = launch('tok-1', opts({ captureLogs: false }));
     const second = await relaunch();
     live.push(second);
@@ -390,7 +390,7 @@ describe('relaunch', () => {
     expect(transport).toHaveBeenCalled();
   });
 
-  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch (L1)', async () => {
+  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch', async () => {
     const seen: string[] = [];
     launch('tok', opts({ lifecycleEventsListener: (type) => seen.push(type) }));
     expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
@@ -405,11 +405,11 @@ describe('relaunch', () => {
     ]);
   });
 
-  it('L18: the process carrier retains the integration seams and deployment identity but no host Bugsee option', () => {
+  it('the process carrier retains the integration seams and deployment identity but no host Bugsee option', () => {
     launch('tok-1', opts({ captureLogs: false, endpoint: 'https://x.test' }));
     const retained = getCarrier().lastLaunch?.options as Record<string, unknown>;
     expect(Object.keys(retained)).not.toContain('captureLogs');
-    expect(retained.endpoint).toBe('https://x.test'); // deployment identity is kept (R2P-3)
+    expect(retained.endpoint).toBe('https://x.test'); // deployment identity is kept
     expect(getCarrier().lastLaunch?.appToken).toBe('tok-1');
   });
 

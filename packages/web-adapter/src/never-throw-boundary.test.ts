@@ -2,7 +2,7 @@ import { setCarrierClient } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reportError } from './adapter';
 
-// Wave 2.1/2.3 — the shared host boundary for @bugsee/vue, angular, svelte and solid.
+// The shared host boundary for @bugsee/vue, angular, svelte and solid.
 //
 // `reportError` runs INSIDE the framework's error seam, whose whole purpose is to make an error survivable.
 // Unguarded, an SDK-internal failure escaped into the framework AND prevented the customer's own handler
@@ -44,7 +44,7 @@ describe('reportError is a contained host boundary', () => {
 
   it('does not leave logException’s rejection unhandled in the host process', async () => {
     // `void client.logException(...)` surfaces a rejection as an unhandled rejection one tick later — which
-    // on Node is a process crash again now that Wave 2.5 restored the default disposition.
+    // on Node is a process crash again now that the default disposition has been restored.
     const g = globalThis as unknown as {
       process: { on(e: string, l: () => void): void; off(e: string, l: () => void): void };
     };

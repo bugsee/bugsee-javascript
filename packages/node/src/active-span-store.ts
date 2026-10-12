@@ -1,7 +1,7 @@
 import type { ContextProvider, RequestContext } from '@bugsee/core';
 import type { ActiveSpanStore, Transaction } from '@bugsee/performance';
 
-// The Node active-span store (D2 part 2): the JS equivalent of Android's `ThreadLocal<Span>`
+// The Node active-span store: the JS equivalent of Android's `ThreadLocal<Span>`
 // (`SpanContextHolder`). The performance controller's active transaction is keyed off the
 // AsyncLocalStorage-backed `RequestContext` — the same per-request isolation the capture
 // correlation-by-tagging foundation needs — instead of one process-wide slot shared by every
@@ -12,7 +12,7 @@ import type { ActiveSpanStore, Transaction } from '@bugsee/performance';
 // Reads are strictly private whenever a request context is active: the slot holds this execution's
 // own live stash or nothing — NEVER another execution's ambient transaction (R-1: the fallback had
 // no producer — every built-in entry opens the context before starting its transaction — and every
-// fallback read is the D2 hazard direction). The ambient single slot serves ONLY context-less
+// fallback read is the hazard direction). The ambient single slot serves ONLY context-less
 // executions (startup, background work), where the behavior is exactly today's. Writes with no
 // current context land in the ambient slot. Known limitation, documented not fixed: contexts nested
 // via a second store.run() inside an enterWith-opened context read private-empty (there is no
@@ -42,7 +42,7 @@ import type { ActiveSpanStore, Transaction } from '@bugsee/performance';
 // mis-attributes `server-instrument.ts`'s `http.route` merge and the capture-ring `contextId` for a
 // pipelined request — pre-existing, wider than this seam, tracked separately.
 //
-// Type-only imports: `@bugsee/performance` stays value-free here (R2-8 — a value import would
+// Type-only imports: `@bugsee/performance` stays value-free here (a value import would
 // eagerly load the whole opt-in APM barrel into every `@bugsee/node` consumer).
 
 const ACTIVE_TRANSACTION = Symbol.for('bugsee.performance.activeTransaction');

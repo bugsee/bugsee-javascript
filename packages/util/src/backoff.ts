@@ -1,6 +1,6 @@
 /**
  * Exponential backoff with symmetric jitter, used by the upload pipeline's retry logic
- * (design §7.5 / §14.8: start 5 s, max 1 h, jitter ±10%).
+ * (start 5 s, max 1 h, jitter ±10%).
  *
  * `random` is injectable so callers (and tests) can make the jitter deterministic; it must
  * return a value in [0, 1) like `Math.random`.
@@ -33,7 +33,7 @@ export function computeBackoff(attempt: number, options: BackoffOptions = {}): n
   const capped = Math.min(exponential, maxDelayMs);
   const jitter = 1 + (random() * 2 - 1) * jitterRatio;
   const jittered = capped * jitter;
-  // maxDelayMs is a hard ceiling: jitter must not push the delay above it (design §14.8).
+  // maxDelayMs is a hard ceiling: jitter must not push the delay above it.
   const bounded = jittered > maxDelayMs ? maxDelayMs : jittered;
 
   return bounded > 0 ? bounded : 0;

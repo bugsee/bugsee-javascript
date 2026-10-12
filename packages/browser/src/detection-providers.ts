@@ -10,7 +10,7 @@ import {
 import { BugseeOption } from '@bugsee/protocol';
 import { parseStack } from './stack';
 
-// Browser crash/error detection providers (design §3.2 globalErrorInterceptor on the browser, §8.5
+// Browser crash/error detection providers (globalErrorInterceptor on the browser,
 // mechanisms). Each subscribes to a window event and submits a ReportingRequest via
 // DetectionProviderBase: `error` → crash (mechanism 'uncaught'), `unhandledrejection` → error
 // (mechanism 'unhandledrejection'). They DETECT + submit only; flush policy lives in launch(). The
@@ -39,7 +39,7 @@ function describeError(value: unknown): { summary: string; description?: string 
   return { summary: String(value) };
 }
 
-/** Structured crash.json (SC3) from a thrown value — `handled: false` (uncaught). A non-Error gets a
+/** Structured crash.json from a thrown value — `handled: false` (uncaught). A non-Error gets a
  *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
 function crashOf(value: unknown): CrashJson {
   return buildCrashJson(value, { parseStack, handled: false });

@@ -3,7 +3,7 @@ import { annotateMarkup } from './annotate';
 import { componentNameFromFilename } from './component-name';
 import { injectRenderSpan, type SvelteScriptInput } from './render-span-inject';
 
-// @bugsee/svelte-plugin-component-annotate — a Svelte PREPROCESSOR (the Svelte emit side of the shared D2/D3
+// @bugsee/svelte-plugin-component-annotate — a Svelte PREPROCESSOR (the Svelte emit side of the shared
 // component-attribution mechanism). It stamps each `.svelte` component's host elements with
 // `data-bugsee-component="<Name>"` (the name derived from the file), so the @bugsee/browser runtime can
 // attribute a captured interaction/error to the COMPONENT that rendered the target. The Svelte counterpart to

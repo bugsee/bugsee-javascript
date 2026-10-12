@@ -1,4 +1,4 @@
-// @bugsee/replay — the rrweb recorder capture-provider (RP4, design D7). Mirrors @bugsee/capture's
+// @bugsee/replay — the rrweb recorder capture-provider. Mirrors @bugsee/capture's
 // log-provider: it subscribes to a SOURCE (rrweb `record`) and routes each event to the aggregator as a
 // `replay` capture entry — so replay events flow through the existing rolling ring / redaction / bounding
 // pipeline for free (one uniform data model). `checkoutEveryNms` (a full snapshot cadence) bounds the ring
@@ -30,7 +30,7 @@ export interface CanvasRecordConfig {
 export interface ReplayCaptureProviderOptions {
   /** The rrweb record function (`@bugsee/rrweb` `record`). */
   record: ReplayRecordFn;
-  /** Fail-closed masking/blocking config (RP1). */
+  /** Fail-closed masking/blocking config. */
   masking: ResolvedReplayMasking;
   /** Full-snapshot cadence (ms) — bounds the retained ring window to one interval. Default 60000. */
   checkoutEveryNms?: number;
@@ -85,7 +85,7 @@ const CUSTOM_EVENT_TYPE = 5;
  * The tag of the rrweb custom events the recorder emits at the start (`payload.active: true`) and end
  * (`false`) of a blackout, so a player can show "blacked out" instead of a frozen pre-blackout screen.
  * Backwards compatible: players that do not know the tag ignore custom events. The viewer rendering is a
- * follow-up (see docs/design/blackout.md).
+ * follow-up.
  */
 export const BLACKOUT_MARKER_TAG = 'bugsee.blackout';
 
@@ -172,10 +172,10 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
       ...this.#canvasForThisStart(),
       checkoutEveryNms: this.#checkoutEveryNms,
       // Cross-origin iframes are never recorded (privacy); same-origin iframes are blocked via the masking
-      // blockSelector (fail-closed, RP1).
+      // blockSelector (fail-closed).
       recordCrossOriginIframes: false,
       emit: (event) => {
-        // Blackout suspends VISUAL capture only (design §401 / startBlackout); a stale session is dead.
+        // Blackout suspends VISUAL capture only (see startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
           this.capture('replay', event.timestamp, event);
         }

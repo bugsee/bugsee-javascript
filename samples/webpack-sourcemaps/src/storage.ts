@@ -1,6 +1,6 @@
 // Local persistence for the Markdown Notes app — plain `localStorage`, no backend database (the
 // backend under test in this sample is the SOURCE-MAP upload pipeline, not a data API). Real notes,
-// real CRUD, real IDs — this is the "genuinely useful app" half of the sample (PLAN §3).
+// real CRUD, real IDs — this is the "genuinely useful app" half of the sample.
 import type { Note, NoteDraft } from './types';
 
 const STORAGE_KEY = 'bugsee-sample.webpack-sourcemaps.notes.v1';

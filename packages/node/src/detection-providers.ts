@@ -10,7 +10,7 @@ import {
 import { BugseeOption } from '@bugsee/protocol';
 import { markOwnHandler } from './process-policy';
 
-// Node crash/error detection providers (design §3.2 globalErrorInterceptor on Node, §8.5 mechanisms).
+// Node crash/error detection providers (the globalErrorInterceptor equivalent on Node).
 // Each subscribes to a process event and submits a ReportingRequest via DetectionProviderBase:
 // uncaughtException → crash (mechanism 'uncaught'), unhandledRejection → error (mechanism
 // 'unhandledrejection'). They DETECT + submit only; the flush-then-exit policy (uncaught: flush
@@ -57,7 +57,7 @@ abstract class NodeProcessDetectionProvider extends DetectionProviderBase {
   protected readonly enrichFrames: FrameEnricher | undefined;
   readonly #proc: ProcessEvents;
   // Marked as Bugsee-owned so the process policy can tell OUR listeners from the host's — the SDK installs
-  // more than one listener per event, so a raw count cannot answer "does the host handle this too?" (D2).
+  // more than one listener per event, so a raw count cannot answer "does the host handle this too?".
   readonly #handler = markOwnHandler((value: unknown): void => this.onDetected(value));
 
   constructor(proc: ProcessEvents, enrichFrames?: FrameEnricher) {

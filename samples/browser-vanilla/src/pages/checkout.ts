@@ -2,7 +2,7 @@ import { getCart, clearCart } from '../lib/cart';
 import { postCheckout } from '../lib/api';
 import { getClient } from '../bugsee-client';
 
-// The checkout form is the masking target for S11: a password field and a credit-card field, both
+// The checkout form is the masking target for session replay: a password field and a credit-card field, both
 // real <input>s the replay recorder must mask under the default (fail-closed) `maskAllInputs`.
 
 export function renderCheckout(container: HTMLElement): void {

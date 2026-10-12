@@ -126,7 +126,7 @@ describe('createObscuringChannel', () => {
     expect(bridge.posted).toHaveLength(0); // a pull never crosses the bridge
   });
 
-  it('emit() posts the current rects (the native `snapshot` command path)', () => {
+  it('emit posts the current rects (the native `snapshot` command path)', () => {
     const { bridge, channel } = setup({ [HIDE]: [el(0)] });
     channel.emit();
     expect(bridge.posted).toHaveLength(1); // emit() only — start() was never called

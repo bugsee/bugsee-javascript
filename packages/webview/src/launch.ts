@@ -68,23 +68,23 @@ import { blackoutMessage, byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
-// @bugsee/webview launch() — the WebView composition root (docs/design/webview-bridge.md §5/§10). A WebView is a
+// @bugsee/webview launch — the WebView composition root. A WebView is a
 // browser environment whose OUTPUT SINK is the native host, not the network: this reuses @bugsee/browser-family
 // capture (console→log + network in slice 1; full parity in slice 2) over a HostBridgeCaptureStore that STREAMS
 // each entry across the WebView boundary — NO transport / upload pipeline / bundle store / IndexedDB (native is
 // the ring buffer + the bundler). On launch it opens a `hello` handshake (declaring its capabilities, which
-// are recorded nowhere by native and decide nothing — D-A7) and exposes `__bugsee_bridge.control` for control.
-// WebView-originated report TRIGGERING is gated behind `reportTrigger` (D5, default off) — wired in slice 2.
+// are recorded nowhere by native and decide nothing) and exposes `__bugsee_bridge.control` for control.
+// WebView-originated report TRIGGERING is gated behind `reportTrigger` (default off) — wired in slice 2.
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
 export const SDK_VERSION = BUGSEE_SDK_VERSION;
 
 /** WebView-local identifier of the `captureObscuring` switch: no cross-SDK identity. */
-/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged (R4V-9). */
+/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged. */
 const NATIVE_REPLY_DEADLINE_MS = 5000;
 const OBSCURING_OPTION_KEY = 'com.bugsee.option.capture.obscuring';
 
-/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported (R3V-3). */
+/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported. */
 const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   {
@@ -106,7 +106,7 @@ const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
  *
  * A network filter is invoked with every event, body included, and REPLACES the default sanitizer — so
  * that one line is a capture tap that also switches off default redaction. `setLogEventFilter(() => null)`
- * suppresses, and `stop()` kills. None of it needs a sink to shadow, a race to win, or the D-A10 secret:
+ * suppresses, and `stop()` kills. None of it needs a sink to shadow, a race to win, or the secret:
  * it walks around every defence the bridge has.
  *
  * That exposure is correct for @bugsee/browser, where the page IS the app and the client is its own API.
@@ -118,7 +118,7 @@ const launchedClients = new WeakMap<object, Bugsee>();
 const carrierKey = (carrier: object | undefined): object => carrier ?? globalThis;
 
 // The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
-// nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
+// nothing: a claim arriving from the page must never reduce masking. The `obscuring`
 // capability is added DYNAMICALLY (only when the obscuring channel is active — a DOM is present + not opted out)
 // so native knows whether this SDK contributes a masking source at all — rects it ADDS to its own mask, never
 // a reason to stand that mask down. The DOM viewtree + performance streams land in later slices.
@@ -178,7 +178,7 @@ export interface BugseeWebViewLaunchOptions {
   /**
    * Stream the viewport rects of sensitive elements (password / payment inputs + `.bugsee-hide`) so native masks
    * them in its captured frames. Default true. When on, the SDK declares the `obscuring` capability and streams
-   * rects native ADDS to its own mask (D-A7 — native never stands its masking down for a page-supplied claim).
+   * rects native ADDS to its own mask (native never stands its masking down for a page-supplied claim).
    *
    * Turning it off does NOT fall back to legacy masking: on the advanced path the legacy in-page script is not
    * injected, so opting out leaves this SDK contributing no rects at all.
@@ -186,14 +186,14 @@ export interface BugseeWebViewLaunchOptions {
   captureObscuring?: boolean;
 
   /**
-   * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug. D5:
+   * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug:
    * default OFF. Native is the authority on opening bugs; the incident ALWAYS streams up as a `crash` timeline
    * entry regardless, so the web error enriches whatever report native opens. Native may also toggle this via
    * the handshake config.
    */
   reportTrigger?: boolean;
 
-  // Redaction filters (D3) — optional JS-side scrubbing. By default the FilterStore is empty, content streams
+  // Redaction filters — optional JS-side scrubbing. By default the FilterStore is empty, content streams
   // un-redacted (`red:false`) and native applies its canonical filters; setting any of these runs it in JS
   // before crossing (the crossing is stamped `red:true`) AND native re-applies, so the union is enforced.
   /** Per-network-event filter: mutate the event, or return null to DROP it. */
@@ -206,7 +206,7 @@ export interface BugseeWebViewLaunchOptions {
   reportHandler?: ReportHandler;
 
   /**
-   * A secret minted by NATIVE and passed in through the injected bootstrap (D-A10).
+   * A secret minted by NATIVE and passed in through the injected bootstrap.
    *
    * Native chooses the bytes of the bundle it injects and, via document-start, runs them before any page
    * script — the one asymmetry native holds over the page. A nonce carried that way is a secret the page
@@ -220,7 +220,7 @@ export interface BugseeWebViewLaunchOptions {
 
   /**
    * A second native-minted secret, stamped on every OUTGOING message so native can drop capture it did not
-   * send (D-A11). Also arrives through the injected bootstrap.
+   * send. Also arrives through the injected bootstrap.
    *
    * Separate from {@link controlNonce} on purpose. This one has to travel the wire to do its job, so a page
    * script that shadowed `BugseeBridge` before the sink was pinned will read it — and that is survivable,
@@ -231,7 +231,7 @@ export interface BugseeWebViewLaunchOptions {
 
   /**
    * Which native sink to use, declared by native in the bootstrap it interpolates into the injected
-   * bundle (D-A11's out-of-band route).
+   * bundle (the out-of-band route for the capture nonce).
    *
    * Native knows which handler it registered and the page does not. That asymmetry is the whole value:
    * each native populates one of the two interface names and leaves the other permanently VACANT — so a
@@ -285,7 +285,7 @@ interface BridgeSession {
 
 /** The stopped state. `snapshot()` must still answer `'[]'` rather than throw: native pulls it synchronously
  *  at frame-capture time, and an exception there propagates into `evaluateJavascript` — the fail-open shape
- *  fixed as SEV1-1. A stopped SDK legitimately has no rects. */
+ * fixed earlier. A stopped SDK legitimately has no rects. */
 const INERT_SESSION: BridgeSession = {
   control: (): void => {},
   snapshot: (): string => '[]',
@@ -298,7 +298,7 @@ const INERT_SESSION: BridgeSession = {
  * page script that pre-owns the name makes `defineProperty` throw, and the SDK must then fail closed
  * rather than advertise a control surface it does not have. `auth` holds the one-way latch at GLOBAL
  * scope, not per-launch: `launch` is itself a page global, so a per-launch latch could be reset simply by
- * relaunching (review round 1).
+ * relaunching.
  */
 interface BridgeSlot {
   session: BridgeSession;
@@ -309,8 +309,7 @@ interface BridgeSlot {
 const BRIDGE_SLOTS = new WeakMap<object, BridgeSlot>();
 
 /**
- * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
- * (Wave 0.3 / D-A3, docs/design/webview-bridge-auth.md).
+ * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to.
  *
  * `Object.freeze(obj)` — what this used to do — protects the object and leaves the binding
  * `{writable: true, configurable: true}`, so a page script could swap the whole thing: `snapshot()` then
@@ -406,7 +405,7 @@ export function launchWithSeams(
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
 
-  // The lifecycle listener must not live on the page-reachable carrier (R5L-1): move it module-private BEFORE
+  // The lifecycle listener must not live on the page-reachable carrier: move it module-private BEFORE
   // anything installs one (the `lifecycleEventsListener` option is installed during client creation below).
   sealCarrierLifecycleSlot(carrier);
 
@@ -438,7 +437,7 @@ export function launchWithSeams(
     WEBVIEW_OPTION_DEFINITIONS,
     options.onError,
   );
-  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON (R3V-3).
+  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON.
   const obscuringEnabled = resolved.options.get<boolean>(OBSCURING_OPTION_KEY, true);
 
   const services = createServiceContainer();
@@ -448,7 +447,7 @@ export function launchWithSeams(
   const bridge = createHostBridge({
     global,
     // Stamped on every outgoing message so native can distinguish this SDK's capture from a page script's
-    // (D-A11). A SEPARATE secret from `controlNonce`, deliberately: this one necessarily travels the wire,
+    // A SEPARATE secret from `controlNonce`, deliberately: this one necessarily travels the wire,
     // so a script that shadowed `BugseeBridge` before we pinned it (the page-ready fallback) reads it. That
     // costs forged capture, which such a script could already produce. Reusing the control nonce here would
     // additionally hand it `cmd:"stop"` — turning a tap into a kill switch.
@@ -459,7 +458,7 @@ export function launchWithSeams(
   // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
   let seqN = 0;
   const seq = (): number => seqN++;
-  // Control state flipped by native commands (§7): `paused` drops the capture stream while backgrounded; flush
+  // Control state flipped by native commands: `paused` drops the capture stream while backgrounded; flush
   // + stop delegate to `publicClient`, assigned at the end of launch — the onCommand closure reads it only when
   // native actually sends a command (always after launch returns). `snapshot` re-pushes the current secure-area
   // rects via the obscuring channel (assigned below; native usually PULLS them synchronously via
@@ -469,7 +468,7 @@ export function launchWithSeams(
   let obscuring: ObscuringChannel | undefined; // TOP frame: the native I/O channel
   // Set once the probe has run (below). Read by BOTH the start() path and the native snapshot command.
   let obscuringWorks = false;
-  // The per-session control token (Wave 0.3 / D-A1). Minted from a CSPRNG — NOT `randomId()`, whose
+  // The per-session control token. Minted from a CSPRNG — NOT `randomId()`, whose
   // fallback is `Math.random()` and which documents itself as unsuitable for secrets (see control-token.ts).
   // `undefined` when the runtime has no CSPRNG: the channel then stays unauthenticated, which is the
   // documented pre-upgrade state and strictly better than a token the page can predict.
@@ -481,7 +480,7 @@ export function launchWithSeams(
   // bridge SURFACE (`BugseeBridge` / `__bugsee_bridge`), not a realm, and the CSPRNG must come from the
   // realm actually executing this code.
   //
-  // A NATIVE-minted nonce supersedes all of that when present (D-A10). Native interpolates it into the
+  // A NATIVE-minted nonce supersedes all of that when present. Native interpolates it into the
   // bundle it injects, so it reaches this SDK by a route the page never observes, and native knew it before
   // the first message — no publication in `hello`, no open period, no latch to arm. The JS-minted token
   // remains for hosts that pass no nonce.
@@ -489,7 +488,7 @@ export function launchWithSeams(
   const controlToken =
     nativeSecret === undefined && bridge.available ? mintControlToken() : undefined;
   // Set once native has answered the handshake (the control reply): until then it cannot have declared anything,
-  // so "native has not declared blackout support" is not yet a finding (R3V-5). `judgeNativeBlackout` is bound
+  // so "native has not declared blackout support" is not yet a finding. `judgeNativeBlackout` is bound
   // below, where the blackout state exists.
   let nativeReplied = false;
   let judgeNativeBlackout: (() => void) | undefined;
@@ -524,7 +523,7 @@ export function launchWithSeams(
       // unknown → ignored.
     },
   });
-  // D3 redaction provenance: read the live `filters` service (registered by createClient into `services` below,
+  // redaction provenance: read the live `filters` service (registered by createClient into `services` below,
   // mutated by the JS-side filter options + the returned client's set* methods) to stamp each crossing's `red`
   // flag — per entry type for the stream, per report handler for incidents. Lazy: the store/pipeline are built
   // before the service is registered, and a filter may be set after launch.
@@ -539,8 +538,8 @@ export function launchWithSeams(
       paused: () => paused,
       redactedFor: provenance.forEntry,
     });
-  // The report path replaces bundle-assembly+upload (D2): every detected incident / logException streams up as
-  // a `crash` entry (always, D5), plus a report TRIGGER gated on `reportTrigger` (read dynamically).
+  // The report path replaces bundle-assembly+upload: every detected incident / logException streams up as
+  // a `crash` entry (always), plus a report TRIGGER gated on `reportTrigger` (read dynamically).
   const triggerPipeline = createWebViewReportPipeline({
     bridge,
     reportTriggerEnabled: () => control.config.reportTrigger,
@@ -550,13 +549,13 @@ export function launchWithSeams(
 
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
-    // the same one every client of this WebView sees (R2L-4).
+    // the same one every client of this WebView sees.
     carrier: carrier ?? globalThis,
     // stop() clears the carrier slot and makes the control binding inert, so a stopped client must not be
-    // restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    // restarted in place: a new one comes from `launch(appToken)`.
     restartable: false,
     // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox stack (every iOS
-    // WebView) would ship `frames: []` in crash.json (R3P-1).
+    // WebView) would ship `frames: []` in crash.json.
     stackParser: parseStack,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -573,7 +572,7 @@ export function launchWithSeams(
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
 
-  // Install any JS-side redaction filters (D3) into the `filters` service via the facade. The capture providers
+  // Install any JS-side redaction filters into the `filters` service via the facade. The capture providers
   // + the report path then run them before crossing; the provenance above stamps `red` accordingly.
   if (options.networkFilter !== undefined) {
     client.setNetworkEventFilter(options.networkFilter);
@@ -603,19 +602,19 @@ export function launchWithSeams(
 
   // === SUB-FRAME: obscuring only, and nothing else =============================================
   //
-  // A WebView has ONE Bugsee session, owned by the top frame. A sub-frame that is injected (D9) exists to
+  // A WebView has ONE Bugsee session, owned by the top frame. A sub-frame that is injected exists to
   // contribute its secure-area rects to the top frame's composed union — that is the whole job.
   //
   // Everything below this branch is deliberately skipped in a sub-frame:
   //  - `hello`: the protocol is one handshake per WebView. N frames posting N hellos makes the session id,
   //    N sessions' worth of handshakes for one WebView. (The sharper version — whichever frame's hello decided
-  //    the retained token and the obscuring capability — is gone: native retains nothing, D-A10, and `caps`
-  //    decides nothing, D-A7.)
+  //    the retained token and the obscuring capability — is gone: native retains nothing, and `caps`
+  //    decides nothing.)
   //  - the control token: a sub-frame can never RECEIVE control — `evaluateJavascript` targets the top
   //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
   //    would be rejected as a mismatch.
   //  - capture: each frame keeps its own `seq` from 0, so entries from different frames collide in
-  //    ordering. And D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66) — running
+  //    ordering. And the design keeps Bugsee OUT of third-party content — running
   //    a full capture stack inside every ad/OAuth/payment iframe is the opposite of that.
   //  - `client.launch()`: `isLaunched()` stays false, which is truthful. This frame captures nothing.
   //
@@ -696,7 +695,7 @@ export function launchWithSeams(
   // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
   // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
   let warnedNativeBlackout = false;
-  // Only the client that owns the process may speak for it (R3V-1): one that has been stopped (its stream is
+  // Only the client that owns the process may speak for it: one that has been stopped (its stream is
   // finalized: `bye` was posted) or whose carrier slot another client has taken must not tell native anything.
   // A launch that has not reached the slot yet still announces (a blackout carried over from an earlier client).
   let torn = false;
@@ -709,9 +708,9 @@ export function launchWithSeams(
     return current === undefined || current === ownFacade;
   };
   // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
-  // blackout is announced at launch, before any reply could possibly have arrived): R3V-5.
+  // blackout is announced at launch, before any reply could possibly have arrived).
   let judgementPending = false;
-  // …but not for ever (R4V-9): a legacy receiver that never answers the handshake, with a single blackout change,
+  // …but not for ever: a legacy receiver that never answers the handshake, with a single blackout change,
   // would leave the integrator unwarned that the native video keeps running. The wait is bounded; `stop()` judges too.
   let judgementTimer: unknown;
   const clearJudgementTimer = (): void => {
@@ -770,7 +769,7 @@ export function launchWithSeams(
     () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate (R2V-3).
+  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate.
   bindInputBlackout(inputSource, blackout);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
@@ -805,21 +804,21 @@ export function launchWithSeams(
 
   // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path
   // (triggerPipeline above) ALWAYS streams the incident as a `crash` entry; whether it ALSO opens a native bug
-  // is gated by `reportTrigger` (D5, default off). Skipped if there is no window.
+  // is gated by `reportTrigger` (default off). Skipped if there is no window.
   if (win !== undefined) {
     client.addDetectionProvider(createWindowErrorProvider(win));
     client.addDetectionProvider(createUnhandledRejectionProvider(win));
   }
 
-  // Obscuring (D9): when there is a DOM and it isn't opted out, track the secure-area rects so native masks
+  // Obscuring: when there is a DOM and it isn't opted out, track the secure-area rects so native masks
   // sensitive pixels. Obscuring runs in EVERY injected frame, but the frame's role differs (sub-frame rect
   // COMPOSITION — the legacy VIEWS_BUBBLE port):
   //   - the TOP frame owns the native I/O (the channel): it composes its own rects + the rects bubbled up from
   //     sub-frames into DOCUMENT-ABSOLUTE coordinates, posts the union as `secure`, and declares the `obscuring`
-  //     capability, which native adds to its own mask rather than standing that mask down (D-A7);
+  // capability, which native adds to its own mask rather than standing that mask down;
   //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
   //     by the sub-frame branch above, which returns before reaching here.
-  // (Native never drops its own masking for this — D-A7. The union is what makes the whole path monotone.)
+  // (Native never drops its own masking for this. The union is what makes the whole path monotone.)
   if (obscuringEnabled && domDocument !== undefined) {
     obscuring = createObscuringChannel({
       bridge,
@@ -833,13 +832,13 @@ export function launchWithSeams(
   // only once a collection has been PROVEN to work. The claim cannot be retracted — the protocol has no
   // retraction message — so on a page where
   // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
-  // answer (docs/review/webview.md SEV1 #2).
+  // answer.
   //
   // The probe result gates the CHANNEL as well as the capability. Declaring nothing but starting anyway
   // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
   // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
   // from `caps`.
-  // Fail CLOSED on both counts (review round 1). The probe already covered "collection is broken"; the
+  // Fail CLOSED on both counts. The probe already covered "collection is broken"; the
   // second half is that a control surface we do not own is just as disqualifying. Declaring `obscuring` tells
   // native this SDK supplies rects; advertising it while the page owns `__bugsee_bridge` means the rects it
   // expects never arrive, and on the advanced path there is no other in-WebView mask source — so the pixels
@@ -850,7 +849,7 @@ export function launchWithSeams(
   // The native→JS control entry point: native calls `__bugsee_bridge.control(json)` via evaluateJavascript for
   // the handshake reply + commands; it also PULLS the current secure-area rects synchronously at frame-capture
   // time via `__bugsee_bridge.snapshot()` (serialized rects; `[]` when obscuring is off).
-  // The binding itself is immutable (D-A3); what a launch swaps is the SESSION behind it.
+  // The binding itself is immutable; what a launch swaps is the SESSION behind it.
   const mySession: BridgeSession = {
     control: control.control,
     snapshot: (): string => obscuring?.snapshot() ?? '[]',
@@ -858,9 +857,9 @@ export function launchWithSeams(
   bridgeSlot.session = mySession;
 
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
-  // is recorded nowhere by native and decides nothing (D-A7).
+  // is recorded nowhere by native and decides nothing.
   //
-  // The token rides this message ONLY when a native sink is already attached (review round 1, SEV1). When
+  // The token rides this message ONLY when a native sink is already attached. When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
   // later — and a page script can be that sink, which is precisely the tap this whole wave exists to stop.
   // Handing it the token would be worse than sending none: it could then authenticate, arm the one-way
@@ -873,7 +872,7 @@ export function launchWithSeams(
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
 
-  // The CURRENT state is restated after `hello`, always (R3V-5, R4L-3). A blackout CARRIED over from a previous
+  // The CURRENT state is restated after `hello`, always. A blackout CARRIED over from a previous
   // client is already in force and never fires `onChange`, so native has to be told. An INACTIVE one is posted
   // too (`a:false`): native resets the JS-reported flag on `bye`/`hello`, but a torn client whose
   // `endBlackout()` was suppressed toward native (it had already said `bye`) would otherwise leave an older
@@ -893,7 +892,7 @@ export function launchWithSeams(
   }
 
   // The public client. stop() clears the per-WebView carrier slot and makes the control global INERT — the
-  // binding is non-configurable and cannot be removed (D-A3), so a later launch() re-points the session
+  // binding is non-configurable and cannot be removed, so a later launch() re-points the session
   // behind it rather than starting from a fresh binding.
   const stopCore = client.stop;
   // The carrier holds this facade, not the client: keep the reference so `stop()` can release the slot only
@@ -904,10 +903,10 @@ export function launchWithSeams(
     ...client,
     stop(timeout?: number): Promise<boolean> {
       torn = true;
-      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now (R4V-9)
+      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
-      // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
+      // Ownership-checked: a late or duplicate stop from a stale handle must not clear the slot, or
       // the module's `launchedClients` entry, of a NEWER launch that has since taken them.
       if (getCarrierClient<unknown>(carrier) === facade) {
         setCarrierStatus(BugseeStatus.Stopped, carrier);
@@ -918,9 +917,9 @@ export function launchWithSeams(
           launchedClients.delete(key);
         }
       }
-      // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
+      // The binding cannot be removed — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
-      // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
+      // Only revert if this session is still the CURRENT one. The slot is shared per
       // global, so a late/duplicate stop() from a stale handle would otherwise make a NEWER live session
       // inert — control and the frame-time snapshot dead while capture keeps flowing.
       if (bridgeSlot.session === mySession) {
@@ -1016,11 +1015,11 @@ function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void)
     },
     addService: (): void => refuse('addService'),
     registerExt: (): void => refuse('registerExt'),
-    // Redaction control (R4L-6 / R4V-7): ending a blackout un-redacts the visual capture and a lifecycle
+    // Redaction control: ending a blackout un-redacts the visual capture and a lifecycle
     // listener observes the session; a page may do neither. `startBlackout` stays (it only fails closed).
     endBlackout: (): void => refuse('endBlackout'),
     setLifecycleEventsListener: (): void => refuse('setLifecycleEventsListener'),
-    // Control the old spread passed through live (R5L-1): provider/filter registration and relaunch control.
+    // Control the old spread passed through live: provider/filter registration and relaunch control.
     setSpanFilter: (): void => refuse('setSpanFilter'),
     addCaptureProvider: (): void => refuse('addCaptureProvider'),
     addDetectionProvider: (): void => refuse('addDetectionProvider'),
@@ -1054,7 +1053,7 @@ function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugs
     undefined,
   );
   const noop = (): void => {};
-  // Every other call is a no-op that SAYS so, once per method (R3V-7): a page can call these at will, so the
+  // Every other call is a no-op that SAYS so, once per method: a page can call these at will, so the
   // report is rate-limited the way every other once-only diagnostic here is.
   const told = new Set<string>();
   const say = (method: string): void => {
@@ -1090,7 +1089,7 @@ function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugs
   return {
     startBlackout: ignored('startBlackout'),
     endBlackout: ignored('endBlackout'),
-    // The session belongs to another module copy, but the carrier is shared (R4V-10): read the process flag and
+    // The session belongs to another module copy, but the carrier is shared: read the process flag and
     // the OWNER's published state instead of claiming "not dark" / "Launched" for ever.
     isBlackout: (): boolean => getCarrierBlackout(carrier),
     getStatus: (): BugseeStatus =>

@@ -1,10 +1,10 @@
-// Edge-runtime end-to-end harness (X2 + X3).
+// Edge-runtime end-to-end harness (bundle-size guard + real-edge VM smoke).
 //
-//   X2 — bundle-size guard: bundle each edge SDK package the way wrangler / Vercel would (single minified ESM,
+//   Bundle-size guard: bundle each edge SDK package the way wrangler / Vercel would (single minified ESM,
 //        node:* external) and assert the gzipped size stays well under a regression budget (and far under the
 //        Workers 3 MB free / 10 MB paid compressed limits), and that the bundle has NO static node:* import (a
 //        leak that would break the edge bundle).
-//   X3 — real-edge VM smoke: evaluate the bundled edge SDK in @edge-runtime/vm — an actual WinterCG isolate (V8,
+//   Real-edge VM smoke: evaluate the bundled edge SDK in @edge-runtime/vm — an actual WinterCG isolate (V8,
 //        fetch/Request/Response/crypto.subtle, NO node:*) — fire an incident from withBugseeFetch (Vercel Edge),
 //        withBugsee (Cloudflare), and an instrumented Durable Object, and assert the mock collector received the
 //        uploaded bundle. This is the proof the in-process unit tests (node + injected fakes) cannot reach: the
@@ -22,15 +22,14 @@ const KB = 1024;
 const GZIP_BUDGET = 150 * KB;
 const WORKERS_FREE_LIMIT = 3 * KB * KB;
 
-describe('X2 — edge bundle-size guard', () => {
+describe('edge bundle-size guard', () => {
   // The node:* builtins each package is ALLOWED to import statically.
   //
   // @bugsee/vercel-edge: none. It must run on any WinterCG isolate.
   //
   // @bugsee/cloudflare: exactly `node:async_hooks`, and nothing else. globalThis.AsyncLocalStorage does not
   // exist on workerd under ANY compatibility flag, so this is the only route to per-request context there —
-  // which is why `nodejs_compat` is a documented REQUIREMENT of the package (Wave 0.1 S0,
-  // docs/design/cloudflare-tenant-isolation.md §7). The allowlist is deliberately EXACT rather than relaxed
+  // which is why `nodejs_compat` is a documented REQUIREMENT of the package. The allowlist is deliberately EXACT rather than relaxed
   // to "any node import": a second builtin creeping in would still fail here.
   const ALLOWED_NODE_IMPORTS: Record<string, string[]> = {
     '@bugsee/vercel-edge': [],
@@ -55,7 +54,7 @@ describe('X2 — edge bundle-size guard', () => {
   }
 });
 
-describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () => {
+describe('real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () => {
   let collector: MockCollector;
   let bundleCode: string;
 
@@ -109,8 +108,7 @@ describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () 
   // Runs last, so it covers every upload the three smokes above produced. The collector schema-validates
   // each session/issue/manifest/request.json and RECORDS failures; that recording is inert unless a suite
   // reads it, and until now only the node/bun/deno suite did. A wire break on the EDGE assembler — a
-  // different assembler from the node one — would have been recorded and silently discarded
-  // (docs/review/session-integration-review.md SEV2 #1).
+  // different assembler from the node one — would have been recorded and silently discarded.
   it('none of the edge upload paths violate the upload contract', () => {
     assertNoContractViolations(collector);
   });

@@ -1,11 +1,11 @@
-// S7 network-capture fixtures — deliberately RAW `fetch`/`XMLHttpRequest`, not Angular's HttpClient
+// Network-capture fixtures — deliberately RAW `fetch`/`XMLHttpRequest`, not Angular's HttpClient
 // (the app's real CRUD flows already exercise HttpClient/XHR — see core/expense.service.ts and
 // app.config.ts's `provideHttpClient()` comment). Mirrors samples/react-spa/src/api/client.ts's
-// scenarioApi 1:1 so the two samples' scenarios.md read the same way.
+// scenarioApi 1:1.
 const BASE = '/api';
 // The API server's OWN origin (`server/api-server.mjs`, PORT default 5336). Everything else in this
 // file goes through the relative `/api` path, which `proxy.conf.json` proxies to that same server —
-// same-origin from the browser's point of view. S10 needs the cross-origin view of the same routes
+// same-origin from the browser's point of view. The distributed-tracing scenario needs the cross-origin view of the same routes
 // (see `getEchoHeadersCrossOrigin*` below), which is what this constant is for.
 const API_ORIGIN = 'http://localhost:5336';
 
@@ -46,7 +46,7 @@ export const scenarioApi = {
     // Nothing listens on 5398 — a genuine connection-refused, not a fabricated error.
     fetch('http://localhost:5398/nope'),
   getSlow: (ms: number): Promise<Response> => fetch(`${BASE}/scenario/slow?ms=${ms}`),
-  // S8 network-filter fixtures: a secret header + a secret body field the filter must strip/redact
+  // Network-filter fixtures: a secret header + a secret body field the filter must strip/redact
   // before the event reaches the capture ring, and a URL the filter vetoes outright.
   postSecret: (): Promise<Response> =>
     fetch(`${BASE}/scenario/echo`, {
@@ -55,7 +55,7 @@ export const scenarioApi = {
       body: JSON.stringify({ ssn: '123-45-6789', note: 'ordinary field, not redacted' }),
     }),
   getVetoTarget: (): Promise<Response> => fetch(`${BASE}/scenario/get?veto-me=1`),
-  // S10: the SDK's fetch interceptor stamps an outbound `traceparent` header; the server echoes back
+  // The SDK's fetch interceptor stamps an outbound `traceparent` header; the server echoes back
   // every header it received so the client can confirm the header actually left the process.
   //
   // THREE probes, because the same-origin one alone cannot falsify `tracePropagationTargets`:

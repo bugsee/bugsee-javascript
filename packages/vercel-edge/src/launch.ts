@@ -52,18 +52,18 @@ import {
   type RunScopedStore,
 } from './request-context-store';
 
-// The edge composition root (docs/design/edge-runtime.md E4) — the fetch/memory analog of node's launch(),
+// The edge composition root — the fetch/memory analog of node's launch,
 // stripped for a V8 isolate: NO node:*/DOM, NO durable bundle queue / crash-recovery / IndexedDB (the isolate
 // is ephemeral → memory-only), NO window/process detection. It assembles the runtime-agnostic kernel
 // (createClient) with the WinterCG fetch transport + an in-memory capture store + the edge environment + the
 // run()-only ALS context store, then wires console→log + network (fetch; xhr/ws/sse self-skip absent globals).
 // Capture is INCIDENT-DRIVEN: nothing uploads until logException/crash; the upload then completes inside the
-// request's `ctx.waitUntil(client.flush())` (the fetch-handler wrapper, E5). The edge context store is
+// request's `ctx.waitUntil(client.flush())` (the fetch-handler wrapper). The edge context store is
 // registered under EdgeContextStoreToken so the wrapper can open a per-request context via `run()`.
 
 const SDK_VERSION = BUGSEE_SDK_VERSION;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
-// Edge capture buffer ceiling (design §966: 10 MB on browser/edge).
+// Edge capture buffer ceiling (10 MB on browser/edge).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
 // NOTE: there is deliberately no local partition-count default. `resolveMaxPartitions` (core) owns it, and
 // a second copy here could drift from the one that actually applies — which is what the doc comment on
@@ -74,7 +74,7 @@ const EDGE_OPTION_DEFINITIONS = [
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
 ];
 
-/** DI token for the edge request-context store — the fetch-handler wrapper (E5) resolves it to open a
+/** DI token for the edge request-context store — the fetch-handler wrapper resolves it to open a
  *  per-request context via `run()` (the same instance is also registered as the core ContextProvider). */
 export const EdgeContextStoreToken = serviceToken<EdgeRequestContextStore>(
   'edge-request-context-store',
@@ -90,8 +90,7 @@ export interface BugseeEdgeLaunchOptions {
    *
    * **Supply this on Cloudflare Workers.** `globalThis.AsyncLocalStorage` does NOT exist on `workerd` under
    * any compatibility flag — it is reachable only as an export of `node:async_hooks` — so the probe always
-   * misses there and per-request context silently degrades (verified on real workerd; docs/review/
-   * cloudflare.md SEV1 #3). This tier cannot import `node:async_hooks` itself without breaking bundles for
+   * misses there and per-request context silently degrades (verified on real workerd). This tier cannot import `node:async_hooks` itself without breaking bundles for
    * deployments that lack `nodejs_compat`, so the store is injected instead:
    *
    * ```ts
@@ -103,8 +102,7 @@ export interface BugseeEdgeLaunchOptions {
   /**
    * Keep each TENANT's capture in its own partition, so an incident uploads only the faulting tenant's
    * data. Set by `@bugsee/cloudflare`, where many Durable Objects for different customers share one
-   * isolate and therefore one capture ring — the leak proven on real workerd
-   * (docs/review/cloudflare.md SEV1 #2, docs/design/cloudflare-tenant-isolation.md).
+   * isolate and therefore one capture ring — the leak proven on real workerd.
    *
    * Default false on Vercel Edge and plain fetch handlers (single-tenant: partitioning there would be overhead
    * with nothing to separate). `@bugsee/cloudflare` defaults it to TRUE.
@@ -121,7 +119,7 @@ export interface BugseeEdgeLaunchOptions {
    *
    * Dividing rather than replicating is deliberate: giving every partition the full budget put 9 x 10 MB
    * against a 128 MB Workers isolate — a measured 116 MB heap ceiling, leaving ~12 MB for the customer's own
-   * code (docs/review/session-changes-review.md SEV1 #2).
+   * code.
    */
   maxTenantPartitions?: number;
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
@@ -233,7 +231,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     // A repeat launch that ASKED for tenant partitioning gets the first client's store, which may not
     // partition — e.g. `launchEdge(token)` ran first (it is re-exported by @bugsee/cloudflare) and a
     // Durable Object's lazy launcher then reuses it. The generic message above does not name that
-    // consequence, and silence here is how the cross-tenant leak comes back (review pass 2, SEV3 #3).
+    // consequence, and silence here is how the cross-tenant leak comes back.
     if (resolveFailOnBoolean(options.partitionCaptureByTenant, false)) {
       // Guarded: this runs inside launch() against a client we did not create — it may lack the service,
       // be mid-teardown, or be a foreign object someone else placed on the carrier. A throw here would
@@ -298,7 +296,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   // PROTECTS (cross-tenant isolation): only boolean `false`/absent is OFF; any other value (`'true'`, `1`, `null`)
-  // fails ON and is reported (R4V-1).
+  // fails ON and is reported.
   const partitionByTenant = resolveFailOnBoolean(options.partitionCaptureByTenant, false);
   if (
     options.partitionCaptureByTenant !== undefined &&
@@ -344,7 +342,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
         })
       : createMemoryCaptureStore(memoryStoreOptions));
 
-  // The run()-only edge context store: registered under EdgeContextStoreToken (for E5's wrapper) AND passed as
+  // The run()-only edge context store: registered under EdgeContextStoreToken (for the fetch wrapper) AND passed as
   // the core ContextProvider (so captures within a request get the contextId/trace stamps).
   const contextStore = createEdgeRequestContextStore({
     ...(options.logger !== undefined ? { logger: options.logger } : {}),
@@ -354,9 +352,9 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const client = createClient({
     // Isolate-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
-    // the same one every client of the isolate sees (R2L-4).
+    // the same one every client of the isolate sees.
     carrier: carrier ?? globalThis,
-    // stop() releases the carrier slot, so a stopped client must not be restarted in place (R2L-3): a new one
+    // stop releases the carrier slot, so a stopped client must not be restarted in place: a new one
     // comes from `launch(appToken)`.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined

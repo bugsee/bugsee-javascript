@@ -2,7 +2,7 @@ import { type Bugsee, BugseeStatus, getStatus, launchEdge } from '@bugsee/vercel
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerServerEdge, relaunch } from './edge';
 
-// R3P-9: the `/edge` entry's `relaunch` used to be the plain vercel-edge one, which re-runs `launchEdge` and
+// the `/edge` entry's `relaunch` used to be the plain vercel-edge one, which re-runs `launchEdge` and
 // ignored the `launch` seam `registerServerEdge` accepts (e.g. Cloudflare's launch). It now takes the same seam.
 const okTransport = () =>
   vi.fn(async () => ({
@@ -52,8 +52,8 @@ describe('@bugsee/sveltekit/edge relaunch', () => {
     expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
   });
 
-  // R4H-4: the install-time seam is the DEFAULT for a plain `relaunch()` (an explicit argument still wins).
-  it('a plain relaunch() re-runs the custom launch the entry was INSTALLED with (R4H-4)', async () => {
+  // The install-time seam is the DEFAULT for a plain `relaunch()` (an explicit argument still wins).
+  it('a plain relaunch() re-runs the custom launch the entry was INSTALLED with', async () => {
     const carrier = {};
     const custom = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {
       const client = launchEdge(token, options);
@@ -69,7 +69,7 @@ describe('@bugsee/sveltekit/edge relaunch', () => {
     expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
   });
 
-  it('an explicit launch beats the install-time one (R4H-4)', async () => {
+  it('an explicit launch beats the install-time one', async () => {
     const carrier = {};
     const installed = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {
       const client = launchEdge(token, options);

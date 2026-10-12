@@ -8,14 +8,13 @@ import {
   type TraceResponseConfig,
 } from './server-instrument';
 
-// Incoming-server auto-instrumentation for node:http (design: docs/design/incoming-server-instrumentation.md
-// §5.2, decisions D2/D11/D12). Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
+// Incoming-server auto-instrumentation for node:http. Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
 // inherits emit via the tls/net chain, NOT via http.Server.prototype, so each is patched separately) to
 // bracket the `'request'` event: it opens the per-request context + an http.server transaction via the
 // shared `runServerRequest` core (run-scoped), wires finish on the response, and passes the dispatch
 // straight through. It is the OPT-IN, INSTALL-DRIVEN companion to the outbound node:http capture source —
 // a server patch has no "subscriber", so it is NOT an InterceptorBase and is driven by explicit
-// install()/uninstall() (launch/stop, slice 3). Restores the prototype by DELETE (the original `emit` is
+// install()/uninstall() (launch/stop). Restores the prototype by DELETE (the original `emit` is
 // inherited from EventEmitter.prototype, so reassigning would leave a residual own-property that alters the
 // prototype shape — "interceptors must not alter app behavior"). Self-isolates the SDK's own inbound
 // traffic (x-bugsee-internal). Captures NO handled errors (a framework swallows them before node:http) and
@@ -59,7 +58,7 @@ export interface HttpServerInterceptorOptions {
   newContextId?: () => string;
   /** Skip instrumenting a request (self-isolation). Default: the inbound `x-bugsee-internal` header. */
   isInternal?: (headers: IncomingHeaders) => boolean;
-  /** BE→FE return headers (traceresponse / Server-Timing), default both off (T9); forwarded to the core. */
+  /** BE→FE return headers (traceresponse / Server-Timing), default both off; forwarded to the core. */
   traceResponse?: TraceResponseConfig;
 }
 
@@ -143,7 +142,7 @@ export function createHttpServerInterceptor(
         runOptions,
         (span) => {
           // Write the BE→FE return headers NOW (before the handler runs) so they survive a streaming
-          // response that flushes headers early. A no-op unless traceResponse opted in (T9).
+          // response that flushes headers early. A no-op unless traceResponse opted in.
           applyReturnHeaders(span, res);
           // Finish on 'close' — it fires AFTER 'finish' (and after any dedicated adapter's own 'finish'
           // listener), so when this span is the OWNER and an adapter refines it (re-entrancy), the adapter's

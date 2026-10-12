@@ -9,7 +9,7 @@ import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
 // The three arguments `launch()` hands core's `runLaunchRecovery` are pure WIRING: `pipeline` and `shared`
 // have no behavioural consequence this tier can observe on its own (see the sibling behavioural test in
-// `launch.test.ts` for `pipeline`, and R5-6 for why `shared: true` is unobservable — the own queue's
+// `launch.test.ts` for `pipeline`, and for the reason why `shared: true` is unobservable — the own queue's
 // namespace is fresh every launch, so holding it back only changes WHEN an empty queue is read). They are
 // therefore pinned here directly, against the call. Core's `launch-recovery.test.ts` owns the semantics.
 vi.mock('@bugsee/core', async (importOriginal) => {

@@ -47,8 +47,7 @@
     getClient()?.clearAttribute(attrKey);
     refresh();
   }
-  /** S2: `getAttribute` (singular) — declared in the catalog but never called anywhere in this sample
-   *  before this fix (only the bulk `getAllAttributes()` dump was exercised). */
+  /** S2: `getAttribute` (singular) — exercised directly, not only through the bulk `getAllAttributes()` dump. */
   function getAttribute(): void {
     if (attrKey.trim() === '') return;
     const value = getClient()?.getAttribute(attrKey);
@@ -108,16 +107,16 @@
 
         Two of them are POSITIVE CONTROLS, and they are what make the absences mean something. Without
         them, "the secret is not in the recording" is equally true of a recording that captured nothing
-        at all, which is precisely the failure mode S11 was blind to before this round.
+        at all, which is precisely the failure mode S11 would miss.
 
-        NOTE on `.bugsee-show` (which this field used to carry, described as an opt-out): that mark maps
+        NOTE on `.bugsee-show` (once wrongly offered as an opt-out for this field): that mark maps
         to rrweb's `unblockSelector` — it un-BLOCKS media/canvas and does nothing whatsoever for an
         input's value (packages/replay/src/masking.ts: `unblockSelector: joinSelectors(BUGSEE_SHOW, …)`,
         while inputs take `unmaskInputSelector: BUGSEE_UNMASK_INPUT`). So the field was masked exactly
         like its neighbour and the copy was wrong.
 
         `.bugsee-unmask` IS the input opt-out mark — but measuring it here found that it does not lift
-        masking for values TYPED during a live recording either (FINDINGS.md F-4): rrweb's live input
+        masking for values TYPED during a live recording either: rrweb's live input
         observer is never given `unmaskInputSelector` and masks purely off `maskInputOptions`, so the
         mark only takes effect in the FULL SNAPSHOT path, i.e. for a value already in the field when
         recording starts. The field keeps the mark because that IS the correct mark and the snapshot
@@ -141,7 +140,7 @@
         <input
           data-testid="s11-unmask-field"
           class="bugsee-unmask"
-          placeholder="Marked .bugsee-unmask (snapshot-path opt-out only — F-4)"
+          placeholder="Marked .bugsee-unmask (snapshot-path opt-out only)"
           bind:value={shownField}
         />
         <input

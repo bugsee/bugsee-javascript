@@ -3,7 +3,7 @@ const MAX_STRING = 60;
 /**
  * A short diagnostic text for a value the host supplied (an invalid option, ...). NEVER throws and never invokes
  * host code beyond a `name` read: `JSON.stringify` throws on a BigInt, `String(Object.create(null))` throws, and a
- * revoked proxy throws on `Array.isArray`, so a warning built from them could take the launch down with it (R5V-5).
+ * revoked proxy throws on `Array.isArray`, so a warning built from them could take the launch down with it.
  */
 export function describeValue(value: unknown): string {
   try {

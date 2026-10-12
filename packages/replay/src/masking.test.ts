@@ -10,7 +10,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).toContain(MEDIA_SELECTOR); // blockAllMedia
   });
 
-  it('wires the .bugsee-unmask / .bugsee-show opt-out selectors (D3)', () => {
+  it('wires the .bugsee-unmask / .bugsee-show opt-out selectors', () => {
     const m = resolveReplayMaskingOptions();
     expect(m.unmaskTextSelector).toContain('.bugsee-unmask');
     expect(m.unmaskInputSelector).toContain('.bugsee-unmask');
@@ -29,7 +29,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
   it('declares the sensitive types the live input observer gates on, with maskAllInputs off', () => {
     // NOTE: this asserts a property of the returned CONFIG. It is not the hard-floor guarantee — rrweb never
     // consults `maskInputOptions` for an element matched by the un-mask selector, which is exactly how the
-    // documented floor came to be false while this test passed (docs/review/replay.md SEV1 #1). The floor
+    // documented floor came to be false while this test passed. The floor
     // itself is asserted against real rrweb in masking.integration.test.ts; this only pins that `tel` is
     // declared, since the live observer gates on this map alone.
     const m = resolveReplayMaskingOptions({ maskAllInputs: false });
@@ -55,7 +55,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
 
   it('returns a non-string attribute value untouched instead of throwing', () => {
     // rrweb hands a boolean/number for some properties; `'*'.repeat(value.length)` would throw on those,
-    // and a throw here escapes into the host page's serialization (docs/review/replay.md SEV3 #8). Not
+    // and a throw here escapes into the host page's serialization. Not
     // reachable through rrweb itself, so it is pinned directly.
     const mask = resolveReplayMaskingOptions().maskAttributeFn as (
       k: string,
@@ -110,7 +110,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(mask('data-ssn', '123-45-6789', hostile)).toBe('***********');
   });
 
-  it('rejects a selector that `matches()` cannot parse, even if `querySelector` can', () => {
+  it('rejects a selector that `matches` cannot parse, even if `querySelector` can', () => {
     // Validation must use the API rrweb consumes. Measured divergence in jsdom: `div:has(:has(div))` passes
     // querySelector and THROWS in matches() — and rrweb's `matches()` call sites are exactly the fail-open
     // this validation exists to close.
@@ -150,7 +150,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     );
   });
 
-  // R4V-2: blocking PROTECTS, so an invalid value fails ON (block) and is reported; only boolean false/absent is off.
+  // blocking PROTECTS, so an invalid value fails ON (block) and is reported; only boolean false/absent is off.
   it.each([
     'true',
     1,

@@ -1,6 +1,6 @@
 import type { LogLevelName, SeverityName } from '@bugsee/types';
 
-// Numeric wire values (design §8.9). The public API is string-typed (@bugsee/types); this layer
+// Numeric wire values. The public API is string-typed (@bugsee/types); this layer
 // translates to/from the mobile-compatible numerics. Severity ascends with severity (1=VeryLow,
 // 5=Blocker); log level: 1=Error .. 5=Verbose.
 
@@ -53,7 +53,7 @@ export function logLevelFromWire(value: number): LogLevelName {
 
 const SEVERITY_BY_NAME: Record<SeverityName, Severity> = {
   verylow: Severity.VeryLow,
-  low: Severity.VeryLow, // iOS alias for verylow (design §8.9)
+  low: Severity.VeryLow, // iOS alias for verylow
   medium: Severity.Medium,
   high: Severity.High,
   critical: Severity.Critical,

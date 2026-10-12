@@ -1,17 +1,16 @@
 import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 
-// R4 — renderer killed before it could report anything
-// (docs/design/electron-renderer-incident-convergence.md §4.4).
+// Renderer killed before it could report anything
 //
 // A renderer that dies from an OOM, a GPU fault or a native crash never runs the JS that would forward its
-// incident (R2). Main therefore watches `render-process-gone` and synthesises the incident itself, attributed
+// incident. Main therefore watches `render-process-gone` and synthesises the incident itself, attributed
 // to the session that already holds that renderer's streamed capture.
 //
 // REASON GATING. `render-process-gone` also fires on ordinary teardown. Synthesising an incident for a closed
 // window would manufacture crashes that never happened, so only genuine faults are handled and `clean-exit`
 // is always ignored.
 //
-// DUMP CLAIMING (decision, 2026-07-30). For a reason that produces a native dump we CLAIM the minidump
+// DUMP CLAIMING. For a reason that produces a native dump we CLAIM the minidump
 // ourselves so the live incident carries it — the live incident is the valuable one, because it also has the
 // session's capture and context, which the next-launch recovery path reconstructs only partially. Claiming
 // deletes the dump, so the recovery path cannot then double-report it.
@@ -62,7 +61,7 @@ export interface RendererGoneHandlerOptions {
     harvest(marker: CrashpadSessionMarker): Promise<HarvestedDump[]> | HarvestedDump[];
     claim(marker: CrashpadSessionMarker, name: string): void;
   };
-  /** Submit the synthesised incident (the R3 join, with the dump attached when one was claimed). */
+  /** Submit the synthesised incident (with the dump attached when one was claimed). */
   submit: (incident: {
     reason: string;
     exitCode?: number;
@@ -112,7 +111,7 @@ export function createRendererGoneHandler(
 
   // Dumps this handler has already taken, so two concurrent `render-process-gone` events cannot both pick the
   // same file. `claim` is exists-guarded and does NOT throw on a double-claim, so without this two incidents
-  // would silently carry one renderer's dump (code review SEV1-4b).
+  // would silently carry one renderer's dump.
   const taken = new Set<string>();
 
   /**
@@ -122,7 +121,7 @@ export function createRendererGoneHandler(
    * (`native-crash-source.ts` — "v1 SCOPE: harvest ALL completed dumps"), so taking `dumps[0]` would claim
    * whatever happened to be there: a dump an earlier fallback deliberately left unclaimed, a GPU or utility
    * process's dump, or an unrecovered dump from a previous run. Claiming DELETES, so that destroys another
-   * crash's evidence and misattributes it to this one (code review SEV1-4).
+   * crash's evidence and misattributes it to this one.
    *
    * So: snapshot what already exists BEFORE waiting, and only accept a name that appears afterwards.
    */

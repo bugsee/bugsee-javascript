@@ -7,7 +7,7 @@ import type { Plugin, ViteDevServer, PreviewServer } from 'vite';
 // A tiny local "backend" for the Widget Shop sample, mounted as Vite middleware so the whole app
 // (static assets + JSON API + SSE + WebSocket) is one process on one port (5301) in both `pnpm dev`
 // and `pnpm build && pnpm preview`. Genuinely serves the product catalog, accepts checkout POSTs, and
-// gives S7 (network capture) real 2xx/4xx/5xx/no-content-type/oversized responses to exercise.
+// gives network capture real 2xx/4xx/5xx/no-content-type/oversized responses to exercise.
 
 const dataPath = fileURLToPath(new URL('../data/products.json', import.meta.url));
 type Product = {
@@ -82,28 +82,28 @@ function handleApi(req: IncomingMessage, res: ServerResponse, next: () => void):
     return;
   }
 
-  // S7: a status the app must surface but must NOT report as an incident (a plain 4xx from the API).
+  // A status the app must surface but must NOT report as an incident (a plain 4xx from the API).
   const statusMatch = pathname.match(/^\/api\/status\/(\d{3})$/);
   if (statusMatch) {
     json(res, Number(statusMatch[1]), { error: 'simulated', status: Number(statusMatch[1]) });
     return;
   }
 
-  // S7: a response with a body larger than maxNetworkBodySize (default 20480 bytes).
+  // A response with a body larger than maxNetworkBodySize (default 20480 bytes).
   if (pathname === '/api/big') {
     const big = 'x'.repeat(40 * 1024);
     json(res, 200, { big });
     return;
   }
 
-  // S7: a response with NO Content-Type header at all.
+  // A response with NO Content-Type header at all.
   if (pathname === '/api/no-content-type') {
     res.writeHead(200, {});
     res.end('plain body, no content-type');
     return;
   }
 
-  // S7: a text/plain body round-trip (not JSON).
+  // A text/plain body round-trip (not JSON).
   if (pathname === '/api/echo-text' && req.method === 'POST') {
     void readBody(req).then((raw) => {
       res.writeHead(200, { 'content-type': 'text/plain' });
@@ -112,14 +112,14 @@ function handleApi(req: IncomingMessage, res: ServerResponse, next: () => void):
     return;
   }
 
-  // S9: a slow endpoint for interaction/transaction timing.
+  // A slow endpoint for interaction/transaction timing.
   if (pathname === '/api/slow') {
     const ms = Number(url.searchParams.get('ms') ?? '600');
     setTimeout(() => json(res, 200, { slept: ms }), ms);
     return;
   }
 
-  // S8: an endpoint that echoes a header back, for filter-drop verification (wire level).
+  // An endpoint that echoes a header back, for filter-drop verification (wire level).
   if (pathname === '/api/echo-headers' && req.method === 'GET') {
     json(res, 200, { headers: req.headers });
     return;

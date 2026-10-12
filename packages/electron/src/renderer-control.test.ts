@@ -28,14 +28,14 @@ describe('createRendererControlHandler', () => {
     expect(h.setPaused).toHaveBeenCalledWith(false);
   });
 
-  it('flush → flush()', () => {
+  it('flush() → flush()', () => {
     const h = harness();
     h.handle(encodeControl({ command: 'flush' }));
     expect(h.flush).toHaveBeenCalledTimes(1);
     expect(h.setPaused).not.toHaveBeenCalled();
   });
 
-  it('stop → stop()', () => {
+  it('stop() → stop()', () => {
     const h = harness();
     h.handle(encodeControl({ command: 'stop' }));
     expect(h.stop).toHaveBeenCalledTimes(1);

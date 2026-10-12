@@ -112,7 +112,7 @@ describe('setTracestateEntry', () => {
     expect(out.some((e) => e.key === 'k31')).toBe(false); // the oldest was dropped
   });
 
-  it('caps the SERIALIZED header at 512 bytes (Profile v1 §12), dropping oldest but keeping ours', () => {
+  it('caps the SERIALIZED header at 512 bytes, dropping oldest but keeping ours', () => {
     // 14 entries × ~46 bytes ≈ 640 bytes > 512 (well under the 32-entry cap, so this exercises the byte cap).
     const big = Array.from({ length: 14 }, (_, i) => ({ key: `key${i}`, value: 'v'.repeat(40) }));
     const out = setTracestateEntry(big, 'bugsee', 'r1');

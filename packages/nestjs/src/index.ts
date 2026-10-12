@@ -1,4 +1,4 @@
-// @bugsee/nestjs — NestJS adapter (tier 4, design: docs/design/framework-adapters.md).
+// @bugsee/nestjs — NestJS adapter.
 // One-call setupNest over the per-request context foundation + a configurable error/APM seam:
 //   - DEFAULT interceptor (non-intrusive: report + rethrow, no @nestjs/core import, no filter conflict)
 //   - opt-in global ExceptionFilter (broadest coverage incl. guards) and/or `both` (deduped).

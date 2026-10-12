@@ -1,5 +1,4 @@
-// Stamp debug-ids INTO the build, before it is written — the real fix for Subresource Integrity
-// (docs/review/cli-js-flows.md §7, option 1).
+// Stamp debug-ids INTO the build, before it is written — the real fix for Subresource Integrity.
 //
 // The post-emit path runs `bugsee-cli sourcemaps inject` over the output directory, which appends bytes
 // to every bundle AFTER a plugin such as `webpack-subresource-integrity` has hashed it. The hash in the
@@ -13,7 +12,7 @@
 // The Rust `inject` stays the one implementation. This stages the bundles and maps in a temp directory
 // with the same relative layout, runs the real `sourcemaps inject` over it, and reads back what it
 // changed. A JavaScript reimplementation of the debug-id algorithm and the runtime stub is exactly the
-// second copy that drifts (docs/design/source-maps.md: "spawn the existing Rust bugsee-cli").
+// second copy that drifts ("spawn the existing Rust bugsee-cli").
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';

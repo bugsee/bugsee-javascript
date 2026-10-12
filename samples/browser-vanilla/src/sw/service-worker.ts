@@ -13,7 +13,7 @@ const CACHE_NAME = 'widget-shop-shell-v1';
 const SHELL_ASSETS = ['/'];
 
 const token = import.meta.env.BUGSEE_APP_TOKEN;
-// See server/bugsee-proxy.ts + FINDINGS.md F-2 (blocker): apidev.bugsee.com's CORS config rejects
+// apidev.bugsee.com's CORS config rejects
 // every third-party origin, so every session in this sample — including the Service Worker's own —
 // goes through the same-origin reverse proxy instead of the raw BUGSEE_ENDPOINT.
 const endpoint = `${sw.location.origin}/bugsee-proxy`;
@@ -22,7 +22,7 @@ const client =
   token !== undefined && token.length > 0
     ? launch(token, {
         endpoint,
-        // See FINDINGS.md F-3: the packed SDK version (0.0.0) is below the backend's accepted floor.
+        // The packed SDK version (0.0.0) is below the backend's accepted floor.
         sdkVersion: '1.0.0',
         appVersion: '1.0.0',
         appBuild: '7',

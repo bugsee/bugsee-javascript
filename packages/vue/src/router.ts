@@ -1,10 +1,10 @@
 import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/vue ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On a
+// The @bugsee/vue ROUTER NAMING integration (and the two-phase naming seam). On a
 // navigation, vue-router knows the matched route PATTERN (`/users/:id` — the matcher rewrites a
 // relatively-configured child to its absolute path at addRoute time, and an absolute-configured child is
 // already full, so the DEEPEST matched record's `path` is the full pattern either way); refine the active
-// navigation transaction (opened raw-URL by the F1 navigation source) via the shared `setRouteName` seam. A
+// navigation transaction (opened raw-URL by the navigation source) via the shared `setRouteName` seam. A
 // STRUCTURAL PEER over the vue-router route/router shapes (no `vue-router` import) → version-agnostic +
 // unit-testable.
 
@@ -37,7 +37,7 @@ export function routePatternFromVueRoute(route: VueRouteLike): string | undefine
 }
 
 /** Instrument a vue-router instance: on each navigation, refine the active transaction to the matched route
- *  PATTERN (D5 phase-2). Call once after `createRouter(...)`. A no-op for a navigation with no usable pattern. */
+ * PATTERN. Call once after `createRouter(...)`. A no-op for a navigation with no usable pattern. */
 export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingOptions = {}): void {
   // CONTAINED at BOTH boundaries. `router.afterEach` is host-supplied and runs during app setup, where a
   // throw takes the whole mount down rather than costing one report; the callback registered with it is
@@ -46,7 +46,7 @@ export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingO
   //
   // The callback guard is REDUNDANT TODAY — verified, not assumed: a mutation removing it survives, because
   // `routePatternFromVueRoute` and `setRouteName` now contain themselves, so nothing inside can throw. It
-  // stays because Wave 2.1's rule is enforced by construction at every host callback rather than re-derived
+  // stays because the rule is enforced by construction at every host callback rather than re-derived
   // from what the callees currently happen to do. Identical situation to @bugsee/react's `apply`.
   const onNavigation = guarded((to: VueRouteLike): void => {
     const pattern = routePatternFromVueRoute(to);

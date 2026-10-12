@@ -7,7 +7,7 @@ import { resolveReplayMaskingOptions } from './masking';
  *
  * Session replay records the DOM continuously, so this resolver decides what a customer's support team
  * can see of an end user's screen. Its own header records three ways "fail-closed" turned out not to be
- * true in practice (docs/review/replay.md SEV1 #1/#2/#3), and each of those was a specific option
+ * true in practice, and each of those was a specific option
  * combination nobody had written a case for. That is precisely what a property covers and an example
  * cannot.
  *
@@ -65,7 +65,7 @@ describe('the sensitive-input floor (fuzz)', () => {
    * THE hard floor: whatever the options say, and whatever the markup says, a sensitive input can never
    * match the un-mask selector.
    *
-   * This is SEV1 #1. rrweb resolves an input's value as
+   * This matters because rrweb resolves an input's value as
    * `unmaskInputSelector.matches(el) ? raw : maskInputValue(…)` — the un-mask check comes FIRST and
    * short-circuits, so `maskInputOptions:{password:true}` is never consulted for an un-masked element.
    * Feeding the caller's text un-mask selector into the input path therefore voided "passwords are always
@@ -193,8 +193,7 @@ describe('selector safety (fuzz)', () => {
    * Every selector this resolver emits must PARSE.
    *
    * Selectors are comma-joined into one string, and rrweb's `catch {}` answers "not blocked" when
-   * `matches()` throws — so a single unparseable fragment silently disables blocking page-wide. That is
-   * SEV1 #3.
+   * `matches()` throws — so a single unparseable fragment silently disables blocking page-wide. That is the fail-open this test guards against.
    */
   it('always emits parseable selectors', () => {
     fc.assert(
@@ -264,7 +263,7 @@ describe('selector safety (fuzz)', () => {
 describe('attribute masking (fuzz)', () => {
   /**
    * The attribute allowlist. A denylist over an open namespace is fail-OPEN by construction — every
-   * `data-*`, `<meta content>` and bespoke attribute shipped in the clear at DEFAULTS (SEV1 #2).
+   * `data-*`, `<meta content>` and bespoke attribute shipped in the clear at DEFAULTS.
    */
   it('masks any attribute that is not rendering-critical, preserving length', () => {
     const { maskAttributeFn } = resolveReplayMaskingOptions({});

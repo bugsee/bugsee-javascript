@@ -11,7 +11,7 @@ import {
 } from './transport';
 import { QUEUE_OVERFLOW_CODE } from './upload-pipeline';
 
-// Durable bundle queue (design §7.8 / crash recovery). A report bundle is written to durable storage
+// Durable bundle queue (/ crash recovery). A report bundle is written to durable storage
 // BEFORE its upload is attempted and removed only once the upload is confirmed; any bundle still on
 // disk at the next launch (the process crashed/was killed mid-upload, or the upload kept failing) is
 // re-uploaded via recover(). This is what guarantees a crash bundle survives a hard exit — the
@@ -136,7 +136,7 @@ export interface DurableUploadPipelineOptions {
 }
 
 /**
- * Bounds on the pending on-disk queue (Wave 6.4).
+ * Bounds on the pending on-disk queue.
  *
  * Without these the queue grows forever on a customer's production server: `sweep-instances` reaps only
  * subtrees whose OWNING PROCESS IS DEAD, so a long-lived server's own pending directory is never swept,

@@ -269,7 +269,7 @@ async function runMultiInstanceScenario(launch: LaunchFn, collectorUrl: string):
 }
 
 /**
- * Disk-capture recovery battery (server write-path P1: "a crash loses nothing"). Unlike multi-instance
+ * Disk-capture recovery battery (server write-path: "a crash loses nothing"). Unlike multi-instance
  * (which recovers an already-ASSEMBLED+persisted bundle), this proves the MARKER path: an incident that
  * died BEFORE its bundle was assembled is rebuilt next launch from the durable on-disk CAPTURE chunks.
  *   seed    — launch with the DEFAULT on-disk capture, log a distinctive breadcrumb, fire an incident (its
@@ -313,7 +313,7 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
 }
 
 /**
- * Off-thread capture-writer battery (server write-path Phase 2 — the INSURANCE path). Boot with
+ * Off-thread capture-writer battery (the off-thread writer — the INSURANCE path). Boot with
  * `captureWriter: 'worker'` so the rolling capture is drained to disk by a REAL worker_threads worker over
  * the shared zero-copy SAB ring — exercising, on each runtime, the worker_threads spawn + the `Atomics`
  * flush-and-ack handshake + the SharedArrayBuffer ring + the worker-owns-the-fds design. A burst of logs
@@ -361,11 +361,11 @@ const INBOUND_TRACE = '0af7651916cd43dd8448eb211c80319c'; // 16-byte W3C trace i
 const INBOUND_SPAN = 'b7ad6b7169203331'; // 8-byte upstream span id
 
 /**
- * Cross-project distributed-tracing round-trip (cross-project-tracing.md X1–X5). One auto-instrumented
+ * Cross-project distributed-tracing round-trip. One auto-instrumented
  * node:http backend, hit with an inbound `traceparent`+`tracestate` (the originator/frontend side). The
  * backend (a) CONTINUES that trace as a child, (b) makes an allowlisted OUTGOING call from the handler that
  * the propagation decorator stamps with the continued `traceparent` + `bugsee=` tracestate, and (c) reports
- * from the handler — whose request.json carries `trace_id` = the inbound trace (T8). The e2e then asserts the
+ * from the handler — whose request.json carries `trace_id` = the inbound trace. The e2e then asserts the
  * SAME trace id flows: inbound → report → outbound. Exits 0.
  */
 async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
@@ -393,7 +393,7 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
       // injects `traceparent` (continuing the inbound trace) + `bugsee=` onto it → the collector records them.
       const echo = await fetch(`${collectorUrl}/echo?probe=propagation`);
       await echo.text();
-      // A report from the handler → request.json carries trace_id = the inbound trace (T8 + continuation).
+      // A report from the handler → request.json carries trace_id = the inbound trace (and continuation).
       await client.logException(new Error('e2e propagation handler failure'));
       res.statusCode = 200;
       res.end('ok');
@@ -418,8 +418,8 @@ async function runPropagationScenario(launch: LaunchFn, collectorUrl: string): P
 }
 
 /**
- * Privacy battery (Wave 1.1 / 1.2). A direct re-run of the probe that FOUND the leaks
- * (docs/review/node-B-http-server.md SEV1 #3, docs/review/capture.md SEV1 #4/#5): drive real traffic whose
+ * Privacy battery. A direct re-run of the probe that FOUND the leaks:
+ * drive real traffic whose
  * every secret-bearing position is filled with a distinctive marker, then let the e2e scan the uploaded
  * bytes for those markers. The original probe recovered QUERY_APIKEY, QUERY_PLAIN and URL_USERINFO from the
  * SDK's own dataDir while headers and JSON bodies were correctly redacted — so the markers are placed to
@@ -458,8 +458,8 @@ async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promi
   });
   await f.text();
 
-  // 4. A SHAPE-matched secret — one with no key name to match, caught only by the pattern pass. Round-3
-  //    review found this path had zero e2e coverage: neutering `redactShapes` entirely left the whole
+  // 4. A SHAPE-matched secret — one with no key name to match, caught only by the pattern pass.
+  //    Review found this path had zero e2e coverage: neutering `redactShapes` entirely left the whole
   //    privacy scenario green.
   const s = await fetch(`${collectorUrl}/echo?ref=AKIAIOSFODNN7EXAMPLE`);
   await s.text();
@@ -480,7 +480,7 @@ async function runPrivacyScenario(launch: LaunchFn, collectorUrl: string): Promi
 }
 
 /**
- * Process-lifecycle battery (Wave 2.4 / 2.5). Two claims that can ONLY be made about a real process:
+ * Process-lifecycle battery. Two claims that can ONLY be made about a real process:
  *
  *  exit-clean — launch with the DEFAULTS (hang detection on) and then simply return. The process must exit
  *    on its own. It did not: the watchdog worker is unref'd at spawn, but attaching its `message` listener
@@ -526,7 +526,7 @@ async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promis
 }
 
 /**
- * The NATIVE server path — `Bun.serve` / `Deno.serve` (Wave 3b.1/3b.5).
+ * The NATIVE server path — `Bun.serve` / `Deno.serve`.
  *
  * Every other server scenario goes through `node:http.createServer`, which is exactly the path idiomatic
  * Bun and Deno apps do NOT take: `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, which
@@ -584,11 +584,11 @@ async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): 
 }
 
 /**
- * OVERLAPPING requests with distinct identities (Wave 3b.4).
+ * OVERLAPPING requests with distinct identities.
  *
  * The `server` scenario issues ONE request, so every per-request mechanism it exercises — the context, the
  * transaction, the outgoing-call attribution — is trivially correct: there is nothing to confuse it with.
- * A server's actual job is concurrency, and that is where two SEV1s lived: an outgoing `http.client` span
+ * A server's actual job is concurrency, and that is where two defects lived: an outgoing `http.client` span
  * parented to whichever request started LAST (so A's database call shipped inside B's trace), and the
  * cross-request identity bleed the same single-slot shape produces.
  *

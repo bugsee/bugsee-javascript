@@ -2,9 +2,9 @@ import type { OptionGate } from './capture-coordinator';
 import type { Client, DetectionProvider } from './contracts';
 import type { ReportingRequest } from './reporting';
 
-// Detection-provider lifecycle manager (design §16.3, Android BugseeDetectionCoordinator parity).
+// Detection-provider lifecycle manager (Android BugseeDetectionCoordinator parity).
 // Mirrors the capture coordinator, but each provider's start receives a `report` callback: the
-// coordinator wires it to a single onReport sink (the pipeline's report-assembly entry, §7.7).
+// coordinator wires it to a single onReport sink (the pipeline's report-assembly entry).
 // Re-entrancy/queue guarding of submitted requests belongs to the pipeline, not here.
 
 export type ReportListener = (request: ReportingRequest) => void;

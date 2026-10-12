@@ -1,7 +1,7 @@
 // @bugsee/electron/renderer — the renderer-process entry. Imports @bugsee/browser only (never @bugsee/node),
-// so it's safe to load in a Chromium renderer. See docs/design/electron.md.
+// so it's safe to load in a Chromium renderer.
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface as `@bugsee/bugsee`, thin
+// API parity with the umbrella entries: the same VALUE surface as `@bugsee/bugsee`, thin
 // re-exports of the same functions. No `relaunch`: a renderer's session is OWNED by the main process (the
 // handshake, control channel and capture stream belong to it), so re-running `launchRenderer` alone is not a
 // restart of the session; reload the renderer instead.

@@ -241,7 +241,7 @@ describe('createLocalVariablesCapture', () => {
     });
   });
 
-  // R4V-2 (nested option bag): `includeCaught` collects MORE data (every caught throw pauses the process),
+  // Nested option bag: `includeCaught` collects MORE data (every caught throw pauses the process),
   // so only boolean `true` enables it; `'false'`, `1`, `null`, `0`, `''` are OFF and reported.
   it.each([
     'false',
@@ -263,7 +263,7 @@ describe('createLocalVariablesCapture', () => {
     ).toHaveLength(1);
   });
 
-  // R5V-4: the warning called the app's sink unguarded, so a sink that rethrows made launch() throw.
+  // The warning called the app's sink unguarded, so a sink that rethrows made launch() throw.
   it.each([
     ['includeCaught', 'false'],
     ['reportSite', 0],
@@ -1186,7 +1186,7 @@ describe('createLocalVariablesCapture — report-site capture', () => {
     expect(f.methods()).not.toContain('Debugger.pause');
   });
 
-  // R4V-2: the report-site pause is default ON inside the opt-in feature; an invalid value is OFF (fail closed)
+  // The report-site pause is default ON inside the opt-in feature; an invalid value is OFF (fail closed)
   // and reported, never "on because it is truthy" (`'false'`).
   it.each([
     'false',

@@ -10,7 +10,7 @@ import {
 } from './span';
 import type { TransactionStore } from './transaction-store';
 
-// R2-8: NAME_SOURCE_ATTRIBUTE is a plain wire attribute KEY, not APM logic — it now lives in
+// NAME_SOURCE_ATTRIBUTE is a plain wire attribute KEY, not APM logic — it now lives in
 // @bugsee/protocol (constants.ts) so @bugsee/node's server-instrument.ts can read it off a Transaction's
 // attributes without a runtime (value-level) dependency on this opt-in extension. Re-exported here for
 // every existing @bugsee/performance consumer (this file's own setters below, navigations.ts, index.ts).
@@ -29,7 +29,7 @@ export interface StartTransactionOptions {
   operation: string;
   description?: string;
   /**
-   * Continue an inbound distributed trace (Bugsee OTLP Profile v1 §12; design: cross-project-tracing.md).
+   * Continue an inbound distributed trace.
    * The transaction adopts this W3C `traceId`, makes its root a CHILD of the upstream `parentSpanId`, and
    * adopts the upstream `sampled` decision — so the frontend and this backend transaction are one trace
    * with a real parent/child link. Omitted → a fresh random trace id, no parent, local sampling.
@@ -37,9 +37,9 @@ export interface StartTransactionOptions {
   continuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
 }
 
-/** Provenance of a transaction's current NAME (frontend-adapters D5, the two-phase naming seam). `url` =
- *  the raw browser path (phase 1, on navigation start); `route` = a resolved/parameterized route
- *  (`/users/:id`, phase 2 — a framework adapter refined it once routing ran); `custom` = an app-supplied
+/** Provenance of a transaction's current NAME (the two-phase naming seam). `url` =
+ *  the raw browser path (on navigation start); `route` = a resolved/parameterized route
+ *  (`/users/:id`: a framework adapter refined it once routing ran); `custom` = an app-supplied
  *  name. Stamped on the transaction as `bugsee.name_source`. */
 export type TransactionNameSource = 'url' | 'route' | 'custom';
 
@@ -51,7 +51,7 @@ export interface PerformanceApi {
    * The active span: the most recently STARTED transaction visible to this execution, cleared when it
    * finishes. No span stack — proper async-context nesting is a later slice.
    *
-   * CONCURRENCY (round-2 D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
+   * CONCURRENCY: WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
    * a process-wide single slot (a second `startTransaction` overwrites the first) — correct for a
    * browser's single in-flight navigation/interaction. The Node launch instead supplies per-async-context
    * tracking keyed off the `AsyncLocalStorage`-backed `RequestContext` (the JS equivalent of Android's
@@ -66,7 +66,7 @@ export interface PerformanceApi {
   getActiveSpan(): Span | undefined;
   /**
    * Rename the ACTIVE transaction (the in-flight pageload / navigation / interaction) and stamp the naming
-   * provenance (`bugsee.name_source`). The frontend-adapters naming seam (D5) + the D10 REFINE half: a
+   * provenance (`bugsee.name_source`). The naming seam + the REFINE half: a
    * framework adapter (or the app) refines the raw-URL navigation name to the resolved route once routing
    * has run — the second phase of two-phase naming. A NO-OP when no transaction is active (nothing to
    * name). Default `source` is `custom`.
@@ -79,7 +79,7 @@ export interface PerformanceApi {
    */
   setActiveTransactionName(name: string, opts?: { source?: TransactionNameSource }): void;
   /** Sugar for {@link setActiveTransactionName}(name, { source: 'route' }) — the manual route-naming
-   *  escape hatch (D5); what a router adapter calls on navigation resolve. See the {@link getActiveSpan}
+   *  escape hatch; what a router adapter calls on navigation resolve. See the {@link getActiveSpan}
    *  CONCURRENCY note before calling this from concurrent Node server-request code. */
   setRouteName(name: string): void;
 }
@@ -95,7 +95,7 @@ export interface PerformanceControllerDeps {
    * Where the active transaction lives. Default a process-wide single slot (last-started wins) —
    * correct for a browser's one in-flight navigation/interaction. A concurrent server passes a
    * per-execution-context store (Node keys it off the AsyncLocalStorage-backed `RequestContext`)
-   * so one request's `startTransaction` never overwrites another's (D2 part 2).
+   * so one request's `startTransaction` never overwrites another's.
    */
   activeSpanStore?: ActiveSpanStore;
   /**
@@ -199,10 +199,10 @@ export function createPerformanceController(deps: PerformanceControllerDeps): Pe
               }
             }
             // When the active root finishes, the slot CLEARS — it is NOT reverted to a still-open
-            // pageload (there is no span stack; D11). Consequence: a fetch between activity transactions
+            // pageload (there is no span stack). Consequence: a fetch between activity transactions
             // (after a navigation/interaction idle-finishes, before the next one) attaches to nothing and
             // is dropped, even though the pageload lingers. Accepted tradeoff of that model; a span stack /
-            // pageload-fallback is a later slice (see frontend-adapters D11/D12).
+            // pageload-fallback is a later change.
             // Cleared by identity, not by re-reading: clear() drops the transaction WHEREVER the
             // store holds it, and a non-held finish clears nothing. (A scoped store may hold it somewhere
             // other than what the finishing execution observes — e.g. an ambient slot it can no longer

@@ -299,7 +299,7 @@ describe('OTLP span emission (fuzz)', () => {
   });
 
   /**
-   * Tree integrity: no span may reference a parent that is not in the batch. The §8.8 wire drops the
+   * Tree integrity: no span may reference a parent that is not in the batch. The wire drops the
    * root's id from its children, so every "dangling" child is remapped — if that remap ever missed, the
    * collector would render an orphan span with no path to the trace root.
    */
@@ -326,7 +326,7 @@ describe('OTLP span emission (fuzz)', () => {
   /**
    * The root carries the transaction's REAL span id — the one `traceparent` propagated. Deriving it from
    * the trace id gave every service in a distributed trace the same root id and left downstream parents
-   * pointing at a span nobody emitted (Wave 5.3).
+   * pointing at a span nobody emitted.
    */
   it('emits the root under the transaction span id that was propagated', () => {
     fc.assert(
@@ -339,7 +339,7 @@ describe('OTLP span emission (fuzz)', () => {
     );
   });
 
-  /** Profile v1 §8: the sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
+  /** The sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
   it('mirrors the sampling decision into the trace flags of every span', () => {
     fc.assert(
       fc.property(transactionWire(), (txn) => {

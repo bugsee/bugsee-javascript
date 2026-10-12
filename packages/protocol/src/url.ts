@@ -2,10 +2,10 @@ import { isFormSegment, redactSensitivePairs } from './pairs';
 import { REDACTED_URL_ENCODED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 
-// URL sanitization (design §8.10; Android `NetworkDataSanitizer.sanitizeUrl` parity + two documented
+// URL sanitization (Android `NetworkDataSanitizer.sanitizeUrl` parity + two documented
 // supersets). Captured URLs are stored and uploaded verbatim, so every secret carried IN the URL — not in
-// a header or a body — reached disk in the clear until this existed (docs/review/node-B-http-server.md
-// SEV1 #3, docs/review/capture.md SEV1 #4, both reproduced against a real on-disk capture).
+// a header or a body — reached disk in the clear until this existed
+// (both reproduced against a real on-disk capture).
 //
 // Three passes, all string-level so the URL still matches what the app actually requested:
 //

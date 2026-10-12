@@ -24,8 +24,8 @@ import {
   relaunch,
 } from './launch';
 
-// Review round 2, group F1 (node): a stopped client stays stopped (R2L-3), a repeat stop() is the same drain
-// (R2L-1), and RelaunchedAfterCrash only on honest evidence (R2D-2).
+// Node: a stopped client stays stopped, a repeat stop() is the same drain,
+// and RelaunchedAfterCrash is reported only on honest evidence.
 
 const probe: SystemProbe = {
   platformType: () => 'node',
@@ -106,7 +106,7 @@ afterEach(async () => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('R2L-3 — launch() on a stopped client is refused; a new client comes from launch(token)', () => {
+describe('launch() on a stopped client is refused; a new client comes from launch(token)', () => {
   it('does not restart core WITHOUT the platform teardown (handlers, carrier slot), and says so', async () => {
     const onError = vi.fn();
     const proc = fakeProcess();
@@ -162,7 +162,7 @@ describe('R2L-3 — launch() on a stopped client is refused; a new client comes 
   });
 });
 
-describe('R2L-14 — a killed client: stop() marks the subtree, a later launch() changes nothing', () => {
+describe('a killed client: stop() marks the subtree, a later launch() changes nothing', () => {
   it('leaves the clean-stop marker alone (core launch is a no-op on a killed client)', async () => {
     const dir = dirFor();
     const kill: HttpTransport = async () => ({
@@ -184,7 +184,7 @@ describe('R2L-14 — a killed client: stop() marks the subtree, a later launch()
   });
 });
 
-describe('R2L-1 — a repeat stop() is the same drain: no .stopped marker while the upload still runs', () => {
+describe('a repeat stop() is the same drain: no .stopped marker while the upload still runs', () => {
   it('a hung upload: stop(timeout) is false, a REPEAT stop(timeout) is false too, and nothing is marked', async () => {
     const dir = dirFor();
     const transport: HttpTransport = () => new Promise(() => {});
@@ -231,7 +231,7 @@ describe('R2L-1 — a repeat stop() is the same drain: no .stopped marker while 
   });
 });
 
-describe('R2D-2 — RelaunchedAfterCrash needs evidence that the previous run did not stop cleanly', () => {
+describe('RelaunchedAfterCrash needs evidence that the previous run did not stop cleanly', () => {
   const plantDeadSibling = (
     dir: string,
     sub: string,
@@ -310,7 +310,7 @@ describe('R2D-2 — RelaunchedAfterCrash needs evidence that the previous run di
   });
 });
 
-describe('R2L-11 — relaunch() with NO options means defaults, with the seams kept', () => {
+describe('relaunch() with NO options means defaults, with the seams kept', () => {
   it('drops a host Bugsee option and keeps the transport, process and error sink', async () => {
     const transport = okTransport();
     const proc = fakeProcess();

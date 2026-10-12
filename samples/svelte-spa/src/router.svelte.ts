@@ -1,5 +1,5 @@
 // A hand-rolled hash router — this sample is a plain Svelte SPA, NOT a SvelteKit app (SvelteKit has its
-// own file-based router; `sveltekit-app`, PLAN §5.11, is the separate sample for that). `@bugsee/svelte`
+// own file-based router; the separate `sveltekit-app` sample covers that). `@bugsee/svelte`
 // (packages/svelte/src/router.ts) is nonetheless wired here: `instrumentSvelteKitNavigation` /
 // `routeIdFromNavigation` / `setRouteName` are all STRUCTURAL PEERS over SvelteKit's `afterNavigate`
 // argument shape (`{ to: { route: { id } } }`, no `$app/navigation` import) — so this router builds that

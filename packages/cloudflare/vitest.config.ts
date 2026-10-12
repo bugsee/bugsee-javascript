@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // @bugsee/cloudflare is the @bugsee/vercel-edge composition with platformType defaulted to 'workers'; its own
 // code is the thin launch wrapper + the re-export index, tested via injection (spy on launchEdge) — the heavy
 // edge behavior is covered in @bugsee/vercel-edge. environment 'node' (no real workerd isolate).

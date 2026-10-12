@@ -9,7 +9,7 @@ import {
 import { realWebVitalsEnv, type WebVitalsEnv } from './web-vitals/env';
 import { onHidden } from './web-vitals/observe';
 
-// Wire an (injected) navigation SOURCE to navigation transactions (frontend-adapters F1c). Each detected
+// Wire an (injected) navigation SOURCE to navigation transactions. Each detected
 // navigation supersedes the previous one (finish it) and opens a new `navigation` transaction wrapped in
 // the idle lifecycle (auto-finish on inactivity). In-flight network activity keeps the transaction alive
 // (the idle timer resets), and the tab going hidden cancels it. The source is a structural abstraction
@@ -47,8 +47,8 @@ export interface CollectNavigationsDeps {
 const NETWORK_STAGES = ['before', 'complete', 'error', 'abort'] as const;
 
 export function collectNavigations(deps: CollectNavigationsDeps): () => void {
-  // The single active navigation transaction (correlation-by-tagging — one current activity on the browser,
-  // D11). `undefined` after teardown, so the (un-removable) onHidden callback below safely no-ops then.
+  // The single active navigation transaction (correlation-by-tagging — one current activity on the browser).
+  // `undefined` after teardown, so the (un-removable) onHidden callback below safely no-ops then.
   let current: IdleTransactionHandle | undefined;
   const offs: Array<() => void> = [];
 
@@ -57,11 +57,11 @@ export function collectNavigations(deps: CollectNavigationsDeps): () => void {
       current?.finishNow(); // the previous navigation/view is superseded → finish it
       const transaction = deps.api.startTransaction({ name: detail.to, operation: 'navigation' });
       // Two distinct axes: `nav.source`/`nav.type` are the immutable DETECTION metadata (how the navigation
-      // was detected); `bugsee.name_source` is the phase-1 NAMING provenance (D5) that the F5 naming seam
+      // was detected); `bugsee.name_source` is the NAMING provenance that the naming seam
       // later mutates to 'route' on resolve — so the two-phase url→route story lives on one key.
       transaction.setAttribute('nav.source', detail.source); // detection (url / route / custom — Sentry parity)
       transaction.setAttribute('nav.type', detail.navigationType);
-      transaction.setAttribute(NAME_SOURCE_ATTRIBUTE, detail.source); // phase-1 naming provenance (D5)
+      transaction.setAttribute(NAME_SOURCE_ATTRIBUTE, detail.source); // naming provenance
       current = createIdleTransaction({
         transaction,
         ...(deps.timer !== undefined ? { timer: deps.timer } : {}),

@@ -35,7 +35,7 @@ export interface ChunkStorage {
   /** Flush everything + close all handles (on stop()). */
   dispose?(): void;
   /**
-   * Bytes currently held UNWRITTEN by a batched writer (Wave 6.3), or absent where nothing is buffered.
+   * Bytes currently held UNWRITTEN by a batched writer, or absent where nothing is buffered.
    *
    * This is the quantity a back-pressure bound exists to cap: a storage that defers physical writes holds
    * captured records in memory until they land, and a persistently failing disk otherwise turns that hold

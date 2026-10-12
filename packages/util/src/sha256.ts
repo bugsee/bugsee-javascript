@@ -7,7 +7,7 @@ type TextEncoderCtor = new () => { encode(input: string): Uint8Array };
 /**
  * SHA-256 via the global WebCrypto `crypto.subtle` — and nothing else.
  *
- * `@bugsee/util` is tier-0 and reachable from every browser, worker and edge bundle, so it must not name
+ * `@bugsee/util` is reachable from every browser, worker and edge bundle, so it must not name
  * `node:crypto` in any form. Every runtime the SDK supports has `crypto.subtle` (browsers in a secure
  * context, Node >=19, Bun, Deno, workerd, Vercel Edge) except unflagged Node 18 — and a runtime that needs
  * a different digest gets one INJECTED by its platform: `@bugsee/node` hands a `node:crypto` digest to

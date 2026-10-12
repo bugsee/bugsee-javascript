@@ -2,9 +2,9 @@ import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage, reportMessage } from './protocol';
 
-// The WebView report path (docs/design/webview-bridge.md §6.2, D5). A `triggerPipeline` for the core Client:
+// The WebView report path. A `triggerPipeline` for the core Client:
 // the Client routes EVERY report (uncaught error / unhandledrejection detection + explicit `logException`) here
-// instead of assembling + uploading a bundle. Per D5, capture is NEVER gated — every incident ALWAYS streams up
+// instead of assembling + uploading a bundle. By design, capture is NEVER gated — every incident ALWAYS streams up
 // as a `crash` ENTRY so native's timeline has it (with the report metadata + stack). The report TRIGGER (telling
 // native to OPEN a bug) is emitted ADDITIONALLY only when `reportTrigger` is on (default off; the gate is read
 // dynamically so native can toggle it mid-session via the control channel). The bridge owns delivery, so report
@@ -13,7 +13,7 @@ import { encode, entryMessage, reportMessage } from './protocol';
 export interface WebViewReportPipelineOptions {
   /** The JS→native channel. */
   bridge: HostBridge;
-  /** Whether the WebView may emit report triggers right now (D5; read per report). */
+  /** Whether the WebView may emit report triggers right now (read per report). */
   reportTriggerEnabled: () => boolean;
   /** Monotonic-sequence source, SHARED with the capture store. */
   seq: () => number;
@@ -23,7 +23,7 @@ export interface WebViewReportPipelineOptions {
   now?: () => number;
   /** `performance.timeOrigin`. Default the ambient `performance`. */
   timeOrigin?: number;
-  /** D3 redaction provenance: did a JS-side report handler (`before`) run before this crossed? Default no. */
+  /** Redaction provenance: did a JS-side report handler (`before`) run before this crossed? Default no. */
   redacted?: () => boolean;
 }
 
@@ -32,7 +32,7 @@ export interface WebViewReportPipeline {
   report(request: ReportingRequest): Promise<UploadResult>;
 }
 
-/** Build the WebView trigger pipeline (errors-as-entries-always + the D5-gated report trigger). */
+/** Build the WebView trigger pipeline (errors-as-entries-always + the gated report trigger). */
 export function createWebViewReportPipeline(
   opts: WebViewReportPipelineOptions,
 ): WebViewReportPipeline {
@@ -54,10 +54,10 @@ export function createWebViewReportPipeline(
           // bytes do not survive JSON as typed arrays: user attachments cross as base64
           report: encodeRequestForMarker(request).report,
         }),
-        // D3 provenance: did a JS-side report handler run before this crossed? (native still re-applies).
+        // Provenance: did a JS-side report handler run before this crossed? (native still re-applies).
         redacted: redacted(),
       };
-      // Capture is never gated (D5): the incident ALWAYS streams up as a timeline crash entry.
+      // Capture is never gated: the incident ALWAYS streams up as a timeline crash entry.
       bridge.post(encode(entryMessage({ ...frame, seq: seq() })));
       // The report TRIGGER (open a native bug) is emitted only when the gate is open.
       if (reportTriggerEnabled()) {

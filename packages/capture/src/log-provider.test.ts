@@ -66,7 +66,7 @@ describe('createLogCaptureProvider', () => {
     expect(entries).toHaveLength(1);
     expect(entries?.[0]?.type).toBe('log');
     expect(entries?.[0]?.timestamp).toBe(5);
-    // The entry carries the NUMERIC wire level (Wave 5.1) while the emitted event keeps its friendly
+    // The entry carries the NUMERIC wire level while the emitted event keeps its friendly
     // name, so this compares against the encoded form rather than the raw event.
     expect(entries?.[0]?.data).toEqual({ ...event, level: 2 });
   });
@@ -186,7 +186,7 @@ describe('createLogCaptureProvider', () => {
 //
 // Converted at the PROVIDER, which is the single point every log entry passes through, and AFTER the user
 // filter so a `logFilter` still sees the friendly name it was written against.
-describe('log level reaches the wire as a NUMERIC (Wave 5.1)', () => {
+describe('log level reaches the wire as a NUMERIC', () => {
   const named = (level: string): LogEvent =>
     ({ timestamp: 1, level, source: 'console', message: 'm' }) as LogEvent;
 

@@ -1,21 +1,20 @@
 // A "tee" transport: forwards every SDK network call to the REAL staging endpoint verbatim, while
 // recording a parsed summary of each call locally. That local record is what lets `pnpm verify` and
 // the agent assert on things the MCP surface does not expose (redacted network bodies, the exact
-// bundle contents, per-request attributes) — the "wire" verification depth from
-// docs/samples/PLAN.md §4.
+// bundle contents, per-request attributes) — the "wire" verification depth.
 //
 // It rewrites no REQUEST the SDK makes. samples/express-api found three wire-contract SDK defects (a
 // hardcoded `x-client-type: web`, the unparsed `{ok, result}` response envelope, and an
 // `x-amz-checksum-sha256` header the presigned S3 url was never signed for) that once required
-// workarounds here; all three are fixed in @bugsee/core (see samples/FINDINGS.md F-X2/F-X10 and
+// workarounds here; all three are fixed in @bugsee/core (see
 // packages/core/src/bugsee-api.ts / bundle-uploader.ts) and this sample was built AFTER those fixes
 // landed, so it never carried them. If a request rewrite is ever needed here, that is itself a new
 // finding — this sample has stopped testing what a customer actually runs.
 //
 // "Rewrites nothing" is NOT the same claim as "behaves identically to the transport it replaces", and
-// the earlier version of this header conflated the two: it rewrote no request while still leaving
+// a transport can rewrite no request while still leaving
 // every SDK upload unbounded (no timeout) and charging the SDK's own request for a synchronous
-// bundle unzip. See the block above createTeeTransport() for the parity contract this now holds to.
+// bundle unzip. See the block above createTeeTransport() for the parity contract this transport holds to.
 //
 // This is a real HttpTransport (the shape @bugsee/node's `transport` launch option expects), built on
 // the Node global `fetch` — no @bugsee/node-utils import needed.
@@ -44,7 +43,7 @@ export interface CapturedCall {
   requestHeaders: Record<string, string>;
   /** Parsed bundle contents (bundle-upload calls only) — file list + the fields verification cares about. */
   bundle?: ParsedBundleSummary;
-  /** Parsed /v2/performance/transactions body (performance calls only) — the wire-only S9 evidence. */
+  /** Parsed /v2/performance/transactions body (performance calls only) — the wire-only evidence. */
   transactions?: Array<{ name: string; op?: string; status?: string; spanCount?: number }>;
 }
 
@@ -60,7 +59,7 @@ export interface ParsedBundleSummary {
   attrs?: Record<string, unknown>;
 }
 
-// Generous headroom: a single verify.ts run can produce well over a hundred issues (the S4 storm
+// Generous headroom: a single verify.ts run can produce well over a hundred issues (the storm
 // scenario alone logs 200), each worth ~2 HTTP calls (issue create + bundle PUT) plus periodic
 // performance/session calls.
 const MAX_RECORDS = 5000;
@@ -163,21 +162,20 @@ function parseBundle(body: Uint8Array): ParsedBundleSummary | undefined {
 //    `TimeoutError` DOMException, so the abort is caught here and re-thrown with node's exact
 //    message — a caller (or a future assertion) cannot tell the two transports apart. That claim is
 //    stated absolutely, so it has to hold for the WHOLE request: both awaited stages (`fetch()` AND
-//    the body read) are inside the normalizing try/catch. An earlier version wrapped only `fetch()`,
-//    which left the body read rejecting with the raw `TimeoutError` — reproduced against a server
-//    that sends headers and then stalls the body. Harmless in practice today (core inspects no error
-//    message, only whether the promise rejected), fixed because the claim admits no exception.
+//    the body read) are inside the normalizing try/catch. Wrapping only `fetch()` would leave the body read
+//    rejecting with the raw `TimeoutError` (reproduced against a server that sends headers and then stalls
+//    the body). Harmless in practice (core inspects no error message, only whether the promise rejected), but
+//    the claim admits no exception.
 //
 //    Known, deliberate residual difference: `req.setTimeout` is an IDLE-SOCKET timeout (fires after
 //    30s of no socket activity) whereas `AbortSignal.timeout` is a TOTAL-REQUEST deadline (30s wall
 //    clock including the body transfer), so the abort-based bound is strictly tighter. The two can
-//    only diverge for a body whose transfer takes >30s while never idling for 30s. The ground for
-//    treating that as out of reach here is MEASURED THROUGHPUT, not bundle size (bundle size was the
-//    earlier justification and it was never measured — and every incident bundle in this sample in
-//    fact carries a `profile.json`, `profiling: true` in src/bugsee.ts:59): the 2026-08-26 sweep
-//    drained 101 bundles to real staging through this transport, its 5s polling ticks advancing by
-//    6-9 bundles each at steady state — ~0.6s per upload end to end, ~50x under the 30s bound. A
-//    sample that ever uploads a body taking >30s must revisit this rather than assume parity.
+//    only diverge for a body whose transfer takes >30s while never idling for 30s. Measured throughput
+//    keeps this out of reach: every incident bundle in this sample carries a `profile.json`
+//    (`profiling: true` in src/bugsee.ts:59), and a 2026-08-26 sweep drained 101 bundles to real staging
+//    through this transport, its 5s polling ticks advancing by 6-9 bundles each at steady state, about
+//    0.6s per upload end to end, roughly 50x under the 30s bound. A sample that ever uploads a body taking
+//    >30s must revisit this rather than assume parity.
 //
 // 2. CONTENT ENCODING. `httpRequest` adds `accept-encoding: gzip, deflate` when the caller set none
 //    (:35-39) and gunzip/inflates the response itself (:19-27). Undici's `fetch` does its own

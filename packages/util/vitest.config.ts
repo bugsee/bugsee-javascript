@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // Per-package Vitest config (the pattern every package follows). Coverage is scoped to this
-// package's src and enforces the binding gate (docs/implementation-standards.md §4):
+// package's src and enforces the binding gate:
 // 100% line / functions / statements, >=90% branch.
 export default defineConfig({
   test: {

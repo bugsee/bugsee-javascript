@@ -9,7 +9,7 @@ import {
 import type { LogLevelName } from '@bugsee/types';
 import { jsonSafeStringify } from '@bugsee/util';
 
-// Cross-runtime console capture SOURCE (design §16.2): patches the global `console` methods, emits a
+// Cross-runtime console capture SOURCE: patches the global `console` methods, emits a
 // LogEvent to client.hubs.log on each call, and calls through to the original so the app's own
 // logging is preserved. `console` is universal across every target runtime, and patching
 // `globalThis.console[method]` is the same technique everywhere, so this lives in the shared

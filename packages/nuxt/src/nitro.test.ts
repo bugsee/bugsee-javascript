@@ -41,9 +41,9 @@ function fakeClient() {
 }
 
 describe('installBugseeNitro', () => {
-  // R3P-3: `relaunch()` stops the launched client and starts another; the hooks installed ONCE at server start
+  // `relaunch()` stops the launched client and starts another; the hooks installed ONCE at server start
   // must follow it, never keep reporting into the stopped one.
-  it('reports and injects trace meta through the CURRENT carrier client after a relaunch (R3P-3)', () => {
+  it('reports and injects trace meta through the CURRENT carrier client after a relaunch', () => {
     const carrier = {};
     const first = fakeClient();
     const second = fakeClient();
@@ -71,7 +71,7 @@ describe('installBugseeNitro', () => {
     expect(html.head).toEqual(['<meta c2>']);
   });
 
-  it('falls back to the launched client while the carrier slot is empty (R3P-3)', () => {
+  it('falls back to the launched client while the carrier slot is empty', () => {
     const carrier = {};
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
@@ -244,7 +244,7 @@ describe('installBugseeNitro', () => {
     expect(hasRenderHook()).toBe(false);
   });
 
-  // R5V-8: truthiness meant `'false'` and `1` kept injecting the trace id into every SSR page while `null`/`0`
+  // truthiness meant `'false'` and `1` kept injecting the trace id into every SSR page while `null`/`0`
   // turned it off silently. It emits ids into the HTML, so an invalid value is OFF and reported.
   it.each([
     ['false', '"false"'],

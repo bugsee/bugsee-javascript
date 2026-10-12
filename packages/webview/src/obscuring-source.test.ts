@@ -172,7 +172,7 @@ describe('createObscuringSource', () => {
     src.start();
     win.fire('scroll');
     win.fire('orientationchange');
-    win.fire('load'); // a frame-tree load re-triggers compose (so a static sub-frame re-bubbles — D9)
+    win.fire('load'); // a frame-tree load re-triggers compose (so a static sub-frame re-bubbles)
     doc.fire('focus');
     expect(onChange).toHaveBeenCalledTimes(4);
     src.stop();
@@ -201,7 +201,7 @@ describe('createObscuringSource', () => {
     src.stop();
   });
 
-  it('start() is idempotent — a second start() does not double-attach (no duplicate emits)', () => {
+  it('start() is idempotent — a second start does not double-attach (no duplicate emits)', () => {
     const doc = fakeDoc({ [HIDE]: [el(0)] });
     const onChange = vi.fn();
     const observe = vi.fn();

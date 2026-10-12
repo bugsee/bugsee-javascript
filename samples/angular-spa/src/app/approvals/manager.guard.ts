@@ -3,7 +3,7 @@ import { CanActivateFn, Router } from '@angular/router';
 import { isManager } from '../core/manager-state';
 
 /**
- * §5.6 "beyond the catalog": a route guard on the lazy-loaded `/approvals` feature. Not a manager?
+ * A route guard on the lazy-loaded `/approvals` feature. Not a manager?
  * redirect back to `/expenses` (with `?denied=approvals` so the app can show a banner) instead of
  * activating the route — the guard-redirect fixture `setRouteNameFromRouter` + `routePatternFromSnapshot`
  * must handle correctly (the navigation that actually completes is the REDIRECT target, not `/approvals`).

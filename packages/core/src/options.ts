@@ -19,8 +19,7 @@ export function createOptionsContainer(values: Record<string, unknown> = {}): Op
   };
 }
 
-// Friendly-name → canonical-identifier option scheme (Android com.bugsee.option.* parity, design
-// §2.4). Users pass idiomatic friendly names at launch; each maps to a canonical dotted identifier
+// Friendly-name → canonical-identifier option scheme (Android com.bugsee.option.* parity). Users pass idiomatic friendly names at launch; each maps to a canonical dotted identifier
 // (the cross-SDK + wire identity). resolveLaunchOptions turns the friendly bag into the canonical
 // form once: the OptionsContainer providers read (keyed by identifier), the gate the coordinators
 // query, and the canonical record platforms serialize into environment.sdk.options (via optionsToWire).
@@ -65,7 +64,7 @@ const normalizeFlushDelay = (value: unknown): unknown =>
 export const BOOLEAN_OPTION = { normalize: normalizeBoolean, expected: 'a boolean' } as const;
 /**
  * A boolean option that CAPTURES data and is ON by default: an invalid value turns it OFF (and is
- * reported) rather than silently leaving it on. Privacy fails closed (review round 2, R2P-4).
+ * reported) rather than silently leaving it on. Privacy fails closed.
  */
 export const FAIL_CLOSED_BOOLEAN_OPTION = {
   normalize: normalizeBoolean,
@@ -75,7 +74,7 @@ export const FAIL_CLOSED_BOOLEAN_OPTION = {
 /**
  * A boolean option that PROTECTS (it hides or blocks data) where ON is the safe side, e.g. `startInBlackout`,
  * WebView `captureObscuring`, performance `sanitizeSpans`: an invalid value (`'true'`, `1`, `null`, `0`, ...) turns
- * it ON and is reported, never silently OFF (review round 3, R3V-2/R3V-3). Only boolean `false` switches it off.
+ * it ON and is reported, never silently OFF. Only boolean `false` switches it off.
  */
 export const FAIL_ON_BOOLEAN_OPTION = {
   normalize: normalizeBoolean,
@@ -94,7 +93,7 @@ const normalizeBooleanOrBag = (value: unknown): unknown =>
 /**
  * `boolean | {…option bag}` that collects MORE data and is off by default (`captureLocalVariables`,
  * `captureSourceContext`): only `true` or a bag turns it on; anything else (`0`, `null`, `''`, `'false'`) is OFF
- * and reported (R3V-3). The bag itself is NOT stored in the resolved record (it is recorded as `true`).
+ * and reported. The bag itself is NOT stored in the resolved record (it is recorded as `true`).
  */
 export const FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION = {
   normalize: normalizeBooleanOrBag,
@@ -104,7 +103,7 @@ export const FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION = {
 
 /**
  * `boolean | {…option bag}` whose default is the SAFE side: an invalid value keeps the default and is reported;
- * it must never throw (`replay: null`, R3V-3).
+ * it must never throw (`replay: null`).
  */
 export const BOOLEAN_OR_BAG_OPTION = {
   normalize: normalizeBooleanOrBag,
@@ -257,7 +256,7 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true, ...boolean },
   { friendly: 'maxRecordingTime', key: BugseeOption.Duration, default: 60 },
   // Mobile-parity options (Android OptionsDescriptors). `captureBreadcrumbs` deliberately defaults to TRUE
-  // here although mobile defaults it to false — see docs/design/mobile-api-alignment.md, Kept differences.
+  // here although mobile defaults it to false.
   {
     friendly: 'captureLogsLevel',
     key: BugseeOption.CaptureLogsLevel,

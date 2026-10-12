@@ -95,7 +95,7 @@ describe('BugseeOption canonical identifiers', () => {
     );
   });
 
-  // Added for mobile parity (T6): byte for byte Android's `Options.*` strings.
+  // Added for mobile parity: byte for byte Android's `Options.*` strings.
   it('match the Android log-level, breadcrumb, http-error and default-priority identifiers', () => {
     expect(BugseeOption.CaptureLogsLevel).toBe('com.bugsee.option.capture.logs.level');
     expect(BugseeOption.CaptureBreadcrumbs).toBe('com.bugsee.option.capture.breadcrumbs');
@@ -112,7 +112,7 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.PersistUserIdentifier).toBe('com.bugsee.option.user.persist-identifier');
   });
 
-  it('matches the Android notify flush delay identifier (T7)', () => {
+  it('matches the Android notify flush delay identifier', () => {
     expect(BugseeOption.NotifyFlushDelay).toBe('com.bugsee.option.config.notify-flush-delay');
   });
 

@@ -42,7 +42,7 @@ for (const t of targets) {
   }
 }
 
-describe('the umbrella install path (Wave 3b.1)', () => {
+describe('the umbrella install path', () => {
   let collector: MockCollector;
 
   beforeAll(async () => {
@@ -115,7 +115,7 @@ describe('the umbrella install path (Wave 3b.1)', () => {
 // resolved to @bugsee/node left idiomatic Bun and Deno servers completely uninstrumented.
 //
 // Nothing in the suite exercised those interceptors on any entry, so this is the first coverage they have.
-describe('the umbrella instruments the NATIVE server (Wave 3b.1)', () => {
+describe('the umbrella instruments the NATIVE server', () => {
   let collector: MockCollector;
 
   beforeAll(async () => {

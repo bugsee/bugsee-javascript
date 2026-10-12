@@ -4,7 +4,7 @@ import { strFromU8 } from '@bugsee/util';
 import type { TransactionWire } from './span';
 
 // The performance HTTP client: POST /v2/performance/transactions (the endpoint the @bugsee/performance
-// extension owns, §0.6). Reuses the core BugseeApi session/Bearer-auth flow (ensureSession memoizes the
+// extension owns). Reuses the core BugseeApi session/Bearer-auth flow (ensureSession memoizes the
 // access token) so it shares the same authenticated session as the bundle upload. This is the `send`
 // injected into the uploader; the umbrella wires it from the launched client's api/transport.
 

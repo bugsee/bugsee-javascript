@@ -136,7 +136,7 @@ describe('@bugsee/nuxt — real Nuxt boot e2e', () => {
 
   // WAVE V0 — the collector VALIDATES every upload against the shipped wire contract, and this is what
   // makes it count. Until the shared kit landed, this harness carried its own collector copy that did no
-  // validation at all, so the entry-payload contract added in Wave 3b.2 (logs.json / network.json /
+  // validation at all, so the entry-payload contract (logs.json / network.json /
   // events.json — the files that carry the actual captured data) covered exactly one of the five suites.
   //
   // A violation the collector records but nobody asserts is the same false assurance as no check at all.

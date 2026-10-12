@@ -10,7 +10,7 @@ import { NAME_SOURCE_ATTRIBUTE, sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
-// Shared server-instrumentation core (design: docs/design/incoming-server-instrumentation.md). Absorbed
+// Shared server-instrumentation core. Absorbed
 // from the retired @bugsee/server-adapters engine and extended with (a) a `run`-scoped entry
 // (`runServerRequest`) for the node:http emit patch / native serve wraps / express / koa, and (b)
 // first-owner-wins RE-ENTRANCY: the first opener OWNS the per-request context + the `http.server`
@@ -36,8 +36,8 @@ export interface ServerRequestInfo {
 }
 
 /**
- * The BE→FE return headers (Profile v1 §12 return path), each independently toggleable. BOTH default OFF
- * (T9) — there is no consumer until the frontend adapters read them, at which point they flip on. Built
+ * The BE→FE return headers (return path), each independently toggleable. BOTH default OFF
+ * — there is no consumer until the frontend adapters read them, at which point they flip on. Built
  * by {@link buildTraceResponseHeaders} and applied to the response by the CALLER (the node:http patch / the
  * native serve wrap), which owns the response object — the core has no response handle.
  */
@@ -47,13 +47,13 @@ export interface TraceResponseConfig {
   /** Emit the W3C trace-context-L2 draft `traceresponse` header so the FE adopts the BE's exact span id. */
   traceresponse?: boolean;
   /**
-   * (F0, cross-origin) The `Timing-Allow-Origin` value to emit alongside `Server-Timing`, so a cross-origin
+   * (cross-origin) The `Timing-Allow-Origin` value to emit alongside `Server-Timing`, so a cross-origin
    * browser can READ it via `PerformanceResourceTiming.serverTiming` (without TAO the entry is opaque). A
    * string (e.g. `'*'`) or an origin list (joined with `, `). Only emitted when `serverTiming` is on.
    */
   timingAllowOrigin?: string | readonly string[];
   /**
-   * (F0, cross-origin) Add `traceresponse` to `Access-Control-Expose-Headers`, so a cross-origin browser can
+   * (cross-origin) Add `traceresponse` to `Access-Control-Expose-Headers`, so a cross-origin browser can
    * READ it off the fetch `Response`. Only emitted when `traceresponse` is on.
    */
   exposeTraceresponse?: boolean;
@@ -66,7 +66,7 @@ export interface ServerInstrumentOptions {
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default {@link defaultShouldReport} (status-based). */
   shouldReport?: (err: unknown) => boolean;
-  /** BE→FE return headers (default both off, T9). The caller writes {@link ServerRequestSpan.responseHeaders}. */
+  /** BE→FE return headers (default both off). The caller writes {@link ServerRequestSpan.responseHeaders}. */
   traceResponse?: TraceResponseConfig;
   /** Where an SDK-internal failure in the request path is reported. It is never thrown into the request. */
   onError?: (error: unknown) => void;
@@ -196,14 +196,14 @@ function buildTraceResponseHeaders(
   const traceContext = `00-${trace.traceId}-${trace.spanId}-${trace.sampled ? '01' : '00'}`;
   if (config.traceresponse === true) {
     headers.traceresponse = traceContext;
-    // F0: expose `traceresponse` to a cross-origin FE (it reads it off the fetch Response).
+    // expose `traceresponse` to a cross-origin FE (it reads it off the fetch Response).
     if (config.exposeTraceresponse === true) {
       headers['Access-Control-Expose-Headers'] = 'traceresponse';
     }
   }
   if (config.serverTiming === true) {
     headers['Server-Timing'] = `traceparent;desc="${traceContext}"`;
-    // F0: expose Server-Timing to a cross-origin FE (it reads it via PerformanceResourceTiming.serverTiming;
+    // expose Server-Timing to a cross-origin FE (it reads it via PerformanceResourceTiming.serverTiming;
     // without `Timing-Allow-Origin` the entry is opaque). Only meaningful alongside the Server-Timing header.
     if (config.timingAllowOrigin !== undefined) {
       headers['Timing-Allow-Origin'] =
@@ -378,12 +378,11 @@ export function runServerRequest<T>(
   options: ServerInstrumentOptions,
   dispatch: (span: ServerRequestSpan) => T,
 ): T {
-  // Wave 2.1/2.3 — THE REQUEST PATH IS INERT. `dispatch` is where the framework calls `next()` / the route
+  // THE REQUEST PATH IS INERT. `dispatch` is where the framework calls `next()` / the route
   // handler, so if the SDK throws before invoking it, the customer's handler never runs and the SDK's own
   // error becomes the request's outcome: a 500 on a request that would have succeeded, with the app's error
   // middleware handed a Bugsee-internal Error as if it were their bug
-  // (docs/review/backend-express-fastify-koa.md SEV1 #1, docs/review/backend-hono-hapi-elysia.md SEV1 #1 —
-  // both reproduced against real servers). Any SDK-side failure degrades to running the request
+  // (both reproduced against real servers). Any SDK-side failure degrades to running the request
   // UNINSTRUMENTED, which loses telemetry and nothing else.
   //
   // `dispatched` is what keeps that from swallowing the application's OWN error: once dispatch has been
@@ -476,7 +475,7 @@ function makeSpan(
         name: spanName(info, route),
         operation: 'http.server',
         // Continue the inbound trace as a true CHILD: adopt the trace id, make the http.server span a
-        // child of the upstream span, and adopt the upstream sampling decision (Profile v1 §12).
+        // child of the upstream span, and adopt the upstream sampling decision.
         ...(inbound !== undefined
           ? {
               continuation: {
@@ -515,7 +514,7 @@ function makeSpan(
       if (transaction === undefined || transaction.isFinished()) {
         return;
       }
-      // F-4: `client.ext('performance').setRouteName()` / `setActiveTransactionName()` rename the
+      // `client.ext('performance').setRouteName()` / `setActiveTransactionName()` rename the
       // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source') — the caller's
       // explicit rename. Without this check, the automatic route-derived name below ran unconditionally
       // on every finish and silently overwrote it. Skip the automatic name ONLY when a manual rename

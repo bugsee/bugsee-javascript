@@ -1,7 +1,7 @@
 import { type CaptureDataEntry, CaptureDataEntryBase, type Scheduler } from '@bugsee/core';
 import type { CpuProfile, CpuProfiler } from './cpu-profiler';
 
-// The rolling CPU-profiling controller (node diagnostics, C2). It runs the V8 sampling profiler
+// The rolling CPU-profiling controller (node diagnostics). It runs the V8 sampling profiler
 // continuously and exposes a pull-at-report SNAPSHOT source that attaches the current segment to the
 // incident bundle as `profile.json`. A rolling-restart timer (every recording window) discards the
 // accreting segment so a long-lived process never accumulates an unbounded profile; the segment the

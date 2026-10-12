@@ -75,7 +75,7 @@ describe('createWorkerThreadRingWorker (real worker_threads)', () => {
   });
 
   it('drop-storm: a real worker drains while the producer drop-oldests — every survivor on disk is INTACT', async () => {
-    // Stress the cross-thread drop-oldest + read-cursor protection (C1/C2): a small ring forces constant
+    // Stress the cross-thread drop-oldest + read-cursor protection: a small ring forces constant
     // drops while the worker is concurrently mid-writev. Each frame self-describes its id twice; a torn read
     // (the producer overwriting a frame the worker is reading) would corrupt a line. With the claim-verify +
     // CAS fix, every line that lands is intact.

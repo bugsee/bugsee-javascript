@@ -4,8 +4,8 @@ import { isSensitiveHeader, isSensitiveKey, REDACTED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import type { NetworkEvent, NoBodyReason } from './wire';
 
-// Object/header/param sanitization (design §8.10): apply the key denylists (§sensitive) and the
-// shape pass (§shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
+// Object/header/param sanitization: apply the key denylists (see ./sensitive) and the
+// shape pass (see ./shapes). Inputs are not mutated; outputs are null-prototype so a `__proto__` key
 // (e.g. from JSON.parse'd untrusted data) is stored as own data and cannot corrupt a prototype.
 
 /**
@@ -66,16 +66,16 @@ export function sanitizeParams(
  * -> redacted), string values shape-scanned, arrays/objects recursed, other primitives unchanged.
  *
  * A sensitive key's value is replaced WHOLE, whatever its type — the subtree is never walked. I briefly
- * changed this to walk and redact each leaf so a report could show which fields existed; review round 5
- * found that wrong on three independent counts:
+ * changed this to walk and redact each leaf so a report could show which fields existed;
+ * review found that wrong on three independent counts:
  *
  *  1. It opened a redaction BYPASS. Walking recurses, so a deep body threw RangeError out of here,
  *     `sanitizeBody`'s catch fell to the textual passes, and `JSON_PAIR` cannot match `"password":{` —
  *     its value alternative excludes `{`. Measured: safe at every depth before, leaking from ~4000 after.
  *  2. KEY NAMES became a leak channel. `{"tokens":{"eyJ…":true}}` emitted the token, because the token IS
  *     the key. Maps keyed by a secret or an identifier (session→token, user→credential) are ordinary.
- *  3. It broke Android parity, which CLAUDE.md makes binding: `NetworkDataSanitizer` does
- *     `obj.put(key, REDACTED_VALUE)` unconditionally, and sdk-design.md requires byte-identical output.
+ *  3. It broke Android parity, which is a binding requirement: `NetworkDataSanitizer` does
+ *     `obj.put(key, REDACTED_VALUE)` unconditionally, and the design requires byte-identical output.
  *
  * The diagnostic cost is accepted and real: inside a subtree the app labelled `password`/`token`/`secret`,
  * a report cannot show which fields existed. Recovering that safely needs a shape SUMMARY (key count and
@@ -185,7 +185,7 @@ function looksLikeJson(body: string): boolean {
  * ANCHORED on `[{,]` — a JSON key is always preceded by an opening brace or a comma. That is not cosmetic:
  * the unanchored form was quadratic for exactly the reason the JWT pattern was, a candidate start at every
  * `"`. On `{"\"\"\"…` (escaped quotes, never closed) it cost 16 ms at 8 KB and 227 ms at 32 KB; anchored it
- * is 0.43 ms at 256 KB. I wrote the unanchored version first, in this same review round, having just fixed
+ * is 0.43 ms at 256 KB. I wrote the unanchored version first, in this same review pass, having just fixed
  * that defect one file over.
  *
  * The unquoted-value alternative excludes `{` and `"` so a scalar cannot swallow a nested object — without
@@ -379,13 +379,13 @@ function redactMultipart(body: string, contentType: string | undefined): string 
 }
 
 /**
- * Sanitize a request/response body string by Content-Type (design §8.10). A JSON media type (see
+ * Sanitize a request/response body string by Content-Type. A JSON media type (see
  * {@link isJsonContentType}) → recursive key-denylist redaction (re-serialized). Anything else — INCLUDING
  * a body that claimed a JSON type but does not parse — gets the two textual shapes we can structurally
  * read: form-urlencoded `key=value&…` and colon-delimited `key: value`, then the shape pass.
  *
- * The non-JSON key redaction is Android parity (`NetworkDataSanitizer.sanitizeBody`) and closes
- * docs/review/capture.md SEV1 #5: `new URLSearchParams({username, password})` is the canonical HTML login
+ * The non-JSON key redaction is Android parity (`NetworkDataSanitizer.sanitizeBody`) and closes a leak:
+ * `new URLSearchParams({username, password})` is the canonical HTML login
  * body, and it was stored verbatim because the denylist ran for JSON media types only. Never throws.
  */
 export function sanitizeBody(
@@ -469,7 +469,7 @@ export interface NetworkBodyGateOptions {
 }
 
 /**
- * Apply the body size + Content-Type policy to a NetworkEvent (Android applyBodyFilters parity, §8.10).
+ * Apply the body size + Content-Type policy to a NetworkEvent (Android applyBodyFilters parity).
  * Non-mutating. A present `custom.body` is dropped (→ null + `no_body_reason`) when its Content-Type is
  * missing/blank and `captureWithoutType` is off, or when it exceeds `maxBytes`. A producer-set
  * `no_body_reason` (or an absent body) is left untouched.

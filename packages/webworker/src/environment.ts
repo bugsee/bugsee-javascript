@@ -1,14 +1,14 @@
 import { detectBrowser, detectOs, UNKNOWN_OS } from '@bugsee/browser';
 import { type EnvironmentEnvelope, optionsToWire } from '@bugsee/protocol';
 
-// The §8.6 environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
+// The environment envelope for a Web Worker / Service Worker. A worker has a `navigator`
 // (WorkerNavigator: userAgent, language, hardwareConcurrency, and deviceMemory on Chromium) but NO `screen`
 // and NO `window` — so this is the browser envelope MINUS the screen/pixel-ratio hardware reads. System reads
 // go through an injectable WorkerProbe so the mapping is testable deterministically (the worker globals are
 // stubbed in tests); realWorkerProbe is the default. platform.type is the worker variant ('web-worker' /
 // 'service-worker') and rides in `runtime`; `platform` carries the OS, identified in-worker from the same
 // navigator the browser tier reads (see @bugsee/browser's user-agent.ts). It used to carry the worker tag
-// and the raw userAgent — the same conflation fixed for the page tier in samples/FINDINGS.md F-X20.
+// and the raw userAgent — the same conflation fixed for the page tier.
 
 /** The worker platform identity. */
 export type WorkerPlatformType = 'web-worker' | 'service-worker';

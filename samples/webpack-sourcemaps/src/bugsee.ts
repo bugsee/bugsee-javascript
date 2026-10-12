@@ -2,7 +2,7 @@
 // every module reads the same instance via `getClient()`. Modeled on samples/react-spa/src/bugsee.ts;
 // this sample has no framework, so it talks to the browser umbrella (`@bugsee/bugsee`) directly.
 //
-// `@bugsee/bugsee`'s browser entry wires @bugsee/performance (S9) + @bugsee/opentelemetry (S13) on by
+// `@bugsee/bugsee`'s browser entry wires @bugsee/performance + @bugsee/opentelemetry on by
 // default on top of @bugsee/browser's bare kernel (packages/bugsee/src/launch.ts).
 import { launch, type Bugsee, type BugseeLaunchOptionsWithPerformance } from '@bugsee/bugsee';
 import {
@@ -53,25 +53,22 @@ let client: Bugsee | undefined;
 const carrier: object = globalThis;
 
 /**
- * The full option set the app launches with (S1: "launch with ... every option set").
+ * The full option set the app launches with ("launch with ... every option set").
  *
  * "Full" means: every non-injectable field of `BugseeLaunchOptions`
  * (`packages/browser/src/launch.ts`) and of the umbrella's `UmbrellaExtensionOptions`
- * (`packages/bugsee/src/wire.ts`), with SEVEN documented exclusions in three groups (corrected in fix
- * round 4, R4-5 — this block said "THREE" and named `otelHeaders`, a field that does not exist):
+ * (`packages/bugsee/src/wire.ts`), with SEVEN documented exclusions in three groups:
  *
  * - `sdkVersion` (`launch.ts:132-133`) — deliberately left at its real default. It is stamped into the
  *   environment envelope AND the `user-agent: BugseeJS/<v>` header (`packages/core/src/bugsee-api.ts:72`),
  *   so overriding it would make every issue this sample files on staging report a version the SDK is
  *   not — poisoning the very evidence trail the sample exists to produce. Exercised by omission.
- * - `replay` — **CORRECTED (substrate-flip re-verification).** This entry used to read "S11 is N/A for
- *   this sample by design", and that is now simply false in two ways. Session replay is ON BY DEFAULT
+ * - `replay` — session replay is ON BY DEFAULT
  *   (`packages/browser/src/launch.ts`: `options.replay !== false && domDocument !== undefined`), so
  *   this sample RECORDS a session and ships `replay.bin` in every bundle it uploads whether or not it
- *   asks to. "Excluded because it is out of scope" therefore described neither the option nor the
- *   sample's behaviour: it described a state of the world that ended when the default flipped.
+ *   asks to. Excluding it as out of scope would describe neither the option nor the sample's behaviour.
  *
- *   `replay` is STILL left unset here, but for the opposite reason, and it is no longer unverified.
+ *   `replay` is left unset here on purpose, and it is verified.
  *   Setting `replay: true` would be behaviour-identical to the default and would make the sweep's
  *   `s11-replay-file` row ("the bundle carries replay.bin WITHOUT the sample asking for it") assert
  *   nothing — a regression that flipped the default back to opt-out would stay green because we had
@@ -84,8 +81,8 @@ const carrier: object = globalThis;
  *   `react-spa` remain the samples that drive the sub-options themselves.
  * - ALL FIVE public OTel options — `otelExportUrl` (`wire.ts:109`), `otelExportHeaders` (`:111`),
  *   `otelExportResource` (`:113`), `otelConsume` (`:119`), `onOtelSpanProcessor` (`:121`) — S13 is N/A
- *   here (no local collector, and no user TracerProvider to consume spans from; see `scenarios.md`
- *   S13). NB `tracePropagationOrigin` (`wire.ts:102`) is NOT an exclusion — it IS set, just below.
+ *   here (no local collector, and no user TracerProvider to consume spans from; see scenario S13).
+ *   NB `tracePropagationOrigin` (`wire.ts:102`) is NOT an exclusion — it IS set, just below.
  *
  * The injectable test seams (`window`/`document`/`clock`/`scheduler`/`captureStore`/`triggerPipeline`/
  * `systemProbe`/`systemMetricsSampler`/`bundleStore`/`locks`/`indexedDB`) are deliberately NOT set — the
@@ -102,7 +99,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   captureNetwork: true,
   captureNetworkBodies: true,
   // Deliberately small so the Scenario panel's "large body" control exercises the bounded-read
-  // truncation path (S7) without needing a multi-megabyte fixture.
+  // truncation path without needing a multi-megabyte fixture.
   maxNetworkBodySize: 2048,
   captureNetworkBodyWithoutType: true,
   captureSystemTraces: true,
@@ -134,10 +131,10 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   ...(typeof location !== 'undefined' ? { tracePropagationOrigin: location.origin } : {}),
 
   onError: reportInternalError,
-  // Wire-depth verification (PLAN §4/§6.6): forwards every SDK call to real staging verbatim while
+  // Wire-depth verification: forwards every SDK call to real staging verbatim while
   // recording a parsed copy locally, so scripts/verify.mjs can assert on the ACTUAL bundle contents
   // (redaction, labels, dedupe) instead of only on the scenario panel's own filter-callback log — see
-  // src/bugsee-transport.ts and FINDINGS.md. Dev/test builds only (IS_PRODUCTION guard above) — a
+  // src/bugsee-transport.ts. Dev/test builds only (IS_PRODUCTION guard above) — a
   // `pnpm build` production bundle gets the SDK's own default transport, untouched.
   ...(IS_PRODUCTION ? {} : { transport: createTeeTransport() }),
 };
@@ -149,7 +146,7 @@ declare global {
     __bugseeTee?: {
       getCapturedBundles: typeof getCapturedBundles;
       clearCapturedCalls: typeof clearCapturedCalls;
-      /** S11 — decode one uploaded bundle's `replay.bin` on demand (see `ReplayDigest`). */
+      /** Decode one uploaded bundle's `replay.bin` on demand (see `ReplayDigest`). */
       getReplayDigest: typeof getReplayDigest;
     };
   }
@@ -159,10 +156,10 @@ if (typeof window !== 'undefined' && !IS_PRODUCTION) {
 }
 
 /**
- * S1: the CALLER-supplied options for the "relaunch minimal" control — deliberately empty, so anything
+ * The CALLER-supplied options for the "relaunch minimal" control — deliberately empty, so anything
  * the sample does not itself have to pin stays at its SDK default.
  *
- * Corrected in fix round 4 (R4-6): this used to read "nothing but the token", which is not what runs.
+ * Note that the launch is not token-only:
  * `relaunch()` below always spreads `endpoint`, `appId`, `appVersion`, `appBuild` and `onError` BEFORE
  * the caller's options, and `doLaunch` adds `carrier` — so this control launches with SIX options set,
  * not zero. Pinning `endpoint` is not optional: a bare `launch(token, {})` would post to the PRODUCTION
@@ -191,7 +188,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * S1: call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one).
  */
 export function attemptDuplicateLaunch(): { sameInstance: boolean } {

@@ -148,7 +148,7 @@ describe('recordReactRenderSpan', () => {
 describe('BugseeProfiler', () => {
   // The direct-call test that lived here — `BugseeProfiler({...})` invoked as a plain function, asserting
   // `element.type === Profiler` and driving `props.onRender` by hand — became invalid when the component
-  // gained hooks for the production fallback (Wave 4.6 / D4): calling a hook component outside a renderer
+  // gained hooks for the production fallback: calling a hook component outside a renderer
   // throws "Invalid hook call".
   //
   // Its three assertions are all covered by `profiler.render.test.ts`, which renders through real react-dom
@@ -242,7 +242,7 @@ describe('withBugseeProfiler', () => {
 // so the resolution is an honest, discoverable escape hatch: `recordReactRenderSpan` is React-free and
 // takes plain numbers, so an app can feed it from `react-dom/profiling` or from timings it already has.
 // These tests exist so that escape hatch cannot be removed or made React-dependent without failing.
-describe('the production escape hatch (Wave 4.6)', () => {
+describe('the production escape hatch', () => {
   it('recordReactRenderSpan works with NO React involved at all', () => {
     const recordChildSpan = vi.fn();
     const client = {

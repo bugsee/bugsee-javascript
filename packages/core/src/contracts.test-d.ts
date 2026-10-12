@@ -1,4 +1,4 @@
-// Type-level tests for the §16.2 contracts, checked by `tsc --noEmit`. Valid example implementations
+// Type-level tests for the contracts, checked by `tsc --noEmit`. Valid example implementations
 // must type-check; @ts-expect-error negatives pin required members. Example object literals are
 // type-checked (excess-property + missing-property checks).
 

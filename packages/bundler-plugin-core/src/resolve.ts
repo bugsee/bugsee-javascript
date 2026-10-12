@@ -41,7 +41,7 @@ export interface BugseePluginOptions {
   /** Disable the plugin entirely (e.g. dev builds). */
   disabled?: boolean;
   /**
-   * FAIL the build when the source-map upload fails. Default `false` (Wave 7).
+   * FAIL the build when the source-map upload fails. Default `false`.
    *
    * A telemetry side effect must not be able to break a production deploy: before this, an expired token,
    * a transient network error or a `bugsee-cli` missing from PATH aborted the user's build with no escape
@@ -75,7 +75,7 @@ export interface BugseePluginOptions {
    */
   onNotice?: (message: string) => void;
   /**
-   * Register this build with Bugsee (docs/design/web-build-registration.md). Falls back to
+   * Register this build with Bugsee. Falls back to
    * `BUGSEE_REGISTER_BUILD` (`release` | `always` | `false`). Default `'release'`.
    *
    * `'release'` registers a build the BUNDLER calls production — Vite's resolved `isProduction`,
@@ -151,7 +151,7 @@ export interface ResolvedPluginOptions {
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
-/** In-flight uploads, keyed by output directory (Wave 7.5). Entries are removed as each run settles. */
+/** In-flight uploads, keyed by output directory. Entries are removed as each run settles. */
 const runsByDir = new Map<string, Promise<PluginRunResult | undefined>>();
 
 export function resolvePluginOptions(
@@ -204,10 +204,10 @@ export async function runPluginUpload(
   if (!resolved.enabled) {
     return undefined;
   }
-  // One pipeline per output DIRECTORY (Wave 7.5). `writeBundle` fires once per OUTPUT, so a multi-output
+  // One pipeline per output DIRECTORY. `writeBundle` fires once per OUTPUT, so a multi-output
   // config whose entries resolve to the same directory — `[{ dir: 'dist' }, { file: 'dist/legacy.js' }]`,
-  // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps (step 3)
-  // while the other was still reading them (steps 1-2). A concurrent caller JOINS the in-flight run and
+  // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps
+  // while the other was still reading them. A concurrent caller JOINS the in-flight run and
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
   const inFlight = runsByDir.get(outDir);
   if (inFlight !== undefined) {

@@ -44,12 +44,12 @@ describe('launch (Cloudflare)', () => {
   });
 });
 
-// S0 (docs/design/cloudflare-tenant-isolation.md §7): AsyncLocalStorage is wired AUTOMATICALLY.
+// AsyncLocalStorage is wired AUTOMATICALLY.
 //
 // `globalThis.AsyncLocalStorage` does not exist on workerd under any compatibility flag — ALS is reachable
-// only via `node:async_hooks` (verified on real workerd; docs/review/cloudflare.md SEV1 #3). Without this,
+// only via `node:async_hooks` (verified on real workerd). Without this,
 // per-request context silently degrades to a single slot, `contextId`/`owner` are never stamped, and the
-// Durable Object tenant fix (S1-S5) is inert. The user must write NO code for this.
+// Durable Object tenant fix is inert. The user must write NO code for this.
 describe('launch (Cloudflare) — automatic AsyncLocalStorage', () => {
   it('supplies a run()-scoped store by default, without the caller passing one', () => {
     const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
@@ -96,7 +96,7 @@ describe('launch (Cloudflare) — automatic AsyncLocalStorage', () => {
   });
 });
 
-// S4.5: Cloudflare turns tenant partitioning ON by default — it is where Durable Objects live.
+// Cloudflare turns tenant partitioning ON by default — it is where Durable Objects live.
 describe('launch (Cloudflare) — tenant partitioning', () => {
   it('enables partitionCaptureByTenant by default', () => {
     const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
@@ -116,7 +116,7 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
     );
   });
 
-  // R5V-9: `false` silently disables the cross-tenant isolation Cloudflare turns on by default; say so, once.
+  // `false` silently disables the cross-tenant isolation Cloudflare turns on by default; say so, once.
   it('an explicit false warns once per isolate through onError, and still opts out', () => {
     const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
     const carrier = {};
@@ -167,7 +167,7 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('a rethrowing onError cannot break the real launch of an invalid partition value (R5V-4)', async () => {
+  it('a rethrowing onError cannot break the real launch of an invalid partition value', async () => {
     vi.restoreAllMocks();
     const onError = vi.fn(() => {
       throw new Error('the host sink rethrows');
@@ -180,7 +180,7 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
     await client?.stop?.();
   });
 
-  it('an explicit undefined does not override the Cloudflare default (R4V-1)', () => {
+  it('an explicit undefined does not override the Cloudflare default', () => {
     const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
     launch('tok', { partitionCaptureByTenant: undefined });
     expect(spy).toHaveBeenCalledWith(

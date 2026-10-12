@@ -1,4 +1,4 @@
-// Process-lifecycle e2e (Wave 2.4 / 2.5, decision D2). Both claims here are about what a REAL process does,
+// Process-lifecycle e2e. Both claims here are about what a REAL process does,
 // which is the only place they are observable: whether it exits at all, and with which code. Unit tests
 // cover the SDK's logic; a supervisor only ever sees these two facts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

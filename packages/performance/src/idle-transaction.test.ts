@@ -35,7 +35,7 @@ function fakeTimer() {
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`). Left as a bare object literal
 // assigned to a `Transaction`-typed const, tsc's missing-property check on a fresh object literal rejects
 // this double at authoring time (a CI gate) the moment `Transaction` grows a member it does not implement.
-// R5-8: these three were the last casts left, and they sit in the package that OWNS the interface.
+// these three were the last casts left, and they sit in the package that OWNS the interface.
 const fakeTxn = (): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',

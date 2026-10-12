@@ -258,7 +258,7 @@ describe('sweepAgedInstances', () => {
 // Age closes it without reintroducing the hazard: a live instance heartbeats every 10 s, so a subtree with
 // NO heartbeat for the whole TTL is not one anybody is using — whatever its pid says. The data given up is
 // a week old, well outside any rolling capture window.
-describe('aged + heartbeat-silent subtrees with a LIVE pid (Wave 6.6)', () => {
+describe('aged + heartbeat-silent subtrees with a LIVE pid', () => {
   const NOW = 1_000_000_000_000;
   const TTL = 10_000;
   const roots: string[] = [];

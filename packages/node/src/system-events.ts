@@ -15,7 +15,7 @@ import { markOwnHandler, releaseSignalToDefault } from './process-policy';
 // SIGNAL SAFETY: registering a signal listener SUPPRESSES Node's default termination, so a naive observer
 // would hang a process that has no other handler. We capture passively: emit the event, then hand the signal
 // back via the shared `releaseSignalToDefault` rule — remove our handler, and re-raise only if NO listener
-// remains. That rule is shared with launch's flush-on-signal hook (Wave 6.1) because it has to hold when
+// remains. That rule is shared with launch's flush-on-signal hook because it has to hold when
 // SEVERAL Bugsee listeners are installed, which the earlier `listenerCount === 1` gate did not: a second
 // Bugsee listener made the count 2, both handlers read that as "the app owns shutdown", and the signal was
 // never released — a SIGTERM left the process running forever.

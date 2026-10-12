@@ -120,7 +120,7 @@ describe('spawnWatchdogWorker', () => {
 
 describe('createEventLoopWatchdog', () => {
   it('unrefs the worker AFTER attaching the message listener, so it cannot pin the host process', () => {
-    // Wave 2.4 (docs/review/node-C-diagnostics-multiinstance.md SEV1 #1). The worker is unref'd at spawn,
+    // The worker is unref'd at spawn,
     // but attaching a `message` listener starts and RE-REFS its MessagePort — so with `detectHangs` on by
     // default, every short-lived program that calls launch() (a CLI, a migration, a CI job, a cron task)
     // hung forever instead of exiting. Measured: default launch → still alive at 5 s, active handle

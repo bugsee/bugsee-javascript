@@ -2,7 +2,7 @@
 // every page/component reads the same instance via `getClient()`.
 //
 // @bugsee/react re-exports the FULL `@bugsee/bugsee` browser umbrella (single-install design), so
-// `launch` here already wires @bugsee/performance (S9) + @bugsee/opentelemetry (S13) on by default —
+// `launch` here already wires @bugsee/performance + @bugsee/opentelemetry on by default —
 // not just @bugsee/browser's bare kernel.
 import { launch, type Bugsee, type BugseeLaunchOptionsWithPerformance } from '@bugsee/react';
 
@@ -30,14 +30,14 @@ function reportInternalError(error: unknown): void {
 let client: Bugsee | undefined;
 let carrier: object = globalThis;
 
-/** The full option set the app launches with (S1: "launch with ... every option set"). Exported so the
+/** The full option set the app launches with ("launch with ... every option set"). Exported so the
  *  Settings + Scenario pages can display/relaunch against it. */
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The default SDK_VERSION baked into @bugsee/browser (packages/browser/src/launch.ts:79) is the
-  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish — see
-  // samples/FINDINGS.md F-X2). Staging's session endpoint actively REJECTS that version
-  // (UnsupportedSdkError, code 99098) rather than merely recording it — see FINDINGS.md F-2. Override
+  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish).
+  // Staging's session endpoint actively REJECTS that version
+  // (UnsupportedSdkError, code 99098) rather than merely recording it. Override
   // it here so this sample's data can land at all; a real published SDK would carry a real version.
   sdkVersion: '1.0.0',
   appId: 'com.bugsee.sample.react-spa',
@@ -48,7 +48,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   captureNetwork: true,
   captureNetworkBodies: true,
   // Deliberately small so /scenarios' "large body" control exercises the bounded-read truncation path
-  // (S7) without needing a multi-megabyte fixture.
+  // without needing a multi-megabyte fixture.
   maxNetworkBodySize: 2048,
   captureNetworkBodyWithoutType: true,
   captureSystemTraces: true,
@@ -72,7 +72,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   onError: reportInternalError,
 };
 
-/** S1: the minimum viable launch — nothing but the token. Used by the Scenario panel to prove the SDK
+/** The minimum viable launch — nothing but the token. Used by the Scenario panel to prove the SDK
  *  works with every option left at its default. */
 export const MINIMAL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {};
 
@@ -98,7 +98,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * S1: call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */

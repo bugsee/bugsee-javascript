@@ -575,7 +575,7 @@ describe('createDurableUploadPipeline', () => {
 // Android's report queue has no count/size/TTL cap, but its sibling queues do and that is the idiom to
 // follow: NotificationRelayStorage.java:47-49 (1 MB / 500 entries / 72 h), PerformanceUploadStorage.java:35
 // (5 MB).
-describe('retention (Wave 6.4)', () => {
+describe('retention', () => {
   const permanent = (status: number): UploadResult => ({
     ok: false,
     permanent: true,
@@ -690,8 +690,8 @@ describe('retention (Wave 6.4)', () => {
   });
 
   it('reports every retention drop through the pipeline’s outcome channel', async () => {
-    // A silently vanishing bundle is indistinguishable from one that was delivered. Wave 4 is about
-    // features that quietly do nothing; a retention policy that drops without saying so is the same shape.
+    // A silently vanishing bundle is indistinguishable from one that was delivered.
+    // Features that quietly do nothing are the failure to avoid; a retention policy that drops without saying so is the same shape.
     let now = 1_000_000;
     const { store } = memStore();
     const { pipeline, drop } = fakePipeline(transient(503));

@@ -40,7 +40,7 @@ describe('createHostBridgeCaptureStore', () => {
     expect(m[1]).toMatchObject({ k: 'entry', t: 'log', s: 1, ts: 2000, p: 'hello' }); // seq incremented
   });
 
-  it('stamps the `red` provenance flag per entry from redactedFor(type) (D3)', () => {
+  it('stamps the `red` provenance flag per entry from redactedFor(type)', () => {
     const { bridge, msgs } = recordingBridge();
     // A network filter is configured but not a log filter → only network entries cross as redacted.
     const store = createHostBridgeCaptureStore({

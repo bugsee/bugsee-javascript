@@ -17,7 +17,7 @@ const { attachBugseeOtelProvider } = vi.hoisted(() => ({
 }));
 vi.mock('./otel-provider', () => ({ attachBugseeOtelProvider }));
 
-// Every processor the umbrella builds, with its ORIGINAL shutdown spied before the adapter wraps it (R4H-9).
+// Every processor the umbrella builds, with its ORIGINAL shutdown spied before the adapter wraps it.
 const { created } = vi.hoisted(() => ({
   created: [] as ReturnType<typeof vi.fn>[],
 }));
@@ -119,13 +119,13 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(getCarrierClient(carrier)).toBe(second);
     // The plain umbrella relaunch would NOT have wired the processor again: registerServer did.
     expect(onSpanProcessor).toHaveBeenCalledTimes(1);
-    // The provider slot is first-wins and already ours: it is NOT registered a second time (R3P-2).
+    // The provider slot is first-wins and already ours: it is NOT registered a second time.
     expect(attachBugseeOtelProvider).toHaveBeenCalledTimes(1);
     // ... and what the user's own provider got is the SAME stable processor, now bound to the new client.
     expect(onSpanProcessor.mock.calls[0]?.[0]).toBe(attachBugseeOtelProvider.mock.calls[0]?.[0]);
   });
 
-  it('spans ended on the processor registered at FIRST launch reach the NEW client (R3P-2)', async () => {
+  it('spans ended on the processor registered at FIRST launch reach the NEW client', async () => {
     const carrier = {};
     const mk = () => {
       let tick: (() => void) | undefined;
@@ -197,7 +197,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(a.names()).not.toContain('GET /after-relaunch');
   });
 
-  // --- R4H-3 / R4H-9: delegate lifetime --------------------------------------------------------
+  // --- Delegate lifetime --------------------------------------------------------
   const DELEGATE = Symbol.for('@bugsee/nextjs.spanProcessorDelegate');
   const targetOf = (carrier: object) =>
     (carrier as Record<symbol, { target?: BugseeSpanProcessor } | undefined>)[DELEGATE]?.target;
@@ -212,7 +212,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     status: { code: 1 },
   } as unknown as Parameters<BugseeSpanProcessor['onEnd']>[0];
 
-  it('forceFlush and shutdown on the registered processor reach the NEW client after a relaunch (R4H-3)', async () => {
+  it('forceFlush and shutdown on the registered processor reach the NEW client after a relaunch', async () => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier)));
     const registered = attachBugseeOtelProvider.mock
@@ -233,7 +233,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(oldShutdown).not.toHaveBeenCalled();
   });
 
-  it('stop() with no relaunch drops the stopped client from the delegate; late spans are dropped (R4H-9)', async () => {
+  it('stop() with no relaunch drops the stopped client from the delegate; late spans are dropped', async () => {
     const carrier = {};
     const client = registerServer('tok', opts(carrier));
     const registered = attachBugseeOtelProvider.mock
@@ -254,7 +254,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     await expect(registered.shutdown()).resolves.toBeUndefined();
   });
 
-  it('a late shutdown of the OLD client does not drop the relaunched client (R4H-9)', async () => {
+  it('a late shutdown of the OLD client does not drop the relaunched client', async () => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier)));
     const oldTarget = targetOf(carrier) as BugseeSpanProcessor;
@@ -265,7 +265,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(targetOf(carrier)).toBe(newTarget);
   });
 
-  it('a relaunch after stop() binds the new client again (R4H-9)', async () => {
+  it('a relaunch after stop() binds the new client again', async () => {
     const carrier = {};
     const first = registerServer('tok', opts(carrier));
     await first.stop();
@@ -277,7 +277,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
   it.each([
     ['otelConsume: false', { otelConsume: false }],
     ['performance monitoring off', { performanceMonitoring: false }],
-  ])('creates no delegate and registers nothing when OTel is off (%s) (R4H-9)', (_n, over) => {
+  ])('creates no delegate and registers nothing when OTel is off (%s)', (_n, over) => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier, over as Partial<NextjsServerOptions>)));
     expect(targetOf(carrier)).toBeUndefined();

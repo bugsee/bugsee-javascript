@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const appDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 const workerBundle = join(appDir, 'dist', '_worker.js', 'chunks', 'nitro', 'nitro.mjs');
 
-describe('@bugsee/nuxt — auto-detected Cloudflare preset (Wave 4.4)', () => {
+describe('@bugsee/nuxt — auto-detected Cloudflare preset', () => {
   let bundle = '';
 
   beforeAll(() => {

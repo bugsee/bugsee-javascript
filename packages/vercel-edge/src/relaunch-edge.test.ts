@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeEdgeLaunchOptions, launchEdge } from './launch';
 import { relaunchEdge, rememberEdgeLaunch } from './relaunch-edge';
 
-// R4H-4 / R5H-4: the edge-entry relaunch seam lives in its own (non-index) module.
+// The edge-entry relaunch seam lives in its own (non-index) module.
 const okTransport = (): HttpTransport =>
   vi.fn(
     async (): Promise<HttpResponse> => ({
@@ -29,7 +29,7 @@ afterEach(async () => {
   await Promise.all(live.splice(0).map((c) => c.stop(0)));
 });
 
-describe('vercel-edge relaunchEdge / rememberEdgeLaunch (R4H-4)', () => {
+describe('vercel-edge relaunchEdge / rememberEdgeLaunch', () => {
   const recordingLaunch = () =>
     vi.fn((token: string, options: BugseeEdgeLaunchOptions) => {
       const client = launchEdge(token, options);

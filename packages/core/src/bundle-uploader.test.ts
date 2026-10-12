@@ -29,7 +29,7 @@ describe('createBundleUploader', () => {
     expect(calls[0]?.options?.body).toBe(body);
   });
 
-  it('sends the §8.3 PUT headers (Content-Length, fileName) and no auth/content-type', async () => {
+  it('sends the PUT headers (Content-Length, fileName) and no auth/content-type', async () => {
     const { transport, calls } = fakeTransport(() => res(200));
     await createBundleUploader(transport).putBundle('https://s3/put', body, opts);
     const h = (calls[0]?.options?.headers ?? {}) as Record<string, string>;

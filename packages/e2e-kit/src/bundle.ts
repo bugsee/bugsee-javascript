@@ -1,8 +1,7 @@
-// Shared bundle-assertion library for the e2e harnesses (Wave V0 of docs/review/REMEDIATION-PLAN.md).
+// Shared bundle-assertion library for the e2e harnesses.
 //
-// WHY THIS EXISTS. The adversarial review found ~90 SEV1s that survived ~100% unit coverage, and
-// root-caused a large share of them to harnesses that assert a bundle ARRIVED rather than what is IN it
-// (docs/review/e2e-harnesses.md SEV1 #3/#9). Each helper here is aimed at a defect class the review
+// WHY THIS EXISTS. The adversarial review found ~90 defects that survived ~100% unit coverage, and
+// root-caused a large share of them to harnesses that assert a bundle ARRIVED rather than what is IN it. Each helper here is aimed at a defect class the review
 // actually confirmed:
 //
 //   assertBundleIntegrity → core Pass D: a recovered crash bundle declared `profile.json` in its manifest
@@ -173,7 +172,7 @@ export function assertNoSecrets(bundle: ParsedBundle, secrets: readonly string[]
   // The apptoken exemption keys on PROVENANCE, not the name: only the assembler's structural apptoken (a
   // root entry the manifest does not declare) is skipped. An attachment that merely happens to be called
   // `apptoken` IS declared in the manifest, so it stays in scope and cannot be used to smuggle a leak past
-  // this check (docs/review/session-changes-review.md SEV3 #8).
+  // this check.
   const declared = new Set((bundle.manifest?.files ?? []).map((f) => f.filename));
   const isStructuralAppToken = (name: string): boolean =>
     name === 'apptoken' && !declared.has(name);

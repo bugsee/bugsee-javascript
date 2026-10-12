@@ -1,4 +1,4 @@
-// Durable Object RPC on REAL workerd (docs/review/cloudflare.md SEV1 #1).
+// Durable Object RPC on REAL workerd.
 //
 // `instrumentRpcMethods: true | [names]` is a documented, advertised opt-in. On real workerd it did not
 // merely fail to instrument — it DELETED the user's RPC surface: every instrumented method threw
@@ -28,7 +28,7 @@ describe('instrumented Durable Object methods stay callable over RPC', () => {
       modules: true,
       script,
       // Required by @bugsee/cloudflare: AsyncLocalStorage is reachable only through node:async_hooks on
-      // workerd (Wave 0.1 S0).
+      // workerd.
       compatibilityFlags: ['nodejs_compat'],
       compatibilityDate: '2026-07-01',
       durableObjects: { COUNTER: 'Counter' },

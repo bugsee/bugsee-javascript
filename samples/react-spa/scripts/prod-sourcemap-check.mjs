@@ -2,7 +2,7 @@
 // it, so a human/agent can then check via MCP (list_issues/get_issue on SREACT) that the stack resolved
 // to original TSX sources + line numbers, not minified bundle locations.
 //
-// Prereqs: `pnpm build` (with BUGSEE_CLI_PATH set — see README.md's F-6 note) then
+// Prereqs: `pnpm build` (with BUGSEE_CLI_PATH set) then
 // `pnpm preview:app` + `pnpm dev:api` running on :5302 / :5330.
 import { chromium } from 'playwright';
 

@@ -1,7 +1,7 @@
 import type { Bugsee, BugseeEdgeLaunchOptions } from '@bugsee/vercel-edge';
 import { launch } from './launch';
 
-// Shared launch config + a lazy per-isolate launcher (docs/design/edge-runtime.md C2). Because `env` (and thus
+// Shared launch config + a lazy per-isolate launcher. Because `env` (and thus
 // the app token, a Worker SECRET) is NOT available at module scope on Cloudflare, the client must be launched
 // from inside a handler/constructor where `env` exists. Both `withBugsee` (handler objects / WorkerEntrypoint
 // classes) and `instrumentDurableObject` reuse this so the launch happens lazily on the first invocation/

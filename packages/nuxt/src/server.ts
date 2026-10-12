@@ -1,7 +1,7 @@
 // @bugsee/nuxt — the server (Nitro) surface. Node-only. The U1 Nuxt Module `addServerPlugin`s a Nitro
 // runtime plugin that calls `installBugseeNitro(nitroApp, useRuntimeConfig().bugsee)`.
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

@@ -1,6 +1,6 @@
 import type { Options } from 'tsup';
 
-// Shared tsup preset for the dual ESM+CJS build (design: docs/design/packaging-dual-module.md).
+// Shared tsup preset for the dual ESM+CJS build.
 // Each package's tsup.config.ts spreads this. @bugsee/* + declared deps are EXTERNAL by default (not
 // bundled), so packages share their deps via node_modules — no duplication. Dev still consumes src
 // directly (the package `exports` point at ./src); `dist` is what `publishConfig.exports` ships.

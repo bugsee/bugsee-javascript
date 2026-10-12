@@ -5,7 +5,7 @@ import { paginate, parsePagination, requireString, ValidationError } from '../va
 const THIRD_PARTY_PORT = process.env.THIRD_PARTY_PORT ?? '5305';
 
 /** Outbound call to the "priority scoring" third-party service — real network capture + trace
- *  propagation material (S7/S10). Never blocks task creation: a failure just skips the score. */
+ * propagation material. Never blocks task creation: a failure just skips the score. */
 async function scoreTask(title: string): Promise<number | undefined> {
   try {
     const res = await fetch(`http://127.0.0.1:${THIRD_PARTY_PORT}/score`, {

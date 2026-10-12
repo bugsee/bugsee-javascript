@@ -1,4 +1,4 @@
-// Instance dedup (design §7.7): tag a thrown object with a hidden symbol on first capture so a
+// Instance dedup: tag a thrown object with a hidden symbol on first capture so a
 // re-capture of the SAME instance (e.g. an error that propagates through several handlers) is a
 // no-op. Distinct from the signature-based 100 ms window dedup, which lives in the capture pipeline.
 

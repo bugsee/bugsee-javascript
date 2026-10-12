@@ -11,13 +11,13 @@ import type {
   NotifyResult,
 } from './transport';
 
-// The control-plane BugseeApi (design §7.5/§8.1/§8.2) — platform-agnostic logic over an injected
+// The control-plane BugseeApi — platform-agnostic logic over an injected
 // HttpTransport. Lazily creates a session (POST /v2/sessions), memoizes the access token, and
 // authenticates issue creation / renewal with it. Non-2xx responses throw a BugseeError carrying the
 // status as `code` — plus the collector's own `error.code` on `serverCode` when the failed body carried
 // one, which is the only thing the UploadPipeline reads as a verdict about the payload. The
 // UploadPipeline catches the throw, calls invalidateSession() and retries (so a stale-token 401 is
-// re-acquired). `app_token` travels in the X-App-Token header (§8.1 v3). The
+// re-acquired). `app_token` travels in the X-App-Token header (v3). The
 // only platform-specific piece is the transport, supplied by the platform.
 
 export interface BugseeApiOptions {
@@ -215,7 +215,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
   const sessionId = options.sessionId ?? randomId();
   let accessToken: AccessToken | null = null;
 
-  // Standard SDK headers on every control-plane call (§8.2). X-Bugsee-Internal lets the network
+  // Standard SDK headers on every control-plane call. X-Bugsee-Internal lets the network
   // capture integration skip the SDK's own traffic.
   const baseHeaders = (): Record<string, string> => ({
     'content-type': 'application/json',
@@ -224,7 +224,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
     // and a JS SDK application is type `javascript` — sending `web` had every session rejected with
     // ApplicationTypeMismatchError. `javascript` also stays off the dashboard cookie-auth path, which
     // only `web`/`unknown`/absent take (`populate.middleware.js`); that risk was the reason `web` was
-    // chosen, and it does not apply. Resolves design open question #1 (sdk-design.md §wire C3).
+    // chosen, and it does not apply.
     'x-client-type': 'javascript',
     ...(options.sendUserAgent === false ? {} : { 'user-agent': `BugseeJS/${sdkVersion}` }),
     'x-bugsee-internal': '1',
@@ -265,7 +265,7 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
       const response = await transport(`${baseUrl}/v2/sessions`, {
         method: 'POST',
         headers: baseHeaders(),
-        // `session_id`: the client-minted correlation id the collector joins to traces (Profile v1 §17).
+        // `session_id`: the client-minted correlation id the collector joins to traces.
         body: JSON.stringify({ app_token: appToken, environment, session_id: sessionId }),
       });
       if (!isOk(response.status)) {

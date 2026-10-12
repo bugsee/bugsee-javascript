@@ -8,10 +8,10 @@ import {
 } from './detector-url-corpus.test-d';
 import { templatePathSegment } from './detector-url-sanitizer';
 
-// R5V-1. The word check counted any run of three lower-case letters as a word, so lower-case random tokens (cuid2,
+// The word check counted any run of three lower-case letters as a word, so lower-case random tokens (cuid2,
 // base32, nanoid, ULID, base36) were kept verbatim. A single-case string with no separator is never word-like; a
 // camel/Pascal identifier needs two Title-case pieces that can each be pronounced; a slug needs pronounceable pieces.
-describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1)', () => {
+describe('templatePathSegment: lower-case random tokens are never "words"', () => {
   it.each([
     'clh3am4pu0000qfw9rg5d1zk', // cuid2, 24
     'tz4a98xxat96iws9zmbrgj3a', // cuid2-shaped, 24
@@ -22,7 +22,7 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
     // English words but no separator and no case change: not provably words (privacy over grouping)
     'getuserdetailsandsettings2',
     'updatenotificationsettings3',
-    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" in R4V-5)
+    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" before the word check was tightened)
     'CLH3AM4PU0000QFW9RG5D1ZK',
     'GETUSERDETAILSANDSETTINGS2',
   ])('templates the single-case string %j', (segment) => {
@@ -95,7 +95,7 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
   });
 
   // The acceptance numbers. Deterministic: the same seed produces the same tokens, so a figure is a fact, not luck.
-  // Ceilings are the pre-round-4 (a98dabb, no word check at all) keep rates measured on THIS corpus (same seed,
+  // Ceilings are the keep rates (commit a98dabb, no word check at all) measured on THIS corpus (same seed,
   // 20,000 tokens a bucket), rounded up to 0.05. The word check may not raise a bucket above them (two base62
   // buckets sit one token in 20,000 above the measured a98dabb figure, inside the rounding). Where the review named
   // a figure it is used as is: base36-lower 24-31 <= 0.1%, cuid2 24-31 <= 0.2%, base32-lower 24-31 <= 1%.
@@ -149,8 +149,8 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
   });
 });
 
-// R5V-2 / R5V-3.
-describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is not an address (R5V-2/3)', () => {
+// E-mail detection on any `@`.
+describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is not an address', () => {
   it.each([
     'react@latest',
     'pkg@next',
@@ -200,8 +200,8 @@ describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is
   });
 });
 
-// R5V-10: the cheap pre-round-4 misses.
-describe('templatePathSegment: addresses, phones and hashed assets (R5V-10)', () => {
+// The cheap misses of the earlier rule set.
+describe('templatePathSegment: addresses, phones and hashed assets', () => {
   it.each([
     ['10.0.0.1:8080', '{ip}'],
     ['192.168.1.1:443', '{ip}'],
@@ -243,7 +243,7 @@ describe('templatePathSegment: addresses, phones and hashed assets (R5V-10)', ()
 
 // R6V: numberless 24+ tokens (`sk-` + letters) and 16-23 character lower-case tokens with a single digit run were
 // kept 200/200. Seeded, so the figures are facts. Both corpora are random letters, never words.
-describe('templatePathSegment: numberless long tokens and single-digit short tokens (R6V)', () => {
+describe('templatePathSegment: numberless long tokens and single-digit short tokens', () => {
   const letters = 'abcdefghijklmnopqrstuvwxyz';
   const pick = (next: () => number, n: number): string => {
     let out = '';

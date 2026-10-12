@@ -25,7 +25,7 @@ const stashed = (ctx: unknown): unknown =>
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+// member this doesn't implement.
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -41,7 +41,7 @@ const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
     getStatus: () => 'OK',
     getOperation: () => 'http.server',
     getDescription: () => undefined,
-    // Required so finishWith's F-4 manual-rename check (transaction.getAttributes()) runs for real
+    // Required so finishWith's manual-rename check (transaction.getAttributes()) runs for real
     // instead of falling through a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
     getAttributes: vi.fn(() => ({})),
     getName: () => 'name',
@@ -138,8 +138,8 @@ describe('openServerRequest', () => {
   });
 
   it('redacts secrets in the request URL before they reach `http.url`', () => {
-    // Wave 1.1. `info.url` is the raw request target, and its own doc comment claimed "the redaction
-    // pipeline scrubs query secrets" — it did not (docs/review/node-B-http-server.md SEV3 #12). This is
+    // `info.url` is the raw request target, and its own doc comment claimed "the redaction
+    // pipeline scrubs query secrets" — it did not. This is
     // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
     // place that has to be right.
     const store = fakeStore();
@@ -242,7 +242,7 @@ describe('openServerRequest', () => {
     expect(txn2.finish).toHaveBeenCalledWith('ERROR');
   });
 
-  // F-4: `setRouteName()`/`setActiveTransactionName()` (the performance controller) rename the ACTIVE
+  // `setRouteName()`/`setActiveTransactionName()` (the performance controller) rename the ACTIVE
   // transaction directly and stamp NAME_SOURCE_ATTRIBUTE ('bugsee.name_source'). finishWith() used to
   // unconditionally call `transaction.setName(spanName(info, route))` on finish, clobbering that manual
   // rename with the route-derived name every time. The fix: skip the automatic setName call once the
@@ -272,7 +272,7 @@ describe('openServerRequest', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /o/:id');
   });
 
-  // D2 (round 2) / R3 S1: `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
+  // `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
   // production `Transaction` can throw from it, so `finishWith` reads it directly (no bespoke inner
   // try/catch around just that call), and the outer try/catch is NOT proven through it (a throwing
   // `getAttributes` is not a reachable production trigger). The outer try/catch around the whole
@@ -298,11 +298,11 @@ describe('openServerRequest', () => {
     expect(txn.finish).not.toHaveBeenCalled(); // never reached — the throw short-circuits the block
   });
 
-  // F-4 integration: the REAL @bugsee/performance controller + real Transaction — not the fakeTxn/fakePerf
+  // Integration: the REAL @bugsee/performance controller + real Transaction — not the fakeTxn/fakePerf
   // structural doubles above — so the fix is proven against the actual setRouteName/getAttributes/setName
   // implementation this file's own NAME_SOURCE_ATTRIBUTE-based check depends on, not merely against a
   // hand-rolled mock's assumption about that contract.
-  it("F-4 integration (real performance controller): setRouteName's rename survives finish()", async () => {
+  it("integration (real performance controller): setRouteName's rename survives finish()", async () => {
     const { createPerformanceController, createTransactionStore } = await import(
       '@bugsee/performance'
     );
@@ -321,7 +321,7 @@ describe('openServerRequest', () => {
     expect(buffered?.name).toBe('/o/custom-name'); // the manual rename won, not the route-derived name
   });
 
-  it('F-4 integration (real performance controller): with NO manual rename, the route name is used', async () => {
+  it('integration (real performance controller): with NO manual rename, the route name is used', async () => {
     const { createPerformanceController, createTransactionStore } = await import(
       '@bugsee/performance'
     );
@@ -336,7 +336,7 @@ describe('openServerRequest', () => {
     expect(buffered?.name).toBe('GET /o/:id');
   });
 
-  it('finish(status, outcome) honors an EXPLICIT outcome over the status-derived one (D10)', () => {
+  it('finish(status, outcome) honors an EXPLICIT outcome over the status-derived one', () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     // recorded status 200 (sub-500) but the framework decided ERROR (e.g. Nest 5xx HttpException)
@@ -862,16 +862,16 @@ describe('getActiveServerSpan', () => {
   });
 });
 
-describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return headers)', () => {
+describe('responseHeaders — BE→FE return path', () => {
   // The span exposes the configured return headers; the CALLER (http patch / native wrap) writes them to
-  // its response object. Default OFF (T9) until the frontend consumes them.
+  // its response object. Default OFF until the frontend consumes them.
   const ownerSpan = (traceResponse?: ServerInstrumentOptions['traceResponse'], txnOver = {}) => {
     const txn = fakeTxn(txnOver);
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     return startServerSpan(info({ url: '/o/7' }), { getClient: () => client, traceResponse });
   };
 
-  it('emits NOTHING when traceResponse is absent (default off, T9)', () => {
+  it('emits NOTHING when traceResponse is absent (default off)', () => {
     expect(ownerSpan().responseHeaders()).toEqual({});
   });
 
@@ -879,7 +879,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     expect(ownerSpan({ serverTiming: false, traceresponse: false }).responseHeaders()).toEqual({});
   });
 
-  it('traceresponse:true → the W3C trace-context-L2 header (00-traceId-beSpanId-flags), sampled → 01', () => {
+  it('traceresponse:true → the W3C trace-context Level 2 header (00-traceId-beSpanId-flags), sampled → 01', () => {
     expect(ownerSpan({ traceresponse: true }).responseHeaders()).toEqual({
       traceresponse: '00-trace-1-span-1-01',
     });
@@ -903,7 +903,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     });
   });
 
-  // --- F0: cross-origin exposure (so a cross-origin FE can READ the return headers) ---
+  // --- Cross-origin exposure (so a cross-origin FE can READ the return headers) ---
   it('timingAllowOrigin + serverTiming → Timing-Allow-Origin alongside Server-Timing', () => {
     expect(ownerSpan({ serverTiming: true, timingAllowOrigin: '*' }).responseHeaders()).toEqual({
       'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
@@ -1000,12 +1000,12 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
   });
 });
 
-describe('a throwing RequestContextStore never breaks the request path (F5)', () => {
+describe('a throwing RequestContextStore never breaks the request path', () => {
   // The store is integrator-replaceable (the `requestContextStore` launch option); a custom binding
   // whose getCurrent() throws must degrade every server-instrument read to "no active context",
   // never propagate into the request lifecycle.
   // Fully conforming, deliberately NOT cast: tsc rejects this double the moment
-  // RequestContextStore grows a member it does not implement (the R3-7 enforcement net).
+  // RequestContextStore grows a member it does not implement (the enforcement net).
   const throwingStore = (): RequestContextStore => {
     const broken = (): never => {
       throw new Error('custom store broken');
@@ -1061,7 +1061,7 @@ describe('a throwing RequestContextStore never breaks the request path (F5)', ()
   it('a null-returning store degrades every read to "no active context" (never a crash)', () => {
     // A custom binding may return null (the idiomatic absent value) instead of undefined. The raw
     // `stashedOwner`/`refinableSpan` readers only guard undefined, so without normalization a null
-    // would throw a TypeError out of start/open/get — breaking the request path the F5 hardening
+    // would throw a TypeError out of start/open/get — breaking the request path the hardening
     // exists to protect. Same normalization the span store applies at its own boundary.
     const nullStore = (): RequestContextStore => ({
       getCurrent: () => null as unknown as RequestContext,
@@ -1191,7 +1191,7 @@ describe('a throwing RequestContextStore never breaks the request path (F5)', ()
   });
 });
 
-describe('concurrent runServerRequest isolation (R-2, the D2 production site)', () => {
+describe('concurrent runServerRequest isolation (the production site)', () => {
   it('two concurrent requests through the real path each read their own transaction', async () => {
     // Every other isolation proof hand-opens its own context, but the hazard is runServerRequest →
     // makeSpan → perf.startTransaction per incoming request. Two concurrent requests through the
@@ -1241,7 +1241,7 @@ describe('concurrent runServerRequest isolation (R-2, the D2 production site)', 
   });
 });
 
-describe('integrator-hostile RequestContextStore members (round 6)', () => {
+describe('integrator-hostile RequestContextStore members', () => {
   // getCurrent is not the only member an integrator's custom store can break. A store whose
   // MUTATORS throw must degrade the same way — skip the write, keep the request path intact —
   // never propagate into the request lifecycle.

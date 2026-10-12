@@ -5,7 +5,7 @@ import { readFileBytes } from '@bugsee/node-utils';
 import { strFromU8 } from '@bugsee/util';
 import type { InstanceOwner } from './instance-layout';
 
-// Liveness detection for multi-instance recovery (design: multi-instance-disk-coexistence.md, D2). Java's
+// Liveness detection for multi-instance recovery. Java's
 // OS FileLock (auto-released on process death) has no portable JS equivalent, so a peer decides whether a
 // sibling subtree is dead from TWO portable signals: (1) the owning OS process still exists
 // (`process.kill(pid, 0)`), and (2) the subtree's `.live` heartbeat is fresh. A whole-process death is
@@ -65,7 +65,7 @@ export function readLiveMtimeMs(liveFile: string): number | undefined {
 }
 
 /**
- * Pure liveness verdict (D2, revised by Wave 6.6).
+ * Pure liveness verdict.
  *
  * DEAD iff the owning PROCESS is gone (reclaim instantly), or a WORKER-thread owner's heartbeat has been
  * stale beyond the patient window. An alive pid with no heartbeat yet is a still-arming instance — KEPT.

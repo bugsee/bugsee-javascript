@@ -1,4 +1,4 @@
-// Regression guard for the `removeNodeProtocol` build defect (samples/angular-spa/FINDINGS.md F-2).
+// Regression guard for the `removeNodeProtocol` build defect.
 //
 // tsup defaults `removeNodeProtocol` to `true` (node_modules/tsup/dist/index.js: the flag gates
 // `nodeProtocolPlugin()`, default `true`), which silently rewrites every statically-resolvable
@@ -22,10 +22,10 @@
 //
 // The population was derived by scanning every `packages/*/src` tree (excluding `.test.`/`.fuzz.`/
 // `.e2e.` files) for THREE forms of `node:`-prefixed reference: static `from '...'`, `require('...')`,
-// AND dynamic `import('...')` — the last of which R3-8 found this guard originally missed entirely,
+// AND dynamic `import('...')` — the last of which this guard originally missed entirely,
 // because its stated derivation method (grepping only for the static `from`/`require` forms) is
-// structurally blind to a specifier that only ever appears as a dynamic-import argument (the case R3-8
-// found was `@bugsee/util`'s old sha256 fallback, `await import(/* ...ignore comments... */ 'node:crypto')`,
+// structurally blind to a specifier that only ever appears as a dynamic-import argument (the case
+// actually found was `@bugsee/util`'s old sha256 fallback, `await import(/* ...ignore comments... */ 'node:crypto')`,
 // since deleted — util is now asserted to carry NO `node:` specifier at all, see the last test). The scan
 // reads WHOLE FILE CONTENTS (not line-by-line — a dynamic import's magic comments and specifier commonly
 // span multiple lines), so a single-line `grep` cannot reproduce it; the script is
@@ -157,7 +157,7 @@ const targets: readonly NodeProtocolTarget[] = [
   },
   {
     // src/meta-tag-transformer.ts imports node:stream, exported ONLY from src/server.ts (the node-only
-    // entry — docs/design/meta-framework-adapters.md's per-runtime entry split). NOT reachable from
+    // entry, per the per-runtime entry split). NOT reachable from
     // index.ts (portable) or client.ts (browser-only) — verified: neither built index/client file
     // mentions `stream` in any form.
     label: '@bugsee/remix',
@@ -184,7 +184,7 @@ function importSpecifiers(code: string): string[] {
   return specifiers;
 }
 
-describe('tsup build config — node: protocol survives into dist (F-2 regression guard)', () => {
+describe('tsup build config — node: protocol survives into dist (regression guard)', () => {
   let outDir: string | undefined;
 
   afterEach(() => {
@@ -252,9 +252,9 @@ describe('tsup build config — node: protocol survives into dist (F-2 regressio
     });
   }
 
-  // The inverse guard. `@bugsee/util` is tier-0 and ships inside every browser, worker and edge bundle, where
+  // The inverse guard. `@bugsee/util` ships inside every browser, worker and edge bundle, where
   // ANY `node:` specifier — even an unreachable, ignore-commented dynamic import — breaks an esbuild build.
-  // Its sha256 used to carry one (R3-8); the digest is now WebCrypto-only and node injects its own.
+  // Its sha256 used to carry one; the digest is now WebCrypto-only and node injects its own.
   it('@bugsee/util: emitted index dist carries no node: specifier in any form', () => {
     outDir = mkdtempSync(join(tmpdir(), 'bugsee-tsup-node-protocol-'));
     execFileSync(tsupBin, ['--out-dir', outDir], {

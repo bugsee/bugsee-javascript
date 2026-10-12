@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeWorkerLaunchOptions, launch } from './launch';
 import { relaunch } from './relaunch';
 
-// `relaunch` is built on core's `relaunchWith` over THIS package's launch (review R2D-4), so a worker that
+// `relaunch` is built on core's `relaunchWith` over THIS package's launch, so a worker that
 // imports `@bugsee/webworker` directly can restart without reaching into another entry.
 const okTransport = (): HttpTransport =>
   vi.fn(

@@ -13,7 +13,7 @@ import {
   getCrashDumpsDirectory,
   installNativeCrashReporter,
 } from './crash-reporter';
-/** The subset of Electron's `app` R4 needs. */
+/** The subset of Electron's `app` that the SDK needs. */
 export interface ElectronAppLike {
   on(
     event: 'render-process-gone',
@@ -41,7 +41,7 @@ import type { VideoCaptureSource } from './video-capture';
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
 
-/** Opt-in pixel-capture video (D8). The app supplies a source built with its Electron/DOM specifics (e.g.
+/** Opt-in pixel-capture video. The app supplies a source built with its Electron/DOM specifics (e.g.
  *  `createCapturePageVideoSource` over `webContents.capturePage`, and/or a `MediaRecorder` source — they can
  *  be composed into one source). rrweb DOM-replay stays the DEFAULT and rides the renderer streaming path. */
 export interface VideoLaunchOptions {
@@ -57,15 +57,15 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   ipcMain: IpcMainLike & IpcMainControlLike;
   /**
    * Electron's `app` — when provided, `render-process-gone` is watched so a renderer killed before it could
-   * forward anything (OOM, native crash) still produces an incident on this session (R4). Injected like
+   * forward anything (OOM, native crash) still produces an incident on this session. Injected like
    * `ipcMain`, so @bugsee/electron keeps no electron dependency.
    */
   app?: ElectronAppLike;
-  /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated (E5). */
+  /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
   crashReporterExtra?: Record<string, string>;
-  /** Opt-in pixel-capture video (D8). Omit for the rrweb-replay default. */
+  /** Opt-in pixel-capture video. Omit for the rrweb-replay default. */
   video?: VideoLaunchOptions;
   /** Test seam: the node launch fn (default @bugsee/node `launchCore`). */
   launch?: NodeLaunch;
@@ -76,7 +76,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const { ipcMain, app, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } =
     options;
 
-  // Opt-in pixel video (D8): build the permission-gated controller and forward its report-time snapshot +
+  // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
   let videoController: PixelVideoController | undefined;
   if (video !== undefined) {
@@ -92,9 +92,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // Native-crash harvesting (Electron/Crashpad): when a crashReporter is provided, wire its crash-dumps
   // directory into the node launch so it persists a crashpad-session marker at START and, on the NEXT
-  // launch, harvests + session-stitches a dead run's `.dmp`s (see electron-native-crashes.md §6.1). The
+  // launch, harvests + session-stitches a dead run's `.dmp`s. The
   // reporter itself is started (uploadToServer:false) AFTER launch, below.
-  // Hoisted so R4's render-process-gone handler can claim dumps through the SAME seam the next-launch
+  // Hoisted so the render-process-gone handler can claim dumps through the SAME seam the next-launch
   // recovery uses — a claim here is what stops recovery re-reporting the crash.
   let nativeCrashSource: ReturnType<typeof createElectronNativeCrashSource> | undefined;
   let nativeDumpDir: string | undefined;
@@ -133,10 +133,10 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
   const store = client.getService(CaptureStoreToken);
 
-  // R3/R4 — the main-side submit path for renderer incidents. Registering this is what makes the feature
-  // LIVE: R2 stopped renderers uploading, so without a join here every renderer incident is silently
+  // The main-side submit path for renderer incidents. Registering this is what makes the feature
+  // LIVE: renderers no longer upload locally, so without a join here every renderer incident is silently
   // destroyed while the app is told it was delivered — strictly worse than the defect
-  // (docs/review/electron-convergence-code-review.md SEV1-1).
+  // it fixes.
   const incidents = new RendererIncidentProvider({
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
@@ -150,7 +150,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
   receiver.start();
 
-  // R4 — a renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
+  // A renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
   // minidump so the LIVE incident carries it; falls back to capture + reason when none arrives.
   if (app !== undefined) {
     const marker =
@@ -195,7 +195,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
 
   // Native crashes (all processes): start Electron's crashReporter in harvest mode (uploadToServer:false),
-  // session-correlated. The dumps are harvested + bundled on the next launch (see electron-native-crashes.md).
+  // session-correlated. The dumps are harvested + bundled on the next launch.
   if (crashReporter !== undefined) {
     installNativeCrashReporter({
       crashReporter,

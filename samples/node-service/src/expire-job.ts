@@ -1,5 +1,5 @@
 // Background job: sweeps expired links periodically. Genuine app behaviour (not a Bugsee scenario) —
-// it also produces a `bugsee.trace()` sample per sweep so client.trace() (S3) has organic call sites.
+// it also produces a `bugsee.trace()` sample per sweep so client.trace() has organic call sites.
 import type { Bugsee } from '@bugsee/node';
 import type { LinkStore } from './store.ts';
 

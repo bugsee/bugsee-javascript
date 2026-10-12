@@ -1,4 +1,4 @@
-// Cart state persisted in localStorage — real app state, and a place S2 attributes can hang off
+// Cart state persisted in localStorage — real app state, and a place attributes can hang off
 // (cart size as a Bugsee attribute) without inventing a scenario-only feature.
 
 const STORAGE_KEY = 'widget-shop.cart.v1';

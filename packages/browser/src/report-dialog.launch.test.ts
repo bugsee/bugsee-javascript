@@ -248,7 +248,7 @@ describe('reportDefaultBugPriority', () => {
     );
   });
 
-  it('says so naming every severity (verylow included) and reports ONCE (R2P-5)', async () => {
+  it('says so naming every severity (verylow included) and reports ONCE', async () => {
     const onError = vi.fn();
     await start({ reportDefaultBugPriority: 'urgent' as unknown as 'high', onError });
     const messages = onError.mock.calls
@@ -259,7 +259,7 @@ describe('reportDefaultBugPriority', () => {
     ]);
   });
 
-  it('survives asInternalClient(): the priority lives in core, not in a wrapper (R2P-9)', async () => {
+  it('survives asInternalClient(): the priority lives in core, not in a wrapper', async () => {
     const { client, http } = await start({ reportDefaultBugPriority: 'critical' });
     await asInternalClient(client).upload({ summary: 'via the internal view' });
     expect(sentRequest(http).severity).toBe(4);

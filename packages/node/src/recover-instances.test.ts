@@ -242,7 +242,7 @@ describe('recoverInstances', () => {
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false);
   });
 
-  // SEV1 (recovery double-upload): the process can die AFTER the crash bundle reaches the durable
+  // Recovery double-upload: the process can die AFTER the crash bundle reaches the durable
   // `pending/` queue but BEFORE the upload settles — client.ts's submitReport clears the report marker
   // only once that upload settles, so a dead sibling can leave BOTH a pending bundle AND its incident's
   // still-present marker for the SAME crash. Both used to be recovered independently (events_count +2
@@ -317,7 +317,7 @@ describe('recoverInstances', () => {
     expect(createNodeBundleStore(join(dir, '9-9-dead', 'pending')).list()).toEqual(['b1']);
   });
 
-  // R2-1: an injected `bundleStore` is the integrator's own, stable across launches and outside the
+  // An injected `bundleStore` is the integrator's own, stable across launches and outside the
   // per-instance layout — so it can hold a dead sibling's staged bundle while that sibling's marker is
   // still here. The scan hands each sibling's marker store to `reconcileOwnQueue` and withholds whatever
   // it settled with, so the marker leg does not rebuild the same incident a second time.
@@ -819,7 +819,7 @@ describe('recoverInstances', () => {
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     const bundle = pipe.bundles[0] as Bundle;
     expect(bundle.request.type).toBe('crash');
-    // Native shape + the provenance the assembler stamps (Wave 5.4a). This is the path that needs it
+    // Native shape + the provenance the assembler stamps. This is the path that needs it
     // most: the incident is SYNTHESIZED at the next launch from a dead sibling's harvested dump, so the
     // routing key cannot come from the crashed process — it comes from the recovered session's own
     // environment, which is what the stamp copies.
@@ -1102,7 +1102,7 @@ describe('recoverInstances', () => {
   });
 });
 
-describe('recoverInstances — evidence that the previous run did not stop cleanly (R2D-2)', () => {
+describe('recoverInstances — evidence that the previous run did not stop cleanly', () => {
   const run = async (dir: string, extra: Partial<Parameters<typeof recoverInstances>[0]> = {}) => {
     const onCrashEvidence = vi.fn();
     await recoverInstances({

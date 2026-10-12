@@ -12,7 +12,7 @@ import {
 
 // The OPT-IN error seam for @bugsee/nestjs (errorCapture: 'filter' | 'both'). Unlike the interceptor, a
 // global exception filter is Nest's single convergence point for EVERY error — including those thrown in
-// GUARDS and pipes, which the interceptor cannot see (verified, see docs/design/framework-adapters.md).
+// GUARDS and pipes, which the interceptor cannot see (verified).
 // The cost: it imports @nestjs/core (BaseExceptionFilter) at runtime (a peer) and, being a catch-all,
 // can collide with a user's own global filter — for that case use {@link BugseeExceptionCaptured} on
 // their filter instead. This filter REPORTS then DELEGATES to super.catch(), so Nest formats the response

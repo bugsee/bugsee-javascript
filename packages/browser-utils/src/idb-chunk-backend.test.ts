@@ -341,7 +341,7 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
     expect(got.map((r) => r.timestamp)).toEqual([10_001, 10_002, 10_003]);
   });
 
-  it('freezes the snapshot: capture after snapshot() does not change it', async () => {
+  it('freezes the snapshot(): capture after snapshot() does not change it', async () => {
     const store = mk(keyed());
     store.add(rec('first', 'log', 10_000));
     const snap = store.snapshot();
@@ -391,7 +391,7 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
 // off the critical path, and it is also exactly what a killed tab discards. `flush()` is the seam the
 // browser's `pagehide`/`visibilitychange` hook awaits so the window shrinks to what was queued in the last
 // instant instead of everything since the previous commit.
-describe('flush (Wave 6.2)', () => {
+describe('flush', () => {
   it('resolves only AFTER queued writes have landed', async () => {
     const store = keyed();
     const b = createIdbChunkBackend(store, { generation: 3 });
@@ -478,7 +478,7 @@ describe('flush (Wave 6.2)', () => {
 // The loss is PERMANENT, which is what makes it worse than a dropped record: capture-recovery catches per
 // generation, does NOT remove the marker, so the generation stays pending, the sweep keeps it, and the next
 // launch fails identically. Forever — and the poisoned data is never freed either.
-describe('torn-record tolerance (Wave 6.5)', () => {
+describe('torn-record tolerance', () => {
   const torn = new TextEncoder().encode('{"t":0,"s":"trunc');
 
   it('keeps the intact records either side of a corrupt DATA envelope', async () => {
@@ -560,7 +560,7 @@ describe('torn-record tolerance (Wave 6.5)', () => {
 // delete at the TAIL of the same queue — eviction can never run ahead of the backlog.
 //
 // Quota pressure, private/incognito storage and a busy IDB thread all produce exactly this stall.
-describe('write-queue back-pressure (Wave 6.3)', () => {
+describe('write-queue back-pressure', () => {
   /** A store whose writes hang until released, so a backlog can be built deterministically. */
   const stalledStore = () => {
     const inner = keyed();

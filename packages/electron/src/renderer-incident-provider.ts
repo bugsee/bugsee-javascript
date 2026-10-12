@@ -7,18 +7,16 @@ import {
 } from '@bugsee/core';
 import type { DecodedReport } from './protocol';
 
-// The main-side submit seam for renderer incidents (R3/R4,
-// docs/design/electron-renderer-incident-convergence.md §4.3).
+// The main-side submit seam for renderer incidents.
 //
 // A DetectionProvider, which is the design's chosen option: it is the ONE public path that submits a
 // ReportingRequest without re-filing it. The alternative — `client.logException` — would turn a renderer
 // CRASH into a handled, programmatic error carrying a MAIN-side stack, destroying the attribution this whole
-// feature exists to preserve (design review SEV1-2).
+// feature exists to preserve.
 //
-// It detects nothing itself; it is a conduit. Registering it is what makes R3 and R4 live: without it the
+// It detects nothing itself; it is a conduit. Registering it is what makes forwarded and synthesised incidents live: without it the
 // receiver's `onReport` has nowhere to go, the renderer no longer uploads, and incidents are silently
-// destroyed while the app is told they were delivered — strictly worse than the defect being fixed
-// (code review SEV1-1).
+// destroyed while the app is told they were delivered — strictly worse than the defect being fixed.
 
 /** How many renderer incidents to accept per window per minute; beyond that they are dropped. */
 const DEFAULT_RATE_LIMIT = 10;
@@ -33,7 +31,7 @@ export interface RendererIncidentProviderOptions {
   onError?: (error: unknown) => void;
 }
 
-/** A synthesised `render-process-gone` incident (R4). */
+/** A synthesised `render-process-gone` incident. */
 export interface RendererGoneIncident {
   reason: string;
   exitCode?: number;
@@ -79,7 +77,7 @@ export class RendererIncidentProvider extends DetectionProviderBase {
   }
 
   /**
-   * Submit an incident forwarded by a renderer (R3).
+   * Submit an incident forwarded by a renderer.
    *
    * The renderer's `source` is preserved verbatim — mechanism and type included — because that attribution is
    * the point. Renderer input is untrusted, so this is rate-limited per window and never throws outward.
@@ -107,7 +105,7 @@ export class RendererIncidentProvider extends DetectionProviderBase {
     }
   }
 
-  /** Submit an incident synthesised from `render-process-gone` (R4). */
+  /** Submit an incident synthesised from `render-process-gone`. */
   submitGone(incident: RendererGoneIncident): void {
     try {
       if (!this.#allow(incident.windowId)) {

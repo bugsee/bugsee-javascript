@@ -7,7 +7,7 @@ import { createNodeRequestContextStore, type RequestContextStore } from './reque
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+// member this doesn't implement.
 const fakeTxn = (): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -23,7 +23,7 @@ const fakeTxn = (): Transaction => {
     getStatus: () => 'OK',
     getOperation: () => 'http.server',
     getDescription: () => undefined,
-    // Required so finishWith's F-4 manual-rename check (transaction.getAttributes()) runs for real
+    // Required so finishWith's manual-rename check (transaction.getAttributes()) runs for real
     // instead of falling through a defensive catch — see server-instrument.ts's `manuallyRenamed` read.
     getAttributes: vi.fn(() => ({})),
     getName: () => 'name',
@@ -112,7 +112,7 @@ describe('wrapFetchHandler', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+  it('writes NO return headers by default (traceResponse off)', async () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     const setHeaders: Record<string, string> = {};
@@ -164,7 +164,7 @@ describe('wrapFetchHandler', () => {
     expect(store.traceresponse).toEqual(['00-trace-1-span-1-01']);
   });
 
-  it('F0: APPENDS the CORS-exposure list headers (Timing-Allow-Origin / Access-Control-Expose-Headers)', async () => {
+  it('APPENDS the CORS-exposure list headers (Timing-Allow-Origin / Access-Control-Expose-Headers)', async () => {
     const txn = fakeTxn();
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
     const store: Record<string, string[]> = {};

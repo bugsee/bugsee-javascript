@@ -1,4 +1,4 @@
-// The per-session CONTROL TOKEN (docs/design/webview-bridge-auth.md D-A1).
+// The per-session CONTROL TOKEN.
 //
 // Deliberately NOT `randomId()` from @bugsee/util, even though it produces the same 32-hex-char shape.
 // That helper's own header states "Context/correlation ids are NOT security tokens, so the fallback is
@@ -15,7 +15,7 @@
 // gets native's own control rejected — the defence inverted into a lockout. No CSPRNG must therefore mean
 // "no authentication" (the documented pre-upgrade state), never "authentication the page can predict".
 
-/** The token length in bytes — 128 bits, matching what the design doc promises. */
+/** The token length in bytes — 128 bits, as the design specifies. */
 const TOKEN_BYTES = 16;
 
 interface CryptoLike {

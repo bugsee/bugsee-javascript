@@ -136,7 +136,7 @@ describe('wirePerformance', () => {
     expect(perf()?.getActiveSpan()).toBeUndefined(); // but NO pageload transaction was started
   });
 
-  it('threads an injected activeSpanStore into the extension (D2 part 2)', () => {
+  it('threads an injected activeSpanStore into the extension', () => {
     const { client, perf } = fakeClient();
     const activeSpanStore = createSingleSlotActiveSpanStore();
     const wired = wirePerformance(base({ client, pageload: false, activeSpanStore }));
@@ -253,7 +253,7 @@ describe('wirePerformance', () => {
     expect((perf()?.getActiveSpan() as Transaction).isSampled()).toBe(false);
   });
 
-  it('wires http spans onto the active transaction + reads the backend span from traceresponse (F3)', () => {
+  it('wires http spans onto the active transaction + reads the backend span from traceresponse', () => {
     const { client, perf } = fakeClient();
     const { source, emit } = fakeNetworkSource();
     wirePerformance(base({ client, networkSource: source }));
@@ -272,7 +272,7 @@ describe('wirePerformance', () => {
     const wire = serializeTransaction(perf()?.getActiveSpan() as Transaction);
     const httpSpan = wire.spans.find((s) => s.operation === 'http.client');
     expect(httpSpan).toBeDefined();
-    // F3: the FE client span records WHICH backend http.server span handled it (read off the return header).
+    // the FE client span records WHICH backend http.server span handled it (read off the return header).
     expect(httpSpan?.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
@@ -305,7 +305,7 @@ describe('wirePerformance', () => {
     }
   });
 
-  it('opens a `ui.interaction` transaction from the interaction source, idle-managed (F4)', () => {
+  it('opens a `ui.interaction` transaction from the interaction source, idle-managed', () => {
     vi.useFakeTimers();
     try {
       const { client, perf } = fakeClient();
@@ -341,7 +341,7 @@ describe('wirePerformance', () => {
     }
   });
 
-  it('two-phase naming (F5/D5): a navigation starts raw-URL, then setRouteName refines the active txn', () => {
+  it('two-phase naming: a navigation starts raw-URL, then setRouteName refines the active txn', () => {
     vi.useFakeTimers();
     try {
       const { client, perf } = fakeClient();
@@ -349,9 +349,9 @@ describe('wirePerformance', () => {
       const wired = wirePerformance(
         base({ client, navigationSource: nav.source, pageload: false }),
       );
-      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' }); // phase 1: raw URL
+      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' }); // raw URL
       expect((perf()?.getActiveSpan() as Transaction).getName()).toBe('/users/42');
-      perf()?.setRouteName('/users/:id'); // phase 2: a router adapter resolves the route
+      perf()?.setRouteName('/users/:id'); // a router adapter resolves the route
       const active = perf()?.getActiveSpan() as Transaction;
       expect(active.getName()).toBe('/users/:id'); // the in-flight navigation was refined in place
       expect(active.getAttributes()['bugsee.name_source']).toBe('route');
@@ -362,7 +362,7 @@ describe('wirePerformance', () => {
     }
   });
 
-  it('continues a server-injected trace on the pageload from pageloadContinuation (F2/D4)', () => {
+  it('continues a server-injected trace on the pageload from pageloadContinuation', () => {
     const { client, perf } = fakeClient();
     wirePerformance(
       base({

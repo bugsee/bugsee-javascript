@@ -14,9 +14,9 @@ const { linkComponentStack, reportReactError, reportRouteError } = report;
 const { instrumentReactRouter, instrumentRouterMatches, routePatternFromMatches, setRouteName } =
   router;
 
-// WAVE 2.2 — the host-boundary contract, enforced rather than re-derived.
+// The host-boundary contract, enforced rather than re-derived.
 //
-// Wave 2.1 established the rule: every host-facing entry point is wrapped, so an SDK-internal failure can
+// The rule: every host-facing entry point is wrapped, so an SDK-internal failure can
 // never become the application's failure. Nothing enforced it, and the review found the rule applied where
 // someone remembered and skipped where they did not.
 //
@@ -92,7 +92,7 @@ const INVOCATIONS: Array<[string, (getClient: () => Bugsee) => void]> = [
   ],
 ];
 
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   it.each(INVOCATIONS)('%s contains a throwing CLIENT', (_name, invoke) => {
     const onError = vi.fn();
     expect(() => invoke(() => hostileClient())).not.toThrow();

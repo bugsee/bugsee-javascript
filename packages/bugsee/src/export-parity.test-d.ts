@@ -95,7 +95,7 @@ export type WorkerdTypes = [
 // Every entry exposes the same getDefaultNetworkSanitizer signature.
 export type SanitizerFactories = Entry['getDefaultNetworkSanitizer'];
 
-// R2L-4: every entry's `launch()` accepts the `lifecycleEventsListener` option (the worker, edge and webview
+// Every entry's `launch()` accepts the `lifecycleEventsListener` option (the worker, edge and webview
 // tiers once did not, so Launching/Launched were unobservable there). `Pick` fails to compile when a key is
 // missing from the options type, which is the whole assertion.
 type LaunchOptionsOf<E extends { launch: (appToken: string, options?: never) => unknown }> =

@@ -5,7 +5,7 @@ import { handleErrorWithBugsee } from './error';
 import * as renderSpan from './render-span';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — SvelteKit renders its error page from what `handleError` RETURNS, so an SDK throw here does
+// SvelteKit renders its error page from what `handleError` RETURNS, so an SDK throw here does
 // not merely lose a report: it takes the app's error page with it.
 afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -54,7 +54,7 @@ describe('svelte handleError is a contained host boundary', () => {
 
 // WAVE 2.2 — the enforcement half. The tests above cover `handleErrorWithBugsee`, the seam the review named.
 // Nothing covered the rest, and nothing failed when a new export arrived without a containment test.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

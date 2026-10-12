@@ -6,7 +6,7 @@ SDK. Pick the one that matches your stack, set an app token, run one command.
 They are also how we verify the SDK before publishing: each sample installs the SDK from a
 pre-publish tarball (the real `dist` + `exports` map, not the monorepo source), exercises every API
 and capture source it can reach, and checks that the data actually arrives on the Bugsee backend.
-Anything that does not is written down in that sample's `FINDINGS.md`.
+Anything that does not is recorded as a finding.
 
 ## Run a sample
 
@@ -37,12 +37,6 @@ cd samples/<name> && pnpm install
 After changing anything under `packages/`, re-pack (`--only @bugsee/x` for a single package) and
 re-run `pnpm install` in the sample.
 
-The plan every sample is built against — the package sweep, the scenario catalog, the per-sample
-coverage and the backend verification protocol — is `docs/samples/PLAN.md`.
-
 ## Findings
-
-- `samples/FINDINGS.md` — cross-cutting findings, and the aggregate index.
-- `samples/<name>/FINDINGS.md` — findings from that sample.
 
 Sample authors record defects; they do not fix SDK code.

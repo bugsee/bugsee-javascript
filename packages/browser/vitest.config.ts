@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': browser code is tested via injected seams (fake probe/window/fetch) and stubbed
 // DOM globals, not a real DOM env — the same injection-first discipline as the node tier.
 export default defineConfig({

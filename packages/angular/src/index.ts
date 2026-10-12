@@ -1,5 +1,5 @@
-// @bugsee/angular — Angular adapter (tier 4). Error seam (ErrorHandler) + Router naming.
-// See docs/design/frontend-adapters.md §7. Structural peer — no @angular/core / @angular/router import.
+// @bugsee/angular — Angular adapter. Error seam (ErrorHandler) + Router naming.
+// Structural peer — no @angular/core / @angular/router import.
 // v1: error + routing only (component/change-detection depth is the shared depth pass).
 
 // Single-install re-export: surface the full public SDK (launch, Bugsee, options + manual-API

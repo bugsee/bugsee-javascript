@@ -1,4 +1,4 @@
-// Absolutization of captured network URLs (protocol + host + port), design §16.1.
+// Absolutization of captured network URLs (protocol + host + port).
 //
 // Every network SOURCE records the target the caller passed, so a same-origin `fetch('/api/x')` was
 // stored as `/api/x` while a cross-origin call was stored as `http://localhost:5398/nope`. Same capture
@@ -13,7 +13,7 @@
 // contacted. Every ambiguous case below therefore falls back to the raw string.
 //
 // Lives in `@bugsee/capture`, NOT in `@bugsee/protocol` next to `sanitizeUrl`, deliberately:
-// `@bugsee/protocol` is the tier-0 wire-contract package — pure string work over canonical shapes, with
+// `@bugsee/protocol` is the wire-contract package — pure string work over canonical shapes, with
 // no notion of the environment it runs in. Choosing a base URL is environment SENSING (which realm am I
 // in? is there a document?), which is the capture tier's job, and `new URL` is neither pure-string nor
 // non-throwing, the two properties protocol/url.ts states about itself. The pure half is still split out

@@ -56,7 +56,7 @@ describe('createTransaction / Transaction', () => {
     expect(txn.getDescription()).toBe('root desc');
   });
 
-  it('serializes the sampling decision onto the wire (Profile v1 §6/§8)', () => {
+  it('serializes the sampling decision onto the wire', () => {
     expect(serializeTransaction(mk(clockAt(1, 1))).sampled).toBe(true);
     expect(serializeTransaction(mk(clockAt(1, 1), { sampled: false })).sampled).toBe(false);
   });
@@ -239,7 +239,7 @@ describe('onFinish hook', () => {
   });
 });
 
-describe('serializeTransaction (§8.8 wire)', () => {
+describe('serializeTransaction (wire)', () => {
   it('emits the documented transaction shape with child spans (parentSpanId linkage)', () => {
     const clock = clockAt(1000, 0);
     const txn = createTransaction(
@@ -261,7 +261,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
 
     expect(serializeTransaction(txn)).toEqual({
       traceId: 'tr',
-      spanId: 's0', // the root's own id now travels on the wire (Wave 5.3)
+      spanId: 's0', // the root's own id now travels on the wire
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',
@@ -294,7 +294,7 @@ describe('serializeTransaction (§8.8 wire)', () => {
     const wire = serializeTransaction(txn);
     expect(wire).toEqual({
       traceId: 'trace-1',
-      spanId: 'span-0', // the root's own id — required on the wire since Wave 5.3
+      spanId: 'span-0', // the root's own id — required on the wire
       name: 'Checkout',
       operation: 'ui.load',
       status: 'OK',

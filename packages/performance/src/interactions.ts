@@ -9,7 +9,7 @@ import {
 import { realWebVitalsEnv, type WebVitalsEnv } from './web-vitals/env';
 import { onHidden } from './web-vitals/observe';
 
-// Wire an (injected) interaction SOURCE to interaction transactions (frontend-adapters F4 / D6). Each
+// Wire an (injected) interaction SOURCE to interaction transactions. Each
 // qualifying user interaction (the Event Timing INP unit) opens a short `ui.interaction` transaction
 // wrapped in the idle lifecycle, so the interaction's async tail (the fetch/xhr it triggers) is captured
 // as child work. Mirrors `collectNavigations`: in-flight network activity keeps the transaction alive,
@@ -17,7 +17,7 @@ import { onHidden } from './web-vitals/observe';
 // interaction source, injected by the umbrella) so @bugsee/performance owns the machinery without a
 // browser dep.
 //
-// Coexistence (D11/D12 — the browser's single active slot): an interaction is SKIPPED when an active
+// Coexistence (the browser's single active slot): an interaction is SKIPPED when an active
 // `navigation` already owns the slot — a click that triggers a route change must not be double-counted
 // (the navigation transaction already captures that work). The lingering `pageload` (active until tab-hide)
 // does NOT block interactions: otherwise a no-navigation SPA would never record one. The interaction
@@ -26,8 +26,8 @@ import { onHidden } from './web-vitals/observe';
 // independently. A previous interaction is superseded (rapid taps collapse to the latest).
 //
 // SCOPE: this records the interaction TRANSACTION + its triggered work (the http.client async tail) and
-// stamps the Event-Timing latency as an attribute. Per-interaction CLS/INP web-vital ATTRIBUTION (D6) is
-// intentionally DEFERRED to a later slice (per D12 — per-navigation/interaction vitals are not in F4).
+// stamps the Event-Timing latency as an attribute. Per-interaction CLS/INP web-vital ATTRIBUTION is
+// intentionally DEFERRED to a later change (per-navigation/interaction vitals are not included yet).
 
 /** The minimal interaction detail the wiring reads — structurally matches the browser `InteractionDetail`. */
 export interface InteractionDetailLike {
@@ -35,7 +35,7 @@ export interface InteractionDetailLike {
   interactionType: string;
   /** A PII-safe target label ('button#submit') → completes the transaction name; omitted when unavailable. */
   target?: string;
-  /** The nearest annotated component name (`data-bugsee-component`, D2) → stamped as `ui.component`; omitted
+  /** The nearest annotated component name (`data-bugsee-component`) → stamped as `ui.component`; omitted
    *  when the app is not annotated. */
   component?: string;
   /** The interaction latency (ms) — stamped as an attribute (the INP contribution). */
@@ -65,7 +65,7 @@ export interface CollectInteractionsDeps {
 const NETWORK_STAGES = ['before', 'complete', 'error', 'abort'] as const;
 
 export function collectInteractions(deps: CollectInteractionsDeps): () => void {
-  // The single active interaction transaction (correlation-by-tagging, D11). `undefined` after teardown,
+  // The single active interaction transaction (correlation-by-tagging). `undefined` after teardown,
   // so the (un-removable) onHidden callback below safely no-ops then.
   let current: IdleTransactionHandle | undefined;
   const offs: Array<() => void> = [];
@@ -85,7 +85,7 @@ export function collectInteractions(deps: CollectInteractionsDeps): () => void {
       if (detail.target !== undefined)
         transaction.setAttribute('ui.interaction_target', detail.target);
       if (detail.component !== undefined)
-        transaction.setAttribute('ui.component', detail.component); // D2 component attribution
+        transaction.setAttribute('ui.component', detail.component); // component attribution
       transaction.setAttribute('ui.interaction_duration_ms', detail.duration);
       current = createIdleTransaction({
         transaction,

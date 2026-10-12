@@ -54,8 +54,8 @@ describe('wire constants', () => {
     expect(DEFAULT_FILENAMES.input).not.toBe(DEFAULT_FILENAMES['events.user']);
   });
 
-  // The geometry sidecar that gives `input`'s coordinates a frame to be drawn against
-  // (specs sdk/reporting/bundle/video-aux.md). Mobile-canonical name: the viewer's manifest
+  // The geometry sidecar that gives `input`'s coordinates a frame to be drawn against.
+  // Mobile-canonical name: the viewer's manifest
   // reader switches on the TYPE `video.aux`, so the type string is the contract.
   it('video.aux default filename is the geometry sidecar', () => {
     expect(DEFAULT_FILENAMES['video.aux']).toBe('video.aux.json');
@@ -65,7 +65,7 @@ describe('wire constants', () => {
     expect(DEFAULT_FILENAMES['video.aux']).not.toBe(DEFAULT_FILENAMES.video);
   });
 
-  // R2-8: the transaction-naming-provenance wire attribute lives here (not in @bugsee/performance) so
+  // the transaction-naming-provenance wire attribute lives here (not in @bugsee/performance) so
   // @bugsee/node can read it off a Transaction without a runtime dependency on the opt-in APM extension.
   it('the transaction name-source attribute is the wire key @bugsee/performance stamps', () => {
     expect(NAME_SOURCE_ATTRIBUTE).toBe('bugsee.name_source');

@@ -1,4 +1,4 @@
-// SDK option-key translation for `environment.sdk.options` (design §2.4 / §8.6). The mobile
+// SDK option-key translation for `environment.sdk.options`. The mobile
 // contract uses colon-separated keys on the wire; SDK option keys are dotted, so dots become
 // colons. Applied only inside `environment.sdk.options`.
 

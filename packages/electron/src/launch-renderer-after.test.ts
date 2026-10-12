@@ -4,7 +4,7 @@ import { launchRenderer } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeControl } from './protocol';
 
-// R2L-2: a renderer's report path is an INJECTED trigger pipeline (it forwards the incident to main), so
+// A renderer's report path is an INJECTED trigger pipeline (it forwards the incident to main), so
 // core's assembly step — where `ReportHandler.after` used to run — never executes there. The application's
 // `after` handler must still run, on the renderer's REAL browser client, before the incident is forwarded.
 

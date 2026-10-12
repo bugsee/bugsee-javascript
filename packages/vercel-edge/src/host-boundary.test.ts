@@ -6,7 +6,7 @@ import type { Bugsee } from './launch';
 //
 // This wrapper IS the customer's request. Whatever it returns is the response; whatever it throws is the
 // failure the platform sees. So an SDK failure inside it does not cost a report — it changes the outcome of
-// the request, which is the strongest form of the rule Wave 2.1 exists to enforce.
+// the request, which is the strongest form of the rule this guard enforces.
 //
 // Two seams are exposed, and they fail differently:
 //

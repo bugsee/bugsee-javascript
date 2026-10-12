@@ -3,10 +3,10 @@ import { join, sep } from 'node:path';
 import type { ChunkStorage } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
-// Batched Node ChunkStorage (design: docs/design/server-disk-capture-write-path.md, Phase 1). Same directory
+// Batched Node ChunkStorage. Same directory
 // layout as createFsChunkStorage, but the per-entry hot path (`append`) is BUFFERED and coalesced: each data
 // file's pending segments are written in ONE `writevSync` on a high-water mark (or the periodic/crash flush),
-// instead of one open+write+close syscall per entry. The benchmark (design §10) shows this turns a blocking
+// instead of one open+write+close syscall per entry. The benchmark shows this turns a blocking
 // write's multi-second event-loop freeze into a ~10 ms tail at full throughput. Handles are held open for the
 // ACTIVE chunk only (sealed on closePart) so the open-fd count stays bounded to ~one chunk, not the rolling
 // window. A reader (snapshot/recovery) flushes the file first, so it always sees everything captured so far.
@@ -16,7 +16,7 @@ const CHUNK_PAD = 12;
 const DEFAULT_HIGH_WATER_MARK = 64 * 1024;
 // A tripped circuit lets one flush through every this-many attempts, to see whether the disk recovered.
 const PROBE_INTERVAL = 128;
-// Ceiling on the unwritten tail held per file (Wave 6.3). 1 MiB × the ~8 capture file types is the
+// Ceiling on the unwritten tail held per file. 1 MiB × the ~8 capture file types is the
 // worst-case hold, which is bounded and small next to the 50 MB default capture budget.
 const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
@@ -45,17 +45,17 @@ export interface BatchedFsChunkStorageOptions {
   /** Failure sink for a flush/close error (a broken disk must never throw into the capture path). Default no-op. */
   onError?: (error: unknown) => void;
   /**
-   * Ceiling on the unwritten tail held per file before the OLDEST records are shed (Wave 6.3). Default 1 MiB.
+   * Ceiling on the unwritten tail held per file before the OLDEST records are shed. Default 1 MiB.
    *
    * The retry-without-duplication design keeps the still-unwritten tail buffered so a later retry cannot
    * duplicate an already-written prefix — correct, but it had no ceiling, so a persistently failing disk
    * (ENOSPC / EROFS / EIO / a vanished dataDir) turned every captured entry into permanent memory growth.
-   * `docs/design/server-disk-capture-write-path.md:120` (D2) binds this path to "fixed ring, drop-oldest
+   * The write-path contract binds this path to "fixed ring, drop-oldest
    * under overload (no elastic growth)"; this is what makes the shipped default honour it.
    */
   maxBufferedBytes?: number;
   /**
-   * Consecutive flush failures after which `writev` stops being attempted (Wave 6.3). Default 8.
+   * Consecutive flush failures after which `writev` stops being attempted. Default 8.
    *
    * A full disk otherwise costs one doomed syscall AND one `onError` per captured entry — measured at
    * 19,998 of each for 20,000 appends. It re-probes, so a disk that frees up is written to again.

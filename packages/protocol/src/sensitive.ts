@@ -1,4 +1,4 @@
-// Sanitizer denylists + redaction tokens (design §8.10). The tokens are byte-identical to mobile
+// Sanitizer denylists + redaction tokens. The tokens are byte-identical to mobile
 // so server-side dedup stays consistent. Headers match case-insensitively but EXACTLY; body/query
 // keys match case-insensitively by SUBSTRING (privacy-conservative; deliberately catches e.g.
 // `userPassword`, `oauth_token`).

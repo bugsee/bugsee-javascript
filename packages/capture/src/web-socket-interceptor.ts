@@ -1,7 +1,7 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 
-// WebSocket capture SOURCE (design §16.2). global WebSocket is broadly available (browser/workers/
+// WebSocket capture SOURCE. global WebSocket is broadly available (browser/workers/
 // Deno/Bun; Node ≥ 22), so the wrap installs only when it exists (availability-detected). Because each
 // connection must be instrumented at CREATION, the wrap replaces the constructor with a thin subclass:
 // its constructor calls through, assigns a per-connection id, emits `before`, and attaches open/message/
@@ -127,7 +127,7 @@ class WebSocketInterceptor extends InterceptorBase<Record<NetworkStage, NetworkE
     );
     // Wrap outbound send on this instance (no prototype mutation): emit a 'message' frame, tagged
     // `event: 'send'` — Android's vocabulary, and the field the viewer reads to tell an outbound frame
-    // from an inbound one. Without it every outbound frame rendered as incoming (Wave 5.2).
+    // from an inbound one. Without it every outbound frame rendered as incoming.
     const originalSend = socket.send.bind(socket);
     socket.send = (data: unknown): void => {
       this.emit('message', { ...this.#event(state, 'message'), direction: 'out', event: 'send' });

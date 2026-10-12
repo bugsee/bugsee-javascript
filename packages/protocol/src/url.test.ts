@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
 
-// Wave 1.1. Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
-// browsers strip it — `http://user:password@host/`. Both were recovered from a real on-disk capture in
-// docs/review/node-B-http-server.md SEV1 #3 and docs/review/capture.md SEV1 #4.
+// Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
+// browsers strip it — `http://user:password@host/`. Both were recovered from a real on-disk capture.
 
 describe('sanitizeUrl — query strings', () => {
   it('redacts a sensitive query value and leaves the rest byte-for-byte', () => {
@@ -243,7 +242,7 @@ describe('sanitizeErrorMessage', () => {
   });
 });
 
-// Review findings (privacy reviewer SEV2 #3/#4/#5/#6/#7): each was reproduced against the real exports
+// Review findings (privacy reviewer): each was reproduced against the real exports
 // before the fix, and each is pinned here.
 describe('sanitizeUrl — separators, nesting, and bounds', () => {
   it('redacts a `;`-separated query parameter (the legacy CGI/PHP separator)', () => {

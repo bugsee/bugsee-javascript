@@ -10,10 +10,9 @@ launchApp();
 
 // Expose for manual console poking + the Playwright verify script (see scripts/verify.mjs), which reads
 // window.__bugsee to probe SDK state directly (e.g. the active performance transaction) instead of
-// scraping the DOM. A GETTER, not a captured reference: S1's relaunch controls swap the module-level
+// scraping the DOM. A GETTER, not a captured reference: the relaunch controls swap the module-level
 // client for a brand-new instance (bugsee.ts's `relaunch()`) — capturing `client` here once would go
-// stale across a relaunch the exact same way the sample's own F-0 bug did (see FINDINGS.md), so this
-// always resolves fresh via `getClient()`.
+// stale across a relaunch, so this always resolves fresh via `getClient()`.
 Object.defineProperty(window, '__bugsee', { get: () => getClient(), configurable: true });
 
 bootstrapApplication(AppComponent, appConfig)

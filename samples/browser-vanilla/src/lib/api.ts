@@ -1,5 +1,5 @@
 // Thin fetch wrapper over the local Widget Shop API (server/api-plugin.ts, mounted on the same
-// Vite-served origin at :5301). Used by every real page, so it is also the S7 network-capture
+// Vite-served origin at :5301). Used by every real page, so it is also the network-capture
 // surface: the SDK's fetch/XHR/WS/SSE interceptors sit underneath every call this file makes.
 
 export interface Product {

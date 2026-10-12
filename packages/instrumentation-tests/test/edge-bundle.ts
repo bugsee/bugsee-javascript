@@ -5,8 +5,8 @@ import { build } from 'esbuild';
 // Bundle an edge SDK package the way a real Worker / Edge bundler (wrangler / Vercel) would: a single
 // minified ESM file with the WinterCG (browser-ish) platform and `node:*` builtins external — the one a
 // supported edge package may import is `node:async_hooks` (@bugsee/cloudflare under `nodejs_compat`), and the
-// X2 guard pins that per package. Used by BOTH the bundle-size guard (X2) and the real-edge VM smoke
-// (X3, which evaluates the produced code in @edge-runtime/vm).
+// bundle-size guard pins that per package. Used by BOTH the bundle-size guard and the real-edge VM smoke
+// (which evaluates the produced code in @edge-runtime/vm).
 
 // instrumentation-tests dir — the resolveDir for the workspace package specifiers.
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
@@ -27,7 +27,7 @@ export interface EdgeBundle {
    * EVERY module the output still imports, of every kind — the authoritative answer to "is this
    * artifact self-contained?".
    *
-   * `nodeImports` above is narrower (static node builtins only); X2 reads the node entries of this list
+   * `nodeImports` above is narrower (static node builtins only); the bundle-size guard reads the node entries of this list
    * too, so a DYNAMIC node import is caught as well. The webview injectable has no allowance at all:
    * it is a single string injected into a WebView with no loader at all, so ANY surviving import —
    * static, dynamic or require — means the artifact cannot run.
@@ -80,7 +80,7 @@ function externalImportsOf(metafile: {
  *
  * `kind` distinguishes an `import-statement` from a `dynamic-import`; this keeps only the static ones. (There
  * used to be a sanctioned dynamic one — @bugsee/util's `import('node:crypto')` sha256 fallback — and it is
- * gone: X2 now also asserts no node builtin of ANY kind beyond the allowlist, via `externalImports`.)
+ * gone: the bundle-size guard now also asserts no node builtin of ANY kind beyond the allowlist, via `externalImports`.)
  */
 function nodeImportsOf(metafile: {
   outputs: Record<string, { imports?: Array<{ path: string; kind?: string }> }>;
@@ -98,7 +98,7 @@ function nodeImportsOf(metafile: {
 
 // Models a `nodejs_compat`-enabled Worker for the VM smoke. @edge-runtime/vm is a bare WinterCG isolate with
 // no node builtins, but @bugsee/cloudflare legitimately imports `node:async_hooks` (the ONLY route to
-// AsyncLocalStorage on workerd — Wave 0.1 S0). Without this the smoke would test an environment Cloudflare
+// AsyncLocalStorage on workerd. Without this the smoke would test an environment Cloudflare
 // users never deploy to. A single-slot stand-in is enough here: the smoke asserts the assembled SDK RUNS and
 // uploads; real ALS propagation is proven on real workerd by the miniflare e2e.
 const NODEJS_COMPAT_SHIM = `
@@ -141,7 +141,7 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     platform: 'browser',
     target: 'es2022',
     // The cloudflare: modules are provided by workerd itself (e.g. the DurableObject RPC base class).
-    external: ['node:*', 'cloudflare:*'], // node:async_hooks for cloudflare (nodejs_compat); pinned by X2
+    external: ['node:*', 'cloudflare:*'], // node:async_hooks for cloudflare (nodejs_compat); pinned by the bundle-size guard
     legalComments: 'none',
     metafile: true,
     write: false,

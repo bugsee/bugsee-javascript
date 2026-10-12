@@ -223,11 +223,11 @@ describe('transactionToOtlpSpans', () => {
         { key: 'bugsee.span.status', value: { stringValue: 'ERROR' } },
       ],
       status: { code: OtlpStatusCode.ERROR, message: 'ERROR' },
-      flags: 1, // the trace's sampled bit (§8), mirrored onto every span
+      flags: 1, // the trace's sampled bit, mirrored onto every span
     });
   });
 
-  it('a continued transaction maps the root span as a CHILD of the upstream parent (§12)', () => {
+  it('a continued transaction maps the root span as a CHILD of the upstream parent', () => {
     const root = transactionToOtlpSpans(txn({ parentSpanId: 'eeeeeeeeeeeeeeee' }))[0];
     expect(root?.parentSpanId).toBe('eeeeeeeeeeeeeeee'); // the derived root links up to the inbound span
     // a standalone (non-continued) transaction's root stays parentless:
@@ -267,12 +267,12 @@ describe('transactionToOtlpSpans', () => {
     expect(root?.attributes).toContainEqual({ key: 'bugsee.sampled', value: { boolValue: false } });
   });
 
-  it('mirrors the sampled bit into the OTLP span trace flags on EVERY span (Profile v1 §8)', () => {
+  it('mirrors the sampled bit into the OTLP span trace flags on EVERY span', () => {
     const spans = transactionToOtlpSpans(txn()); // sampled: true
     expect(spans.map((s) => s.flags)).toEqual([1, 1, 1]); // root + 2 children all carry the W3C sampled bit
   });
 
-  it('mirrors an UNSAMPLED transaction as trace flags 0 on every span (§8)', () => {
+  it('mirrors an UNSAMPLED transaction as trace flags 0 on every span', () => {
     const spans = transactionToOtlpSpans(txn({ sampled: false }));
     expect(spans.map((s) => s.flags)).toEqual([0, 0, 0]);
   });
@@ -360,7 +360,7 @@ describe('toOtlpExportRequest', () => {
     expect(rs?.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'web' } },
       { key: 'host', value: { intValue: '2' } },
-      // Profile v1 §4 fixed constants, always present (after the caller's resource).
+      // The fixed constants, always present (after the caller's resource).
       { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
       { key: 'bugsee.profile.version', value: { stringValue: '1' } },
     ]);
@@ -376,7 +376,7 @@ describe('toOtlpExportRequest', () => {
   it('defaults the scope name/resource and omits the scope version when not given', () => {
     const req = toOtlpExportRequest([txn()]);
     const rs = req.resourceSpans[0];
-    // No caller resource → still the Profile v1 §4 fixed constants.
+    // No caller resource → still the fixed constants.
     expect(rs?.resource.attributes).toEqual([
       { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
       { key: 'bugsee.profile.version', value: { stringValue: '1' } },
@@ -404,7 +404,7 @@ describe('toOtlpExportRequest', () => {
 //
 // The real id existed the whole time — minted by `env.newSpanId()`, used as every child's `parentSpanId`,
 // and returned by `getSpanId()` for propagation. `toTransactionWire()` simply dropped it.
-describe('the OTLP root uses the transaction’s REAL span id (Wave 5.3)', () => {
+describe('the OTLP root uses the transaction’s REAL span id', () => {
   const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
     traceId: 'a'.repeat(32),
     spanId: 'feedfacecafebeef',

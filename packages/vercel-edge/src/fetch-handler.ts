@@ -4,7 +4,7 @@ import { runInEdgeContext } from './edge-context';
 import type { Bugsee } from './launch';
 import type { EdgeExecutionContext } from './wait-until';
 
-// The edge fetch-handler wrapper (docs/design/edge-runtime.md E5) — the fetch-specific face of the generic
+// The edge fetch-handler wrapper — the fetch-specific face of the generic
 // edge-invocation core (`runInEdgeContext`, edge-context.ts). Wrap your Worker/Edge `fetch` handler so each
 // request runs in its own Bugsee context (stamped with which route is running), a thrown error is captured AND
 // rethrown, and the incident upload completes inside `ctx.waitUntil(client.flush())` (without which the eager
@@ -37,7 +37,7 @@ export function requestAttributes(request: Request): Record<string, AttributeVal
       // a relative / malformed URL → keep the raw value
     }
     // The pathname reduction above already drops the query and any userinfo; the fallback does not, so
-    // scrub before stamping. A no-op on the happy path (Wave 1.1).
+    // scrub before stamping. A no-op on the happy path.
     attributes['http.url'] = sanitizeUrl(target);
   }
   return attributes;

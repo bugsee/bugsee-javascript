@@ -3,8 +3,8 @@ import { readFileBytes, remove, writeFileExclusive } from '@bugsee/node-utils';
 import { strFromU8 } from '@bugsee/util';
 import { isSiblingDead, pidAlive, readLiveMtimeMs } from './liveness';
 
-// The multi-instance recovery CLAIM (design: multi-instance-disk-coexistence.md, D4 — the item its own
-// header called "atomic-rename claim lands in slice 4"). Without it, two launches that start at the same
+// The multi-instance recovery CLAIM (an item the original
+// header listed as still to come). Without it, two launches that start at the same
 // moment both see the same dead sibling subtree, both recover it, and both upload every bundle in it. The
 // browser tier has been serialized since #166 by `web-lock-liveness.ts` (`ifAvailable: true`); node had
 // nothing, because there is no portable cross-process lock in JS.

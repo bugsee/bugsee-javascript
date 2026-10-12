@@ -1,7 +1,7 @@
 // The "Link shortener" service — plain node:http, no framework, so @bugsee/node is the subject under
 // test. Real endpoints (create/resolve/stats/dashboard) live alongside a "scenario panel" of HTTP
-// routes (§3 convention: a server sample exposes the panel as routes, not a UI) that exercise every
-// catalog scenario in docs/samples/PLAN.md §4. See scenarios.md for the full id -> route mapping.
+// routes (a server sample exposes the panel as routes, not a UI) that exercise every
+// catalog scenario.
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -80,7 +80,7 @@ function handleResolve(code: string, res: import('node:http').ServerResponse): v
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S1 launch/lifecycle
+// Scenario panel — launch/lifecycle
 // ---------------------------------------------------------------------------------------------------
 
 async function scenarioS1(action: string, res: import('node:http').ServerResponse): Promise<void> {
@@ -105,7 +105,7 @@ async function scenarioS1(action: string, res: import('node:http').ServerRespons
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S2 identity & attributes
+// Scenario panel — identity & attributes
 // ---------------------------------------------------------------------------------------------------
 
 function scenarioS2(marker: string, res: import('node:http').ServerResponse): void {
@@ -131,7 +131,7 @@ function scenarioS2(marker: string, res: import('node:http').ServerResponse): vo
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S3 manual telemetry
+// Scenario panel — manual telemetry
 // ---------------------------------------------------------------------------------------------------
 
 function scenarioS3(marker: string, res: import('node:http').ServerResponse): void {
@@ -155,10 +155,10 @@ function scenarioS3(marker: string, res: import('node:http').ServerResponse): vo
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S4 exceptions
+// Scenario panel — exceptions
 // ---------------------------------------------------------------------------------------------------
 
-// The upload always fails on this staging app-type (see FINDINGS.md — the javascript app-type gate),
+// The upload always fails on this staging app-type (staging's javascript app-type gate),
 // so every logException() runs its FULL internal retry+backoff cycle (tens of seconds) before its
 // promise settles. Scenario endpoints therefore fire-and-forget by default (report accepted=true
 // immediately — matches real "don't block the request on telemetry" usage); pass `?sync=1` to await
@@ -230,7 +230,7 @@ async function scenarioS4(
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S6 console capture
+// Scenario panel — console capture
 // ---------------------------------------------------------------------------------------------------
 
 function scenarioS6(marker: string, res: import('node:http').ServerResponse): void {
@@ -247,7 +247,7 @@ function scenarioS6(marker: string, res: import('node:http').ServerResponse): vo
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S7 network capture (loopback echo endpoints so the sample needs no internet access)
+// Scenario panel — network capture (loopback echo endpoints so the sample needs no internet access)
 // ---------------------------------------------------------------------------------------------------
 
 async function scenarioS7(kind: string, marker: string, res: import('node:http').ServerResponse): Promise<void> {
@@ -333,7 +333,7 @@ async function scenarioS7(kind: string, marker: string, res: import('node:http')
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S8 filters & redaction (demonstrated on a dedicated route so the default filters
+// Scenario panel — filters & redaction (demonstrated on a dedicated route so the default filters
 // used by the rest of the scenario panel stay unaffected)
 // ---------------------------------------------------------------------------------------------------
 
@@ -386,7 +386,7 @@ function scenarioS8(marker: string, res: import('node:http').ServerResponse): vo
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S9 performance / APM
+// Scenario panel — performance / APM
 // ---------------------------------------------------------------------------------------------------
 
 function scenarioS9(marker: string, res: import('node:http').ServerResponse): void {
@@ -409,7 +409,7 @@ function scenarioS9(marker: string, res: import('node:http').ServerResponse): vo
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Scenario panel — S13 OpenTelemetry consume (a hand-rolled ReadableSpanLike, since the produce
+// Scenario panel — OpenTelemetry consume (a hand-rolled ReadableSpanLike, since the produce
 // direction is the umbrella's otelExportUrl option, exercised via the otel-produce profile instead)
 // ---------------------------------------------------------------------------------------------------
 
@@ -486,7 +486,7 @@ const server = createServer((req, res) => {
         json(res, 200, { hasContext: current !== undefined, contextId: current?.contextId ?? null });
         return;
       }
-      // Per-request context under concurrency (§5.13): the auto-instrumentation (instrumentIncomingRequests)
+      // Per-request context under concurrency: the auto-instrumentation (instrumentIncomingRequests)
       // already opened a per-request context for THIS request before the handler ran; stamp a
       // caller-supplied attribute onto it and fire a report so the report's merged attributes prove
       // isolation across N concurrent requests (no cross-contamination between async call-chains).
@@ -521,14 +521,14 @@ const server = createServer((req, res) => {
         return;
       }
 
-      // ---- echo endpoints for S7 -----------------------------------------------------------------
+      // ---- echo endpoints -----------------------------------------------------------------
       if (url.pathname === '/echo/json') {
         const body = req.method === 'POST' ? await readBody(req) : '{}';
         json(res, 200, {
           method: req.method,
           query: Object.fromEntries(url.searchParams),
           body: body ? JSON.parse(body) : null,
-          // S10 evidence: echo back trace-propagation headers so a caller (curl, verify.ts, a human)
+          // Evidence: echo back trace-propagation headers so a caller (curl, verify.ts, a human)
           // can see whether propagateTrace + tracePropagationTargets actually decorated this request.
           traceparent: req.headers['traceparent'] ?? null,
           tracestate: req.headers['tracestate'] ?? null,
@@ -588,7 +588,7 @@ const server = createServer((req, res) => {
 
       json(res, 404, { error: 'not found' });
     } catch (error) {
-      // A route THROWING synchronously/asynchronously is itself S5/adapter-error-surface coverage: let
+      // A route THROWING synchronously/asynchronously is itself adapter-error-surface coverage: let
       // it become an uncaught exception path by rethrowing on the next tick would kill the request
       // instead; log + report explicitly here so the HTTP response is still well-formed.
       void client

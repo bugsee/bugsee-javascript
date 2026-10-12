@@ -3,7 +3,7 @@ import { serviceToken } from '@bugsee/service';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import type { BugseeError } from './errors';
 
-// Transport split into three roles (design §7.5). The BugseeApi / BundleUploader / UploadPipeline
+// Transport split into three roles. The BugseeApi / BundleUploader / UploadPipeline
 // LOGIC is platform-agnostic, so core owns the implementations (bugsee-api.ts, bundle-uploader.ts,
 // upload-pipeline.ts); only the raw HTTP primitive (HttpTransport below) is platform-specific —
 // node:http(s) in @bugsee/node, fetch/XHR in @bugsee/browser. Platforms supply the transport; they
@@ -36,7 +36,7 @@ export interface HttpResponse {
   body: Uint8Array;
 }
 
-/** Result of POST /v2/issues — the signed PUT url + identifiers (§7.5/§8.1). */
+/** Result of POST /v2/issues — the signed PUT url + identifiers. */
 export interface IssueCreateResult {
   /** Signed S3 PUT url. */
   endpoint: string;
@@ -44,7 +44,7 @@ export interface IssueCreateResult {
   recordingId: RecordingId;
 }
 
-/** Result of the signed-URL PUT (§7.5). */
+/** Result of the signed-URL PUT. */
 export type PutResult =
   | { ok: true }
   | {
@@ -95,11 +95,11 @@ export type NotifyResult =
       rateLimited?: true;
     };
 
-/** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
+/** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle. */
 export interface BugseeApi {
   /**
-   * The client-minted per-launch session-correlation id (Bugsee OTLP Profile v1 §12 `bugsee=s<id>` +
-   * §10 `bugsee.session.id`). Sent at POST /v2/sessions so the collector can join the session to traces;
+   * The client-minted per-launch session-correlation id (`bugsee=s<id>` +
+   * `bugsee.session.id`). Sent at POST /v2/sessions so the collector can join the session to traces;
    * read by the trace-propagation decorator and the OTLP resource. Stable for the life of the api.
    */
   readonly sessionId: string;
@@ -122,36 +122,36 @@ export interface BugseeApi {
   notify(items: readonly NotifyItem[]): Promise<NotifyResult>;
 }
 
-/** PUT headers for the signed-URL upload (§8.3). */
+/** PUT headers for the signed-URL upload. */
 export interface PutBundleOptions {
   contentLength: number;
-  /** Hex SHA-256 of the body. Optional on the wire (§8.3); absent when the runtime could not compute it. */
+  /** Hex SHA-256 of the body. Optional on the wire; absent when the runtime could not compute it. */
   checksumSha256?: string;
   /** `<random20>.bundle.zip`. */
   fileName: string;
 }
 
-/** DATA PLANE — unauthenticated signed PUT; mirrors iOS PUT headers (§7.5/§8.3). */
+/** DATA PLANE — unauthenticated signed PUT; mirrors iOS PUT headers. */
 export interface BundleUploader {
   putBundle(url: string, body: Uint8Array, options: PutBundleOptions): Promise<PutResult>;
 }
 
-/** A fully-assembled, ready-to-upload bundle (output of the trigger path, §7.7). */
+/** A fully-assembled, ready-to-upload bundle (output of the trigger path). */
 export interface Bundle {
   /** The /v2/issues body, also embedded verbatim in the zip. */
   request: RequestJson;
   /** The `*.bundle.zip` bytes. */
   body: Uint8Array;
-  /** Bundle archive basename `<random20>.bundle.zip` (§8.3). */
+  /** Bundle archive basename `<random20>.bundle.zip`. */
   fileName: string;
 }
 
-/** Outcome accounting buckets (§7.5). */
+/** Outcome accounting buckets. */
 export type OutcomeCategory = 'session' | 'issue' | 'upload' | 'performance';
 
 /**
- * Why a capture/bundle was dropped. The design names `queue_overflow` (§7.8), `rate_limit` and
- * `duplicate` (§7.7); the pipeline records additional reasons, so this is left open.
+ * Why a capture/bundle was dropped. The design names `queue_overflow`, `rate_limit` and
+ * `duplicate`; the pipeline records additional reasons, so this is left open.
  */
 export type DropReason = string;
 
@@ -160,14 +160,14 @@ export interface UploadHint {
   category?: OutcomeCategory;
 }
 
-/** Public upload result (§10). */
+/** Public upload result. */
 export interface UploadResult {
   ok: boolean;
   issueId?: IssueId;
   recordingId?: RecordingId;
   error?: BugseeError;
   /**
-   * The failure will not succeed on a retry — the collector REFUSED this bundle (Wave 6.4).
+   * The failure will not succeed on a retry — the collector REFUSED this bundle.
    *
    * Distinguishes "the network was down" from "this payload is not acceptable", which the caller cannot
    * otherwise tell apart: both arrive as `{ok:false}` with a status. The durable queue uses it to delete
@@ -181,7 +181,7 @@ export interface UploadResult {
   permanent?: boolean;
   /**
    * The bundle's bytes are DURABLY STAGED by the queue that answered, and will be carried to the next
-   * launch — so the caller's own copy of the incident is redundant and may be released (Round 6, R5-1).
+   * launch — so the caller's own copy of the incident is redundant and may be released.
    *
    * Set only by {@link DurableUploadPipeline}, and only on a result that has NOT settled: a delivered or
    * refused bundle has just had its durable copy freed, so claiming it were retained would be a lie.
@@ -214,7 +214,7 @@ export interface UploadResult {
  * sweep, and on browser/worker not bounded at all. That second half is now closed separately, by the age
  * bound `recoverSiblingBundleQueue` applies from `DEFAULT_DURABLE_RETENTION`: a verdict settles a bundle,
  * and a bound gives up on one, and the two must stay different things. Widening what counts as a verdict
- * to make up for a missing bound is what produced a new loss path in three consecutive review rounds.
+ * to make up for a missing bound is what produced a new loss path in three consecutive rounds of review.
  *
  * Android parity: `CommunicationErrorClassifier.java:14-33` + `ReportUploadExecutor.java:258-268`.
  */
@@ -229,7 +229,7 @@ export const isUploadSettled = (result: UploadResult): boolean =>
  * whole instance subtree are DELETED. It lives here, beside `isUploadSettled`, because the two are one
  * policy: this says whether the collector's answer is final, that says what to do when it is.
  *
- * It is NOT the only such input, and saying so here was wrong (R5-9): the DATA plane's verdict comes from
+ * It is NOT the only such input, and saying so here was wrong: the DATA plane's verdict comes from
  * here via `bundle-uploader.ts`, while the CONTROL plane's comes from {@link classifyServerErrorCode} via
  * `upload-pipeline.ts` — a separate namespace carried in a `/v2/*` envelope on an HTTP 200, which no
  * status function can see.
@@ -313,14 +313,14 @@ export const SERVER_ERROR_CATEGORIES: Readonly<Record<number, ServerErrorCategor
 export const classifyServerErrorCode = (code: number): ServerErrorCategory =>
   SERVER_ERROR_CATEGORIES[code] ?? 'transient';
 
-/** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes (§7.5/§7.8). */
+/** ORCHESTRATOR — owns the promise buffer, retry/backoff, 403 renew, outcomes. */
 export interface UploadPipeline {
   enqueue(bundle: Bundle, hint?: UploadHint): Promise<UploadResult>;
   flush(timeout?: number): Promise<boolean>;
   drop(reason: DropReason, category: OutcomeCategory): void;
 }
 
-// Per-platform SERVICE tokens in the internal container (design §198): core owns the `HttpTransport`
+// Per-platform SERVICE tokens in the internal container: core owns the `HttpTransport`
 // contract; each platform registers its impl (Node's httpRequest, the browser's fetch wrapper) under
 // this token and the container resolves it — without core importing any platform.
 /** Service token for the platform HTTP transport primitive. */

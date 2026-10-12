@@ -76,9 +76,9 @@ export function installBugseeNitroEdge(
     ...launchOptions
   } = options;
   const client = launch(appToken, launchOptions);
-  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch() (R4H-4)
+  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch()
   // The hook outlives this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
-  // error (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
+  // error (the carrier slot), keeping the launched one as the fallback while the slot is empty.
   const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
 
   nitroApp.hooks.hook('error', (error, context) => {
@@ -120,7 +120,7 @@ export function installBugseeNitroEdge(
   return client;
 }
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,
@@ -141,10 +141,10 @@ export interface NitroEdgeRelaunchOptions extends BugseeEdgeLaunchOptions {
 /**
  * Stop the running client and launch again with the remembered token through the SAME launch seam
  * `installBugseeNitroEdge` was installed with (default `launchEdge`), so a custom launch (e.g. Cloudflare's) is re-run
- * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9).
- * That install-time seam is remembered on the carrier and is the DEFAULT here (R4H-4); an explicit `launch`
+ * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use.
+ * That install-time seam is remembered on the carrier and is the DEFAULT here; an explicit `launch`
  * argument wins and is remembered in turn. The installed Nitro hooks follow
- * the new client (R3P-3).
+ * the new client.
  * Bugsee options return to their defaults; integration seams are kept. Rejects when nothing was launched.
  */
 export function relaunch(options: NitroEdgeRelaunchOptions = {}): Promise<Bugsee> {

@@ -3,8 +3,7 @@
 // The umbrella had three conditions (browser / node / default). Every runtime that set none of them fell
 // through to `default`, i.e. the BROWSER entry — IndexedDB, DOM, a page lifecycle — none of which exists on
 // workerd, Vercel Edge, or in a Web Worker. Bun and Deno were worse than that: they set `node`, so they
-// resolved the Node SDK and silently lost their own composition (measured through the real runtimes in
-// Wave 3b.1: Bun 1.3.14 reporting as `node` 24.3.0, and `Bun.serve` left uninstrumented entirely).
+// resolved the Node SDK and silently lost their own composition (measured through the real runtimes: Bun 1.3.14 reporting as `node` 24.3.0, and `Bun.serve` left uninstrumented entirely).
 //
 // The lesson from that is why this file exists: an `exports` entry is only as good as the resolution that
 // selects it, and nothing had ever exercised the selection. esbuild's `conditions` is a real resolver
@@ -82,7 +81,7 @@ async function entryResolvedUnder(conditions: string[]): Promise<string> {
   return (entries[0] as string).replace(/^.*bugsee\/src\//, '');
 }
 
-describe('the umbrella resolves the right entry per runtime (Wave 4.1)', () => {
+describe('the umbrella resolves the right entry per runtime', () => {
   // Every runtime here sets SEVERAL conditions; the expected entry is the one whose condition is listed
   // FIRST in the exports map. That ordering IS the contract.
   const CASES: Array<{ runtime: string; conditions: string[]; entry: string }> = [

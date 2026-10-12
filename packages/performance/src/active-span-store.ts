@@ -1,6 +1,6 @@
 import type { Transaction } from './span';
 
-// The active-span store (D2 part 2): where the performance controller keeps the in-flight
+// The active-span store: where the performance controller keeps the in-flight
 // transaction behind `getActiveSpan()` / the naming seam. A process-wide single slot is WRONG on
 // a concurrent server — a second in-flight request's `startTransaction` overwrites the first
 // request's slot, so a rename intended for request A lands on request B's transaction (Android's

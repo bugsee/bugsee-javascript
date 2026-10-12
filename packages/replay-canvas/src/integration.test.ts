@@ -1,4 +1,4 @@
-// Integration (cross-package boundary, standards §3): @bugsee/replay-canvas's resolved config must COMPOSE
+// Integration (cross-package boundary): @bugsee/replay-canvas's resolved config must COMPOSE
 // with @bugsee/replay's recorder seam — i.e. flow through registerReplay into the rrweb `record()` options.
 // Uses the REAL registerReplay + REAL createCanvasRecordConfig with a fake `record` (no rrweb).
 import type { CaptureProviderInit } from '@bugsee/core';
@@ -50,7 +50,7 @@ describe('@bugsee/replay-canvas ⇄ @bugsee/replay integration', () => {
     expect(recordArgs?.maskAllText).toBe(true);
   });
 
-  it("threads full-fidelity ('all') canvas capture through registerReplay to rrweb record()", () => {
+  it("threads full-fidelity ('all') canvas capture through registerReplay to rrweb record", () => {
     let recordArgs: RecordOpts | undefined;
     const record: ReplayRecordFn = vi.fn((o) => {
       recordArgs = o;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// F-6: HttpTransport (+ its request/response option shapes) was usable internally (`launch.ts`'s
+// HttpTransport (+ its request/response option shapes) was usable internally (`launch.ts`'s
 // `transport?: HttpTransport` option) but never re-exported, forcing a consumer wiring a custom
 // transport into an unsafe `as never` cast to satisfy the type checker (see samples/fastify-api and
 // samples/express-api's `transport: createTeeTransport() as never`). Type-only: erased at runtime, so
@@ -93,7 +93,7 @@ describe('@bugsee/node public export surface', () => {
     expect(typeof publicApi.launchCore).toBe('function');
   });
 
-  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast (F-6)', () => {
+  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast', () => {
     // The `as` casts require the imported types to exist; removing any re-export breaks `tsc --noEmit`.
     const transport = (async () => ({
       status: 200,

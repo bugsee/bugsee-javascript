@@ -1,6 +1,6 @@
 // A small local API for the Expense report app — plain node:http, no framework (the framework under
 // test is on the client side: @bugsee/angular). Also hosts `/api/scenario/*` routes purpose-built to
-// exercise S7 (network capture) edge cases, and (when STATIC_DIR is set) serves the production
+// exercise network-capture edge cases, and (when STATIC_DIR is set) serves the production
 // `ng build` output + falls back to index.html for client-side routing — so `pnpm preview` is a single
 // process on one port, the same way a customer would deploy this app.
 import { randomUUID } from 'node:crypto';
@@ -90,7 +90,7 @@ function serveStatic(req, res, pathname) {
 
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  // S10 needs a genuinely CROSS-ORIGIN request that carries a `traceparent` header: the app is served
+  // The distributed-tracing scenario needs a genuinely CROSS-ORIGIN request that carries a `traceparent` header: the app is served
   // by `ng serve` on :5306 while this API is on :5336, so a direct call here (bypassing the `/api`
   // dev-server proxy) is cross-origin, and `traceparent` is not a CORS-safelisted request header —
   // the browser sends a preflight OPTIONS first and drops the real request unless the preflight
@@ -109,7 +109,7 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    // ---- S10 exclude probe -----------------------------------------------------------------------
+    // ---- exclude probe -----------------------------------------------------------------------
     // Deliberately NOT under `/api/`: `tracePropagationTargets: ['/api/']` (src/app/bugsee.ts) is a
     // substring match against the full URL, so a cross-origin call to THIS path must NOT be decorated.
     // It echoes the received headers exactly like `/api/scenario/echo-headers` does, so the two probes
@@ -118,14 +118,14 @@ const server = createServer(async (req, res) => {
       return json(res, 200, req.headers);
     }
 
-    // ---- Scenario routes (S7 network-capture edge cases) --------------------------------------
+    // ---- Scenario routes (network-capture edge cases) --------------------------------------
     if (parts[0] === 'api' && parts[1] === 'scenario') {
       const which = parts[2];
       if (which === 'get' && req.method === 'GET') {
         return json(res, 200, { ok: true, now: Date.now() });
       }
       if (which === 'echo-headers' && req.method === 'GET') {
-        // S10: lets the client confirm a traceparent/tracestate header it cannot read off its own
+        // Lets the client confirm a traceparent/tracestate header it cannot read off its own
         // outgoing request actually left the process — the server echoes back what it received.
         return json(res, 200, req.headers);
       }

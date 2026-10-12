@@ -124,7 +124,7 @@ describe('describeTarget', () => {
     });
   });
 
-  it('attaches the nearest annotated component name (data-bugsee-component, D2)', () => {
+  it('attaches the nearest annotated component name (data-bugsee-component)', () => {
     expect(describeTarget(el({ tag: 'button', id: 'go', component: 'Toolbar' }), MASK)).toEqual({
       tag: 'button',
       id: 'go',
@@ -525,7 +525,7 @@ describe('createBrowserInputSource', () => {
       target.emit('pointerdown', pen());
       target.emit('pointermove', pen()); // identical to the begin
       target.emit('pointermove', pen({ clientX: 12.2 })); // rounds to the same x
-      target.emit('pointermove', pen({ tiltX: 30 })); // L3 angles win, so nothing recorded changed
+      target.emit('pointermove', pen({ tiltX: 30 })); // angles win, so nothing recorded changed
       target.emit('pointermove', pen({ pressure: 0.6 })); // force changed
       target.emit('pointermove', pen({ pressure: 0.6 })); // same as the previous MOVE
       expect(events.map((e) => [e.type, e.force])).toStrictEqual([
@@ -1374,7 +1374,7 @@ describe('createBrowserInputSource', () => {
       ...over,
     });
 
-    describe('blackout (V7: wheel deltas are gated when COLLECTED, and pending ones are cleared)', () => {
+    describe('blackout: wheel deltas are gated when COLLECTED, and pending ones are cleared', () => {
       it('a wheel turn during a blackout is not collected at all (nothing is scheduled)', () => {
         const target = fakeTarget();
         const frame = fakeFrame();
@@ -1427,7 +1427,7 @@ describe('createBrowserInputSource', () => {
         expect(events.map((e) => (e as { scrollY: number }).scrollY)).toEqual([1, 2]);
       });
 
-      describe('bindBlackout (R2V-3: a carrier-shared source follows the current client)', () => {
+      describe('bindBlackout: a carrier-shared source follows the current client', () => {
         it('an ACTIVE source moves its subscription to the new gate and stops watching the old one', () => {
           const target = fakeTarget();
           const frame = fakeFrame();

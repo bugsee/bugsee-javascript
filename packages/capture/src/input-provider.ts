@@ -7,7 +7,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
-// Runtime-agnostic INPUT provider (design §16.1, Android `input` / `input.json` parity). An input event is
+// Runtime-agnostic INPUT provider (Android `input` / `input.json` parity). An input event is
 // one press or release the SDK OBSERVED a device make: a touch/mouse/pen pointer going down or up, a key
 // going down. While started, the provider subscribes to an input SOURCE and routes each event to the
 // aggregator as an `input` entry, stamping it from the clock when the source did not.

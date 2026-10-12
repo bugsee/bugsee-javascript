@@ -1,7 +1,7 @@
 import { asInternalClient, neverThrow } from '@bugsee/core';
 import type { Bugsee } from './launch';
 
-// Service Worker event flush (design §3.x — the SW analog of the edge ctx.waitUntil). A Service Worker is
+// Service Worker event flush (the SW analog of the edge ctx.waitUntil). A Service Worker is
 // TERMINATED when idle, so a fire-and-forget incident upload can be dropped before it completes. Wrapping a SW
 // event handler hands the SDK flush to `event.waitUntil`, which keeps the worker alive until the upload
 // finishes — the exact isolate-freeze guard the edge SDK uses (vercel-edge wait-until.ts). A dedicated/shared
@@ -49,7 +49,7 @@ export type ServiceWorkerEventHandler<E extends ExtendableEventLike> = (event: E
  *  }));
  *  ```
  *
- *  CONTAINED at the host boundary (the Wave 2.1 `neverThrow` rule; the edge sibling guards the same seam —
+ * CONTAINED at the host boundary (the `neverThrow` rule; the edge sibling guards the same seam —
  *  vercel-edge/src/edge-context.ts). This wrapper runs with the CUSTOMER'S error in flight, and neither
  *  side of it is total: `logException` reads `.message`/`.stack` off the thrown value (a Proxy with a
  *  throwing trap, a throwing `stack` getter or a throwing `toString` — all things a handler can throw —

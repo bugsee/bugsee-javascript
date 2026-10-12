@@ -1,4 +1,4 @@
-// Resolving `waitUntil` — the load-bearing edge mechanism (docs/design/edge-runtime.md §2.1.1). An edge
+// Resolving `waitUntil` — the load-bearing edge mechanism. An edge
 // isolate freezes the instant the `Response` is returned, so a fire-and-forget upload `fetch` is silently
 // dropped. `ctx.waitUntil(promise)` extends the isolate's life until the promise settles. The catch:
 //   • Cloudflare passes an ExecutionContext `ctx` as the handler's 3rd arg → use `ctx.waitUntil`.

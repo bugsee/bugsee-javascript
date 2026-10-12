@@ -23,7 +23,7 @@ function fakeLaunch() {
     // What the real client does: refused while not launched; the core state change; events from the
     // state change unless it is silent.
     isLaunched: () => true,
-    // The core client's own methods: start is refused while not launched (end is allowed, R2L-7).
+    // The core client's own methods: start is refused while not launched (end is allowed).
     startBlackout: () => {
       if (client.isLaunched()) blackout.start();
     },
@@ -94,7 +94,7 @@ function fakeBridge() {
   };
 }
 
-// The one-instance-per-page slot (R3V-6) lives on globalThis so a hot-reloaded module sees it; every test starts
+// The one-instance-per-page slot lives on globalThis so a hot-reloaded module sees it; every test starts
 // from an empty page.
 const RENDERER_SLOT = Symbol.for('bugsee.electron.renderer');
 afterEach(() => {
@@ -257,7 +257,7 @@ describe('resolveRendererBridge', () => {
   });
 });
 
-describe('launchRenderer — incidents forward instead of uploading (R2)', () => {
+describe('launchRenderer — incidents forward instead of uploading', () => {
   it('injects a forwarding triggerPipeline into the browser launch', async () => {
     let injected: { triggerPipeline?: { report: (r: unknown) => Promise<unknown> } } | undefined;
     const fakeLaunch = (async (_t: string, o: never) => {
@@ -408,7 +408,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
     expect(f.lifecycle).toEqual(['Started', 'Ended']);
   });
 
-  it('R2V-1: startBlackout() right after launchRenderer() (before the handshake) survives a bo:false reply', async () => {
+  it('startBlackout() right after launchRenderer() (before the handshake) survives a bo:false reply', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
@@ -422,7 +422,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
     expect(f.lifecycle).toEqual(['Started', 'Ended']);
   });
 
-  it("R2V-1: an app-local blackout is not ended by main's blackout-end, and main's is not ended by endBlackout()", async () => {
+  it("an app-local blackout is not ended by main's blackout-end, and main's is not ended by endBlackout()", async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
@@ -439,7 +439,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
     expect(f.lifecycle).toEqual(['Started', 'Ended']); // one visible span, not one per source
   });
 
-  it('R2V-1: an explicit startInBlackout:true survives the handshake (bo:false) and is ended only by endBlackout()', async () => {
+  it('an explicit startInBlackout:true survives the handshake (bo:false) and is ended only by endBlackout()', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     const client = await launchRenderer('tok', {
@@ -471,7 +471,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
     setLaunched(true);
     client.startBlackout();
     setLaunched(false);
-    client.endBlackout(); // R2L-7: allowed while stopped (quietly), see the dedicated tests below
+    client.endBlackout(); // allowed while stopped (quietly), see the dedicated tests below
     expect(f.blackout.isActive()).toBe(false);
   });
 
@@ -500,7 +500,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
   });
 });
 
-describe('launchRenderer - one instance per page (R3V-6)', () => {
+describe('launchRenderer - one instance per page', () => {
   it('a second call in the same page is a no-op returning the existing instance: one launch, one hello, one control handler', async () => {
     const f = fakeLaunch();
     const hellos: string[] = [];
@@ -553,7 +553,7 @@ describe('launchRenderer - one instance per page (R3V-6)', () => {
   });
 });
 
-describe('launchRenderer - a re-run honours the carried blackout and R2L-7 (R3V-6)', () => {
+describe('launchRenderer - a re-run honours the carried blackout', () => {
   const session = (blackout?: boolean) =>
     encodeControl({
       command: 'session',
@@ -597,7 +597,7 @@ describe('launchRenderer - a re-run honours the carried blackout and R2L-7 (R3V-
   });
 });
 
-describe('launchRenderer - stopped before the handshake (R2L-7)', () => {
+describe('launchRenderer - stopped before the handshake', () => {
   it('endBlackout() on a stopped client also drops the launch hold: a late main message cannot re-darken it', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
@@ -611,7 +611,7 @@ describe('launchRenderer - stopped before the handshake (R2L-7)', () => {
   });
 });
 
-describe('launchRenderer - invalid startInBlackout is dark (R3V-2)', () => {
+describe('launchRenderer - invalid startInBlackout is dark', () => {
   it.each([
     true,
     'true',
@@ -646,10 +646,10 @@ describe('launchRenderer - invalid startInBlackout is dark (R3V-2)', () => {
   });
 });
 
-// R4V-3: a renderer re-run (the old client was stopped by main, a new one launched) used to leave the OLD
+// A renderer re-run (the old client was stopped by main, a new one launched) used to leave the OLD
 // handler subscribed: every control message then ran twice (double onSessionId, BlackoutStarted twice) and a
 // stale `A.startBlackout()` was swallowed while the live client B stayed un-dark.
-describe("launchRenderer - a stopped client's handler is inert after a re-run (R4V-3)", () => {
+describe("launchRenderer - a stopped client's handler is inert after a re-run", () => {
   const session = (blackout?: boolean) =>
     encodeControl({
       command: 'session',

@@ -128,7 +128,7 @@ describe('createLifecycleEmitter', () => {
   });
 });
 
-describe('createLifecycleEmitter — re-entrancy (L2)', () => {
+describe('createLifecycleEmitter — re-entrancy', () => {
   it('an event emitted from inside a listener is delivered after that listener returns, in order', () => {
     const emitter = createLifecycleEmitter(() => {});
     const log: string[] = [];
@@ -179,7 +179,7 @@ describe('createLifecycleEmitter — re-entrancy (L2)', () => {
   });
 });
 
-describe('createLifecycleEmitter — shared slot (L1)', () => {
+describe('createLifecycleEmitter — shared slot', () => {
   it('reads and writes the listener through the supplied slot, so two emitters share one listener', () => {
     let held: ((t: string) => void) | null = null;
     const slot = {
@@ -200,7 +200,7 @@ describe('createLifecycleEmitter — shared slot (L1)', () => {
   });
 });
 
-describe('createLifecycleEmitter — delivery state lives with the shared slot (R2L-5)', () => {
+describe('createLifecycleEmitter — delivery state lives with the shared slot', () => {
   it('an event emitted by ANOTHER emitter from inside the listener is queued, not nested', () => {
     const g = {};
     const a = createLifecycleEmitter(() => {}, getCarrierLifecycleSlot(g));
@@ -228,7 +228,7 @@ describe('createLifecycleEmitter — delivery state lives with the shared slot (
   });
 });
 
-describe('createLifecycleEmitter — runaway listeners (R2L-15)', () => {
+describe('createLifecycleEmitter — runaway listeners', () => {
   it('stops delivering and reports when listeners keep causing each other forever', () => {
     const onError = vi.fn();
     const emitter = createLifecycleEmitter(onError);

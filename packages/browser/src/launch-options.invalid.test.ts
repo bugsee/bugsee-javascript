@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserProbe } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
-// R2P-4 / R2P-5. Every browser-owned boolean launch option, every kind of invalid value. Read by plain
+// Every browser-owned boolean launch option, every kind of invalid value. Read by plain
 // truthiness these used to be wrong in BOTH directions: `persistUserIdentifier: 'false'` persisted PII,
 // `captureInteractions: 0` kept capturing input. The rules, per option:
 //   captureInteractions, captureViewHierarchy (default ON, capture)  -> invalid = OFF (fail-closed) + onError
-//   startInBlackout (default OFF, but ON is the safe side)             -> invalid = ON (fail-on) + onError (R3V-2)
+//   startInBlackout (default OFF, but ON is the safe side)             -> invalid = ON (fail-on) + onError
 //   persistUserIdentifier, report* UI flags (default OFF)              -> only boolean true turns on
 
 const probe: BrowserProbe = {
@@ -75,7 +75,7 @@ const defaultOff: Array<[string, string]> = [
   ['reportPrioritySelectorEnabled', BugseeOption.ReportingUiPrioritySelectorEnabled],
 ];
 
-describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () => {
+describe('browser boolean launch options: invalid values', () => {
   it.each(failClosed)('%s (default ON): invalid => OFF + onError', async (friendly, key) => {
     const { client: base } = await start({});
     expect(base.getLaunchOptions()[key]).toBe(true);
@@ -113,7 +113,7 @@ describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () =>
     'true',
     1,
     {},
-  ])('startInBlackout=%j (invalid) starts the page DARK and reports (R3V-2, fail-on)', async (bad) => {
+  ])('startInBlackout=%j (invalid) starts the page DARK and reports (fail-on)', async (bad) => {
     const { client, onError } = await start({ startInBlackout: bad });
     expect(client.isBlackout()).toBe(true);
     expect(client.getLaunchOptions()[BugseeOption.CaptureStartInBlackout]).toBe(true);
@@ -157,7 +157,7 @@ describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () =>
     expect(absent.isBlackout()).toBe(false);
   });
 
-  // R3V-3/R4V-2: `replay` is ON by default and collects data. A scalar that is not a boolean must not THROW
+  // `replay` is ON by default and collects data. A scalar that is not a boolean must not THROW
   // (`null` did); it resolves to OFF (fail closed) and is reported.
   it.each([
     null,

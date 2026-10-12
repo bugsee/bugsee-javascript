@@ -1,6 +1,6 @@
-// Seeded corpora for the URL sanitizer's acceptance numbers (R5V-1). Not a test file and not shipped (excluded from
+// Seeded corpora for the URL sanitizer's acceptance numbers. Not a test file and not shipped (excluded from
 // coverage and from the package entry): the unit test imports it, and the 200k scratch measurement imports it too, so
-// the figures reported in docs/review/mobile-alignment-round-5.md are produced by exactly the code the test runs.
+// the figures reported for it are produced by exactly the code the test runs.
 
 /** mulberry32: a deterministic PRNG so every figure is reproducible, not luck. */
 export function mulberry32(seed: number): () => number {

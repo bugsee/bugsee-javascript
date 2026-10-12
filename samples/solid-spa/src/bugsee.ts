@@ -2,7 +2,7 @@
 // every page/component reads the same instance via `getClient()`.
 //
 // @bugsee/solid re-exports the FULL `@bugsee/bugsee` browser umbrella (single-install design), so
-// `launch` here already wires @bugsee/performance (S9) + @bugsee/opentelemetry (S13) on by default —
+// `launch` here already wires @bugsee/performance + @bugsee/opentelemetry on by default —
 // not just @bugsee/browser's bare kernel.
 import { launch, type Bugsee, type BugseeLaunchOptionsWithPerformance } from '@bugsee/solid';
 
@@ -30,13 +30,12 @@ function reportInternalError(error: unknown): void {
 let client: Bugsee | undefined;
 const carrier: object = globalThis;
 
-/** The full option set the app launches with (S1: "launch with ... every option set"). Exported so the
+/** The full option set the app launches with ("launch with ... every option set"). Exported so the
  *  Settings + Scenario pages can display/relaunch against it. */
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The default SDK_VERSION baked into @bugsee/browser (packages/browser/src/launch.ts:79) is the
-  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish — see
-  // samples/FINDINGS.md F-X2). Staging's session endpoint actively REJECTS that version
+  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish). Staging's session endpoint actively REJECTS that version
   // (UnsupportedSdkError) rather than merely recording it. Override it here so this sample's data
   // can land at all; a real published SDK would carry a real version.
   sdkVersion: '1.0.0',
@@ -48,7 +47,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   captureNetwork: true,
   captureNetworkBodies: true,
   // Deliberately small so /scenarios' "large body" control exercises the bounded-read truncation path
-  // (S7) without needing a multi-megabyte fixture.
+  // without needing a multi-megabyte fixture.
   maxNetworkBodySize: 2048,
   captureNetworkBodyWithoutType: true,
   captureSystemTraces: true,
@@ -65,8 +64,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   performanceMonitoring: true,
   performanceSampleRate: 1,
   // Short enough that `pnpm verify`'s wire-level checks (intercepting POST /v2/performance/transactions)
-  // don't need to wait out the 30s default — see FINDINGS.md finding A and scripts/verify.mjs's
-  // `waitForPerfTransactions`.
+  // don't need to wait out the 30s default. See scripts/verify.mjs's `waitForPerfTransactions`.
   performanceFlushIntervalMs: 1000,
   traceNavigations: true,
   traceInteractions: true,
@@ -77,13 +75,13 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
 };
 
 /**
- * S1: the minimum viable launch. Used by the Scenario panel to prove the SDK works with every option
+ * The minimum viable launch. Used by the Scenario panel to prove the SDK works with every option
  * left at its default.
  *
  * NOT literally `launch(token, {})` at the wire, and the docs must not claim it is: `relaunch()` below
  * always merges `endpoint`, `appId`, `appVersion`, `appBuild`, `onError` (+ `carrier`) UNDER whatever is
  * passed here, so those five are never at their default for this control. `endpoint` is the load-bearing
- * one — a launch without it posts to PRODUCTION, which `docs/samples/PLAN.md` §3 forbids for a sample —
+ * one — a launch without it posts to PRODUCTION, which a sample must never do —
  * and the other four exist so a report from this client is still attributable and its internal errors
  * still reach the panel. Everything else (including `sdkVersion`, `captureNetwork`, `persist`,
  * `performanceMonitoring`, the replay options, …) really is at its default here.
@@ -117,7 +115,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * S1: call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */
@@ -133,8 +131,7 @@ export function attemptDuplicateLaunch(): { sameInstance: boolean } {
  * observed by actually rebuilding the client. Stops the current client first (draining its pending
  * uploads) so the two clients never race on the same IndexedDB/network resources.
  *
- * Deliberately does NOT relaunch onto a fresh/private carrier object (`carrier = {}`) — see
- * samples/FINDINGS.md F-X21 (found by react-spa): `stop()` clears the carrier's client slot
+ * Deliberately does NOT relaunch onto a fresh/private carrier object (`carrier = {}`): `stop()` clears the carrier's client slot
  * SYNCHRONOUSLY (packages/browser/src/launch.ts) before it awaits the drain, so the "already
  * launched" guard is already satisfied and no second carrier is needed. Relaunching onto a PRIVATE
  * carrier would silently disable every adapter API that resolves the client from `globalThis` by

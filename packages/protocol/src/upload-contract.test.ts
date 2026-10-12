@@ -7,9 +7,8 @@
 // authoritative. These tests pin every enum in the schema to its TS union, so adding a FileType or a
 // RuntimeType without updating the schema fails here rather than in production.
 //
-// Introduced with Wave V0 (docs/review/REMEDIATION-PLAN.md): the adversarial review found the e2e mock
-// collector "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1
-// #7), which is how wire defects such as the never-called logLevelToWire survived e2e.
+// Introduced with the e2e harness rework: the adversarial review found the e2e mock
+// collector "validates nothing — it is a byte sink, not a contract", which is how wire defects such as the never-called logLevelToWire survived e2e.
 import { describe, expect, it } from 'vitest';
 import schema from '../upload-contract.schema.json' with { type: 'json' };
 import { DEFAULT_FILENAMES } from './constants';
@@ -53,8 +52,7 @@ describe('upload-contract.schema.json ↔ TypeScript wire contract', () => {
   });
 
   it('requires sdk.type to be exactly "javascript" — the backend JS discriminator', () => {
-    // worker/jobs/bundle.py routes JS crashes on this value; a loosened schema would stop protecting it
-    // (docs/review/protocol.md finding 3).
+    // worker/jobs/bundle.py routes JS crashes on this value; a loosened schema would stop protecting it.
     expect(schema.definitions.environmentEnvelope.properties.sdk.properties.type.const).toBe(
       'javascript',
     );
@@ -92,7 +90,7 @@ describe('upload-contract.schema.json ↔ TypeScript wire contract', () => {
   });
 
   it('lists the RUNTIME types the SDK actually reports', () => {
-    // Pinned explicitly: these are the values docs/design/sdk-design.md §8.6 defines, and a new runtime
+    // Pinned explicitly: these are the values the wire contract defines, and a new runtime
     // must be added here deliberately.
     expect([...enumAt(['definitions', 'runtimeType'])].sort()).toEqual(
       [

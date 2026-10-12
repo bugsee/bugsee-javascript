@@ -171,10 +171,9 @@ describe('createNetworkCaptureProvider', () => {
     expect(event.custom?.headers).toEqual({ authorization: 'secret-token', accept: 'json' });
   });
 
-  // Wave 1.1. Every network source writes `event.url` verbatim and the provider is the ONE place that
+  // Every network source writes `event.url` verbatim and the provider is the ONE place that
   // redacts — so a secret in the URL reached disk on every transport, and on node:http too (it folds into
-  // this same provider via `additionalSources`). Reproduced end-to-end in docs/review/capture.md SEV1 #4
-  // and docs/review/node-B-http-server.md SEV1 #3.
+  // this same provider via `additionalSources`). Reproduced end-to-end.
   it('redacts a sensitive query value in the captured URL (non-mutating)', async () => {
     const store = mkStore();
     const source = mkSource();
@@ -614,7 +613,7 @@ describe('createNetworkCaptureProvider', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// FINDING 2 (solid-spa F-1) — investigated, NOT changed. A user network filter's veto is applied per
+// Investigated, NOT changed. A user network filter's veto is applied per
 // NetworkStage-ENTRY, not per logical request: vetoing the `complete` stage does not retroactively or
 // prospectively veto the `before` stage of the SAME request (shared `id`), so `before`'s URL/request
 // body still ships. Verified this is Android-canonical (CLAUDE.md's binding parity target), not a JS-only
@@ -684,7 +683,7 @@ describe('network filter veto granularity — per stage-entry, not per request (
 });
 
 // ---------------------------------------------------------------------------------------------------
-// FINDING 3 (solid-spa finding C) — documentation only, behaviour unchanged (deliberate Android XOR
+// Documentation only, behaviour unchanged (deliberate Android XOR
 // rule; see the doc comments on `onStart` and `createNetworkCaptureProvider` above). This test guards
 // that the (now-documented) behaviour itself doesn't drift: installing ANY network filter — even a pure
 // pass-through identity filter that redacts nothing — disables the default PII sanitizer, silently, for
@@ -842,7 +841,7 @@ describe('network URL absolutization', () => {
     expect((await emitAndDrain(netEvent({ url: '/api/x' }))).url).toBe('/api/x');
   });
 
-  it('survives a non-string url without dropping the entry', async () => {
+  it('survives an undefined url without dropping the entry', async () => {
     const captured = await withPageRealm('https://app.example.com/', () =>
       emitAndDrain(netEvent({ url: undefined as unknown as string })),
     );

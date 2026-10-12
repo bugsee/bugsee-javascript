@@ -24,7 +24,7 @@ export class NewExpenseComponent {
   readonly submitError = signal<string | null>(null);
 
   // A reactive form with field-level validators (required/minLength/min/max/pattern) AND a group-level
-  // custom validator (`maxAmountWithoutNoteValidator`) — §5.6 "a reactive form with validation".
+  // custom validator (`maxAmountWithoutNoteValidator`).
   readonly form = this.#fb.nonNullable.group(
     {
       title: ['', [Validators.required, Validators.minLength(3)]],

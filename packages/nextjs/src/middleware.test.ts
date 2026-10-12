@@ -133,7 +133,7 @@ describe('withBugseeMiddleware', () => {
     expect(event.waitUntil).toHaveBeenCalled(); // the context still ran (correlated capture)
   });
 
-  it('accepts a middleware pre-typed with a WIDER fetch event (type-level guard, R1 fix)', () => {
+  it('accepts a middleware pre-typed with a WIDER fetch event (type-level guard)', () => {
     // Compiles only because `Ev` is generic — mirrors the real Next NextFetchEvent (members beyond waitUntil).
     interface WiderFetchEvent {
       waitUntil(promise: Promise<unknown>): void;

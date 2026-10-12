@@ -1,6 +1,6 @@
 // A small local API for the Kanban app — plain node:http, no framework (the framework under test is
 // on the client side: @bugsee/react / @bugsee/vite-plugin / @bugsee/babel-plugin-component-annotate).
-// Also hosts a handful of `/api/scenario/*` routes purpose-built to exercise S7 (network capture) edge
+// Also hosts a handful of `/api/scenario/*` routes purpose-built to exercise network-capture edge
 // cases: a 4xx, a 5xx, a response with no Content-Type, a body over maxNetworkBodySize, and an SSE feed.
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -88,14 +88,14 @@ const server = createServer(async (req, res) => {
   const parts = url.pathname.split('/').filter(Boolean); // ['api', ...]
 
   try {
-    // ---- Scenario routes (S7 network-capture edge cases) --------------------------------------
+    // ---- Scenario routes (network-capture edge cases) --------------------------------------
     if (parts[0] === 'api' && parts[1] === 'scenario') {
       const which = parts[2];
       if (which === 'get' && req.method === 'GET') {
         return json(res, 200, { ok: true, now: Date.now() });
       }
       if (which === 'echo-headers' && req.method === 'GET') {
-        // S10: lets the browser confirm a traceparent/tracestate header it cannot read off its own
+        // Lets the browser confirm a traceparent/tracestate header it cannot read off its own
         // outgoing fetch actually left the process — the server echoes back what it received.
         return json(res, 200, req.headers);
       }

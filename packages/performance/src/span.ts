@@ -3,10 +3,10 @@ import type { Clock } from '@bugsee/core';
 // The APM Span/Transaction model (Android-canonical: contracts/performance/{Span,Transaction,SpanStatus}).
 // Runtime-portable (no DOM/process); timing comes from the injected core Clock — wallNow() anchors the
 // wire `*TimestampMs`, monotonicNow() gives the precise `durationNanos` (sub-ms preserved). Serializes to
-// the design §8.8 transaction wire owned by this extension. Spans form a flat per-trace list linked by
+// the transaction wire owned by this extension. Spans form a flat per-trace list linked by
 // parentSpanId; the transaction is the root span (no parent) plus name/sampled.
 
-/** Span outcome (Android SpanStatus parity; the §8.8 wire `status` values). */
+/** Span outcome (Android SpanStatus parity; the wire `status` values). */
 export type SpanStatus = 'OK' | 'ERROR' | 'TIMEOUT' | 'CANCELLED' | 'DEADLINE_EXCEEDED' | 'UNKNOWN';
 
 /** A unit of work in a trace (Android contracts/performance/Span). Fluent setters return the span. */
@@ -48,7 +48,7 @@ export interface RecordChildSpanOptions {
   attributes?: Record<string, unknown>;
 }
 
-/** A child span on the §8.8 wire. */
+/** A child span on the wire. */
 export interface SpanWire {
   spanId: string;
   parentSpanId?: string;
@@ -61,7 +61,7 @@ export interface SpanWire {
   attributes?: Record<string, unknown>;
 }
 
-/** The §8.8 performance transaction wire. */
+/** The performance transaction wire. */
 export interface TransactionWire {
   traceId: string;
   /**
@@ -70,8 +70,7 @@ export interface TransactionWire {
    * It was omitted here, so the OTLP converter fabricated one as `traceId.slice(0, 16)`. That broke a
    * distributed trace at every service boundary: the downstream root's `parentSpanId` is the id the
    * upstream PROPAGATED (the real one), while the upstream emitted its root under the derived one — so the
-   * downstream pointed at a span nobody emitted. It also gave every service in a trace the same root id
-   * (Wave 5.3).
+   * downstream pointed at a span nobody emitted. It also gave every service in a trace the same root id.
    */
   spanId: string;
   name: string;
@@ -79,7 +78,7 @@ export interface TransactionWire {
   /** The upstream parent span id when this transaction CONTINUES an inbound trace (else absent — a root). */
   parentSpanId?: string;
   status: SpanStatus;
-  /** The head-sampling decision (Bugsee OTLP Profile v1 §6/§8: surfaced on the OTLP root as `bugsee.sampled`). */
+  /** The head-sampling decision (surfaced on the OTLP root as `bugsee.sampled`). */
   sampled: boolean;
   startTimestampMs: number;
   endTimestampMs?: number;
@@ -97,8 +96,8 @@ export interface TransactionOptions {
   description?: string;
   /**
    * The parent span id for the root span — set ONLY when continuing an inbound distributed trace (the
-   * upstream caller's span). Makes this transaction's root a true child of the upstream span (Bugsee OTLP
-   * Profile v1 §12). Omitted → a fresh root with no parent (the default standalone transaction).
+   * upstream caller's span). Makes this transaction's root a true child of the upstream span.
+   * Omitted → a fresh root with no parent (the default standalone transaction).
    */
   parentSpanId?: string;
   /** Whether the trace is sampled (kept). Default true. */
@@ -147,7 +146,7 @@ export const defaultSpanId = (): string => toHex(randomBytes(8));
 
 // --- the model -----------------------------------------------------------------------------------
 
-/** Anything that can serialize itself to the §8.8 child-span wire (a live SpanImpl or a RecordedSpan). */
+/** Anything that can serialize itself to the child-span wire (a live SpanImpl or a RecordedSpan). */
 interface SerializableSpan {
   toSpanWire(): SpanWire;
 }
@@ -287,7 +286,7 @@ class SpanImpl implements Span {
     this.#finished = true;
   }
 
-  /** Serialize this span to the §8.8 child-span wire (omitting absent optionals). */
+  /** Serialize this span to the child-span wire (omitting absent optionals). */
   toSpanWire(): SpanWire {
     const wire: SpanWire = {
       spanId: this.#spanId,
@@ -341,7 +340,7 @@ class TransactionImpl extends SpanImpl implements Transaction {
     if (!alreadyFinished) this.#onFinish?.(this); // fire once, after the span is closed
   }
 
-  /** Serialize the whole trace to the §8.8 transaction wire (root fields + non-root spans). */
+  /** Serialize the whole trace to the transaction wire (root fields + non-root spans). */
   toTransactionWire(): TransactionWire {
     const root = this.toSpanWire(); // root span's own fields (spanId/operation/status/timestamps/...)
     const wire: TransactionWire = {
@@ -384,7 +383,7 @@ export function createTransaction(
   return transaction;
 }
 
-/** Serialize a transaction (and its spans) to the §8.8 wire shape. */
+/** Serialize a transaction (and its spans) to the wire shape. */
 export function serializeTransaction(transaction: Transaction): TransactionWire {
   return (transaction as TransactionImpl).toTransactionWire();
 }

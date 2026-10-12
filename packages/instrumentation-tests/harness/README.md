@@ -2,7 +2,7 @@
 
 `invariants.mts` sweeps the durable-upload / recovery subsystem against a fake collector and asserts
 invariants about what may be delivered, kept and deleted. It is the safety net that caught the three
-blocking defects fixed in round 6 (R5-1 live-path marker loss, R5-2 kill-state on 401/403, R5-3
+blocking defects found in the last review (live-path marker loss, kill-state on 401/403, and a
 collector-code namespace collision).
 
 Run it from the repo root: `pnpm exec tsx packages/instrumentation-tests/harness/invariants.mts`
@@ -30,7 +30,7 @@ Two earlier versions of this harness were wrong in exactly that way and certifie
 - v1 keyed an invariant on `reportId ?? 'anon:' + summary`, so a legacy blob and its own marker's rebuild
   counted as two different incidents. It swept the violation and discarded it.
 - v2 computed `settledOk = ok || permanent` — i.e. it assumed the policy under test. Re-injecting the
-  SEV1 classifier bug produced **0 violations across 231 cases**.
+  classifier bug produced **0 violations across 231 cases**.
 
 The current version does not classify a status at all. The fake collector **declares its intent** per
 answer (`Answer`/`ANSWERS`) and then **behaves that way** — an answer it called `transient` really clears

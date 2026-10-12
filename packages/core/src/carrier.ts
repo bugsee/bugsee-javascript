@@ -20,7 +20,7 @@ import type { NotifyItem } from './transport';
  */
 export type ServiceManifest = (internal: ServiceRegistrar & ServiceResolver) => void;
 
-// Process-global Carrier (design §4.2 §214): a version-keyed slot on `globalThis.__BUGSEE__` holding
+// Process-global Carrier: a version-keyed slot on `globalThis.__BUGSEE__` holding
 // the SDK's process-global singletons — currently the interceptor registry. Routing interceptor
 // creation through it means that even if a bundler emits multiple copies of @bugsee/capture /
 // @bugsee/core (mixed dep ranges, framework adapters), all copies WITHIN ONE SDK VERSION converge on
@@ -34,7 +34,7 @@ export const BUGSEE_SDK_VERSION = '0.1.0-beta.2';
 
 const CARRIER_PROPERTY = '__BUGSEE__';
 
-/** What a stale client handle needs of the client that owns the process blackout (R3L-4). */
+/** What a stale client handle needs of the client that owns the process blackout. */
 export interface CarrierBlackoutOwner {
   /** Start the blackout on the owner (refused by the owner itself when it is not launched). */
   start(): void;
@@ -48,13 +48,13 @@ export interface BugseeCarrier {
   readonly version: string;
   /** Interceptor singletons keyed by interceptor `name` — one global patch per name. */
   readonly interceptors: Map<string, Interceptor<unknown>>;
-  /** The process-global launched client (Bugsee is a per-process singleton, §1497/§473); else undefined. */
+  /** The process-global launched client (Bugsee is a per-process singleton); else undefined. */
   client?: unknown;
   /** The process lifecycle state; absent means {@link BugseeStatus.Stopped}. */
   status?: BugseeStatus;
   /**
    * On the DEFAULT (`globalThis`) slot only: the custom carrier host the last launch used, so a plain
-   * `relaunch()` (which is not told the host) finds the client and the remembered launch there (R2L-12).
+   * `relaunch()` (which is not told the host) finds the client and the remembered launch there.
    */
   lastHost?: object;
   /** What the last launch that built a client leaves for `relaunch()`: the token + only the integration seams (never secrets or the full options). */
@@ -65,7 +65,7 @@ export interface BugseeCarrier {
    * survives `relaunch()` (a new client has a new emitter, but reads the same slot).
    */
   lifecycleListener?: LifecycleEventsListener | null;
-  /** The delivery queue of that listener (R2L-5): shared by every emitter of the process, like the slot. */
+  /** The delivery queue of that listener: shared by every emitter of the process, like the slot. */
   lifecycleDelivery?: LifecycleDeliveryState;
   /**
    * Whether a blackout is in force. Process-level, like mobile: a relaunch builds a new client, and
@@ -73,36 +73,36 @@ export interface BugseeCarrier {
    */
   blackout?: boolean;
   /**
-   * The client that currently owns the process-wide blackout (R3L-4): the newest one created or launched on
+   * The client that currently owns the process-wide blackout: the newest one created or launched on
    * this carrier. Only it may change {@link BugseeCarrier.blackout}; a stale handle's start is forwarded to it.
    */
   blackoutOwner?: CarrierBlackoutOwner;
   /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
   relaunching?: boolean;
   /**
-   * Bumped each time a `relaunch()` attempt FAILS (R4L-2). A client that handed its notifications over records the
+   * Bumped each time a `relaunch()` attempt FAILS. A client that handed its notifications over records the
    * value when its stop() was issued; a hand-back that arrives after the value moved belongs to an attempt nobody
    * will complete, so it is dropped instead of parked on `globalThis` (user-identifying titles/e-mail).
    */
   relaunchEpoch?: number;
-  /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds (R2L-6). */
+  /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds. */
   notifyBacklog?: NotifyItem[];
   /**
-   * The launched client that takes over notifications another client hands back (R3L-5): a late hand-back
+   * The launched client that takes over notifications another client hands back: a late hand-back
    * after the new client already adopted the backlog goes straight to it instead of parking on the carrier.
    * `owner` is the registering client's own token, so a client never hands items to itself.
    */
   notifyAdopter?: { owner: object; adopt(items: NotifyItem[]): void };
   /**
    * The launch function an EDGE entry (`@bugsee/{sveltekit,astro,nuxt}/edge`) was installed with, so its
-   * `relaunch()` re-runs the same seam by default (R4H-4). Typed `unknown` here (core does not know the
+   * `relaunch()` re-runs the same seam by default. Typed `unknown` here (core does not know the
    * edge launch signature); owned by `@bugsee/vercel-edge`'s `rememberEdgeLaunch`.
    */
   edgeLaunch?: unknown;
   /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
   pendingLaunch?: Promise<unknown>;
   /**
-   * Node: how many LIVE launches write into each on-disk subtree root (R4L-1/R5L-2), keyed by root path. On the
+   * Node: how many LIVE launches write into each on-disk subtree root, keyed by root path. On the
    * carrier (not module state) so the ESM and CJS copies of `@bugsee/node` count the same launches.
    */
   liveInstanceRoots?: Map<string, number>;
@@ -309,7 +309,7 @@ export function setCarrierLastLaunch(
     }
   }
   getCarrier(globalObj).lastLaunch = { appToken, options: retained };
-  // Remember the custom host on the default slot, so a plain relaunch() can find it (R2L-12).
+  // Remember the custom host on the default slot, so a plain relaunch() can find it.
   const host = retained.carrier;
   getCarrier().lastHost =
     typeof host === 'object' && host !== null && host !== globalThis ? host : undefined;
@@ -331,7 +331,7 @@ export function getFilters(globalObj: object = globalThis): FilterStore | undefi
   return getInternal(globalObj)?.getService(FiltersToken);
 }
 
-// Lifecycle state of SEALED carriers (R5L-1). Module-private on purpose: a property on the carrier is page-
+// Lifecycle state of SEALED carriers. Module-private on purpose: a property on the carrier is page-
 // reachable in a WebView (the carrier is `window.__BUGSEE__`), and a listener there both observes the session
 // and receives events page script could forge. A WebView is one self-contained bundle, so one module copy
 // holds this; node/browser never seal and keep the cross-copy carrier slot.
@@ -445,7 +445,7 @@ export function getCarrierRelaunching(globalObj: object = globalThis): boolean {
   return getCarrier(globalObj).relaunching === true;
 }
 
-/** The failed-relaunch counter a notify hand-over is tied to (R4L-2). */
+/** The failed-relaunch counter a notify hand-over is tied to. */
 export function getCarrierRelaunchEpoch(globalObj: object = globalThis): number {
   return getCarrier(globalObj).relaunchEpoch ?? 0;
 }

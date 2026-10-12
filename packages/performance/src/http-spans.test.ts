@@ -66,10 +66,10 @@ describe('collectHttpSpans', () => {
     ]);
   });
 
-  it('redacts URL userinfo credentials from the span description (Wave 1.1)', () => {
+  it('redacts URL userinfo credentials from the span description', () => {
     // Stripping `?…` removes query secrets but leaves `user:pass@` completely intact, and the span
     // description is uploaded like any other attribute. node:http supports userinfo and it is routine for
-    // private registries and service-to-service calls (docs/review/node-B-http-server.md SEV1 #3).
+    // private registries and service-to-service calls.
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -81,7 +81,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.description).toBe('GET http://alice:%3Credacted%3E@reg/pkg');
   });
 
-  it('F3: stamps the backend http.server span id read from the response `traceresponse` header', () => {
+  it('stamps the backend http.server span id read from the response `traceresponse` header', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -100,7 +100,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('F3: case-insensitive header NAME + value (uppercase-hex normalized); ignores unrelated headers', () => {
+  it('case-insensitive header NAME + value (uppercase-hex normalized); ignores unrelated headers', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -121,7 +121,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331'); // lowercased
   });
 
-  it('F3: falls back to `Server-Timing` (traceparent;desc=...) when there is no traceresponse', () => {
+  it('falls back to `Server-Timing` (traceparent;desc=...) when there is no traceresponse', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -142,7 +142,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('F3: reads `Server-Timing` when traceparent is the SOLE entry (the real X4 backend format)', () => {
+  it('reads `Server-Timing` when traceparent is the SOLE entry (the real backend format)', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -165,7 +165,7 @@ describe('collectHttpSpans', () => {
     expect(calls[0]?.opts.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
-  it('F3: no stamp for invalid / ff-version / zero trace / zero span / no return header', () => {
+  it('no stamp for invalid / ff-version / zero trace / zero span / no return header', () => {
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -293,7 +293,7 @@ describe('collectHttpSpans', () => {
 // WAVE 3b.4 — an outgoing call belongs to the request that MADE it.
 //
 // The parent transaction was resolved at COMPLETION time, from a module-scoped single slot that always
-// holds the most-recently-started transaction. On the browser that slot is the design (D12: "the single
+// holds the most-recently-started transaction. On the browser that slot is the design ("the single
 // active slot follows the MOST RECENT"). On Node it is not: `perf.startTransaction` runs once per INCOMING
 // request and a server serves them concurrently, so the slot is "whichever request arrived last" and every
 // outgoing call was parented to it regardless of who made it.
@@ -307,7 +307,7 @@ describe('collectHttpSpans', () => {
 // The repo already knows this hazard and guards it one line away: `bugsee/src/wire.ts:255-259` gates the
 // trace-propagation decorator on `platform.pageload` because the same single slot "would leak the ambient
 // transaction's trace across concurrent server requests". The gate was simply missing here.
-describe('concurrent requests (Wave 3b.4)', () => {
+describe('concurrent requests', () => {
   it('parents each http.client span to the transaction that was active when the call STARTED', () => {
     const { source, emit } = fakeNetworkSource();
     const a = fakeActive();

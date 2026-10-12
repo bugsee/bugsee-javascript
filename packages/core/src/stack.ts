@@ -1,7 +1,7 @@
-// V8 stack-trace parsing (design §14.3 step 5: frame-path scrubbing). Pure string work, so it lives
+// V8 stack-trace parsing (frame-path scrubbing). Pure string work, so it lives
 // in core and is shared by every V8 runtime (node/bun/deno + chromium browsers); the browser tier
 // adds SpiderMonkey/JavaScriptCore parsers and a runtime-dispatching parseStack on top. The other
-// §14.3 steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
+// report-path steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
 // config-driven and belong to the report path, not this pure parser.
 
 /** Source lines around a frame: the line itself, plus a bounded window either side. */
@@ -38,7 +38,7 @@ export interface StackFrame {
   context?: FrameContext;
 }
 
-// §14.3 step 5: strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
+// Strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
 // customer's filesystem out of the report.
 //
 // A Node crash frame used to carry the FULL absolute path — the OS username, the home-directory layout,
@@ -208,7 +208,7 @@ export function callSiteFrames(
       .captureStackTrace;
     if (typeof capture === 'function') {
       // Into a plain holder, never `error`: JavaScriptCore does not re-capture an Error that already has
-      // a stack, so frame 0 stayed an SDK frame there (R3P-1). A fresh object has nothing to keep.
+      // a stack, so frame 0 stayed an SDK frame there. A fresh object has nothing to keep.
       const holder: { stack?: string } = {};
       capture(holder, boundary);
       return parseStack(holder.stack ?? '');

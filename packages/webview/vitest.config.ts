@@ -1,9 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // The WebView SDK is tested via injected seams (a fake host bridge / global / clock) — the injection-first
 // discipline of the browser tier; a real WebView round-trip against a mock native receiver is the e2e
-// conformance harness (slice 7), not a unit here.
+// conformance harness, not a unit here.
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

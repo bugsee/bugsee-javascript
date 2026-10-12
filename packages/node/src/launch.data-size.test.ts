@@ -69,7 +69,7 @@ const launchTracked = (over?: Partial<BugseeLaunchOptions>) => {
 
 describe('launch — maxDataSize byte-bound wiring', () => {
   it('builds the in-memory store with a 50 MB byte cap and a 60 s window by default', () => {
-    launchTracked({ capturedDataStore: 'memory' }); // disk is the default now (D3); pin the in-memory path
+    launchTracked({ capturedDataStore: 'memory' }); // disk is the default now; pin the in-memory path
     expect(memSpy).toHaveBeenCalledTimes(1);
     expect(memSpy.mock.calls[0]?.[0]).toMatchObject({
       maxDataSizeBytes: 50 * MB,

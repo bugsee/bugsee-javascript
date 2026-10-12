@@ -17,7 +17,7 @@ function writeStored(ids: string[]): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
 }
 
-// Favourites persisted in localStorage (per the app concept in docs/samples/PLAN.md §5.3) — genuinely
+// Favourites persisted in localStorage — genuinely
 // used by the app (the heart toggle on every recipe card and the Favourites page), not a scenario prop.
 export const useFavouritesStore = defineStore('favourites', {
   state: () => ({ ids: readStored() as string[] }),

@@ -5,10 +5,10 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeWorkerLaunchOptions, launch } from './launch';
 
-// Review round 3 (H1), webworker half: R3L-1. The instance lock and IndexedDB handles are released when the ONE
+// The webworker half: the instance lock and IndexedDB handles are released when the ONE
 // shared real stop drain settles true, from whichever stop() observes it (exactly once), even after a stop(timeout)
 // gave up.
-// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work (R4L-4).
+// The coexistence handle is real except that, on demand, its release throws AFTER doing its work.
 let releaseThrows = false;
 vi.mock('@bugsee/browser-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/browser-utils')>();
@@ -96,7 +96,7 @@ const track = (options: BugseeWorkerLaunchOptions): Bugsee => {
   return client;
 };
 
-describe('R3L-1 — the lock is released by whichever stop() observes the shared drain settle', () => {
+describe('the lock is released by whichever stop() observes the shared drain settle', () => {
   const setup = (over: Partial<BugseeWorkerLaunchOptions> = {}) => {
     const locks = realLocks();
     return {
@@ -155,7 +155,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     await vi.waitFor(() => expect(locks.held.size).toBe(0));
   });
 
-  it('a killed client is released by stop(), and a second stop() is harmless', async () => {
+  it('a killed client is released by stop(), and a second stop is harmless', async () => {
     const { locks, options } = setup({ transport: killTransport() });
     const client = track(options);
     await client.logException(new Error('boom'));
@@ -180,7 +180,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
       const { locks, options } = setup();
       const client = track(options);
       expect(await client.stop()).toBe(false);
-      // A FALSE drain does no further I/O: microtask turns run every continuation the observer could have (R4H-8).
+      // A FALSE drain does no further I/O: microtask turns run every continuation the observer could have.
       for (let i = 0; i < 20; i += 1) await Promise.resolve();
       expect(locks.held.size).toBe(1);
     } finally {
@@ -202,7 +202,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     expect(flush).toHaveBeenCalledTimes(2);
   });
 
-  it('R4L-4: the observer flushes AGAIN after the drain, before it releases (a stop(timeout) had memoized an early flush)', async () => {
+  it('the observer flushes AGAIN after the drain, before it releases (a stop(timeout) had memoized an early flush)', async () => {
     const g = gated();
     const seen: number[] = [];
     let locksRef: ReturnType<typeof realLocks> | undefined;
@@ -224,7 +224,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     expect(seen).toEqual([1, 1]);
   });
 
-  it('R4L-4: a throwing onError plus a failing flush cannot become an unhandled rejection, and the lock is still released', async () => {
+  it('a throwing onError plus a failing flush cannot become an unhandled rejection, and the lock is still released', async () => {
     const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
       flush: async () => {
         throw new Error('flush failed');
@@ -240,7 +240,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     expect(onError).toHaveBeenCalled();
   });
 
-  it('R4L-4: a release() that throws in the observer is reported, never an unhandled rejection', async () => {
+  it('a release() that throws in the observer is reported, never an unhandled rejection', async () => {
     const g = gated();
     const errors: unknown[] = [];
     const { options } = setup({ transport: g.transport, onError: (e) => errors.push(e) });

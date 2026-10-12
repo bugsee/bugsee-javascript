@@ -25,7 +25,7 @@ describe('createEnvironment — user identifier', () => {
     [42],
     [{}],
     [true],
-  ])('a non-string (%s) is a CLEAR, never stored or shipped as an email (R2V-5)', (bad) => {
+  ])('a non-string (%s) is a CLEAR, never stored or shipped as an email', (bad) => {
     const env = createEnvironment();
     env.setUserIdentifier('a@b.c');
     env.setUserIdentifier(bad as unknown as string);

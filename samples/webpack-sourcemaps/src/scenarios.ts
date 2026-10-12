@@ -1,6 +1,6 @@
-// The Scenario panel — one control per scenario in docs/samples/PLAN.md §4, driven from plain DOM
+// The Scenario panel — one control per scenario, driven from plain DOM
 // (no framework here; the package under test is the webpack build/source-map pipeline). Every control
-// calls the REAL SDK API; see scenarios.md for what should appear in Bugsee for each.
+// calls the REAL SDK API.
 import type { SpanStatus } from '@bugsee/performance';
 import {
   attemptDuplicateLaunch,
@@ -105,8 +105,8 @@ function template(): string {
   return `
   <div class="scenario-panel">
     <h2>Scenario panel</h2>
-    <p class="desc">One control per scenario in docs/samples/PLAN.md §4. Every control calls the real
-    SDK API — see scenarios.md for what should appear in Bugsee for each.</p>
+    <p class="desc">One control per scenario. Every control calls the real
+    SDK API.</p>
 
     <section class="scenario-section">
       <h3>S1 — Launch &amp; lifecycle</h3>
@@ -199,13 +199,13 @@ function template(): string {
 
     <section class="scenario-section">
       <h3>S10 — Distributed tracing</h3>
-      <p class="na">N/A — see scenarios.md (no natural second-hop Bugsee-instrumented service in this
+      <p class="na">N/A (no natural second-hop Bugsee-instrumented service in this
       sample's scope; the local API is a plain fixture server).</p>
     </section>
 
     <section class="scenario-section">
       <h3>S11 — Session replay</h3>
-      <p class="na">N/A — see scenarios.md (out of scope: this sample's packages under test are the
+      <p class="na">N/A (out of scope: this sample's packages under test are the
       bundler plugins, not @bugsee/replay; browser-vanilla/react-spa already cover S11 exhaustively).</p>
     </section>
 
@@ -217,7 +217,7 @@ function template(): string {
     <section class="scenario-section">
       <h3>S13 — OpenTelemetry</h3>
       <p class="na">N/A — @bugsee/opentelemetry is wired on-by-default via the umbrella launch(), but
-      no local OTel collector was stood up for this pass (matches react-spa's own reasoning).</p>
+      no local OTel collector was stood up for this scenario (matches react-spa's own reasoning).</p>
     </section>
 
     <section class="scenario-section">
@@ -232,7 +232,7 @@ function wire(): void {
   const q = <T extends HTMLElement = HTMLElement>(testid: string): T | null =>
     container!.querySelector<T>(`[data-testid="${testid}"]`);
 
-  // ---- S1 -----------------------------------------------------------------------------------
+  // ---- Launch & lifecycle -----------------------------------------------------------------------
   q('s1-flush')?.addEventListener('click', async () => {
     const ok = await getClient()?.flush(5000);
     setStatus('s1-flush', `flush -> ${String(ok)}`, ok === true);
@@ -252,7 +252,7 @@ function wire(): void {
     rerenderIsLaunched();
   });
   q('s1-stop')?.addEventListener('click', async () => {
-    // S1 requires stop(timeout) exercised DIRECTLY, not only indirectly inside relaunch() (which calls
+    // The launch scenario requires stop(timeout) exercised DIRECTLY, not only indirectly inside relaunch() (which calls
     // it as an implementation detail of switching option sets).
     const stopped = await getClient()?.stop(2000);
     const launchedAfterStop = getClient()?.isLaunched();
@@ -267,7 +267,7 @@ function wire(): void {
     rerenderIsLaunched();
   });
 
-  // ---- S2 -----------------------------------------------------------------------------------
+  // ---- Identity & attributes --------------------------------------------------------------------
   q('s2-set-user')?.addEventListener('click', () => {
     getClient()?.setUserIdentifier('scenario-panel-user@bugsee.dev');
     setStatus('s2-set-user', `getUserIdentifier() -> ${getClient()?.getUserIdentifier()}`);
@@ -307,7 +307,7 @@ function wire(): void {
       ?.logException(new Error('S2: attribute set BEFORE this report (before_report_attr only)'), {
         labels: ['s2-before-after', 'before-only'],
       });
-    c?.setAttribute('after_report_attr', 'set-after'); // SYNCHRONOUS, before report 1 settles (R5-2)
+    c?.setAttribute('after_report_attr', 'set-after'); // SYNCHRONOUS, before report 1 settles
     void report1?.then(() => {
         void c
           ?.logException(
@@ -325,10 +325,9 @@ function wire(): void {
 
   // ---- S3 -----------------------------------------------------------------------------------
   // Every S3 status line below reports whether `getClient()` actually resolved to a live client
-  // (`clientPresent`) and folds it into the pass/fail `ok` flag. Previously these just set a static
-  // string and verify.mjs recorded `true` unconditionally — a real defect (`getClient()` returning
-  // undefined, e.g. after a bad relaunch) would have every `c?.foo()` call silently no-op and the
-  // table would still read green. See FINDINGS.md.
+  // (`clientPresent`) and folds it into the pass/fail `ok` flag. A static string recorded `true` unconditionally,
+  // which hid a real defect: `getClient()` returning undefined (e.g. after a bad relaunch) would have every
+  // `c?.foo()` call silently no-op while the table still read green.
   q('s3-log')?.addEventListener('click', () => {
     const c = getClient();
     const clientPresent = c !== undefined;
@@ -369,7 +368,7 @@ function wire(): void {
     );
   });
 
-  // ---- S4 -----------------------------------------------------------------------------------
+  // ---- Exceptions -------------------------------------------------------------------------------
   q('s4-error')?.addEventListener('click', () => {
     void getClient()
       ?.logException(new Error('S4: logException(new Error(...))'))
@@ -416,10 +415,10 @@ function wire(): void {
     void (async () => {
       // The rate limiter is a HARD CAP (packages/core/src/rate-limiter.ts): 100 admissions per rolling
       // 60s window, refused beyond that (client.ts:640 resolves refused calls with {ok:false}
-      // immediately — NOT a pacing/minimum-interval scheme, see FINDINGS.md's corrected note). To
+      // immediately — NOT a pacing/minimum-interval scheme). To
       // measure the cap EXACTLY (100 admitted / 100 refused out of 200), relaunch immediately before
       // firing so the window starts empty — a shared client would already have consumed some of its
-      // quota from earlier S2/S4/S8/S12 logException calls in this same sweep.
+      // quota from earlier identity, exception, filter and persistence logException calls in this same sweep.
       await relaunch(FULL_LAUNCH_OPTIONS);
       rerenderIsLaunched();
       const c = getClient();
@@ -453,7 +452,7 @@ function wire(): void {
     })();
   });
 
-  // ---- S5 -----------------------------------------------------------------------------------
+  // ---- Crashes ---------------------------------------------------------------------------------
   q('s5-uncaught')?.addEventListener('click', () => {
     setStatus('s5-uncaught', 'throwing outside any try/catch…');
     setTimeout(() => {
@@ -465,7 +464,7 @@ function wire(): void {
     void Promise.reject(new Error('S5: unhandled promise rejection'));
   });
 
-  // ---- S6 -----------------------------------------------------------------------------------
+  // ---- Console capture -------------------------------------------------------------------------
   q('s6-console')?.addEventListener('click', () => {
     console.log('S6: console.log', { a: 1 });
     console.info('S6: console.info');
@@ -487,7 +486,7 @@ function wire(): void {
     setStatus('s6-circular', `console.log(circular) threw: ${threw}`, !threw);
   });
 
-  // ---- S7 -----------------------------------------------------------------------------------
+  // ---- Network capture --------------------------------------------------------------------------
   q('s7-get')?.addEventListener('click', async () => {
     const res = await fetch('/api/scenario/text');
     const text = await res.text();
@@ -521,7 +520,7 @@ function wire(): void {
   q('s7-large-body')?.addEventListener('click', async () => {
     const res = await fetch('/api/scenario/large-body');
     const body = (await res.json()) as { big: string };
-    // Corrected wording (F-E): a body over `maxNetworkBodySize` is DROPPED from the captured copy
+    // A body over `maxNetworkBodySize` is DROPPED from the captured copy
     // (no_body_reason: 'size_too_large'), never truncated to 2048 bytes — see
     // packages/capture/src/fetch-interceptor.ts's readBoundedBody. The app's own read is unaffected
     // either way (that's the "interceptors must not alter app behaviour" contract, not this control).
@@ -556,7 +555,7 @@ function wire(): void {
     ws.onmessage = (ev) => setStatus('s7-ws', `WS message: ${String(ev.data).slice(0, 60)}`);
   });
 
-  // ---- S8 -----------------------------------------------------------------------------------
+  // ---- Filters & redaction ----------------------------------------------------------------------
   q('s8-install')?.addEventListener('click', () => {
     installFilters();
     setStatus('s8-network', 'filters installed');
@@ -596,13 +595,13 @@ function wire(): void {
       .then(() => setStatus('s8-report-veto', 'call returned (issue should NOT appear)'));
   });
 
-  // ---- S9 -----------------------------------------------------------------------------------
+  // ---- Performance ------------------------------------------------------------------------------
   q('s9-manual-transaction')?.addEventListener('click', () => {
     // Every SDK call below is optional-chained (ext('performance') CAN legitimately be undefined —
     // e.g. if the extension failed to register), so the status must be derived from what the SDK
     // actually returned, not from a hard-coded literal — a hard-coded `${statuses.length} child
     // spans` would keep reading "finished with 6 child spans" even if `perf`/`txn` were undefined and
-    // every call below had silently no-op'd (this was the actual bug this fix pass found).
+    // every call below had silently no-op'd.
     const perf = getClient()?.ext('performance');
     const txn = perf?.startTransaction({ name: 's9-manual-transaction', operation: 'scenario' });
     const statuses: SpanStatus[] = ['OK', 'ERROR', 'TIMEOUT', 'CANCELLED', 'DEADLINE_EXCEEDED', 'UNKNOWN'];
@@ -645,17 +644,17 @@ function wire(): void {
     setStatus('s9-sample-rate-1', `relaunched, isLaunched: ${String(getClient()?.isLaunched())}`, getClient()?.isLaunched() === true);
   });
 
-  // ---- S12 ----------------------------------------------------------------------------------
+  // ---- Persistence & recovery -------------------------------------------------------------------
   q('s12-crash-and-reload')?.addEventListener('click', () => {
-    // Real persist+recover (§4 S12: "data captured before a hard termination still arrives on the
-    // NEXT start"), not the previous version of this control, which AWAITED logException() (whose
+    // Real persist+recover (S12: "data captured before a hard termination still arrives on the
+    // NEXT start"), not a control that AWAITED logException() (whose
     // promise resolves only after the full assemble->enqueue->upload round trip completes,
     // packages/core/src/client.ts submitReport) before reloading — by then the report had already been
     // delivered in the ORIGINAL session, so recovery had nothing to do and the check only proved a
     // normal report round-trips. Firing without awaiting and reloading almost immediately gives the
     // durable marker (persist:true) a chance to be written before the upload completes, so it is
-    // `recover:true` on the NEXT launch that actually delivers this report — see FINDINGS.md for
-    // whether that lands as exactly one issue or (per a known cross-sample SDK finding) two.
+    // `recover:true` on the NEXT launch that actually delivers this report — whether that lands as exactly one issue or
+    // two depends on a known SDK duplicate.
     void getClient()?.logException(new Error('S12: persist+recover across a hard reload'));
     setStatus('s12-crash-and-reload', 'reloading in 100ms (NOT awaiting the upload)…');
     setTimeout(() => location.reload(), 100);

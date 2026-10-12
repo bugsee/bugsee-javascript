@@ -1,7 +1,7 @@
 import { serviceToken } from '@bugsee/service';
 import type { AttributeValue } from '@bugsee/types';
 
-// A transient, per-request execution context (design: docs/design/framework-adapters.md). It is born when
+// A transient, per-request execution context. It is born when
 // a request / unit of work begins, isolated across concurrent work by a runtime binding (the Node
 // AsyncLocalStorage store), and discarded when it ends. It carries (a) the identity to MERGE into any
 // report produced WITHIN it (user / attributes, over the global Environment) and (b) the correlation ids
@@ -19,8 +19,7 @@ export interface RequestContext {
    * TENANT, so a rolling window stays per-tenant: on Cloudflare it is the Durable Object id.
    *
    * Routing-only — it is passed out-of-band to the store and never written onto the wire payload. Absent on
-   * single-tenant runtimes, where partitioning is a no-op and behaviour is unchanged
-   * (docs/design/cloudflare-tenant-isolation.md §4.1).
+   * single-tenant runtimes, where partitioning is a no-op and behaviour is unchanged.
    */
   readonly owner?: string;
   /** End-user identity for reports produced in this context (wire `email`); overrides the global user. */
@@ -28,7 +27,7 @@ export interface RequestContext {
   /** Custom attributes merged into reports produced in this context (over the global attributes). */
   attributes?: Record<string, AttributeValue>;
   /** The active W3C trace when a transaction is in flight; stamped onto capture entries for correlation.
-   * `sampled` is the trace's sampling decision (Profile v1 §8) — used for the outbound `traceparent` flags. */
+   * `sampled` is the trace's sampling decision — used for the outbound `traceparent` flags. */
   trace?: { readonly traceId: string; readonly spanId: string; readonly sampled: boolean };
 }
 

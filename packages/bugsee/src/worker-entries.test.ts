@@ -51,7 +51,7 @@ describe.each([
   });
 });
 
-// getStatus / relaunch on the worker and edge entries (review L9): relaunch re-runs THIS entry's launch,
+// getStatus / relaunch on the worker and edge entries: relaunch re-runs THIS entry's launch,
 // stopping the old client first, and the status follows the process state.
 describe.each([
   [

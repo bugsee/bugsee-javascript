@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': the edge SDK is tested via injected seams (fake fetch/transport/clock), the same
 // injection-first discipline as the browser/node tiers — not a real edge isolate.
 export default defineConfig({

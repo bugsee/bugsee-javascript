@@ -11,13 +11,13 @@ import {
   OtlpStatusCode,
 } from './otlp-wire';
 
-// The Produce-direction mapping: Bugsee performance transactions (§8.8) → the OTLP/HTTP-JSON trace wire.
-// Pure + runtime-portable (no @opentelemetry/* deps). Phase A of docs/design/opentelemetry-integration.md.
+// The Produce-direction mapping: Bugsee performance transactions → the OTLP/HTTP-JSON trace wire.
+// Pure + runtime-portable (no @opentelemetry/* deps).
 //
-// The §8.8 wire deliberately omits the root span's id (the root is the transaction; only children carry
+// The wire deliberately omits the root span's id (the root is the transaction; only children carry
 // spanId/parentSpanId). OTLP needs every span to have an id and children to link to the root, so we
 // DERIVE a stable root span id from the trace id and remap any "dangling" child parent (one that points
-// at the dropped root, or is absent) to it — without piercing the §8.8 wire.
+// at the dropped root, or is absent) to it — without piercing the wire.
 //
 // `durationNanos` is intentionally NOT emitted: OTLP derives a span's duration from start/end, which our
 // model always sets together (durationNanos is never present without endTimestampMs). The only loss is
@@ -95,7 +95,7 @@ const KIND_BY_NAME: Record<string, number> = {
 };
 
 /**
- * OTLP span kind (Profile v1 §6): an explicit `bugsee.span.kind` attribute wins; else inbound server
+ * OTLP span kind: an explicit `bugsee.span.kind` attribute wins; else inbound server
  * (`http.server`) → SERVER, outgoing call (`http.client`) → CLIENT, everything else → INTERNAL.
  */
 export function spanKindFor(operation: string, attributes?: Record<string, unknown>): number {
@@ -119,7 +119,7 @@ export function spanKindFor(operation: string, attributes?: Record<string, unkno
  * the wrong question. Collision with a sibling child was never the risk; determinism was. The id it
  * returns is a pure function of the trace id, so every service in a distributed trace produced the SAME
  * root id — and, worse, `traceparent` propagates the transaction's REAL span id, so a downstream root's
- * parent pointed at a span that was never emitted. The trace broke at every boundary (Wave 5.3).
+ * parent pointed at a span that was never emitted. The trace broke at every boundary.
  */
 export function deriveRootSpanId(traceId: string): string {
   return traceId.slice(0, 16).toLowerCase();
@@ -131,14 +131,14 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   // downstream `parentSpanId` actually meet. Falls back to the derived form only for a legacy wire.
   const rootSpanId = txn.spanId ?? deriveRootSpanId(txn.traceId);
   const childIds = new Set(txn.spans.map((s) => s.spanId));
-  // Profile v1 §8: the OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
-  // Every span shares that one decision (the Bugsee §8.8 transaction wire carries a single root-level
+  // The OTLP span trace_flags sampled bit MUST mirror the transaction's sampling decision.
+  // Every span shares that one decision (the Bugsee transaction wire carries a single root-level
   // `sampled`, not a per-span one).
   const flags = txn.sampled ? OTLP_SPAN_FLAG_SAMPLED : 0;
 
   const rootAttributes: Record<string, unknown> = {
     ...txn.attributes,
-    // Profile v1 §6/§10 root requirements: the transaction name, the sampling decision, the lossless
+    // Root requirements: the transaction name, the sampling decision, the lossless
     // original status, plus the operation + app info + snapshot flag.
     'bugsee.transaction.name': txn.name,
     'bugsee.sampled': txn.sampled,
@@ -151,7 +151,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   const root: OtlpSpan = {
     traceId: txn.traceId,
     spanId: rootSpanId,
-    // A continued transaction's root is a CHILD of the upstream span (Profile v1 §12); a standalone root has none.
+    // A continued transaction's root is a CHILD of the upstream span; a standalone root has none.
     ...(txn.parentSpanId !== undefined ? { parentSpanId: txn.parentSpanId } : {}),
     name: txn.name,
     kind: spanKindFor(txn.operation, rootAttributes),
@@ -206,7 +206,7 @@ export function toOtlpExportRequest(
   return {
     resourceSpans: [
       {
-        // Profile v1 §4: the two profile-fixed resource constants are always present (after the caller's
+        // The two profile-fixed resource constants are always present (after the caller's
         // resource, so they can't be overridden away); service.* + telemetry.sdk.language come from `resource`.
         resource: {
           attributes: toKeyValues({

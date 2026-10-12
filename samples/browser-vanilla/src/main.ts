@@ -100,7 +100,7 @@ async function router(): Promise<void> {
   main.innerHTML = `<section class="block"><h1>Not found</h1><p><a href="#/">Back to shop</a></p></section>`;
 }
 
-// Names the current path by its ROUTE PATTERN, never the concrete URL (S9 route naming).
+// Names the current path by its ROUTE PATTERN, never the concrete URL (route naming).
 function routeNamePattern(path: string): string {
   if (path.startsWith('/product/')) return '/product/:id';
   if (path.startsWith('/orders/')) return '/orders/:id';

@@ -1,13 +1,13 @@
 import type { FileType } from '@bugsee/protocol';
 
-// The JSON intrinsics, captured at MODULE LOAD (review round 1, SEV1).
+// The JSON intrinsics, captured at MODULE LOAD.
 //
 // `JSON.parse` and `JSON.stringify` are page-writable globals. Reading them at call time let a script do:
 //
 //   const orig = JSON.parse;
 //   JSON.parse = s => { if (s.includes('"k":"control"')) steal(orig(s).tok); return orig(s); };
 //
-// which reads the token out of NATIVE's control message — defeating D-A1, whose guarantee is stated
+// which reads the token out of NATIVE's control message — defeating the control token's guarantee, which is stated
 // only in outbound terms ("sent once, on hello"). The same trick on `stringify` (or an
 // `Object.prototype.toJSON`) reads the outbound hello and can silently replace the payload.
 //
@@ -16,7 +16,7 @@ import type { FileType } from '@bugsee/protocol';
 const jsonParse = JSON.parse;
 const jsonStringify = JSON.stringify;
 
-// The versioned wire protocol crossing the WebView boundary (docs/design/webview-bridge.md §6). A single,
+// The versioned wire protocol crossing the WebView boundary. A single,
 // transport-agnostic JSON envelope rides whichever channel is available (Android @JavascriptInterface /
 // WebMessageChannel; later iOS/Cordova). Every message carries `b` (the protocol version) — its presence also
 // tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | report | secure | blackout | bye.
@@ -58,7 +58,7 @@ export interface HelloMessage {
   /** The JS-side session id (until native supplies its own via the control reply). */
   readonly session: string;
   /**
-   * SUPERSEDED by D-A10 — a native receiver MUST NOT store or echo this.
+   * SUPERSEDED by the native-minted control secret — a native receiver MUST NOT store or echo this.
    *
    * It is minted by this SDK and published here so native could learn it, which authenticates nobody:
    * `hello` arrives on the same `@JavascriptInterface` any frame can post to, so native cannot tell it from
@@ -66,7 +66,7 @@ export interface HelloMessage {
    * script could stop capture inside that window. Native mints its OWN secret instead and delivers it
    * inside the bundle it injects — see {@link ControlMessage.tok}.
    *
-   * Still emitted only when no `controlNonce` was injected, i.e. against a host that predates D-A10.
+   * Still emitted only when no `controlNonce` was injected, i.e. against a host that predates the native-minted secret.
    */
   readonly tok?: string;
 }
@@ -86,7 +86,7 @@ export interface EntryMessage {
   readonly mono: number;
   /** `performance.timeOrigin`. */
   readonly o: number;
-  /** Redaction provenance: did a JS-side filter pass run before this crossed? (D3) */
+  /** Redaction provenance: did a JS-side filter pass run before this crossed? */
   readonly red: boolean;
   /** Optional distributed-trace join. */
   readonly tr?: TraceRef;
@@ -108,7 +108,7 @@ export interface SecureArea {
 }
 
 /** JS→native: the current set of secure-area rects to mask. A current native receiver DISCARDS this payload and
- *  re-pulls `__bugsee_bridge.snapshot()` instead (D-A9); an older one applies the LATEST (by `s`).
+ * re-pulls `__bugsee_bridge.snapshot()` instead; an older one applies the LATEST (by `s`).
  *  Also returned synchronously by `__bugsee_bridge.snapshot()` at native frame-capture time. */
 export interface SecureMessage {
   readonly b: number;
@@ -121,7 +121,7 @@ export interface SecureMessage {
   readonly p: string;
 }
 
-/** JS→native: a WebView-originated report TRIGGER (D5 — gated by `reportTrigger`). Native opens a bug from the
+/** JS→native: a WebView-originated report TRIGGER (gated by `reportTrigger`). Native opens a bug from the
  *  serialized `ReportingRequest` metadata in `p`. Same time/seq frame as an entry, with `k:'report'`. */
 export interface ReportMessage {
   readonly b: number;
@@ -151,7 +151,7 @@ export interface BatchMessage {
  * host (its video / screenshots), which only the host can pause. A receiver that supports it MUST stop
  * (clear) its visual capture while `a` is true and declare that with `config.blackout: true` in its control
  * reply; a receiver that predates it ignores the unknown kind (forward-compatible) and the SDK reports that
- * the native video is NOT paused (docs/design/blackout.md).
+ * the native video is NOT paused.
  *
  * Receiver contract: (1) the CURRENT state is ALWAYS posted right after `hello` (`a: true` for a blackout carried over
  * a relaunch, `a: false` otherwise), and native RESETS its JS-reported flag on `bye` and on `hello`: a torn client
@@ -179,9 +179,9 @@ export interface ByeMessage {
 export interface ControlConfig {
   /** The capture FileTypes native wants (others are suppressed). */
   readonly enabledTypes?: readonly FileType[];
-  /** Whether the WebView may emit report triggers (D5 — default off). */
+  /** Whether the WebView may emit report triggers (default off). */
   readonly reportTrigger?: boolean;
-  /** Native declares that it applies `blackout` messages to its own visual capture (R2V-2). */
+  /** Native declares that it applies `blackout` messages to its own visual capture. */
   readonly blackout?: boolean;
 }
 
@@ -199,7 +199,7 @@ export interface ControlMessage {
   /** A one-shot command (pause/resume/flush/stop/snapshot — handled in slice 3). */
   readonly command?: 'pause' | 'resume' | 'flush' | 'stop' | 'snapshot';
   /**
-   * The control secret NATIVE minted (D-A10), interpolated into the bundle native injects so it reaches
+   * The control secret NATIVE minted, interpolated into the bundle native injects so it reaches
    * this SDK by a route the page never observes. Required on EVERY control message, from the first —
    * `__bugsee_bridge.control(...)` is page-callable, so there is no open period and no latch to race.
    *
@@ -216,7 +216,7 @@ export function helloMessage(opts: {
   sdk: string;
   caps: readonly string[];
   session: string;
-  /** The per-session control token (Wave 0.3 / D-A1). Omitted → no `tok` field, i.e. the pre-token wire. */
+  /** The per-session control token. Omitted → no `tok` field, i.e. the pre-token wire. */
   token?: string;
 }): HelloMessage {
   return {
@@ -254,7 +254,7 @@ export function entryMessage(opts: {
   };
 }
 
-/** Build a `report` trigger message (D5-gated) from serialized report metadata + its time/seq context. */
+/** Build a `report` trigger message (gated) from serialized report metadata + its time/seq context. */
 export function reportMessage(opts: {
   type: FileType;
   seq: number;
@@ -318,7 +318,7 @@ export function byeMessage(): ByeMessage {
  * = the store's `StoredEntry.serialized`); we splice those bytes in VERBATIM as the raw `p` value rather than
  * `JSON.stringify`-ing them into a quoted string. So the payload is serialized exactly ONCE (by the aggregator)
  * and appears INLINE on the wire (an object/array), letting native parse the whole message once — no nested
- * second parse (docs/design/webview-bridge.md §6.1). `batch` splices each element the same way; `hello`/`bye`
+ * second parse. `batch` splices each element the same way; `hello`/`bye`
  * have no opaque payload, so plain `JSON.stringify`.
  */
 export function encode(
@@ -367,7 +367,7 @@ export function parseControl(raw: string): ControlMessage | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  // Cut the prototype chain BEFORE any field is read (review round 1, SEV1). Every subsequent read —
+  // Cut the prototype chain BEFORE any field is read. Every subsequent read —
   // `k`, `b`, `tok`, `command`, `config`, `session` — is a plain property lookup, so without this a single
   // line of page script forges an authenticated message by riding native's own:
   //
@@ -376,7 +376,7 @@ export function parseControl(raw: string): ControlMessage | undefined {
   //
   // `JSON.parse` never produces inherited own-properties, so nulling the prototype cannot discard anything
   // native actually sent. `config` is nulled too — `reportTrigger` is read off it, and it is the quiet half
-  // of this attack (the WebView opens native bug reports at will, past the D5 gate).
+  // of this attack (the WebView opens native bug reports at will, past the gate).
   Object.setPrototypeOf(parsed, null);
   const config = (parsed as { config?: unknown }).config;
   if (typeof config === 'object' && config !== null) {

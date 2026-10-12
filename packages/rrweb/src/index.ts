@@ -4,7 +4,7 @@
 // record-only bundle with the replay player tree-shaken out (~56 KB gzip). It is a BUILD-time
 // dependency that tsup inlines into this package's dist: as a runtime dependency it was a git ref on
 // a private repository, which no customer can install. Swapping the source touches ONLY this file —
-// @bugsee/replay stays untouched (design D1/D2).
+// @bugsee/replay stays untouched.
 //
 // The event/option TYPES still come from the published rrweb/@rrweb/types type surface (they match the
 // fork's API); `recordOptions` is augmented locally with the fork-only `maskAttributeFn`. Type-only
@@ -22,7 +22,7 @@ export type { EventType, eventWithTime, listenerHandler } from '@rrweb/types';
 export type MaskAttributeFn = (key: string, value: string, element: HTMLElement) => string;
 
 // The record options type — carries the masking/blocking surface (`maskAllInputs`/`blockClass`/
-// `maskInputOptions`/`checkoutEveryNms`/`emit`/…) that @bugsee/replay's masking config (RP1) maps onto,
+// `maskInputOptions`/`checkoutEveryNms`/`emit`/…) that @bugsee/replay's masking config maps onto,
 // augmented with the Bugsee fork's privacy options:
 //   • `maskAttributeFn` — redact attribute values;
 //   • `maskAllText` + `unmaskTextClass`/`unmaskTextSelector` — mask-everything with per-element opt-out;

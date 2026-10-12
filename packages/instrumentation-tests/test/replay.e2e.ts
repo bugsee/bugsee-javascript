@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// RP6 — the real-rrweb session-replay integration e2e. Unlike the fake-`record` unit tests, this boots the
+// The real-rrweb session-replay integration e2e. Unlike the fake-`record` unit tests, this boots the
 // REAL @bugsee/browser launch with `replay: true` (which lazy-loads the REAL @bugsee/replay → the REAL rrweb
 // `record` against a REAL — jsdom — DOM), drives a masked page, fires a report, and asserts the actual
 // uploaded bundle: its `replay.bin` ungzips to a valid rrweb stream (with a full snapshot) and masked text is

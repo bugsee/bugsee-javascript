@@ -7,7 +7,7 @@ import { resetBrowserDeviceIdCache } from './device-id';
 import type { BrowserProbe } from './environment';
 import { type BugseeLaunchOptions, launch } from './launch';
 
-// L7: stop() must not release the instance lock / IndexedDB while the launch-time recovery is still
+// stop() must not release the instance lock / IndexedDB while the launch-time recovery is still
 // running (it may be reading or writing), and must release once it has settled.
 vi.mock('@bugsee/replay', () => ({ registerReplay: vi.fn() }));
 vi.mock('@bugsee/core', async (importOriginal) => {
@@ -63,7 +63,7 @@ afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('browser stop() and the launch-time recovery (L7)', () => {
+describe('browser stop() and the launch-time recovery', () => {
   it('keeps the lock while the recovery is still running, bounded by the stop deadline', async () => {
     vi.mocked(runLaunchRecovery).mockImplementationOnce(() => new Promise<void>(() => {}));
     const locks = realLocks();

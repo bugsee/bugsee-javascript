@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { BundleStore } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileAtomic } from './fs-storage';
 
-// Node implementation of core's BundleStore (the durable bundle queue's storage, design §7.8) — one
+// Node implementation of core's BundleStore (the durable bundle queue's storage) — one
 // owner-only (0o600) file per pending bundle under `dir`, named `<id>.bundle`. @bugsee/node points
 // the durable upload pipeline at this; bun and electron-main reuse it (deno ships a Deno.* store).
 // The directory must be STABLE across launches (not per-generation) so recover() can re-upload what a

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// WebView bridge protocol CONFORMANCE harness (slice 7, docs/design/webview-bridge.md §12.7).
+// WebView bridge protocol CONFORMANCE harness (slice 7).
 //
 // THIS HARNESS IS THE REFERENCE SPEC handed to the native (Android) team: it boots the REAL @bugsee/webview SDK
 // against a MOCK NATIVE RECEIVER + a real DOM (jsdom), drives a full session (handshake -> capture -> obscuring
@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // the harness validates against the SAME file shipped in the @bugsee/webview package — they cannot drift.
 import schema from '../../webview/bridge-protocol.schema.json';
 
-/** The two secrets native mints and injects; see D-A10/D-A11. */
+/** The two secrets native mints and injects. */
 const CONTROL_NONCE = 'conformance-control-nonce';
 const CAPTURE_NONCE = 'conformance-capture-nonce';
 
@@ -49,7 +49,7 @@ function createReceiver() {
             `protocol VIOLATION: ${JSON.stringify(m)}\n${JSON.stringify(validateMessage.errors, null, 2)}`,
           );
         }
-        // D-A11: native DROPS anything without the capture nonce, so an unstamped message is not merely
+        // native DROPS anything without the capture nonce, so an unstamped message is not merely
         // off-contract — it is capture that silently never arrives. Schema-valid is not sufficient here,
         // because the field is optional on the wire (a host that mints no nonce still conforms).
         const stamped = (m as { n?: unknown }).n;
@@ -60,7 +60,7 @@ function createReceiver() {
     },
     /** native -> JS control. The control message itself is schema-checked (it is part of the contract). */
     sendControl(msg: Record<string, unknown>): void {
-      // Native stamps every control message with the secret it minted and injected (D-A10). The SDK
+      // Native stamps every control message with the secret it minted and injected. The SDK
       // requires it from the FIRST message — there is no open period — so a harness that omitted it was
       // exercising a channel real native never speaks on.
       const control = { b: 1, k: 'control', tok: CONTROL_NONCE, ...msg };
@@ -80,7 +80,7 @@ function boot(options: Parameters<typeof launch>[1] = {}): {
   tickers.length = 0;
   const client = launch('app-token', {
     global: rx.host,
-    // Boot the way native actually boots the SDK (D-A10/D-A11): both secrets arrive through the injected
+    // Boot the way native actually boots the SDK: both secrets arrive through the injected
     // bootstrap. Without them the harness exercised an unstamped wire that production never emits — and
     // since native now DROPS unstamped messages, a green harness would have meant nothing about the bytes
     // a real receiver sees.
@@ -116,14 +116,14 @@ const track = (b: ReturnType<typeof boot>): ReturnType<typeof boot> => {
   return b;
 };
 
-describe('slice 7 — WebView bridge protocol conformance (the native-team reference spec)', () => {
+describe('WebView bridge protocol conformance (the native-team reference spec)', () => {
   it('opens with a schema-valid hello declaring sdk + caps (incl. obscuring) + a session', () => {
     const { rx } = track(boot());
     const hello = rx.messages()[0];
     expect(hello?.k).toBe('hello');
     expect(validateMessage(hello)).toBe(true);
     expect(hello).toMatchObject({ b: 1, sdk: expect.any(String) });
-    // jsdom provides a real top-frame DOM, so obscuring is declared (D10) alongside the capture caps.
+    // jsdom provides a real top-frame DOM, so obscuring is declared alongside the capture caps.
     expect(hello?.caps).toEqual(
       expect.arrayContaining([
         'log',
@@ -245,7 +245,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(JSON.stringify(rx.messages())).not.toContain('login-pw');
   });
 
-  it('streams an incident as a crash entry (always) + a report trigger when gated on (D5)', async () => {
+  it('streams an incident as a crash entry (always) + a report trigger when gated on', async () => {
     const { client, rx } = track(boot({ reportTrigger: true }));
     await client.logException(new Error('conformance-boom'));
     const crash = rx.entries('crash').find((e) => JSON.stringify(e.p).includes('conformance-boom'));
@@ -256,7 +256,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('streams a schema-valid secure message + answers the native snapshot pull (D10 obscuring)', () => {
+  it('streams a schema-valid secure message + answers the native snapshot pull (obscuring)', () => {
     const { rx } = track(boot());
     const input = document.createElement('input');
     input.type = 'password';
@@ -265,7 +265,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
 
     // The LAST secure message: [0] is the initial push emitted at start(), which precedes this password
     // input existing. An initial push is required either way — an older receiver masks from the payload,
-    // a current one (D-A9) re-pulls on receipt — so no push means no mask. See
+    // a current one re-pulls on receipt — so no push means no mask. See
     // packages/webview/src/obscuring-composer.ts start().
     const secures = rx.byKind('secure');
     const secure = secures[secures.length - 1];
@@ -278,7 +278,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('composes a SUB-frame bubble into the top frame secure message (D9 sub-frame composition)', () => {
+  it('composes a SUB-frame bubble into the top frame secure message (sub-frame composition)', () => {
     const { rx } = track(boot());
     // A real sub-frame in the page; the top SDK is the receiving (top) frame.
     const iframe = document.createElement('iframe');
@@ -318,7 +318,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  // WAVE 0.3 — the control-channel token (docs/design/webview-bridge-auth.md D-A1/D-A2).
+  // The control-channel token.
   //
   // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret from a CSPRNG,
   // interpolate it into the bundle it injects (`BugseeWebView.launch(token,{transport,controlNonce,captureNonce})`),
@@ -329,7 +329,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
   // script's — which is why the channel had to start OPEN and wait to latch, and why any script could stop
   // capture inside that window. A receiver that mints its own secret has no such window.
 
-  it('requires the NATIVE-minted control secret, from the very first message (D-A10)', async () => {
+  it('requires the NATIVE-minted control secret, from the very first message', async () => {
     // THIS IS THE PART THE NATIVE RECEIVER MUST IMPLEMENT: mint a per-WebView secret, interpolate it into
     // the bundle it injects (`BugseeWebView.launch(token, {transport, controlNonce, captureNonce})`), and put the
     // control one on EVERY control message as `tok`.
@@ -344,7 +344,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(hello.tok, 'hello must NOT carry a secret — native already has its own').toBeUndefined();
     rx.assertAllConform();
 
-    // A correctly-stamped control is accepted: the D5 gate turns ON.
+    // A correctly-stamped control is accepted: the gate turns ON.
     rx.sendControl({ config: { reportTrigger: true } });
     await client.logException(new Error('gate-on'));
     expect(rx.byKind('report')).toHaveLength(1);
@@ -358,13 +358,13 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     );
   });
 
-  it('keeps accepting native control AFTER the first authenticated message (D-A10)', async () => {
-    // The canary round 1 found missing: every tokened test sent exactly ONE message, so
+  it('keeps accepting native control AFTER the first authenticated message', async () => {
+    // The canary that was found missing: every tokened test sent exactly ONE message, so
     // `if (tok === secret && !authenticated)` — a one-word change — would lock native permanently out of
     // its own channel while the suite stayed green. Native sends many control messages over a session.
     //
-    // Round 12 caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
-    // under D-A10 `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
+    // A review caught this test itself having gone vacuous. It read `hello.tok` and passed it back — but
+    // under the current design `hello` carries no token, so it was spreading `tok: undefined`, which overrode the
     // harness default and got BOTH messages rejected. It then asserted zero reports and passed because
     // nothing was applied at all, which is the opposite of what it is named for.
     const { client, rx } = track(boot());
@@ -384,13 +384,13 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(rx.byKind('report'), 'the control channel stopped working entirely').toHaveLength(1);
   });
 
-  it('never puts the CONTROL secret on the wire at all (D-A10)', () => {
+  it('never puts the CONTROL secret on the wire at all', () => {
     // The constraint the whole scheme rests on. `BugseeBridge` is a page global, so any script loading
-    // after the SDK can wrap it and read every subsequent message. Under D-A1 the token rode `hello` and
-    // the guarantee was only "never REPEATED after hello"; under D-A10 native already holds the secret, so
+    // after the SDK can wrap it and read every subsequent message. Under the original design the token rode `hello` and
+    // the guarantee was only "never REPEATED after hello"; under the current design native already holds the secret, so
     // it need never be sent — a strictly stronger property, and this asserts that one.
     //
-    // Round 12 caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
+    // A review caught the previous version asserting `includes(token)` where `token` was `undefined`, i.e.
     // searching every message for the literal substring "undefined". It could not fail.
     const { rx } = track(boot());
     console.log('post-hello-traffic');
@@ -410,7 +410,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     await client.stop();
     const bye = rx.byKind('bye')[0];
     expect(bye).toEqual({ b: 1, k: 'bye', n: CAPTURE_NONCE });
-    // Wave 0.3 / D-A3: the control entry sits on a NON-CONFIGURABLE binding — a removable global was a
+    // The control entry sits on a NON-CONFIGURABLE binding — a removable global was a
     // replaceable one, which is the defect — so teardown makes it inert instead of deleting it.
     const before = rx.messages().length;
     rx.host.__bugsee_bridge?.control(JSON.stringify({ b: 1, k: 'control', command: 'snapshot' }));
@@ -421,8 +421,8 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     rx.assertAllConform();
   });
 
-  it('the schema REJECTS a malformed `tok` in BOTH directions (Wave 0.3)', () => {
-    // Round 1: the schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
+  it('the schema REJECTS a malformed `tok` in BOTH directions', () => {
+    // The schema pins `tok` as a non-empty string, and nothing asserted it — so relaxing
     // `"type":"string","minLength":1` would have gone unnoticed. An empty token matters concretely: the
     // JS side treats a present-but-wrong token as an ATTACK and rejects the message, so a receiver
     // echoing `""` would break the handshake it was meant to authenticate.
@@ -436,7 +436,7 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(validateMessage({ b: 1, k: 'control', tok: 42 })).toBe(false);
   });
 
-  it('R4V-10: blackout messages are schema-valid, stamped, ordered after hello, and the a:false state is restated at launch', () => {
+  it('blackout messages are schema-valid, stamped, ordered after hello, and the a:false state is restated at launch', () => {
     const { client, rx } = track(boot());
     client.startBlackout();
     client.endBlackout();

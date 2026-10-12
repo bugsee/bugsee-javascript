@@ -4,7 +4,7 @@ import * as mod_setup from './setup';
 
 // WAVE 2.2 — the host-boundary contract for @bugsee/express.
 //
-// The rule (Wave 2.1): every host-facing entry point is wrapped, so an SDK-internal failure never becomes
+// The rule: every host-facing entry point is wrapped, so an SDK-internal failure never becomes
 // the application's failure. Enforced here rather than re-derived, because the review found it applied where
 // someone remembered and skipped where they did not — and the same file found real defects in every frontend
 // adapter it was added to.
@@ -26,7 +26,7 @@ const hostileApp = (): never =>
     },
   });
 
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   it('setupExpress does not throw out of server bootstrap on a hostile app', () => {
     expect(() => mod_setup.setupExpress(hostileApp(), {})).not.toThrow();
   });

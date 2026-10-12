@@ -1,8 +1,7 @@
 import { randomId } from '@bugsee/util';
 import type { AsyncBlobStore, AsyncKeyedStore } from './idb';
 
-// Per-instance IndexedDB namespacing for browser/worker multi-instance coexistence (docs/design/
-// browser-multi-instance-coexistence.md, BD1/BD5). Several instances on one origin (N tabs, page + workers)
+// Per-instance IndexedDB namespacing for browser/worker multi-instance coexistence. Several instances on one origin (N tabs, page + workers)
 // share the origin's IndexedDB; each writes its durable data under its OWN `"<instanceId>/"` key prefix inside a
 // per-APP-TOKEN database, so they coexist without cross-contamination. The recovery coordinator reads the shared
 // store to find dead siblings (the prefixes ARE the instance registry — no separate registry store needed).

@@ -28,7 +28,7 @@ describe('relaunchWith', () => {
     const result = await relaunchWith(launch, undefined, g);
     expect(result).toBe(next);
     expect(order).toEqual(['stop', 'launch']);
-    expect(launch).toHaveBeenCalledWith('tok', { clock: 'c' }); // only the seams are retained (L18)
+    expect(launch).toHaveBeenCalledWith('tok', { clock: 'c' }); // only the seams are retained
   });
 
   it('uses NEW options when given, and works with no client running', async () => {
@@ -51,7 +51,7 @@ describe('relaunchWith', () => {
   });
 });
 
-describe('relaunchWith — options reset to defaults, integration seams kept (L10)', () => {
+describe('relaunchWith — options reset to defaults, integration seams kept', () => {
   const seams = {
     transport: () => 'transport',
     carrier: {},
@@ -127,7 +127,7 @@ describe('relaunchWith — options reset to defaults, integration seams kept (L1
   });
 });
 
-describe('relaunchWith — bounded stop (L13)', () => {
+describe('relaunchWith — bounded stop', () => {
   it('passes a timeout to stop() and does not hang when the old client never settles', async () => {
     const g = {};
     const stop = vi.fn(() => new Promise<boolean>(() => {}));
@@ -153,7 +153,7 @@ describe('relaunchWith — bounded stop (L13)', () => {
   });
 });
 
-describe('relaunchWith — a launch that is still in flight (L13)', () => {
+describe('relaunchWith — a launch that is still in flight', () => {
   it('waits for it, then stops THAT client and launches with the NEW options (never returns the stale one)', async () => {
     const g = {};
     const order: string[] = [];
@@ -190,7 +190,7 @@ describe('relaunchWith — a launch that is still in flight (L13)', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
-  it('waits for a slow in-flight launch WITHOUT the stop bound (R2L-8): no "before launch", no second build', async () => {
+  it('waits for a slow in-flight launch WITHOUT the stop bound: no "before launch", no second build', async () => {
     const g = {};
     const order: string[] = [];
     const slow = { stop: vi.fn(async () => void order.push('stop-slow')) };
@@ -224,7 +224,7 @@ describe('relaunchWith — a launch that is still in flight (L13)', () => {
   });
 });
 
-describe('relaunchWith — kept deployment identity and the remembered carrier host (R2P-3, R2L-12)', () => {
+describe('relaunchWith — kept deployment identity and the remembered carrier host', () => {
   it('keeps the endpoint, app identity, persistence and runtime scope handles across a relaunch', async () => {
     const g = {};
     const kept = {

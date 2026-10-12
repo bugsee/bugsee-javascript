@@ -5,7 +5,6 @@ import { BugseeErrorHandler, createAngularErrorHandler } from './error';
 import * as renderTracker from './render-tracker';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #1 + #2.
 const throwingClient = () =>
   ({
     logException: () => {
@@ -102,9 +101,9 @@ describe('BugseeErrorHandler does not silently delete the app’s error surfacin
   });
 });
 
-// WAVE 2.2 — the enforcement half. The tests above cover the ErrorHandler seam the review named; nothing
+// The enforcement half. The tests above cover the ErrorHandler seam the review named; nothing
 // covered the rest, and nothing failed when a new export arrived without a containment test.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

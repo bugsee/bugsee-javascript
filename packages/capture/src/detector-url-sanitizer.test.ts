@@ -91,8 +91,8 @@ describe('templatePathSegment', () => {
   });
 });
 
-// R2P-8. Short ids and PII the first rule set missed, and the over-templating it did.
-describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', () => {
+// Short ids and PII the first rule set missed, and the over-templating it did.
+describe('templatePathSegment: short ids, PII-shaped values and dates', () => {
   it.each([
     // nanoid(21) and a Firebase push id (20): mixed case + digits
     ['V1StGXR8_Z5jdHi6B-myT', '{id}'],
@@ -116,7 +116,7 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
     ['2024-01-15', '{date}'],
     ['2024-01-15T10:20:30Z', '{date}'],
     ['2024-01-15T10:20:30.123Z', '{date}'],
-    // upper-case hex is hex too (mutation survivor m13)
+    // upper-case hex is hex too
     ['0123456789ABCDEF', '{hex}'],
     ['ABCDEFABCDEFABCDEFABCDEF', '{hex}'],
     ['AbCdEfAbCdEfAbCdEf', '{hex}'],
@@ -168,15 +168,15 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
     ['ord_123', 'ord_{id}'],
     // slug detection: 3 plain words is a slug, 2 is not
     ['internationalization-guide-ab1', 'internationalization-guide-ab1'],
-    // ... but the words must be pronounceable: the alphabet is not a word (R5V-1)
+    // ... but the words must be pronounceable: the alphabet is not a word
     ['abcdefghijklmnopqrstuvwx-yz-ab1', '{token}'],
     ['abcdefghijklmnopqrstuvwx-yz1', '{token}'],
     // fixed-length ids need a number AND both cases, and exactly 20 or 21 characters
     ['abcdefghijklmnopqrst1', '{token}'],
     ['ABCDEFGHIJKLMNOPQRST1', '{token}'],
     ['AbCdEfGhIjKlMnOpQrStU', 'AbCdEfGhIjKlMnOpQrStU'],
-    ['AbCdEfGhIjKlMnOpQrSt1u', '{token}'], // 22 chars: past SHORT_ID, below the 24-char token floor (R3V-4)
-    ['AbCdEfGhIjKlMnOpQr1', '{token}'], // 19 chars, mixed case + a digit (R3V-4)
+    ['AbCdEfGhIjKlMnOpQrSt1u', '{token}'], // 22 chars: past SHORT_ID, below the 24-char token floor
+    ['AbCdEfGhIjKlMnOpQr1', '{token}'], // 19 chars, mixed case + a digit
     ['AbCdEfGhIjKlMnOpQrS1', '{id}'],
     ['AbCdEfGhIjKlMnOpQrSt1', '{id}'],
   ])('boundary: %j -> %j', (segment, expected) => {
@@ -194,7 +194,7 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
   });
 });
 
-describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded time (R2P-8)', () => {
+describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded time', () => {
   const BIG = 1_000_000;
   const shapes: Array<[string, string]> = [
     ['digits then a letter', `${'1'.repeat(BIG)}x`],
@@ -237,9 +237,9 @@ describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded tim
   });
 });
 
-// R3V-4. Leaks the round-2 rules missed: 16-23 character tokens, card numbers with separators, and an address on a
+// Leaks the earlier rules missed: 16-23 character tokens, card numbers with separators, and an address on a
 // dot-less host. Each positive is paired with the ordinary segment it must NOT swallow.
-describe('templatePathSegment: short tokens, card numbers and dot-less e-mail hosts (R3V-4)', () => {
+describe('templatePathSegment: short tokens, card numbers and dot-less e-mail hosts', () => {
   it.each([
     // base64url tokens of 16-23 chars: mixed case + a digit
     ['aB3dE5gH7jK9mN1pQ', '{token}'], // 17
@@ -308,7 +308,7 @@ describe('templatePathSegment: short tokens, card numbers and dot-less e-mail ho
   });
 });
 
-describe('R3V-4 rules stay linear: 1,000,000-character adversarial inputs', () => {
+describe('rules stay linear: 1,000,000-character adversarial inputs', () => {
   const BIG = 1_000_000;
   it.each([
     ['digits and dashes', `${'1-'.repeat(BIG / 2)}`],
@@ -327,9 +327,9 @@ describe('R3V-4 rules stay linear: 1,000,000-character adversarial inputs', () =
   });
 });
 
-// R4V-5: the 16-23 character `{token}` rule merged ordinary camelCase / versioned route names (every endpoint
+// The 16-23 character `{token}` rule merged ordinary camelCase / versioned route names (every endpoint
 // became one issue). It now needs RANDOMNESS: a segment made of words is an identifier, not a secret.
-describe('templatePathSegment: identifiers that read as words are NOT tokens (R4V-5)', () => {
+describe('templatePathSegment: identifiers that read as words are NOT tokens', () => {
   it.each([
     'getUserDetailsV2',
     'exportCsvReportV3',
@@ -418,7 +418,7 @@ describe('templatePathSegment: identifiers that read as words are NOT tokens (R4
   });
 });
 
-describe('templatePathSegment: e-mail uses the LAST @ and ignores dist-tags (R4V-6)', () => {
+describe('templatePathSegment: e-mail uses the LAST @ and ignores dist-tags', () => {
   it.each([
     'react@latest',
     'pkg@next',
@@ -451,7 +451,7 @@ describe('templatePathSegment: e-mail uses the LAST @ and ignores dist-tags (R4V
     );
   });
 
-  // No wall-clock assertion (R5V-10: it measured 11.7 s on the CI runner against a 30 s bound): a quadratic or
+  // No wall-clock assertion (it measured 11.7 s on the CI runner against a 30 s bound): a quadratic or
   // catastrophic regression hangs, and the test timeout is the hang guard.
   it('the word check stays linear: one million probes and million-character adversarial segments', () => {
     expect(templatePathSegment('a@'.repeat(500_000))).toBe('{token}'); // past the segment cap

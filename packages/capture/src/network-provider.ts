@@ -20,7 +20,7 @@ import {
 
 import { absolutizeUrl } from './absolutize-url';
 
-// Runtime-agnostic network capture CONSUMER (design §16.1): subscribes to one or more network SOURCES
+// Runtime-agnostic network capture CONSUMER: subscribes to one or more network SOURCES
 // (the fetch interceptor, and later xhr/ws/webtransport/sse) and routes every NetworkEvent — at any
 // stage — to the aggregator as a `network` entry. ONE provider serves all transports because they all
 // emit the same NetworkEvent shape; only the sources vary. Subscribing drives each source's
@@ -29,7 +29,7 @@ import { absolutizeUrl } from './absolutize-url';
 /** A network source — any emitter exposing NetworkStage channels (e.g. the fetch interceptor). */
 export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>>;
 
-// Per-event default PII redaction (§8.10, [R:wire m9]): redact the URL (sensitive query/fragment params
+// Per-event default PII redaction: redact the URL (sensitive query/fragment params
 // and any `user:pass@` credential), the sensitive request/response headers, and the captured body by
 // Content-Type (JSON key denylist, else form/colon key redaction plus a shape pass). Non-mutating (the hub
 // event other subscribers see stays raw); returns the same event when there is nothing to redact.
@@ -37,8 +37,7 @@ export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>
 // The URL is handled FIRST and OUTSIDE the `custom` guard: ws/sse/webtransport events carry no headers or
 // body, so an early return on `custom === undefined` would ship `wss://…?token=…` verbatim. This provider
 // is the single redaction point for every transport — including node:http, which folds in through
-// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere
-// (docs/review/capture.md SEV1 #4, docs/review/node-B-http-server.md SEV1 #3).
+// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere.
 /** Optional free text: sanitized when present, passed through untouched (and identity-preserving) when not,
  *  so the unchanged-checks below still short-circuit on an event that carried none of these fields. */
 const sanitizeText = (value: string | undefined): string | undefined =>
@@ -203,7 +202,7 @@ class NetworkCaptureProvider extends CaptureProviderBase {
     // auto-scrubbed unless `fn` does it itself (see `sanitize()` above and `sanitizeUrl`/`sanitizeBody`/
     // `sanitizeHeaders` in @bugsee/protocol for what the default sanitizer does, so a filter author knows
     // what they've taken over). This is intentional, not a bug — Android is this SDK's binding API/
-    // architecture parity target (CLAUDE.md) — but it is easy to miss, so it is called out here at the
+    // architecture parity target — but it is easy to miss, so it is called out here at the
     // one place that implements it, not just in a design doc.
     //
     // The body policy (master toggle, size limit, allow-without-type) is read once per launch and
