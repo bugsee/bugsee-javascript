@@ -103,7 +103,6 @@ function safeDecode(segment: string): string {
  */
 function isSlugWord(word: string): boolean {
   let digitRuns = 0;
-  let digits = 0;
   let upper = 0;
   let lower = 0;
   let run = 0;
@@ -112,7 +111,6 @@ function isSlugWord(word: string): boolean {
     const code = word.charCodeAt(i);
     if (code >= 48 && code <= 57) {
       run += 1;
-      digits += 1;
       if (run === 1) {
         digitRuns += 1;
       }

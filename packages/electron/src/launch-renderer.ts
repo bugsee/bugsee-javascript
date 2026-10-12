@@ -60,6 +60,7 @@ export function resolveRendererBridge(): BugseeElectronBridge {
     sendHello(raw: string): void {
       readBridge()?.sendHello?.(raw);
     },
+    // biome-ignore lint/suspicious/noConfusingVoidType: mirrors the bridge contract: an older bridge returns nothing
     onControl(handler: (raw: string) => void): void | (() => void) {
       return readBridge()?.onControl?.(handler);
     },

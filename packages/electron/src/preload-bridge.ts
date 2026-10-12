@@ -36,6 +36,7 @@ export interface BugseeElectronBridge {
    * renderer re-run must be able to retire the previous client's handler, or every message runs twice (R4V-3).
    * (An older bridge returns nothing; the renderer then relies on its own stopped-client guard.)
    */
+  // biome-ignore lint/suspicious/noConfusingVoidType: an older bridge returns nothing (void) rather than undefined
   onControl(handler: (raw: string) => void): void | (() => void);
 }
 
