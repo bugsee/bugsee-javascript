@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { getCarrierLifecycleSlot } from './carrier';
 import { createLifecycleEmitter, LifecycleEvents } from './lifecycle-events';
 
+const host = globalThis as unknown as {
+  process: {
+    on(e: string, f: (...a: unknown[]) => void): void;
+    off(e: string, f: (...a: unknown[]) => void): void;
+  };
+  setTimeout(f: () => void, ms: number): unknown;
+};
+const macrotask = (): Promise<void> => new Promise((resolve) => host.setTimeout(resolve, 10));
+
 describe('LifecycleEvents', () => {
   it('uses the Android wire names, prefixed com.bugsee.lifecycle.', () => {
     expect(LifecycleEvents).toEqual({
@@ -86,6 +95,26 @@ describe('createLifecycleEmitter', () => {
     });
     expect(() => emitter.emit(LifecycleEvents.Launched)).not.toThrow();
     expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('routes a REJECTING async listener to onError instead of an unhandled rejection', async () => {
+    const onError = vi.fn();
+    const unhandled = vi.fn();
+    host.process.on('unhandledRejection', unhandled);
+    try {
+      const emitter = createLifecycleEmitter(onError);
+      const boom = new Error('async boom');
+      emitter.set(async () => {
+        throw boom;
+      });
+      emitter.emit(LifecycleEvents.Launched);
+      await macrotask();
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(boom);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      host.process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('survives a throwing onError too', () => {

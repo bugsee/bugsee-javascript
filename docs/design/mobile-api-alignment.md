@@ -146,6 +146,8 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
 
 ## Kept differences (documented, not changed)
 
+- **Lifecycle upload events and `ReportHandler.after` cover the live path only** (PR #37 review). They follow trigger → assemble → upload. A report delivered another way (durable recovery on the next launch, native-crash harvest, trigger-queue overflow, WebView/Electron-renderer hand-off, where `after` still runs) is not announced with `BeforeReportAssembled`/`AfterReportUploaded`. Accepted for the beta: Android announces from its single report builder, JS has several delivery paths; unifying them is a follow-up.
+
 - **`detectHttpErrors` vs mobile.** Same: 5xx only, per-session de-duplication on (method, normalized URL, status),
   severity High, domain `HttpError::Server`, attributes, query/fragment/credentials stripped. Different:
   (1) path templating (`{id}`, `{uuid}`, `{hex}`, `{token}`, `{email}`) is ALWAYS on; Android applies it only when a

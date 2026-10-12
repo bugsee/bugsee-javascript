@@ -1,7 +1,14 @@
 // Lifecycle events (Android `LifecycleEvents`, iOS `BugseeLifecycleEventType`): coarse SDK milestones an
 // application can observe through ONE listener. The wire names are the Android ones so a cross-platform
 // app can share its handler. Observe-only: a listener can neither veto nor alter anything, and one that
-// throws is routed to `onError` and otherwise ignored.
+// throws (or returns a rejecting promise) is routed to `onError` and otherwise ignored.
+//
+// Coverage: upload events and `ReportHandler.after` follow the live trigger -> assemble -> upload path.
+// A report delivered another way (durable recovery on the next launch, native-crash harvest, a queue
+// overflow, a WebView/Electron-renderer hand-off) is not announced; see "Kept differences" in
+// docs/design/mobile-api-alignment.md.
+
+import { neverThrow } from './never-throw';
 
 const PREFIX = 'com.bugsee.lifecycle.';
 
@@ -127,15 +134,9 @@ export function createLifecycleEmitter(
           if (listener === null) {
             continue;
           }
-          try {
-            listener(next[0], next[1]);
-          } catch (error) {
-            try {
-              onError(error);
-            } catch {
-              // a throwing sink must not defeat the guard either
-            }
-          }
+          // neverThrow also handles an async listener whose promise rejects (otherwise an unhandled rejection
+          // in the host), and survives a throwing sink.
+          neverThrow(() => listener(next[0], next[1]), onError);
         }
       } finally {
         state.delivering = false;

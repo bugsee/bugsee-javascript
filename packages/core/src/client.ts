@@ -71,6 +71,7 @@ import {
   runFilter,
   type SpanFilter,
 } from './filters';
+import { neverThrow } from './never-throw';
 import { createNotifyRelay } from './notify-relay';
 import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
@@ -1040,11 +1041,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       const afterHandler = filters.report?.after;
       const beforeAfter =
         afterHandler !== undefined ? reportChangeSignature(request.report) : undefined;
-      try {
-        afterHandler?.(request);
-      } catch (error) {
-        onErrorSafe(error);
-      }
+      neverThrow(() => afterHandler?.(request), onErrorSafe);
       const captured = reportContext;
       // Submit-time identity (see reportIdentity). Absent only on a hypothetical assembly that did not
       // come through submitReport, where reading the Environment live is the previous behaviour and a
@@ -1332,11 +1329,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     if (options.triggerPipeline !== undefined) {
       // An injected pipeline (Electron renderer, WebView) never goes through `assembleReport`, which is where
       // `after` runs for the built one (R2L-2). The report exists and `before` has had its say: same moment.
-      try {
-        filters.report?.after?.(handled);
-      } catch (error) {
-        onErrorSafe(error);
-      }
+      neverThrow(() => filters.report?.after?.(handled), onErrorSafe);
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
     // Once the pipeline settles: tell the lifecycle listener how the upload went. Guarded — observing a

@@ -26,6 +26,15 @@ const setup = (
   return { client, events, types };
 };
 
+const host = globalThis as unknown as {
+  process: {
+    on(e: string, f: (...a: unknown[]) => void): void;
+    off(e: string, f: (...a: unknown[]) => void): void;
+  };
+  setTimeout(f: () => void, ms: number): unknown;
+};
+const macrotask = (): Promise<void> => new Promise((resolve) => host.setTimeout(resolve, 10));
+
 describe('lifecycle events — launch and stop', () => {
   it('emits Launching then Launched around launch()', () => {
     const { client, types } = setup();
@@ -337,6 +346,60 @@ describe('ReportHandler.after (Android onAfterReportCreated)', () => {
     });
     await expect(client.logException(new Error('x'))).resolves.toEqual({ ok: true });
     expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('a REJECTING async after goes to onError, not to an unhandled rejection', async () => {
+    const onError = vi.fn();
+    const unhandled = vi.fn();
+    host.process.on('unhandledRejection', unhandled);
+    try {
+      const { client } = setup(async () => ({ ok: true }), { onError });
+      const boom = new Error('async after');
+      client.setReportHandler({
+        after: async () => {
+          throw boom;
+        },
+      });
+      await expect(client.logException(new Error('x'))).resolves.toEqual({ ok: true });
+      await macrotask();
+      expect(onError).toHaveBeenCalledWith(boom);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      host.process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('a REJECTING async after on an injected trigger pipeline is contained too', async () => {
+    const onError = vi.fn();
+    const unhandled = vi.fn();
+    host.process.on('unhandledRejection', unhandled);
+    try {
+      const triggerPipeline: TriggerPipeline = { report: async () => ({ ok: true }) } as never;
+      const uploadPipeline: UploadPipeline = {
+        enqueue: async () => ({ ok: true }),
+        flush: async () => true,
+        drop: vi.fn(),
+      };
+      const client = createClient({
+        uploadPipeline,
+        triggerPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        onError,
+      });
+      const boom = new Error('async after injected');
+      client.setReportHandler({
+        after: async () => {
+          throw boom;
+        },
+      });
+      await client.logException(new Error('x'));
+      await macrotask();
+      expect(onError).toHaveBeenCalledWith(boom);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      host.process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('a throwing onError sink cannot break reporting either', async () => {
