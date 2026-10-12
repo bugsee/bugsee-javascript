@@ -164,6 +164,29 @@ describe.each(
       expect(collector.echoHits).toBeGreaterThanOrEqual(1);
     });
 
+    it('delivered the application attachments under namespaced names with manifest metadata', () => {
+      const up = bundles.find((b) => b.request.summary === 'e2e attachment upload');
+      expect(up, 'no upload bundle was delivered').toBeDefined();
+      const bundle = up as ParsedBundle;
+      const manifest = parseJson<{
+        files: { filename: string; type: string; name?: string; attrs?: Record<string, string> }[];
+      }>(bundle.files['manifest.json']);
+      const atts = manifest.files.filter((f) => f.type === 'attachment');
+      expect(atts.map((f) => f.name)).toEqual(['state.json', 'blob']);
+      for (const f of atts) {
+        expect(f.filename).toMatch(/^[a-z0-9]{20}\.attachment\.bgsfile$/);
+      }
+      expect(atts[0]?.attrs).toMatchObject({
+        mimeType: 'application/json',
+        fileName: 'state.json',
+      });
+      expect(atts[1]?.attrs).toMatchObject({ fileName: 'blob.bin' });
+      expect(strFromU8(bundle.files[atts[0]?.filename as string] as Uint8Array)).toBe('{"cart":3}');
+      expect(Array.from(bundle.files[atts[1]?.filename as string] as Uint8Array)).toEqual([
+        0, 1, 2, 255,
+      ]);
+    });
+
     it('delivered an error report bundle with logs, the captured network request, and a CPU profile', () => {
       const err = bundles.find((b) => b.request.source.mechanism === 'programmatic');
       expect(err, 'no programmatic error bundle was delivered').toBeDefined();

@@ -10,6 +10,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
 // Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.

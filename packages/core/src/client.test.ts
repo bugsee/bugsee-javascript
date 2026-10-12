@@ -2,6 +2,7 @@ import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
+import { addReportAttachment } from './attachments';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import {
@@ -2122,6 +2123,54 @@ describe('createClient — upload (manual report)', () => {
     expect(sent().labels).toEqual(['checkout', 'payments']);
     expect(sent().email).toBe('jane@example.com');
     expect(sent().severity).toBe(4); // critical on the wire
+  });
+
+  it('attaches UploadOptions.attachments to the uploaded bundle and drops over-limit ones to onError', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    await client.upload({
+      attachments: [
+        { name: 'one', data: 'a' },
+        { name: 'two', data: 'b' },
+        { name: 'three', data: 'c' },
+        { name: 'four', data: 'd' },
+      ],
+    });
+
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const names = manifest.files
+      .filter((f: { type: string }) => f.type === 'attachment')
+      .map((f: { name: string }) => f.name);
+    expect(names).toEqual(['one', 'two', 'three']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets ReportHandler.before add attachments with addReportAttachment', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setReportHandler({
+      before: (request) => {
+        addReportAttachment(request.report, {
+          name: 'state.json',
+          data: '{"a":1}',
+          mimeType: 'application/json',
+        });
+        return request;
+      },
+    });
+
+    await client.upload();
+
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
+    expect(entry.attrs.mimeType).toBe('application/json');
+    expect(strFromU8(files[entry.filename] as Uint8Array)).toBe('{"a":1}');
   });
 
   it('defaults to a high-severity bug with nothing else set', async () => {

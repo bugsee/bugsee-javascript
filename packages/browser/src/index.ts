@@ -8,6 +8,8 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+// Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.
+export type { ReportAttachmentInput } from '@bugsee/core';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,

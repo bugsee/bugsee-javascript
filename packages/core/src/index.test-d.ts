@@ -12,6 +12,7 @@ import type {
   InternalLogExceptionOptions,
   InternalUploadOptions,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from './index';
 
@@ -33,7 +34,15 @@ const internalUpload: InternalUploadOptions = { trigger: 'code_dialog', summary:
 const publicUpload: UploadOptions = { summary: 's' };
 declare const publicClient: BugseeClient;
 
+// Attachments: string or bytes data; mimeType/fileName optional; reachable from UploadOptions.
+const attachment: ReportAttachmentInput = { name: 'log', data: new Uint8Array(1) };
+const uploadOpts: UploadOptions = {
+  attachments: [attachment, { name: 't', data: 'text', mimeType: 'text/plain' }],
+};
+
 // --- Negatives ---
+// @ts-expect-error data is required.
+export const badAttachment: ReportAttachmentInput = { name: 'x' };
 // @ts-expect-error onError must accept the thrown value; a wrong-arity handler is rejected.
 export const badOptions: CreateClientOptions = { onError: (_a: string, _b: string) => {} };
 // @ts-expect-error the base Breadcrumb requires `timestamp` (BreadcrumbInput makes it optional).
@@ -56,4 +65,5 @@ export type IndexAssertions = [
   typeof publicLogOpts,
   typeof internalUpload,
   typeof publicUpload,
+  typeof uploadOpts,
 ];

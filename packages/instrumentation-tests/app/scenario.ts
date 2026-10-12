@@ -62,6 +62,15 @@ async function runMainScenario(launch: LaunchFn, collectorUrl: string): Promise<
   // A logged exception → an error report bundle (drains the capture window: logs + network).
   await client.logException(new Error('e2e instrumented failure'));
 
+  // An explicit upload carrying application attachments (one text, one binary, one with a traversal file name).
+  await client.upload({
+    summary: 'e2e attachment upload',
+    attachments: [
+      { name: 'state.json', data: '{"cart":3}', mimeType: 'application/json' },
+      { name: 'blob', data: new Uint8Array([0, 1, 2, 255]), fileName: '../../etc/blob.bin' },
+    ],
+  });
+
   // A deliberate main-thread hang past the fair threshold → the worker watchdog fires an AppHang report.
   // The CPU profiler keeps sampling through the stall, so `e2eHangSpin` lands in the profile attached to it.
   //

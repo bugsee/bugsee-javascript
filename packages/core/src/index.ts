@@ -14,6 +14,11 @@ export {
   serviceToken,
 } from '@bugsee/service';
 export type { AttributeValue } from '@bugsee/types';
+export {
+  addReportAttachment,
+  MAX_USER_ATTACHMENT_BYTES,
+  MAX_USER_ATTACHMENTS,
+} from './attachments';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 export { createBundleUploader } from './bundle-uploader';
@@ -212,6 +217,7 @@ export {
   createReportingRequest,
   type Report,
   type ReportAttachment,
+  type ReportAttachmentInput,
   type ReportingRequest,
   type ReportingRequestInit,
   type ReportingSource,
