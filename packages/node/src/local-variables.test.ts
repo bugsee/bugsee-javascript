@@ -263,6 +263,27 @@ describe('createLocalVariablesCapture', () => {
     ).toHaveLength(1);
   });
 
+  // R5V-4: the warning called the app's sink unguarded, so a sink that rethrows made launch() throw.
+  it.each([
+    ['includeCaught', 'false'],
+    ['reportSite', 0],
+  ])('a rethrowing onError cannot make %s=%j throw out of the factory (the switch stays OFF)', (name, bad) => {
+    const f = fakeSession();
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    expect(() =>
+      createLocalVariablesCapture({ session: f.session, [name]: bad as never, onError }),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String((onError.mock.calls[0] as unknown as [Error])[0].message)).toContain(name);
+    if (name === 'includeCaught') {
+      expect(f.posts.find((p) => p.method === 'Debugger.setPauseOnExceptions')?.params).toEqual({
+        state: 'uncaught',
+      });
+    }
+  });
+
   it('includeCaught: false / absent report nothing', () => {
     const onError = vi.fn();
     createLocalVariablesCapture({ session: fakeSession().session, includeCaught: false, onError });

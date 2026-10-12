@@ -84,9 +84,12 @@ The safe side is DARK, so the option fails ON: any value that is not boolean `fa
 un-darkened. The Electron renderer follows the same rule (and so does the internal launch hold `holdBlackout`).
 Every other privacy option has an explicit fail direction too, pinned by `packages/bugsee/src/option-directions.test.ts`:
 options that collect more data fail OFF (including default-ON ones such as `replay`, `instrumentIncomingRequests`,
-node `propagateTrace`), protective ones (`startInBlackout`, WebView `captureObscuring`, performance `sanitizeSpans`,
+node `propagateTrace`, and the framework adapters' own `setupOtelProvider` (Next.js) and `injectTraceMeta` (Nuxt), R5V-8), protective ones (`startInBlackout`, WebView `captureObscuring`, performance `sanitizeSpans`,
 edge `partitionCaptureByTenant`, replay `blockAllCanvas`) fail ON, and the rest keep their default and report. The
-table also covers NESTED option bags (`replay.*`, `captureLocalVariables.*`, `traceResponse.*`).
+table also covers NESTED option bags (`replay.*`, `captureLocalVariables.*`, `traceResponse.*`) and the adapter option interfaces
+(`NextjsServerOptions`, the Nuxt install options). On Cloudflare `partitionCaptureByTenant` defaults to ON, an explicit
+`false` is honoured but warned about once per isolate (R5V-9). Every warning reaches `onError` through a guarded
+reporter: a sink that throws cannot make `launch()` throw (R5V-4).
 
 ## Electron renderers: three reasons to be dark
 

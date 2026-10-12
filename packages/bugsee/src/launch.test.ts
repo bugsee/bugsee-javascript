@@ -599,6 +599,34 @@ describe('bugsee umbrella launch', () => {
     ).toBeDefined();
   });
 
+  // R5V-6: `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
+  it('an empty-string target never reaches a third party, and an invalid entry is reported to onError', async () => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    const onError = vi.fn();
+    await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          onError,
+          propagateTrace: true,
+          tracePropagationOrigin: 'https://app.test',
+          tracePropagationTargets: ['', 5 as never],
+        }),
+      ),
+    );
+    await globalFetch()('https://third-party.test/x', { method: 'GET' });
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0].message).toMatch(/tracePropagationTargets entries/);
+  });
+
   it('defaults same-origin detection to location.origin when no tracePropagationOrigin is given', async () => {
     vi.stubGlobal('location', { origin: 'https://default.test', pathname: '/' });
     let received: { init: unknown } | undefined;
@@ -705,6 +733,88 @@ describe('bugsee umbrella launch', () => {
     await fire(7777);
     expect(calls.some((u) => u.endsWith('/v2/performance/transactions'))).toBe(true); // Bugsee still gets it
     expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
+  });
+
+  // R5V-7: a `URL` object worked before R4V-10 and was silently ignored after it; whitespace still built an exporter
+  // (`fetch('   ')` is the page's own URL); numbers and objects were dropped without a word.
+  describe('otelExportUrl forms (R5V-7)', () => {
+    async function runWith(
+      otelExportUrl: unknown,
+    ): Promise<{ otlpUrls: string[]; errors: Error[]; bugseeGotBatch: boolean }> {
+      const { scheduler, fire } = fakeScheduler();
+      const otlpUrls: string[] = [];
+      const errors: Error[] = [];
+      let bugseeGotBatch = false;
+      const transport = vi.fn<HttpTransport>(async (url: string) => {
+        if (url.endsWith('/v2/sessions')) {
+          return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+        }
+        if (url.endsWith('/v2/performance/transactions')) {
+          bugseeGotBatch = true;
+        } else {
+          otlpUrls.push(url);
+        }
+        return { status: 200, headers: {}, body: new Uint8Array() };
+      });
+      const client = await track(
+        await launch(
+          'tok',
+          base({
+            carrier: {},
+            scheduler,
+            transport,
+            onError: (error: unknown) => errors.push(error as Error),
+            performanceFlushIntervalMs: 7777,
+            otelExportUrl: otelExportUrl as never,
+          }),
+        ),
+      );
+      (client.ext('performance').getActiveSpan() as Transaction).finish();
+      await fire(7777);
+      return { otlpUrls, errors, bugseeGotBatch };
+    }
+    const COLLECTOR = 'https://collector.test/v1/traces';
+
+    it('a URL object exports to its href', async () => {
+      const result = await runWith(new URL(COLLECTOR));
+      expect(result.otlpUrls).toEqual([COLLECTOR]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('a string is trimmed', async () => {
+      const result = await runWith(`  \n${COLLECTOR}\t `);
+      expect(result.otlpUrls).toEqual([COLLECTOR]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it.each(['   ', '\n\t', ''])('%j is no exporter, silently', async (blank) => {
+      const result = await runWith(blank);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toEqual([]);
+      expect(result.bugseeGotBatch).toBe(true);
+    });
+
+    it.each([undefined, null])('%j is no exporter, silently', async (absent) => {
+      const result = await runWith(absent);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it.each([
+      ['a number', 5, 'number'],
+      ['zero', 0, 'number'],
+      ['an object', { href: COLLECTOR }, 'object'],
+      ['an array', [COLLECTOR], 'object'],
+      ['true', true, 'boolean'],
+      ['a function', () => COLLECTOR, 'function'],
+    ])('%s is no exporter and is reported', async (_name, value, kind) => {
+      const result = await runWith(value);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.message).toMatch(/otelExportUrl/);
+      expect(result.errors[0]?.message).toContain(kind);
+      expect(result.bugseeGotBatch).toBe(true); // Bugsee still receives its own batch
+    });
   });
 
   it('produce-tee: an OTLP failure surfaces to onError, but Bugsee still receives the batch', async () => {

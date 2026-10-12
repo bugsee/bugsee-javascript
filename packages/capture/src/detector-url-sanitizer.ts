@@ -24,25 +24,391 @@ const HAS_UPPER = /[A-Z]/;
 const HAS_LOWER = /[a-z]/;
 const IPV4 = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$/;
 const IPV6_CHARS = /^[0-9a-fA-F:]+$/;
+const IPV4_PORT = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}:[0-9]{1,5}$/;
+const PORT_SUFFIX = /^(?::[0-9]{1,5})?$/;
+// A content hash of a built asset: webpack's 8-hex `[contenthash:8]` up to the 15 just below LONG_HEX.
+const HASH_PIECE = /^[0-9a-fA-F]{8,15}$/;
+const HAS_HEX_LETTER = /[a-fA-F]/;
+const TEL_PREFIX = /^tel:/i;
 // ISO-8601 date, optionally with a time and zone: 2024-01-15, 2024-01-15T10:20:30.123Z, ...+02:00.
 const ISO_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9:.]+(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?$/;
 // A prefix (one short alphanumeric word) + `_`/`-` + 3 or more numbers: `ord_12345`, `user-9981`.
 const PREFIX_HEAD = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
 const PREFIXED_ID_MIN_LENGTH = 3;
 const FILE_EXTENSION = /^\.[A-Za-z][A-Za-z0-9]{0,4}$/;
-// Word-like pieces of an identifier: a Title-cased word (`Details`, `Csv`) or a lower-case word of 3+ letters.
-const WORD_PIECE = /[A-Z][a-z]{2,}|[a-z]{3,}/g;
-// How much of a 16+ character segment must be made of such words before it is an identifier (`getUserDetailsV2`,
-// `HTML5VideoPlayer2`) and not a random token (R4V-5). Measured with seeded random base64url tokens: a 22-character
-// (128-bit) token is kept as a word in ~0.07% of cases and a 16-21 character one in well under 1% (the unavoidable
-// price of not collapsing every camelCase route name; no dictionary is used).
-const WORD_COVERAGE = 0.6;
-const WORD_COVERAGE_LONG = 0.75; // 22 characters and up: where a 128-bit random token lives
-const WORD_COVERAGE_LONG_FROM = 22;
-const WORD_MIN_PIECES = 2; // words of 4+ characters
-const WORD_MIN_LONGEST = 6;
+const SLUG_WORD_PIECE = /^([A-Za-z]{3,12})[0-9]{0,4}$/;
+const SLUG_CODE_PIECE = /^(?:[A-Za-z]{1,2}[0-9]{0,4}|[0-9]{1,2}[A-Za-z]{1,3})$/;
+const MID_DIGIT = /[0-9][A-Za-z]/;
+const VERSION_MARKER = /^[A-Za-z]{1,2}[0-9]{1,2}[A-Za-z]{3,6}[0-9]{0,2}$/;
 const MID_DIGIT_WORD_MAX = 8; // `v1beta1`, `covid19x2`: the longest slug word with a number inside it
-const WORD_MAX_STRAY_LOWER = 1; // lower-case letters outside any word (`gpt4oMini`: the `o`)
+// Word-likeness (R4V-5, R5V-1). No dictionary: a piece "reads as a word" when it can be pronounced, a cheap test on
+// its vowel/consonant structure that real words pass and random letters almost never do. A string with no separator
+// and a single case can never be shown to be words (a lower-case cuid2 or base32 id is made of the same letters), so
+// only camelCase/PascalCase identifiers and separator-delimited slugs are ever word-like.
+const PIECE_FREE_LETTERS = 3; // a slug word's letter run up to this long needs no test (`v`, `xl`, `api`)
+const STRAY_MAX_LETTERS = 2; // a camelCase piece this short is a fragment, not a word (`o` in `gpt4oMini`)
+const SLUG_LIKE_PIECE_MAX_LETTERS = 20; // a plain 3+ word slug: `internationalization`
+const CAMEL_PIECE_MAX_LETTERS = 16; // a Title/lower piece of a camelCase name
+const CAMEL_MIN_TITLE_WORDS = 2;
+const CAMEL_MAX_STRAY_PIECES = 1; // a 1-2 letter piece that is not an acronym (`gpt4oMini`: the `o`)
+const CAMEL_STRONG_WORD_LETTERS = 4;
+const CAMEL_MIN_STRONG_WORDS = 2;
+const CAMEL_MIN_STRONG_COVERAGE_PERCENT = 60; // of the name made of words of 4+ letters
+const CAMEL_MAX_ACRONYMS = 2;
+const CAMEL_MIN_COVERAGE_PERCENT = 80; // of the name made of pronounceable words and acronyms (the rest: numbers)
+const CAMEL_MAX_DIGIT_RUNS = 3;
+const CAMEL_MAX_DIGITS = 4;
+const MIN_VOWEL_DENOMINATOR = 9; // at least one vowel in nine letters (`strengths`)
+const MAX_VOWEL_PERCENT = 80; // `queue`
+const DIGRAPHS = new Set(['sh', 'ch', 'th', 'ph', 'gh', 'ck', 'wh', 'ng']);
+/**
+ * Consonant runs of 3+ SOUNDS (digraphs count once) that real words contain (`street`, `lengths`, `subscription`,
+ * `workspace`). Two in a row are always allowed; a longer run must be one of these. Random letters hit a listed run
+ * rarely, which is most of what separates `getUserDetails` from `IvmwRkbu`.
+ */
+const KNOWN_CONSONANT_CLUSTERS = new Set([
+  // three
+  'str',
+  'spr',
+  'spl',
+  'scr',
+  'shr',
+  'thr',
+  'chr',
+  'sch',
+  'phr',
+  'nch',
+  'tch',
+  'rch',
+  'lch',
+  'nth',
+  'rth',
+  'lth',
+  'nst',
+  'rst',
+  'lst',
+  'mst',
+  'ght',
+  'ngs',
+  'nds',
+  'rds',
+  'lds',
+  'rms',
+  'rns',
+  'rks',
+  'rts',
+  'rps',
+  'mps',
+  'mpt',
+  'nts',
+  'sts',
+  'cts',
+  'pts',
+  'kts',
+  'xts',
+  'cks',
+  'nks',
+  'lks',
+  'lps',
+  'lms',
+  'rnt',
+  'rld',
+  'rmt',
+  'rnd',
+  'rbs',
+  'rgs',
+  'ngl',
+  'ngr',
+  'ndl',
+  'ndr',
+  'ntr',
+  'nsf',
+  'nsp',
+  'nsc',
+  'mpl',
+  'mpr',
+  'mbl',
+  'mbr',
+  'bsc',
+  'ctr',
+  'xpl',
+  'xpr',
+  'xtr',
+  'ckl',
+  'ckn',
+  'ckp',
+  'ckg',
+  'ckb',
+  'ldr',
+  'ntl',
+  'ndw',
+  'dsc',
+  'rsh',
+  'rsp',
+  'rtm',
+  'rtn',
+  'rtr',
+  'rgr',
+  'rsc',
+  'rcl',
+  'rpl',
+  'rpr',
+  'ths',
+  'ndt',
+  'mbs',
+  'tsp',
+  'dgm',
+  'dgn',
+  'ntm',
+  'ndm',
+  'stm',
+  'stl',
+  'stn',
+  'ltr',
+  'wst',
+  'rkt',
+  'nct',
+  'rch',
+  'ncl',
+  'ncr',
+  'ngt',
+  'rrl',
+  'lsc',
+  'xcl',
+  'xpt',
+  'ftw',
+  'ftp',
+  'pst',
+  'ndp',
+  'llm',
+  'rtc',
+  'nrl',
+  'tstr',
+  'wsl',
+  'rkl',
+  'bst',
+  'gst',
+  'bjc',
+  'ldn',
+  'ppr',
+  'wnl',
+  'lts',
+  'shb',
+  'ddr',
+  'ssw',
+  'ndc',
+  'ndf',
+  'ndg',
+  'ndb',
+  'rdw',
+  'rkf',
+  'rkg',
+  'rkm',
+  'rkb',
+  'rkt',
+  'mbn',
+  'ctm',
+  'ctp',
+  'ctn',
+  'ptn',
+  'dpr',
+  'dcl',
+  'ntf',
+  'ntg',
+  'nfl',
+  'nfr',
+  'mmr',
+  'ngd',
+  'ngf',
+  'ngp',
+  'ngm',
+  'ngw',
+  'lfl',
+  'tsc',
+  'tsh',
+  'tsm',
+  'tsn',
+  'ssl',
+  'ssn',
+  'ssm',
+  'ssp',
+  'sst',
+  'rsn',
+  'rsl',
+  'rtl',
+  'rdr',
+  'rdt',
+  'rdn',
+  'rmn',
+  'dst',
+  'dsp',
+  'dsl',
+  'dsm',
+  'dvr',
+  'bbl',
+  'ggl',
+  'ppl',
+  'ttl',
+  'ddl',
+  'ffl',
+  'kfl',
+  'hnl',
+  'nsl',
+  'nsm',
+  'nsn',
+  // four and more
+  'ngth',
+  'ngths',
+  'nths',
+  'dths',
+  'mpts',
+  'ghts',
+  'ghtw',
+  'mphs',
+  'rksp',
+  'rksh',
+  'rkfl',
+  'rkgr',
+  'bscr',
+  'nscr',
+  'nstr',
+  'bstr',
+  'ndsc',
+  'ndstr',
+  'stscr',
+  'rdpr',
+  'ckgr',
+  'rthd',
+  'ntrl',
+  'nstl',
+  'ctrl',
+  'ntsp',
+]);
+/** Vowel runs of 3+ letters that real words contain (`beautiful`, `previous`, `queue`, `queen`, `seeing`). */
+const KNOWN_VOWEL_CLUSTERS = new Set([
+  'eau',
+  'iou',
+  'eou',
+  'uou',
+  'ieu',
+  'uee',
+  'ueu',
+  'oui',
+  'ioa',
+  'uai',
+  'uie',
+  'eei',
+  'ooi',
+  'aii',
+  'aia',
+  'ueue',
+]);
+/** Upper-case abbreviations that appear in route names (`getAPIKeys`, `HTML5VideoPlayer`), beside the vowel-less ones below. */
+const KNOWN_ACRONYMS = new Set([
+  'api',
+  'url',
+  'uri',
+  'uuid',
+  'guid',
+  'json',
+  'yaml',
+  'utf',
+  'ascii',
+  'rest',
+  'soap',
+  'jwt',
+  'oauth',
+  'saml',
+  'otp',
+  'sdk',
+  'sso',
+  'ios',
+  'aws',
+  'gcp',
+  'rpc',
+  'cpu',
+  'gpu',
+  'ram',
+  'png',
+  'gif',
+  'jpeg',
+  'ssh',
+  'iot',
+  'seo',
+  'cors',
+  'csrf',
+  'xss',
+  'cli',
+  'ide',
+  'mfa',
+  'sms',
+  'pdf',
+  'svg',
+  'html',
+  'http',
+  'https',
+  'xml',
+  'sql',
+  'css',
+  'csv',
+  'dns',
+  'ssl',
+  'tls',
+  'tcp',
+  'udp',
+  'vpn',
+  'ftp',
+  'smtp',
+  'grpc',
+  'jsx',
+  'tsx',
+  'wasm',
+  'webgl',
+  'crud',
+  'ajax',
+  'dom',
+]);
+/** Abbreviations with no vowel (and 3-letter ones) that are routes' bread and butter. */
+const VOWELLESS_WORDS = new Set([
+  'html',
+  'xhtml',
+  'shtml',
+  'http',
+  'https',
+  'grpc',
+  'rtsp',
+  'smtp',
+  'sftp',
+  'ftps',
+  'scss',
+  'xmpp',
+  'css',
+  'csv',
+  'xml',
+  'sql',
+  'gpt',
+  'dns',
+  'php',
+  'cdn',
+  'rss',
+  'tcp',
+  'udp',
+  'xhr',
+  'jpg',
+  'svg',
+  'ssl',
+  'tls',
+  'ftp',
+  'nfc',
+  'pdf',
+  'tsx',
+  'jsx',
+  'vpn',
+  'cts',
+  'mjs',
+  'cjs',
+  'wss',
+]);
 // A payment card number: 13-19 digits (Maestro to the longest PAN) with `-` or ` ` between the groups.
 const CARD_MIN_LENGTH = 13;
 const CARD_MAX_LENGTH = 19;
@@ -70,21 +436,67 @@ const DIST_TAGS = new Set([
   'experimental',
 ]);
 
+// A version (`18.2.0`, `18`) or a retina asset (`2x.png`) after an `@` is a package spec / file name, not a domain (R5V-3).
+const VERSION_HOST = /^[0-9.]+$/;
+const RETINA_HOST = /^[0-9]+x(?:\.[A-Za-z][A-Za-z0-9]{0,4})?$/; // `logo@2x` is the stem of `logo@2x.png`
+
+/**
+ * Whether ANY `@` of the segment (not the first character) yields an address (R4V-6, R5V-2): `@alice@example.com`,
+ * `alice@example.com@latest`, `jane.doe@corp.com@next`. One linear pass: a dotted host after a NON-last `@` is an
+ * address whatever follows it (the dot test is a single `lastIndexOf`), and the last `@`, whose host contains no `@`,
+ * is judged on its own (a version, a retina asset or a dist-tag is a package spec, not a host).
+ */
 function looksLikeEmail(segment: string): boolean {
-  // The LAST `@` splits local part from host: `@alice@example.com` and `a@b@example.com` are addresses too (R4V-6).
-  const at = segment.lastIndexOf('@');
-  if (at <= 0 || at >= segment.length - 1) {
+  const first = segment.indexOf('@', 1);
+  if (first < 0) {
     return false;
   }
-  // A dot in the domain part, not adjacent to '@' or the end.
-  const dot = segment.indexOf('.', at + 2);
-  if (dot > 0 && dot < segment.length - 1) {
+  const last = segment.lastIndexOf('@');
+  // A dot in the domain part of an earlier `@`, not adjacent to it or to the end.
+  if (first !== last && segment.lastIndexOf('.', segment.length - 2) >= first + 2) {
+    return true;
+  }
+  const host = segment.slice(last + 1);
+  if (VERSION_HOST.test(host) || RETINA_HOST.test(host)) {
+    return false;
+  }
+  const dot = host.indexOf('.', 1);
+  if (dot > 0 && dot < host.length - 1) {
     return true;
   }
   // Or a dot-less host (`user@localhost`): still an address (R3V-4). One character is not a host (`a@b`), and a
   // dist-tag is a package version, not a host.
-  const host = segment.slice(at + 1);
   return HOST_LABEL.test(host) && !DIST_TAGS.has(host.toLowerCase());
+}
+
+/** `10.0.0.1:8080`, `[::1]`, `[2001:db8::1]:8443`: an address with an optional port (R5V-10). */
+function looksLikeIpWithPort(segment: string): boolean {
+  if (IPV4_PORT.test(segment)) {
+    return true;
+  }
+  const close = segment.indexOf(']');
+  if (!segment.startsWith('[') || close < 0) {
+    return false;
+  }
+  return PORT_SUFFIX.test(segment.slice(close + 1)) && looksLikeIp(segment.slice(1, close));
+}
+
+/** A file name with a content hash in the middle (`main.3f9a2c1b.chunk`, `bundle.068e178e`): templates the hash only (R5V-10). */
+function templateHashedPieces(stem: string): string {
+  if (!stem.includes('.')) {
+    return stem;
+  }
+  return stem
+    .split('.')
+    .map((piece) => {
+      if (LONG_HEX.test(piece)) {
+        return '{hex}';
+      }
+      return HASH_PIECE.test(piece) && HAS_NUMBER.test(piece) && HAS_HEX_LETTER.test(piece)
+        ? '{token}'
+        : piece;
+    })
+    .join('.');
 }
 
 function safeDecode(segment: string): string {
@@ -137,6 +549,90 @@ function isSlugWord(word: string): boolean {
   }
   return !midDigits || (word.length <= MID_DIGIT_WORD_MAX && (upper === 0 || lower === 0));
 }
+/** A consonant run counted in sounds: `sh`, `ch`, `th`, `ph`, `gh`, `ck`, `wh`, `ng` are one each (`wishlist`: `sh` + `l`). */
+function consonantUnits(run: string): number {
+  let units = 0;
+  for (let i = 0; i < run.length; i += 1) {
+    units += 1;
+    if (DIGRAPHS.has(run.slice(i, i + 2))) {
+      i += 1;
+    }
+  }
+  return units;
+}
+
+/**
+ * Whether a lower-case run of letters can be pronounced (R5V-1): at least one vowel in nine letters and at most 80%
+ * vowels, no `q` without a `u`, no letter three times in a row, no consonant run of 3+ and no vowel run of 3+ except
+ * the explicit clusters above (`street`, `lengths`, `beautiful`, `queue`). `y` is a vowel for the ratio and ends a run
+ * (`layout`, `player`). A known vowel-less abbreviation (`html`) passes. Real words pass; random letters almost never
+ * do. Linear.
+ */
+function isPronounceable(letters: string): boolean {
+  if (VOWELLESS_WORDS.has(letters)) {
+    return true;
+  }
+  let vowels = 0;
+  let runStart = 0;
+  let runIsVowel = false;
+  for (let i = 0; i <= letters.length; i += 1) {
+    const char = letters.charAt(i); // '' past the end: closes the last run
+    const isY = char === 'y';
+    const vowel = !isY && char !== '' && 'aeiou'.includes(char);
+    if (i === 0 || i === letters.length || isY || vowel !== runIsVowel) {
+      const run = letters.slice(runStart, i);
+      if (
+        run.length >= 3 &&
+        (runIsVowel
+          ? !KNOWN_VOWEL_CLUSTERS.has(run)
+          : consonantUnits(run) >= 3 && !KNOWN_CONSONANT_CLUSTERS.has(run))
+      ) {
+        return false;
+      }
+      runStart = isY ? i + 1 : i;
+      runIsVowel = vowel;
+    }
+    vowels += vowel || isY ? 1 : 0;
+    if (char === 'q' && letters.charAt(i + 1) !== 'u') {
+      return false;
+    }
+  }
+  return (
+    vowels * MIN_VOWEL_DENOMINATOR >= letters.length &&
+    vowels * 100 <= letters.length * MAX_VOWEL_PERCENT
+  );
+}
+
+/** A word of 3+ letters: no longer than `max` and pronounceable (a 3-letter one needs a vowel or to be a known abbreviation). */
+function isWordPiece(piece: string, max: number): boolean {
+  return piece.length <= max && isPronounceable(piece.toLowerCase());
+}
+
+/**
+ * Every run of letters of a slug word (`v1beta1` has `v` and `beta`) is short or pronounceable, within `max`.
+ * Returns the number of 4+ letter runs, or -1 when a run is not a word.
+ */
+function slugWordRuns(word: string, max: number): number {
+  let runs = 0;
+  let start = -1;
+  for (let i = 0; i <= word.length; i += 1) {
+    const code = i < word.length ? word.charCodeAt(i) : 48;
+    const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    if (letter && start < 0) {
+      start = i;
+    } else if (!letter && start >= 0) {
+      const run = word.slice(start, i);
+      if (run.length > PIECE_FREE_LETTERS) {
+        if (!isWordPiece(run, max)) {
+          return -1;
+        }
+        runs += 1;
+      }
+      start = -1;
+    }
+  }
+  return runs;
+}
 
 /** Three or more plain words (`quick-start-guide-2`): a readable slug, never an id. */
 function isSlugLike(segment: string): boolean {
@@ -145,7 +641,12 @@ function isSlugLike(segment: string): boolean {
     if (word === '') {
       continue;
     }
-    if (!isSlugWord(word)) {
+    // A number BETWEEN letters is only a version marker (`v1beta1`): `bc29wh` and `x9ayze6` are pieces of an id.
+    if (
+      !isSlugWord(word) ||
+      (MID_DIGIT.test(word) && !VERSION_MARKER.test(word)) ||
+      slugWordRuns(word, SLUG_LIKE_PIECE_MAX_LETTERS) < 0
+    ) {
       return false;
     }
     words += 1;
@@ -154,42 +655,159 @@ function isSlugLike(segment: string): boolean {
 }
 
 /**
- * Whether a segment READS as an identifier made of words (`getUserDetailsV2`, `HTML5VideoPlayer2`,
- * `Chapter12Section3`, `gpt4oMiniPreview`) rather than a random token (R4V-5). A random base64url string has
- * short, case-flipping runs; an identifier is mostly Title/lower-case words of 3+ letters with only digits or an
- * acronym between them. Requires: enough of the segment covered by such words, two or more words of 4+
- * characters, one of 6+, and at most one stray lower-case letter outside the words. Linear.
+ * A camelCase / PascalCase identifier (`getUserDetailsV2`, `HTML5VideoPlayer2`, `Chapter12Section3`,
+ * `gpt4oMiniPreview`): two or more Title-case words that can each be pronounced, with at most one fragment of 1-2
+ * letters outside an acronym, three acronyms, three separate numbers of at most four digits. A string with one case
+ * has no Title-case word and is never an identifier. Linear, no regex.
  */
-function looksLikeWords(segment: string): boolean {
-  let covered = 0;
+function isCamelIdentifier(segment: string, inSlug = false): boolean {
+  const kinds = (index: number): number => {
+    const code = segment.charCodeAt(index);
+    if (code >= 48 && code <= 57) {
+      return 0;
+    }
+    if (code >= 65 && code <= 90) {
+      return 1;
+    }
+    return code >= 97 && code <= 122 ? 2 : 3;
+  };
+  const length = segment.length;
+  let titles = 0;
   let words = 0;
-  let longest = 0;
-  let last = 0;
-  let stray = 0;
-  const strayLower = (from: number, to: number): void => {
-    for (let i = from; i < to; i += 1) {
-      const code = segment.charCodeAt(i);
-      if (code >= 97 && code <= 122) {
-        stray += 1;
+  let strong = 0; // words of 4+ letters: a 3-letter piece with a vowel is easy to hit by chance
+  let strongLetters = 0;
+  let covered = 0; // letters that belong to a pronounceable word or an acronym
+  let strays = 0;
+  let acronyms = 0;
+  let digitRuns = 0;
+  // An upper-case run counts as part of the name when it is a fragment (`V`, `FA`) or a known abbreviation: a random
+  // `UPCG` is not evidence of anything.
+  const acronym = (from: number, to: number): boolean => {
+    const letters = to - from;
+    if (letters <= STRAY_MAX_LETTERS || KNOWN_ACRONYMS.has(segment.slice(from, to).toLowerCase())) {
+      covered += letters;
+      strongLetters += letters >= CAMEL_STRONG_WORD_LETTERS ? letters : 0;
+    }
+    acronyms += 1;
+    return acronyms <= CAMEL_MAX_ACRONYMS;
+  };
+  const word = (piece: string, isTitle: boolean): boolean => {
+    if (piece.length <= STRAY_MAX_LETTERS) {
+      strays += 1;
+      return strays <= CAMEL_MAX_STRAY_PIECES;
+    }
+    titles += isTitle ? 1 : 0;
+    words += 1;
+    if (piece.length >= CAMEL_STRONG_WORD_LETTERS) {
+      strong += 1;
+      strongLetters += piece.length;
+    }
+    covered += piece.length;
+    return isWordPiece(piece, CAMEL_PIECE_MAX_LETTERS);
+  };
+  let i = 0;
+  while (i < length) {
+    const kind = kinds(i);
+    let j = i + 1;
+    if (kind === 3) {
+      return false;
+    }
+    if (kind === 0) {
+      while (j < length && kinds(j) === 0) {
+        j += 1;
+      }
+      digitRuns += 1;
+      if (j - i > CAMEL_MAX_DIGITS || digitRuns > CAMEL_MAX_DIGIT_RUNS) {
+        return false;
+      }
+    } else if (kind === 1) {
+      while (j < length && kinds(j) === 1) {
+        j += 1;
+      }
+      if (j < length && kinds(j) === 2) {
+        // `HTMLVideo`: the last capital begins the Title word, the capitals before it are an acronym.
+        const start = j - 1;
+        let end = j;
+        while (end < length && kinds(end) === 2) {
+          end += 1;
+        }
+        if (start > i && !acronym(i, start)) {
+          return false;
+        }
+        if (!word(segment.slice(start, end), true)) {
+          return false;
+        }
+        j = end;
+      } else {
+        if (!acronym(i, j)) {
+          return false;
+        }
+      }
+    } else {
+      while (j < length && kinds(j) === 2) {
+        j += 1;
+      }
+      if (!word(segment.slice(i, j), false)) {
+        return false;
       }
     }
-  };
-  for (const match of segment.matchAll(WORD_PIECE)) {
-    const length = match[0].length;
-    covered += length;
-    words += length >= 4 ? 1 : 0;
-    longest = Math.max(longest, length);
-    strayLower(last, match.index);
-    last = match.index + length;
+    i = j;
   }
-  strayLower(last, segment.length);
-  const coverage = segment.length >= WORD_COVERAGE_LONG_FROM ? WORD_COVERAGE_LONG : WORD_COVERAGE;
+  // A name has a lead word and Title words after it (`paymentList`) only inside a slug, where the rest of the slug
+  // vouches for it; on its own it needs two Title words, so a random `AbcDef` is not a name.
+  const enough = inSlug ? titles >= 1 && words >= 2 : titles >= CAMEL_MIN_TITLE_WORDS;
   return (
-    covered >= coverage * segment.length &&
-    words >= WORD_MIN_PIECES &&
-    longest >= WORD_MIN_LONGEST &&
-    stray <= WORD_MAX_STRAY_LOWER
+    enough &&
+    strong >= CAMEL_MIN_STRONG_WORDS &&
+    strongLetters * 100 >= length * CAMEL_MIN_STRONG_COVERAGE_PERCENT &&
+    covered * 100 >= length * CAMEL_MIN_COVERAGE_PERCENT
   );
+}
+
+/**
+ * A separator-delimited slug (R5V-1) in which words outnumber the numbers: a word is a camelCase
+ * identifier or 3-12 letters (one case, or Title) that can be pronounced, with up to four trailing digits (`guide2`);
+ * a number is up to four digits or a short code (`2024`, `v2`, `q3`, `h264`, `2fa`). A piece that mixes letters and
+ * digits any other way (`k3j4`, `ab3de`) is what a random id is made of.
+ */
+function isWordSlug(segment: string): boolean {
+  let words = 0;
+  let numbers = 0;
+  for (const piece of segment.split(/[-_.]/)) {
+    if (piece === '') {
+      continue;
+    }
+    const letters = SLUG_WORD_PIECE.exec(piece)?.[1];
+    const lower = letters?.toLowerCase() ?? '';
+    if (ALL_DIGITS.test(piece) ? piece.length <= CAMEL_MAX_DIGITS : SLUG_CODE_PIECE.test(piece)) {
+      numbers += 1;
+    } else if (
+      letters !== undefined &&
+      (letters === lower ||
+        letters === letters.toUpperCase() ||
+        letters === letters.charAt(0) + lower.slice(1))
+    ) {
+      if (!isPronounceable(lower)) {
+        return false;
+      }
+      words += 1;
+    } else if (isCamelIdentifier(piece, true)) {
+      words += 1;
+    } else {
+      return false;
+    }
+  }
+  return words >= 1 && words >= numbers;
+}
+
+/**
+ * Whether a segment READS as an identifier made of words rather than a random token (R4V-5, R5V-1). Never true for a
+ * single-case string without a separator: `clh3am4pu0000qfw9rg5d1zk` is as long and as lower-case as any English
+ * run-on, and keeping it verbatim leaks an id (measured: a lower-case coverage rule kept 8-30% of cuid2 / base32 /
+ * base36 ids). Privacy over grouping: what cannot be shown to be words is templated.
+ */
+function looksLikeWords(segment: string): boolean {
+  return /[-_.]/.test(segment) ? isWordSlug(segment) : isCamelIdentifier(segment);
 }
 
 /** A phone number: optional leading `+`, then 7 to 15 numbers with `()-. ` separators. Linear, no regex. */
@@ -261,7 +879,8 @@ export function templatePathSegment(segment: string): string {
     return '{token}';
   }
   // `%40` is how an e-mail address is usually encoded into a path; a phone number's space is `%20`.
-  const decoded = segment.includes('%') ? safeDecode(segment) : segment;
+  // Decoded twice: `%2540` is an `@` that was encoded again by a proxy or a framework router (R5V-10).
+  const decoded = segment.includes('%') ? safeDecode(safeDecode(segment)) : segment;
   if (looksLikeEmail(segment) || looksLikeEmail(decoded)) {
     return '{email}';
   }
@@ -277,7 +896,7 @@ export function templatePathSegment(segment: string): string {
   if (ISO_DATE.test(decoded)) {
     return '{date}';
   }
-  if (looksLikeIp(segment)) {
+  if (looksLikeIp(segment) || looksLikeIpWithPort(segment)) {
     return '{ip}';
   }
   if (looksLikeCard(decoded)) {
@@ -286,9 +905,16 @@ export function templatePathSegment(segment: string): string {
   if (looksLikePhone(decoded)) {
     return '{phone}';
   }
+  if (TEL_PREFIX.test(decoded) && looksLikePhone(decoded.slice(4))) {
+    return 'tel:{phone}';
+  }
   // `42.json`, `<uuid>.png`: template the stem and keep the extension, so the file type still groups.
   const dot = segment.lastIndexOf('.');
   if (dot > 0 && FILE_EXTENSION.test(segment.slice(dot))) {
+    const hashed = templateHashedPieces(segment.slice(0, dot));
+    if (hashed !== segment.slice(0, dot)) {
+      return `${hashed}${segment.slice(dot)}`;
+    }
     const stem = templatePathSegment(segment.slice(0, dot));
     if (stem !== segment.slice(0, dot)) {
       return `${stem}${segment.slice(dot)}`;

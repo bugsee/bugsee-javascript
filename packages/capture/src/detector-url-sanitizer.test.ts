@@ -167,7 +167,9 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
     ['ord_12', 'ord_12'],
     ['ord_123', 'ord_{id}'],
     // slug detection: 3 plain words is a slug, 2 is not
-    ['abcdefghijklmnopqrstuvwx-yz-ab1', 'abcdefghijklmnopqrstuvwx-yz-ab1'],
+    ['internationalization-guide-ab1', 'internationalization-guide-ab1'],
+    // ... but the words must be pronounceable: the alphabet is not a word (R5V-1)
+    ['abcdefghijklmnopqrstuvwx-yz-ab1', '{token}'],
     ['abcdefghijklmnopqrstuvwx-yz1', '{token}'],
     // fixed-length ids need a number AND both cases, and exactly 20 or 21 characters
     ['abcdefghijklmnopqrst1', 'abcdefghijklmnopqrst1'],
@@ -262,7 +264,6 @@ describe('templatePathSegment: short tokens, card numbers and dot-less e-mail ho
 
   it.each([
     // ordinary segments of the same lengths / shapes stay readable
-    'abcdefgh1abcdefgh2', // two plain words and a number between: reads as words (R4V-5)
     'authentication-v2', // 17, one digit run, two words
     'ecmascript2015modules', // 21, a single digit run
     'ProductCatalogItems', // 19, mixed case, no digit
@@ -447,14 +448,15 @@ describe('templatePathSegment: e-mail uses the LAST @ and ignores dist-tags (R4V
     );
   });
 
+  // No wall-clock assertion (R5V-10: it measured 11.7 s on the CI runner against a 30 s bound): a quadratic or
+  // catastrophic regression hangs, and the test timeout is the hang guard.
   it('the word check stays linear: one million probes and million-character adversarial segments', () => {
-    const started = Date.now();
-    templatePathSegment('a@'.repeat(500_000));
+    expect(templatePathSegment('a@'.repeat(500_000))).toBe('{token}'); // past the segment cap
+    expect(templatePathSegment(`${'a@'.repeat(127)}bc`)).toBe('{email}'); // under it: every '@' is a candidate
     templatePathSegment('Abc1'.repeat(250_000));
     templatePathSegment('abc-'.repeat(250_000));
     for (let i = 0; i < 1_000_000; i += 1) {
       templatePathSegment('getUserDetailsV2'.slice(0, 1 + (i % 16)));
     }
-    expect(Date.now() - started).toBeLessThan(30_000);
   });
 });

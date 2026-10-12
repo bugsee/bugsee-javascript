@@ -2213,6 +2213,44 @@ describe('launch — trace propagation (X3)', () => {
     }
   });
 
+  // R5V-6: `['']` is a substring of every URL, so the trace + session ids went to every third party; and the
+  // invalid list must reach the host's onError THROUGH the launch (not only through the unit-level builder).
+  it('tracePropagationTargets [""] sends no trace to a third party; an invalid entry is reported', async () => {
+    const { scheduler } = fakeScheduler();
+    let init: { headers?: Record<string, string> } | undefined;
+    fetchSpy((i) => {
+      init = i;
+    });
+    const errors: Error[] = [];
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          captureNetwork: true,
+          capturedDataStore: 'memory',
+          tracePropagationTargets: ['', 5 as never],
+          onError: (e: unknown) => errors.push(e as Error),
+        }),
+      );
+      const store = client.getService(RequestContextStoreToken);
+      await store.run({ contextId: 'c1', attributes: {}, trace: TRACE }, async () => {
+        await (globalThis as { fetch: (u: string, o?: unknown) => Promise<unknown> }).fetch(
+          'https://third-party.test/x',
+          { method: 'GET' },
+        );
+      });
+      expect(init?.headers?.traceparent).toBeUndefined();
+      expect(
+        errors.filter((e) => e.message.includes('tracePropagationTargets entries')),
+      ).toHaveLength(1);
+    } finally {
+      await client?.stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
   // R4V-4: `propagateTrace` is node's OWN definition (default ON, fail OFF): `'false'`/`0`/`null`/`''` used to
   // leave propagation ON (a raw `=== false` read). Only boolean `true` or absence keeps it on.
   it.each([

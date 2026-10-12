@@ -22,6 +22,8 @@ export interface TracePropagationOptions {
   /** Targets allowed to receive `traceparent` (substring or RegExp). Node has no same-origin default, so
    *  without this nothing is propagated. */
   tracePropagationTargets?: ReadonlyArray<string | RegExp>;
+  /** Where an invalid `tracePropagationTargets` is reported (R5V-6). */
+  onError?: (error: unknown) => void;
 }
 
 /**
@@ -59,5 +61,6 @@ export function buildTracePropagationDecorator(
     ...(options.tracePropagationTargets !== undefined
       ? { allowlist: options.tracePropagationTargets }
       : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
 }

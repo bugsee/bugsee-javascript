@@ -44,6 +44,19 @@ describe('buildTracePropagationDecorator', () => {
     expect(d?.(req('https://api.stripe.com/charge'))).toBeUndefined();
   });
 
+  // R5V-6: an empty entry used to match every URL (the trace + session ids went to every third party).
+  it('an empty-string target propagates to nobody; an invalid list is reported through onError', () => {
+    const errors: unknown[] = [];
+    const d = buildTracePropagationDecorator(
+      store({ traceId: TID, spanId: SID, sampled: true }),
+      api(),
+      { tracePropagationTargets: ['', 7 as never], onError: (e) => errors.push(e) },
+    );
+    expect(d?.(req('https://api.stripe.com/charge'))).toBeUndefined();
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toMatch(/tracePropagationTargets entries/);
+  });
+
   it('does nothing when no per-request trace is active', () => {
     const d = buildTracePropagationDecorator(store(undefined), api(), {
       tracePropagationTargets: ['svc'],

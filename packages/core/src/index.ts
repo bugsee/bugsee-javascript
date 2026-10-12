@@ -14,6 +14,9 @@ export {
   serviceToken,
 } from '@bugsee/service';
 export type { AttributeValue } from '@bugsee/types';
+// Diagnostics helpers for packages that read a host option themselves (framework adapters) and must warn about
+// an invalid value without ever breaking launch (R5V-4/5/8); they live in @bugsee/util.
+export { describeValue, reportGuarded } from '@bugsee/util';
 export {
   addReportAttachment,
   MAX_USER_ATTACHMENT_BYTES,
@@ -229,6 +232,7 @@ export {
   FAIL_ON_BOOLEAN_OPTION,
   type OptionDefinition,
   type ResolvedLaunchOptions,
+  resolveFailClosedBoolean,
   resolveFailOnBoolean,
   resolveLaunchOptions,
 } from './options';

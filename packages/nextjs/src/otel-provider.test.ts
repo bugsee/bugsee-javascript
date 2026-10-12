@@ -56,6 +56,66 @@ describe('attachBugseeOtelProvider', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  // R5V-8: `=== false` meant `'false'`, `0` and `null` kept the zero-config global provider ON. It installs a
+  // process-wide provider and consumes every span, so an invalid value is OFF and reported.
+  it.each([
+    ['false', '"false"'],
+    [0, '0'],
+    [null, 'null'],
+    ['', '""'],
+    ['true', '"true"'],
+    [1, '1'],
+    [{}, '[object Object]'],
+  ])('an invalid setupOtelProvider %j is OFF (never loads the SDK) and is reported', async (value, text) => {
+    const load = vi.fn(async () => fakeMods());
+    const onError = vi.fn();
+    const outcome = await attachBugseeOtelProvider(processor, {
+      setupOtelProvider: value as never,
+      load,
+      onError,
+    });
+    expect(outcome).toBe('disabled');
+    expect(load).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    const message = (onError.mock.calls[0]?.[0] as Error).message;
+    expect(message).toContain('setupOtelProvider');
+    expect(message).toContain('OFF');
+    expect(message).toContain(`got ${text}`);
+  });
+
+  it.each([
+    [undefined],
+    [true],
+  ])('setupOtelProvider %j sets the provider up and reports nothing', async (value) => {
+    const mods = fakeMods();
+    const onError = vi.fn();
+    const outcome = await attachBugseeOtelProvider(processor, {
+      ...(value === undefined ? {} : { setupOtelProvider: value }),
+      load: async () => mods,
+      onError,
+    });
+    expect(outcome).toBe('registered');
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('an explicit false is silent', async () => {
+    const onError = vi.fn();
+    expect(await attachBugseeOtelProvider(processor, { setupOtelProvider: false, onError })).toBe(
+      'disabled',
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a rethrowing onError cannot make the invalid-value warning throw or reject', async () => {
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    await expect(
+      attachBugseeOtelProvider(processor, { setupOtelProvider: 'no' as never, onError }),
+    ).resolves.toBe('disabled');
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('skips gracefully when the optional OTel SDK is not installed', async () => {
     const outcome = await attachBugseeOtelProvider(processor, { load: async () => undefined });
     expect(outcome).toBe('unavailable');

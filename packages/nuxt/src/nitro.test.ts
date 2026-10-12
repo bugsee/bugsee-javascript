@@ -243,4 +243,69 @@ describe('installBugseeNitro', () => {
     });
     expect(hasRenderHook()).toBe(false);
   });
+
+  // R5V-8: truthiness meant `'false'` and `1` kept injecting the trace id into every SSR page while `null`/`0`
+  // turned it off silently. It emits ids into the HTML, so an invalid value is OFF and reported.
+  it.each([
+    ['false', '"false"'],
+    ['true', '"true"'],
+    [1, '1'],
+    [0, '0'],
+    [null, 'null'],
+    ['', '""'],
+    [{}, '[object Object]'],
+  ])('an invalid injectTraceMeta %j registers NO render:html hook and is reported', (value, text) => {
+    const { nitroApp, hasRenderHook } = fakeNitro();
+    const onError = vi.fn();
+    installBugseeNitro(nitroApp, {
+      appToken: 'tok',
+      injectTraceMeta: value as never,
+      onError,
+      launch: () => fakeClient() as never,
+    });
+    expect(hasRenderHook()).toBe(false);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const message = (onError.mock.calls[0]?.[0] as Error).message;
+    expect(message).toContain('injectTraceMeta');
+    expect(message).toContain('OFF');
+    expect(message).toContain(`got ${text}`);
+  });
+
+  it.each([
+    [undefined],
+    [true],
+  ])('injectTraceMeta %j registers the hook and reports nothing', (value) => {
+    const { nitroApp, hasRenderHook } = fakeNitro();
+    const onError = vi.fn();
+    installBugseeNitro(nitroApp, {
+      appToken: 'tok',
+      ...(value === undefined ? {} : { injectTraceMeta: value }),
+      onError,
+      launch: () => fakeClient() as never,
+    });
+    expect(hasRenderHook()).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('an explicit false is silent, and a rethrowing onError cannot break installing the hooks', () => {
+    const quiet = vi.fn();
+    installBugseeNitro(fakeNitro().nitroApp, {
+      appToken: 'tok',
+      injectTraceMeta: false,
+      onError: quiet,
+      launch: () => fakeClient() as never,
+    });
+    expect(quiet).not.toHaveBeenCalled();
+    const { nitroApp } = fakeNitro();
+    expect(() =>
+      installBugseeNitro(nitroApp, {
+        appToken: 'tok',
+        injectTraceMeta: 'no' as never,
+        onError: () => {
+          throw new Error('the host sink rethrows');
+        },
+        launch: () => fakeClient() as never,
+      }),
+    ).not.toThrow();
+  });
 });
