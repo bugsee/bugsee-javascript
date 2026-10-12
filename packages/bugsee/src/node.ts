@@ -1,6 +1,5 @@
-import type { Bugsee } from '@bugsee/node';
 import { launchCore } from '@bugsee/node';
-import { type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
+import { type Bugsee, type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
 
 // The `bugsee` umbrella launch() for NODE — the batteries-included server entry, selected via the package
 // `exports` "node" condition. The composition itself lives in ./server-launch, shared with the bun and deno

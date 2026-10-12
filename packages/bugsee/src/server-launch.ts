@@ -1,4 +1,6 @@
-import type { Bugsee, BugseeLaunchOptions, LaunchResult } from '@bugsee/node';
+import type { BugseeLaunchOptions, LaunchResult, Bugsee as NodeBugsee } from '@bugsee/node';
+import type { PerformanceFacade } from '@bugsee/performance';
+import { withPerformanceFacade } from './performance-facade';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
 // The shared umbrella launch() for every SERVER runtime — node, bun and deno (Wave 3b.1 / 4.1).
@@ -13,6 +15,9 @@ import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 // A server runtime has no pageload lifecycle, so instead of a pageload transaction it records a startup
 // transaction (process-start → launch, `app.start`); web-vitals and finish-on-hidden are browser-only.
 
+/** The launched client on a server runtime: the platform client plus the top-level performance calls. */
+export type Bugsee = NodeBugsee & PerformanceFacade;
+
 export interface BugseeServerLaunchOptions extends BugseeLaunchOptions, UmbrellaExtensionOptions {
   /** Process start time (ms) for the `app.start` startup transaction. Default `Date.now() -
    *  process.uptime()*1000`; override for determinism / a custom start mark. */
@@ -26,7 +31,7 @@ export function createServerLaunch(
   return (appToken: string, options: BugseeServerLaunchOptions = {}): Bugsee => {
     const { client, internals } = launchCore(appToken, options);
     // No internals → a prior launch already owns the process singleton (and already wired the extensions).
-    if (internals === undefined) return client;
+    if (internals === undefined) return withPerformanceFacade(client);
     // Process start = now − uptime. Reached via globalThis (no node:process import → no node types needed);
     // these entries only run on server runtimes, where process.uptime always exists (Bun and Deno both
     // provide it through their node-compat layers).

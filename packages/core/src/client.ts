@@ -149,12 +149,21 @@ function describeError(error: unknown): string | undefined {
 
 /** Options for logException (a focused core subset of Android ExceptionOptions). */
 export interface LogExceptionOptions {
-  /** Capture mechanism for the wire source (default 'programmatic'). */
-  mechanism?: Mechanism;
   /** Issue severity (default derived from the error issue type). */
   severity?: SeverityName;
   /** Extra labels for the issue. */
   labels?: string[];
+}
+
+/**
+ * {@link LogExceptionOptions} plus the wire `source.mechanism`. SDK-internal: the mobile SDKs expose no
+ * such option, so the public `BugseeClient` does not accept it. Adapters and platform packages reach it
+ * through {@link asInternalClient}.
+ * @internal
+ */
+export interface InternalLogExceptionOptions extends LogExceptionOptions {
+  /** Capture mechanism for the wire source (default 'programmatic'). */
+  mechanism?: Mechanism;
 }
 
 /**
@@ -170,6 +179,13 @@ export interface UploadOptions {
   labels?: string[];
   /** Reporter email; when absent the global user identifier is used, as for any report. */
   email?: string;
+}
+
+/**
+ * {@link UploadOptions} plus the wire `source.type`. SDK-internal: the mobile SDKs expose no such option.
+ * @internal
+ */
+export interface InternalUploadOptions extends UploadOptions {
   /**
    * Who asked: `code_upload` (the default — the app called `upload()` directly) or `code_dialog` (the
    * user filled in the report dialog). It is the report's `source.type` on the wire, which the viewer
@@ -188,6 +204,11 @@ export interface PreparedUpload {
   send(options?: UploadOptions): Promise<UploadResult>;
   /** Release the frozen capture without sending anything. */
   discard(): void;
+}
+
+/** {@link PreparedUpload} whose `send` also accepts the internal `trigger`. @internal */
+export interface InternalPreparedUpload extends PreparedUpload {
+  send(options?: InternalUploadOptions): Promise<UploadResult>;
 }
 
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
@@ -268,6 +289,27 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   stop(timeout?: number): Promise<boolean>;
   /** Drain pending uploads. Resolves true if drained within `timeout`. */
   flush(timeout?: number): Promise<boolean>;
+}
+
+/**
+ * The client as the SDK's own packages see it: the public {@link BugseeClient} plus the wire-level
+ * options (`mechanism`, `trigger`) the public surface deliberately omits. A subtype, so it is assignable
+ * to `BugseeClient`; the reverse needs {@link asInternalClient}.
+ * @internal
+ */
+export interface InternalBugseeClient extends BugseeClient {
+  logException(error: unknown, options?: InternalLogExceptionOptions): Promise<UploadResult>;
+  upload(options?: InternalUploadOptions): Promise<UploadResult>;
+  prepareUpload(): InternalPreparedUpload | null;
+}
+
+/**
+ * View a public client through its internal surface. A type-level cast only: every client the SDK
+ * creates already implements the internal options.
+ * @internal
+ */
+export function asInternalClient(client: BugseeClient): InternalBugseeClient {
+  return client as InternalBugseeClient;
 }
 
 /**
@@ -380,7 +422,7 @@ interface ReportIdentity {
   userIdentifier: string | null;
 }
 
-export function createClient(options: CreateClientOptions = {}): BugseeClient {
+export function createClient(options: CreateClientOptions = {}): InternalBugseeClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
   const onError = options.onError ?? (() => {});
@@ -576,7 +618,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
   // Build, filter and submit a report someone explicitly asked for (`upload` / a prepared upload).
   const sendUpload = (
-    uploadOptions: UploadOptions,
+    uploadOptions: InternalUploadOptions,
     frozen?: Promise<Map<FileType, CaptureDataEntry[]>>,
   ): Promise<UploadResult> => {
     const request = createReportingRequest({
@@ -921,7 +963,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
     logException: function logException(
       error: unknown,
-      exceptionOptions?: LogExceptionOptions,
+      exceptionOptions?: InternalLogExceptionOptions,
     ): Promise<UploadResult> {
       // After stop() (§1501) or in the kill-state (§1435), logException is a silent no-op.
       if (stopped || killed) {
@@ -977,14 +1019,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return submitReport(handled);
     },
 
-    upload(uploadOptions: UploadOptions = {}): Promise<UploadResult> {
+    upload(uploadOptions: InternalUploadOptions = {}): Promise<UploadResult> {
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
       return sendUpload(uploadOptions);
     },
 
-    prepareUpload(): PreparedUpload | null {
+    prepareUpload(): InternalPreparedUpload | null {
       if (stopped || killed) {
         return null;
       }
@@ -1002,7 +1044,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       frozen.catch(() => undefined);
       let spent = false;
       return {
-        send(sendOptions: UploadOptions = {}): Promise<UploadResult> {
+        send(sendOptions: InternalUploadOptions = {}): Promise<UploadResult> {
           if (spent || stopped || killed) {
             return Promise.resolve({ ok: false });
           }

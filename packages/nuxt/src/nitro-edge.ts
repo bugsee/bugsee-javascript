@@ -9,6 +9,7 @@
 // (on `event.context.cloudflare.context`) or Vercel Edge's global request-context symbol. This delivers the
 // moat's edge value (server errors reported from Nuxt-on-edge — a differentiator Sentry lacks). Full
 // per-request context/trace correlation on edge needs Nitro fetch-entry wrapping — a documented v2.
+import { asInternalClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeEdgeLaunchOptions,
@@ -86,7 +87,7 @@ export function installBugseeNitroEdge(
     waitUntil(
       (async () => {
         try {
-          await client.logException(error, { mechanism: 'http-error' });
+          await asInternalClient(client).logException(error, { mechanism: 'http-error' });
           // A non-finite deadline means NO deadline: `flush` races `sleep(timeout)`, and
           // `setTimeout(fn, Infinity)` coerces to 0 and fires at once, which would abandon immediately.
           const delivered = await client.flush(

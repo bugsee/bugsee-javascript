@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import {
+  type InternalPreparedUpload,
+  type InternalUploadOptions,
   LifecycleEvents,
-  type PreparedUpload,
-  type UploadOptions,
   type UploadResult,
 } from '@bugsee/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,10 +26,10 @@ const UI: ReportDialogUiOptions = {
 
 interface Harness {
   deps: ReportDialogDeps;
-  /** `PreparedUpload.send` — what the dialog submits. */
-  upload: ReturnType<typeof vi.fn<(options: UploadOptions) => Promise<UploadResult>>>;
+  /** `InternalPreparedUpload.send` — what the dialog submits. */
+  upload: ReturnType<typeof vi.fn<(options: InternalUploadOptions) => Promise<UploadResult>>>;
   discard: ReturnType<typeof vi.fn<() => void>>;
-  prepare: ReturnType<typeof vi.fn<() => PreparedUpload | null>>;
+  prepare: ReturnType<typeof vi.fn<() => InternalPreparedUpload | null>>;
   setUserIdentifier: ReturnType<typeof vi.fn<(email: string) => void>>;
   clearUserIdentifier: ReturnType<typeof vi.fn<() => void>>;
   show: ReturnType<typeof createReportDialogLauncher>;
@@ -39,11 +39,11 @@ const harness = (
   overrides: Partial<ReportDialogDeps> = {},
   ui: Partial<ReportDialogUiOptions> = {},
 ): Harness => {
-  const upload = vi.fn<(options: UploadOptions) => Promise<UploadResult>>(async () => ({
+  const upload = vi.fn<(options: InternalUploadOptions) => Promise<UploadResult>>(async () => ({
     ok: true,
   }));
   const discard = vi.fn<() => void>();
-  const prepare = vi.fn<() => PreparedUpload | null>(() => ({ send: upload, discard }));
+  const prepare = vi.fn<() => InternalPreparedUpload | null>(() => ({ send: upload, discard }));
   const setUserIdentifier = vi.fn<(email: string) => void>();
   const clearUserIdentifier = vi.fn<() => void>();
   const deps: ReportDialogDeps = {

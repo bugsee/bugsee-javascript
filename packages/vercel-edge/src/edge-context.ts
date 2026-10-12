@@ -1,5 +1,5 @@
 import type { AttributeValue, RequestContext } from '@bugsee/core';
-import { neverThrow } from '@bugsee/core';
+import { asInternalClient, neverThrow } from '@bugsee/core';
 import { randomId } from '@bugsee/util';
 import { type Bugsee, EdgeContextStoreToken } from './launch';
 import type { EdgeRequestContextStore } from './request-context-store';
@@ -106,7 +106,10 @@ export async function runInEdgeContext<T>(
       // "SDK internal failure" instead of what actually went wrong. `neverThrow` also attaches a rejection
       // handler to the returned promise, so the fire-and-forget call cannot surface as an unhandled
       // rejection in the isolate one tick later.
-      neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), options.onError);
+      neverThrow(
+        () => asInternalClient(client).logException(error, { mechanism: 'uncaught' }),
+        options.onError,
+      );
       throw error;
     }
   };

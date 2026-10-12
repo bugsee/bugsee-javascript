@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { asInternalClient, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   defaultShouldReport,
@@ -164,7 +164,7 @@ export function errorHandler(options: ExpressAdapterOptions = {}): ErrorMiddlewa
         if (store !== undefined && route !== undefined) {
           store.setAttribute('http.route', route);
         }
-        void client.logException(err, { mechanism: 'http-error' });
+        void asInternalClient(client).logException(err, { mechanism: 'http-error' });
       }
     } catch {
       // the adapter must never replace the app's own error handling

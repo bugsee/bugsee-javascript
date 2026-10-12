@@ -18,6 +18,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -740,7 +741,7 @@ export async function launchCore(
   const showReportDialog = createReportDialogLauncher({
     // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.
     document: domDocument as Document,
-    prepare: () => client.prepareUpload(),
+    prepare: () => asInternalClient(client).prepareUpload(),
     isLaunched: () => domDocument !== undefined && client.isLaunched(),
     getUserIdentifier: () => client.getUserIdentifier(),
     setUserIdentifier: (email) => client.setUserIdentifier(email),

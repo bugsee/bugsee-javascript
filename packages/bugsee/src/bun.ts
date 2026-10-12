@@ -1,6 +1,5 @@
 import { launchCore } from '@bugsee/bun';
-import type { Bugsee } from '@bugsee/node';
-import { type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
+import { type Bugsee, type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
 
 // The `bugsee` umbrella launch() for BUN — selected via the package `exports` "bun" condition, which must
 // be listed BEFORE "node" because Bun sets both.
