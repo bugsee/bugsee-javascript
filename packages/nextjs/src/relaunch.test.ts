@@ -277,7 +277,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
   it.each([
     ['otelConsume: false', { otelConsume: false }],
     ['performance monitoring off', { performanceMonitoring: false }],
-  ])('creates no delegate and registers nothing when OTel is off (%s) (R4H-9)', (_n, over) => {
+  ])('creates no delegate and registers nothing when OTel is off (%s)', (_n, over) => {
     const carrier = {};
     started.push(registerServer('tok', opts(carrier, over as Partial<NextjsServerOptions>)));
     expect(targetOf(carrier)).toBeUndefined();

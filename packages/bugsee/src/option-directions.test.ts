@@ -144,12 +144,12 @@ const RAW_STRICT: Record<string, RawEntry> = {
   },
   'nextjs:setupOtelProvider': {
     safe: 'off',
-    why: 'default ON, installs a process-wide provider that consumes every span: invalid is OFF + onError (R5V-8)',
+    why: 'default ON, installs a process-wide provider that consumes every span: invalid is OFF + onError',
     check: ['nextjs', /resolveFailClosedBoolean\(\s*options\.setupOtelProvider/],
   },
   'nuxt:injectTraceMeta': {
     safe: 'off',
-    why: 'default ON, emits trace ids into every rendered page: invalid is OFF + onError (R5V-8)',
+    why: 'default ON, emits trace ids into every rendered page: invalid is OFF + onError',
     check: ['nuxt', /resolveFailClosedBoolean\(\s*injectTraceMeta/],
   },
 };

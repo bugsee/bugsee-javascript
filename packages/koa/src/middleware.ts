@@ -39,7 +39,7 @@ export interface KoaAdapterOptions {
   /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx. */
   shouldReport?: (
     err: unknown,
-  ) => boolean /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */;
+  ) => boolean /** Where an SDK-internal failure is reported. Never thrown into the request. */;
   onError?: (error: unknown) => void;
 }
 

@@ -96,9 +96,8 @@ jobs:
   #
   # These existed but were OUTSIDE the gate until 2026-07-27: the `check` job runs
   # `turbo run test:coverage`, and the four harness packages define only `test:e2e`, so
-  # turbo reported `<NONEXISTENT>` and skipped them silently. The adversarial review
-  # (docs/review/e2e-harnesses.md, SEV1 #1) identified that as the root cause of most of
-  # its ~90 SEV1 findings surviving ~100% unit coverage.
+  # turbo reported `<NONEXISTENT>` and skipped them silently. An adversarial review
+  # identified that as the root cause of most of its ~90 severe findings surviving ~100% unit coverage.
   #
   # Separate job so it runs alongside `check` and so its extra runtime setup
   # (bun, deno) is isolated. Bun and Deno are installed deliberately: the harness SKIPS

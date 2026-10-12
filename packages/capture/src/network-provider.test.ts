@@ -613,7 +613,7 @@ describe('createNetworkCaptureProvider', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// FINDING 2 (solid-spa F-1) — investigated, NOT changed. A user network filter's veto is applied per
+// Investigated, NOT changed. A user network filter's veto is applied per
 // NetworkStage-ENTRY, not per logical request: vetoing the `complete` stage does not retroactively or
 // prospectively veto the `before` stage of the SAME request (shared `id`), so `before`'s URL/request
 // body still ships. Verified this is Android-canonical (CLAUDE.md's binding parity target), not a JS-only
@@ -683,7 +683,7 @@ describe('network filter veto granularity — per stage-entry, not per request (
 });
 
 // ---------------------------------------------------------------------------------------------------
-// FINDING 3 (solid-spa finding C) — documentation only, behaviour unchanged (deliberate Android XOR
+// Documentation only, behaviour unchanged (deliberate Android XOR
 // rule; see the doc comments on `onStart` and `createNetworkCaptureProvider` above). This test guards
 // that the (now-documented) behaviour itself doesn't drift: installing ANY network filter — even a pure
 // pass-through identity filter that redacts nothing — disables the default PII sanitizer, silently, for

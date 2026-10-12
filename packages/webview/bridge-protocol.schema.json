@@ -310,7 +310,7 @@
             },
             "blackout": {
               "type": "boolean",
-              "description": "Native declares that it applies `blackout` messages to its own visual capture (R2V-2)."
+              "description": "Native declares that it applies `blackout` messages to its own visual capture."
             }
           },
           "additionalProperties": false

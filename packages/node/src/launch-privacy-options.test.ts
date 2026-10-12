@@ -166,7 +166,7 @@ describe('instrumentIncomingRequests: only boolean false opts out', () => {
 
   it.each(
     INVALID,
-  )('instrumentIncomingRequests=%j is OFF (fail closed, R4V-2) and reports', (bad) => {
+  )('instrumentIncomingRequests=%j is OFF (fail closed) and reports', (bad) => {
     const server = installable();
     const { onError } = start({ instrumentIncomingRequests: bad, serverInterceptor: server });
     expect(server.install).not.toHaveBeenCalled();
