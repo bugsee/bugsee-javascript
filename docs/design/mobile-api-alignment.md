@@ -146,6 +146,8 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
 
 ## Kept differences (documented, not changed)
 
+- **`captureLogs: false` gates automatic capture only; `client.log()` is always recorded** (bugsee/specs#49 / PR 52). The JS SDK already behaves this way: the option switches off the console provider, while `client.log()` writes straight to the capture aggregator (only `captureLogsLevel` filters it). Pinned in `packages/node/src/mobile-options.launch.test.ts`. Not yet applicable: absent-output entries (`not_enabled` / `no_data`), which the JS bundle does not emit today.
+
 - **Node `.stopped` is written when the stop drain completes, not at `stop()`** (PR #41 review). An overlapping `stop()` + `launch()` leaves the old subtree un-marked until its drain finishes; writing it earlier would let a sibling recover (upload twice or delete) a subtree still uploading (round-1 L5/L7). Nothing is lost: the marker lands when the drain does, and the next launch recovers it.
 
 - **Lifecycle upload events and `ReportHandler.after` cover the live path only** (PR #37 review). They follow trigger → assemble → upload. A report delivered another way (durable recovery on the next launch, native-crash harvest, trigger-queue overflow, WebView/Electron-renderer hand-off, where `after` still runs) is not announced with `BeforeReportAssembled`/`AfterReportUploaded`. Accepted for the beta: Android announces from its single report builder, JS has several delivery paths; unifying them is a follow-up.

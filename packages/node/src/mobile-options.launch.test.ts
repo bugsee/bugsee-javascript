@@ -179,6 +179,33 @@ describe('captureBreadcrumbs / captureLogsLevel', () => {
   });
 });
 
+describe('captureLogs gates automatic capture, not explicit client.log() (specs#49)', () => {
+  const logTextOf = (files: Files): string =>
+    Object.entries(files)
+      .filter(([name]) => name.startsWith('log'))
+      .map(([, bytes]) => strFromU8(bytes))
+      .join('\n');
+
+  it('records client.log() lines and no console output with captureLogs off', async () => {
+    const { client, transport } = start({ captureLogs: false });
+    console.error('auto-captured-console-line');
+    client.log('explicit-app-line', 'info');
+    await client.upload({ summary: 'x' });
+    const text = logTextOf(uploads(transport)[0] as Files);
+    expect(text).toContain('explicit-app-line');
+    expect(text).not.toContain('auto-captured-console-line');
+  });
+
+  it('with captureLogs off and nothing logged explicitly there is no log file', async () => {
+    const { client, transport } = start({ captureLogs: false });
+    console.error('auto-captured-console-line');
+    await client.upload({ summary: 'x' });
+    expect(Object.keys(uploads(transport)[0] as Files).some((n) => n.startsWith('log'))).toBe(
+      false,
+    );
+  });
+});
+
 describe('reportDefault{Crash,Error}Priority', () => {
   it('gives a detected crash the configured severity (low = 1), and blocker (5) by default', async () => {
     const low = start({ reportDefaultCrashPriority: 'low' });
