@@ -18,6 +18,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  BlackoutToken,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -486,8 +487,16 @@ export async function launchCore(
   // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
   // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
   const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
+  let clientRef: BugseeClient | undefined;
   const reportSnapshots = captureViewtree
-    ? [createViewtreeSnapshotSource({ document: domDocument })]
+    ? [
+        createViewtreeSnapshotSource({
+          document: domDocument,
+          // The source is built before the client (it is an input to it), so it reads the client's blackout
+          // through a late-bound reference. A report cannot be assembled before the client exists.
+          blackout: { isActive: () => clientRef?.isBlackout() === true },
+        }),
+      ]
     : undefined;
 
   // Session replay (lazy). When enabled, a shared fileEncoders map is threaded into the client's report
@@ -539,6 +548,8 @@ export async function launchCore(
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
 
+  clientRef = client;
+
   // Run every contributed service manifest against the now-populated container.
   for (const manifest of getServiceManifests(carrier)) {
     manifest(client);
@@ -579,7 +590,8 @@ export async function launchCore(
     () => createBrowserInputSource({ target: domDocument }),
     carrier,
   );
-  client.addCaptureProvider(createInputProvider(inputSource));
+  const blackout = client.getService(BlackoutToken);
+  client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
   // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,
   // in CSS px, so it shrinks under page zoom while `clientX` does not, and the click renders off the
@@ -602,9 +614,13 @@ export async function launchCore(
     carrier,
   );
   client.addCaptureProvider(
-    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
-      client.addBreadcrumb(crumb);
-    }),
+    createUiBreadcrumbProvider(
+      uiBreadcrumbSource,
+      (crumb) => {
+        client.addBreadcrumb(crumb);
+      },
+      blackout,
+    ),
   );
 
   // Session replay: lazy-`import()` @bugsee/replay unless it was opted OUT (`replay: false`) or this host
@@ -629,6 +645,9 @@ export async function launchCore(
           : undefined;
         m.registerReplay(client, fileEncoders, {
           ...replayMasking,
+          // The recorder follows the client's blackout: stopped for its whole span, restarted (a fresh full
+          // snapshot) at the end — and never started at all if a blackout began before this chunk loaded.
+          blackout: client.getService(BlackoutToken),
           ...(canvas !== undefined ? { canvas } : {}),
           // Give replay's masking resolver a sink: it drops an invalid caller selector rather than letting
           // it disable privacy page-wide, and that downgrade must not be silent (Wave 1.4).

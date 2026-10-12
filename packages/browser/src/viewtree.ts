@@ -1,4 +1,4 @@
-import { CaptureDataEntryBase, type ReportSnapshotSource } from '@bugsee/core';
+import { type BlackoutGate, CaptureDataEntryBase, type ReportSnapshotSource } from '@bugsee/core';
 import { describeTarget } from './input-source';
 
 // Browser VIEW HIERARCHY (Android viewtree parity). A DOM-tree snapshot taken AT REPORT TIME (the
@@ -43,6 +43,8 @@ export interface DomSnapshotEnv {
   maxNodes?: number;
   /** Max tree depth captured. Default 32. */
   maxDepth?: number;
+  /** The blackout gate. {@link createViewtreeSnapshotSource} yields NOTHING (and never reads the DOM) while active. */
+  blackout?: Pick<BlackoutGate, 'isActive'>;
 }
 
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template']);
@@ -124,6 +126,10 @@ export function createDomSnapshot(env: DomSnapshotEnv = {}): () => ViewNode | un
 export function createViewtreeSnapshotSource(env?: DomSnapshotEnv): ReportSnapshotSource {
   const snapshot = createDomSnapshot(env);
   return (now: number) => {
+    // Blackout: the view hierarchy is visual capture. A report built while it is in force carries none.
+    if (env?.blackout?.isActive() === true) {
+      return [];
+    }
     const tree = snapshot();
     return tree !== undefined ? [new CaptureDataEntryBase('viewtree', now, tree)] : [];
   };

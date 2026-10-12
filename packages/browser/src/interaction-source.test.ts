@@ -1,3 +1,4 @@
+import { createBlackoutState } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import {
   createBrowserInteractionSource,
@@ -238,5 +239,23 @@ describe('createBrowserInteractionSource', () => {
     expect(instances[0]?.disconnected).toBe(false);
     off();
     expect(instances[0]?.disconnected).toBe(true);
+  });
+
+  it('emits nothing during a blackout, and an entry seen then is not replayed after it ends', () => {
+    const { Ctor, instances } = fakeObserver();
+    const blackout = createBlackoutState();
+    const { seen } = wire({ PerformanceObserver: Ctor, blackout });
+    const click = (id: number) => ({
+      name: 'click',
+      duration: 90,
+      interactionId: id,
+      target: { tagName: 'BUTTON', id: `b${id}` },
+    });
+    instances[0]?.push([click(1)]);
+    blackout.start();
+    instances[0]?.push([click(2)]);
+    blackout.end();
+    instances[0]?.push([click(2), click(3)]); // 2 was consumed during the blackout
+    expect(seen.map((d) => d.interactionId)).toEqual([1, 3]);
   });
 });

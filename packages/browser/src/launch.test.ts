@@ -705,6 +705,114 @@ describe('launch', () => {
     ]);
   });
 
+  describe('blackout', () => {
+    const press = (doc: ReturnType<typeof fakeWindow>, id: number): void =>
+      doc.emit('pointerdown', {
+        pointerId: id,
+        pointerType: 'mouse',
+        target: {
+          tagName: 'BUTTON',
+          getAttribute: () => null,
+          closest: () => null,
+          matches: () => false,
+        },
+        clientX: id,
+        clientY: id,
+        button: 0,
+        pressure: 0.5,
+      });
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      type: 'number',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+
+    it('exposes startBlackout / endBlackout / isBlackout on the launched client', async () => {
+      const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+      expect(client.isBlackout()).toBe(false);
+      client.startBlackout();
+      expect(client.isBlackout()).toBe(true);
+      client.endBlackout();
+      expect(client.isBlackout()).toBe(false);
+    });
+
+    it('suppresses input presses and ui.* breadcrumbs for the blackout window only', async () => {
+      const store = memStore();
+      const doc = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+      );
+      press(doc, 1);
+      doc.emit('focusin', { target: field });
+      client.startBlackout();
+      press(doc, 2);
+      doc.emit('change', { target: field });
+      doc.emit('submit', { target: field });
+      client.endBlackout();
+      press(doc, 3);
+      doc.emit('change', { target: field });
+
+      const input = await drain(store, 'input');
+      expect(input?.map((e) => (e.data as { x: number }).x)).toEqual([1, 3]);
+      const crumbs = await drain(store, 'breadcrumbs');
+      expect(crumbs?.map((e) => (e.data as { category: string }).category)).toEqual([
+        'ui.focus',
+        'ui.change',
+      ]);
+    });
+
+    it('does NOT suppress non-visual capture: logs, events and app breadcrumbs continue', async () => {
+      const store = memStore();
+      const client = await launchTracked('tok', baseOptions({ captureStore: store }));
+      client.startBlackout();
+      client.log('kept');
+      client.event('kept-event');
+      client.addBreadcrumb({ category: 'app.step', message: 'kept' });
+      expect(await drain(store, 'log')).toHaveLength(1);
+      expect(await drain(store, 'events.user')).toHaveLength(1);
+      expect(
+        (await drain(store, 'breadcrumbs'))?.map((e) => (e.data as { category: string }).category),
+      ).toEqual(['app.step']);
+    });
+
+    it('a report built DURING a blackout carries no viewtree; one built after it does', async () => {
+      const transport = uploadTransport();
+      const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ transport, captureStore: memStore(), document: doc }),
+      );
+      const bundleFiles = (n: number): Record<string, Uint8Array> => {
+        const puts = transport.mock.calls.filter(([url]) => url === 'https://s3.test/put');
+        return unzipSync((puts[n]?.[1] as HttpRequestOptions).body as Uint8Array);
+      };
+      client.startBlackout();
+      await client.upload({ summary: 'during' });
+      expect(bundleFiles(0)['viewtree.json']).toBeUndefined();
+      client.endBlackout();
+      await client.upload({ summary: 'after' });
+      expect(bundleFiles(1)['viewtree.json']).toBeDefined();
+    });
+
+    it('hands the replay recorder the client blackout gate so it follows the blackout', async () => {
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ document: fakeDocument(viewEl('body')) }),
+      );
+      await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+      const options = registerReplay.mock.calls[0]?.[2] as {
+        blackout: { isActive(): boolean };
+      };
+      expect(options.blackout.isActive()).toBe(false);
+      client.startBlackout();
+      expect(options.blackout.isActive()).toBe(true);
+    });
+  });
+
   it('omits the viewtree when captureViewHierarchy is disabled', async () => {
     const transport = uploadTransport();
     const doc = fakeDocument(viewEl('body'));
@@ -1756,7 +1864,7 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({}); // no caller overrides → replay's own fail-closed defaults apply
+    expect(call[2]).toEqual({ blackout: expect.any(Object) }); // no caller overrides → replay's own fail-closed defaults apply
   });
 
   it('records when the document arrives via window.document (the real-browser path)', async () => {
@@ -1803,7 +1911,11 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({ maskAllText: false, checkoutEveryNms: 5000 }); // options forwarded
+    expect(call[2]).toEqual({
+      maskAllText: false,
+      checkoutEveryNms: 5000,
+      blackout: expect.any(Object),
+    }); // options forwarded
   });
 
   it('forwards the launch onError so a dropped masking selector is actually reported', async () => {
@@ -1818,7 +1930,7 @@ describe('launch — session replay (lazy)', () => {
   it('enables replay with default options when replay is `true`', async () => {
     await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
-    expect(registerReplay.mock.calls[0]?.[2]).toEqual({}); // no options object → {}
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
   });
 
   // `replay: false` is now THE errors-only path — it inherits the guarantee the old default carried: no

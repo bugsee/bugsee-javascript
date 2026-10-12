@@ -1,4 +1,4 @@
-import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { type BlackoutGate, type Interceptor, InterceptorBase } from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
 import { describeTarget } from './input-source';
 
@@ -56,6 +56,8 @@ export interface InteractionEnv {
   durationThreshold?: number;
   /** Mask selector forwarded to `describeTarget`. Default `[data-bugsee-hidden]`. */
   maskSelector?: string;
+  /** Blackout gate: while active, interactions are not emitted (they are interaction capture). */
+  blackout?: BlackoutGate;
 }
 
 const DEFAULT_DURATION_THRESHOLD = 40;
@@ -78,6 +80,7 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
   readonly #Ctor: PerformanceObserverCtorLike | undefined;
   readonly #threshold: number;
   readonly #mask: string;
+  readonly #blackout: BlackoutGate | undefined;
   #observer: PerformanceObserverLike | undefined;
   // Dedupe by the monotonic interactionId high-water mark: Event Timing entries arrive in startTime order
   // and interactionId increases per interaction, so emitting only for ids ABOVE the mark yields exactly
@@ -91,6 +94,7 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
     this.#Ctor = env.PerformanceObserver;
     this.#threshold = env.durationThreshold ?? DEFAULT_DURATION_THRESHOLD;
     this.#mask = env.maskSelector ?? DEFAULT_MASK;
+    this.#blackout = env.blackout;
   }
 
   #onEntries(entries: EventTimingEntryLike[]): void {
@@ -98,6 +102,8 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
       const id = entry.interactionId ?? 0;
       if (id <= this.#maxSeenId) continue; // a non-interaction (id 0) or an already-seen interaction
       this.#maxSeenId = id;
+      // Blackout: the id is still consumed above, so a buffered entry cannot be replayed after it ends.
+      if (this.#blackout?.isActive() === true) continue;
       const target = targetLabel(entry.target, this.#mask);
       const component = componentNameFromElement(entry.target); // D2: nearest data-bugsee-component
       this.emit('interact', {
@@ -137,5 +143,6 @@ export function createBrowserInteractionSource(env: InteractionEnv = {}): Intera
     PerformanceObserver: env.PerformanceObserver ?? g.PerformanceObserver,
     ...(env.durationThreshold !== undefined ? { durationThreshold: env.durationThreshold } : {}),
     ...(env.maskSelector !== undefined ? { maskSelector: env.maskSelector } : {}),
+    ...(env.blackout !== undefined ? { blackout: env.blackout } : {}),
   });
 }

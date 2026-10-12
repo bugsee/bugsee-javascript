@@ -1,6 +1,7 @@
 import {
   type CaptureProviderInit,
   type CaptureStore,
+  createBlackoutState,
   createCaptureAggregator,
   createCaptureCoordinator,
   createCaptureExporter,
@@ -141,5 +142,36 @@ describe('createInputProvider', () => {
     offCoordinator.start(options, () => false);
     offSource.emit('input', { type: 'begin' });
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
+  });
+
+  describe('blackout', () => {
+    it('drops input while a blackout is in force and resumes when it ends', async () => {
+      const store = mkStore();
+      const source = mkSource();
+      const blackout = createBlackoutState();
+      const p = createInputProvider(source, { now: () => 5, blackout });
+      p.init(buildInit(store));
+      p.start(options);
+      source.emit('input', { type: 'begin', x: 1 });
+      blackout.start();
+      source.emit('input', { type: 'begin', x: 2 });
+      source.emit('input', { type: 'end', x: 3 });
+      blackout.end();
+      source.emit('input', { type: 'begin', x: 4 });
+      const entries = await drainInput(store);
+      expect(entries?.map((e) => (e.data as { x: number }).x)).toStrictEqual([1, 4]);
+    });
+
+    it('honours a blackout that was already active when the provider started', async () => {
+      const store = mkStore();
+      const source = mkSource();
+      const blackout = createBlackoutState();
+      blackout.start();
+      const p = createInputProvider(source, { now: () => 5, blackout });
+      p.init(buildInit(store));
+      p.start(options);
+      source.emit('input', { type: 'begin', x: 9 });
+      expect(await drainInput(store)).toBeUndefined();
+    });
   });
 });

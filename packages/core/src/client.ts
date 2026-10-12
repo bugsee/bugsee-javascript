@@ -21,6 +21,7 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { isThenable } from '@bugsee/util';
+import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
@@ -238,6 +239,18 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    */
   prepareUpload(): PreparedUpload | null;
 
+  // Blackout (mobile `startBlackout`/`endBlackout`/`isBlackout`).
+  /**
+   * Suppress ALL visual / interaction capture (session replay, input presses, `ui.*` interaction
+   * breadcrumbs, the report-time view hierarchy) until {@link endBlackout}. Logs, network, traces and
+   * events continue. Idempotent and NOT counted: one `endBlackout()` ends any number of calls, as on mobile.
+   */
+  startBlackout(): void;
+  /** End a blackout; visual capture resumes (replay with a fresh full snapshot). No-op when not active. */
+  endBlackout(): void;
+  /** Whether a blackout is currently in force. */
+  isBlackout(): boolean;
+
   // Lifecycle (§7.1).
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
   launch(): void;
@@ -396,6 +409,11 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // via getService(CaptureStoreToken), alongside transport/filters (DI Phase 3).
   services.addService(defineService(CaptureStoreToken, () => captureStore));
   services.addService(defineService(ClockToken, () => clock));
+  // The blackout state: visual providers read it (and subscribe to its changes) via the container, so the
+  // kernel never has to know which of them are visual. `client.getService(BlackoutToken).onChange` is the
+  // internal subscription the lifecycle events (BlackoutStarted/Ended) hang off.
+  const blackout: BlackoutState = createBlackoutState(onErrorSafe);
+  services.addService(defineService(BlackoutToken, () => blackout));
   // The active-request context provider (framework adapters). When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
   const contextProvider = options.contextProvider;
@@ -949,6 +967,18 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
     isLaunched(): boolean {
       return launched;
+    },
+
+    startBlackout(): void {
+      blackout.start();
+    },
+
+    endBlackout(): void {
+      blackout.end();
+    },
+
+    isBlackout(): boolean {
+      return blackout.isActive();
     },
 
     launch(): void {
