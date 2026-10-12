@@ -271,12 +271,44 @@ const referenceRatioFor = (size: number): number => {
 export const linearityVerdict = (observed: number, reference: number): number =>
   observed / reference;
 
+/**
+ * How many times a guard may re-measure before it fails. Scheduler/contention noise is independent per
+ * attempt (a CI runner read 8.7 against a ceiling of 4 for work that measures ~1 on an idle machine, with a
+ * 0.08 ms small side), while a genuinely super-linear subject is `SIZE_SEPARATION`x the reference on EVERY
+ * attempt. So the guard passes if ANY attempt lands under the ceiling: a real regression still fails, and
+ * a healthy build no longer fails on one unlucky sample. The best (lowest) verdict is the one reported.
+ */
+const MAX_ATTEMPTS = 3;
+
 export const expectLinearIn = <T>(
   prepare: (size: number) => T,
   work: (input: T) => void,
   size: number,
   benign?: (size: number) => T,
 ): void => {
+  let best: { verdict: number; message: string } | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const result = measureLinearity(prepare, work, size, benign);
+    if (best === undefined || result.verdict < best.verdict) {
+      best = result;
+    }
+    if (result.verdict < LINEAR_TOLERANCE) {
+      break;
+    }
+  }
+  // EVERY number rides along in the message. This fails on machines that cannot be inspected, and
+  // the verdict alone does not say whether the subject grew, the baseline shrank, or the machine
+  // simply reads a 16x step as more than 16x for everything — which is the whole reason the ceiling
+  // is relative. The reference reading is what separates those.
+  expect(best?.verdict, best?.message).toBeLessThan(LINEAR_TOLERANCE);
+};
+
+const measureLinearity = <T>(
+  prepare: (size: number) => T,
+  work: (input: T) => void,
+  size: number,
+  benign?: (size: number) => T,
+): { verdict: number; message: string } => {
   // Warm up BELOW the baseline, purely to get the path JIT-compiled before the baseline is taken. An
   // unwarmed baseline is inflated, which makes the ceiling too generous and could mask a regression.
   work(prepare(size / (SIZE_SEPARATION * 4)));
@@ -315,14 +347,11 @@ export const expectLinearIn = <T>(
         })();
   const verdict = linearityVerdict(observed, reference);
 
-  // EVERY number rides along in the message. This fails on machines that cannot be inspected, and
-  // the verdict alone does not say whether the subject grew, the baseline shrank, or the machine
-  // simply reads a 16x step as more than 16x for everything — which is the whole reason the ceiling
-  // is relative. The reference reading is what separates those.
-  expect(
+  return {
     verdict,
-    `linearity: ${small.toFixed(4)} ms at n/${SIZE_SEPARATION} vs ${large.toFixed(4)} ms at n ` +
+    message:
+      `linearity: ${small.toFixed(4)} ms at n/${SIZE_SEPARATION} vs ${large.toFixed(4)} ms at n ` +
       `= ${observed.toFixed(1)}x, against ${reference.toFixed(1)}x for work that is linear by ` +
       `construction on this machine (quadratic would be ~${SIZE_SEPARATION}x the reference)`,
-  ).toBeLessThan(LINEAR_TOLERANCE);
+  };
 };
