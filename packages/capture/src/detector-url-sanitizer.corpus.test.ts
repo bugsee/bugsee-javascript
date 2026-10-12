@@ -240,3 +240,55 @@ describe('templatePathSegment: addresses, phones and hashed assets (R5V-10)', ()
     expect(templatePathSegment(segment)).toBe(segment);
   });
 });
+
+// R6V: numberless 24+ tokens (`sk-` + letters) and 16-23 character lower-case tokens with a single digit run were
+// kept 200/200. Seeded, so the figures are facts. Both corpora are random letters, never words.
+describe('templatePathSegment: numberless long tokens and single-digit short tokens (R6V)', () => {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const pick = (next: () => number, n: number): string => {
+    let out = '';
+    for (let i = 0; i < n; i += 1) {
+      out += letters.charAt(Math.floor(next() * 26));
+    }
+    return out;
+  };
+
+  it('templates (almost) every `sk-` + 24 random letters, a numberless secret key', () => {
+    const next = mulberry32(0x5eed01);
+    let kept = 0;
+    for (let i = 0; i < 200; i += 1) {
+      const token = `sk-${pick(next, 24)}`;
+      kept += templatePathSegment(token) === token ? 1 : 0;
+    }
+    expect(kept).toBe(0); // measured 0/200 (was 200/200)
+  });
+
+  it('templates (almost) every 16-23 character lower-case token with a single digit run', () => {
+    const next = mulberry32(0x5eed02);
+    let kept = 0;
+    for (let i = 0; i < 200; i += 1) {
+      const length = 16 + Math.floor(next() * 8);
+      const at = Math.floor(next() * (length - 1));
+      const token = `${pick(next, at)}${1 + Math.floor(next() * 9)}${pick(next, length - at - 1)}`;
+      kept += templatePathSegment(token) === token ? 1 : 0;
+    }
+    expect(kept).toBeLessThanOrEqual(2); // measured 0/200 (was 200/200)
+  });
+
+  it.each([
+    'getAllUserNotificationSettings',
+    'getUserDetailsV2',
+    'exportCsvReportV3',
+    'HTML5VideoPlayer2',
+    'Chapter12Section3',
+    'iso-8859-1-encoding',
+    'report_2024_q3_final',
+    'react@latest',
+    'pkg@next',
+    'logo@2x.png',
+    'ecmascript2015modules',
+    'authentication-v2',
+  ])('still keeps the name %j', (keep) => {
+    expect(templatePathSegment(keep)).toBe(keep);
+  });
+});

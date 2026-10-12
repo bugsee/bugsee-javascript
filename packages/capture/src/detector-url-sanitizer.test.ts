@@ -80,7 +80,7 @@ describe('templatePathSegment', () => {
     ['abcdefabcdefabcdefabcdef', '{hex}'],
     ['abcdefghijklmnopqrstuvwx1', '{token}'],
     ['the-quick-brown-fox-jumps', 'the-quick-brown-fox-jumps'],
-    ['abcdefghijklmnopqrstuv1', 'abcdefghijklmnopqrstuv1'],
+    ['abcdefghijklmnopqrstuv1', '{token}'],
     ['abcdefghijklmnopqrstuvw1!', 'abcdefghijklmnopqrstuvw1!'],
   ])('%j -> %j', (segment, expected) => {
     expect(templatePathSegment(segment)).toBe(expected);
@@ -172,8 +172,8 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
     ['abcdefghijklmnopqrstuvwx-yz-ab1', '{token}'],
     ['abcdefghijklmnopqrstuvwx-yz1', '{token}'],
     // fixed-length ids need a number AND both cases, and exactly 20 or 21 characters
-    ['abcdefghijklmnopqrst1', 'abcdefghijklmnopqrst1'],
-    ['ABCDEFGHIJKLMNOPQRST1', 'ABCDEFGHIJKLMNOPQRST1'],
+    ['abcdefghijklmnopqrst1', '{token}'],
+    ['ABCDEFGHIJKLMNOPQRST1', '{token}'],
     ['AbCdEfGhIjKlMnOpQrStU', 'AbCdEfGhIjKlMnOpQrStU'],
     ['AbCdEfGhIjKlMnOpQrSt1u', '{token}'], // 22 chars: past SHORT_ID, below the 24-char token floor (R3V-4)
     ['AbCdEfGhIjKlMnOpQr1', '{token}'], // 19 chars, mixed case + a digit (R3V-4)
@@ -229,7 +229,10 @@ describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded tim
 
   it('a segment past any plausible identifier length is never echoed into a summary', () => {
     expect(templatePathSegment('a'.repeat(5000))).toBe('{token}');
-    expect(templatePathSegment('g'.repeat(256))).toBe('g'.repeat(256)); // the cap is exclusive
+    expect(templatePathSegment('g'.repeat(256))).toBe('{token}'); // numberless 24+ random run is a token by shape too
+    expect(templatePathSegment('internationalization-'.repeat(12).slice(0, 256))).not.toBe(
+      '{token}',
+    ); // the cap is exclusive (a slug of words)
     expect(templatePathSegment('a'.repeat(257))).toBe('{token}');
   });
 });
@@ -272,7 +275,7 @@ describe('templatePathSegment: short tokens, card numbers and dot-less e-mail ho
     'user-profile-settings', // 21, no digit
     'oauth2-callback-url', // 19, slug
     'api-v1-v2-compat-layer', // 22, slug of short versioned words
-    'ABCDEFGHIJKLMNOPQRST1', // upper case only
+    'INTERNATIONALIZATION1', // upper case only, but pronounceable words
     // digit runs that are not card numbers
     '2024-01', // 6
     '555-123', // 6

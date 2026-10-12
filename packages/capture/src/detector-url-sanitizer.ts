@@ -862,6 +862,23 @@ function digitRuns(segment: string): number {
   return runs;
 }
 
+/** Whether any run of 3+ letters (case-folded) between digits / separators cannot be pronounced: random letters, not a word. Linear. */
+function hasUnpronounceableRun(segment: string): boolean {
+  let start = -1;
+  for (let i = 0; i <= segment.length; i += 1) {
+    const code = i === segment.length ? 0 : segment.charCodeAt(i) | 32;
+    if (code >= 97 && code <= 122) {
+      start = start < 0 ? i : start;
+    } else if (start >= 0) {
+      if (i - start >= 3 && !isPronounceable(segment.slice(start, i).toLowerCase())) {
+        return true;
+      }
+      start = -1;
+    }
+  }
+  return false;
+}
+
 function looksLikeIp(segment: string): boolean {
   if (IPV4.test(segment)) {
     return true;
@@ -932,12 +949,7 @@ export function templatePathSegment(segment: string): string {
       return `${segment.slice(0, sep + 1)}{id}`;
     }
   }
-  if (
-    TOKENISH.test(segment) &&
-    HAS_NUMBER.test(segment) &&
-    !isSlugLike(segment) &&
-    !looksLikeWords(segment)
-  ) {
+  if (TOKENISH.test(segment) && !isSlugLike(segment) && !looksLikeWords(segment)) {
     return '{token}';
   }
   if (
@@ -959,7 +971,9 @@ export function templatePathSegment(segment: string): string {
     HAS_NUMBER.test(segment) &&
     !isSlugLike(segment) &&
     !looksLikeWords(segment) &&
-    ((HAS_UPPER.test(segment) && HAS_LOWER.test(segment)) || digitRuns(segment) >= 2)
+    ((HAS_UPPER.test(segment) && HAS_LOWER.test(segment)) ||
+      digitRuns(segment) >= 2 ||
+      (!/[-_.]/.test(segment) && hasUnpronounceableRun(segment)))
   ) {
     return '{token}';
   }
