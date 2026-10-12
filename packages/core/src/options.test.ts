@@ -137,6 +137,11 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     }
   });
 
+  it('maps notifyFlushDelay (T7) to the config.notify-flush-delay identifier, default 0 ms', () => {
+    expect(byFriendly.get('notifyFlushDelay')?.key).toBe(BugseeOption.NotifyFlushDelay);
+    expect(byFriendly.get('notifyFlushDelay')?.default).toBe(0);
+  });
+
   it('defaults capture/detect toggles on and the recording duration to 60s', () => {
     expect(byFriendly.get('captureLogs')?.default).toBe(true);
     expect(byFriendly.get('detectCrashes')?.default).toBe(true);
@@ -167,6 +172,7 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
       [BugseeOption.CaptureNetworkDefaultSanitizer]: true,
       [BugseeOption.ReportingDefaultCrashPriority]: 'blocker',
       [BugseeOption.ReportingDefaultErrorPriority]: 'high',
+      [BugseeOption.NotifyFlushDelay]: 0,
     });
   });
 });

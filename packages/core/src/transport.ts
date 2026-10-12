@@ -56,6 +56,35 @@ export type PutResult =
       cause?: unknown;
     };
 
+/**
+ * One `notify()` message as POST /v2/notifications carries it (mobile `RelayNotification`; the collector
+ * reads these exact keys). `severity` is the numeric wire value; `delivery` is stamped at send.
+ */
+export interface NotifyItem {
+  id: string;
+  timestamp: number;
+  title: string;
+  body?: string;
+  severity?: number;
+  fields?: Record<string, string>;
+  urgent?: true;
+  delivery?: 'immediate' | 'deferred';
+  user?: { id: string };
+  environment?: EnvironmentEnvelope;
+  attributes?: Record<string, unknown>;
+}
+
+/**
+ * What the collector decided about a notification batch. `sent`: every item is settled (delivered, or
+ * deliberately not relayed). `retry`: the items in `retryIds` (all of them when absent) should be sent
+ * again later — a network error, 408/429/5xx, or a per-item `failed`. `rejected`: a client error, which
+ * retrying cannot fix, so the batch is dropped.
+ */
+export type NotifyResult =
+  | { outcome: 'sent' }
+  | { outcome: 'rejected' }
+  | { outcome: 'retry'; retryIds?: readonly string[] };
+
 /** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
 export interface BugseeApi {
   /**
@@ -76,6 +105,11 @@ export interface BugseeApi {
   ): Promise<IssueCreateResult>;
   /** Drop the cached access token; the next ensureSession re-acquires. */
   invalidateSession(): void;
+  /**
+   * POST /v2/notifications (mobile `Bugsee.notify` relay). Authenticates with the app token alone, so it
+   * needs no session. Never throws: a transport failure is a `retry` result.
+   */
+  notify(items: readonly NotifyItem[]): Promise<NotifyResult>;
 }
 
 /** PUT headers for the signed-URL upload (§8.3). */

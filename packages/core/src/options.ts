@@ -106,4 +106,6 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     key: BugseeOption.ReportingDefaultErrorPriority,
     default: 'high',
   },
+  // `notify()` batching window in ms (Android `NotifyFlushDelay`); 0 = send as soon as the tick ends.
+  { friendly: 'notifyFlushDelay', key: BugseeOption.NotifyFlushDelay, default: 0 },
 ];

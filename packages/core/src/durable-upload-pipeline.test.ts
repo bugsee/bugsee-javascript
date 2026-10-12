@@ -224,6 +224,7 @@ describe('createDurableUploadPipeline', () => {
             throw new Error('unused');
           },
           invalidateSession: () => {},
+          notify: async () => ({ outcome: 'sent' }),
         },
         uploader: { putBundle },
         sleep: async () => {},
