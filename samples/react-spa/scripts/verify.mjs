@@ -1,4 +1,4 @@
-// The scripted scenario sweep (docs/samples/PLAN.md §3/§6). Drives the REAL app + REAL SDK headlessly
+// The scripted scenario sweep. Drives the REAL app + REAL SDK headlessly
 // via Playwright: exercises the Kanban app itself, then every control in the Scenario panel, and prints
 // a pass/fail table for what could be checked from the browser (LOCAL: no throw / WIRE: the right
 // request left the process). Backend (MCP) verification is a SEPARATE step the build agent runs by hand
@@ -47,7 +47,7 @@ async function main() {
     bugseeCalls.push({ url: res.url(), status: res.status(), ok, t: Date.now() });
   });
 
-  // A window of bugsee/S3 calls seen since the last checkpoint — lets each scenario report what it,
+  // A window of calls seen since the last checkpoint — lets each scenario report what it,
   // specifically, sent (WIRE-level evidence).
   let checkpoint = 0;
   const sinceCheckpoint = () => {
@@ -55,7 +55,7 @@ async function main() {
     checkpoint = bugseeCalls.length;
     return slice;
   };
-  /** A bugsee/S3 call that created (or attempted) an issue — the evidence a report left the process. */
+  /** A call that created (or attempted) an issue — the evidence a report left the process. */
   const isIssueCall = (c) => c.url.includes('issues');
 
   /**
@@ -153,7 +153,7 @@ async function main() {
   const edited = await page.locator('.card-tile', { hasText: cardTitleEdited }).count();
   record('app-edit-card', 'Edit card via modal route (/board/:id/card/:cardId)', edited === 1);
 
-  // ---------------------------------------------------------------------------------- Settings (S2)
+  // ---------------------------------------------------------------------------------- Settings
   await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
   await page.fill('[data-testid="user-id-input"]', 'verify-script-user@bugsee.dev');
   await click(page, 'set-user-id');
@@ -179,8 +179,8 @@ async function main() {
   // ---------------------------------------------------------------------------------- Scenario panel
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
 
-  // S1: relaunch demos FIRST (each rebuilds the client) — minimal (demonstrates default sdkVersion
-  // 0.0.0 being rejected server-side, see FINDINGS.md F-2/F-3 note), then full (restores a working
+  // relaunch demos FIRST (each rebuilds the client) — minimal (demonstrates default sdkVersion
+  // 0.0.0 being rejected server-side, see /F-3 note), then full (restores a working
   // client with sdkVersion override for everything below).
   sinceCheckpoint();
   await click(page, 's1-relaunch-minimal', { wait: 0 });
@@ -197,7 +197,7 @@ async function main() {
   const dupStatus = await page.locator('[data-testid="s1-duplicate-launch"]').locator('xpath=following-sibling::p').first().textContent();
   record('s1-duplicate-launch', 'second launch() on the same carrier is ignored', Boolean(dupStatus?.includes('true')), dupStatus ?? '');
 
-  // S3 manual telemetry
+  // manual telemetry
   for (const level of ['error', 'warning', 'info', 'debug', 'verbose']) {
     await click(page, `s3-log-${level}`, { wait: 150 });
   }
@@ -210,7 +210,7 @@ async function main() {
   await click(page, 's3-breadcrumb');
   record('s3-breadcrumb', 'addBreadcrumb() — every field', true);
 
-  // S4 exceptions
+  // exceptions
   sinceCheckpoint();
   // The first report since the relaunch also creates the session, so it is the slowest of the group —
   // which is precisely why waiting for the evidence beats guessing a window for it.
@@ -236,7 +236,7 @@ async function main() {
   // stack intermittently produced no issue call for ~10-15s after the storm — not a real bug, just this
   // script's own scenarios competing for the same rate-limit budget).
 
-  // S5 crashes
+  // crashes
   sinceCheckpoint();
   await click(page, 's5-uncaught', { wait: 0 });
   const uncaughtCalls = await waitForCalls(isIssueCall);
@@ -244,14 +244,14 @@ async function main() {
   await click(page, 's5-rejection', { wait: 0 });
   record('s5-rejection', 'unhandled promise rejection', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
-  // S6 console
+  // console
   for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
     await click(page, `s6-${m}`, { wait: 120 });
   }
   await click(page, 's6-circular');
   record('s6-console', 'console.* incl. multi-arg + circular object', true);
 
-  // S7 network
+  // network
   await click(page, 's7-get');
   await click(page, 's7-post-json');
   await click(page, 's7-post-text');
@@ -264,7 +264,7 @@ async function main() {
   await click(page, 's7-sse', { wait: 1500 });
   record('s7-network', 'fetch/XHR/SSE GET/POST/4xx/5xx/connfail/large-body/no-content-type', true);
 
-  // S8 filters
+  // filters
   await click(page, 's8-install');
   sinceCheckpoint();
   await click(page, 's8-network', { wait: 500 });
@@ -277,7 +277,7 @@ async function main() {
   record('s8-filters', 'network/log/breadcrumb/report before-mutate/before-veto', true, `${filterCalls.length} issue calls while filters installed (veto should reduce this)`);
   await click(page, 's8-uninstall');
 
-  // S9 performance
+  // performance
   sinceCheckpoint();
   await click(page, 's9-manual-transaction', { wait: 400 });
   record('s9-manual-transaction', 'manual transaction + every SpanStatus child span', true);
@@ -325,7 +325,7 @@ async function main() {
   await page.goto(`${BASE}/board/board-1`, { waitUntil: 'networkidle' });
   record('react-router-navigation', 'data-router navigation to /board/:id', page.url().includes('/board/board-1'));
 
-  // S11 session replay — each control relaunches the SDK (fresh carrier) with a different replay option
+  // session replay — each control relaunches the SDK (fresh carrier) with a different replay option
   // set. No throw is the LOCAL-level bar; MCP cannot show replay contents (documented gap).
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   newPageErrors(); // reset the checkpoint
@@ -342,8 +342,8 @@ async function main() {
   await click(page, 's11-replay-off', { wait: 800 }); // restore FULL_LAUNCH_OPTIONS (with sdkVersion override) for the rest of the sweep
   record('s11-replay-restore', 'relaunch back to FULL_LAUNCH_OPTIONS baseline', true);
 
-  // The global (unguarded) throw. EXPECTED (per docs/design intent): propagates to the app-level
-  // BugseeErrorBoundary wrapping <RouterProvider> in main.tsx. OBSERVED (FINDINGS.md F-5): react-router
+  // The global (unguarded) throw. EXPECTED (intent): propagates to the app-level
+  // BugseeErrorBoundary wrapping <RouterProvider> in main.tsx. OBSERVED: react-router
   // v6 data routers install their OWN per-route RenderErrorBoundary, which intercepts a route-element
   // render throw BEFORE it ever reaches an outer boundary — so BugseeErrorBoundary never runs, nothing
   // is reported, and the user sees React Router's generic "Unexpected Application Error!" page instead
@@ -366,9 +366,9 @@ async function main() {
     `bugsee's fallback shown=${globalFallback === 1}, react-router's own fallback shown=${reactRouterOwnFallback === 1}, issue calls in window=${globalReportCalls.length} (diagnostic only)`,
   );
 
-  // S4 storm — deliberately last (see the note by s4-dedupe above): 200 logException calls in ~1s must
+  // storm — deliberately last (see the note by s4-dedupe above): 200 logException calls in ~1s must
   // rate-limit rather than drop the app, and its rate-limit window lingering afterward no longer affects
-  // any other check since nothing follows it but flush + the S12 reload.
+  // any other check since nothing follows it but flush + the reload.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   sinceCheckpoint();
   await click(page, 's4-storm', { wait: 0 });
@@ -376,7 +376,7 @@ async function main() {
   const stormCalls = (await waitForQuiet({ quietMs: 3000, timeout: 60_000 })).filter(isIssueCall);
   record('s4-storm', '200 exceptions in ~1s — rate-limited, app stays responsive', stormCalls.length < 200, `${stormCalls.length} issue calls (of 200 attempted)`);
 
-  // Final flush + S12 persistence probe: logException then hard-reload before it can settle.
+  // Final flush + persistence probe: logException then hard-reload before it can settle.
   await click(page, 's1-flush', { wait: 1500 });
   record('s1-flush', 'flush(5000) drains pending uploads', true);
 

@@ -45,14 +45,14 @@ export const api = {
   updateIssue: (id: string, patch: Partial<Issue>): Promise<Issue> =>
     req(`/issues/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   // Deliberately errors for the "not found" case so the sample can demonstrate a createResource
-  // fetcher that throws (docs/samples/PLAN.md §5.5 "an error inside a createResource").
+  // fetcher that throws ("an error inside a createResource").
   getIssueOrThrow: (id: string): Promise<Issue> => req(`/issues/${id}`),
   listComments: (issueId: string): Promise<Comment[]> => req(`/issues/${issueId}/comments`),
   addComment: (issueId: string, author: string, body: string): Promise<Comment> =>
     req(`/issues/${issueId}/comments`, { method: 'POST', body: JSON.stringify({ author, body }) }),
 };
 
-// ---- Scenario-panel network fixtures (S7) ---------------------------------------------------------
+// ---- Scenario-panel network fixtures ---------------------------------------------------------
 export const scenarioApi = {
   get: (): Promise<unknown> => req('/scenario/get'),
   postJson: (body: unknown): Promise<unknown> =>
@@ -71,7 +71,7 @@ export const scenarioApi = {
     // Nothing listens on 5399 — a genuine connection-refused, not a fabricated error.
     fetch('http://localhost:5399/nope'),
   getSlow: (ms: number): Promise<Response> => fetch(`${BASE}/scenario/slow?ms=${ms}`),
-  // S8 network-filter fixtures: a secret header + a secret body field the filter must strip/redact
+  // network-filter fixtures: a secret header + a secret body field the filter must strip/redact
   // before the event reaches the capture ring, and a URL the filter vetoes outright.
   postSecret: (): Promise<Response> =>
     fetch(`${BASE}/scenario/echo`, {
@@ -81,7 +81,7 @@ export const scenarioApi = {
     }),
   getVetoTarget: (): Promise<Response> => fetch(`${BASE}/scenario/get?veto-me=1`),
   getEchoHeaders: (): Promise<Record<string, string>> => req('/scenario/echo-headers'),
-  // F-1 (major, see FINDINGS.md): a filter that vetoes on a REQUEST-BODY marker only present on the
+  // F-1 (major, see): a filter that vetoes on a REQUEST-BODY marker only present on the
   // `before` NetworkStage. The server's response is a FIXED body unrelated to the request (does not
   // echo it back), so the veto hole is visible without any echo-based confusion.
   postVetoRequestBody: (): Promise<Response> =>
@@ -90,7 +90,7 @@ export const scenarioApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vetoMarker: 'VETO_REQUEST_BODY_FIELD', otherField: 'irrelevant' }),
     }),
-  // Finding C (major, see FINDINGS.md): a sensitive-looking query param the DEFAULT sanitizer would
+  // Finding C (major, see): a sensitive-looking query param the DEFAULT sanitizer would
   // normally redact (packages/protocol/src/url.ts's denylist matches `token`) — demonstrates that
   // installing ANY network filter silently disables that sanitizer entirely.
   getWithSensitiveUrlToken: (): Promise<Response> =>
@@ -99,7 +99,7 @@ export const scenarioApi = {
    * `navigator.sendBeacon` — the network transport `@bugsee/capture` gained a dedicated interceptor for
    * (`packages/capture/src/send-beacon-interceptor.ts`, wired into `installNetworkCapture`). It is inert
    * unless an app actually calls it, and this sample called it nowhere, so the leaf had ZERO coverage
-   * here: S7 claimed to exercise the network umbrella while one of its transports was never touched.
+   * here: claimed to exercise the network umbrella while one of its transports was never touched.
    *
    * BOTH payload branches are fired, because the interceptor treats them differently and only one of
    * them can carry a body into the bundle:

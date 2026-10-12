@@ -1,5 +1,5 @@
 // Thin fetch wrapper for the local habit-tracker API. Deliberately plain `fetch` (not axios/etc.) so
-// @bugsee/svelte's inherited @bugsee/browser network capture (S7) intercepts it the same way it would
+// @bugsee/svelte's inherited @bugsee/browser network capture intercepts it the same way it would
 // intercept any real app's calls.
 import type { Habit } from '../types';
 

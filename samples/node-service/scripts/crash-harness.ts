@@ -1,4 +1,4 @@
-// S5 crashes: uncaught exceptions / unhandled rejections must be run OUT OF PROCESS from the main
+// crashes: uncaught exceptions / unhandled rejections must be run OUT OF PROCESS from the main
 // server (they terminate or alter the process by design). Usage:
 //   node scripts/crash-harness.ts <profile> <kind: uncaught|rejection> <marker>
 // Exits 0 if the process behaved as the profile says it should (see the per-kind checks below);

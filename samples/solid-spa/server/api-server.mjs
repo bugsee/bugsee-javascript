@@ -1,6 +1,6 @@
 // A small local API for the Bug tracker app — plain node:http, no framework (the framework under
 // test is on the client side: @bugsee/solid). Also hosts a handful of `/api/scenario/*` routes
-// purpose-built to exercise S7 (network capture) edge cases: a 4xx, a 5xx, a response with no
+// purpose-built to exercise (network capture) edge cases: a 4xx, a 5xx, a response with no
 // Content-Type, a body over maxNetworkBodySize, and an SSE feed.
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -96,14 +96,14 @@ const server = createServer(async (req, res) => {
   const parts = url.pathname.split('/').filter(Boolean); // ['api', ...]
 
   try {
-    // ---- Scenario routes (S7 network-capture edge cases) --------------------------------------
+    // ---- Scenario routes (network-capture edge cases) --------------------------------------
     if (parts[0] === 'api' && parts[1] === 'scenario') {
       const which = parts[2];
       if (which === 'get' && req.method === 'GET') {
         return json(res, 200, { ok: true, now: Date.now() });
       }
       if (which === 'echo-headers' && req.method === 'GET') {
-        // S10: lets the browser confirm a traceparent/tracestate header it cannot read off its own
+        // lets the browser confirm a traceparent/tracestate header it cannot read off its own
         // outgoing fetch actually left the process — the server echoes back what it received.
         return json(res, 200, req.headers);
       }
@@ -112,7 +112,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { received: body });
       }
       if (which === 'veto-body-target' && req.method === 'POST') {
-        // F-1 (samples/solid-spa/FINDINGS.md) demo target: a FIXED response, deliberately NOT echoing
+        // F-1 demo target: a FIXED response, deliberately NOT echoing
         // the request body — so a network filter that vetoes on a REQUEST-BODY marker (only present on
         // the `before` NetworkStage) cannot "accidentally" also veto the response's `complete`
         // stage-entry by the same body-content check. Proves the veto is per-entry, not per-request.

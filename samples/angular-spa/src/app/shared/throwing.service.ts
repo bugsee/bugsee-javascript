@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { Observable, of } from 'rxjs';
 import { map } from 'rxjs/operators';
 
-// §5.6 "beyond the catalog" fixture: an error thrown IN A SERVICE (as opposed to a component template/
+// "beyond the catalog" fixture: an error thrown IN A SERVICE (as opposed to a component template/
 // lifecycle hook or an RxJS pipeline — each gets its own method here so the Scenario panel can arm them
 // independently and the resulting report's stack trace can be told apart).
 @Injectable({ providedIn: 'root' })

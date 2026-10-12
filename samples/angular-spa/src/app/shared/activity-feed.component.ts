@@ -2,7 +2,7 @@ import { Component, OnDestroy, OnInit, signal } from '@angular/core';
 
 /**
  * A real (if small) feature: a live "expense activity" feed over a WebSocket to the local API server —
- * every browser tab open on the app sees every create/approve/reject in real time. Also exercises S7's
+ * every browser tab open on the app sees every create/approve/reject in real time. Also exercises 's
  * WebSocket capture path with genuine bidirectional traffic (not a synthetic ping).
  */
 @Component({

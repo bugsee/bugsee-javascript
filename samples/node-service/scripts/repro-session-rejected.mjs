@@ -1,4 +1,4 @@
-// Reproduction script for FINDINGS.md F-1 (blocker): staging (apidev.bugsee.com) rejects EVERY
+// Reproduction script for (blocker): staging (apidev.bugsee.com) rejects EVERY
 // session-creation call for this app token, so no report from this sample can ever reach the backend.
 //
 // Usage: node --env-file=.env scripts/repro-session-rejected.mjs [sdkVersion]

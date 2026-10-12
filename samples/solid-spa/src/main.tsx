@@ -17,9 +17,9 @@ const container = document.getElementById('root');
 if (!container) throw new Error('missing #root element');
 
 // solidErrorHandler wired into an <ErrorBoundary> — the @bugsee/solid ERROR SEAM under test
-// (docs/samples/PLAN.md §5.5). Solid's ErrorBoundary catches synchronous render/reactive errors in
+// Solid's ErrorBoundary catches synchronous render/reactive errors in
 // its owner scope; async/event-handler/rejection errors are covered by the SDK's global handlers
-// (S5), not here.
+// not here.
 render(
   () => (
     <ErrorBoundary

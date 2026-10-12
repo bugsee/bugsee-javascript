@@ -2,10 +2,10 @@ import solid from 'vite-plugin-solid';
 import { defineConfig, loadEnv } from 'vite';
 
 // @bugsee/solid ships no bundler plugin (unlike @bugsee/react's vite-plugin/babel-plugin) — see
-// docs/samples/PLAN.md §1a: this sample's ONLY package under test is @bugsee/solid itself.
+// this sample's ONLY package under test is @bugsee/solid itself.
 export default defineConfig(({ mode }) => {
   // Bridge the plain (unprefixed) BUGSEE_* names required by the samples convention
-  // (docs/samples/PLAN.md §3) into import.meta.env.VITE_* so client code can read them, without
+  // into import.meta.env.VITE_* so client code can read them, without
   // renaming the .env file itself.
   const env = loadEnv(mode, process.cwd(), '');
 

@@ -1,7 +1,6 @@
 <script lang="ts">
-  // The SDK Scenario panel (docs/samples/PLAN.md §3/§4) — one control per catalog scenario, plus every
-  // @bugsee/svelte / @bugsee/svelte-plugin-component-annotate API named in PLAN §5.4's "beyond the
-  // catalog" list. Mirrors samples/react-spa's ScenarioPage.tsx structure/ids so the two samples are
+  // The SDK Scenario panel: one control per catalog scenario, plus every
+  // @bugsee/svelte / @bugsee/svelte-plugin-component-annotate API the catalog does not list. Mirrors samples/react-spa's ScenarioPage.tsx structure/ids so the two samples are
   // directly comparable in scripts/verify.mjs and scenarios.md.
   import {
     attemptDuplicateLaunch,
@@ -471,7 +470,7 @@
     });
     setStatus('s11-replay-masking', 'relaunched with explicit masking options');
   }
-  // The selector-driven masking config (PLAN §4 S11 names `maskTextSelector` / `blockSelector` /
+  // The selector-driven masking config (the catalog names `maskTextSelector` / `blockSelector` /
   // `ignoreSelector`; nothing in this sample exercised any of the three before this round). This is the
   // session verify.mjs records the Settings drawer under, then unzips at WIRE depth.
   //
@@ -577,7 +576,7 @@
     setTimeout(() => location.reload(), 250);
   }
 
-  // ---------------------------------------------------------------------------- Svelte-specific (§5.4)
+  // ---------------------------------------------------------------------------- Svelte-specific
   let boundaryArmed = $state(false);
   function armBoundary(): void {
     boundaryArmed = true;

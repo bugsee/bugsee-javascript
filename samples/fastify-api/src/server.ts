@@ -55,7 +55,7 @@ app.get('/health', async (_req: FastifyRequest, reply: FastifyReply) => {
 // plugin (verified: with this call after the `register()`s, `/scenarios/s5/route-throw` returned
 // Fastify's own default envelope, not this shape). Fastify snapshots the parent's error handler at
 // registration time — the same encapsulation rule that makes a plugin-scoped `setErrorHandler` win
-// over this one, which is what FINDINGS.md's F-3 is about.
+// over this one, which is what 's F-3 is about.
 app.setErrorHandler(async (err: Error & { statusCode?: number }, _req: FastifyRequest, reply: FastifyReply) => {
   const status = err.statusCode ?? 500;
   await reply.status(status).send({ error: err.message });

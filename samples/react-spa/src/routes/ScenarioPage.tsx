@@ -41,7 +41,7 @@ export default function ScenarioPage(): JSX.Element {
   const [statuses, setStatus] = useStatuses();
   const client = getClient();
 
-  // ---- S4 exception dedupe fixture -----------------------------------------------------------
+  // ---- exception dedupe fixture -----------------------------------------------------------
   const [sharedError] = useState(() => new Error('shared instance — logException twice must dedupe'));
 
   // ---- React-specific: ThrowingWidget demo state ---------------------------------------------
@@ -51,7 +51,7 @@ export default function ScenarioPage(): JSX.Element {
   // ---- React-specific: profiled slow list -----------------------------------------------------
   const [showSlowList, setShowSlowList] = useState(false);
 
-  // ---- S8 filters toggle -----------------------------------------------------------------------
+  // ---- filters toggle -----------------------------------------------------------------------
   const [filtersInstalled, setFiltersInstalled] = useState(false);
   const [filterLog, setFilterLog] = useState<string[]>([]);
 

@@ -254,7 +254,7 @@
   </div>
   <div class="field-row">
     <!-- The opt-out class for an INPUT VALUE is `.bugsee-unmask`, NOT `.bugsee-show`. This markup said
-         `.bugsee-show` until round 6, which is the media/canvas un-BLOCK mark and does nothing for an
+         `.bugsee-show` until a later fix, which is the media/canvas un-BLOCK mark and does nothing for an
          input's value — `packages/replay/src/masking.ts:544-548` builds `unmaskInputSelector` from
          `.bugsee-unmask` (+ a sensitive-input guard) and feeds `.bugsee-show` to `unblockSelector`.
          The wrong class was a SAMPLE defect, and it was verified by markup inspection alone; the

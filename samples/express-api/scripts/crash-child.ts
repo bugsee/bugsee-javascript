@@ -13,7 +13,7 @@ const appToken = process.env.BUGSEE_APP_TOKEN as string;
 
 const client = launch(appToken, {
   endpoint: process.env.BUGSEE_ENDPOINT,
-  sdkVersion: '1.0.0', // F-1 workaround — see src/bugsee.ts + FINDINGS.md
+  sdkVersion: '1.0.0', // F-1 workaround — see src/bugsee.ts +
   appVersion: '1.0.0',
   appBuild: 'crash-child',
   capturedDataStore: 'memory',

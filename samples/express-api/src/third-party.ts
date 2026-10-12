@@ -1,6 +1,6 @@
 // A tiny, deliberately NOT Bugsee-instrumented "third-party service" — stands in for the priority
 // scoring API the Task API calls when a task is created, and doubles as a controllable target for the
-// outbound network-capture scenarios (S7) and distributed-tracing scenarios (S10). Plain node:http, no
+// outbound network-capture scenarios and distributed-tracing scenarios. Plain node:http, no
 // framework, so nothing here masks what the SDK's outbound interceptor actually sends/receives.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 

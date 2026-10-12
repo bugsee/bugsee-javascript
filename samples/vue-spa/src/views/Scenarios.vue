@@ -4,7 +4,7 @@ import ErrorLab from '../components/ErrorLab.vue';
 import { attemptRelaunch, getBugsee, RUN_ID, SAMPLE_USER_ID } from '../bugsee';
 import { marker } from '../lib/marker';
 
-// The Scenario panel (docs/samples/PLAN.md §3/§4/§6): one control per scenario in the catalog, plus the
+// The Scenario panel: one control per scenario in the catalog, plus the
 // vue-specific ones (ErrorLab.vue). Every trigger stamps `marker(scenarioId)` into whatever field is
 // searchable on the resulting issue (a label, a log line, a breadcrumb) so a specific run's result can
 // be told apart from a previous one when polling the backend. `data-testid` attributes let

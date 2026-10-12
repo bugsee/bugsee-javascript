@@ -4,7 +4,7 @@
 //
 // WebSocket upgrade requests are NOT proxied here (a real customer would put this behind a real
 // reverse proxy / CDN in production) — the presence-socket feature in the notes app degrades to
-// "no live indicator" when served this way; every scenario this sample cares about (S4/S7 fetch/XHR/
+// "no live indicator" when served this way; every scenario this sample cares about (fetch/XHR/
 // SSE, and above all the production source-map symbolication check) works over plain HTTP.
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';

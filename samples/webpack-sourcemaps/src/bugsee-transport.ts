@@ -2,9 +2,9 @@
 // network call to the REAL staging endpoint verbatim, via the browser's own `fetch`, while recording a
 // parsed summary of each call locally. That local record is what lets `scripts/verify.mjs` assert on
 // things the MCP surface does not expose — the exact bundle contents (redaction, labels, dedupe) — the
-// "wire" verification depth from docs/samples/PLAN.md §4/§6.6, instead of only asserting on the
+// "wire" verification depth from, instead of only asserting on the
 // SCENARIO PANEL'S OWN callback having run (which proves nothing about what the SDK actually put on the
-// wire — see FINDINGS.md's S8 note).
+// wire — see 's note).
 //
 // It rewrites nothing: every call is forwarded byte-for-byte to the real endpoint.
 import { gunzipSync, strFromU8, unzipSync } from '@bugsee/util';
@@ -31,12 +31,12 @@ export interface ParsedBundleSummary {
    *  request.json). That is `ManifestJson.attrs`, `packages/protocol/src/wire.ts:150,154`, written by
    *  `packages/core/src/bundle-assembler.ts:188-196` — NOT the per-FILE `ManifestFileEntry.attrs`
    *  (`wire.ts:142,146`), which the earlier `wire.ts:141` citation pointed at by mistake (corrected in
-   *  fix round 6, R6-3). Needed to assert S2's "each report carries only the attributes that existed
+   * fix). Needed to assert 's "each report carries only the attributes that existed
    *  at ITS trigger time" at wire depth instead of merely counting calls. */
   attrs?: Record<string, unknown>;
   logMessages?: string[];
-  /** logs.json entries with their LEVEL, not just the message — added for the S6 console wire check
-   *  (fix round 5, R5-1): `console.warn`/`error`/`debug` are claimed to map to distinct captured
+  /** logs.json entries with their LEVEL, not just the message — added for the console wire check
+   * (fix): `console.warn`/`error`/`debug` are claimed to map to distinct captured
    *  levels (`packages/capture/src/console-interceptor.ts`'s `DEFAULT_LEVELS`), and a message-only
    *  view cannot tell a correct mapping from one that filed everything as `info`. */
   logEntries?: Array<{ message?: string; level?: unknown }>;
@@ -52,7 +52,7 @@ export interface ParsedBundleSummary {
     url?: string;
     type?: string;
     /** Which interceptor produced the entry — `fetch` / `xhr` / `ws` / `sse` (`NetworkEvent.mechanism`).
-     *  Load-bearing for the S7 wire checks: `s7-get` and `s7-xhr` hit the SAME url, so only `mechanism`
+     * Load-bearing for the wire checks: `s7-get` and `s7-xhr` hit the SAME url, so only `mechanism`
      *  tells "the XHR code path was captured" apart from "the fetch path was captured". */
     mechanism?: string;
     method?: string;
@@ -69,9 +69,9 @@ export interface ParsedBundleSummary {
 }
 
 /**
- * A compact, on-demand view of ONE bundle's `replay.bin` (S11). Deliberately NOT part of
+ * A compact, on-demand view of ONE bundle's `replay.bin`. Deliberately NOT part of
  * `ParsedBundleSummary`: `scripts/verify.mjs` polls `getCapturedBundles()` through `page.evaluate`
- * several times a second, and the S4 storm alone puts 100 bundles in the record — serialising a full
+ * several times a second, and the storm alone puts 100 bundles in the record — serialising a full
  * rrweb event stream (a DOM full-snapshot plus every incremental mutation) out of the page on every
  * poll would dominate the sweep's runtime. The digest is computed only when a check asks for it.
  *
@@ -99,7 +99,7 @@ export interface ReplayDigest {
 export interface CapturedCall {
   seq: number;
   /** Wall-clock ms when the call completed — lets a reader tell two SEPARATELY-ASSEMBLED uploads of the
-   *  same incident apart by their spacing (the S12 duplicate-delivery evidence in FINDINGS.md F-3). */
+   * same incident apart by their spacing (the duplicate-delivery evidence in). */
   t: number;
   kind: 'bundle-upload' | 'other';
   method: string;
@@ -108,14 +108,14 @@ export interface CapturedCall {
   bundle?: ParsedBundleSummary;
 }
 
-// Generous headroom — the S4 storm alone can produce up to 100 admitted reports in one sweep.
+// Generous headroom — the storm alone can produce up to 100 admitted reports in one sweep.
 const MAX_RECORDS = 2000;
 const records: CapturedCall[] = [];
 let seq = 0;
 
 /** `seq -> the bundle's replay.bin bytes`, kept so `getReplayDigest()` can decode on demand. Bounded
- *  hard: replay.bin is the largest file in the bundle and the S4 storm uploads 100 bundles, so
- *  retaining every one would hold tens of MB in the page for no benefit — the S11 checks only ever
+ * hard: replay.bin is the largest file in the bundle and the storm uploads 100 bundles, so
+ * retaining every one would hold tens of MB in the page for no benefit — the checks only ever
  *  read the most recent few. */
 const MAX_REPLAY_BLOBS = 8;
 const replayBlobs = new Map<number, Uint8Array>();
@@ -128,7 +128,7 @@ function parseBundle(body: Uint8Array, forSeq: number): ParsedBundleSummary | un
   try {
     const files = unzipSync(body) as Record<string, Uint8Array>;
     const summary: ParsedBundleSummary = { files: Object.keys(files) };
-    // S11: keep the raw bytes only — decoding happens in getReplayDigest(), on demand. See ReplayDigest.
+    // keep the raw bytes only — decoding happens in getReplayDigest(), on demand. See ReplayDigest.
     const replayFile = files['replay.bin'];
     if (replayFile !== undefined) {
       replayBlobs.set(forSeq, replayFile);
@@ -217,7 +217,7 @@ export function createTeeTransport(): HttpTransport {
     const kind = classify(method);
     const record: CapturedCall = { seq: (seq += 1), t: Date.now(), kind, method, url, status: res.status };
     if (kind === 'bundle-upload' && options.body !== undefined) {
-      // The zip is the REQUEST body being PUT to the presigned S3 url, not the response (S3's PUT
+      // The zip is the REQUEST body being PUT to the presigned S3 url, not the response (the PUT
       // response body is empty on success — parsing `rawBuf` here was a bug caught during this fix
       // pass: it silently produced 0 bundles, which is exactly the "everything still reads green"
       // failure mode this wire-level check exists to avoid).
@@ -237,7 +237,7 @@ export function getCapturedBundles(): readonly CapturedCall[] {
 }
 
 /**
- * Decode the `replay.bin` uploaded with bundle `seq` (S11). Returns `undefined` when that bundle
+ * Decode the `replay.bin` uploaded with bundle `seq`. Returns `undefined` when that bundle
  * carried no replay file or its bytes are no longer retained (see MAX_REPLAY_BLOBS) — the caller
  * treats that as "no evidence", never as "verified".
  *

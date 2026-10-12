@@ -35,7 +35,7 @@ export const api = {
   deleteCard: (id: string): Promise<void> => req(`/cards/${id}`, { method: 'DELETE' }),
 };
 
-// ---- Scenario-panel network fixtures (S7) ---------------------------------------------------------
+// ---- Scenario-panel network fixtures ---------------------------------------------------------
 export const scenarioApi = {
   get: (): Promise<unknown> => req('/scenario/get'),
   postJson: (body: unknown): Promise<unknown> =>
@@ -54,7 +54,7 @@ export const scenarioApi = {
     // Nothing listens on 5399 — a genuine connection-refused, not a fabricated error.
     fetch('http://localhost:5398/nope'),
   getSlow: (ms: number): Promise<Response> => fetch(`${BASE}/scenario/slow?ms=${ms}`),
-  // S8 network-filter fixtures: a secret header + a secret body field the filter must strip/redact
+  // network-filter fixtures: a secret header + a secret body field the filter must strip/redact
   // before the event reaches the capture ring, and a URL the filter vetoes outright.
   postSecret: (): Promise<Response> =>
     fetch(`${BASE}/scenario/echo`, {

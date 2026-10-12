@@ -5,7 +5,7 @@ import { reportVueError } from '@bugsee/vue';
 import LifecycleBoom from './LifecycleBoom.vue';
 import RenderBoom from './RenderBoom.vue';
 
-// One trigger per distinct Vue error surface (docs/samples/PLAN.md §5.3 "beyond the catalog"): a render
+// One trigger per distinct Vue error surface beyond the catalog: a render
 // error, a lifecycle-hook error, an event-handler error, a watcher error, an async-component/Suspense
 // error (see RecipeDetail.vue + NutritionPanel.vue), and a direct reportVueError() call. Every path is
 // wired to the SAME app.config.errorHandler installed in main.ts (installBugseeErrorHandler) except the

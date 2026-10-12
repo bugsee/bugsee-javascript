@@ -1,4 +1,4 @@
-// Every /scenarios/* route from docs/samples/PLAN.md §4 (the shared catalog) + §5.14-5.20 (the
+// Every /scenarios/* route from (the shared catalog) + (the
 // framework-backend extras). Each route is deliberately small and does ONE thing so scripts/verify.ts
 // and scenarios.md can point at it 1:1. Routes read a `marker` (query or body) that verify.ts sets to a
 // per-run-unique string, embedded in every message/summary this scenario produces — that's how
@@ -25,7 +25,7 @@ export function buildScenariosRouter(): Router {
     return c;
   };
 
-  // ---------------------------------------------------------------- S1 · Launch & lifecycle
+  // ---------------------------------------------------------------- · Launch & lifecycle
   router.get('/s1/status', (_req: Request, res: Response) => {
     res.json({ isLaunched: client().isLaunched() });
   });
@@ -45,7 +45,7 @@ export function buildScenariosRouter(): Router {
     res.json({ sameInstance: before === after });
   });
 
-  // ---------------------------------------------------------------- S2 · Identity & attributes
+  // ---------------------------------------------------------------- · Identity & attributes
   router.post('/s2/identity-attributes', (req: Request, res: Response) => {
     const marker = markerOf(req);
     const c = client();
@@ -84,7 +84,7 @@ export function buildScenariosRouter(): Router {
     res.json({ afterClearOne, afterClearAll: c.getAllAttributes() });
   });
 
-  // ---------------------------------------------------------------- S3 · Manual telemetry
+  // ---------------------------------------------------------------- · Manual telemetry
   router.post('/s3/telemetry', (req: Request, res: Response) => {
     const marker = markerOf(req);
     const c = client();
@@ -107,7 +107,7 @@ export function buildScenariosRouter(): Router {
     res.json({ ok: true, marker });
   });
 
-  // ---------------------------------------------------------------- S4 · Exceptions
+  // ---------------------------------------------------------------- · Exceptions
   router.post('/s4/error-instance', (req: Request, res: Response) => {
     const marker = markerOf(req);
     void client().logException(new Error(`s4-error-instance-${marker}`));
@@ -159,7 +159,7 @@ export function buildScenariosRouter(): Router {
     res.json({ ok: true, marker, tookMs: Date.now() - started, stillResponsive: true });
   });
 
-  // ---------------------------------------------------------------- S5 · Crashes
+  // ---------------------------------------------------------------- · Crashes
   router.get('/s5/route-throw', (req: Request) => {
     const marker = markerOf(req);
     throw new Error(`s5-route-throw-${marker}`);
@@ -201,7 +201,7 @@ export function buildScenariosRouter(): Router {
     res.status(202).json({ accepted: true, marker });
   });
 
-  // ---------------------------------------------------------------- S6 · Console capture
+  // ---------------------------------------------------------------- · Console capture
   router.post('/s6/console', (req: Request, res: Response) => {
     const marker = markerOf(req);
     // eslint-disable-next-line no-console
@@ -224,7 +224,7 @@ export function buildScenariosRouter(): Router {
     res.json({ ok: true, marker });
   });
 
-  // ---------------------------------------------------------------- S7 · Network capture
+  // ---------------------------------------------------------------- · Network capture
   router.get('/s7/fetch-get', async (req: Request, res: Response) => {
     const marker = markerOf(req);
     const r = await fetch(thirdPartyUrl('/ok'));
@@ -289,7 +289,7 @@ export function buildScenariosRouter(): Router {
     res.json({ marker, thirdPartyStatus: r.status, contentType: r.headers.get('content-type'), text });
   });
 
-  // ---------------------------------------------------------------- S8 · Filters & redaction
+  // ---------------------------------------------------------------- · Filters & redaction
   const SECRET_LOG_MARKER = 'SECRET_LOG_VALUE';
   const VETO_MARKER = 'VETO_ME';
   let filtersInstalled = false;
@@ -366,7 +366,7 @@ export function buildScenariosRouter(): Router {
     res.json({ ok: true, marker, filterInvoked: installed });
   });
 
-  // ---------------------------------------------------------------- S9 · Performance / APM
+  // ---------------------------------------------------------------- · Performance / APM
   router.post('/s9/manual-span', async (req: Request, res: Response) => {
     const marker = markerOf(req);
     const perf = client().ext('performance');
@@ -394,7 +394,7 @@ export function buildScenariosRouter(): Router {
     res.json({ ok: true, marker });
   });
 
-  // ---------------------------------------------------------------- S10 · Distributed tracing
+  // ---------------------------------------------------------------- · Distributed tracing
   router.get('/s10/outbound-trace', async (req: Request, res: Response) => {
     const marker = markerOf(req);
     const r = await fetch(thirdPartyUrl('/score'), {
@@ -406,7 +406,7 @@ export function buildScenariosRouter(): Router {
     res.json({ marker, traceparentReceivedByThirdParty: body.traceparentSeen });
   });
 
-  // ---------------------------------------------------------------- S12 · Persistence & recovery
+  // ---------------------------------------------------------------- · Persistence & recovery
   router.get('/s12/info', (_req: Request, res: Response) => {
     res.json({
       capturedDataStore: 'disk',
@@ -415,7 +415,7 @@ export function buildScenariosRouter(): Router {
     });
   });
 
-  // ---------------------------------------------------------------- concurrency (S2 + §5.14-20)
+  // ---------------------------------------------------------------- concurrency
   router.get('/concurrency/hit', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const marker = markerOf(req);
