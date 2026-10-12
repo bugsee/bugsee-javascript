@@ -21,11 +21,13 @@ import {
 import {
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -36,6 +38,7 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
   type HttpRequestOptions,
@@ -47,6 +50,8 @@ import {
   runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
@@ -307,6 +312,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
     appToken,
@@ -369,7 +375,8 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // shared stores directly (no mirror hydration). The coordinator hands this callback the sibling's
   // hydrated marker store plus the incidents its bundle-queue leg already settled with, so an incident
   // that left BOTH a staged bundle and a marker (the SEV1 double-upload) is delivered exactly once.
-  void runLaunchRecovery({
+  let recoverySettled = false;
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
     // activations, so the dead-sibling scan must get first refusal on it (docs on the option in core).
@@ -401,17 +408,62 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
             }
           : {}),
       }),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
-  // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
+  // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
+  // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
+  // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
   const stopCore = client.stop;
+  // Bumped by every stop() and every client.launch(): a stop may release the instance's lock only if it is
+  // still the latest transition when it gets there.
+  let lifecycleEpoch = 0;
   const publicClient: Bugsee = {
     ...client,
-    stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+    launch(): void {
+      lifecycleEpoch++;
+      client.launch();
+    },
+    async stop(timeout?: number): Promise<boolean> {
+      const wasLaunched = client.isLaunched();
+      const epoch = ++lifecycleEpoch;
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(wasLaunched ? BugseeStatus.Stopping : BugseeStatus.Stopped, carrier);
+        clearCarrierClient(publicClient, carrier);
+      }
+      let drained = false;
+      try {
+        drained = await stopCore(timeout);
+        return drained;
+      } finally {
+        // The launch-time dead-sibling scan may still be reading IndexedDB; closing under it would only
+        // make it reopen the connection. Wait for it, bounded by the caller's own deadline.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await (timeout === undefined
+          ? recoveryDone
+          : Promise.race([
+              recoveryDone,
+              new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, timeout);
+              }),
+            ]));
+        clearTimeout(timer);
+        // Release ONLY when the drain completed (a timed-out upload may still be running here and another
+        // context that saw this instance as dead would upload it again), the recovery has settled, and
+        // nothing launched or stopped again meanwhile.
+        if (drained && recoverySettled && epoch === lifecycleEpoch) {
+          coexistence.release();
+        }
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      }
     },
   };
   setCarrierClient(publicClient, carrier);
+  setCarrierLastLaunch(appToken, options, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier);
   return publicClient;
 }

@@ -38,7 +38,7 @@ export interface BugseeCarrier {
   client?: unknown;
   /** The process lifecycle state; absent means {@link BugseeStatus.Stopped}. */
   status?: BugseeStatus;
-  /** The arguments of the last launch that built a client — what `relaunch()` reuses (token + options). */
+  /** What the last launch that built a client leaves for `relaunch()`: the token + only the integration seams (never secrets or the full options). */
   lastLaunch?: { appToken: string; options: unknown };
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
   serviceManifests?: ServiceManifest[];
@@ -151,13 +151,30 @@ export function getProcessStatus(globalObj: object = globalThis): BugseeStatus {
   return client !== undefined ? client.getStatus() : getCarrierStatus(globalObj);
 }
 
-/** Remember the arguments of a launch that built a client, for `relaunch()`. */
+/**
+ * The launch options a carrier slot may retain for `relaunch()`: the integration seams that say WHERE the
+ * SDK lives in the process. Everything else (transport, onError, stores, identifiers, data options, and any
+ * secret-bearing object) is deliberately NOT kept: the slot sits on `globalThis`, readable by every script
+ * in the process. Omitted-options relaunch therefore starts from the defaults, like Android and iOS.
+ */
+const RELAUNCH_RETAINED_OPTIONS = ['carrier', 'clock', 'scheduler'] as const;
+
+/** Remember the token and the integration seams of a launch that built a client, for `relaunch()`. */
 export function setCarrierLastLaunch(
   appToken: string,
   options: unknown,
   globalObj: object = globalThis,
 ): void {
-  getCarrier(globalObj).lastLaunch = { appToken, options };
+  const retained: Record<string, unknown> = {};
+  if (typeof options === 'object' && options !== null) {
+    for (const key of RELAUNCH_RETAINED_OPTIONS) {
+      const value = (options as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        retained[key] = value;
+      }
+    }
+  }
+  getCarrier(globalObj).lastLaunch = { appToken, options: retained };
 }
 
 /**

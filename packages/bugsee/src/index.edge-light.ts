@@ -34,6 +34,7 @@ export type {
 } from '@bugsee/performance';
 export * from '@bugsee/vercel-edge';
 
+import { relaunchWith } from '@bugsee/core';
 import type { PerformanceFacade } from '@bugsee/performance';
 import {
   type BugseeEdgeLaunchOptions,
@@ -51,3 +52,11 @@ export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bug
 
 // Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
 export { addReportAttachment } from '@bugsee/core';
+// Lifecycle parity with the node/browser entries: the status enum, the process-level getStatus(), and
+// relaunch() on top of core's relaunchWith, so it re-runs THIS entry's launch (extensions re-wired).
+export { BugseeStatus, getStatus } from './status';
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. */
+export const relaunch = (options?: BugseeEdgeLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

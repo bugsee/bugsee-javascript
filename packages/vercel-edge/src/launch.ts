@@ -8,10 +8,12 @@ import {
 import {
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type CaptureStore,
   CaptureStoreToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -21,6 +23,7 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
   type HttpRequestOptions,
@@ -32,6 +35,8 @@ import {
   type Scheduler,
   serviceToken,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
@@ -317,6 +322,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const client = createClient({
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
     appToken,
@@ -355,15 +361,29 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   client.launch();
 
-  // The public client. stop() clears the per-isolate carrier slot so a later launch() starts fresh.
+  // The public client. stop() releases the per-isolate carrier slot, but only if it is still OURS: a late
+  // stop() must not take the slot from a client that has since been relaunched (as browser/node already do).
   const stopCore = client.stop;
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(
+          client.isLaunched() ? BugseeStatus.Stopping : BugseeStatus.Stopped,
+          carrier,
+        );
+        clearCarrierClient(publicClient, carrier);
+      }
+      return stopCore(timeout).finally(() => {
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      });
     },
   };
   setCarrierClient(publicClient, carrier);
+  setCarrierLastLaunch(appToken, options, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier);
   return publicClient;
 }

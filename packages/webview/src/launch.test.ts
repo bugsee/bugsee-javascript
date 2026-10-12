@@ -143,6 +143,17 @@ describe('launch (webview)', () => {
     expect(client.isLaunched()).toBe(true);
   });
 
+  it('getLaunchOptions / getHostLaunchOptions report the options in effect (L9), not {}', () => {
+    const client = track('tok', baseOptions({ captureLogs: false }));
+    expect(client.getLaunchOptions()['com.bugsee.option.capture.logs']).toBe(false);
+    expect(client.getHostLaunchOptions()).toMatchObject({
+      'com.bugsee.option.capture.logs': false,
+    });
+    expect(client.getHostLaunchOptions()).not.toHaveProperty([
+      'com.bugsee.option.capture.system.events',
+    ]);
+  });
+
   it('opens with a hello handshake declaring sdk + capabilities + a session', () => {
     const fake = fakeGlobal();
     track('tok', baseOptions({ global: fake.global }));

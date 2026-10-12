@@ -313,6 +313,80 @@ describe('launch -> stop -> launch cycles leave nothing behind', () => {
   });
 });
 
+describe('stop() releases the instance lock and IndexedDB only when it is SAFE to (L7, L14)', () => {
+  const never = (): HttpTransport => () => new Promise(() => {});
+  // The collector's KILL_SDK verdict (99099) arrives as a v2 envelope; every call answers with it.
+  const killTransport = (): HttpTransport => async () => ({
+    status: 200,
+    headers: {},
+    body: new TextEncoder().encode(
+      JSON.stringify({ ok: false, error: { type: 'KillSdk', message: 'off', code: 99099 } }),
+    ),
+  });
+
+  it('L7: a drain that timed out keeps the lock and the IDB connections (the upload may still run)', async () => {
+    const locks = realLocks();
+    const real = countingIdb(new IDBFactory());
+    const client = await launch(
+      'tok',
+      opts({ persist: true, locks: locks.manager, indexedDB: real.idb, transport: never() }),
+    );
+    void client.logException(new Error('in flight'));
+    expect(await client.stop(30)).toBe(false);
+    expect(locks.held.size).toBe(1); // another tab must NOT see this instance as dead and re-upload
+    expect(real.open()).toBeGreaterThan(0);
+    expect(getStatus()).toBe(BugseeStatus.Stopped);
+  });
+
+  it('L7: a clean drain with the recovery settled still releases the lock and the connections', async () => {
+    const locks = realLocks();
+    const real = countingIdb(new IDBFactory());
+    const client = await launch(
+      'tok',
+      opts({ persist: true, locks: locks.manager, indexedDB: real.idb }),
+    );
+    expect(await client.stop()).toBe(true);
+    await vi.waitFor(() => expect(locks.held.size).toBe(0));
+    await vi.waitFor(() => expect(real.open()).toBe(0));
+  });
+
+  it('L7: a client.launch() while the stop is draining keeps the lock (the instance is live again)', async () => {
+    const locks = realLocks();
+    const client = await launch(
+      'tok',
+      opts({ persist: true, locks: locks.manager, indexedDB: new IDBFactory() }),
+    );
+    const stopping = client.stop();
+    client.launch();
+    await stopping;
+    expect(locks.held.size).toBe(1);
+    live.push(client);
+  });
+
+  it('L14: stop() on a KILLED client still releases the lock and the connections', async () => {
+    const locks = realLocks();
+    const real = countingIdb(new IDBFactory());
+    const onError = vi.fn();
+    const client = await launch(
+      'tok',
+      opts({
+        persist: true,
+        locks: locks.manager,
+        indexedDB: real.idb,
+        transport: killTransport(),
+        onError,
+      }),
+    );
+    await client.logException(new Error('boom'));
+    await vi.waitFor(() => expect(client.isLaunched()).toBe(false)); // the collector killed the SDK
+    expect(locks.held.size).toBe(1); // still held until stop()
+    await client.stop();
+    await vi.waitFor(() => expect(locks.held.size).toBe(0));
+    await vi.waitFor(() => expect(real.open()).toBe(0));
+    expect(getStatus()).toBe(BugseeStatus.Stopped);
+  });
+});
+
 describe('launch options introspection', () => {
   it('getLaunchOptions is host over defaults by canonical key; getHostLaunchOptions only what the host set', async () => {
     const client = await track('tok', opts({ captureLogs: false, maxRecordingTime: 30 }));
@@ -354,15 +428,16 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and options', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options', async () => {
     const first = await launch('tok-1', opts({ captureLogs: false }));
-    const second = await relaunch();
+    const second = await relaunch(opts());
     live.push(second);
     expect(second).not.toBe(first);
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
     expect(second.getStatus()).toBe(BugseeStatus.Launched);
     expect(getStatus()).toBe(BugseeStatus.Launched);
-    expect(second.getHostLaunchOptions()).toHaveProperty([BugseeOption.CaptureLogs], false);
+    // The previous host options are NOT carried over (L18: the slot retains only seams, never the options).
+    expect(second.getHostLaunchOptions()).not.toHaveProperty([BugseeOption.CaptureLogs]);
   });
 
   it('uses NEW options when given (they replace the previous host options)', async () => {
@@ -378,7 +453,7 @@ describe('relaunch', () => {
     await launch('tok', opts({ window: win.target as unknown as Window }));
     const baseline = win.total();
     for (let i = 0; i < 3; i++) {
-      const next = await relaunch();
+      const next = await relaunch(opts({ window: win.target as unknown as Window }));
       live.push(next);
       expect(win.total()).toBe(baseline);
     }

@@ -211,11 +211,54 @@ describe('getProcessStatus', () => {
 });
 
 describe('setCarrierLastLaunch', () => {
-  it('stores the token and options on the carrier slot', () => {
+  it('stores the token on the carrier slot', () => {
     const g = {};
-    const options = { a: 1 };
-    setCarrierLastLaunch('tok', options, g);
-    expect(getCarrier(g).lastLaunch).toEqual({ appToken: 'tok', options });
+    setCarrierLastLaunch('tok', { a: 1 }, g);
+    expect(getCarrier(g).lastLaunch?.appToken).toBe('tok');
+  });
+
+  // L18: the slot lives on globalThis, readable by any script in the process. It keeps only what
+  // relaunch() needs to find its way back, never the host's options wholesale.
+  it('keeps ONLY the integration seams relaunch needs, never secrets, transport, onError or data options', () => {
+    const g = {};
+    const clock = { now: () => 1 };
+    const scheduler = { setInterval: () => 'h' };
+    setCarrierLastLaunch(
+      'tok',
+      {
+        carrier: g,
+        clock,
+        scheduler,
+        transport: () => 'bearer',
+        onError: () => {},
+        headers: { authorization: 'Bearer SECRET' },
+        endpoint: 'https://x.test',
+        captureLogs: false,
+        userIdentifier: 'a@b.c',
+      },
+      g,
+    );
+    const retained = getCarrier(g).lastLaunch?.options as Record<string, unknown>;
+    expect(Object.keys(retained).sort()).toEqual(['carrier', 'clock', 'scheduler']);
+    expect(retained.carrier).toBe(g);
+    expect(retained.clock).toBe(clock);
+    expect(retained.scheduler).toBe(scheduler);
+  });
+
+  it('retains nothing for absent or non-object options', () => {
+    const g = {};
+    setCarrierLastLaunch('tok', undefined, g);
+    expect(getCarrier(g).lastLaunch?.options).toEqual({});
+    setCarrierLastLaunch('tok', 'not-an-object', g);
+    expect(getCarrier(g).lastLaunch?.options).toEqual({});
+    setCarrierLastLaunch('tok', null, g);
+    expect(getCarrier(g).lastLaunch?.options).toEqual({});
+  });
+
+  it('omits a seam the host did not set (no explicit undefined keys)', () => {
+    const g = {};
+    setCarrierLastLaunch('tok', { clock: undefined }, g);
+    expect('clock' in (getCarrier(g).lastLaunch?.options as object)).toBe(false);
   });
 
   it('defaults to the real globalThis', () => {

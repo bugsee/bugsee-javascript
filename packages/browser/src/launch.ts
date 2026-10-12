@@ -800,6 +800,10 @@ async function buildLaunch(
   // incidents its bundle-queue leg already settled with (`skipReportIds`), so one incident is delivered
   // once even when the sibling left BOTH a staged bundle and that incident's marker (the SEV1
   // double-upload — reconciled in browser-utils).
+  let recoverySettled = false;
+  // Bumped by every stop() and every client.launch(): a stop may release the instance's lock only if it is
+  // still the latest transition when it gets there (L7).
+  let lifecycleEpoch = 0;
   const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
@@ -837,6 +841,8 @@ async function buildLaunch(
             }
           : {}),
       }),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
   // Flush on page hide (Wave 6.2). The browser is the one runtime with no shutdown hook at all — no
@@ -922,8 +928,15 @@ async function buildLaunch(
     // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
     upload: (uploadOptions) =>
       client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
+    launch(): void {
+      // A relaunch of this client while a stop is still draining makes the instance live again: its
+      // lock and connections must outlive that stop (L7).
+      lifecycleEpoch++;
+      client.launch();
+    },
     async stop(timeout?: number): Promise<boolean> {
       const wasLaunched = client.isLaunched();
+      const epoch = ++lifecycleEpoch;
       // Release the process slot, but only if it is still OURS: a repeat/late stop() must not evict a
       // client that has since been relaunched.
       const owned = getCarrierClient(carrier) === publicClient;
@@ -932,27 +945,41 @@ async function buildLaunch(
         clearCarrierClient(publicClient, carrier);
       }
       uninstallPageHideFlush();
-      if (!wasLaunched) {
-        return stopCore(timeout);
-      }
+      let drained = false;
       try {
-        return await stopCore(timeout);
+        drained = await stopCore(timeout);
+        return drained;
       } finally {
-        // Everything below is idempotent; the drain is over, so now make the data durable, then let go of
-        // the instance liveness lock (this instance now reads as dead, so the NEXT launch can recover any
-        // leftovers) and the IndexedDB connections.
-        try {
-          await captureStore.flush?.();
-        } catch (error) {
-          options.onError?.(error);
+        // Make the data durable first (a launched client only: a killed one has no live store to flush).
+        if (wasLaunched) {
+          try {
+            await captureStore.flush?.();
+          } catch (error) {
+            options.onError?.(error);
+          }
         }
         // The launch-time dead-sibling scan may still be reading IndexedDB (a quick launch -> stop); closing
         // under it would just make it reopen the connection and leak it. Let it settle first — bounded by
         // the caller's own timeout, since a long recovery upload must not hold up a deadline-bound stop.
+        let timer: ReturnType<typeof setTimeout> | undefined;
         await (timeout === undefined
           ? recoveryDone
-          : Promise.race([recoveryDone, new Promise<void>((r) => setTimeout(r, timeout))]));
-        coexistence.release();
+          : Promise.race([
+              recoveryDone,
+              new Promise<void>((r) => {
+                timer = setTimeout(r, timeout);
+              }),
+            ]));
+        clearTimeout(timer);
+        // Let go of the instance liveness lock (this instance now reads as dead, so the NEXT launch can
+        // recover any leftovers) and the IndexedDB connections ONLY when that is true: the drain
+        // completed (a timed-out drain's upload may still be running here, and another tab that saw this
+        // instance as dead would upload it again), the launch recovery has settled (it may still be
+        // reading or writing), and this is still the latest stop with no client.launch() since (L7). A killed client is
+        // released too (L14): the collector switched it off, so nothing of it is in flight.
+        if (drained && recoverySettled && epoch === lifecycleEpoch) {
+          coexistence.release();
+        }
         if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
           setCarrierStatus(BugseeStatus.Stopped, carrier);
         }

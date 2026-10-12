@@ -1,3 +1,4 @@
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import process from 'node:process';
 import {
@@ -940,7 +941,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
             ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
           })
       : (): Promise<void> => Promise.resolve();
-  void runLaunchRecovery({
+  // Kept (not `void`ed): stop() must not mark this instance's subtree recoverable while the recovery can
+  // still be staging bundles into it (L6). The promise never rejects.
+  let recoverySettled = false;
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An INJECTED `bundleStore` is the integrator's, outside the per-instance layout and stable across
     // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
@@ -948,6 +952,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     pipeline: baseUploadPipeline,
     scan,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
@@ -1117,8 +1123,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // cycle stranded up to `maxDataSize` of capture files; the marker lets the NEXT launch recover whatever
   // is undelivered (retained bundles, pending incident markers) and remove the rest. A timed-out drain is
   // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
-  const markStopped = (drained: boolean): void => {
-    if (!drained || instanceLayout === undefined) {
+  //
+  // The marker is written only when it can still be TRUE: this is the latest stop AND no `client.launch()`
+  // happened since (both are `stopGeneration`: the launch override below bumps it — a relaunch re-opens the
+  // same subtree for a live writer, and marking it would let the next launch claim and DELETE it under that
+  // writer), and the launch-time recovery has settled (it may still be staging bundles into the subtree).
+  let stopGeneration = 0;
+  const markStopped = (drained: boolean, generation: number): void => {
+    if (
+      !drained ||
+      instanceLayout === undefined ||
+      generation !== stopGeneration ||
+      !recoverySettled
+    ) {
       return;
     }
     try {
@@ -1127,6 +1144,30 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       options.onError?.(error);
     }
   };
+  /** Wait for the launch-time recovery, bounded by the caller's own deadline (a long recovery upload must
+   *  not hold up a deadline-bound stop). */
+  const awaitRecovery = async (timeout: number | undefined): Promise<void> => {
+    if (recoverySettled) {
+      return;
+    }
+    if (timeout === undefined) {
+      await recoveryDone;
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      recoveryDone,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeout);
+      }),
+    ]);
+    clearTimeout(timer);
+  };
+  const finishStop = (drained: boolean, generation: number, timeout: number | undefined) =>
+    (drained ? awaitRecovery(timeout) : Promise.resolve()).then(() => {
+      markStopped(drained, generation);
+      return drained;
+    });
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
@@ -1138,8 +1179,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       };
       // A repeat stop() (or one after the collector killed the SDK) has nothing left to tear down; running
       // the teardown again would double-dispose the writer and could evict a relaunched client's slot.
+      const generation = ++stopGeneration;
       if (tornDown) {
-        return stopCore(timeout);
+        return stopCore(timeout).then((drained) => finishStop(drained, generation, timeout));
       }
       tornDown = true;
       const owned = getCarrierClient(carrier) === publicClient;
@@ -1175,11 +1217,21 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       }
       clearCarrierClient(publicClient, carrier);
       return stopCore(timeout)
-        .then((drained) => {
-          markStopped(drained);
-          return drained;
-        })
+        .then((drained) => finishStop(drained, generation, timeout))
         .finally(settle);
+    },
+    launch(): void {
+      // A relaunch of this client re-opens the subtree for a live writer: retire any in-flight stop's
+      // pending marker and remove one a settled stop already wrote (L5).
+      stopGeneration++;
+      if (instanceLayout !== undefined) {
+        try {
+          rmSync(instanceLayout.stoppedFile, { force: true });
+        } catch (error) {
+          options.onError?.(error);
+        }
+      }
+      client.launch();
     },
   };
   setCarrierClient(publicClient, carrier);
