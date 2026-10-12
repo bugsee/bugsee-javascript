@@ -92,3 +92,16 @@ export function createEdgeHandle(options: CreateEdgeHandleOptions = {}): SvelteK
     );
   };
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getDefaultNetworkSanitizer,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/vercel-edge';

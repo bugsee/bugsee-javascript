@@ -2,9 +2,25 @@
 // storage, incident-driven upload via ctx.waitUntil, globalThis.AsyncLocalStorage probe. Tier 2. See
 // docs/design/sdk-design.md §3.x/§7.7/§12.5. Edge capture is INCIDENT-DRIVEN — a no-incident invocation
 // uploads nothing (the in-memory buffer is discarded when the isolate ends).
+
+// API parity with the umbrella entries (review R2D-4): a directly imported edge package exposes the same VALUE
+// surface (status enum + getStatus, lifecycle constants, the report-attachment helper, the default network
+// sanitizer). Thin re-exports of the same functions. `relaunchWith` is re-exported so `@bugsee/cloudflare`
+// (which depends on this package only) can build ITS `relaunch` on its own launch.
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // Re-export the core attribute type that the edge public surface uses (EdgeInvocationOptions.attributes), so
 // downstream edge packages (@bugsee/cloudflare) need not depend on @bugsee/core directly.
 export type { AttributeValue } from '@bugsee/core';
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getProcessStatus as getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunchWith,
+} from '@bugsee/core';
 export {
   createEdgeUnhandledRejectionProvider,
   type EdgeGlobalEvents,
@@ -29,6 +45,7 @@ export {
   launchEdge as launch,
   launchEdge,
 } from './launch';
+export { relaunch } from './relaunch';
 export {
   createEdgeRequestContextStore,
   type EdgeContextStoreLogger,

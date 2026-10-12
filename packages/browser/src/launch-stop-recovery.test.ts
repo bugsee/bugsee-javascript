@@ -69,9 +69,29 @@ describe('browser stop() and the launch-time recovery (L7)', () => {
     const locks = realLocks();
     const client = await launch('tok', opts({ locks: locks.manager, indexedDB: new IDBFactory() }));
     expect(locks.held.size).toBe(1);
-    const t0 = Date.now();
-    expect(await client.stop(20)).toBe(true);
-    expect(Date.now() - t0).toBeLessThan(1000);
+    // Deterministic, no wall clock: only the deadline timer is faked, advanced in 20 ms steps.
+    // If stop() waited for the never-settling recovery (or used a longer deadline) this would never resolve.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let settled = false;
+      const stopping = client.stop(20).then((drained) => {
+        settled = true;
+        return drained;
+      });
+      // The deadline timer is armed a few async steps into stop(): advance in deadline-sized steps, at most 5
+      // (100 ms of fake time in all), so a longer or missing deadline fails instead of passing slowly; the
+      // setImmediate lets fake-indexeddb's own (unfaked) macrotasks run between steps.
+      for (let step = 0; step < 5 && !settled; step++) {
+        await vi.advanceTimersByTimeAsync(20);
+        await new Promise<void>((resolve) =>
+          (globalThis as unknown as { setImmediate(cb: () => void): void }).setImmediate(resolve),
+        );
+      }
+      expect(settled).toBe(true);
+      expect(await stopping).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(locks.held.size).toBe(1); // recovery may still be reading/writing: not dead yet
   });
 

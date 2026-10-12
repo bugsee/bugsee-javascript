@@ -11,3 +11,5 @@ export {
 export { createDenoSystemProbe, denoSystemProbe } from './environment';
 // Deno's launch()/launchCore() — shadow the @bugsee/node ones re-exported by `export *` above.
 export { launch, launchCore } from './launch';
+// Likewise `relaunch` re-runs THIS launch (the node one from `export *` would drop the runtime probe/gates).
+export { relaunch } from './relaunch';

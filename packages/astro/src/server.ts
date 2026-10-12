@@ -22,3 +22,15 @@ export interface AstroServerOptions extends BugseeNodeLaunchOptions {}
 export function registerServer(appToken: string, options: AstroServerOptions = {}): Bugsee {
   return launch(appToken, options);
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/bugsee/node';

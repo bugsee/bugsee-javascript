@@ -27,6 +27,9 @@ export type BrowserTypes = [
   Browser.Transaction,
   Browser.PerformanceFacade,
   Browser.PerformanceApi,
+  Browser.LifecycleEventsListener,
+  Browser.LifecycleEventType,
+  Browser.ReportAttachmentInput,
 ];
 export type NodeTypes = [
   Node.DefaultNetworkSanitizer,
@@ -34,6 +37,9 @@ export type NodeTypes = [
   Node.Transaction,
   Node.PerformanceFacade,
   Node.PerformanceApi,
+  Node.LifecycleEventsListener,
+  Node.LifecycleEventType,
+  Node.ReportAttachmentInput,
 ];
 export type BunTypes = [
   Bun.DefaultNetworkSanitizer,
@@ -41,6 +47,9 @@ export type BunTypes = [
   Bun.Transaction,
   Bun.PerformanceFacade,
   Bun.PerformanceApi,
+  Bun.LifecycleEventsListener,
+  Bun.LifecycleEventType,
+  Bun.ReportAttachmentInput,
 ];
 export type DenoTypes = [
   Deno.DefaultNetworkSanitizer,
@@ -48,6 +57,9 @@ export type DenoTypes = [
   Deno.Transaction,
   Deno.PerformanceFacade,
   Deno.PerformanceApi,
+  Deno.LifecycleEventsListener,
+  Deno.LifecycleEventType,
+  Deno.ReportAttachmentInput,
 ];
 export type EdgeLightTypes = [
   EdgeLight.DefaultNetworkSanitizer,
@@ -55,6 +67,9 @@ export type EdgeLightTypes = [
   EdgeLight.Transaction,
   EdgeLight.PerformanceFacade,
   EdgeLight.PerformanceApi,
+  EdgeLight.LifecycleEventsListener,
+  EdgeLight.LifecycleEventType,
+  EdgeLight.ReportAttachmentInput,
 ];
 export type WorkerTypes = [
   Worker.DefaultNetworkSanitizer,
@@ -62,6 +77,9 @@ export type WorkerTypes = [
   Worker.Transaction,
   Worker.PerformanceFacade,
   Worker.PerformanceApi,
+  Worker.LifecycleEventsListener,
+  Worker.LifecycleEventType,
+  Worker.ReportAttachmentInput,
 ];
 export type WorkerdTypes = [
   Workerd.DefaultNetworkSanitizer,
@@ -69,6 +87,9 @@ export type WorkerdTypes = [
   Workerd.Transaction,
   Workerd.PerformanceFacade,
   Workerd.PerformanceApi,
+  Workerd.LifecycleEventsListener,
+  Workerd.LifecycleEventType,
+  Workerd.ReportAttachmentInput,
 ];
 
 // Every entry exposes the same getDefaultNetworkSanitizer signature.

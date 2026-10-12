@@ -2,6 +2,9 @@
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
 
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review R2D-4: the
+// directly imported platform package exposes the same value surface as the umbrella entries).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.
 export type { ReportAttachmentInput } from '@bugsee/core';
 // Lifecycle events: the event-name constants + listener type for `setLifecycleEventsListener`.
@@ -97,6 +100,9 @@ export {
   parseOsFromUserAgent,
   UNKNOWN_OS,
 } from './user-agent';
+// The localStorage key prefix of the opt-in persisted user identifier (`<prefix><appToken>`), so tests and
+// tooling that inspect the storage do not hard-code the string.
+export { USER_IDENTIFIER_KEY_PREFIX } from './user-identifier-store';
 export {
   createDomSnapshot,
   createViewtreeSnapshotSource,

@@ -26,6 +26,8 @@ export {
 // 'workers' (an explicit named export wins over `export *` for the same name).
 export { launch } from './launch';
 export type { BugseeWorkerConfig } from './launch-config';
+// ... and `relaunch` likewise re-runs THIS launch (shadowing the plain-edge `relaunch` of the `export *`).
+export { relaunch } from './relaunch';
 // request.cf geo/network enrichment (C3) — applied to fetch by `withBugsee`; exposed for manual DO-fetch use.
 export { cfAttributes, cloudflareRequestAttributes } from './request-cf';
 export { type WorkerEntrypointInstrumentOptions, withBugsee } from './with-bugsee';

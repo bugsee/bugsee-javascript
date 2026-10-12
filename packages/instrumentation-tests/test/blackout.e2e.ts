@@ -122,9 +122,38 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
     );
     await page.goto(serverUrl);
     await page.waitForFunction(() => (window as unknown as { __ready?: boolean }).__ready === true);
-    // The replay chunk is lazy-loaded: wait for the recorder to have written its opening snapshot.
-    await page.waitForTimeout(600);
+    // The replay chunk is lazy-loaded, so launch() resolving does not mean the recorder is running yet.
+    if (extraOptions.startInBlackout === true) {
+      // A dark launch never records, so there is no snapshot to wait for; drain the event loop instead (two
+      // rendered frames: every queued import/microtask has run). The "lit" report of the test is what proves
+      // this page CAN record, i.e. that its silence was the blackout and not a recorder that never loaded.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+    } else {
+      await waitForRecorder(page, collector);
+    }
     return page;
+  }
+
+  /** CONDITION wait, not a sleep: report until a report's replay.bin carries the recorder's opening snapshot. */
+  async function waitForRecorder(page: Page, collector: MockCollector): Promise<void> {
+    const deadline = Date.now() + 20_000;
+    let probes = 0;
+    while (Date.now() < deadline) {
+      const probe = await sendReport(page, collector, `recorder-probe-${probes++}`);
+      const hasSnapshot =
+        probe.files['replay.bin'] !== undefined &&
+        replayOf(probe).events.some((e) => e.type === FULL_SNAPSHOT);
+      if (hasSnapshot) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error('the replay recorder never produced its opening snapshot');
   }
 
   async function sendReport(
@@ -303,10 +332,30 @@ describe('blackout — REAL Chromium + REAL rrweb end to end', () => {
       await page.evaluate(() => (window as unknown as BlackoutWindow).__bugsee.endBlackout());
       await page.waitForTimeout(400);
       await page.click('#btn');
+      await page.focus('#field');
       await page.waitForTimeout(300);
       const lit = await sendReport(page, collector, 'lit');
       expect(replayOf(lit).text).toContain('PRE_MARKER_ALPHA');
       expect(lit.files['viewtree.json']).toBeDefined();
+      // The "lit" CONTROLS for every negative above: the same page, once released, DOES record input and
+      // interaction breadcrumbs, so their absence while dark was the blackout and not a dead source. Only
+      // what happened AFTER endBlackout() is there (the dark presses and the typed "x" are not).
+      expect(readJson<{ events: unknown[] }>(lit, 'input.json').events.length).toBeGreaterThan(0);
+      const litCrumbs = readJson<Array<{ category: string }>>(lit, 'breadcrumbs');
+      expect(litCrumbs.filter((c) => c.category === 'ui.focus')).toHaveLength(2); // #btn, #field after the release
+      // The replay brackets. A dark launch emits at most the end of its blackout and NEVER leaves the stream
+      // saying a blackout is still active after endBlackout(). TIGHTEN to `[[], [true, false]]` once the orphan
+      // `[false]` (an end with no start) is gone: review round 2, R2V-12.
+      const markers = (
+        replayOf(lit).events as Array<{
+          type: number;
+          data?: { tag?: string; payload?: { active?: boolean } };
+        }>
+      )
+        .filter((e) => e.type === 5 && e.data?.tag === 'bugsee.blackout')
+        .map((e) => e.data?.payload?.active);
+      expect(markers.length).toBeLessThanOrEqual(2);
+      expect(markers.at(-1) ?? false).toBe(false);
       assertNoContractViolations(collector);
       await page.context().close();
     } finally {
