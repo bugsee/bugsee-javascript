@@ -1,14 +1,25 @@
 # @bugsee/protocol
 
-Canonical wire shapes: types + sanitizer lists + shape redaction + option-key translator + enum maps
+The wire contract of the Bugsee JavaScript SDK: the shapes the SDK uploads and the rules for sanitizing them.
 
-**Status:** implemented. Tier 0 (design §5). The single source of truth for the wire contract
-(design §8); byte-identical to the Bugsee mobile SDKs where they overlap.
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Implemented: wire-shape types (§8.5–§8.7), bundle constants (§8.4), log-level/severity enum
-translation (§8.9), option-key translation, sanitizer denylists + shape redaction (§8.10).
+This is an internal building block of the Bugsee SDK, not intended to be installed directly. Install `@bugsee/bugsee` instead.
 
-Deferred to `@bugsee/core` (core-coupled, not wire-shape concerns): URL path scrubbing (§8.10),
-error-message/stack-frame scrubbing (§14.3), and ring-buffer→bundle serializers (`CaptureProvider`).
+## What it contains
 
-Implementation follows `docs/implementation-standards.md`.
+- Wire-shape types for environments, events, traces and reports, and the bundle constants.
+- Launch-option key translation and enum maps.
+- Sanitizer deny-lists and shape redaction.
+- The `./upload-contract.schema.json` JSON schema of the upload bundle.
+
+It is used by `@bugsee/core`, `@bugsee/capture`, `@bugsee/browser`, `@bugsee/node`, `@bugsee/performance`, `@bugsee/electron` and other SDK packages. Its API is internal and may change between releases.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/protocol
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.

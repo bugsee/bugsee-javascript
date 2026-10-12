@@ -1,12 +1,22 @@
 # @bugsee/logger
 
-The SDK's internal diagnostic logger — the `debug.*` channel used across the SDK, gated by `__BUGSEE_DEBUG__`. Distinct from the captured-log pipeline (these are SDK self-diagnostics, not user log entries).
+The internal diagnostic logger of the Bugsee JavaScript SDK: a log level plus handler registration.
 
-`createLogger(initialLevel = 'error')` returns a `Logger` with levels `silent < error < warn < info < debug`:
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-- `setLevel` / `getLevel`
-- `addHandler(handler)` → returns an unsubscribe function
-- level-gated `error` / `warn` / `info` / `debug`
-- `warnOnce(key, ...)` for one-time diagnostics (consumes the key only on actual delivery)
+This is an internal building block of the Bugsee SDK, not intended to be installed directly. Install `@bugsee/bugsee` instead.
 
-A throwing handler can't break delivery or starve other sinks; args are frozen and the handler set is snapshotted per emit. Standalone, zero-dependency. Tier 0 (design §5).
+## What it contains
+
+- `createLogger(level)` returns a logger with the levels `silent`, `error`, `warn`, `info` and `debug`, and pluggable log handlers.
+
+It is used by `@bugsee/integration-shims` and `@bugsee/vercel-edge`. Its API is internal and may change between releases.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/logger
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
